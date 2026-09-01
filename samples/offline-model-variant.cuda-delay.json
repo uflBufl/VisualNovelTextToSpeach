@@ -1,0 +1,10 @@
+[
+  {
+    "model_id": "moss-delay-8b-v1.5-cuda",
+    "backend": "moss-tts-delay",
+    "model": "OpenMOSS-Team/MOSS-TTS-v1.5",
+    "model_revision": "cdd3b911b1585e3f2dbc7775ef10f9926f58850a",
+    "generation_profile": "expressive",
+    "require_cuda": true
+  }
+]

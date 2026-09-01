@@ -58,6 +58,7 @@ class ModelVariant:
     model_id: str
     backend: str
     model: str | None = None
+    model_revision: str | None = None
     generation_profile: str = "stable"
     voice: str | None = None
     terms_accepted: bool = False
@@ -478,6 +479,7 @@ def benchmark_renderer(
     seed=0,
     reported_output_directory=None,
     voice_controls_sha256=None,
+    voice_controls_content_sha256=None,
 ):
     """Render a common corpus through one typed backend without playback."""
     output_directory = Path(output_directory).expanduser().resolve()
@@ -503,6 +505,7 @@ def benchmark_renderer(
             reported_output_directory=reported_output_directory,
             seed=seed,
             voice_controls_sha256=voice_controls_sha256,
+            voice_controls_content_sha256=voice_controls_content_sha256,
         )
         try:
             if output_directory.exists():
@@ -524,6 +527,7 @@ def _benchmark_renderer_staged(
     reported_output_directory,
     seed,
     voice_controls_sha256,
+    voice_controls_content_sha256,
 ):
     render = getattr(backend, "render", None)
     if not callable(render):
@@ -646,11 +650,13 @@ def _benchmark_renderer_staged(
         "provider": variant.backend,
         "backend": variant.backend,
         "model": variant.model or variant.backend,
+        "model_revision": variant.model_revision,
         "generation_profile": variant.generation_profile,
         "voice_override": variant.voice,
         "terms_accepted": variant.terms_accepted,
         "require_cuda": variant.require_cuda,
         "voice_controls_sha256": voice_controls_sha256,
+        "voice_controls_content_sha256": voice_controls_content_sha256,
         "seed_policy": (
             "unsupported" if variant.backend in UNSEEDED_BACKENDS else "shared"
         ),
@@ -675,8 +681,8 @@ def benchmark_model_variants(
     """Benchmark multiple model variants over one exact corpus."""
     corpus = load_benchmark_corpus(corpus_path)
     variants = tuple(variants)
-    if len(variants) < 2:
-        raise ModelBenchmarkError("At least two model variants are required")
+    if not variants:
+        raise ModelBenchmarkError("At least one model variant is required")
     model_ids = [variant.model_id for variant in variants]
     if len(model_ids) != len(set(model_ids)):
         raise ModelBenchmarkError("Model variant IDs must be unique")
@@ -743,6 +749,21 @@ def benchmark_model_variants(
             snapshot_registry = registry
             voice_controls = []
         voice_controls_sha256 = _canonical_sha256(voice_controls)
+        voice_controls_content_sha256 = _canonical_sha256(
+            [
+                {
+                    key: control[key]
+                    for key in (
+                        "character",
+                        "speaker",
+                        "reference_index",
+                        "sha256",
+                        "size",
+                    )
+                }
+                for control in voice_controls
+            ]
+        )
         reports = []
         model_summaries = []
         for variant, safe_model_id in zip(variants, safe_model_ids, strict=True):
@@ -757,6 +778,11 @@ def benchmark_model_variants(
                     snapshot_registry,
                     cache_directory,
                     model_name=variant.model,
+                    **(
+                        {"model_revision": variant.model_revision}
+                        if variant.model_revision is not None
+                        else {}
+                    ),
                     **(
                         {"terms_accepted": True}
                         if variant.backend == "coqui-xtts"
@@ -779,6 +805,7 @@ def benchmark_model_variants(
                     seed=seed,
                     reported_output_directory=reported_model_output,
                     voice_controls_sha256=voice_controls_sha256,
+                    voice_controls_content_sha256=voice_controls_content_sha256,
                 )
                 reports.append(str(reported_model_output / "report.json"))
                 model_summaries.append(
@@ -801,8 +828,10 @@ def benchmark_model_variants(
             "corpus_sha256": _sha256_file(published_corpus),
             "voice_controls": voice_controls,
             "voice_controls_sha256": voice_controls_sha256,
+            "voice_controls_content_sha256": voice_controls_content_sha256,
             "sample_count": len(corpus["samples"]),
             "manual_review_required": True,
+            "comparison_ready": len(variants) >= 2,
             "models": model_summaries,
             "reports": reports,
         }
@@ -899,10 +928,8 @@ def load_model_variants(path):
         raise ModelBenchmarkError(
             f"Unable to read model variants {path}: {error}"
         ) from error
-    if not isinstance(document, list) or len(document) < 2:
-        raise ModelBenchmarkError(
-            "Model variants must be a list with at least two entries"
-        )
+    if not isinstance(document, list) or not document:
+        raise ModelBenchmarkError("Model variants must be a non-empty list")
     variants = []
     for index, item in enumerate(document):
         if not isinstance(item, dict) or not all(
@@ -919,6 +946,18 @@ def load_model_variants(path):
         if "model" in item and (not isinstance(model, str) or not model.strip()):
             raise ModelBenchmarkError(
                 f"Model variant {index} model must be non-empty text"
+            )
+        model_revision = item.get("model_revision")
+        if "model_revision" in item and (
+            not isinstance(model_revision, str)
+            or re.fullmatch(r"[0-9a-f]{40,64}", model_revision) is None
+        ):
+            raise ModelBenchmarkError(
+                f"Model variant {index} model_revision must be an exact commit"
+            )
+        if model_revision is not None and item["backend"] != "moss-tts-delay":
+            raise ModelBenchmarkError(
+                f"Model variant {index} model_revision applies only to moss-tts-delay"
             )
         terms_accepted = item.get("terms_accepted", False)
         if not isinstance(terms_accepted, bool):
@@ -943,6 +982,7 @@ def load_model_variants(path):
                 model_id=item["model_id"],
                 backend=item["backend"],
                 model=model.strip() if isinstance(model, str) else None,
+                model_revision=model_revision,
                 generation_profile=str(item.get("generation_profile") or "stable"),
                 voice=voice.strip() if isinstance(voice, str) else None,
                 terms_accepted=terms_accepted,

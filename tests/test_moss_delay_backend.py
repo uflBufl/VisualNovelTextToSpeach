@@ -24,8 +24,9 @@ class FakeTensor:
 
 
 class FakeCuda:
-    def __init__(self, available=False):
+    def __init__(self, available=False, bf16=True):
         self.available = available
+        self.bf16 = bf16
         self.seeds = []
 
     def is_available(self):
@@ -34,13 +35,16 @@ class FakeCuda:
     def manual_seed_all(self, seed):
         self.seeds.append(seed)
 
+    def is_bf16_supported(self):
+        return self.bf16
+
 
 class FakeTorch:
     bfloat16 = "bfloat16"
     float32 = "float32"
 
-    def __init__(self, cuda=False):
-        self.cuda = FakeCuda(cuda)
+    def __init__(self, cuda=False, bf16=True):
+        self.cuda = FakeCuda(cuda, bf16)
         self.seeds = []
 
     def manual_seed(self, seed):
@@ -171,6 +175,22 @@ class MossDelayBackendTest(unittest.TestCase):
         self.assertEqual(model.device, "cpu")
         self.assertTrue(model.evaluated)
 
+    def test_exact_model_revision_is_forwarded_to_both_upstream_loaders(self):
+        processor_loader = FakeAutoLoader(FakeProcessor())
+        model_loader = FakeAutoLoader(LoadableFakeModel())
+        revision = "c" * 40
+
+        MossTTSDelayVoiceRouterBackend(
+            CharacterVoiceRegistry(),
+            torch_module=FakeTorch(),
+            auto_processor=processor_loader,
+            auto_model=model_loader,
+            model_revision=revision,
+        )
+
+        self.assertEqual(processor_loader.calls[0][1]["revision"], revision)
+        self.assertEqual(model_loader.calls[0][1]["revision"], revision)
+
     def test_required_cuda_rejects_before_model_loading(self):
         processor_loader = FakeAutoLoader(FakeProcessor())
         model_loader = FakeAutoLoader(LoadableFakeModel())
@@ -179,6 +199,22 @@ class MossDelayBackendTest(unittest.TestCase):
             MossTTSDelayVoiceRouterBackend(
                 CharacterVoiceRegistry(),
                 torch_module=FakeTorch(cuda=False),
+                auto_processor=processor_loader,
+                auto_model=model_loader,
+                require_cuda=True,
+            )
+
+        self.assertEqual(processor_loader.calls, [])
+        self.assertEqual(model_loader.calls, [])
+
+    def test_required_cuda_rejects_unsupported_bf16_before_model_loading(self):
+        processor_loader = FakeAutoLoader(FakeProcessor())
+        model_loader = FakeAutoLoader(LoadableFakeModel())
+
+        with self.assertRaisesRegex(TTSConfigurationError, "BF16"):
+            MossTTSDelayVoiceRouterBackend(
+                CharacterVoiceRegistry(),
+                torch_module=FakeTorch(cuda=True, bf16=False),
                 auto_processor=processor_loader,
                 auto_model=model_loader,
                 require_cuda=True,

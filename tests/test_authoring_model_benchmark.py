@@ -616,9 +616,14 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 ],
             )
             self.assertTrue(aggregate["voice_controls_sha256"])
+            self.assertTrue(aggregate["voice_controls_content_sha256"])
             self.assertEqual(
                 {report["voice_controls_sha256"] for report in reports},
                 {aggregate["voice_controls_sha256"]},
+            )
+            self.assertEqual(
+                {report["voice_controls_content_sha256"] for report in reports},
+                {aggregate["voice_controls_content_sha256"]},
             )
 
     def test_voice_cloning_model_rejects_unresolved_corpus_voice(self):
@@ -690,6 +695,7 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                         {
                             "model_id": "delay",
                             "backend": "moss-tts-delay",
+                            "model_revision": "c" * 40,
                             "require_cuda": True,
                         },
                         {"model_id": "control", "backend": "fake"},
@@ -697,7 +703,9 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            self.assertTrue(load_model_variants(path)[0].require_cuda)
+            variant = load_model_variants(path)[0]
+            self.assertTrue(variant.require_cuda)
+            self.assertEqual(variant.model_revision, "c" * 40)
 
             document = json.loads(path.read_text(encoding="utf-8"))
             document[0]["require_cuda"] = "yes"
@@ -713,6 +721,97 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
             path.write_text(json.dumps(document), encoding="utf-8")
             with self.assertRaisesRegex(ModelBenchmarkError, "only"):
                 load_model_variants(path)
+
+            document[0] = {
+                "model_id": "delay",
+                "backend": "moss-tts-delay",
+                "model_revision": "latest",
+            }
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ModelBenchmarkError, "exact commit"):
+                load_model_variants(path)
+
+    def test_single_cuda_candidate_is_a_render_batch_not_a_comparison(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            text = "One exact CUDA candidate line."
+            corpus = root / "corpus.json"
+            corpus.write_text(
+                json.dumps(
+                    {
+                        "schema": "vntts.tts-benchmark-corpus",
+                        "schema_version": 1,
+                        "samples": [
+                            {
+                                "id": "one",
+                                "line_id": "line-one",
+                                "character": "Rhiannon",
+                                "text": text,
+                                "text_sha256": hashlib.sha256(
+                                    text.encode()
+                                ).hexdigest(),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            reference = root / "rhiannon.wav"
+            reference.write_bytes(b"exact-reference")
+            registry = CharacterVoiceRegistry(
+                [CharacterVoice("Rhiannon", "rhiannon", references=(reference,))]
+            )
+            received = []
+
+            def factory(name, received_registry, cache, **options):
+                del received_registry, cache
+                received.append((name, options))
+                return FakeRenderBackend(backend_name=name)
+
+            aggregate = benchmark_model_variants(
+                corpus,
+                (
+                    ModelVariant(
+                        "moss-delay-8b",
+                        "moss-tts-delay",
+                        require_cuda=True,
+                    ),
+                ),
+                registry,
+                root / "output",
+                backend_factory=factory,
+            )
+            repeated = benchmark_model_variants(
+                corpus,
+                (
+                    ModelVariant(
+                        "moss-delay-8b",
+                        "moss-tts-delay",
+                        require_cuda=True,
+                    ),
+                ),
+                registry,
+                root / "repeated-output",
+                backend_factory=factory,
+            )
+
+        self.assertFalse(aggregate["comparison_ready"])
+        self.assertTrue(aggregate["manual_review_required"])
+        self.assertNotEqual(
+            aggregate["voice_controls_sha256"],
+            repeated["voice_controls_sha256"],
+        )
+        self.assertEqual(
+            aggregate["voice_controls_content_sha256"],
+            repeated["voice_controls_content_sha256"],
+        )
+        self.assertEqual(
+            received,
+            [
+                ("moss-tts-delay", {"model_name": None, "require_cuda": True}),
+                ("moss-tts-delay", {"model_name": None, "require_cuda": True}),
+            ],
+        )
 
     def test_limited_render_is_reported_without_publishing_partial_wav(self):
         with TemporaryDirectory() as directory:

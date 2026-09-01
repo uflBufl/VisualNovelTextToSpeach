@@ -38,6 +38,9 @@ generation is an error.
 
 The aggregate `vntts.voice-model-benchmark` version 1 document records the exact
 corpus and per-model report paths; model selection remains a manual decision.
+A single model is permitted as a render batch for a backend that cannot share
+the baseline model's platform. Such a report has `comparison_ready=false` and
+cannot itself select a winner. Two or more completed model reports set it true.
 For any voice-cloning backend, every used manifest reference is captured once
 into the staged output before model construction. All variants read those same
 immutable copies. The aggregate retains the original path, published copy,
@@ -46,12 +49,24 @@ each model report binds that same digest. A missing or unreadable reference
 fails the whole comparison before a backend is created. Fake-only test variants
 use an explicitly empty control inventory.
 
+The aggregate also records `voice_controls_content_sha256`, calculated from
+character, speaker, reference index, WAV SHA-256 and byte size without source or
+publication paths. Use that digest with `corpus_sha256` when comparing a later
+single-model CUDA render to a preserved baseline produced in another output
+directory. The original path-bound digest continues to protect each individual
+publication.
+
 A model variant may set an explicit `voice` override. This changes only the
 voice passed to synthesis: the corpus character, line identity, exact text,
 seed and generation profile remain unchanged. The report preserves both the
 corpus `character` and the effective `synthesis_voice`, and records the
 top-level `voice_override`. This supports controlled narrator comparisons
 without misrepresenting the shared sample as character dialogue.
+
+MOSS Delay variants may additionally set `model_revision`, which must be an
+exact lowercase 40-64 character commit hash. The revision is forwarded to both
+upstream processor and model loaders and retained in the report; floating tags
+are rejected for this CUDA comparison path.
 
 Example model configuration:
 

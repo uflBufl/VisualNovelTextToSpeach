@@ -54,6 +54,7 @@ class MossTTSDelayVoiceRouterBackend:
         model_name=None,
         generation_profile="expressive",
         require_cuda=False,
+        model_revision=None,
         model=None,
         processor=None,
         torch_module=None,
@@ -66,6 +67,7 @@ class MossTTSDelayVoiceRouterBackend:
         self.narrator_speaker = "MOSS Delay reference voice"
         self.language = normalize_moss_language(language)
         self.model_name = str(model_name or default_moss_tts_delay_model)
+        self.model_revision = str(model_revision) if model_revision else None
         self.generation_profile, _options = get_moss_tts_generation_profile(
             generation_profile
         )
@@ -88,6 +90,13 @@ class MossTTSDelayVoiceRouterBackend:
             raise TTSConfigurationError(
                 "MOSS Delay comparison requires CUDA; refusing CPU model loading"
             )
+        if require_cuda:
+            supports_bf16 = getattr(torch_module.cuda, "is_bf16_supported", None)
+            if not callable(supports_bf16) or not supports_bf16():
+                raise TTSConfigurationError(
+                    "MOSS Delay comparison requires CUDA BF16 support; "
+                    "refusing model loading"
+                )
         self.dtype = (
             torch_module.bfloat16 if self.device == "cuda" else torch_module.float32
         )
@@ -107,6 +116,11 @@ class MossTTSDelayVoiceRouterBackend:
                 processor = auto_processor.from_pretrained(
                     self.model_name,
                     trust_remote_code=True,
+                    **(
+                        {"revision": self.model_revision}
+                        if self.model_revision is not None
+                        else {}
+                    ),
                 )
                 processor.audio_tokenizer = processor.audio_tokenizer.to(self.device)
                 model = auto_model.from_pretrained(
@@ -114,6 +128,11 @@ class MossTTSDelayVoiceRouterBackend:
                     trust_remote_code=True,
                     attn_implementation=self._attention_implementation(),
                     torch_dtype=self.dtype,
+                    **(
+                        {"revision": self.model_revision}
+                        if self.model_revision is not None
+                        else {}
+                    ),
                 ).to(self.device)
                 model.eval()
             except Exception as error:

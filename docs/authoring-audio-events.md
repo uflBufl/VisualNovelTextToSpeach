@@ -87,12 +87,39 @@ MLX conversion exists, but it is not an official parity guarantee and is not a
 production dependency today.
 
 There is no CUDA machine available for the current project acceptance. Model
-download/integration is therefore deferred rather than guessed. Before use, a
-bounded evaluation must compare exact isolated effects, reject speech/music or
-identity contamination, validate duration/rate/channel/peak/silence, and obtain
-a human decision. `Tsk!` additionally permits a bounded TTS pronunciation/IPA
-candidate because it is a character vocalization; it still requires blind
-comparison and must never fall back to reading the letters as a word.
+acceptance therefore remains deferred. The experiment code is prepared without
+adding a production provider. It pins upstream code revision
+`c0880299e8b8d0f7119efab17e4e776fffe7b8fa` and model revision
+`e35df4d82fbe87fcd5d14e5d100e349c0c3c076d` in a separate Python 3.12,
+CUDA 12.8 runtime under `backends/moss-soundeffect-v2`. The fixed corpus is
+[`samples/moss-soundeffect-v2-corpus.json`](../samples/moss-soundeffect-v2-corpus.json).
+
+On a Linux CUDA host, install and preflight without loading model weights:
+
+```sh
+uv sync --project backends/moss-soundeffect-v2
+uv run --project backends/moss-soundeffect-v2 --no-sync \
+  python -m vntts.cuda_probe --output /absolute/new/cuda-preflight.json
+```
+
+Then run the bounded three-seed technical render:
+
+```sh
+uv run --project backends/moss-soundeffect-v2 --no-sync \
+  python -m vntts.authoring.sound_effect_benchmark \
+  --corpus samples/moss-soundeffect-v2-corpus.json \
+  --output /absolute/new/moss-soundeffect-v2-benchmark
+```
+
+The output is published atomically and records prompts, seeds, controls,
+requested/actual duration, timing, waveform hashes, peak/silence and exact
+CUDA/VRAM provenance. Adherence, unwanted speech and artifacts remain marked
+`pending`; the report makes no speaker-identity claim. Before production use,
+the bounded evaluation must reject speech/music or identity contamination and
+obtain a human decision. `Tsk!` additionally permits a bounded TTS
+pronunciation/IPA candidate because it is a character vocalization; it still
+requires blind comparison and must never fall back to reading the letters as a
+word.
 
 The bounded local pronunciation experiment is now complete. The official
 MOSS-TTS v1.5 syntax accepts pure IPA inside slashes, and the installed Local

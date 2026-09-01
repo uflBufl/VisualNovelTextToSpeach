@@ -1,0 +1,55 @@
+{
+  "schema": "vntts.sound-effect-benchmark-corpus",
+  "schema_version": 1,
+  "name": "Character Story isolated non-verbal events v1",
+  "samples": [
+    {
+      "id": "human-gasp",
+      "kind": "human-gasp",
+      "prompt": "One brief isolated human gasp of surprise, close-miked, no words, no speech, no music, no ambience.",
+      "seconds": 1.5
+    },
+    {
+      "id": "human-gurgle",
+      "kind": "human-gurgle",
+      "prompt": "One brief isolated wet human throat gurgle, close-miked, no words, no speech, no music, no ambience.",
+      "seconds": 1.5
+    },
+    {
+      "id": "whimper",
+      "kind": "human-whimper",
+      "prompt": "One quiet isolated human whimper of fear, no intelligible words, no music, no ambience.",
+      "seconds": 2.0
+    },
+    {
+      "id": "yelp",
+      "kind": "human-yelp",
+      "prompt": "One short isolated human yelp of pain, no intelligible words, no music, no ambience.",
+      "seconds": 1.5
+    },
+    {
+      "id": "pop",
+      "kind": "impact-pop",
+      "prompt": "One small dry pop impact, isolated, no voice, no speech, no music, no ambience.",
+      "seconds": 1.0
+    },
+    {
+      "id": "bang",
+      "kind": "impact-bang",
+      "prompt": "One sharp heavy bang impact indoors, isolated, no voice, no speech, no music.",
+      "seconds": 2.0
+    },
+    {
+      "id": "electrical-buzz",
+      "kind": "electrical-buzz",
+      "prompt": "A brief isolated unstable electrical buzz that fades out, no voice, no speech, no music.",
+      "seconds": 2.5
+    },
+    {
+      "id": "shriek",
+      "kind": "human-shriek",
+      "prompt": "One brief isolated human shriek of fear, no intelligible words, no music, no ambience.",
+      "seconds": 2.0
+    }
+  ]
+}

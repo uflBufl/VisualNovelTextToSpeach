@@ -32,6 +32,18 @@ Install the new Delay runtime separately:
 uv sync --project backends/moss-tts-delay
 ```
 
+This isolated runtime follows the pinned upstream v1.5 stack: PyTorch 2.9.1,
+CUDA 12.8, TorchCodec 0.8.1 and Transformers 5.0. It does not change the main
+application's dependency versions.
+
+Before model download or loading, verify the isolated runtime and retain its
+hardware report:
+
+```sh
+uv run --project backends/moss-tts-delay --no-sync \
+  python -m vntts.cuda_probe --output /absolute/new/cuda-preflight.json
+```
+
 Upstream currently selects CUDA when available and otherwise CPU. It does not
 advertise an MPS path. The 8B model is therefore intended for a sufficiently
 large CUDA host; a CPU-only Apple Silicon run is a compatibility path, not a
@@ -85,6 +97,17 @@ and Python or isolated-worker module provenance. Isolated workers also report
 their platform, machine, selected device and, on inspectable CUDA runtimes, the
 CUDA runtime, device name, total memory and compute capability. Compare timing
 or resource claims only when this hardware provenance is compatible.
+
+The CUDA host may render only Delay 8B by using
+[`samples/offline-model-variant.cuda-delay.json`](../samples/offline-model-variant.cuda-delay.json)
+with the preserved v3 `benchmark-corpus.json`. A one-model run is deliberately
+marked `comparison_ready=false`: it is a checksum-bound render batch, not a
+model verdict. The sample pins the v1.5 weights to Hugging Face revision
+`cdd3b911b1585e3f2dbc7775ef10f9926f58850a`; changing that revision creates a
+different experiment. Compare it with the existing Local-4B report only when the
+`corpus_sha256` and path-independent `voice_controls_content_sha256` match.
+The older `voice_controls_sha256` also binds publication paths, so it is
+expected to differ across output directories.
 
 ## Decision gate
 

@@ -4,10 +4,13 @@ version = "0.1.0"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "numpy>=1.24",
+    "accelerate>=1.10.1",
     "platformdirs>=4.3,<5",
     "scipy>=1.11,<2",
-    "torch<2.9",
-    "transformers==4.57.3",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+    "torchcodec==0.8.1",
+    "transformers==5.0.0",
     "vntts-artifacts[audio]",
 ]
 
@@ -17,13 +20,17 @@ package = false
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "dd0459df41d596d649a5a3e33fb03f93024d5af9" }
 
 [[tool.uv.index]]
-name = "pytorch-cu129"
-url = "https://download.pytorch.org/whl/cu129"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [[tool.uv.index]]

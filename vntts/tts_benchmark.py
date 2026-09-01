@@ -77,6 +77,7 @@ def create_backend(
     cache_root,
     *,
     model_name=None,
+    model_revision=None,
     narrator_reference=None,
     moss_streaming_first_chunk_frames=None,
     moss_streaming_interval=None,
@@ -136,6 +137,11 @@ def create_backend(
         return create_moss_delay_worker_backend(
             registry,
             **({"model_name": str(model_name)} if model_name is not None else {}),
+            **(
+                {"model_revision": str(model_revision)}
+                if model_revision is not None
+                else {}
+            ),
             generation_profile="expressive",
             require_cuda=require_cuda,
             **(
