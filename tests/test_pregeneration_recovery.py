@@ -106,7 +106,7 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
         self.assertEqual(plan.deferred_action_counts, ())
         self.assertEqual(plan.deferred_batches, ())
 
-    def test_unseeded_pocket_backend_defers_a_seed_retry(self):
+    def test_pocket_resumes_cancellation_once_and_defers_real_failures(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, result, voice_plan = inputs(Path(temporary_directory))
             voice_plan = replace(
@@ -117,16 +117,21 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             document = {
                 "state_sha256": "1" * 64,
                 "queue_sha256": "2" * 64,
-                "failure_count": 2,
+                "failure_count": 3,
                 "records": [
                     {
-                        "queue_id": "a",
+                        "queue_id": "b",
                         "action": "bounded_seed_retry",
                         "provider": "pocket-tts",
                     },
                     {
-                        "queue_id": "b",
+                        "queue_id": "c",
                         "action": "offline_fallback_backend",
+                        "provider": "pocket-tts",
+                    },
+                    {
+                        "queue_id": "a",
+                        "action": "safe_resume",
                         "provider": "pocket-tts",
                     },
                 ],
@@ -138,12 +143,15 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             ):
                 plan = plan_automatic_recovery(generation_input, voice_plan, result)
 
-        self.assertEqual(plan.automatic_batches, ())
+        self.assertEqual(
+            plan.automatic_batches,
+            (OfflineRecoveryBatch("safe_resume", ("a",)),),
+        )
         self.assertEqual(
             plan.deferred_action_counts,
             (("bounded_seed_retry", 1), ("offline_fallback_backend", 1)),
         )
-        self.assertEqual(plan.live_fallback_queue_ids, ("a", "b"))
+        self.assertEqual(plan.live_fallback_queue_ids, ("b", "c"))
 
 
 class OfflineRecoveryWorkerTest(unittest.TestCase):

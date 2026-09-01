@@ -389,4 +389,10 @@ verifies that the pack is active without exposing authoring vocabulary or asking
 for per-line review. A second synthetic journey now interrupts the application at
 a real source-evidence ambiguity, reopens the same resumable job, renders the A/B
 comparison, persists one candidate decision, replans to zero ambiguity and
-publishes the pack without per-line review.
+publishes the pack without per-line review. A third journey interrupts a real
+resumable bulk run after one line is durable, discards the first dialog and
+reopens the same saved job with fresh worker objects. The resumed worker renders
+only the cancelled line, then completes acceptance and publication with no
+duplicate generation or player review. Pocket may safely resume that cancelled
+attempt once; a completed Pocket failure still proceeds directly to live
+fallback.

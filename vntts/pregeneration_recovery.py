@@ -108,7 +108,7 @@ def plan_automatic_recovery(generation_input, voice_plan, generation_result):
             raise OfflineRecoveryError("Offline recovery record is malformed")
         seen_queue_ids.add(queue_id)
         provider = record.get("provider")
-        if provider == "pocket-tts":
+        if provider == "pocket-tts" and action != "safe_resume":
             deferred[action] += 1
             deferred_queue_ids.setdefault(action, []).append(queue_id)
             live_fallback_queue_ids.append(queue_id)

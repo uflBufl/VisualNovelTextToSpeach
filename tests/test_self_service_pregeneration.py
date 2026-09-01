@@ -30,7 +30,10 @@ from vntts.authoring.missing_voice_policy import (  # noqa: E402
 from vntts.pregeneration_acceptance import OfflineAcceptanceWorker  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivator  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionCancelled  # noqa: E402
-from vntts.pregeneration_generation import OfflineGenerationWorker  # noqa: E402
+from vntts.pregeneration_generation import (  # noqa: E402
+    OfflineGenerationCancelled,
+    OfflineGenerationWorker,
+)
 from vntts.pregeneration_queue import PregenerationInputStore  # noqa: E402
 from vntts.pregeneration_recovery import OfflineRecoveryWorker  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
@@ -76,6 +79,47 @@ class InProcessPocketGenerator(OfflineGenerationWorker):
             ),
             narrator_character="Narrator",
         )
+        self.rendered = True
+        return self.inspect(generation_input)
+
+
+class InterruptingPocketGenerator(InProcessPocketGenerator):
+    def __init__(self, *, interrupt):
+        super().__init__()
+        self.interrupt = interrupt
+        self.rendered_texts = []
+
+    def generate(self, generation_input, voice_plan, cancel_event=None):
+        output = generation_input.directory.parent / (
+            f"generation-output-{generation_input.identity[:16]}"
+        )
+        renderer = SyntheticRenderer(
+            (
+                [SynthesisCompletion.COMPLETE, SynthesisCompletion.CANCELLED]
+                if self.interrupt
+                else [SynthesisCompletion.COMPLETE]
+            )
+        )
+        renderer.name = "pocket-tts"
+        renderer.model_name = "pocket-tts"
+        run_bulk_generation(
+            generation_input.queue,
+            output,
+            renderer,
+            provider="pocket-tts",
+            model="pocket-tts",
+            generation_profile="default",
+            retries=0,
+            cancellation=cancel_event,
+            missing_voice_policy=MissingVoicePolicy(
+                NARRATOR_ROLES,
+                generation_input.narrator_fallback_roles,
+            ),
+            narrator_character="Narrator",
+        )
+        self.rendered_texts.extend(request.text for request in renderer.requests)
+        if self.interrupt:
+            raise OfflineGenerationCancelled("Synthetic generation interrupted")
         self.rendered = True
         return self.inspect(generation_input)
 
@@ -271,6 +315,73 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(generator.rendered)
             self.assertTrue(decisions.path.is_file())
             first.deleteLater()
+            second.deleteLater()
+
+    def test_process_restart_resumes_only_the_cancelled_line(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            settings = AppSettings(
+                speech_backend="pocket-tts",
+                tts_profile="default",
+            )
+            jobs = PregenerationJobStore(root / "jobs")
+            decisions = VoiceDecisionStore(root / "voice-decisions.json")
+            voices = VoicePlanStore(jobs, decisions=decisions)
+            inputs = PregenerationInputStore(jobs)
+            pool = ManualThreadPool()
+            interrupted = InterruptingPocketGenerator(interrupt=True)
+            first = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                voice_plan_store=voices,
+                input_store=inputs,
+                generator=interrupted,
+                thread_pool=pool,
+            )
+
+            first.continue_button.click()
+            for _step in range(3):
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+            interrupted_job_id = first.job().job_id
+            interrupted_input_id = first.generation_input().identity
+            self.assertIn("Generation cancelled", first.resume_status.text())
+            self.assertEqual(len(interrupted.rendered_texts), 2)
+            first.reject()
+            first.deleteLater()
+
+            resumed = InterruptingPocketGenerator(interrupt=False)
+            second = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                voice_plan_store=voices,
+                input_store=inputs,
+                generator=resumed,
+                recovery=OfflineRecoveryWorker(resumed),
+                acceptance=OfflineAcceptanceWorker(resumed),
+                thread_pool=pool,
+            )
+            second.continue_button.click()
+            for _step in range(8):
+                if second.result() == QDialog.DialogCode.Accepted:
+                    break
+                self.assertTrue(
+                    pool.tasks,
+                    f"step {_step}: {second.resume_status.text()}",
+                )
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+
+            self.assertEqual(second.result(), QDialog.DialogCode.Accepted)
+            self.assertEqual(second.job().job_id, interrupted_job_id)
+            self.assertEqual(second.generation_input().identity, interrupted_input_id)
+            self.assertEqual(resumed.rendered_texts, interrupted.rendered_texts[-1:])
+            self.assertNotIn(interrupted.rendered_texts[0], resumed.rendered_texts)
+            self.assertEqual(second.pack_result().approved, 2)
+            self.assertEqual(second.pack_result().live_fallbacks, 0)
             second.deleteLater()
 
 

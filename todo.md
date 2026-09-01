@@ -21,10 +21,6 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
   - [ ] Opportunistically pre-render the next unresolved comparison after the
         current A/B card becomes usable, without delaying a decision or making
         cancellation wait for speculative work.
-- [ ] Extend the synthetic end-to-end journey with cancellation during active
-      generation, process restart and exact-line resume before the already tested
-      repair, fallback, publication and activation stages.
-
 ## P1 - Improve the self-service generation engine
 
 Follow
