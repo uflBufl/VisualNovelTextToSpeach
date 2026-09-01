@@ -12,10 +12,10 @@ content, confirms only a small number of ambiguous character voices, and lets
 VNTTS build and activate a local game pack without exposing authoring concepts.
 
 - [ ] Refine ambiguous-voice comparison without expanding mandatory review.
-  - [ ] Add objective source-reference and generated-preview preflight for
-        clipping, unusable silence and obvious artifacts before candidates enter
-        the A/B card. Calibrate evidence margins against held-out decisions rather
-        than weakening the existing automatic fallback rules ad hoc.
+  - [ ] Calibrate an obvious-artifact preview rejection rule against held-out
+        decisions. Existing exact-repeat, near-clipping and discontinuity signals
+        remain diagnostic because the current labelled corpus does not establish
+        a safe automatic margin.
   - [ ] Cluster acoustically duplicate references for one evidenced speaker while
         preserving genuinely distinct age and identity variants.
   - [ ] Add an optional second matched phrase and opportunistically pre-render the

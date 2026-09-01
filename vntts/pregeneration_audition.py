@@ -16,7 +16,11 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.application_directories import get_local_data_directory
+from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.authoring.generation_manifest import inspect_generated_wav
+from vntts.authoring.speech_quality import inspect_generated_speech
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
+from vntts.reference_quality import analyze_reference
 from vntts.synthesis import SynthesisCompletion, SynthesisRequest
 from vntts.tts_benchmark import create_backend
 from vntts.voices import CharacterVoiceRegistry
@@ -86,6 +90,7 @@ class VoiceAuditionPreviewService:
             _raise_if_cancelled(cancellation)
             candidate = _validate_request(plan, group, candidate_source_id)
             registry = _load_candidate_registry(plan, candidate)
+            _preflight_candidate_references(registry, candidate)
             identity = _preview_identity(plan, group, candidate)
             target = self.root / f"{identity}.wav"
             if target.exists():
@@ -168,7 +173,7 @@ class VoiceAuditionPreviewService:
             staging = _staging_path(target)
             try:
                 write_pcm16_wav(staging, samples, sample_rate)
-                probe_pcm16_mono_wav(staging)
+                _inspect_preview(staging, group.sample_text)
                 _load_candidate_registry(plan, candidate)
                 _raise_if_cancelled(cancellation)
                 os.replace(staging, target)
@@ -331,13 +336,44 @@ def _preview_identity(plan, group, candidate):
     return hashlib.sha256(payload).hexdigest()
 
 
+def _preflight_candidate_references(registry, candidate):
+    voice = registry.resolve_source(candidate.source_id)
+    if voice is None:
+        return
+    for index, reference in enumerate(voice.references):
+        try:
+            report = analyze_reference(reference)
+        except ValueError as error:
+            raise VoiceAuditionError(
+                f"Voice reference {index + 1} failed objective preflight: {error}"
+            ) from error
+        if report["sha256"] != candidate.reference_sha256s[index]:
+            raise VoiceAuditionError("Voice reference changed during objective preflight")
+        if report["objective_preflight"] != "pass":
+            reasons = ", ".join(report["rejection_reasons"])
+            raise VoiceAuditionError(
+                f"Voice reference {index + 1} failed objective preflight: {reasons}"
+            )
+
+
+def _inspect_preview(path, text):
+    try:
+        quality = inspect_generated_wav(path)
+        inspect_generated_speech(path, text=text)
+    except BulkGenerationError as error:
+        raise VoiceAuditionError(
+            f"Generated voice preview failed objective preflight: {error}"
+        ) from error
+    return quality
+
+
 def _cached_preview(target, identity, plan, group, candidate, *, reused=True):
     if target.is_symlink():
         raise VoiceAuditionError("Cached voice preview must not be a symbolic link")
     try:
-        info = probe_pcm16_mono_wav(target)
+        info = _inspect_preview(target, group.sample_text)
         audio_sha256 = sha256_file(target)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, VoiceAuditionError) as error:
         raise VoiceAuditionError(f"Cached voice preview is invalid: {error}") from error
     return VoiceAuditionPreview(
         identity=identity,

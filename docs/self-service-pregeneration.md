@@ -67,6 +67,14 @@ accept or reject a class of outputs. Until a classifier is calibrated, the safe
 terminal route is a bounded fallback or live synthesis, not mandatory line-by-line
 review by the player.
 
+Before an ambiguous A/B card appears, every exact source reference passes the
+checksum-bound reference preflight and every generated preview passes the same
+format, clipping and speech-silence gates as bulk generation. A failed candidate
+is omitted automatically; one surviving candidate is selected without asking,
+and zero surviving candidates take the existing safe fallback. Diagnostic
+artifact signals are not rejection authority until held-out evidence establishes
+a safe margin.
+
 ## Progress and recovery
 
 Before generation, the wizard shows selected chapters, dialogue-line count, an

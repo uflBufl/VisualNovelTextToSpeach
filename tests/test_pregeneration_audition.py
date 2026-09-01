@@ -1,8 +1,11 @@
+import io
 import unittest
+import wave
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from unittest.mock import Mock
 
 import numpy as np
 import soundfile as sf
@@ -36,11 +39,17 @@ class CollectedResult:
 
 class FakeBackend:
     def __init__(
-        self, name, *, completion=SynthesisCompletion.COMPLETE, on_render=None
+        self,
+        name,
+        *,
+        completion=SynthesisCompletion.COMPLETE,
+        on_render=None,
+        pcm=None,
     ):
         self.name = name
         self.completion = completion
         self.on_render = on_render
+        self.pcm = pcm
         self.registry = None
         self.requests = []
         self.shutdown_count = 0
@@ -51,7 +60,11 @@ class FakeBackend:
             self.on_render()
         return CollectedResult(
             SynthesisResult(
-                pcm=np.full(1_600, 0.1, dtype=np.float32),
+                pcm=(
+                    np.full(1_600, 0.1, dtype=np.float32)
+                    if self.pcm is None
+                    else self.pcm
+                ),
                 sample_rate=16_000,
                 completion=self.completion,
                 limits=SynthesisLimits(None, None),
@@ -71,11 +84,24 @@ class FakeBackend:
         self.shutdown_count += 1
 
 
+def clean_wav_bytes(*, amplitude=0.1, seconds=1.2, sample_rate=16_000):
+    samples = np.full(round(seconds * sample_rate), amplitude, dtype=np.float32)
+    samples[1::2] *= -1
+    pcm = np.round(samples * 32767).astype("<i2")
+    output = io.BytesIO()
+    with wave.open(output, "wb") as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(sample_rate)
+        target.writeframes(pcm.tobytes())
+    return output.getvalue()
+
+
 def ambiguous_fixture(root):
     content = inspect_story_index(write_content(root / "content"))
     jobs = PregenerationJobStore(root / "jobs")
     job = jobs.create_or_resume(content, ("story",))
-    manifest = write_manifest(root / "voices")
+    manifest = write_manifest(root / "voices", rhiannon=clean_wav_bytes())
     plan = VoicePlanStore(jobs).create(
         job,
         AppSettings(speech_backend="moss-tts", tts_profile="stable"),
@@ -105,9 +131,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             job = jobs.create_or_resume(content, ("story",))
             manifest = write_manifest(root / "voices")
             reference = manifest.parent / "references" / "rhiannon.wav"
-            sf.write(
-                reference, np.zeros(1_600, dtype=np.float32), 16_000, subtype="PCM_16"
-            )
+            sf.write(reference, np.tile((0.1, -0.1), 9_600), 16_000, subtype="PCM_16")
             plan = VoicePlanStore(jobs).create(
                 job,
                 AppSettings(speech_backend="moss-tts", tts_profile="stable"),
@@ -196,6 +220,60 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             service.close()
 
             self.assertFalse(factory_called)
+
+    def test_rejects_objectively_bad_reference_before_starting_model(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_content(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("story",))
+            manifest = write_manifest(
+                root / "voices", rhiannon=clean_wav_bytes(amplitude=1.0)
+            )
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(speech_backend="moss-tts", tts_profile="stable"),
+                manifest_path=manifest,
+            )
+            selected = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            group = replace(selected, route="needs-audition")
+            plan = replace(
+                plan,
+                groups=tuple(
+                    group if value.group_id == group.group_id else value
+                    for value in plan.groups
+                ),
+            )
+            factory = Mock()
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=factory
+            )
+
+            with self.assertRaisesRegex(VoiceAuditionError, "excessive-clipping"):
+                service.generate(plan, group, group.candidates[0].source_id)
+            service.close()
+
+            factory.assert_not_called()
+
+    def test_rejects_silent_generated_preview_without_publishing_wav(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend(
+                "moss-tts", pcm=np.zeros(1_600, dtype=np.float32)
+            )
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: backend,
+            )
+
+            with self.assertRaisesRegex(VoiceAuditionError, "effectively silent"):
+                service.generate(plan, group, group.candidates[0].source_id)
+            service.close()
+
+            self.assertFalse(tuple((root / "auditions").glob("*.wav")))
 
     def test_embedded_pocket_candidate_needs_no_manifest_or_seed(self):
         with TemporaryDirectory() as temporary_directory:
