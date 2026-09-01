@@ -32,8 +32,14 @@ from vntts_artifacts.voice_manifest import (
     write_voice_manifest,
 )
 
+from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.generation_manifest import approved_manifest_entries
+from vntts.authoring.generation_state import (
+    AUDIO_EVENT_OMISSION_REASON,
+    AUDIO_EVENT_OMISSION_SCHEMA,
+    AUDIO_EVENT_OMISSION_VERSION,
+)
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
@@ -69,13 +75,12 @@ class OfflinePackResult:
     approved: int
     live_fallbacks: int
     story_lines: int = 0
+    omissions: int = 0
 
 
 class OfflinePackPublisher:
     def __init__(self, *, base_pack=None):
-        self.base_pack = (
-            Path(base_pack).expanduser().resolve() if base_pack else None
-        )
+        self.base_pack = Path(base_pack).expanduser().resolve() if base_pack else None
 
     def publish(
         self,
@@ -87,15 +92,48 @@ class OfflinePackPublisher:
         _validate_inputs(job, generation_input, generation_result)
         _raise_if_cancelled(cancel_event)
         try:
+            story = load_story_index_document(generation_input.story_index)
+            state_sha256 = sha256_file(generation_result.state)
+        except (
+            OSError,
+            StoryIndexError,
+            ValueError,
+        ) as error:
+            raise OfflinePackError(
+                f"Unable to inspect prepared audio: {error}"
+            ) from error
+        base, source_story = _load_incremental_base(self.base_pack, job, story)
+        base_identity = (
+            None
+            if base is None
+            else base.pack.extensions["vntts.self-service"]["identity"]
+        )
+        identity = _identity(generation_input, state_sha256, base_identity)
+        destination = (
+            generation_input.directory.parent / "game-packs" / (f"pack-{identity[:24]}")
+        )
+        if destination.is_dir():
+            return _load_existing(destination, identity)
+        try:
             state = load_generation_state(
                 generation_result.state,
                 generation_input.queue,
             )
             queue = VoiceGenerationQueue.load(generation_input.queue)
-            story = load_story_index_document(generation_input.story_index)
             voice_document, voices = load_voice_manifest(
                 generation_input.voice_manifest,
                 allow_legacy=False,
+            )
+            current_omissions = _self_service_omission_records(
+                job,
+                generation_input,
+                state_sha256,
+                queue,
+            )
+            _require_terminal_generation(
+                state,
+                queue,
+                omission_queue_ids={value["queue_id"] for value in current_omissions},
             )
         except (
             BulkGenerationError,
@@ -110,20 +148,6 @@ class OfflinePackPublisher:
             raise OfflinePackError(
                 f"Unable to inspect prepared audio: {error}"
             ) from error
-        _require_terminal_generation(state, queue)
-        base, source_story = _load_incremental_base(self.base_pack, job, story)
-        base_identity = (
-            None
-            if base is None
-            else base.pack.extensions["vntts.self-service"]["identity"]
-        )
-        state_sha256 = sha256_file(generation_result.state)
-        identity = _identity(generation_input, state_sha256, base_identity)
-        destination = (
-            generation_input.directory.parent / "game-packs" / (f"pack-{identity[:24]}")
-        )
-        if destination.is_dir():
-            return _load_existing(destination, identity)
         destination.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(
             tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent)
@@ -159,12 +183,13 @@ class OfflinePackPublisher:
                     voice_copy,
                 )
             _raise_if_cancelled(cancel_event)
-            generated_records, live_fallbacks = _write_cumulative_routes(
+            generated_records, live_fallbacks, omissions = _write_cumulative_routes(
                 base,
                 story,
                 state,
                 generation_result,
                 generated_copy,
+                current_omissions,
             )
             write_generated_audio_manifest(
                 generated_copy,
@@ -185,7 +210,7 @@ class OfflinePackPublisher:
                     "vntts.authoring.audio_event_omission": {
                         "schema_version": 1,
                         "mode": "explicit",
-                        "entries": [],
+                        "entries": omissions,
                     },
                 },
                 generated_records,
@@ -217,6 +242,7 @@ class OfflinePackPublisher:
                     "source_state_sha256": state_sha256,
                     "approved_count": len(generated_records),
                     "live_fallback_count": len(live_fallbacks),
+                    "omission_count": len(omissions),
                     "story_line_count": len(published_story.records),
                     "base_pack_identity": base_identity,
                 },
@@ -282,14 +308,15 @@ def _validate_inputs(job, generation_input, generation_result):
         raise OfflinePackError("Offline pack output identity changed")
 
 
-def _require_terminal_generation(state, queue):
+def _require_terminal_generation(state, queue, *, omission_queue_ids=()):
     if state.get("active") is not None:
         raise OfflinePackError("Offline generation is still active")
     expected = {item.queue_id for item in queue.items if item.action == "generate"}
     actual = set(state.get("items", {}))
-    if actual != expected:
+    omission_queue_ids = set(omission_queue_ids)
+    if actual != expected - omission_queue_ids:
         raise OfflinePackError("Offline generation does not cover the selected queue")
-    for queue_id in sorted(expected):
+    for queue_id in sorted(expected - omission_queue_ids):
         item = state["items"][queue_id]
         status = item.get("status") if isinstance(item, dict) else None
         review = item.get("review_status") if isinstance(item, dict) else None
@@ -327,14 +354,11 @@ def _load_incremental_base(path, job, selected_story):
     try:
         imported = import_game_pack(path)
         extension = imported.pack.extensions.get("vntts.self-service")
-        if not isinstance(extension, dict) or not _is_sha256(
-            extension.get("identity")
-        ):
+        if not isinstance(extension, dict) or not _is_sha256(extension.get("identity")):
             return None, None
-        if (
-            imported.pack.game_id != (selected_story.game or job.game)
-            or imported.pack.game_version != (job.game_version or "local")
-        ):
+        if imported.pack.game_id != (
+            selected_story.game or job.game
+        ) or imported.pack.game_version != (job.game_version or "local"):
             return None, None
         source_path = Path(job.story_index).expanduser().resolve()
         if sha256_file(source_path) != job.story_index_sha256:
@@ -342,7 +366,9 @@ def _load_incremental_base(path, job, selected_story):
         source = load_story_index_document(source_path)
         base_story = load_story_index_document(imported.story_index)
     except (GamePackError, OSError, StoryIndexError, ValueError) as error:
-        raise OfflinePackError(f"Unable to inspect the active offline pack: {error}") from error
+        raise OfflinePackError(
+            f"Unable to inspect the active offline pack: {error}"
+        ) from error
     if (
         source.game != selected_story.game
         or source.language != selected_story.language
@@ -466,10 +492,12 @@ def _write_cumulative_routes(
     state,
     generation_result,
     generated_copy,
+    current_omissions,
 ):
     current_line_ids = {record.line_id for record in current_story.records}
     records = []
     live_fallbacks = []
+    omissions = []
     if base is not None:
         if base.generated_audio_manifest is None:
             raise OfflinePackError("Active self-service pack has no audio routes")
@@ -488,6 +516,11 @@ def _write_cumulative_routes(
             for value in _document_live_fallbacks(base_generated)
             if value.get("line_id") not in current_line_ids
         )
+        omissions.extend(
+            value
+            for value in _document_audio_event_omissions(base_generated)
+            if value.get("line_id") not in current_line_ids
+        )
     for record in approved_manifest_entries(state, generation_result.output):
         relative = _safe_relative(record["audio"], "Generated WAV")
         records.append(
@@ -498,9 +531,11 @@ def _write_cumulative_routes(
             )
         )
     live_fallbacks.extend(_live_fallback_records(state))
+    omissions.extend(copy.deepcopy(current_omissions))
     records.sort(key=lambda value: (value["line_id"], value["text_sha256"]))
     live_fallbacks.sort(key=lambda value: (value["line_id"], value["text_sha256"]))
-    return records, live_fallbacks
+    omissions.sort(key=lambda value: (value["line_id"], value["text_sha256"]))
+    return records, live_fallbacks, omissions
 
 
 def _portable_generated_record(record, source, generated_copy):
@@ -519,6 +554,71 @@ def _document_live_fallbacks(document):
     if not isinstance(entries, list):
         raise OfflinePackError("Active pack live fallback ledger is malformed")
     return copy.deepcopy(entries)
+
+
+def _document_audio_event_omissions(document):
+    extension = document.producer_metadata.get("vntts.authoring.audio_event_omission")
+    if extension is None:
+        return []
+    entries = extension.get("entries") if isinstance(extension, dict) else None
+    if not isinstance(entries, list):
+        raise OfflinePackError("Active pack audio-event omission ledger is malformed")
+    return copy.deepcopy(entries)
+
+
+def _self_service_omission_records(job, generation_input, state_sha256, queue):
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    queue_ids = tuple(sorted(generation_input.audio_event_omission_queue_ids))
+    batch_id = canonical_document_sha256(
+        {
+            "schema_version": 1,
+            "generation_input_identity": generation_input.identity,
+            "state_sha256": state_sha256,
+            "queue_sha256": generation_input.queue_sha256,
+            "queue_ids": list(queue_ids),
+        }
+    )
+    authority = {
+        "batch_id": batch_id,
+        "base_workspace_id": f"self-service:{generation_input.identity}",
+        "base_workspace_sha256": generation_input.identity,
+        "base_state_sha256": state_sha256,
+        "queue_sha256": generation_input.queue_sha256,
+    }
+    records = []
+    for queue_id in queue_ids:
+        item = queue_by_id.get(queue_id)
+        plan = None if item is None else audio_event_plan_for_record(item)
+        if (
+            item is None
+            or item.action != "generate"
+            or not isinstance(plan, dict)
+            or not plan.get("requires_composition")
+            or plan.get("spoken_text") != ""
+        ):
+            raise OfflinePackError(
+                f"Offline audio-event omission is invalid: {queue_id!r}"
+            )
+        decision = {
+            "schema": AUDIO_EVENT_OMISSION_SCHEMA,
+            "schema_version": AUDIO_EVENT_OMISSION_VERSION,
+            "reason": AUDIO_EVENT_OMISSION_REASON,
+            "queue_id": queue_id,
+            "line_id": item.line_id,
+            "text_sha256": item.text_sha256,
+            "speaker": item.speaker,
+            "plan_sha256": plan["plan_sha256"],
+            "spoken_text_sha256": plan["spoken_text_sha256"],
+            "decided_at": job.created_at,
+            "authority": copy.deepcopy(authority),
+        }
+        records.append(
+            {
+                **decision,
+                "decision_sha256": canonical_document_sha256(decision),
+            }
+        )
+    return records
 
 
 def _live_fallback_records(state):
@@ -594,8 +694,11 @@ def _load_existing(destination, identity):
     library = GeneratedAudioLibrary(generated)
     approved = extension.get("approved_count")
     live_fallbacks = extension.get("live_fallback_count")
-    if approved != len(generated.records) or live_fallbacks != len(
-        library.live_fallbacks
+    omissions = extension.get("omission_count", 0)
+    if (
+        approved != len(generated.records)
+        or live_fallbacks != len(library.live_fallbacks)
+        or omissions != len(library.audio_event_omissions)
     ):
         raise OfflinePackError("Existing offline pack route counts changed")
     return OfflinePackResult(
@@ -606,6 +709,7 @@ def _load_existing(destination, identity):
         approved=approved,
         live_fallbacks=live_fallbacks,
         story_lines=story_lines,
+        omissions=omissions,
     )
 
 

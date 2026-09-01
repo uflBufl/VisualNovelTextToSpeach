@@ -3,6 +3,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
@@ -13,8 +14,10 @@ from vntts_artifacts.voice_generation_queue import write_voice_generation_queue
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from tests.test_authoring_bulk_generation import SyntheticRenderer
+from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.bulk_generation import (
     authorize_live_fallback,
+    is_spoken_queue_item,
     review_generation_item,
     run_bulk_generation,
 )
@@ -46,12 +49,23 @@ def item(name, sequence):
     }
 
 
-def fixture(root, names=("generated", "fallback")):
+def fixture(root, names=("generated", "fallback"), *, include_omission=False):
     identity = "a" * 64
     directory = root / f"generation-input-{identity[:16]}"
     directory.parent.mkdir(parents=True, exist_ok=True)
     directory.mkdir()
-    items = tuple(item(name, sequence) for sequence, name in enumerate(names, 1))
+    items = [item(name, sequence) for sequence, name in enumerate(names, 1)]
+    if include_omission:
+        text = "*chirp*"
+        event = item("omission", len(items) + 1)
+        event.update(
+            text=text,
+            text_sha256=hashlib.sha256(text.encode()).hexdigest(),
+        )
+        event["queue_id"] = f"pack:omission:{event['text_sha256'][:16]}"
+        event["vntts.authoring.audio_event_plan"] = audio_event_plan_for_record(event)
+        items.append(event)
+    items = tuple(items)
     story = directory / "story-index.jsonl"
     write_story_index_document(
         story,
@@ -102,6 +116,9 @@ def fixture(root, names=("generated", "fallback")):
         2,
         2,
         (),
+        audio_event_omission_queue_ids=(items[-1]["queue_id"],)
+        if include_omission
+        else (),
     )
     output = root / f"generation-output-{identity[:16]}"
     renderer = SyntheticRenderer(
@@ -117,6 +134,7 @@ def fixture(root, names=("generated", "fallback")):
         model="pocket-tts",
         generation_profile="default",
         retries=0,
+        item_filter=is_spoken_queue_item,
     )
     review_generation_item(generated.state, items[0]["queue_id"], "approved")
     authorize_live_fallback(
@@ -160,7 +178,11 @@ class OfflinePackPublisherTest(unittest.TestCase):
             publisher = OfflinePackPublisher()
 
             first = publisher.publish(job, generation_input, generation_result)
-            second = publisher.publish(job, generation_input, generation_result)
+            with patch(
+                "vntts.pregeneration_pack.load_generation_state",
+                side_effect=AssertionError("published pack must be reused"),
+            ):
+                second = publisher.publish(job, generation_input, generation_result)
             library = GeneratedAudioLibrary.load_optional(
                 first.imported.generated_audio_manifest
             )
@@ -175,10 +197,35 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 library.live_fallbacks,
             )
 
+    def test_publishes_exact_pure_event_omission_without_a_wav(self):
+        with TemporaryDirectory() as temporary_directory:
+            job, generation_input, generation_result, items = fixture(
+                Path(temporary_directory),
+                include_omission=True,
+            )
+
+            pack = OfflinePackPublisher().publish(
+                job,
+                generation_input,
+                generation_result,
+            )
+            library = GeneratedAudioLibrary.load_optional(
+                pack.imported.generated_audio_manifest
+            )
+
+        self.assertEqual(pack.omissions, 1)
+        self.assertIsNotNone(
+            library.find_audio_event_omission(
+                items[-1]["line_id"], items[-1]["text_sha256"]
+            )
+        )
+
     def test_second_selection_publishes_an_immutable_cumulative_successor(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            base_job, base_input, base_result, base_items = fixture(root / "base")
+            base_job, base_input, base_result, base_items = fixture(
+                root / "base", include_omission=True
+            )
             base = OfflinePackPublisher().publish(
                 base_job,
                 base_input,
@@ -220,21 +267,29 @@ class OfflinePackPublisherTest(unittest.TestCase):
             library = GeneratedAudioLibrary.load_optional(
                 successor.imported.generated_audio_manifest
             )
-            current_found = library.find(
-                current_items[0]["line_id"], current_items[0]["text_sha256"]
-            ) is not None
+            current_found = (
+                library.find(
+                    current_items[0]["line_id"], current_items[0]["text_sha256"]
+                )
+                is not None
+            )
             live_fallbacks = set(library.live_fallbacks)
+            retained_omission = library.find_audio_event_omission(
+                base_items[-1]["line_id"], base_items[-1]["text_sha256"]
+            )
             base_unchanged = base_hashes == (
                 sha256_file(base.manifest),
                 sha256_file(base.imported.generated_audio_manifest),
             )
 
         self.assertNotEqual(successor.identity, base.identity)
-        self.assertEqual(len(successor_story.records), 3)
-        self.assertEqual(successor.story_lines, 3)
+        self.assertEqual(len(successor_story.records), 4)
+        self.assertEqual(successor.story_lines, 4)
         self.assertEqual(successor.approved, 1)
         self.assertEqual(successor.live_fallbacks, 2)
         self.assertTrue(current_found)
+        self.assertIsNotNone(retained_omission)
+        self.assertEqual(successor.omissions, 1)
         self.assertIn(
             (base_items[1]["line_id"], base_items[1]["text_sha256"]),
             live_fallbacks,

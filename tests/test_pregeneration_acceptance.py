@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -37,19 +38,43 @@ def inputs(root):
         2,
         0,
         0,
+        2,
     )
     return generation_input, result
 
 
 class OfflineAcceptanceWorkerTest(unittest.TestCase):
+    def test_no_pending_wavs_reuses_validated_generation_result(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, generation = inputs(Path(temporary_directory))
+            generation = replace(generation, pending_review=0)
+            state = {
+                "items": {
+                    "a": {"status": "approved", "review_status": "approved"},
+                    "b": {
+                        "status": "live_fallback",
+                        "review_status": "live_fallback",
+                    },
+                }
+            }
+            generator = Mock()
+
+            with patch(
+                "vntts.pregeneration_acceptance.load_generation_state",
+                return_value=state,
+            ):
+                result = OfflineAcceptanceWorker(generator).accept(
+                    generation_input,
+                    generation,
+                )
+
+        generator.inspect.assert_not_called()
+        self.assertIs(result.generation, generation)
+
     def test_accepts_all_pending_wavs_in_one_automatic_cohort(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first = inputs(Path(temporary_directory))
-            final = OfflineGenerationResult(
-                first.output, first.state, first.manifest, 2, 0, 0
-            )
             generator = Mock()
-            generator.inspect.return_value = final
             authorities = {"a": Mock(), "b": Mock()}
             state = {
                 "items": {
@@ -84,7 +109,7 @@ class OfflineAcceptanceWorkerTest(unittest.TestCase):
         self.assertEqual(commit.call_args.args[3], "approved")
         self.assertEqual(commit.call_args.kwargs["provenance"]["human_reviewed"], False)
         self.assertEqual(result.approved, 2)
-        self.assertIs(result.generation, final)
+        self.assertEqual(result.generation.pending_review, 0)
 
     def test_cancelled_acceptance_does_not_snapshot_or_commit(self):
         with TemporaryDirectory() as temporary_directory:

@@ -28,6 +28,7 @@ class OfflineGenerationResult:
     generated: int
     failed: int
     other_terminal: int
+    pending_review: int = 0
 
     @property
     def total(self):
@@ -47,10 +48,31 @@ class OfflineGenerationWorker:
         return (sys.executable, "-m", "vntts.authoring.cli")
 
     def generate(self, generation_input, voice_plan, cancel_event=None):
+        try:
+            current = self.inspect(generation_input)
+        except OfflineGenerationError:
+            pass
+        else:
+            if current.total == generation_input.ready_items:
+                return current
         output = _generation_output(generation_input)
         arguments = self._base_arguments(generation_input, voice_plan, output)
-        return self._execute(
+        result = self._execute(
             arguments,
+            generation_input,
+            output,
+            cancel_event=cancel_event,
+        )
+        if not generation_input.audio_event_projection_queue_ids:
+            return result
+        projection_arguments = self._base_arguments(
+            generation_input, voice_plan, output
+        )
+        for queue_id in generation_input.audio_event_projection_queue_ids:
+            projection_arguments.extend(("--queue-id", queue_id))
+            projection_arguments.extend(("--audio-event-spoken-projection", queue_id))
+        return self._execute(
+            projection_arguments,
             generation_input,
             output,
             cancel_event=cancel_event,
@@ -74,22 +96,33 @@ class OfflineGenerationWorker:
             raise OfflineGenerationError("Offline repair output identity changed")
         option, retries = _repair_option(action)
         queue_ids = _queue_ids(queue_ids)
-        arguments = self._base_arguments(
-            generation_input,
-            voice_plan,
-            output,
-            retries=retries,
-        )
-        for queue_id in queue_ids:
-            arguments.extend(("--queue-id", queue_id))
-            if option is not None:
-                arguments.extend((option, queue_id))
-        return self._execute(
-            arguments,
-            generation_input,
-            output,
-            cancel_event=cancel_event,
-        )
+        projection_ids = set(generation_input.audio_event_projection_queue_ids)
+        current = generation_result
+        for selected, is_projection in (
+            (tuple(value for value in queue_ids if value not in projection_ids), False),
+            (tuple(value for value in queue_ids if value in projection_ids), True),
+        ):
+            if not selected:
+                continue
+            arguments = self._base_arguments(
+                generation_input,
+                voice_plan,
+                output,
+                retries=retries,
+            )
+            for queue_id in selected:
+                arguments.extend(("--queue-id", queue_id))
+                if option is not None:
+                    arguments.extend((option, queue_id))
+                if is_projection:
+                    arguments.extend(("--audio-event-spoken-projection", queue_id))
+            current = self._execute(
+                arguments,
+                generation_input,
+                output,
+                cancel_event=cancel_event,
+            )
+        return current
 
     def inspect(self, generation_input):
         """Reload the current validated terminal counts without starting work."""
@@ -207,7 +240,7 @@ def _load_result(output, generation_input):
         raise OfflineGenerationError(
             f"Offline generation result is invalid: {error}"
         ) from error
-    counts = {"generated": 0, "failed": 0, "other": 0}
+    counts = {"generated": 0, "failed": 0, "other": 0, "pending": 0}
     for item in state.get("items", {}).values():
         status = item.get("status") if isinstance(item, dict) else None
         if status in {"generated", "approved"}:
@@ -216,6 +249,8 @@ def _load_result(output, generation_input):
             counts["failed"] += 1
         else:
             counts["other"] += 1
+        if isinstance(item, dict) and item.get("review_status") == "pending_review":
+            counts["pending"] += 1
     return OfflineGenerationResult(
         output=output,
         state=state_path,
@@ -223,6 +258,7 @@ def _load_result(output, generation_input):
         generated=counts["generated"],
         failed=counts["failed"],
         other_terminal=counts["other"],
+        pending_review=counts["pending"],
     )
 
 

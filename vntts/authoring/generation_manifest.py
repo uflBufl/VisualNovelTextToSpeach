@@ -10,7 +10,7 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import (
     PCM16_MONO_WAV_FORMAT,
     Pcm16MonoWavError,
-    probe_pcm16_mono_wav,
+    read_pcm16_mono_wav,
 )
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import (
@@ -35,11 +35,15 @@ class AudioQuality:
 def inspect_generated_wav(path, *, allow_short_audio_event=False):
     """Validate the normalized generated-audio WAV contract."""
     try:
-        info = probe_pcm16_mono_wav(path)
+        _samples, info = read_pcm16_mono_wav(path)
     except (OSError, Pcm16MonoWavError) as error:
         raise BulkGenerationError(
             f"Generated output is not a readable PCM16 mono WAV: {error}"
         ) from error
+    return _audio_quality(info, allow_short_audio_event=allow_short_audio_event)
+
+
+def _audio_quality(info, *, allow_short_audio_event=False):
     if info.sample_rate < 16_000:
         raise BulkGenerationError("Generated WAV sample rate must be at least 16 kHz")
     minimum_duration = 0.02 if allow_short_audio_event else 0.1
@@ -176,12 +180,24 @@ def write_generated_manifest_from_state(
 
 def validate_success_file(queue_id, result, audio):
     """Validate one generated WAV against its authoritative state record."""
+    quality, _samples = validate_success_file_with_samples(queue_id, result, audio)
+    return quality
+
+
+def validate_success_file_with_samples(queue_id, result, audio):
+    """Validate one WAV and retain its already-read samples for deeper checks."""
     if not audio.is_file():
         raise BulkGenerationError(f"Generated WAV is missing for {queue_id!r}: {audio}")
     if sha256_file(audio) != result.get("file_sha256"):
         raise BulkGenerationError(f"Generated WAV checksum mismatch for {queue_id!r}")
-    quality = inspect_generated_wav(
-        audio,
+    try:
+        samples, info = read_pcm16_mono_wav(audio)
+    except (OSError, Pcm16MonoWavError) as error:
+        raise BulkGenerationError(
+            f"Generated output is not a readable PCM16 mono WAV: {error}"
+        ) from error
+    quality = _audio_quality(
+        info,
         allow_short_audio_event=(result.get("provider") == "original-game-audio-event"),
     )
     stored = result.get("quality")
@@ -193,7 +209,7 @@ def validate_success_file(queue_id, result, audio):
             raise BulkGenerationError(
                 f"Generated WAV quality {field} mismatch for {queue_id!r}"
             )
-    return quality
+    return quality, samples
 
 
 def _safe_relative(value, label):

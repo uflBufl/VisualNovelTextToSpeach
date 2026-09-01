@@ -420,3 +420,28 @@ it against isolated settings. Pocket's allowlisted embedded narrator now passes
 the same reference-free contract in CLI setup and shared fallback preflight. An
 intentional harness abort followed by two exact-job resumes performed no recovery
 or acceptance work; both WAV mtimes, sizes and SHA-256 values remained unchanged.
+
+The subsequent full-scale Pocket run completed the same immutable selection as
+input `edffcbb31afeefae1c692ca449075bf39a73ca1a41d456a8387afa8d7cb6ef4b`.
+It published all 3,395 selected story lines with 1,191 generated and automatically
+approved WAVs, three exact live fallbacks and 11 pure-event omissions. The one
+mixed speech/event line was rendered separately from its canonical spoken
+projection; `*cough*` was not read aloud. The three fallbacks preserved complete
+Pocket results rejected for 1.28, 1.36 and 1.44-second internal silences; two used
+voice X and one routed Lorentz Butterfly through Marguerite. The published pack
+identity is `d0ec668c0ff4efdf11a5960aece662d30cb6003955332d4e1c9817c02015404e`;
+its generated-audio manifest contains exactly 1,191 WAV entries, three fallback
+entries and 11 omission entries, and the public importer reopened all 3,395 story
+records before isolated activation. Re-materializing under the audio-event-aware
+input schema reused the shared synthesis cache while repeating the quality gates.
+
+Reopening that terminal job now validates its state and WAVs once, starts no
+speech backend, performs zero recovery actions and zero acceptance writes, and
+reuses the same pack identity. `OfflineGenerationResult` carries its pending
+review count through the pipeline, and an already-published identity is reopened
+from the immutable pack instead of rescanning generation output at every phase.
+The exact full diagnostic harness fell from 70.4 to 39.6 seconds; that number also
+includes rebuilding the 152,453-record source selection and voice plan plus
+multiple deliberate public-import checks. Within the remaining mandatory WAV
+scan, format/peak and speech-silence validation now share one PCM read while
+retaining the file SHA-256 and both stored-quality comparisons.

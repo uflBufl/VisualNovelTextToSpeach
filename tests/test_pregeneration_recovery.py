@@ -155,6 +155,21 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
 
 
 class OfflineRecoveryWorkerTest(unittest.TestCase):
+    def test_terminal_generation_skips_failure_planning(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, first, voice_plan = inputs(Path(temporary_directory))
+            terminal = replace(first, generated=3, failed=0)
+            planner = Mock()
+
+            result = OfflineRecoveryWorker(planner=planner).recover(
+                generation_input,
+                voice_plan,
+                terminal,
+            )
+
+        planner.assert_not_called()
+        self.assertIs(result.generation, terminal)
+
     def test_replans_and_never_repeats_a_queue_action_pair(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first, voice_plan = inputs(Path(temporary_directory))
@@ -251,11 +266,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
                         "1" * 64,
                         "2" * 64,
                         2,
-                        (
-                            OfflineRecoveryBatch(
-                                "offline_fallback_backend", ("a", "b")
-                            ),
-                        ),
+                        (OfflineRecoveryBatch("offline_fallback_backend", ("a", "b")),),
                         (),
                     ),
                     OfflineRecoveryPlan("3" * 64, "2" * 64, 0, (), ()),

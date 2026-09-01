@@ -257,6 +257,56 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     probe_pcm16_mono_wav(result.directory / relative)
             self.assertNotIn("not-selected", result.story_index.read_text())
 
+    def test_classifies_mixed_and_pure_audio_events(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            story_path = write_content(root / "content")
+            story = load_story_index_document(story_path)
+            records = [record.to_record() for record in story.records]
+            for line_id, sequence, text in (
+                ("mixed-event", 5, "*cough* Who is there?"),
+                ("pure-event", 6, "*chirp*"),
+            ):
+                records.append(
+                    {
+                        "record_type": "line",
+                        "line_id": line_id,
+                        "chapter": "1",
+                        "sequence": sequence,
+                        "speaker": "Narrator",
+                        "voice_character": "Narrator",
+                        "text": text,
+                        "kind": "dialogue",
+                        "collection_id": "selected",
+                        "source_audio_status": "absent",
+                        "speakable": True,
+                    }
+                )
+            write_story_index_document(story_path, story.metadata, records)
+            content = inspect_story_index(story_path)
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("selected",))
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
+                manifest_path=write_manifest(root / "voices"),
+            )
+
+            result = PregenerationInputStore(jobs).materialize(job, plan)
+            queue = VoiceGenerationQueue.load(result.queue)
+            queue_by_line = {item.line_id: item.queue_id for item in queue.items}
+
+        self.assertEqual(result.queue_items, 5)
+        self.assertEqual(result.ready_items, 4)
+        self.assertEqual(
+            result.audio_event_projection_queue_ids,
+            (queue_by_line["mixed-event"],),
+        )
+        self.assertEqual(
+            result.audio_event_omission_queue_ids,
+            (queue_by_line["pure-event"],),
+        )
+
     def test_materializes_distinct_voices_for_same_character_variants(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

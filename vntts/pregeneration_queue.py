@@ -24,6 +24,7 @@ from vntts_artifacts.story_index import (
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
 
+from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
@@ -48,7 +49,7 @@ from vntts.voices import (
     synthesis_character_for_line,
 )
 
-generation_input_schema_version = 3
+generation_input_schema_version = 4
 
 
 class PregenerationQueueError(RuntimeError):
@@ -70,6 +71,8 @@ class PregenerationInput:
     queue_items: int
     ready_items: int
     narrator_fallback_roles: tuple[str, ...]
+    audio_event_projection_queue_ids: tuple[str, ...] = ()
+    audio_event_omission_queue_ids: tuple[str, ...] = ()
     source_audio_semantic_evidence: Path | None = None
 
 
@@ -154,7 +157,13 @@ class PregenerationInputStore:
             )
             publish_generation_queue(queue_plan, queue_path)
             queue = VoiceGenerationQueue.load(queue_path)
-            ready_items = _runnable_generation_items(queue, effective)
+            projection_ids, omission_ids = _audio_event_routes(queue)
+            ready_items = _runnable_generation_items(
+                queue,
+                effective,
+                projection_ids=projection_ids,
+                omission_ids=omission_ids,
+            )
             _raise_if_cancelled(cancellation)
             fields = {
                 "identity": identity,
@@ -167,6 +176,8 @@ class PregenerationInputStore:
                 "queue_items": queue_plan.summary.queue_items,
                 "ready_items": ready_items,
                 "narrator_fallback_roles": list(effective["narrator_roles"]),
+                "audio_event_projection_queue_ids": list(projection_ids),
+                "audio_event_omission_queue_ids": list(omission_ids),
                 "source_audio_semantic_evidence_sha256": (
                     None
                     if semantic_evidence is None
@@ -386,13 +397,31 @@ def _pocket_embedded_voice(group, plan):
     )
 
 
-def _runnable_generation_items(queue, effective):
+def _audio_event_routes(queue):
+    projections = []
+    omissions = []
+    for item in queue.items:
+        plan = audio_event_plan_for_record(item)
+        if not isinstance(plan, dict) or not plan.get("requires_composition"):
+            continue
+        (projections if plan.get("spoken_text") else omissions).append(item.queue_id)
+    return tuple(sorted(projections)), tuple(sorted(omissions))
+
+
+def _runnable_generation_items(queue, effective, *, projection_ids, omission_ids):
     routes = effective["routes"]
     fallback_roles = set(effective["narrator_roles"])
+    projection_ids = set(projection_ids)
+    omission_ids = set(omission_ids)
     return sum(
         1
         for item in queue.items
         if item.action == "generate"
+        and item.queue_id not in omission_ids
+        and (
+            item.queue_id in projection_ids
+            or not isinstance(audio_event_plan_for_record(item), dict)
+        )
         and (
             synthesis_character_for_line(item.speaker, item.voice_character) in routes
             or synthesis_character_for_line(item.speaker, item.voice_character)
@@ -441,6 +470,23 @@ def _load_existing(directory, identity):
             isinstance(value, str) and value.strip() for value in roles
         ):
             raise ValueError("narrator fallback roles are invalid")
+        event_routes = {}
+        for name in (
+            "audio_event_projection_queue_ids",
+            "audio_event_omission_queue_ids",
+        ):
+            values = document.get(name)
+            if (
+                not isinstance(values, list)
+                or not all(isinstance(value, str) and value.strip() for value in values)
+                or len(values) != len(set(values))
+            ):
+                raise ValueError(f"{name.replace('_', ' ')} are invalid")
+            event_routes[name] = tuple(values)
+        if set(event_routes["audio_event_projection_queue_ids"]).intersection(
+            event_routes["audio_event_omission_queue_ids"]
+        ):
+            raise ValueError("audio event routes overlap")
         semantic_sha256 = document.get("source_audio_semantic_evidence_sha256")
         semantic_path = None
         if semantic_sha256 is not None:
@@ -457,6 +503,12 @@ def _load_existing(directory, identity):
             queue_items=_nonnegative_int(document.get("queue_items"), "queue items"),
             ready_items=_nonnegative_int(document.get("ready_items"), "ready items"),
             narrator_fallback_roles=tuple(roles),
+            audio_event_projection_queue_ids=event_routes[
+                "audio_event_projection_queue_ids"
+            ],
+            audio_event_omission_queue_ids=event_routes[
+                "audio_event_omission_queue_ids"
+            ],
             source_audio_semantic_evidence=semantic_path,
         )
     except (OSError, TypeError, ValueError) as error:

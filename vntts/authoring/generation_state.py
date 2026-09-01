@@ -31,7 +31,7 @@ from vntts.authoring.failure_repair import (
     safe_sentence_segments,
 )
 from vntts.authoring.generation_lease import BulkGenerationError
-from vntts.authoring.generation_manifest import validate_success_file
+from vntts.authoring.generation_manifest import validate_success_file_with_samples
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
@@ -41,8 +41,7 @@ from vntts.authoring.speech_quality import (
     NOTABLE_SILENCE_SPAN_SECONDS,
     PAUSE_DIAGNOSIS_VERSION,
     SPEECH_QUALITY_ANALYSIS_VERSION,
-    inspect_generated_speech,
-    measure_generated_speech_bytes,
+    measure_generated_speech_samples,
 )
 from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
@@ -2145,7 +2144,7 @@ def _validate_success_item(
             )
     relative = _safe_relative(result.get("path"), f"State item {queue_id!r} path")
     audio = _within(output_directory, relative, "Generated WAV")
-    validate_success_file(queue_id, result, audio)
+    quality, samples = validate_success_file_with_samples(queue_id, result, audio)
     if state_schema == STATE_SCHEMA:
         stored_speech_quality = result.get("speech_quality")
         if not isinstance(stored_speech_quality, dict):
@@ -2167,23 +2166,14 @@ def _validate_success_item(
             raise BulkGenerationError(
                 f"Generated WAV speech quality version is invalid for {queue_id!r}"
             )
-        if result.get("provider") == "original-game-audio-event":
-            try:
-                audio_payload = audio.read_bytes()
-            except OSError as error:
-                raise BulkGenerationError(
-                    f"Generated audio event is unreadable for {queue_id!r}: {error}"
-                ) from error
-            actual_speech_quality = asdict(
-                measure_generated_speech_bytes(
-                    audio_payload,
-                    analysis_version=analysis_version,
-                )
+        actual_speech_quality = asdict(
+            measure_generated_speech_samples(
+                samples,
+                sample_rate=quality.sample_rate,
+                duration_seconds=quality.duration_seconds,
+                analysis_version=analysis_version,
             )
-        else:
-            actual_speech_quality = asdict(
-                inspect_generated_speech(audio, analysis_version=analysis_version)
-            )
+        )
         if analysis_version == LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION:
             actual_speech_quality.pop("analysis_version")
         if stored_speech_quality != actual_speech_quality:

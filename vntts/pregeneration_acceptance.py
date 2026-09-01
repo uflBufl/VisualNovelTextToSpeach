@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -36,6 +36,8 @@ class OfflineAcceptanceWorker:
     def accept(self, generation_input, generation_result, cancel_event=None):
         _validate_inputs(generation_input, generation_result)
         _raise_if_cancelled(cancel_event)
+        if generation_result.pending_review == 0:
+            return OfflineAcceptanceResult(generation_result, 0)
         try:
             state = load_generation_state(
                 generation_result.state,
@@ -55,10 +57,7 @@ class OfflineAcceptanceWorker:
             )
         )
         if not pending:
-            return OfflineAcceptanceResult(
-                self.generator.inspect(generation_input),
-                0,
-            )
+            return OfflineAcceptanceResult(generation_result, 0)
         _raise_if_cancelled(cancel_event)
         try:
             authorities = generation_review_authorities(
@@ -85,7 +84,7 @@ class OfflineAcceptanceWorker:
                 f"Unable to accept generated audio: {error}"
             ) from error
         return OfflineAcceptanceResult(
-            self.generator.inspect(generation_input),
+            replace(generation_result, pending_review=0),
             len(pending),
         )
 

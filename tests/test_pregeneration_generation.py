@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -88,6 +89,10 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             generation_input, plan = generation_inputs(
                 root, backend="moss-tts", model="model-id"
             )
+            generation_input = replace(
+                generation_input,
+                audio_event_projection_queue_ids=("mixed-event",),
+            )
             output = generation_input.directory.parent / (
                 f"generation-output-{generation_input.identity[:16]}"
             )
@@ -108,11 +113,14 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
 
             with patch(
                 "vntts.pregeneration_generation.load_generation_state",
-                return_value=state,
+                side_effect=[{"items": {}}, state, state],
             ):
                 result = worker.generate(generation_input, plan)
 
-        arguments = popen.call_args.args[0]
+        self.assertEqual(popen.call_count, 2)
+        ordinary_arguments = popen.call_args_list[0].args[0]
+        arguments = popen.call_args_list[1].args[0]
+        self.assertNotIn("--audio-event-spoken-projection", ordinary_arguments)
         self.assertEqual(arguments[:2], ("vntts-worker", "generate"))
         self.assertIn(str(generation_input.queue), arguments)
         self.assertIn("model-id", arguments)
@@ -123,10 +131,42 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             str(root / "synthesis-cache"),
         )
         self.assertEqual(arguments.count("--narrator-fallback-role"), 2)
+        projection = arguments.index("--audio-event-spoken-projection")
+        self.assertEqual(arguments[projection + 1], "mixed-event")
         self.assertEqual(result.generated, 1)
         self.assertEqual(result.failed, 1)
         self.assertEqual(result.other_terminal, 1)
         self.assertEqual(result.total, 3)
+
+    def test_completed_job_does_not_start_a_backend(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            generation_input, plan = generation_inputs(root)
+            output = generation_input.directory.parent / (
+                f"generation-output-{generation_input.identity[:16]}"
+            )
+            output.mkdir()
+            (output / "generation-state.json").write_text("{}", encoding="utf-8")
+            (output / "manifest.json").write_text("{}", encoding="utf-8")
+            popen = Mock()
+            state = {
+                "items": {
+                    "one": {"status": "approved"},
+                    "two": {"status": "live_fallback"},
+                    "three": {"status": "failed"},
+                }
+            }
+
+            with patch(
+                "vntts.pregeneration_generation.load_generation_state",
+                return_value=state,
+            ):
+                result = OfflineGenerationWorker(
+                    command=("worker",), popen_factory=popen
+                ).generate(generation_input, plan)
+
+        popen.assert_not_called()
+        self.assertEqual(result.total, generation_input.ready_items)
 
     def test_selection_jobs_share_one_content_addressed_synthesis_cache(self):
         with TemporaryDirectory() as temporary_directory:
@@ -174,6 +214,10 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             generation_input, plan = generation_inputs(
                 root, backend="moss-tts", model="model-id"
             )
+            generation_input = replace(
+                generation_input,
+                audio_event_projection_queue_ids=("two",),
+            )
             output = generation_input.directory.parent / (
                 f"generation-output-{generation_input.identity[:16]}"
             )
@@ -204,11 +248,16 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                     queue_ids=("two", "one"),
                 )
 
-        arguments = popen.call_args.args[0]
-        self.assertEqual(arguments.count("--queue-id"), 2)
-        self.assertEqual(arguments.count("--sentence-segment-failed"), 2)
-        self.assertEqual(arguments[arguments.index("--retries") + 1], "0")
-        self.assertNotIn("--regenerate-existing", arguments)
+        self.assertEqual(popen.call_count, 2)
+        ordinary, projection = (call.args[0] for call in popen.call_args_list)
+        self.assertEqual(ordinary.count("--queue-id"), 1)
+        self.assertNotIn("--audio-event-spoken-projection", ordinary)
+        self.assertEqual(projection.count("--queue-id"), 1)
+        self.assertIn("--audio-event-spoken-projection", projection)
+        for arguments in (ordinary, projection):
+            self.assertEqual(arguments.count("--sentence-segment-failed"), 1)
+            self.assertEqual(arguments[arguments.index("--retries") + 1], "0")
+            self.assertNotIn("--regenerate-existing", arguments)
 
     def test_cancellation_terminates_only_the_owned_worker(self):
         with TemporaryDirectory() as temporary_directory:
@@ -237,9 +286,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             manifest.write_text("{}", encoding="utf-8")
             result = OfflineGenerationResult(output, state, manifest, 1, 2, 0)
             popen = Mock(return_value=FinishedProcess())
-            worker = OfflineGenerationWorker(
-                command=("worker",), popen_factory=popen
-            )
+            worker = OfflineGenerationWorker(command=("worker",), popen_factory=popen)
 
             with patch(
                 "vntts.pregeneration_generation.load_generation_state",

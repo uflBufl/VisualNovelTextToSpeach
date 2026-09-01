@@ -169,6 +169,8 @@ class OfflineRecoveryWorker:
         _validate_inputs(generation_input, generation_result)
         if not isinstance(voice_plan, VoicePlan):
             raise OfflineRecoveryError("Offline voice plan is invalid")
+        if generation_result.failed == 0:
+            return OfflineRecoveryResult(generation_result, 0, 0, 0, ())
         initial_failures = generation_result.failed
         current = generation_result
         applied = set()
@@ -188,10 +190,7 @@ class OfflineRecoveryWorker:
                     break
             if next_batch is None:
                 terminal_queue_ids = plan.live_fallback_queue_ids
-                if (
-                    terminal_queue_ids
-                    and not terminalization_attempted
-                ):
+                if terminal_queue_ids and not terminalization_attempted:
                     current = self.terminalizer(
                         generation_input,
                         current,
