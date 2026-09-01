@@ -745,21 +745,36 @@ class LiveReplayTest(unittest.TestCase):
 
     def test_tracked_sequence_rollout_corpora_pass(self):
         root = Path(__file__).resolve().parents[1] / "samples"
-        reports = [
-            LiveReplayRunner(
+        reports = []
+        for corpus_name in (
+            "sequence-live-replay-shadow.json",
+            "sequence-live-replay-audio-manual.json",
+            "sequence-live-replay-audio-auto.json",
+            "sequence-live-replay-audio-auto-safety.json",
+        ):
+            report = LiveReplayRunner(
                 load_live_replay_corpus(root / corpus_name),
                 interval_seconds=0.002,
                 timeout_seconds=5,
             ).run()
-            for corpus_name in (
-                "sequence-live-replay-shadow.json",
-                "sequence-live-replay-audio-manual.json",
-                "sequence-live-replay-audio-auto.json",
-                "sequence-live-replay-audio-auto-safety.json",
+            reports.append(report)
+            self.assertTrue(
+                report["successful"],
+                {
+                    "corpus": corpus_name,
+                    "errors": report["errors"],
+                    "dialogue": (
+                        report["expected_dialogue"],
+                        report["observed_dialogue"],
+                    ),
+                    "route_sources": report["route_sources"],
+                    "advance_requests": report["advance_requests"],
+                    "sequence": report["sequence"],
+                    "route_integrity": report["route_integrity"],
+                    "frame_consumption": report["media_integrity"]["frame_consumption"],
+                },
             )
-        ]
 
-        self.assertTrue(all(report["successful"] for report in reports), reports)
         self.assertTrue(
             all(report["route_integrity"]["successful"] for report in reports),
             reports,
