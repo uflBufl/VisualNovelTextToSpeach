@@ -166,6 +166,13 @@ Candidates outside the top evidence margin remain in diagnostic provenance but
 do not create another player prompt. A unique candidate, a clear evidence winner
 and a one-line incidental role resolve automatically.
 
+Resolved voices do not receive a separate synthetic preview corpus: their actual
+selected story lines already exercise the chosen voice and every resulting WAV
+passes the generation quality gates. Adding a second artificial corpus would
+delay preparation without strengthening publication. Player listening remains
+limited to materially ambiguous voice choices; expert diagnostics remain
+available outside the default workflow.
+
 Narrator dialogue and named roles without a usable candidate receive an explicit
 narrator route without asking the player to confirm an already-known absence.
 Each group records ordered line IDs, one representative phrase, the complete

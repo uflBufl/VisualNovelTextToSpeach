@@ -21,11 +21,6 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
   - [ ] Opportunistically pre-render the next unresolved comparison after the
         current A/B card becomes usable, without delaying a decision or making
         cancellation wait for speculative work.
-- [ ] Add one fixed preview corpus per resolved voice and retain only
-      low-confidence voice or quality exceptions as optional auditions. Normal
-      completion already accepts technically valid generated WAVs atomically and
-      must continue to require no per-line review. Preserve the expert review
-      tools for diagnostics, not the default path.
 - [ ] Extend automatic pack publication from the completed single-selection path
       to incremental chapter preparation: reuse unchanged work, keep the last good
       pack playable while another chapter is prepared, merge terminal routes
