@@ -98,6 +98,69 @@ class ReleaseSmokeTest(unittest.TestCase):
         self.assertFalse(capture.call_args.kwargs["save_screenshot"])
         engine.speak.assert_called_once_with("Window capture works.")
 
+    def test_window_smoke_dispatches_and_visually_acknowledges_auto_advance(self):
+        images = [Image.new("RGB", (400, 120), color) for color in ("white", "black")]
+        capture = Mock(side_effect=((images[0], None), (images[1], None)))
+        recognize = Mock(
+            side_effect=(
+                OCRResult("Marcus", "First dialog.", 95.0, "balanced", 1),
+                OCRResult(
+                    "Marcus",
+                    "Auto advance acknowledged.",
+                    96.0,
+                    "balanced",
+                    1,
+                ),
+            )
+        )
+        auto_advance = Mock(return_value=True)
+        with TemporaryDirectory() as temporary_directory:
+            successful, report_path = run_release_smoke_test(
+                window_title="VNTTS fixture",
+                report_path=Path(temporary_directory) / "report.json",
+                expected_speaker="Marcus",
+                capture=capture,
+                recognize=recognize,
+                engine_factory=Mock(return_value=Mock()),
+                auto_advance_expected_text="Auto advance acknowledged.",
+                auto_advance=auto_advance,
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(successful)
+        self.assertTrue(report["auto_advance_dispatched"])
+        self.assertTrue(report["auto_advance_acknowledged"])
+        self.assertEqual(
+            report["auto_advance_controller"],
+            "AppController._auto_advance_dialog",
+        )
+        auto_advance.assert_called_once_with()
+        self.assertEqual(capture.call_count, 2)
+
+    def test_auto_advance_dispatch_without_visual_change_fails_closed(self):
+        image = Image.new("RGB", (400, 120), "white")
+        capture = Mock(return_value=(image, None))
+        recognize = Mock(
+            return_value=OCRResult("Marcus", "Unchanged dialog.", 95.0, "balanced", 1)
+        )
+        with TemporaryDirectory() as temporary_directory:
+            successful, report_path = run_release_smoke_test(
+                window_title="VNTTS fixture",
+                report_path=Path(temporary_directory) / "report.json",
+                capture=capture,
+                recognize=recognize,
+                engine_factory=Mock(return_value=Mock()),
+                auto_advance_expected_text="Next dialog.",
+                auto_advance=Mock(return_value=True),
+                auto_advance_timeout_seconds=0,
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(successful)
+        self.assertTrue(report["auto_advance_dispatched"])
+        self.assertFalse(report["auto_advance_acknowledged"])
+        self.assertIn("did not show", report["checks"][-1]["message"])
+
     def test_uncertain_ocr_fails_without_loading_speech_model(self):
         recognize = Mock(
             return_value=OCRResult(

@@ -140,6 +140,10 @@ try {
         SmokeTestWindowTitle = $WindowTitle
         SmokeTestModel = $SmokeTestModel
         ExpectedSpeaker = "Marcus"
+        VerifyAutoAdvance = $true
+    }
+    if ($GameProcessLevel -eq "elevated") {
+        $VerifyArguments.ElevatedSmokeTest = $true
     }
     if ($AllowUnsigned) {
         $VerifyArguments.AllowUnsigned = $true
@@ -162,6 +166,10 @@ try {
         game_process_level = $GameProcessLevel
         installer_signature = $Signature.Status.ToString()
         smoke_test_model = $SmokeTestModel
+        smoke_test_process_level = $GameProcessLevel
+        auto_advance_dispatched = $true
+        auto_advance_acknowledged = $true
+        auto_advance_controller = "AppController._auto_advance_dialog"
     }
     $EvidenceDirectory = Split-Path -Parent $EvidenceReport
     New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null

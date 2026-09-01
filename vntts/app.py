@@ -86,7 +86,7 @@ from vntts.release_backends import (
     speech_backend_options,
 )
 from vntts.release_smoke_test import (
-    default_smoke_test_model,
+    configure_release_smoke_arguments,
     run_release_smoke_test,
 )
 from vntts.runtime_config import (
@@ -2760,14 +2760,7 @@ def main(argv=None):
     )
     parser.add_argument("--package-self-test", action="store_true")
     parser.add_argument("--package-self-test-report")
-    parser.add_argument("--release-smoke-test-image")
-    parser.add_argument("--release-smoke-test-window-title")
-    parser.add_argument("--release-smoke-test-report")
-    parser.add_argument(
-        "--release-smoke-test-model",
-        default=default_smoke_test_model,
-    )
-    parser.add_argument("--release-smoke-test-expected-speaker")
+    configure_release_smoke_arguments(parser)
     parser.add_argument(
         "--game-content-import-worker",
         choices=("reverse1999",),
@@ -2799,11 +2792,13 @@ def main(argv=None):
             report_path=arguments.release_smoke_test_report,
             model_name=arguments.release_smoke_test_model,
             expected_speaker=arguments.release_smoke_test_expected_speaker,
+            auto_advance_expected_text=(
+                arguments.release_smoke_test_auto_advance_expected_text
+            ),
         ).exit_code
 
     enable_windows_dpi_awareness()
-    application_arguments = [sys.argv[0], *qt_arguments]
-    application = QApplication.instance() or QApplication(application_arguments)
+    application = QApplication.instance() or QApplication([sys.argv[0], *qt_arguments])
     application.setApplicationName(application_name)
     application.setQuitOnLastWindowClosed(False)
     tray_application = TrayApplication(application)

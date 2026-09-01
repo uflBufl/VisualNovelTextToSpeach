@@ -76,6 +76,25 @@ class ReleasePackagingTest(unittest.TestCase):
                 ):
                     self.assertIn(name, script)
 
+    def test_windows_release_gate_requires_production_auto_advance_acknowledgement(
+        self,
+    ):
+        fixture = (PROJECT_ROOT / "scripts/windows-capture-fixture.ps1").read_text(
+            encoding="utf-8"
+        )
+        verifier = (PROJECT_ROOT / "scripts/verify-windows-installer.ps1").read_text(
+            encoding="utf-8"
+        )
+        qualification = (
+            PROJECT_ROOT / "scripts/run-windows-release-test.ps1"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("Auto advance acknowledged.", fixture)
+        self.assertIn("VerifyAutoAdvance", verifier)
+        self.assertIn("AppController._auto_advance_dialog", verifier)
+        self.assertIn("ElevatedSmokeTest", qualification)
+        self.assertIn("auto_advance_acknowledged", qualification)
+
 
 if __name__ == "__main__":
     unittest.main()

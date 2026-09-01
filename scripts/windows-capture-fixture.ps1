@@ -44,6 +44,7 @@ $Form.Location = New-Object System.Drawing.Point(
 )
 $Form.BackColor = [System.Drawing.Color]::FromArgb(20, 25, 35)
 $Form.TopMost = $true
+$Form.KeyPreview = $true
 if ($WindowMode -eq "borderless") {
     $Form.FormBorderStyle = "None"
 }
@@ -66,12 +67,29 @@ $Dialog.ForeColor = [System.Drawing.Color]::Black
 $Dialog.Font = New-Object System.Drawing.Font("Segoe UI", 24)
 $Dialog.Text = "Marcus`r`n`r`nCompatibility capture and speech are working."
 $Form.Controls.Add($Dialog)
+$script:AdvanceAcknowledged = $false
+$Form.Add_KeyDown({
+    param($Sender, $Event)
+    if ($Event.KeyCode -in @(
+        [System.Windows.Forms.Keys]::Space,
+        [System.Windows.Forms.Keys]::Enter,
+        [System.Windows.Forms.Keys]::Right,
+        [System.Windows.Forms.Keys]::Down
+    )) {
+        $Dialog.Text = "Marcus`r`n`r`nAuto advance acknowledged."
+        $script:AdvanceAcknowledged = $true
+        $Event.Handled = $true
+    }
+})
 
 $Timer = New-Object System.Windows.Forms.Timer
 $Timer.Interval = 250
 $Timer.Add_Tick({
     if (Test-Path $StopFile -PathType Leaf) {
         $Form.Close()
+    }
+    elseif (-not $script:AdvanceAcknowledged) {
+        $Form.Activate()
     }
 })
 $Form.Add_Shown({

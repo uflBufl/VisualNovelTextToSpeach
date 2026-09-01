@@ -76,4 +76,17 @@ def validate_release_evidence(profiles, reports, *, allow_unsigned=False):
             )
         if not allow_unsigned and report.get("installer_signature") != "Valid":
             errors.append(f"{prefix} installer signature is not valid")
+        if report.get("smoke_test_process_level") != profile.get("game_process_level"):
+            errors.append(
+                f"{prefix} smoke test did not match the game process integrity level"
+            )
+        if report.get("auto_advance_dispatched") is not True:
+            errors.append(f"{prefix} production auto advance was not dispatched")
+        if report.get("auto_advance_acknowledged") is not True:
+            errors.append(f"{prefix} auto advance was not acknowledged by the fixture")
+        if (
+            report.get("auto_advance_controller")
+            != "AppController._auto_advance_dialog"
+        ):
+            errors.append(f"{prefix} auto advance bypassed the production controller")
     return errors

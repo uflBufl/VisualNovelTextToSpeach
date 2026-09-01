@@ -133,3 +133,26 @@ The downloaded public preset inventory was exactly:
 
 This evidence closes the unsigned arm64 packaging mechanics only. Developer ID
 signing/notarization and the Windows portable/installer gates remain separate.
+
+## Windows auto-advance qualification
+
+The Windows compatibility fixture starts with the dialog `Compatibility capture
+and speech are working.` and changes to `Auto advance acknowledged.` only after
+its focused form receives Space, Enter, Right or Down. Until that transition it
+keeps the fixture focused, so the release probe exercises the same focus guard
+as ordinary live mode rather than bypassing it.
+
+The installed application first captures, recognizes and speaks the initial
+dialog. It then calls the production `AppController._auto_advance_dialog` path,
+recaptures the selected window and requires confident OCR of the second dialog.
+Dispatch without the visual acknowledgement fails the smoke test. Elevated-game
+profiles launch both the fixture and installed smoke process elevated; normal
+profiles launch both normally. This detects Windows cross-integrity input
+failure instead of publishing successful OCR and legacy speech as false
+auto-advance evidence.
+
+Every Windows matrix report must now record matching smoke/game process levels,
+`auto_advance_dispatched=true`, `auto_advance_acknowledged=true` and the exact
+production controller name. The matrix validator rejects absent, legacy or
+unacknowledged evidence. This implements the gate; real signed reports for every
+GPU/display/DPI profile are still required before release qualification closes.

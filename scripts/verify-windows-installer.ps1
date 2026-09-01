@@ -5,7 +5,9 @@ param(
     [string]$SmokeTestImage,
     [string]$SmokeTestWindowTitle,
     [string]$SmokeTestModel = "tts_models/en/vctk/vits",
-    [string]$ExpectedSpeaker
+    [string]$ExpectedSpeaker,
+    [switch]$VerifyAutoAdvance,
+    [switch]$ElevatedSmokeTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -91,15 +93,44 @@ try {
                 ('"{0}"' -f $ExpectedSpeaker)
             )
         }
-        $Smoke = Start-Process -FilePath $InstalledExecutable `
-            -ArgumentList $SmokeArguments `
-            -Wait `
-            -PassThru
+        if ($VerifyAutoAdvance) {
+            if (-not $SmokeTestWindowTitle) {
+                throw "Auto-advance verification requires a smoke-test window."
+            }
+            $SmokeArguments += @(
+                "--release-smoke-test-auto-advance-expected-text",
+                '"Auto advance acknowledged."'
+            )
+        }
+        $SmokeParameters = @{
+            FilePath = $InstalledExecutable
+            ArgumentList = $SmokeArguments
+            Wait = $true
+            PassThru = $true
+        }
+        if ($ElevatedSmokeTest) {
+            $SmokeParameters.Verb = "RunAs"
+        }
+        $Smoke = Start-Process @SmokeParameters
         if (Test-Path $SmokeReport -PathType Leaf) {
             Get-Content $SmokeReport
         }
         if ($Smoke.ExitCode -ne 0) {
             throw "Installed OCR-to-speech smoke test failed."
+        }
+        if ($VerifyAutoAdvance) {
+            if (-not (Test-Path $SmokeReport -PathType Leaf)) {
+                throw "Installed auto-advance smoke report is missing."
+            }
+            $SmokeEvidence = Get-Content $SmokeReport -Raw | ConvertFrom-Json
+            if (
+                $SmokeEvidence.auto_advance_dispatched -ne $true -or
+                $SmokeEvidence.auto_advance_acknowledged -ne $true -or
+                $SmokeEvidence.auto_advance_controller -ne
+                    "AppController._auto_advance_dialog"
+            ) {
+                throw "Installed production auto advance was not acknowledged."
+            }
         }
     }
     if (-not (Test-Path $StartMenuShortcut -PathType Leaf)) {

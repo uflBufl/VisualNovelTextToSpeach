@@ -2752,6 +2752,32 @@ class TrayApplicationTest(unittest.TestCase):
             report_path="custom-report.json",
             model_name="tts_models/en/vctk/vits",
             expected_speaker="Marcus",
+            auto_advance_expected_text=None,
+        )
+        application.assert_not_called()
+
+    def test_release_smoke_test_passes_auto_advance_acknowledgement_text(self):
+        with (
+            patch("vntts.app.configure_bundled_dependencies"),
+            patch(
+                "vntts.app.run_release_smoke_test",
+                return_value=CLIReportResult(True, Path("report.json")),
+            ) as smoke_test,
+            patch("vntts.app.QApplication") as application,
+        ):
+            result = main(
+                [
+                    "--release-smoke-test-window-title",
+                    "VNTTS fixture",
+                    "--release-smoke-test-auto-advance-expected-text",
+                    "Auto advance acknowledged.",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            smoke_test.call_args.kwargs["auto_advance_expected_text"],
+            "Auto advance acknowledged.",
         )
         application.assert_not_called()
 

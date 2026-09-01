@@ -35,6 +35,10 @@ class ReleaseMatrixTest(unittest.TestCase):
             "game_process_level": profile["game_process_level"],
             "installer_signature": "Valid",
             "smoke_test_model": "tts_models/en/vctk/vits",
+            "smoke_test_process_level": profile["game_process_level"],
+            "auto_advance_dispatched": True,
+            "auto_advance_acknowledged": True,
+            "auto_advance_controller": "AppController._auto_advance_dialog",
         }
 
     def test_accepts_complete_matching_signed_evidence(self):
@@ -68,6 +72,19 @@ class ReleaseMatrixTest(unittest.TestCase):
             sum(error.startswith("Missing evidence") for error in errors),
             len(self.profiles) - 1,
         )
+
+    def test_rejects_false_green_auto_advance_evidence(self):
+        profile = self.profiles[0]
+        report = self.evidence_for(profile)
+        report["auto_advance_acknowledged"] = False
+        report["auto_advance_controller"] = "legacy-smoke"
+
+        errors = validate_release_evidence(
+            [profile], [(Path("false-green.json"), report)]
+        )
+
+        self.assertTrue(any("not acknowledged" in error for error in errors))
+        self.assertTrue(any("production controller" in error for error in errors))
 
     def test_unsigned_evidence_can_be_used_for_development(self):
         reports = []
