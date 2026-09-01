@@ -5,11 +5,22 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from vntts.authoring.cli import COMMAND_FAMILIES, create_parser
-from vntts.authoring.cli_contract import parser_contract, parser_contract_sha256
+from vntts.authoring.cli_contract import (
+    _normalized,
+    parser_contract,
+    parser_contract_sha256,
+)
 from vntts.authoring.cli_dispatch import CommandFamily, dispatch_command
 
 
 class AuthoringCliDispatchTest(unittest.TestCase):
+    def test_contract_normalizes_absolute_and_relative_path_defaults(self):
+        self.assertEqual(
+            _normalized(Path.cwd() / "different-user" / "authoring" / "workspaces"),
+            {"kind": "absolute-path", "name": "workspaces"},
+        )
+        self.assertEqual(_normalized(Path("relative/path")), "relative/path")
+
     def test_parser_matches_captured_semantic_contract(self):
         fixture = json.loads(
             (

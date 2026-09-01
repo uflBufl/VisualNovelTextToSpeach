@@ -135,7 +135,9 @@ def preserve_command_order(subparsers: argparse._SubParsersAction) -> None:
 
 def _normalized(value):
     if isinstance(value, Path):
-        return str(value)
+        if value.is_absolute():
+            return {"kind": "absolute-path", "name": value.name}
+        return value.as_posix()
     if isinstance(value, (list, tuple)):
         return [_normalized(item) for item in value]
     if isinstance(value, set):
