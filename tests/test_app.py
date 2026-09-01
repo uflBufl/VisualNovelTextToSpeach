@@ -1067,6 +1067,16 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
             dialog.deleteLater()
 
+    def test_settings_allow_nested_screenshot_directory_to_be_created(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory) / "missing" / "screenshots"
+
+            self.assertIsNone(
+                SettingsDialog._directory_validation_error(
+                    "Screenshot directory", str(directory)
+                )
+            )
+
     def test_settings_restart_fields_are_marked_per_control(self):
         dialog = SettingsDialog(AppSettings())
         restart_labels = {

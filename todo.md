@@ -13,6 +13,8 @@ measurements and completed-work history in `docs/` and Git, not here.
     does not provide the display required by `pynput`.
   - Preserve failing macOS shard output as a GitHub annotation so CI identifies
     the exact test instead of reporting only the shard exit code.
+  - Accept a not-yet-created screenshot directory when its nearest existing
+    ancestor is a directory; capture already creates the full path recursively.
   - Gate: `uv sync --frozen --dry-run` resolves for Windows x64 and Linux x64,
     the local Python 3.14 quality/full-suite gate passes, and the pushed CI run
     completes successfully on all three operating systems.
