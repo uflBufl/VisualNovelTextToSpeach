@@ -292,6 +292,7 @@ def benchmark_backend(
     benchmark_samples=None,
     corpus_name=None,
     model_id=None,
+    seed=None,
     backend_factory=create_backend,
     clock=perf_counter,
     cpu_clock=process_time,
@@ -319,6 +320,7 @@ def benchmark_backend(
                 benchmark_samples=benchmark_samples,
                 corpus_name=corpus_name,
                 model_id=model_id,
+                seed=seed,
                 backend_factory=tracked_backend_factory,
                 clock=clock,
                 cpu_clock=cpu_clock,
@@ -378,6 +380,7 @@ def _benchmark_backend_staged(
     benchmark_samples=None,
     corpus_name=None,
     model_id=None,
+    seed=None,
     backend_factory=create_backend,
     clock=perf_counter,
     cpu_clock=process_time,
@@ -430,6 +433,7 @@ def _benchmark_backend_staged(
             fresh_request = SynthesisRequest(
                 voice=character,
                 text=sample_text,
+                seed=seed,
                 generation_profile=getattr(backend, "generation_profile", "stable"),
                 cache_policy=SynthesisCachePolicy.REFRESH,
             )
@@ -557,6 +561,7 @@ def _benchmark_backend_staged(
         "schema_version": TTS_BENCHMARK_REPORT_VERSION,
         "version": 1,
         "model_id": str(model_id or backend_name),
+        "seed": seed,
         "backend": backend_name,
         "platform": platform.platform(),
         "python": platform.python_version(),
@@ -596,6 +601,7 @@ def build_parser():
     )
     parser.add_argument("--moss-first-chunk-frames", type=int)
     parser.add_argument("--moss-streaming-interval", type=float)
+    parser.add_argument("--seed", type=int)
     parser.add_argument("--output", type=Path, default=default_output)
     return parser
 
@@ -650,6 +656,7 @@ def main(argv=None):
         benchmark_samples=corpus["samples"] if corpus is not None else None,
         corpus_name=corpus["name"] if corpus is not None else None,
         model_id=f"{arguments.backend}/{arguments.model or 'default'}",
+        seed=arguments.seed,
         backend_factory=backend_factory,
     )
     report_path = write_report(report, arguments.output)

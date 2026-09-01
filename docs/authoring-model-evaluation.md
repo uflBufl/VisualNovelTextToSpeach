@@ -232,24 +232,29 @@ be regenerated.
 
 ### Rhiannon MOSS 4B timing checkpoint, 2026-09-01
 
-The checked-in three-line Rhiannon corpus now uses the strict benchmark schema;
-its SHA-256 is
+The checked-in three-line Rhiannon replay corpus uses the strict benchmark
+schema; its SHA-256 is
 `a5ae711d69e1497cb4e2890921b676c3c2d8dd00e08936e32d80e765533ab095`.
-An all-line stable-profile run with
-`shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8` failed closed because `I,
-erhm ...` exhausted the existing three-second short-utterance guard before EOS.
-No partial WAV or report was published for that run.
+Its first line, `I, erhm ...`, declares available original-game audio and is not
+a MOSS generation target. Forcing it through MOSS correctly failed closed at the
+three-second missed-EOS guard and published no partial artifact. The two actual
+generated-route lines have a separate strict timing corpus with SHA-256
+`fb78e5f08242c985f2dd91d25e1e51f0c62af7a3828eef431e798fa18f0c0c3e`.
 
-A device-free timing subset containing the other two exact lines is retained in
-the application data directory under
-`benchmarks/tts/rhiannon-moss-4b-stable-long-lines-20260901`. The report SHA-256
-is `06975aaaac63e359167774ab48836a5158eda75038ff530dd8f6cee3bca779a9`.
-Startup took 2789 ms. Fresh first PCM was 1238 ms and 747 ms, realtime factors
-were 1.21 and 1.02, and memory-cache retrieval took 17.5 ms and 13.7 ms. The WAV
-hashes are `df661b655f881e8fe758ff5b18398b97691307245883f49158814d04fd9aeca0`
-and `02f1a275a8555bdbbd31d561c39fbe9246642a8c9e6848a4c737a248e34db8d5`.
-These are renderer timings: they provide no audio-device underrun evidence and
-do not measure the original-game playback route.
+The deterministic stable-profile seed-0 run with
+`shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8` is retained in the application
+data directory under
+`benchmarks/tts/rhiannon-moss-4b-stable-generated-seed0-20260901`. Its report
+SHA-256 is
+`af073f9a01043c94e604bfc0e3e97bc81ef50f3cc73621076a78f9964faaa395`.
+Startup took 2520 ms. Fresh first PCM was 1287 ms and 670 ms, realtime factors
+were 1.16 and 1.00, and memory-cache retrieval took 13.3 ms and 13.1 ms. The WAV
+hashes are `387bb7336866266793d258a9375a2cc714d03ec68d85673c3ba40e524f6b5497`
+and `039a35c9a5c6a17c988878d4a31e7d29d837871b2a7fc5c227930c4ecaf52538`.
+The benchmark report now records its exact seed, and MOSS applies the same
+short trailing-ellipsis normalization at its live, offline and benchmark
+boundary. These remain renderer timings: they provide no audio-device underrun
+evidence and do not measure the original-game playback route.
 
 The engine NFKC-normalizes text, normalizes the Unicode ellipsis to three ASCII
 dots and collapses whitespace before matching the same stable sample across

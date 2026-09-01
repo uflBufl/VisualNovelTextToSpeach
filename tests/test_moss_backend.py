@@ -15,6 +15,7 @@ from vntts.speech_backend import (
     activate_moss_tts_runtime,
     moss_generation_limits,
     normalize_moss_language,
+    normalize_short_trailing_ellipsis,
 )
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -415,6 +416,12 @@ class MossTTSBackendTest(unittest.TestCase):
 
         prepared = backend.prepare("Narrator", "I, erhm ...")
 
+        self.assertEqual(prepared.text, "I, erhm.")
+        self.assertEqual(normalize_short_trailing_ellipsis("Wait..."), "Wait.")
+        self.assertEqual(
+            normalize_short_trailing_ellipsis("I don't know yet..."),
+            "I don't know yet...",
+        )
         self.assertEqual(
             (prepared.max_tokens, prepared.max_audio_seconds),
             moss_generation_limits("I, erhm ..."),

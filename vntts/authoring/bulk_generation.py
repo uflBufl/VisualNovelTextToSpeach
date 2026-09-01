@@ -211,6 +211,9 @@ from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
     validate_terminal_conflict_state_binding,
 )
+from vntts.speech_backend import (
+    normalize_short_trailing_ellipsis as _normalize_short_trailing_ellipsis,
+)
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
@@ -220,9 +223,6 @@ from vntts.voices import pocket_tts_preset_voices, synthesis_character_for_line
 
 NO_PROMPT_SHA256 = hashlib.sha256(b"").hexdigest()
 PURE_SOUND_EFFECT_PATTERN = re.compile(r'^\s*["“”]?\*[^*]+\*["“”]?[.!?]?\s*$')
-SHORT_TRAILING_ELLIPSIS_PATTERN = re.compile(
-    r"^\s*(?P<spoken>[\w'’]+(?:\s+[\w'’]+)?)\s*(?:\.{3}|…)\s*$"
-)
 
 
 class BulkGenerationSourceChangedError(BulkGenerationError):
@@ -576,9 +576,7 @@ def is_spoken_queue_item(item):
 
 
 def normalize_short_trailing_ellipsis(text):
-    """Give one/two-word ellipses an audible terminal boundary for MOSS."""
-    match = SHORT_TRAILING_ELLIPSIS_PATTERN.fullmatch(str(text or ""))
-    return str(text) if match is None else match.group("spoken") + "."
+    return _normalize_short_trailing_ellipsis(text)
 
 
 def audio_event_spoken_projection(text):

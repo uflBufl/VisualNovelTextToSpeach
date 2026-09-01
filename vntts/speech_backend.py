@@ -117,6 +117,10 @@ moss_tts_generation_profiles = {
     },
 }
 
+_SHORT_TRAILING_ELLIPSIS = re.compile(
+    r"^\s*(?P<spoken>[\w'’]+(?:[,;:]?\s+[\w'’]+)?)\s*(?:\.{3}|…)\s*$"
+)
+
 moss_language_names = {
     "ar": "Arabic",
     "cs": "Czech",
@@ -183,6 +187,12 @@ def moss_generation_limits(text):
     )
     max_tokens = min(2048, max(256, round(max_audio_seconds * 100)))
     return max_tokens, max_audio_seconds
+
+
+def normalize_short_trailing_ellipsis(text):
+    """Give one/two-word ellipses an audible terminal boundary for MOSS."""
+    match = _SHORT_TRAILING_ELLIPSIS.fullmatch(str(text or ""))
+    return str(text) if match is None else match.group("spoken") + "."
 
 
 class XTTSVoiceRouterBackend:
@@ -1757,7 +1767,9 @@ class MossTTSVoiceRouterBackend:
         return self._render_prepared(prepared, request)
 
     def _prepare_request(self, request):
-        spoken_text = " ".join((request.text or "").split())
+        spoken_text = normalize_short_trailing_ellipsis(
+            " ".join((request.text or "").split())
+        )
         if not spoken_text:
             raise TTSSynthesisError("MOSS-TTS received empty text")
         profile, generation_options = get_moss_tts_generation_profile(

@@ -124,7 +124,8 @@ class FakeRenderingBackend(FakeBackend):
 
 class TTSBenchmarkTest(unittest.TestCase):
     def test_checked_in_rhiannon_corpus_has_strict_stable_identity(self):
-        path = Path(__file__).parents[1] / "samples" / "rhiannon-moss-benchmark.json"
+        samples = Path(__file__).parents[1] / "samples"
+        path = samples / "rhiannon-moss-benchmark.json"
 
         corpus = load_tts_benchmark_corpus(path)
 
@@ -137,6 +138,13 @@ class TTSBenchmarkTest(unittest.TestCase):
                 "regression:rhiannon:ocr-noise-boundary",
                 "regression:rhiannon:clone-probe",
             ],
+        )
+        generated = load_tts_benchmark_corpus(
+            samples / "rhiannon-moss-generated-benchmark.json"
+        )
+        self.assertEqual(
+            [sample["line_id"] for sample in generated["samples"]],
+            [sample["line_id"] for sample in corpus["samples"][1:]],
         )
 
     def test_xtts_backend_requires_explicit_cpml_acceptance(self):
@@ -553,11 +561,13 @@ class TTSBenchmarkTest(unittest.TestCase):
                     }
                 ],
                 corpus_name="Rhiannon regression",
+                seed=7,
                 backend_factory=lambda _name, _registry, _cache: backend,
             )
 
         sample = report["samples"][0]
         self.assertEqual(report["corpus"], "Rhiannon regression")
+        self.assertEqual(report["seed"], 7)
         self.assertEqual(sample["id"], "short-line")
         self.assertEqual(sample["fresh"]["first_pcm_ms"], 25.0)
         self.assertEqual(sample["memory_cache"]["first_pcm_ms"], 25.0)
@@ -571,6 +581,7 @@ class TTSBenchmarkTest(unittest.TestCase):
                 SynthesisCachePolicy.USE,
             ],
         )
+        self.assertEqual({request.seed for request in backend.render_requests}, {7})
         identities = {
             (request.voice, request.text, request.generation_profile, request.seed)
             for request in backend.render_requests

@@ -31,12 +31,10 @@ intentional omission as distinct terminal authorities.
       positives and false negatives on that split. Until then keep the current
       order: safe sentence repair when eligible, one bounded provider-local
       retry, then a typed XTTS or Pocket fallback.
-- [ ] Run `vntts-benchmark-tts` on the exact Rhiannon replay corpus and retain a
-      checksum-bound report with fresh/cache first-chunk timing, realtime factor
-      and generated/original route timing. Device underrun remains a separate
+- [ ] Complete the route-partitioned timing record for the exact Rhiannon replay
+      corpus. The generated MOSS seed-0 report is retained with fresh/cache
+      first-chunk timing and realtime factor; device underrun remains a separate
       hardware measurement.
-  - [ ] Diagnose the short `I, erhm ...` missed-EOS result without weakening the
-        three-second guard, then rerun all three exact samples into one report.
   - [ ] Measure the original-game route on the same replay boundary and record it
         beside the retained generated/cache checkpoint; do not infer playback
         underruns from the device-free renderer.
