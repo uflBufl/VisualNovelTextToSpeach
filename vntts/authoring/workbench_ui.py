@@ -576,7 +576,6 @@ class AuthoringWorkbenchDialog(QDialog):
         self.collection_tree.setSelectionMode(
             QAbstractItemView.SelectionMode.NoSelection
         )
-
         self.voice_search = QLineEdit()
         self.voice_search.setPlaceholderText("Search configured voices")
         self.voice_search.setAccessibleName("Search voice references")
@@ -816,7 +815,6 @@ class AuthoringWorkbenchDialog(QDialog):
             ),
         ):
             self._accessible_button(button, name, description)
-
         review_actions = QGridLayout()
         self.review_actions_layout = review_actions
         review_buttons = (
@@ -828,6 +826,8 @@ class AuthoringWorkbenchDialog(QDialog):
             self.reject,
             self.reload_authority,
         )
+        for widget in review_buttons:
+            widget.setMinimumWidth(widget.sizeHint().width())
         for column, widget in enumerate(review_buttons[:4]):
             review_actions.addWidget(widget, 0, column)
         review_actions.addWidget(self.approve, 1, 0)

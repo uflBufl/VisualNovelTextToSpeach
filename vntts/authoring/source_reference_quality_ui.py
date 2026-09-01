@@ -167,9 +167,11 @@ class SourceReferenceQualityDialog(QDialog):
         self.player.errorOccurred.connect(self._playback_error)
         self._load_next()
 
-    def _load_next(self):
+    def _load_next(self, session=None):
         self._stop()
-        self.session = load_source_reference_quality_review(self.session_path)
+        self.session = session or load_source_reference_quality_review(
+            self.session_path
+        )
         completed, total = quality_review_progress(self.session)
         self.progress.setText(f"Progress: {completed}/{total}")
         self.current = next_pending_quality_variant(self.session)
@@ -530,9 +532,9 @@ class SourceReferenceQualityDialog(QDialog):
             decision,
         )
 
-    def _decision_finished(self, _result, error):
+    def _decision_finished(self, result, error):
         if error is None:
-            self._load_next()
+            self._load_next(result)
         else:
             self.status.setText(
                 f"Decision was not saved: {error}. Choose again to retry."

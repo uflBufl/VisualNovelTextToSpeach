@@ -106,41 +106,43 @@ def _run_macos_full_discovery():
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
             print(f"Running macOS unittest shard {name}: {len(ids)} tests")
-            try:
-                completed = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "scripts.run_ci_unittests",
-                        "--exact-test-ids-file",
-                        str(inventory),
-                    ],
-                    timeout=MACOS_SHARD_TIMEOUTS[name],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
-            except subprocess.TimeoutExpired as error:
-                output = error.stdout or ""
-                if isinstance(output, bytes):
-                    output = output.decode(errors="replace")
-                print(output, end="")
-                if os.environ.get("GITHUB_ACTIONS"):
+            with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as transcript:
+                try:
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "scripts.run_ci_unittests",
+                            "--exact-test-ids-file",
+                            str(inventory),
+                        ],
+                        timeout=MACOS_SHARD_TIMEOUTS[name],
+                        stdout=transcript,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                    )
+                except subprocess.TimeoutExpired:
+                    transcript.seek(0)
+                    output = transcript.read()
+                    print(output, end="")
+                    if os.environ.get("GITHUB_ACTIONS"):
+                        print(
+                            f"::error title=macOS {name} tests timed out::"
+                            f"{escape_workflow_command(workflow_failure_details(output))}",
+                            file=sys.stderr,
+                        )
                     print(
-                        f"::error title=macOS {name} tests timed out::"
-                        f"{escape_workflow_command(workflow_failure_details(output))}",
+                        f"macOS unittest shard {name} exceeded "
+                        f"{MACOS_SHARD_TIMEOUTS[name]} seconds",
                         file=sys.stderr,
                     )
-                print(
-                    f"macOS unittest shard {name} exceeded "
-                    f"{MACOS_SHARD_TIMEOUTS[name]} seconds",
-                    file=sys.stderr,
-                )
-                return 124
+                    return 124
+                transcript.seek(0)
+                output = transcript.read()
             if completed.returncode:
-                print(completed.stdout, end="")
+                print(output, end="")
                 if os.environ.get("GITHUB_ACTIONS"):
-                    details = workflow_failure_details(completed.stdout) or (
+                    details = workflow_failure_details(output) or (
                         f"macOS unittest shard {name} exited without output."
                     )
                     print(

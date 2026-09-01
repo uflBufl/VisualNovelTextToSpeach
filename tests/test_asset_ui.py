@@ -299,8 +299,8 @@ class AssetManagerDialogTest(unittest.TestCase):
                 dialog._validated_manifest_identity,
                 (str(second.resolve()), sha256_file(second)),
             )
-            self.assertIn(str(second), dialog.voice_status.text())
-            self.assertNotIn(str(first), dialog.voice_status.text())
+            self.assertIn(second.name, dialog.voice_status.text())
+            self.assertNotIn(first.name, dialog.voice_status.text())
 
     def test_save_waits_for_exact_manifest_validation_then_accepts(self):
         with TemporaryDirectory() as directory:

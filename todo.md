@@ -25,7 +25,9 @@ measurements and completed-work history in `docs/` and Git, not here.
   - Give the 1,896-test macOS remainder shard a realistic 15-minute bound; a
     five-minute cutoff aborts a healthy full run on slower machines. Preserve
     the last verbose test ID when that bound is exceeded so a real hang is
-    actionable instead of producing an empty shard timeout.
+    actionable instead of producing an empty shard timeout. Capture child
+    output in a temporary file rather than a pipe so an inherited descriptor
+    from a test subprocess cannot keep `communicate()` waiting after tests end.
   - Accept a not-yet-created screenshot directory; capture already creates the
     full path recursively.
   - Gate: `uv sync --frozen --dry-run` resolves for Windows x64 and Linux x64,
