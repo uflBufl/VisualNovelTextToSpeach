@@ -78,7 +78,7 @@ torchaudio = [
     { index = "pytorch-cu129", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "dd0459df41d596d649a5a3e33fb03f93024d5af9" }
-reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "08cee9d36d05cabe6186cb85119e1a66b2b000cb" }
+reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "f7838c9c298426f2f6f79475a8f4a2e4c3d16772" }
 
 [dependency-groups]
 dev = [

@@ -3585,7 +3585,7 @@ wheels = [
 [[package]]
 name = "reverse1999-extractor"
 version = "0.1.0"
-source = { git = "https://github.com/AlexRedby/r1999-extractor.git?rev=08cee9d36d05cabe6186cb85119e1a66b2b000cb#08cee9d36d05cabe6186cb85119e1a66b2b000cb" }
+source = { git = "https://github.com/AlexRedby/r1999-extractor.git?rev=f7838c9c298426f2f6f79475a8f4a2e4c3d16772#f7838c9c298426f2f6f79475a8f4a2e4c3d16772" }
 dependencies = [
     { name = "cryptography" },
     { name = "numpy" },
@@ -4588,7 +4588,7 @@ requires-dist = [
     { name = "pytesseract", specifier = ">=0.3.13" },
     { name = "python-xlib", marker = "sys_platform == 'linux'", specifier = ">=0.33" },
     { name = "rapidocr", marker = "extra == 'rapidocr'", specifier = ">=3.8.1,<4" },
-    { name = "reverse1999-extractor", git = "https://github.com/AlexRedby/r1999-extractor.git?rev=08cee9d36d05cabe6186cb85119e1a66b2b000cb" },
+    { name = "reverse1999-extractor", git = "https://github.com/AlexRedby/r1999-extractor.git?rev=f7838c9c298426f2f6f79475a8f4a2e4c3d16772" },
     { name = "sounddevice", specifier = ">=0.5.3" },
     { name = "soundfile", specifier = ">=0.13" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = "<2.9", index = "https://download.pytorch.org/whl/cpu" },
