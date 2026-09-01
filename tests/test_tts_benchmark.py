@@ -123,6 +123,22 @@ class FakeRenderingBackend(FakeBackend):
 
 
 class TTSBenchmarkTest(unittest.TestCase):
+    def test_checked_in_rhiannon_corpus_has_strict_stable_identity(self):
+        path = Path(__file__).parents[1] / "samples" / "rhiannon-moss-benchmark.json"
+
+        corpus = load_tts_benchmark_corpus(path)
+
+        self.assertEqual(corpus["name"], "Rhiannon reported-line regression")
+        self.assertEqual(len(corpus["samples"]), 3)
+        self.assertEqual(
+            [sample["line_id"] for sample in corpus["samples"]],
+            [
+                "fixture:rhiannon:1",
+                "regression:rhiannon:ocr-noise-boundary",
+                "regression:rhiannon:clone-probe",
+            ],
+        )
+
     def test_xtts_backend_requires_explicit_cpml_acceptance(self):
         registry = CharacterVoiceRegistry()
         with TemporaryDirectory() as directory:

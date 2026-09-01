@@ -230,6 +230,27 @@ identity and WAV hashes, so its reports can use the same `start-reports`
 boundary. Historical schema-less reports are intentionally rejected and must
 be regenerated.
 
+### Rhiannon MOSS 4B timing checkpoint, 2026-09-01
+
+The checked-in three-line Rhiannon corpus now uses the strict benchmark schema;
+its SHA-256 is
+`a5ae711d69e1497cb4e2890921b676c3c2d8dd00e08936e32d80e765533ab095`.
+An all-line stable-profile run with
+`shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8` failed closed because `I,
+erhm ...` exhausted the existing three-second short-utterance guard before EOS.
+No partial WAV or report was published for that run.
+
+A device-free timing subset containing the other two exact lines is retained in
+the application data directory under
+`benchmarks/tts/rhiannon-moss-4b-stable-long-lines-20260901`. The report SHA-256
+is `06975aaaac63e359167774ab48836a5158eda75038ff530dd8f6cee3bca779a9`.
+Startup took 2789 ms. Fresh first PCM was 1238 ms and 747 ms, realtime factors
+were 1.21 and 1.02, and memory-cache retrieval took 17.5 ms and 13.7 ms. The WAV
+hashes are `df661b655f881e8fe758ff5b18398b97691307245883f49158814d04fd9aeca0`
+and `02f1a275a8555bdbbd31d561c39fbe9246642a8c9e6848a4c737a248e34db8d5`.
+These are renderer timings: they provide no audio-device underrun evidence and
+do not measure the original-game playback route.
+
 The engine NFKC-normalizes text, normalizes the Unicode ellipsis to three ASCII
 dots and collapses whitespace before matching the same stable sample across
 models. It creates every model pair that shares a sample, shuffles trial order

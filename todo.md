@@ -16,8 +16,6 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
         decisions. Existing exact-repeat, near-clipping and discontinuity signals
         remain diagnostic because the current labelled corpus does not establish
         a safe automatic margin.
-  - [ ] Cluster acoustically duplicate references for one evidenced speaker while
-        preserving genuinely distinct age and identity variants.
 ## P1 - Improve the self-service generation engine
 
 Follow
@@ -37,6 +35,16 @@ intentional omission as distinct terminal authorities.
       checksum-bound report with fresh/cache first-chunk timing, realtime factor
       and generated/original route timing. Device underrun remains a separate
       hardware measurement.
+  - [ ] Diagnose the short `I, erhm ...` missed-EOS result without weakening the
+        three-second guard, then rerun all three exact samples into one report.
+  - [ ] Measure the original-game route on the same replay boundary and record it
+        beside the retained generated/cache checkpoint; do not infer playback
+        underruns from the device-free renderer.
+- [ ] Validate speaker-identity clustering before reducing voice choices. Select
+      a redistributable local speaker-embedding implementation and label held-out
+      same-speaker, different-speaker and same-character/different-age pairs from
+      installed references. Publish a threshold only if it preserves every known
+      age/identity boundary; until then keep the current evidence variants apart.
 - [ ] Run a small blind Rhiannon comparison between the stable generation
       profile, the current reference-codec roundtrip and the original extracted
       line. Judge speaker similarity, pronunciation, prosody, artifacts,

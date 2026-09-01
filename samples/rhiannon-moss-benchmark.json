@@ -1,21 +1,28 @@
 {
+  "schema": "vntts.tts-benchmark-corpus",
   "schema_version": 1,
   "name": "Rhiannon reported-line regression",
   "samples": [
     {
       "id": "short-hesitation",
+      "line_id": "fixture:rhiannon:1",
       "character": "Rhiannon",
-      "text": "I, erhm ..."
+      "text": "I, erhm ...",
+      "text_sha256": "937165b7a1754247e9120a8cc0c1a30eadb7206a13498df5ac2545d46205f594"
     },
     {
       "id": "ocr-noise-boundary",
+      "line_id": "regression:rhiannon:ocr-noise-boundary",
       "character": "Rhiannon",
-      "text": "Alright, that makes five."
+      "text": "Alright, that makes five.",
+      "text_sha256": "8b33120b7eda67f91d0444a328512916f3c8441a7440cd882c80718b07e6cbf5"
     },
     {
       "id": "clone-probe",
+      "line_id": "regression:rhiannon:clone-probe",
       "character": "Rhiannon",
-      "text": "That road was really long, so long I thought it'd never end."
+      "text": "That road was really long, so long I thought it'd never end.",
+      "text_sha256": "aa1580bd2f4d8d665a8844b33739eb7283c55cf3c8e3bf13564cbe100c7e91eb"
     }
   ]
 }
