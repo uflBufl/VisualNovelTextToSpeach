@@ -257,7 +257,12 @@ def write_conflicting_manifest(root, *, bind_selected_lines=False):
     return path
 
 
-def write_player_candidate_manifest(root, story_index_sha256):
+def write_player_candidate_manifest(
+    root,
+    story_index_sha256,
+    *,
+    portrait_image_sha256=None,
+):
     references = root / "references"
     references.mkdir(parents=True, exist_ok=True)
     report = root / "report.json"
@@ -281,6 +286,7 @@ def write_player_candidate_manifest(root, story_index_sha256):
                 "variant_id": variant_id,
                 "character": "Rhiannon",
                 "portrait": "10",
+                "portrait_image_sha256": portrait_image_sha256,
                 "source_bank": "rhiannon.bnk",
                 "source_voice_ids": [f"play_rhiannon_{index}"],
                 "voice_character": voice_character,
@@ -299,7 +305,7 @@ def write_player_candidate_manifest(root, story_index_sha256):
                 "voices": voices,
                 PLAYER_VOICE_CANDIDATES_FIELD: {
                     "schema": "vntts.player-voice-candidates",
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "story_index_sha256": story_index_sha256,
                     "candidate_report": report.name,
                     "candidate_report_sha256": sha256_file(report),
@@ -471,6 +477,37 @@ class VoicePlanStoreTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 PregenerationVoiceError,
                 "Player voice candidate evidence is invalid",
+            ):
+                VoicePlanStore(jobs).create(
+                    job,
+                    AppSettings(),
+                    manifest_path=manifest,
+                )
+
+    def test_player_import_candidate_portrait_is_checksum_bound(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            portraits = Path(job.story_index).parent / "portraits"
+            portraits.mkdir()
+            portrait = portraits / "10.png"
+            Image.new("RGB", (32, 32), "purple").save(portrait)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices",
+                job.story_index_sha256,
+                portrait_image_sha256=sha256_file(portrait),
+            )
+
+            VoicePlanStore(jobs).create(
+                job,
+                AppSettings(),
+                manifest_path=manifest,
+            )
+            portrait.write_bytes(b"changed")
+
+            with self.assertRaisesRegex(
+                PregenerationVoiceError,
+                "portrait changed",
             ):
                 VoicePlanStore(jobs).create(
                     job,

@@ -36,7 +36,8 @@ voice_plan_schema_version = 2
 voice_decisions_schema_version = 1
 PLAYER_VOICE_CANDIDATES_FIELD = "vntts.player.voice_candidates"
 PLAYER_VOICE_CANDIDATES_SCHEMA = "vntts.player-voice-candidates"
-PLAYER_VOICE_CANDIDATES_VERSION = 1
+PLAYER_VOICE_CANDIDATES_VERSION = 2
+PLAYER_VOICE_CANDIDATES_VERSIONS = frozenset({1, PLAYER_VOICE_CANDIDATES_VERSION})
 _CLEAR_WINNER_SCORE = 80
 _CLEAR_WINNER_MARGIN = 20
 
@@ -274,6 +275,7 @@ class VoicePlanStore:
             registry,
             manifest_path,
             job.story_index_sha256,
+            Path(job.story_index).resolve().parent,
         )
         controls = _synthesis_controls(settings)
         controls_sha256 = _digest(controls)
@@ -775,6 +777,7 @@ def _manifest_candidate_variants(
     registry,
     manifest_path,
     story_index_sha256,
+    content_root,
 ):
     bindings = manifest_document.get(SOURCE_REFERENCE_BINDINGS_FIELD, {})
     variants = list(
@@ -795,7 +798,7 @@ def _manifest_candidate_variants(
         not isinstance(player, dict)
         or set(player) != expected_fields
         or player.get("schema") != PLAYER_VOICE_CANDIDATES_SCHEMA
-        or player.get("schema_version") != PLAYER_VOICE_CANDIDATES_VERSION
+        or player.get("schema_version") not in PLAYER_VOICE_CANDIDATES_VERSIONS
         or player.get("story_index_sha256") != story_index_sha256
         or manifest_path is None
     ):
@@ -828,6 +831,7 @@ def _manifest_candidate_variants(
     if not isinstance(values, list) or not values:
         raise PregenerationVoiceError("Player voice candidate inventory is empty")
     seen = set()
+    version = player["schema_version"]
     for index, variant in enumerate(values):
         fields = {
             "variant_id",
@@ -842,6 +846,8 @@ def _manifest_candidate_variants(
             "duration_seconds",
             "quality_score",
         }
+        if version >= 2:
+            fields.add("portrait_image_sha256")
         if not isinstance(variant, dict) or set(variant) != fields:
             raise PregenerationVoiceError(
                 f"Player voice candidate {index} is malformed"
@@ -857,6 +863,7 @@ def _manifest_candidate_variants(
         portrait = variant.get("portrait")
         duration = variant.get("duration_seconds")
         quality = variant.get("quality_score")
+        portrait_image_sha256 = variant.get("portrait_image_sha256")
         if (
             not _is_sha256(variant_id)
             or variant_id in seen
@@ -883,10 +890,23 @@ def _manifest_candidate_variants(
             or isinstance(quality, bool)
             or not isinstance(quality, int)
             or not 0 <= quality <= 100
+            or version >= 2
+            and portrait_image_sha256 is not None
+            and not _is_sha256(portrait_image_sha256)
         ):
             raise PregenerationVoiceError(
                 f"Player voice candidate {index} evidence is invalid"
             )
+        if version >= 2:
+            _portrait_path, actual_portrait_sha256 = _portrait_snapshot(
+                content_root,
+                portrait,
+                {},
+            )
+            if portrait_image_sha256 != actual_portrait_sha256:
+                raise PregenerationVoiceError(
+                    f"Player voice candidate {index} portrait changed"
+                )
         source_id = f"character:{normalize_character_name(voice_character)}"
         voice = _candidate_from_source(source_id, registry)
         if voice is None or tuple(sha256_file(path) for path in voice.references) != (

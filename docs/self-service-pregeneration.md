@@ -114,6 +114,16 @@ card. If preparation finds no safe candidate or fails, pregeneration remains
 playable through the existing narrator route instead of opening an authoring
 workflow.
 
+Candidate-manifest v2 also binds each available exact portrait PNG. The
+extractor resolves the installed Unity `Sprite` by portrait ID, writes it under
+the imported content's `portraits/` directory, and caches the source bundle
+against the story-index hash. Known content-addressed head-icon shards avoid a
+full game scan on the current release; scanning all installed bundles remains a
+fallback for a future shard layout. Voice planning rejects a changed or stale
+PNG before the existing A/B card renders it. A real 11-portrait extraction
+reproduced the previously reviewed PNG bytes exactly and took 0.86 seconds via
+the direct shard path on the development Mac.
+
 `reverse1999-extractor` is an exact-revision runtime dependency. macOS and Windows
 PyInstaller specifications collect its modules, data, binaries and distribution
 metadata. A frozen VNTTS executable relaunches itself with a hidden provider
