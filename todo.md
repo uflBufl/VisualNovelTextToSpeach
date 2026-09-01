@@ -28,12 +28,27 @@ Follow
 and keep original audio, approved generated audio, explicit live fallback and
 intentional omission as distinct terminal authorities.
 
-- [ ] Use the 1,220 patch-3.7 `no_audio` lines as the first full-scale validation
-      corpus for the self-service workflow. Preserve source-audio candidates and
-      invalidate decisions when controlling hashes change, but do not make the
-      ordinary user review every technical flag or a stratified line sample.
-      Route low-confidence exceptions to bounded automatic repair/fallback and
-      retain expert review only as an opt-in diagnostic export.
+- [ ] Use the historical 1,220 patch-3.7 `no_audio` lines as the comparison
+      baseline for the first full-scale self-service validation. The current
+      checksum-bound import of Chapter 13 plus `The Eaglet Takes Wing` has 1,205
+      synthesis candidates; never resume the 1,220-item queue across that changed
+      story-index identity.
+  - [ ] Create an isolated current job with the saved player settings and voice
+        decisions, then require every selected line to be original audio,
+        runnable offline synthesis, explicit live fallback or intentional
+        omission. Record unresolved voice choices instead of silently guessing.
+  - [ ] Materialize and validate the current private input; require queue count,
+        ready count, source hashes and narrator-fallback roles to agree before
+        any synthesis starts.
+  - [ ] Run a bounded canary through generation, recovery, automatic acceptance,
+        publication and activation. Resume the same exact job after an
+        interruption and prove completed WAVs are not regenerated.
+  - [ ] Complete the full current corpus only after the canary passes. Preserve
+        source-audio candidates and invalidate decisions when controlling hashes
+        change, but do not make the ordinary user review every technical flag or
+        a stratified line sample. Route low-confidence exceptions to bounded
+        automatic repair/fallback and retain expert review only as an opt-in
+        diagnostic export.
 - [ ] Turn the existing defect-reason labels into a calibrated MOSS quality
       router. Collect enough independently reviewed examples for pacing,
       repetition, truncation, pronunciation, artifacts and speaker identity to

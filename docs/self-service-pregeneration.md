@@ -166,6 +166,13 @@ Candidates outside the top evidence margin remain in diagnostic provenance but
 do not create another player prompt. A unique candidate, a clear evidence winner
 and a one-line incidental role resolve automatically.
 
+When many installed clips have the same evidence score, the planner ranks them
+by the extractor's technical quality score and then by closeness to the preferred
+four-second reference duration. The complete checksum-bound inventory remains in
+diagnostics, but one unresolved player card exposes at most the best three clips.
+The current patch-3.7 full-scale preflight reduced inventories as large as 149
+clips to three choices without discarding their provenance.
+
 Resolved voices do not receive a separate synthetic preview corpus: their actual
 selected story lines already exercise the chosen voice and every resulting WAV
 passes the generation quality gates. Adding a second artificial corpus would

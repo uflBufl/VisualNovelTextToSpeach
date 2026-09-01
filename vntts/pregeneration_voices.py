@@ -43,6 +43,7 @@ PLAYER_VOICE_CANDIDATES_VERSION = 2
 PLAYER_VOICE_CANDIDATES_VERSIONS = frozenset({1, PLAYER_VOICE_CANDIDATES_VERSION})
 _CLEAR_WINNER_SCORE = 80
 _CLEAR_WINNER_MARGIN = 20
+_MAX_AUDITION_CANDIDATES = 3
 
 
 class PregenerationVoiceError(RuntimeError):
@@ -632,11 +633,13 @@ def _candidate_inventory(
         )
 
     candidates = {}
+    candidate_ranks = {}
 
     def add(source_id, score, recommendation, variant=None):
         voice = _candidate_from_source(source_id, registry)
         if voice is None:
             return
+        variant = variant or {}
         candidate = _ranked_candidate(
             source_id,
             voice,
@@ -645,8 +648,28 @@ def _candidate_inventory(
             variant=variant,
         )
         previous = candidates.get(source_id)
-        if previous is None or candidate.match_score > previous.match_score:
+        quality = variant.get("quality_score")
+        duration = variant.get("duration_seconds")
+        rank = (
+            -(
+                quality
+                if isinstance(quality, int) and not isinstance(quality, bool)
+                else -1
+            ),
+            (
+                abs(float(duration) - 4.0)
+                if isinstance(duration, (int, float)) and not isinstance(duration, bool)
+                else float("inf")
+            ),
+        )
+        if (
+            previous is None
+            or candidate.match_score > previous.match_score
+            or candidate.match_score == previous.match_score
+            and rank < candidate_ranks[source_id]
+        ):
             candidates[source_id] = candidate
+            candidate_ranks[source_id] = rank
 
     if bound_source:
         add(bound_source, 120, "Exact voice binding for this dialogue")
@@ -703,6 +726,7 @@ def _candidate_inventory(
             candidates.values(),
             key=lambda value: (
                 -value.match_score,
+                *candidate_ranks[value.source_id],
                 value.source_character.casefold(),
                 value.source_id,
             ),
@@ -785,7 +809,7 @@ def _eligible_candidates(candidates):
         for candidate in candidates
         if best_score - candidate.match_score < _CLEAR_WINNER_MARGIN
     )
-    return eligible or candidates[:1]
+    return (eligible or candidates[:1])[:_MAX_AUDITION_CANDIDATES]
 
 
 def _manifest_queue_bindings(manifest_document, registry):
@@ -844,7 +868,9 @@ def _manifest_candidate_variants(
     ):
         raise PregenerationVoiceError("Player voice candidate report path is invalid")
     relative = PurePosixPath(report_relative)
-    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+    if relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
         raise PregenerationVoiceError("Player voice candidate report path is unsafe")
     report = (manifest_path.parent / Path(*relative.parts)).resolve()
     try:

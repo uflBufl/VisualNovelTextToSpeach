@@ -263,6 +263,7 @@ def write_player_candidate_manifest(
     story_index_sha256,
     *,
     portrait_image_sha256=None,
+    quality_scores=(99, 98),
 ):
     references = root / "references"
     references.mkdir(parents=True, exist_ok=True)
@@ -270,7 +271,7 @@ def write_player_candidate_manifest(
     report.write_text('{"candidate_count":2}', encoding="utf-8")
     voices = []
     variants = []
-    for index in (1, 2):
+    for index, quality_score in enumerate(quality_scores, start=1):
         reference = references / f"rhiannon-{index}.wav"
         reference.write_bytes(f"rhiannon-{index}".encode())
         variant_id = str(index) * 64
@@ -295,7 +296,7 @@ def write_player_candidate_manifest(
                 "source_line_ids": [f"line:source:{index}"],
                 "source_event_ids": [index],
                 "duration_seconds": 3.0 + index,
-                "quality_score": 100 - index,
+                "quality_score": quality_score,
             }
         )
     path = root / "manifest.json"
@@ -491,6 +492,35 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(
                 rhiannon.candidates[0].source_voice_ids,
                 ("play_rhiannon_1",),
+            )
+
+    def test_player_audition_keeps_only_three_best_equal_evidence_clips(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices",
+                job.story_index_sha256,
+                quality_scores=(60, 100, 80, 70, 90),
+            )
+
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(),
+                manifest_path=manifest,
+            )
+
+            rhiannon = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            self.assertEqual(len(rhiannon.candidate_inventory), 5)
+            self.assertEqual(
+                [candidate.source_character for candidate in rhiannon.candidates],
+                [
+                    "Player candidate Rhiannon 2",
+                    "Player candidate Rhiannon 5",
+                    "Player candidate Rhiannon 3",
+                ],
             )
 
     def test_player_import_candidates_reject_another_story_index(self):
