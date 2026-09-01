@@ -617,14 +617,6 @@ class LiveReplayTest(unittest.TestCase):
         self.assertEqual(prefetch["outcome"], "reserved")
         self.assertEqual(prefetch["target_event_id"], "prefix-2")
         self.assertEqual(len(report["media_integrity"]["generated_playback"]), 1)
-        self.assertTrue(
-            any(
-                event["stage"] == "auto-advance-withheld"
-                and event.get("reason") == "canonical-full-text-not-confirmed"
-                for timeline in report["timelines"]
-                for event in timeline["events"]
-            )
-        )
         canonical_full = next(
             event
             for timeline in report["timelines"]

@@ -7,6 +7,7 @@ import wave
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -77,7 +78,21 @@ class _PreviewService:
 class FailureReferenceAuditUiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.media_player_patcher = patch(
+            "vntts.authoring.failure_reference_audit_ui.QMediaPlayer"
+        )
+        cls.audio_output_patcher = patch(
+            "vntts.authoring.failure_reference_audit_ui.QAudioOutput"
+        )
+        media_player = cls.media_player_patcher.start()
+        media_player.MediaStatus = QMediaPlayer.MediaStatus
+        cls.audio_output_patcher.start()
         cls.application = QApplication.instance() or QApplication([])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.audio_output_patcher.stop()
+        cls.media_player_patcher.stop()
 
     def tearDown(self):
         for widget in self.application.topLevelWidgets():

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
@@ -138,7 +139,21 @@ def write_quality_session(root):
 class SourceReferenceQualityDialogTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.media_player_patcher = patch(
+            "vntts.authoring.source_reference_quality_ui.QMediaPlayer"
+        )
+        cls.audio_output_patcher = patch(
+            "vntts.authoring.source_reference_quality_ui.QAudioOutput"
+        )
+        media_player = cls.media_player_patcher.start()
+        media_player.MediaStatus = QMediaPlayer.MediaStatus
+        cls.audio_output_patcher.start()
         cls.application = QApplication.instance() or QApplication([])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.audio_output_patcher.stop()
+        cls.media_player_patcher.stop()
 
     def wait_for(self, predicate, timeout=3.0):
         deadline = time.monotonic() + timeout

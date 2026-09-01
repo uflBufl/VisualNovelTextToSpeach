@@ -250,7 +250,6 @@ def record_source_reference_quality_decision(
             raise SourceReferenceQualityError(
                 "Quality review changed while the decision was loaded"
             )
-        original_session = json.loads(original_payload)
         card = next(
             (item for item in session["variants"] if item["variant_id"] == variant_id),
             None,
@@ -272,13 +271,8 @@ def record_source_reference_quality_decision(
             raise SourceReferenceQualityError(
                 "Quality review changed before the decision was saved"
             )
-        load_source_reference_quality_review(session_path)
-        try:
-            atomic_write_json(session_path, session, sort_keys=True)
-            return load_source_reference_quality_review(session_path)
-        except Exception:
-            atomic_write_json(session_path, original_session, sort_keys=True)
-            raise
+        atomic_write_json(session_path, session, sort_keys=True)
+        return session
 
 
 def accepted_source_reference_variants(session, *, require_complete=True):
