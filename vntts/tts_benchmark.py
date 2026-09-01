@@ -422,7 +422,6 @@ def _benchmark_backend_staged(
             conditioning_started = clock()
             backend.prime(character)
             conditioning_ms = (clock() - conditioning_started) * 1000
-
             generation_started = clock()
             cpu_started = cpu_clock()
             render = getattr(backend, "render", None)

@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -44,6 +43,8 @@ from vntts.synthesis import (
     SynthesisRequest,
     SynthesisResult,
     SynthesisTiming,
+    moss_generation_limits,
+    normalize_short_trailing_ellipsis,
 )
 from vntts.voices import (
     is_narrator,
@@ -117,10 +118,6 @@ moss_tts_generation_profiles = {
     },
 }
 
-_SHORT_TRAILING_ELLIPSIS = re.compile(
-    r"^\s*(?P<spoken>[\w'’]+(?:\s+[\w'’]+)?)\s*(?:\.{3}|…)\s*$"
-)
-
 moss_language_names = {
     "ar": "Arabic",
     "cs": "Czech",
@@ -170,29 +167,6 @@ def get_moss_tts_generation_profile(name):
         raise TTSConfigurationError(
             f"Unknown MOSS-TTS voice profile {name!r}; available profiles: {available}"
         ) from error
-
-
-def moss_generation_limits(text):
-    """Bound missed-EOS output while leaving room for normal speech cadence."""
-    words = re.findall(r"[\w']+", str(text or ""), flags=re.UNICODE)
-    word_count = max(1, len(words))
-    # Keep the strict three-second guard for one/two-word hesitation lines, the
-    # case that originally exposed missed EOS. Longer natural sentences need a
-    # slower 90-wpm allowance plus a bounded lead/tail reserve: real authoring
-    # evidence includes a four-word completion at 3.68s and a nine-word line
-    # that exhausted the former 6.5s ceiling. The absolute 20-second guard is
-    # unchanged.
-    max_audio_seconds = (
-        3.0 if word_count <= 2 else min(20.0, max(4.0, 2.5 + word_count / 1.5))
-    )
-    max_tokens = min(2048, max(256, round(max_audio_seconds * 100)))
-    return max_tokens, max_audio_seconds
-
-
-def normalize_short_trailing_ellipsis(text):
-    """Give one/two-word ellipses an audible terminal boundary for MOSS."""
-    match = _SHORT_TRAILING_ELLIPSIS.fullmatch(str(text or ""))
-    return str(text) if match is None else match.group("spoken") + "."
 
 
 class XTTSVoiceRouterBackend:

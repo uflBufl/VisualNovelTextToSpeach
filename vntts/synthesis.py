@@ -1,9 +1,31 @@
+import re
 from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 import numpy as np
+
+_SHORT_TRAILING_ELLIPSIS = re.compile(
+    r"^\s*(?P<spoken>[\w'’]+(?:\s+[\w'’]+)?)\s*(?:\.{3}|…)\s*$"
+)
+
+
+def normalize_short_trailing_ellipsis(text: str | None) -> str:
+    """Give one/two-word ellipses an audible terminal boundary for MOSS."""
+    match = _SHORT_TRAILING_ELLIPSIS.fullmatch(str(text or ""))
+    return str(text) if match is None else match.group("spoken") + "."
+
+
+def moss_generation_limits(text: str | None) -> tuple[int, float]:
+    """Bound missed-EOS output while leaving room for normal speech cadence."""
+    word_count = max(1, len(re.findall(r"[\w']+", str(text or ""), flags=re.UNICODE)))
+    # Short hesitations keep the strict 3s guard; longer text gets a 90wpm
+    # allowance plus lead/tail reserve, capped at the existing absolute 20s.
+    max_audio_seconds = (
+        3.0 if word_count <= 2 else min(20.0, max(4.0, 2.5 + word_count / 1.5))
+    )
+    return min(2048, max(256, round(max_audio_seconds * 100))), max_audio_seconds
 
 
 class SynthesisCachePolicy(str, Enum):

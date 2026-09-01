@@ -72,15 +72,15 @@
     "vntts.live_replay_coverage -> vntts.live_replay_sequence_seal:_write_json"
   ],
   "module_lines": {
-    "vntts.app": 2833,
+    "vntts.app": 2815,
     "vntts.authoring": 2026,
-    "vntts.authoring.bulk_generation": 3668,
-    "vntts.authoring.generation_state": 2379,
+    "vntts.authoring.bulk_generation": 3665,
+    "vntts.authoring.generation_state": 2369,
     "vntts.authoring.workbench": 5662,
     "vntts.authoring.workbench_ui": 2827,
     "vntts.controller": 2985,
     "vntts.live": 2321,
-    "vntts.speech_backend": 2602
+    "vntts.speech_backend": 2588
   },
   "function_lines": {
     "vntts.app.SettingsDialog.__init__": 460,
@@ -89,7 +89,7 @@
     "vntts.authoring.audio_event_projection_fallback.create_audio_event_projection_fallback_workspace": 273,
     "vntts.authoring.bulk_generation.authorize_live_fallback": 231,
     "vntts.authoring.bulk_generation.review_generation_cohort": 234,
-    "vntts.authoring.bulk_generation.run_bulk_generation": 772,
+    "vntts.authoring.bulk_generation.run_bulk_generation": 770,
     "vntts.authoring.cli_generation._generate": 251,
     "vntts.authoring.cli_references.configure_parsers": 268,
     "vntts.authoring.cli_references.handle": 223,

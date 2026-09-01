@@ -114,40 +114,11 @@ class OfflinePackPublisher:
         )
         if destination.is_dir():
             return _load_existing(destination, identity)
-        try:
-            state = load_generation_state(
-                generation_result.state,
-                generation_input.queue,
+        state, queue, voice_document, voices, current_omissions = (
+            _load_terminal_generation(
+                job, generation_input, generation_result, state_sha256
             )
-            queue = VoiceGenerationQueue.load(generation_input.queue)
-            voice_document, voices = load_voice_manifest(
-                generation_input.voice_manifest,
-                allow_legacy=False,
-            )
-            current_omissions = _self_service_omission_records(
-                job,
-                generation_input,
-                state_sha256,
-                queue,
-            )
-            _require_terminal_generation(
-                state,
-                queue,
-                omission_queue_ids={value["queue_id"] for value in current_omissions},
-            )
-        except (
-            BulkGenerationError,
-            GamePackError,
-            GeneratedAudioManifestError,
-            OSError,
-            StoryIndexError,
-            ValueError,
-            VoiceGenerationQueueError,
-            VoiceManifestError,
-        ) as error:
-            raise OfflinePackError(
-                f"Unable to inspect prepared audio: {error}"
-            ) from error
+        )
         destination.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(
             tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent)
@@ -292,6 +263,42 @@ class OfflinePackPublisher:
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
+
+
+def _load_terminal_generation(job, generation_input, generation_result, state_sha256):
+    try:
+        state = load_generation_state(
+            generation_result.state,
+            generation_input.queue,
+        )
+        queue = VoiceGenerationQueue.load(generation_input.queue)
+        voice_document, voices = load_voice_manifest(
+            generation_input.voice_manifest,
+            allow_legacy=False,
+        )
+        omissions = _self_service_omission_records(
+            job,
+            generation_input,
+            state_sha256,
+            queue,
+        )
+        _require_terminal_generation(
+            state,
+            queue,
+            omission_queue_ids={value["queue_id"] for value in omissions},
+        )
+        return state, queue, voice_document, voices, omissions
+    except (
+        BulkGenerationError,
+        GamePackError,
+        GeneratedAudioManifestError,
+        OSError,
+        StoryIndexError,
+        ValueError,
+        VoiceGenerationQueueError,
+        VoiceManifestError,
+    ) as error:
+        raise OfflinePackError(f"Unable to inspect prepared audio: {error}") from error
 
 
 def _validate_inputs(job, generation_input, generation_result):

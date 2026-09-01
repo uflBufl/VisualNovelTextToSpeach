@@ -211,13 +211,13 @@ from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
     validate_terminal_conflict_state_binding,
 )
-from vntts.speech_backend import (
-    normalize_short_trailing_ellipsis as _normalize_short_trailing_ellipsis,
-)
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
     SynthesisRequest,
+)
+from vntts.synthesis import (
+    normalize_short_trailing_ellipsis as normalize_short_trailing_ellipsis,
 )
 from vntts.voices import pocket_tts_preset_voices, synthesis_character_for_line
 
@@ -575,10 +575,6 @@ def is_spoken_queue_item(item):
     )
 
 
-def normalize_short_trailing_ellipsis(text):
-    return _normalize_short_trailing_ellipsis(text)
-
-
 def audio_event_spoken_projection(text):
     """Remove typed inline events while preserving the record's spoken text."""
     try:
@@ -779,7 +775,7 @@ def _synthesis_fallback_document(
 
 
 def _assert_missing_voice_overrides_match_manifest(
-    controls, character_overrides, *, narrator_character, provider
+    controls, character_overrides, narrator_character, provider
 ):
     if not character_overrides:
         return
@@ -1594,10 +1590,7 @@ def run_bulk_generation(
         )
     controls = _snapshot_control_files(control_files or {})
     _assert_missing_voice_overrides_match_manifest(
-        controls,
-        character_overrides,
-        narrator_character=narrator_character,
-        provider=provider,
+        controls, character_overrides, narrator_character, provider
     )
     control_records = [_stored_control(value) for value in controls]
     synthesis_configuration = {
