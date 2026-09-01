@@ -93,6 +93,13 @@ snapshot copying: source trees must be directories without symlinks, every file
 is copied through contained-path checks, and the caller receives the source
 SHA-256 ledger used for post-publication authority verification.
 
+The same leaf copies generated WAVs into successor workspaces only after
+canonical-path, collision and checksum validation, recording each source digest
+in the publication snapshot ledger. Successor workflows retain their own
+eligibility and evidence logic and use standard-library `TemporaryDirectory`
+owners so staging cleanup also runs after errors, early returns and consumed
+atomic renames.
+
 `workbench` keeps its historical private aliases and exposes public wrappers
 with `AuthoringWorkbenchError` semantics. Production callers now use those
 public wrappers for path, file, JSON and digest operations; atomic directory

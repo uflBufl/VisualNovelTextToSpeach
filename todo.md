@@ -55,12 +55,6 @@ intentional omission as distinct terminal authorities.
 Keep wire schemas, public compatibility aliases and domain-specific validation
 messages stable. Prefer existing leaf modules over new abstraction layers.
 
-- [ ] Extract the common workspace-successor mechanics used by audio-event,
-      known-role, reviewed-rejection, explicit-fallback and reviewed-waveform
-      publication: checksum-validated base-WAV copying and lexically scoped
-      staging cleanup. Keep each workflow's eligibility and evidence construction
-      local. Gate: all successor publication/validation tests pass and workspace
-      IDs plus generated manifests remain byte-for-byte compatible.
 - [ ] Move repeated terminal-conflict text, digest, timestamp and contained-file
       validation into the terminal-conflict record leaf with caller-selected
       error types. Gate: review, resolution and successor tests preserve their

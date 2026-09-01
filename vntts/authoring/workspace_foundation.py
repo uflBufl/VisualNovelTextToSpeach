@@ -107,8 +107,54 @@ def copy_workspace_tree_snapshot(source, target, snapshots, *, error_type=ValueE
         snapshots.append((path, digest))
 
 
+def copy_generation_wavs(
+    base_directory,
+    output,
+    state,
+    snapshots,
+    target_label,
+    error_type=ValueError,
+    source_label="Base WAV",
+):
+    """Copy checksum-bound generated WAVs into an immutable successor."""
+    owners = {}
+    for queue_id, result in state["items"].items():
+        if not isinstance(result, dict) or not isinstance(result.get("path"), str):
+            continue
+        relative = safe_relative_path(
+            result["path"],
+            f"Base generation item {queue_id!r} path",
+            error_type=error_type,
+        )
+        owner = owners.setdefault(relative.as_posix(), queue_id)
+        if owner != queue_id:
+            raise error_type(f"{source_label} path collides with {owner!r}")
+        source = contained_path(
+            Path(base_directory) / "generated-audio",
+            relative,
+            "Base generation WAV",
+            error_type=error_type,
+        )
+        payload = read_regular_file(
+            source, "base generation WAV", error_type=error_type
+        )
+        digest = hashlib.sha256(payload).hexdigest()
+        expected = require_sha256(
+            result.get("file_sha256"),
+            f"Base item {queue_id!r} WAV SHA-256",
+            error_type=error_type,
+        )
+        if digest != expected:
+            raise error_type(f"{source_label} changed for {queue_id!r}")
+        target = contained_path(output, relative, target_label, error_type=error_type)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        snapshots.append((source, digest))
+
+
 __all__ = [
     "contained_path",
+    "copy_generation_wavs",
     "copy_workspace_tree_snapshot",
     "load_json_object",
     "load_json_object_snapshot",

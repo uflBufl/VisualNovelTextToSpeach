@@ -1,3 +1,4 @@
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -5,6 +6,7 @@ from tempfile import TemporaryDirectory
 
 from vntts.authoring.workspace_foundation import (
     contained_path,
+    copy_generation_wavs,
     load_json_object,
     load_json_object_snapshot,
     read_regular_file,
@@ -68,6 +70,49 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(FoundationError, "hexadecimal"):
             require_sha256("z" * 64, "Digest", error_type=FoundationError)
+
+    def test_generation_wav_copy_is_checksum_and_collision_bound(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "base/generated-audio/audio.wav"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"wav")
+            item = {
+                "path": "audio.wav",
+                "file_sha256": hashlib.sha256(b"wav").hexdigest(),
+            }
+            snapshots = []
+            copy_generation_wavs(
+                root / "base",
+                root / "output",
+                {"items": {"line-1": item}},
+                snapshots,
+                "Copied WAV",
+                FoundationError,
+            )
+            self.assertEqual((root / "output/audio.wav").read_bytes(), b"wav")
+            self.assertEqual(snapshots, [(source.resolve(), item["file_sha256"])])
+
+            source.write_bytes(b"changed")
+            with self.assertRaisesRegex(FoundationError, "changed"):
+                copy_generation_wavs(
+                    root / "base",
+                    root / "bad-output",
+                    {"items": {"line-1": item}},
+                    [],
+                    "Copied WAV",
+                    FoundationError,
+                )
+            source.write_bytes(b"wav")
+            with self.assertRaisesRegex(FoundationError, "collides"):
+                copy_generation_wavs(
+                    root / "base",
+                    root / "collision-output",
+                    {"items": {"line-1": item, "line-2": item}},
+                    [],
+                    "Copied WAV",
+                    FoundationError,
+                )
 
 
 if __name__ == "__main__":

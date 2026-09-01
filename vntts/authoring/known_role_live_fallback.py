@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import shutil
-import tempfile
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -51,8 +50,17 @@ from vntts.authoring.workbench import (
     validate_workspace_provenance_extensions,
 )
 from vntts.authoring.workspace_config import workspace_config_fingerprint
-from vntts.authoring.workspace_foundation import copy_workspace_tree_snapshot
+from vntts.authoring.workspace_foundation import (
+    copy_generation_wavs,
+    copy_workspace_tree_snapshot,
+)
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+
+_copy_base_wavs = partial(
+    copy_generation_wavs,
+    target_label="Known-role base WAV",
+    error_type=AuthoringWorkbenchError,
+)
 
 SCHEMA = "vntts.authoring-known-role-live-fallback-batch"
 SCHEMA_VERSION = 1
@@ -244,7 +252,8 @@ def create_known_role_live_fallback_workspace(
     destination = contained_workspace_path(
         root, Path(workspace_id), "Known-role fallback destination"
     )
-    staging = Path(tempfile.mkdtemp(prefix=".known-role-fallback-", dir=root)).resolve()
+    staging_owner = TemporaryDirectory(prefix=".known-role-fallback-", dir=root)
+    staging = Path(staging_owner.name).resolve()
     base_snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
         (base_directory / "generated-audio/generation-state.json", base_state_sha256),
@@ -406,14 +415,12 @@ def create_known_role_live_fallback_workspace(
                     ) from error
                 for lease in held_leases:
                     lease.mark_committed()
-                staging = None
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
+        staging_owner.cleanup()
     return WorkspaceCreationResult(destination, True)
 
 
@@ -562,32 +569,6 @@ def _synthesis_configuration(run_config, override_sha256):
         "failure_repair_policy": repair.to_document(),
         "queue_voice_overrides_sha256": override_sha256,
     }
-
-
-def _copy_base_wavs(base_directory, output, state, snapshots):
-    owners = {}
-    for queue_id, result in state["items"].items():
-        if not isinstance(result, dict) or not isinstance(result.get("path"), str):
-            continue
-        relative = safe_workspace_relative_path(
-            result["path"], f"Base generation item {queue_id!r} path"
-        )
-        owner = owners.setdefault(relative.as_posix(), queue_id)
-        if owner != queue_id:
-            raise AuthoringWorkbenchError(f"Base WAV path collides with {owner!r}")
-        source = contained_workspace_path(
-            base_directory / "generated-audio", relative, "Base generation WAV"
-        )
-        payload = read_workspace_file_bytes(source, "base generation WAV")
-        digest = hashlib.sha256(payload).hexdigest()
-        if digest != require_workspace_sha256(
-            result.get("file_sha256"), f"Base item {queue_id!r} WAV SHA-256"
-        ):
-            raise AuthoringWorkbenchError(f"Base WAV changed for {queue_id!r}")
-        target = contained_workspace_path(output, relative, "Known-role base WAV")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
-        snapshots.append((source, digest))
 
 
 def _required_text(value, label):

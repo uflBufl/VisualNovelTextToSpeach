@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import shutil
-import tempfile
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -33,12 +32,21 @@ from vntts.authoring.workbench import (
     load_workspace_json,
     read_workspace_file_bytes,
     require_workspace_sha256,
-    safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
 )
 from vntts.authoring.workspace_config import workspace_config_fingerprint
-from vntts.authoring.workspace_foundation import copy_workspace_tree_snapshot
+from vntts.authoring.workspace_foundation import (
+    copy_generation_wavs,
+    copy_workspace_tree_snapshot,
+)
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+
+_copy_base_wavs = partial(
+    copy_generation_wavs,
+    target_label="Merged base WAV",
+    error_type=AuthoringWorkbenchError,
+    source_label="Base generation WAV",
+)
 
 SCHEMA = "vntts.authoring-explicit-fallback-merge"
 SCHEMA_VERSION = 2
@@ -201,9 +209,8 @@ def merge_explicit_live_fallbacks(
     destination = contained_workspace_path(
         root, Path(workspace_id), "Explicit fallback destination"
     )
-    staging = Path(
-        tempfile.mkdtemp(prefix=".fallback-merge-staging-", dir=root)
-    ).resolve()
+    staging_owner = TemporaryDirectory(prefix=".fallback-merge-staging-", dir=root)
+    staging = Path(staging_owner.name).resolve()
     base_snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
         (
@@ -317,14 +324,12 @@ def merge_explicit_live_fallbacks(
                     ) from error
                 for lease in held_leases:
                     lease.mark_committed()
-                staging = None
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
     except (BulkGenerationError, OSError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
+        staging_owner.cleanup()
     return WorkspaceCreationResult(destination, True)
 
 
@@ -462,36 +467,6 @@ def _is_additive_source_queue(
             for item in source_queue.items
         )
     )
-
-
-def _copy_base_wavs(base_directory, output, state, snapshots):
-    path_owners = {}
-    for queue_id, result in state["items"].items():
-        if not isinstance(result, dict) or not isinstance(result.get("path"), str):
-            continue
-        relative = safe_workspace_relative_path(
-            result["path"], f"Base generation item {queue_id!r} path"
-        )
-        owner = path_owners.setdefault(relative.as_posix(), queue_id)
-        if owner != queue_id:
-            raise AuthoringWorkbenchError(
-                f"Base generation WAV path collides with {owner!r}"
-            )
-        source_path = contained_workspace_path(
-            base_directory / "generated-audio", relative, "Base generation WAV"
-        )
-        payload = read_workspace_file_bytes(source_path, "base generation WAV")
-        digest = hashlib.sha256(payload).hexdigest()
-        if digest != require_workspace_sha256(
-            result.get("file_sha256"), f"Base item {queue_id!r} WAV SHA-256"
-        ):
-            raise AuthoringWorkbenchError(
-                f"Base generation WAV changed for {queue_id!r}"
-            )
-        target = contained_workspace_path(output, relative, "Merged base WAV")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
-        snapshots.append((source_path, digest))
 
 
 __all__ = [
