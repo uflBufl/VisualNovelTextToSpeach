@@ -88,6 +88,9 @@ def _run_macos_full_discovery():
                         str(inventory),
                     ],
                     timeout=MACOS_SHARD_TIMEOUTS[name],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
                 )
             except subprocess.TimeoutExpired:
                 print(
@@ -96,7 +99,17 @@ def _run_macos_full_discovery():
                     file=sys.stderr,
                 )
                 return 124
+            print(completed.stdout, end="")
             if completed.returncode:
+                if os.environ.get("GITHUB_ACTIONS"):
+                    details = completed.stdout[-12_000:] or (
+                        f"macOS unittest shard {name} exited without output."
+                    )
+                    print(
+                        f"::error title=macOS {name} tests failed::"
+                        f"{escape_workflow_command(details)}",
+                        file=sys.stderr,
+                    )
                 return completed.returncode
     print(f"Ran all {len(test_ids)} exact discovered tests once in 2 shards")
     return 0

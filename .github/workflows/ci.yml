@@ -83,10 +83,12 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y espeak-ng libportaudio2 tesseract-ocr
+          sudo apt-get install -y espeak-ng libegl1 libportaudio2 tesseract-ocr xvfb
 
       - name: Install locked dependencies
         run: uv sync --group dev --frozen
 
       - name: Run Linux X11 source unit tests
-        run: uv run --frozen python scripts/run_ci_unittests.py discover -s tests
+        run: >-
+          xvfb-run -a uv run --frozen python scripts/run_ci_unittests.py
+          discover -s tests

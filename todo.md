@@ -9,6 +9,10 @@ measurements and completed-work history in `docs/` and Git, not here.
   - Use a matching Torch/Torchaudio release that publishes CPython 3.14 wheels
     for every target; keep the CUDA 12.9 index Linux-only because it has no
     Windows wheels for the selected release.
+  - Run the Linux X11 suite under Xvfb with EGL available; `offscreen` alone
+    does not provide the display required by `pynput`.
+  - Preserve failing macOS shard output as a GitHub annotation so CI identifies
+    the exact test instead of reporting only the shard exit code.
   - Gate: `uv sync --frozen --dry-run` resolves for Windows x64 and Linux x64,
     the local Python 3.14 quality/full-suite gate passes, and the pushed CI run
     completes successfully on all three operating systems.
