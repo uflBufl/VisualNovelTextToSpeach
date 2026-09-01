@@ -42,6 +42,9 @@ measurements and completed-work history in `docs/` and Git, not here.
     checksum-bound write.
   - Keep live replay assertions independent of whether canonical text completion
     or generated playback completion wins a valid scheduling race.
+  - Make macOS shard annotations publish the exact unittest traceback instead of
+    replacing it with buffered application stdout; use that evidence to resolve
+    the remaining tracked sequence rollout failure.
   - Gate: `scripts/run_ci_unittests.py discover -s tests` and
     `scripts/build-windows.ps1` complete as a non-admin user without requiring
     Developer Mode. Retain the ordinary macOS full-suite gate.

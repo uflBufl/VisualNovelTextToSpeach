@@ -42,11 +42,14 @@ class CiUnitTestRunnerTest(unittest.TestCase):
 
     def test_failure_details_keep_both_ends(self):
         value = (
-            "start" + "x" * 6_000 + "\nFAIL: test_windows\n" + "y" * 6_000 + "finish"
+            "FAIL: test_windows\nTraceback\nAssertionError: exact failure\n"
+            + "x" * 12_000
+            + "finish"
         )
         details = workflow_failure_details(value)
 
         self.assertTrue(details.startswith("FAIL: test_windows"))
+        self.assertIn("AssertionError: exact failure", details)
         self.assertTrue(details.endswith("finish"))
         self.assertLessEqual(len(details), 4_000)
 
@@ -60,6 +63,17 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         self.assertEqual(
             workflow_failure_sections(output),
             ("FAIL: test_one\ntrace one", "ERROR: test_two\ntrace two"),
+        )
+
+    def test_failure_section_excludes_buffered_stdout_after_summary(self):
+        divider = "=" * 70
+        output = (
+            f"{divider}\nFAIL: test_one\ntrace one\n{divider}\n"
+            "Ran 1 test\nFAILED\napplication output"
+        )
+
+        self.assertEqual(
+            workflow_failure_sections(output), ("FAIL: test_one\ntrace one",)
         )
 
     def test_exact_inventory_executes_each_named_test_once(self):

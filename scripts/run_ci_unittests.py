@@ -18,12 +18,9 @@ def escape_workflow_command(value):
 
 
 def workflow_failure_details(value):
-    identities = "\n".join(
-        line for line in value.splitlines() if line.startswith(("FAIL: ", "ERROR: "))
-    )
     if len(value) <= 4_000:
         return value
-    prefix = f"{identities[:1_000]}\n" if identities else value[:1_000]
+    prefix = value[:2_500]
     tail_size = 3_950 - len(prefix)
     return prefix + "\n... output truncated ...\n" + value[-tail_size:]
 
@@ -142,14 +139,15 @@ def _run_macos_full_discovery():
             if completed.returncode:
                 print(output, end="")
                 if os.environ.get("GITHUB_ACTIONS"):
-                    details = workflow_failure_details(output) or (
-                        f"macOS unittest shard {name} exited without output."
-                    )
-                    print(
-                        f"::error title=macOS {name} tests failed::"
-                        f"{escape_workflow_command(details)}",
-                        file=sys.stderr,
-                    )
+                    sections = workflow_failure_sections(output)
+                    for details in sections or (
+                        output or f"macOS unittest shard {name} exited without output.",
+                    ):
+                        print(
+                            f"::error title=macOS {name} tests failed::"
+                            f"{escape_workflow_command(workflow_failure_details(details))}",
+                            file=sys.stderr,
+                        )
                 return completed.returncode
     print(f"Ran all {len(test_ids)} exact discovered tests once in 3 shards")
     return 0
