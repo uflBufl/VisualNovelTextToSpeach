@@ -438,7 +438,7 @@ def discover_imports(import_root=None):
                 _validate_import_history(manifest)
                 results.append(directory)
                 seen.add(key)
-        except (AuthoringWorkbenchError, ValueError):
+        except AuthoringWorkbenchError, ValueError:
             continue
     return tuple(results)
 
@@ -463,7 +463,7 @@ def discover_workspaces(workspaces_root=None):
             _load_workspace(directory)
             results.append(directory)
             seen.add(key)
-        except (AuthoringWorkbenchError, ValueError):
+        except AuthoringWorkbenchError, ValueError:
             continue
     return tuple(results)
 

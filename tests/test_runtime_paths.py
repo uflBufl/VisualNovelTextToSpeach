@@ -225,7 +225,7 @@ class RuntimePathsTest(unittest.TestCase):
             bundle_root = Path(temporary_directory).resolve()
             runtime = bundle_root / "speech-runtimes/pocket-tts"
             interpreter = runtime / "bin/python"
-            site = runtime / "lib/python3.11/site-packages"
+            site = runtime / "lib/python3.14/site-packages"
             site.mkdir(parents=True)
             interpreter.parent.mkdir(parents=True)
             interpreter.write_bytes(b"python")

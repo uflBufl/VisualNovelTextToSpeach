@@ -334,7 +334,7 @@ def _backend_runtime_metadata(backend):
                 "capability": list(torch_module.cuda.get_device_capability(index)),
             }
         )
-    except (AttributeError, RuntimeError, TypeError, ValueError):
+    except AttributeError, RuntimeError, TypeError, ValueError:
         accelerator["inspection"] = "unavailable"
     metadata["accelerator"] = accelerator
     return metadata

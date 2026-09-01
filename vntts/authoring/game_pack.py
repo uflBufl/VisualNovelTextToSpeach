@@ -575,7 +575,7 @@ class _PublicationLease:
             with exclusive_advisory_lock(self.guard_path, blocking=True):
                 try:
                     document = json.loads(self.path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
+                except OSError, json.JSONDecodeError:
                     ownership_lost = True
                 else:
                     if document.get("owner") == self.owner:
@@ -1292,7 +1292,7 @@ def _verify_voice_control_provenance(
             )
             try:
                 control_path = Path(control["path"]).expanduser().resolve()
-            except (KeyError, TypeError, OSError):
+            except KeyError, TypeError, OSError:
                 control_path = None
             if (
                 control.get("kind") != "file"

@@ -93,7 +93,7 @@ def match_output_sample_rate(audio_output, audio, source_sample_rate):
     try:
         device = query_devices(kind="output")
         target_sample_rate = int(round(float(device["default_samplerate"])))
-    except (KeyError, TypeError, ValueError, RuntimeError):
+    except KeyError, TypeError, ValueError, RuntimeError:
         return audio, source_sample_rate
     if target_sample_rate <= 0 or target_sample_rate == source_sample_rate:
         return audio, source_sample_rate
@@ -521,7 +521,7 @@ class TTSEngine:
 
         try:
             stored_speakers = get_voices(voice_dir)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             return False
         if speaker not in stored_speakers:
             return False

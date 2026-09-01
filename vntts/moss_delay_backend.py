@@ -166,7 +166,7 @@ class MossTTSDelayVoiceRouterBackend:
         if importlib.util.find_spec("flash_attn") is not None:
             try:
                 major, _minor = self.torch.cuda.get_device_capability()
-            except (AttributeError, RuntimeError, TypeError, ValueError):
+            except AttributeError, RuntimeError, TypeError, ValueError:
                 major = 0
             if major >= 8:
                 return "flash_attention_2"
@@ -231,7 +231,7 @@ class MossTTSDelayVoiceRouterBackend:
                     **options,
                 )
                 decoded = self.processor.decode(outputs)
-        except (TTSConfigurationError, TTSSynthesisError):
+        except TTSConfigurationError, TTSSynthesisError:
             raise
         except Exception as error:
             if request.cancellation_requested() or self.stop_requested.is_set():

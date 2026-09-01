@@ -36,7 +36,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 if command[1:3] == ["python", "install"]:
                     managed_root = Path(command[command.index("--install-dir") + 1])
                     managed_python = (
-                        managed_root / "cpython-3.11-test" / "bin" / "python3.11"
+                        managed_root / "cpython-3.14-test" / "bin" / "python3.14"
                     )
                     managed_python.parent.mkdir(parents=True)
                     managed_python.write_bytes(b"python")
@@ -46,19 +46,19 @@ class ReleaseRuntimeTest(unittest.TestCase):
                     interpreter = runtime / "bin/python"
                     interpreter.parent.mkdir(parents=True)
                     interpreter.write_bytes(b"launcher")
-                    (runtime / "lib/python3.11/site-packages").mkdir(parents=True)
+                    (runtime / "lib/python3.14/site-packages").mkdir(parents=True)
                     return SimpleNamespace(stdout="")
                 if command[1] == "sync" or command[1:3] == ["pip", "install"]:
                     return SimpleNamespace(stdout="")
                 interpreter = Path(command[0])
                 speech_runtimes = interpreter.parents[2]
                 runtime = speech_runtimes / "pocket-tts"
-                site = runtime / "lib/python3.11/site-packages"
+                site = runtime / "lib/python3.14/site-packages"
                 report = {
                     "executable": str(interpreter),
                     "prefix": str(runtime),
                     "base_prefix": str(
-                        speech_runtimes / "_python" / "cpython-3.11-test"
+                        speech_runtimes / "_python" / "cpython-3.14-test"
                     ),
                     "modules": {
                         name: str(site / name / "__init__.py")
@@ -109,15 +109,15 @@ class ReleaseRuntimeTest(unittest.TestCase):
     def test_managed_interpreter_must_be_unique_and_contained(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            interpreter = root / "cpython-3.11-test/bin/python3.11"
+            interpreter = root / "cpython-3.14-test/bin/python3.14"
             interpreter.parent.mkdir(parents=True)
             interpreter.write_bytes(b"python")
-            alias = root / "cpython-3.11-alias/bin/python3.11"
+            alias = root / "cpython-3.14-alias/bin/python3.14"
             alias.parent.mkdir(parents=True)
             symlink_or_skip(alias, interpreter)
 
             self.assertEqual(
-                _find_managed_interpreter(root, "darwin", "3.11"),
+                _find_managed_interpreter(root, "darwin", "3.14"),
                 interpreter.resolve(),
             )
 
@@ -129,7 +129,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             interpreter.parent.mkdir(parents=True)
             interpreter.write_bytes(b"old")
             managed = (
-                root / "speech-runtimes" / "_python" / "cpython" / "bin/python3.11"
+                root / "speech-runtimes" / "_python" / "cpython" / "bin/python3.14"
             )
             managed.parent.mkdir(parents=True)
             managed.write_bytes(b"python")
@@ -143,11 +143,11 @@ class ReleaseRuntimeTest(unittest.TestCase):
     def test_prunes_only_managed_python_development_metadata(self):
         with TemporaryDirectory() as directory:
             managed_root = Path(directory) / "_python"
-            distribution = managed_root / "cpython-3.11-test"
-            interpreter = distribution / "bin/python3.11"
+            distribution = managed_root / "cpython-3.14-test"
+            interpreter = distribution / "bin/python3.14"
             interpreter.parent.mkdir(parents=True)
             interpreter.write_bytes(b"python")
-            standard_library = distribution / "lib/python3.11/os.py"
+            standard_library = distribution / "lib/python3.14/os.py"
             standard_library.parent.mkdir(parents=True)
             standard_library.write_text("runtime", encoding="utf-8")
             for relative in (
@@ -158,7 +158,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 path = distribution / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("development", encoding="utf-8")
-            alias = managed_root / "cpython-3.11-alias"
+            alias = managed_root / "cpython-3.14-alias"
             symlink_or_skip(alias, distribution)
 
             _prune_managed_runtime(managed_root, interpreter)
@@ -174,7 +174,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             managed_root = root / "_python"
-            managed_interpreter = managed_root / "cpython/bin/python3.11"
+            managed_interpreter = managed_root / "cpython/bin/python3.14"
             managed_interpreter.parent.mkdir(parents=True)
             managed_interpreter.write_bytes(b"python")
             managed_interpreter.chmod(0o755)
@@ -195,7 +195,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             entrypoint = runtime / "bin/vntts"
             entrypoint.write_text("script", encoding="utf-8")
             entrypoint.chmod(0o755)
-            executable_data = runtime / "lib/python3.11/example.py"
+            executable_data = runtime / "lib/python3.14/example.py"
             executable_data.parent.mkdir(parents=True)
             executable_data.write_text("data", encoding="utf-8")
             executable_data.chmod(0o755)
@@ -223,7 +223,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
             managed_interpreter = managed_root / "cpython/python.exe"
             managed_interpreter.parent.mkdir(parents=True)
             managed_interpreter.write_bytes(b"python")
-            runtime_library = managed_interpreter.parent / "python311.dll"
+            runtime_library = managed_interpreter.parent / "python314.dll"
             runtime_library.write_bytes(b"library")
             runtime = root / "pocket-tts"
             interpreter = runtime / "Scripts/python.exe"
@@ -246,7 +246,7 @@ class ReleaseRuntimeTest(unittest.TestCase):
     def test_runtime_site_rejects_ambiguous_posix_layout(self):
         with TemporaryDirectory() as directory:
             runtime = Path(directory)
-            for version in ("python3.11", "python3.12"):
+            for version in ("python3.14", "python3.15"):
                 (runtime / "lib" / version / "site-packages").mkdir(parents=True)
 
             with self.assertRaisesRegex(RuntimeError, "Expected one site-packages"):

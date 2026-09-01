@@ -792,7 +792,7 @@ class ChatterboxNanoVoiceRouterBackend:
             return None
         try:
             return loader(cache_path, map_location=self.device)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             return None
 
     def _save_conditionals(self, conditionals, cache_path):
@@ -802,7 +802,7 @@ class ChatterboxNanoVoiceRouterBackend:
         try:
             with atomic_output_path(cache_path) as temporary_path:
                 save(temporary_path)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             return False
         return True
 
@@ -1192,7 +1192,7 @@ class PocketTTSVoiceRouterBackend:
             result = finish(completion)
             render_finished = True
             return result
-        except (TTSConfigurationError, TTSSynthesisError):
+        except TTSConfigurationError, TTSSynthesisError:
             raise
         except Exception as error:
             if cancelled():
@@ -1468,7 +1468,7 @@ class PocketTTSVoiceRouterBackend:
         if cache_path.is_file():
             try:
                 state = self.model.get_state_for_audio_prompt(str(cache_path))
-            except (OSError, RuntimeError, TypeError, ValueError):
+            except OSError, RuntimeError, TypeError, ValueError:
                 state = None
             if state is not None:
                 self.voice_states[voice_key] = state
@@ -1522,7 +1522,7 @@ class PocketTTSVoiceRouterBackend:
         try:
             with atomic_output_path(cache_path) as temporary_path:
                 self.state_exporter(state, temporary_path)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             return False
         return True
 
@@ -1922,7 +1922,7 @@ class MossTTSVoiceRouterBackend:
             if not chunks and completion is SynthesisCompletion.COMPLETE:
                 raise TTSSynthesisError("MOSS-TTS generated no audio")
             return finish(completion)
-        except (TTSConfigurationError, TTSSynthesisError):
+        except TTSConfigurationError, TTSSynthesisError:
             raise
         except Exception as error:
             if cancelled():
@@ -2299,7 +2299,7 @@ class MossTTSVoiceRouterBackend:
             try:
                 codes = self.prompt_code_loader(cache_path)
                 self.array_evaluator(codes)
-            except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+            except OSError, RuntimeError, TypeError, ValueError, KeyError:
                 codes = None
             if codes is not None:
                 self.prompt_audio_codes[voice_key] = codes
@@ -2315,7 +2315,7 @@ class MossTTSVoiceRouterBackend:
         self.prompt_audio_codes[voice_key] = codes
         try:
             self.prompt_code_saver(codes, cache_path)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except OSError, RuntimeError, TypeError, ValueError:
             pass
         return voice_key, codes
 
@@ -2436,7 +2436,7 @@ class MossTTSVoiceRouterBackend:
         if callable(close):
             try:
                 close()
-            except (RuntimeError, ValueError):
+            except RuntimeError, ValueError:
                 pass
 
 
@@ -2457,7 +2457,7 @@ def configure_cpu_synthesis_threads(torch_module, reserved_threads=2):
         return False
     try:
         current = int(get_num_threads())
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     target = max(1, current - max(1, int(reserved_threads)))
     if target >= current:
@@ -2472,7 +2472,7 @@ def get_torch_thread_count(torch_module):
         return None
     try:
         count = int(get_num_threads())
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return count if count > 0 else None
 

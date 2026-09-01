@@ -286,7 +286,7 @@ class SpeechWorkerTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             interpreter = root / "bin/python"
-            runtime_site = root / "lib/python3.11/site-packages"
+            runtime_site = root / "lib/python3.14/site-packages"
             captured = {}
 
             def process_factory(command, **options):
@@ -328,7 +328,7 @@ class SpeechWorkerTest(unittest.TestCase):
             bundle_root = Path(directory).resolve()
             runtime_root = bundle_root / "speech-runtimes/pocket-tts"
             interpreter = runtime_root / "bin/python"
-            runtime_site = runtime_root / "lib/python3.11/site-packages"
+            runtime_site = runtime_root / "lib/python3.14/site-packages"
             captured = {}
 
             def process_factory(command, **options):
@@ -382,7 +382,7 @@ class SpeechWorkerTest(unittest.TestCase):
             bundle_root = Path(directory).resolve()
             runtime_root = bundle_root / "speech-runtimes/pocket-tts"
             interpreter = runtime_root / "bin/python"
-            runtime_site = runtime_root / "lib/python3.11/site-packages"
+            runtime_site = runtime_root / "lib/python3.14/site-packages"
             captured = {}
 
             def process_factory(command, **options):
@@ -520,7 +520,7 @@ class SpeechWorkerTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             interpreter = root / "bin/python"
-            runtime_site = root / "lib/python3.11/site-packages"
+            runtime_site = root / "lib/python3.14/site-packages"
             process = FakeProcess(None)
 
             with (

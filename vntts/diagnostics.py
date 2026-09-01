@@ -52,14 +52,14 @@ def macos_permission_warnings(
             from Quartz import CGPreflightScreenCaptureAccess
 
             screen_capture_trusted = CGPreflightScreenCaptureAccess
-        except (ImportError, AttributeError):
+        except ImportError, AttributeError:
             screen_capture_trusted = None
     if accessibility_trusted is None:
         try:
             from ApplicationServices import AXIsProcessTrusted
 
             accessibility_trusted = AXIsProcessTrusted
-        except (ImportError, AttributeError):
+        except ImportError, AttributeError:
             accessibility_trusted = None
 
     warnings = []

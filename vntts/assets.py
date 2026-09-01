@@ -441,5 +441,5 @@ def load_coqui_model_asset(model_name):
 def read_json(path, default):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return default

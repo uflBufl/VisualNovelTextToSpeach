@@ -76,14 +76,14 @@ def get_macos_permission_status(
             from Quartz import CGPreflightScreenCaptureAccess
 
             screen_capture_probe = CGPreflightScreenCaptureAccess
-        except (AttributeError, ImportError):
+        except AttributeError, ImportError:
             screen_capture_probe = None
     if accessibility_probe is None:
         try:
             from ApplicationServices import AXIsProcessTrusted
 
             accessibility_probe = AXIsProcessTrusted
-        except (AttributeError, ImportError):
+        except AttributeError, ImportError:
             accessibility_probe = None
     return {
         "screen_capture": (

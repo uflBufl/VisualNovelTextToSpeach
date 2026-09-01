@@ -33,7 +33,7 @@ def install_moss_quantized_codec_compat(
         return False
     try:
         upstream_source = inspect.getsource(tokenizer_class.from_pretrained)
-    except (OSError, TypeError):
+    except OSError, TypeError:
         upstream_source = ""
     if "apply_quantization" in upstream_source:
         return False

@@ -41,7 +41,7 @@ class PersistentAudioCache:
                 return None
             path.touch()
             return audio
-        except (OSError, ValueError, TypeError):
+        except OSError, ValueError, TypeError:
             return None
 
     def put(self, key, audio):

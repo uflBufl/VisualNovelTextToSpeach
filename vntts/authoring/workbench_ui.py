@@ -242,7 +242,7 @@ class VoiceReferenceController:
         duration = None
         try:
             duration = probe_pcm16_mono_wav(path).duration_seconds
-        except (OSError, Pcm16MonoWavError):
+        except OSError, Pcm16MonoWavError:
             pass
         return VoiceReference(character, index, len(references), path, duration)
 
@@ -1512,7 +1512,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 for encoded in stored:
                     try:
                         value = json.loads(str(encoded))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         continue
                     if not isinstance(value, dict) or set(value) != {
                         "character",

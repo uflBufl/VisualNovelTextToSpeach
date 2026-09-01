@@ -67,7 +67,7 @@ class Reverse1999GameImporter:
             module_available = (
                 importlib.util.find_spec("r1999extractor.bootstrap") is not None
             )
-        except (ImportError, ModuleNotFoundError, ValueError):
+        except ImportError, ModuleNotFoundError, ValueError:
             module_available = False
         if getattr(sys, "frozen", False):
             if not module_available:

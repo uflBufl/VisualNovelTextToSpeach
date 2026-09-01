@@ -31,7 +31,7 @@ def inspect_process_status(pid):
     """Return ``live``, ``dead`` or ``unknown`` without changing the process."""
     try:
         pid = int(pid)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return "unknown"
     if pid <= 0:
         return "unknown"
@@ -41,7 +41,7 @@ def inspect_process_status(pid):
         os.kill(pid, 0)
     except ProcessLookupError:
         return "dead"
-    except (PermissionError, OSError):
+    except PermissionError, OSError:
         return "unknown"
     return "live"
 
@@ -99,7 +99,7 @@ def process_started_at(pid):
             capture_output=True,
             text=True,
         )
-    except (TypeError, ValueError, OSError, subprocess.CalledProcessError):
+    except TypeError, ValueError, OSError, subprocess.CalledProcessError:
         return None
     return completed.stdout.strip() or None
 

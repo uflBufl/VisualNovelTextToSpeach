@@ -513,7 +513,7 @@ def collect_ocr_metrics(directory):
                 attempts.append(int(payload.get("attempts", 0)))
                 profiles[str(payload.get("preprocessing_profile") or "unknown")] += 1
                 resolved += payload.get("resolved") is True
-            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            except OSError, TypeError, ValueError, json.JSONDecodeError:
                 invalid += 1
     return {
         "sample_count": len(confidences),

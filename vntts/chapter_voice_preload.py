@@ -90,7 +90,7 @@ class ChapterVoicePreloader:
                 continue
             try:
                 sequence = int(entry.get("sequence", 0))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 sequence = 0
             line_id = str(entry.get("line_id") or "").strip() or None
             text_hash = str(entry.get("text_sha256") or "").strip() or None
@@ -742,6 +742,6 @@ def _load_source_audio_extensions(path, *, completion_contract=None):
                         duration_seconds=duration_seconds,
                     ),
                 )
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    except OSError, TypeError, ValueError, json.JSONDecodeError:
         return {}
     return result

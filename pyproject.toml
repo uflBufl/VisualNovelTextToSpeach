@@ -7,7 +7,7 @@ name = "visual-novel-text-to-speech"
 version = "0.1.0"
 description = "Desktop app for converting visual novel text to speech"
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.14"
 license = { text = "MIT" }
 
 authors = [
@@ -23,8 +23,8 @@ dependencies = [
     "pyobjc-framework-quartz>=10.3 ; sys_platform == 'darwin'",
     "python-xlib>=0.33 ; sys_platform == 'linux'",
     "pynput>=1.8.1",
-    "torch<2.9",
-    "torchaudio<2.9",
+    "torch>=2.11,<2.12",
+    "torchaudio>=2.11,<2.12",
     "transformers==4.57.3",
     "pytesseract>=0.3.13",
     "numpy>=1.24",
@@ -113,7 +113,7 @@ explicit = true
 include = ["vntts*"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 line-length = 88
 extend-exclude = ["exps", "README.md"]
 
@@ -121,7 +121,7 @@ extend-exclude = ["exps", "README.md"]
 select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 files = [
     "vntts/authoring/cli_dispatch.py",
     "vntts/controller_components.py",

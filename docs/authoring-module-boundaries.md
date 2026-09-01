@@ -358,8 +358,8 @@ order and the normalized parser schema: every option, positional, type, required
 flag, choice, default and help text. The checked-in v1 contract prevents
 extraction work from silently changing the public CLI. Its gate also requires
 the parser inventory to equal the union of family inventories with exactly one
-owner per command. The contract runs on every supported Python minor (3.11,
-3.12 and 3.13), guarding the compatibility shim that preserves historical
+owner per command. The contract runs on the supported Python runtime, guarding
+the compatibility shim that preserves historical
 argparse help order. Family modules depend only on workflow leaves and never on
 `cli.py` or sibling command families. Focused tests bind their parser defaults,
 ordering, single-owner dispatch and existing JSON behavior; the complete suite

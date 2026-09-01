@@ -9,30 +9,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  authoring-cli-compatibility:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v9.0.0
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install locked dependencies
-        run: uv sync --group dev --frozen --python ${{ matrix.python-version }}
-
-      - name: Check authoring parser and dispatch contract
-        run: >-
-          uv run --frozen --python ${{ matrix.python-version }} python -m unittest
-          tests.test_authoring_cli_dispatch
-
   quality:
     runs-on: macos-15
     timeout-minutes: 60
@@ -45,7 +21,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Install native dependencies
         run: brew install tesseract espeak-ng
@@ -82,7 +58,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Install locked dependencies
         run: uv sync --group dev --frozen
@@ -102,7 +78,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.14"
 
       - name: Install native dependencies
         run: |

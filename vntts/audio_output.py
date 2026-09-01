@@ -22,7 +22,7 @@ def playback_underflowed(audio_output, playback_status=None):
         return False
     try:
         value = get_stream().status.output_underflow
-    except (AttributeError, RuntimeError):
+    except AttributeError, RuntimeError:
         return False
     return bool(value) if isinstance(value, (bool, np.bool_)) else False
 

@@ -477,7 +477,7 @@ def calculate_ocr_confidence(data):
             continue
         try:
             confidence = float(confidences[position])
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if confidence < 0:
             continue
@@ -597,7 +597,7 @@ def clean_dialog_lines_from_data(data, fallback_lines):
             continue
         try:
             confidence = float(confidences[position])
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if confidence < 0:
             continue

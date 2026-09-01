@@ -16,7 +16,7 @@ def load_evidence(directory):
     for path in sorted(Path(directory).rglob("*.json")):
         try:
             report = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             continue
         if isinstance(report, dict) and "profile" in report:
             reports.append((path, report))
@@ -50,7 +50,7 @@ def validate_release_evidence(profiles, reports, *, allow_unsigned=False):
             errors.append(f"{prefix} test did not run on Windows 11")
         try:
             build_number = int(report.get("build_number", 0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             build_number = 0
         if build_number < 22000:
             errors.append(f"{prefix} Windows build is older than 22000")
@@ -69,7 +69,7 @@ def validate_release_evidence(profiles, reports, *, allow_unsigned=False):
                 )
         try:
             display_count = int(report.get("display_count", 0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             display_count = 0
         if display_count < int(profile["minimum_displays"]):
             errors.append(

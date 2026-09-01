@@ -2,7 +2,7 @@
 
 PyInstaller one-folder mode is used because the application includes large
 Torch and Coqui libraries plus external OCR and phonemizer processes. Build it
-on 64-bit Windows with Python 3.11, uv, Tesseract 5 with English language data,
+on 64-bit Windows with Python 3.14, uv, Tesseract 5 with English language data,
 and eSpeak-NG:
 
 ```powershell

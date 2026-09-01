@@ -426,7 +426,7 @@ def _has_local_reference(entry, manifest_directory):
     try:
         for candidate in candidates:
             probe_pcm16_mono_wav(candidate)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False
     return True
 

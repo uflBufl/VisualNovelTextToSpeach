@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 BACKEND = "pocket-tts"
-PYTHON_VERSION = "3.11"
+PYTHON_VERSION = "3.14"
 PROBE_MODULES = (
     "durable_file",
     "numpy",
