@@ -62,22 +62,24 @@ class Reverse1999GameImporter:
     def command(self):
         if self._configured_command:
             return self._configured_command
-        executable = shutil.which("r1999-bootstrap")
-        if executable:
-            return (executable,)
         try:
             module_available = (
                 importlib.util.find_spec("r1999extractor.bootstrap") is not None
             )
         except (ImportError, ModuleNotFoundError, ValueError):
             module_available = False
+        if getattr(sys, "frozen", False):
+            if not module_available:
+                return None
+            return (
+                sys.executable,
+                "--game-content-import-worker",
+                self.provider_id,
+            )
+        executable = shutil.which("r1999-bootstrap")
+        if executable:
+            return (executable,)
         if module_available:
-            if getattr(sys, "frozen", False):
-                return (
-                    sys.executable,
-                    "--game-content-import-worker",
-                    self.provider_id,
-                )
             return (sys.executable, "-m", "r1999extractor.bootstrap")
         return None
 
