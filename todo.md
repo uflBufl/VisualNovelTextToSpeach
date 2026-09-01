@@ -36,20 +36,13 @@ intentional omission as distinct terminal authorities.
       same-speaker, different-speaker and same-character/different-age pairs from
       installed references. Publish a threshold only if it preserves every known
       age/identity boundary; until then keep the current evidence variants apart.
-- [ ] Run a small blind Rhiannon comparison between the stable generation
-      profile, the current reference-codec roundtrip and an original extracted
-      line. Include the exact expressive-profile recovery for the no-audio short
-      hesitation against the ordinary Pocket fallback; stable seeds 0-2 and
-      natural seed 0 all miss EOS for that line. Judge speaker similarity,
-      pronunciation, prosody, artifacts, repetition and trailing silence before
-      changing sampling controls or automatically escalating the MOSS profile.
-  - [ ] Complete the prepared one-trial session at
-        `authoring/listening-sessions/rhiannon-short-profile-vs-pocket-20260901`;
-        choose only by the short hesitation's voice match, prosody and artifacts.
-        Do not reveal A/B identity before the decision is committed.
-  - [ ] After that decision, add only one representative full-line trial for the
-        stable/reference-codec/original question. Do not ask the player to review
-        a broad Rhiannon cohort.
+- [ ] Complete the prepared three-trial blind Rhiannon comparison for exact
+      voiced line `reverse1999:101341:42`. Compare only anonymous A/B playback
+      and choose A, B, both acceptable/no preference, or neither; do not add a
+      broad cohort.
+  - [ ] Use the final report only to locate degradation between original source,
+        the current MOSS reference-codec roundtrip and stable-profile synthesis.
+        Do not change MOSS sampling/profile controls from this single line.
 
 ## P1 - Resolve project-wide code-review findings
 

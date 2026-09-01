@@ -237,6 +237,34 @@ be regenerated.
 
 ### Rhiannon MOSS 4B timing checkpoint, 2026-09-01
 
+The first proposed source/codec/synthesis representative,
+`reverse1999:101341:41`, was rejected by its objective gate before listening:
+the stable-profile seed-0 MOSS render completed as `limited`, so no truncated
+WAV was published as a candidate. A shorter two-sentence replacement,
+`reverse1999:101341:37`, also completed as `limited`. The bounded comparison
+therefore uses the exact voiced line `reverse1999:101341:42`, `Aha! There it
+is.`; the two failed renders remain technical outcomes rather than listening
+candidates.
+
+The prepared comparison artifacts live under application data at
+`benchmarks/tts/rhiannon-original-codec-stable-seed0-20260901`. The exact game
+media `124526164` is PCM16 mono 24 kHz, 1.30 seconds, SHA-256
+`d437fe6f0b3ff32ac660ba4adedc66e30f0e1bafac2fdceaef5637ef94af50da`.
+The current int8 MOSS codec roundtrip is PCM16 stereo 48 kHz, 1.28 seconds,
+SHA-256
+`d01b3020dbf7dea0b1753250f71058426e660202b9ed42a31d42df05f7975ae8`.
+Stable-profile seed-0 synthesis completed at 2.48 seconds with SHA-256
+`1550555a7377f9eb53d2c13f126d93380c6321d1fb10adc94b1e0e22c922b2ec`;
+first PCM was 1310 ms and fresh RTF was 1.44. All three strict reports share the
+exact source text hash and pass the listening loader's checksum/WAV validation.
+The blind session is
+`authoring/listening-sessions/rhiannon-original-codec-stable-20260901`; its
+public session SHA-256 is
+`64cfee5b08ca7521e2a279d369ba38f7da0d3fa62284b429663e2fa19d977972`
+and its mode-0600 blind-key SHA-256 is
+`b1574d4ea4795490684a7060857c1dcd43a7488c6636addd91771c8611bb569e`.
+It contains exactly three anonymous pairwise trials and starts at `0/3`.
+
 The checked-in three-line Rhiannon replay corpus uses the strict benchmark
 schema; its SHA-256 is
 `a5ae711d69e1497cb4e2890921b676c3c2d8dd00e08936e32d80e765533ab095`.
@@ -297,11 +325,16 @@ the unseeded 1.52-second WAV SHA-256 is
 The one-trial blind session is retained under
 `authoring/listening-sessions/rhiannon-short-profile-vs-pocket-20260901`.
 Its public session SHA-256 is
-`2f0d2beea87dec2d33acd902d2450dc6afce6a56c09d2eb750e4e4a6e760af71`;
+`f742ff761e91140f23d9caa341e6daaf66f4600c213f4be34548498c1bc7f4be`;
 the mode-0600 blind-key SHA-256 is
 `63ddb22d43c0c5cd89886f3c303828e529a631b07bf4ca8b95f434f263c9a743`.
-The verified state is `0/1` pending, and neither public trial metadata nor the UI
-reveals the expressive-MOSS/Pocket orientation before scoring.
+The final report SHA-256 is
+`7c5de2ec766e6662cb686d677b9985ba8eeea27dfb4d5d051d7ac5092905a7eb`.
+The session completed `1/1`; the blind decision preferred expressive MOSS over
+the ordinary Pocket fallback. This authorizes expressive recovery for the exact
+short hesitation, not automatic expressive-profile escalation for other lines.
+Neither public trial metadata nor the UI revealed the expressive-MOSS/Pocket
+orientation before scoring.
 
 The engine NFKC-normalizes text, normalizes the Unicode ellipsis to three ASCII
 dots and collapses whitespace before matching the same stable sample across
@@ -359,6 +392,9 @@ zero without replacing its asynchronous media source. Playback callbacks carry
 their source side, so a late state change from the previous candidate cannot
 start, finish or move the controls for the newly selected candidate. This also
 keeps rapid switching stable when the two WAVs use different sample rates.
+The workbench plays the verified candidate waveform without adding a synthetic
+preroll: an abnormal or clipped onset is candidate-quality evidence and must not
+be hidden by presentation timing.
 
 Preference and derived-report publication run outside the Qt thread. While the
 exact trial snapshot is being committed, decision buttons are disabled with a
