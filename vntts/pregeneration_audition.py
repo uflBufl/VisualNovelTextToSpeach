@@ -361,7 +361,9 @@ def _preflight_candidate_references(registry, candidate):
                 f"Voice reference {index + 1} failed objective preflight: {error}"
             ) from error
         if report["sha256"] != candidate.reference_sha256s[index]:
-            raise VoiceAuditionError("Voice reference changed during objective preflight")
+            raise VoiceAuditionError(
+                "Voice reference changed during objective preflight"
+            )
         if report["objective_preflight"] != "pass":
             reasons = ", ".join(report["rejection_reasons"])
             raise VoiceAuditionError(

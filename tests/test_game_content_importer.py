@@ -176,7 +176,9 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 ("story",),
             )
             output = root / "imports"
-            manifest = output / "reverse1999" / "voice-candidates" / "id" / "manifest.json"
+            manifest = (
+                output / "reverse1999" / "voice-candidates" / "id" / "manifest.json"
+            )
             manifest.parent.mkdir(parents=True)
             manifest.write_text("{}", encoding="utf-8")
             process = FinishedProcess(

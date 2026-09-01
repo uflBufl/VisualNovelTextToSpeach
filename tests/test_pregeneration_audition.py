@@ -291,9 +291,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, group, _manifest = ambiguous_fixture(root)
-            backend = FakeBackend(
-                "moss-tts", pcm=np.zeros(1_600, dtype=np.float32)
-            )
+            backend = FakeBackend("moss-tts", pcm=np.zeros(1_600, dtype=np.float32))
             service = VoiceAuditionPreviewService(
                 root / "auditions",
                 backend_factory=lambda *_args, **_kwargs: backend,

@@ -90,9 +90,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.generator = generator or OfflineGenerationWorker()
         self.recovery = recovery or OfflineRecoveryWorker(self.generator)
         self.acceptance = acceptance or OfflineAcceptanceWorker(self.generator)
-        self.publisher = publisher or OfflinePackPublisher(
-            base_pack=settings.game_pack
-        )
+        self.publisher = publisher or OfflinePackPublisher(base_pack=settings.game_pack)
         self.importer = importer or Reverse1999GameImporter()
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.import_runner.finished.connect(self._import_finished)
@@ -451,9 +449,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.selection_panel.setVisible(False)
         self.cancel_button.setText("Cancel voice matching")
         self.cancel_button.setEnabled(True)
-        self.resume_status.setText(
-            "Preparing and matching character voices..."
-        )
+        self.resume_status.setText("Preparing and matching character voices...")
         self.voice_runner.start(
             self._create_voice_plan,
             self._job,
