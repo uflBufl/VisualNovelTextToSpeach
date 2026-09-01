@@ -15,7 +15,8 @@ measurements and completed-work history in `docs/` and Git, not here.
     does not emit loader failures during clean CLI help smoke tests.
   - Preserve failing macOS shard output as a GitHub annotation so CI identifies
     the exact test instead of reporting only the shard exit code, including
-    both ends when a large assertion would otherwise hide the test name.
+    both ends within GitHub's 4,096-character annotation limit when a large
+    assertion would otherwise hide the test name.
   - Keep crash-prone Qt modules in exact once-only macOS shards and prevent UI
     unit tests from starting a real FFmpeg/CoreAudio player on headless runners;
     the runner otherwise exits with signal 11 instead of a Python traceback.

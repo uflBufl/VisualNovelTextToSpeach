@@ -45,7 +45,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
 
         self.assertTrue(details.startswith("start"))
         self.assertTrue(details.endswith("finish"))
-        self.assertLessEqual(len(details), 12_000)
+        self.assertLessEqual(len(details), 4_000)
 
     def test_exact_inventory_executes_each_named_test_once(self):
         with TemporaryDirectory() as directory:

@@ -17,9 +17,9 @@ def escape_workflow_command(value):
 
 
 def workflow_failure_details(value):
-    if len(value) <= 12_000:
+    if len(value) <= 4_000:
         return value
-    return value[:4_000] + "\n... output truncated ...\n" + value[-7_950:]
+    return value[:1_000] + "\n... output truncated ...\n" + value[-2_950:]
 
 
 def _flatten_suite(suite):
