@@ -200,6 +200,11 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
         atomic_write_json(state_path, state, sort_keys=True)
         return queue_id
 
+    def mark_selected_review_heard(self, dialog):
+        selected = dialog._selected_review_item()
+        dialog._review_evidence.heard.add(dialog._review_evidence.identity(selected))
+        dialog._update_review_actions(preserve_queue_id=True)
+
     def test_voice_reference_search_navigation_and_duration(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -930,6 +935,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 settings=self.settings(root),
                 reviewer=reviewer,
             )
+            self.mark_selected_review_heard(dialog)
             heartbeat = []
             QTimer.singleShot(0, lambda: heartbeat.append("painted"))
             started = time.monotonic()
@@ -1022,6 +1028,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                     for index in range(592)
                 )
                 dialog._apply_review_filters()
+                self.mark_selected_review_heard(dialog)
                 heartbeat = []
                 timer = QTimer()
                 timer.setInterval(5)
@@ -1080,6 +1087,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog._apply_review_filters()
             projection = Mock(side_effect=AssertionError("unexpected full projection"))
             dialog._projection_loader = projection
+            self.mark_selected_review_heard(dialog)
 
             dialog.approve.click()
             self.wait_for(lambda: not dialog._review_save_active)
@@ -1089,7 +1097,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             selected = dialog._selected_review_item()
             self.assertEqual(selected.queue_id, second.queue_id)
             self.assertEqual(selected.authority.state_sha256, "a" * 64)
-            self.assertTrue(dialog.approve.isEnabled())
+            self.assertFalse(dialog.approve.isEnabled())
             self.assertFalse(dialog._projection_active)
 
     def test_large_authority_projection_keeps_qt_heartbeat_responsive(self):
@@ -1153,6 +1161,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 settings=self.settings(root),
                 reviewer=flaky_reviewer,
             )
+            self.mark_selected_review_heard(dialog)
             dialog.approve.click()
             self.wait_for(lambda: not dialog._review_save_active)
 
@@ -1192,6 +1201,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 synchronous_projection=False,
             )
             self.wait_for(lambda: not dialog._projection_active)
+            self.mark_selected_review_heard(dialog)
             heartbeat = []
             timer = QTimer()
             timer.setInterval(5)
@@ -1255,11 +1265,13 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
             dialog.review_status.setCurrentText("All statuses")
             dialog.review_table.setCurrentCell(0, 0)
+            self.mark_selected_review_heard(dialog)
 
             dialog.approve.click()
             self.wait_for(lambda: not dialog._review_save_active)
             self.application.processEvents()
             self.assertEqual(dialog._selected_review_item().review_status, "approved")
+            self.mark_selected_review_heard(dialog)
             dialog.reject.click()
             self.wait_for(lambda: not dialog._review_save_active)
             self.application.processEvents()
@@ -1285,6 +1297,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             queue_id = self.mark_fixture_pending_review(workspace)
             dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
             displayed_authority = dialog._selected_review_item().authority
+            self.mark_selected_review_heard(dialog)
             review_workspace_item(workspace, queue_id, "approved")
 
             dialog.reject.click()
@@ -1307,6 +1320,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.mark_fixture_pending_review(workspace)
             dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
             selected = dialog._selected_review_item()
+            self.mark_selected_review_heard(dialog)
             selected.audio.write_bytes(selected.audio.read_bytes() + b"tampered")
 
             dialog.approve.click()
@@ -1330,6 +1344,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.review_table.setCurrentCell(0, 0)
             self.application.processEvents()
 
+            self.assertFalse(dialog.approve.isEnabled())
+            self.assertFalse(dialog.reject.isEnabled())
+            self.mark_selected_review_heard(dialog)
             self.assertTrue(dialog.approve.isEnabled())
             self.assertTrue(dialog.reject.isEnabled())
 
@@ -1559,8 +1576,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.wait_for(lambda: not dialog._playback_prepare_active)
             self.application.processEvents()
 
-            self.assertTrue(dialog.approve.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertFalse(dialog.approve.isEnabled())
+            self.assertFalse(dialog.reject.isEnabled())
             self.assertTrue(dialog.review_stop.isEnabled())
             self.assertEqual(
                 tuple(control.geometry().x() for control in controls), initial_positions
@@ -1595,8 +1612,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(
                 dialog._selected_review_item().queue_id, "second-pending-review"
             )
-            self.assertTrue(dialog.approve.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertFalse(dialog.approve.isEnabled())
+            self.assertFalse(dialog.reject.isEnabled())
             self.assertIsNone(dialog._review_playback_buffer)
             self.assertEqual(
                 tuple(control.geometry().x() for control in controls), initial_positions

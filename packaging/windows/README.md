@@ -30,11 +30,12 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows-installer.ps1
 The installer adds a Start Menu shortcut, offers an optional startup shortcut,
 upgrades the stable application ID in place, and preserves settings, downloaded
 models, and imported voices in the application-data directories. Verify an
-install, in-place upgrade, and uninstall with:
+install, real in-place upgrade, and uninstall with:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\verify-windows-installer.ps1 `
   -InstallerPath .\dist\VisualNovelTextToSpeech-0.1.0-windows-x64-setup.exe `
+  -PreviousInstallerPath C:\path\to\VisualNovelTextToSpeech-previous-windows-x64-setup.exe `
   -AllowUnsigned
 ```
 
@@ -54,6 +55,7 @@ evidence report:
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run-windows-release-test.ps1 `
   -InstallerPath .\dist\VisualNovelTextToSpeech-0.1.0-windows-x64-setup.exe `
+  -PreviousInstallerPath C:\path\to\VisualNovelTextToSpeech-previous-windows-x64-setup.exe `
   -ProfileName nvidia-borderless-normal-125-multidisplay `
   -ExpectedGpuVendor NVIDIA `
   -CaptureMode borderless `

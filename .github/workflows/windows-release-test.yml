@@ -7,6 +7,10 @@ on:
         description: Run ID containing the Windows installer artifact
         required: true
         type: string
+      previous_installer_run_id:
+        description: Run ID containing the previous released installer
+        required: true
+        type: string
       profile:
         description: Required release-matrix profile
         required: true
@@ -48,11 +52,21 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.installer_run_id }}
 
+      - name: Download previous installer
+        uses: actions/download-artifact@v4
+        with:
+          name: VisualNovelTextToSpeech-windows-x64-installer
+          path: dist/previous
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.previous_installer_run_id }}
+
       - name: Run installed OCR-to-speech compatibility test
         shell: powershell
         run: |
           $Installer = Get-Item `
               "dist\release\VisualNovelTextToSpeech-*-windows-x64-setup.exe"
+          $PreviousInstaller = Get-Item `
+              "dist\previous\VisualNovelTextToSpeech-*-windows-x64-setup.exe"
           $Matrix = Get-Content `
               "packaging\windows\release-matrix.json" | ConvertFrom-Json
           $Profile = $Matrix.required_profiles | Where-Object {
@@ -63,6 +77,7 @@ jobs:
           }
           $Arguments = @{
               InstallerPath = $Installer.FullName
+              PreviousInstallerPath = $PreviousInstaller.FullName
               ProfileName = $Profile.name
               ExpectedGpuVendor = $Profile.gpu_vendor
               CaptureMode = $Profile.capture_mode

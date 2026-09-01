@@ -1211,6 +1211,31 @@ class MainTest(unittest.TestCase):
         self.assertFalse(received["allow_gated_model_access"])
         controller.shutdown()
 
+    def test_requested_shutdown_prevents_backend_startup(self):
+        backend_factory = Mock()
+        controller = AppController(
+            AppSettings(speech_backend="pocket-tts"),
+            pocket_backend_factory=backend_factory,
+            model_asset_manager_factory=Mock(),
+        )
+        controller.request_shutdown()
+
+        self.assertFalse(controller.start())
+
+        backend_factory.assert_not_called()
+
+    def test_shutdown_uses_terminal_live_reader_guard(self):
+        controller = AppController(AppSettings())
+        reader = Mock()
+        controller.live_reader = reader
+
+        controller.shutdown()
+
+        reader.emergency_stop.assert_called_once_with()
+        reader.wait.assert_called_once_with()
+        reader.stop.assert_not_called()
+        reader.clear_queue.assert_not_called()
+
     def test_controller_explicitly_allows_pocket_gated_model_access(self):
         backend = Mock()
         backend.registry = Mock()
@@ -2062,6 +2087,8 @@ class MainTest(unittest.TestCase):
         generated_backend.has_generated_line = Mock(return_value=True)
         controller.speech_backend = generated_backend
         controller.live_reader = Mock(active_generation=7)
+        controller.capture_target = Mock()
+        controller.capture_target.is_focused.return_value = True
         controller._offer_unknown_speaker_mapping = Mock(return_value=False)
         controller._auto_advance_dialog = Mock(return_value=True)
         controller.story_cursor.anchor_event("event-1")
@@ -2386,6 +2413,8 @@ class MainTest(unittest.TestCase):
             live_sequence_plan_factory=Mock(return_value=plan),
         )
         controller.live_reader = Mock(active_generation=7)
+        controller.capture_target = Mock()
+        controller.capture_target.is_focused.return_value = True
         controller._offer_unknown_speaker_mapping = Mock(return_value=False)
         controller._auto_advance_dialog = Mock(return_value=True)
         controller.story_cursor.anchor_event("event-1")
@@ -4790,7 +4819,14 @@ class MainTest(unittest.TestCase):
     def test_auto_advance_status_distinguishes_dispatch_failure_and_confirmation(self):
         statuses = []
         controller = AppController(
-            AppSettings(auto_advance_enabled=True),
+            AppSettings(
+                capture_mode="window",
+                game_window_title="Reverse: 1999",
+                auto_advance_enabled=True,
+            ),
+            capture_target_factory=Mock(
+                return_value=Mock(is_focused=Mock(return_value=True))
+            ),
             status_handler=statuses.append,
         )
 
@@ -4809,6 +4845,14 @@ class MainTest(unittest.TestCase):
         self.assertIn("continuing to wait", statuses[1])
         self.assertIn("no second key was sent", statuses[2])
         self.assertEqual(statuses[3], "Auto advance confirmed by new dialogue")
+
+    def test_screen_capture_never_authorizes_auto_advance(self):
+        controller = AppController(AppSettings(auto_advance_enabled=True))
+
+        with patch("vntts.controller.DialogueAdvancer") as advancer:
+            self.assertFalse(controller._auto_advance_dialog())
+
+        advancer.assert_not_called()
 
     def test_auto_advance_reports_that_it_is_waiting_for_game_focus(self):
         statuses = []

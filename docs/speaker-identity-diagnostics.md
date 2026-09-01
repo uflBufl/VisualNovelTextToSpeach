@@ -75,9 +75,10 @@ Create a draft JSON list or an object containing `pairs`. Each pair contains
 
 Allowed relationships are `same-speaker`, `different-speaker` and
 `same-character/different-age`. The last two are hard negative boundaries. An
-unordered reference pair may occur only once, and a reference may belong to only
-one partition, so neither a pair nor an audio recording can leak from fit into
-held-out evidence.
+unordered reference pair may occur only once, duplicate reference identities are
+rejected, and an audio SHA-256 may belong to only one partition. Two manifest
+entries containing identical bytes therefore cannot leak the recording from fit
+into held-out evidence or be labelled as a comparison with itself.
 
 Publish the labels and run the diagnostic:
 

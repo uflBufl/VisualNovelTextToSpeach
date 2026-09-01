@@ -154,5 +154,11 @@ auto-advance evidence.
 Every Windows matrix report must now record matching smoke/game process levels,
 `auto_advance_dispatched=true`, `auto_advance_acknowledged=true` and the exact
 production controller name. The matrix validator rejects absent, legacy or
-unacknowledged evidence. This implements the gate; real signed reports for every
-GPU/display/DPI profile are still required before release qualification closes.
+unacknowledged evidence. It also requires one identical candidate installer
+SHA-256, product version and signer identity across every profile. Qualification
+installs a separately hashed, declared previous-release installer first, upgrades
+it with the candidate, and rejects a same-artifact reinstall as upgrade evidence.
+macOS packaging accepts only the build host's native architecture until every
+native dependency is staged independently. These checks implement the gate;
+real signed reports for every GPU/display/DPI profile are still required before
+release qualification closes.

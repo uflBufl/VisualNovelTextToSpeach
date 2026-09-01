@@ -34,6 +34,13 @@ class ReleaseMatrixTest(unittest.TestCase):
             "capture_mode": profile["capture_mode"],
             "game_process_level": profile["game_process_level"],
             "installer_signature": "Valid",
+            "installer_sha256": "a" * 64,
+            "installer_product_version": "0.2.0",
+            "installer_signer_subject": "CN=VNTTS Release",
+            "installer_signer_thumbprint": "c" * 40,
+            "previous_installer_sha256": "b" * 64,
+            "previous_installer_product_version": "0.1.0",
+            "upgrade_verified": True,
             "smoke_test_model": "tts_models/en/vctk/vits",
             "smoke_test_process_level": profile["game_process_level"],
             "auto_advance_dispatched": True,
@@ -91,6 +98,8 @@ class ReleaseMatrixTest(unittest.TestCase):
         for profile in self.profiles:
             report = self.evidence_for(profile)
             report["installer_signature"] = "NotSigned"
+            report["installer_signer_subject"] = None
+            report["installer_signer_thumbprint"] = None
             reports.append((Path(f"{profile['name']}.json"), report))
 
         self.assertEqual(
@@ -100,6 +109,20 @@ class ReleaseMatrixTest(unittest.TestCase):
                 allow_unsigned=True,
             ),
             [],
+        )
+
+    def test_rejects_evidence_from_different_candidate_installers(self):
+        reports = []
+        for index, profile in enumerate(self.profiles):
+            report = self.evidence_for(profile)
+            if index == 1:
+                report["installer_sha256"] = "d" * 64
+            reports.append((Path(f"{profile['name']}.json"), report))
+
+        errors = validate_release_evidence(self.profiles, reports)
+
+        self.assertTrue(
+            any("identical installer artifact" in error for error in errors)
         )
 
 

@@ -1135,6 +1135,8 @@ class TrayApplicationTest(unittest.TestCase):
     def test_settings_expose_guarded_auto_advance_controls(self):
         dialog = SettingsDialog(
             AppSettings(
+                capture_mode="window",
+                game_window_title="Reverse: 1999",
                 auto_advance_enabled=True,
                 auto_advance_key="enter",
                 auto_advance_delay_ms=600,
@@ -1255,6 +1257,8 @@ class TrayApplicationTest(unittest.TestCase):
     def test_sequence_audio_manual_disables_auto_advance_controls(self):
         dialog = SettingsDialog(
             AppSettings(
+                capture_mode="window",
+                game_window_title="Reverse: 1999",
                 live_sequence_mode="audio-manual",
                 auto_advance_enabled=True,
             )
@@ -1270,6 +1274,8 @@ class TrayApplicationTest(unittest.TestCase):
     def test_sequence_audio_auto_keeps_guarded_auto_advance_opt_in(self):
         dialog = SettingsDialog(
             AppSettings(
+                capture_mode="window",
+                game_window_title="Reverse: 1999",
                 live_sequence_mode="audio-auto",
                 auto_advance_enabled=False,
             )
@@ -1286,12 +1292,28 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.deleteLater()
 
     def test_new_install_settings_recommend_guarded_sequence_auto(self):
-        dialog = SettingsDialog(AppSettings())
+        dialog = SettingsDialog(
+            AppSettings(
+                capture_mode="window",
+                game_window_title="Reverse: 1999",
+            )
+        )
 
         self.assertEqual(dialog.live_sequence_mode.currentData(), "audio-auto")
         self.assertIn("recommended", dialog.live_sequence_mode.currentText().casefold())
         self.assertTrue(dialog.auto_advance.isChecked())
         self.assertFalse(dialog.validation_errors())
+        dialog.deleteLater()
+
+    def test_screen_capture_disables_auto_advance(self):
+        dialog = SettingsDialog(
+            AppSettings(capture_mode="screen", auto_advance_enabled=True)
+        )
+
+        self.assertFalse(dialog.auto_advance.isEnabled())
+        self.assertFalse(dialog.auto_advance.isChecked())
+        self.assertIn("selected game window", dialog.auto_advance.toolTip())
+        self.assertFalse(dialog.settings().auto_advance_enabled)
         dialog.deleteLater()
 
     def test_settings_offer_moss_with_model_language_and_reference(self):
@@ -2068,6 +2090,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         controller.start.side_effect = start
         controller.shutdown.side_effect = shutdown
+        controller.request_shutdown.side_effect = release.set
         tray_application = TrayApplication(
             self.application,
             AppSettings(onboarding_completed=True),
@@ -2088,13 +2111,13 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.start()
             self.assertTrue(started.wait(1))
             tray_application.shutdown()
-            release.set()
             self.wait_until(lambda: controller.shutdown.call_count == 1)
 
         self.assertFalse(runtime["live"])
         self.assertEqual(ready_events, [])
         self.assertEqual(hotkey_events, [])
         self.assertTrue(tray_application._shutting_down)
+        controller.request_shutdown.assert_called_once_with()
 
     def test_macos_skips_unstable_native_hotkey_listener(self):
         tray_application = TrayApplication(

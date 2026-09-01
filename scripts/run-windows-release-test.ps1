@@ -2,6 +2,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$InstallerPath,
     [Parameter(Mandatory = $true)]
+    [string]$PreviousInstallerPath,
+    [Parameter(Mandatory = $true)]
     [string]$ProfileName,
     [Parameter(Mandatory = $true)]
     [ValidateSet("Intel", "NVIDIA", "AMD")]
@@ -30,10 +32,15 @@ if ($MinimumDisplayCount -lt 1) {
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $InstallerPath = (Resolve-Path $InstallerPath).Path
+$PreviousInstallerPath = (Resolve-Path $PreviousInstallerPath).Path
 if (-not $EvidenceReport) {
     $EvidenceReport = Join-Path $ProjectRoot "build\windows\release-evidence.json"
 }
 $EvidenceReport = [System.IO.Path]::GetFullPath($EvidenceReport)
+$EvidenceDirectory = Split-Path -Parent $EvidenceReport
+New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
+$SmokeEvidenceReport = Join-Path $EvidenceDirectory "installed-smoke-evidence.json"
+Remove-Item $SmokeEvidenceReport -Force -ErrorAction SilentlyContinue
 
 $OperatingSystem = Get-CimInstance Win32_OperatingSystem
 $BuildNumber = [int]$OperatingSystem.BuildNumber
@@ -137,10 +144,12 @@ try {
 
     $VerifyArguments = @{
         InstallerPath = $InstallerPath
+        PreviousInstallerPath = $PreviousInstallerPath
         SmokeTestWindowTitle = $WindowTitle
         SmokeTestModel = $SmokeTestModel
         ExpectedSpeaker = "Marcus"
         VerifyAutoAdvance = $true
+        SmokeEvidenceReport = $SmokeEvidenceReport
     }
     if ($GameProcessLevel -eq "elevated") {
         $VerifyArguments.ElevatedSmokeTest = $true
@@ -151,6 +160,16 @@ try {
     & (Join-Path $PSScriptRoot "verify-windows-installer.ps1") @VerifyArguments
 
     $Signature = Get-AuthenticodeSignature $InstallerPath
+    $InstallerVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo(
+        $InstallerPath
+    ).ProductVersion
+    $PreviousInstallerVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo(
+        $PreviousInstallerPath
+    ).ProductVersion
+    if (-not $InstallerVersion -or -not $PreviousInstallerVersion) {
+        throw "Both installers must expose a product version."
+    }
+    $SmokeEvidence = Get-Content $SmokeEvidenceReport -Raw | ConvertFrom-Json
     $Evidence = [ordered]@{
         success = $true
         profile = $ProfileName
@@ -165,14 +184,23 @@ try {
         capture_mode = $CaptureMode
         game_process_level = $GameProcessLevel
         installer_signature = $Signature.Status.ToString()
+        installer_sha256 = (Get-FileHash $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        installer_product_version = $InstallerVersion
+        installer_signer_subject = if ($Signature.SignerCertificate) {
+            $Signature.SignerCertificate.Subject
+        } else { $null }
+        installer_signer_thumbprint = if ($Signature.SignerCertificate) {
+            $Signature.SignerCertificate.Thumbprint.ToLowerInvariant()
+        } else { $null }
+        previous_installer_sha256 = (Get-FileHash $PreviousInstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        previous_installer_product_version = $PreviousInstallerVersion
+        upgrade_verified = $true
         smoke_test_model = $SmokeTestModel
         smoke_test_process_level = $GameProcessLevel
-        auto_advance_dispatched = $true
-        auto_advance_acknowledged = $true
-        auto_advance_controller = "AppController._auto_advance_dialog"
+        auto_advance_dispatched = $SmokeEvidence.auto_advance_dispatched
+        auto_advance_acknowledged = $SmokeEvidence.auto_advance_acknowledged
+        auto_advance_controller = $SmokeEvidence.auto_advance_controller
     }
-    $EvidenceDirectory = Split-Path -Parent $EvidenceReport
-    New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
     $TemporaryReport = "$EvidenceReport.tmp"
     $Evidence | ConvertTo-Json -Depth 4 | Set-Content $TemporaryReport
     Move-Item $TemporaryReport $EvidenceReport -Force

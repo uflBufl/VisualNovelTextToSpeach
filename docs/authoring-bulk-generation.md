@@ -77,6 +77,10 @@ the review decision was already saved and can be recovered with `publish`.
 Workbench decisions additionally carry the displayed queue, state-item, state
 and WAV SHA-256 snapshot into this transaction. The replacement state and
 derived manifest are fully validated and staged under unique temporary names.
+The workbench enables Approve and Reject only after that exact queue/state/WAV
+identity reaches end-of-media. Stops and playback failures do not grant heard
+credit, and any authority checksum change requires replay before another
+decision.
 Under the exclusive lease, all four identities and the complete lease document
 are checked again immediately before the canonical state is replaced; the lease
 is checked once more before the manifest replace. If ownership changes in that

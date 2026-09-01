@@ -20,6 +20,7 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       [`docs/speech-robustness-corpus.md`](docs/speech-robustness-corpus.md);
       until then keep existing signals diagnostic-only and use safe sentence
       repair, one bounded provider-local retry, then typed XTTS/Pocket fallback.
+
 ## P1 - Improve the self-service generation engine
 
 Follow
@@ -36,7 +37,7 @@ intentional omission as distinct terminal authorities.
       if the fit groups separate and held-out evaluation preserves every known
       age/identity boundary; until then keep all current variants separate.
 
-## P1 - Resolve project-wide code-review findings
+## P1 - Complete distributable release packages
 
 - [ ] Make release packages able to run the backend they recommend by default.
   - Follow [`docs/release-speech-runtime.md`](docs/release-speech-runtime.md).

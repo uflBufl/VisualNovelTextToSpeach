@@ -454,7 +454,7 @@ print(json.dumps({
             "vntts.authoring.source_reference_review",
         }
 
-        self.assertEqual(graph[records], set())
+        self.assertEqual(graph[records], {"vntts.authoring.advisory_lock"})
         for module in modules:
             self.assertFalse(_reachable(graph, records, module))
             for peer in modules - {module}:

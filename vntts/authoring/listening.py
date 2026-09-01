@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.settings import get_local_data_directory
 
 SESSION_SCHEMA = "vntts.model-listening-session"
@@ -490,32 +491,35 @@ def record_trial_preference(
     if preference not in {"a", "b", "tie", "neither"}:
         raise ModelListeningError("Preference must be a, b, tie, or neither")
     session_path = Path(session_path).expanduser().resolve()
-    session = load_listening_session(session_path)
-    _load_blind_key(session_path, session)
-    trial = next(
-        (item for item in session["trials"] if item.get("trial_id") == trial_id), None
-    )
-    if trial is None:
-        raise ModelListeningError(f"Unknown listening trial: {trial_id}")
-    if trial.get("rating") is not None and not overwrite:
-        raise ModelListeningError(f"Listening trial is already rated: {trial_id}")
-    trial["rating"] = {
-        "preference": "tie" if preference == "neither" else preference,
-        "reviewed_at": _utc_now(),
-    }
-    if preference == "neither":
-        trial["rating"]["acceptability"] = "neither"
-    session["completed_count"] = listening_progress(session)[0]
-    session["updated_at"] = _utc_now()
-    atomic_write_json(session_path, session, sort_keys=True)
-    if report_path is not None:
-        try:
-            aggregate_listening_report(session_path, report_path)
-        except (ModelListeningError, OSError) as error:
-            raise ModelListeningError(
-                "Preference was saved, but the listening report could not be updated; "
-                "run `vntts-listen report` to recover it"
-            ) from error
+    guard_path = session_path.with_name(f".{session_path.name}.guard")
+    with exclusive_advisory_lock(guard_path, blocking=True):
+        session = load_listening_session(session_path)
+        _load_blind_key(session_path, session)
+        trial = next(
+            (item for item in session["trials"] if item.get("trial_id") == trial_id),
+            None,
+        )
+        if trial is None:
+            raise ModelListeningError(f"Unknown listening trial: {trial_id}")
+        if trial.get("rating") is not None and not overwrite:
+            raise ModelListeningError(f"Listening trial is already rated: {trial_id}")
+        trial["rating"] = {
+            "preference": "tie" if preference == "neither" else preference,
+            "reviewed_at": _utc_now(),
+        }
+        if preference == "neither":
+            trial["rating"]["acceptability"] = "neither"
+        session["completed_count"] = listening_progress(session)[0]
+        session["updated_at"] = _utc_now()
+        atomic_write_json(session_path, session, sort_keys=True)
+        if report_path is not None:
+            try:
+                aggregate_listening_report(session_path, report_path)
+            except (ModelListeningError, OSError) as error:
+                raise ModelListeningError(
+                    "Preference was saved, but the listening report could not be "
+                    "updated; run `vntts-listen report` to recover it"
+                ) from error
     return session
 
 

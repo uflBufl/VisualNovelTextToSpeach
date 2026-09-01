@@ -68,6 +68,7 @@ from vntts.authoring.cohort_bundle import (
 )
 from vntts.authoring.cohort_bundle_ui import CohortReviewBundleDialog
 from vntts.authoring.generation_lease import process_started_at
+from vntts.authoring.review_playback_evidence import ReviewPlaybackEvidence
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
@@ -492,46 +493,35 @@ class AuthoringWorkbenchDialog(QDialog):
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.stop_timeout_ms = int(stop_timeout_ms)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.summary = None
-        self.collection_selection = None
-        self.voice_controller = None
-        self.active_started_at = None
+        self.summary = self.collection_selection = None
+        self.voice_controller = self.active_started_at = None
         self.close_after_stop = False
         self._finishing = False
         self._process_generation = 0
-        self._stop_generation_token = None
-        self.local_process_started_at = None
-        self.process_outcome = None
-        self.media_outcome = None
-        self._current_reference_key = None
-        self._selected_review_identity = None
+        self._stop_generation_token = self.local_process_started_at = None
+        self.process_outcome = self.media_outcome = None
+        self._current_reference_key = self._selected_review_identity = None
         self._preview_active = False
         self._review_playback_buffer = None
+        self._review_evidence = ReviewPlaybackEvidence()
         self._playback_prepare_active = False
         self._playback_prepare_serial = 0
         self._playback_preparer = playback_preparer or _prepare_review_playback
         self._playback_signals = _PlaybackTaskSignals()
         self._playback_signals.finished.connect(self._playback_preparation_finished)
         self._playback_thread_pool = QThreadPool.globalInstance()
-        self._selected_collection_ids = None
+        self._selected_collection_ids = self._recent_reference_choices = None
         self._collection_selection_version = 0
-        self._loading_collections = False
-        self._selection_refresh_pending = False
+        self._loading_collections = self._selection_refresh_pending = False
         self._loading_recent_choices = False
-        self._recent_reference_choices = None
-        self._stop_requested = False
-        self._forced_kill = False
+        self._stop_requested = self._forced_kill = False
         self._log_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._poll_paths = self._default_poll_paths()
-        self._poll_signature = None
-        self._all_reviews = ()
-        self._filtered_reviews = ()
-        self._selected_review_queue_id = None
-        self._integrity_error = None
-        self._workspace = None
+        self._poll_signature = self._workspace = None
+        self._all_reviews = self._filtered_reviews = ()
+        self._selected_review_queue_id = self._integrity_error = None
         self._history = ()
-        self._projection_active = False
-        self._projection_pending = False
+        self._projection_active = self._projection_pending = False
         self._projection_serial = 0
         self._projection_selection_version = 0
         self._projection_loader = projection_loader or _load_workbench_projection
@@ -543,9 +533,8 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self._review_save_active = False
         self._review_save_serial = 0
-        self._review_save_queue_id = None
-        self._review_save_decision = None
-        self._review_advance_queue_id = None
+        self._review_save_queue_id = self._review_save_decision = None
+        self._review_advance_queue_id = self._specialist_reviewer = None
         self._reviewer = reviewer
         self._review_signals = _ReviewTaskSignals(self)
         self._review_signals.finished.connect(self._review_save_finished)
@@ -564,7 +553,6 @@ class AuthoringWorkbenchDialog(QDialog):
         self._specialist_reviewer_factory = (
             specialist_reviewer_factory or CohortReviewBundleDialog
         )
-        self._specialist_reviewer = None
 
         self.setWindowTitle("VNTTS authoring workbench")
         self.setMinimumSize(900, 640)
@@ -1741,6 +1729,7 @@ class AuthoringWorkbenchDialog(QDialog):
     def _media_status_changed(self, status):
         if status != QMediaPlayer.MediaStatus.EndOfMedia:
             return
+        self._review_evidence.complete()
         self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW FINISHED"
@@ -1996,6 +1985,7 @@ class AuthoringWorkbenchDialog(QDialog):
 
     def _discard_review_playback_copy(self):
         self.player.stop()
+        self._review_evidence.cancel()
         playback = self._review_playback_buffer
         self._review_playback_buffer = None
         if playback is not None:
@@ -2127,8 +2117,9 @@ class AuthoringWorkbenchDialog(QDialog):
             and not self._playback_prepare_active
             and selected.authority is not None
         )
-        self.approve.setEnabled(enabled)
-        self.reject.setEnabled(enabled)
+        heard = self._review_evidence.allows(selected)
+        self.approve.setEnabled(enabled and heard)
+        self.reject.setEnabled(enabled and heard)
         self.review_play.setEnabled(enabled and selected.audio is not None)
         self.review_stop.setEnabled(self._preview_active)
         navigation_enabled = (
@@ -2165,6 +2156,8 @@ class AuthoringWorkbenchDialog(QDialog):
             reason = "Review disabled: exact state and WAV authority is unavailable"
         elif selected.audio is None:
             reason = "Playback disabled: no state-validated generated WAV is available"
+        elif not heard:
+            reason = "Review disabled: play this exact WAV through to the end first"
         else:
             reason = (
                 "Ready: exact WAV and state will be revalidated when the action starts"
@@ -2254,6 +2247,7 @@ class AuthoringWorkbenchDialog(QDialog):
             )
             return
         self._review_playback_buffer = playback
+        self._review_evidence.begin(current)
         self.player.setSourceDevice(playback, QUrl("vntts-review.wav"))
         self.player.play()
         self._preview_active = True
@@ -2278,6 +2272,11 @@ class AuthoringWorkbenchDialog(QDialog):
         selected = self._selected_review_item()
         if selected is None:
             self.status.setText("Select one generated outcome to review")
+            return
+        if not self._review_evidence.allows(selected):
+            self.review_action_reason.setText(
+                "Review disabled: play this exact WAV through to the end first"
+            )
             return
         self._discard_review_playback_copy()
         self._preview_active = False

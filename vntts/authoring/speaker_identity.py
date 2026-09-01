@@ -81,6 +81,8 @@ def build_reference_inventory(manifest_path):
             )
     if not references:
         raise SpeakerIdentityError("Voice manifest has no references")
+    if len({item["reference_id"] for item in references}) != len(references):
+        raise SpeakerIdentityError("Voice manifest repeats a reference identity")
     body = {
         "schema": INVENTORY_SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -113,10 +115,11 @@ def load_reference_inventory(path):
 def build_labelled_pairs(inventory, pairs):
     """Bind human labels to exact inventory references and non-overlapping splits."""
     _validate_inventory_shape(inventory)
-    known = {item["reference_id"] for item in inventory["references"]}
+    by_id = {item["reference_id"]: item for item in inventory["references"]}
+    known = set(by_id)
     normalized = []
     seen = set()
-    reference_partitions = {}
+    checksum_partitions = {}
     for index, pair in enumerate(pairs):
         if not isinstance(pair, dict):
             raise SpeakerIdentityError(f"Labelled pair {index} must be an object")
@@ -127,6 +130,10 @@ def build_labelled_pairs(inventory, pairs):
         if left not in known or right not in known:
             raise SpeakerIdentityError(
                 f"Labelled pair {index} uses an unknown reference"
+            )
+        if by_id[left]["sha256"] == by_id[right]["sha256"]:
+            raise SpeakerIdentityError(
+                f"Labelled pair {index} repeats the same reference audio"
             )
         partition = pair.get("partition")
         relationship = pair.get("relationship")
@@ -142,10 +149,11 @@ def build_labelled_pairs(inventory, pairs):
                 f"Labelled pair {index} duplicates or leaks across partitions"
             )
         for reference_id in canonical_pair:
-            previous = reference_partitions.setdefault(reference_id, partition)
+            checksum = by_id[reference_id]["sha256"]
+            previous = checksum_partitions.setdefault(checksum, partition)
             if previous != partition:
                 raise SpeakerIdentityError(
-                    f"Labelled pair {index} leaks a reference across partitions"
+                    f"Labelled pair {index} leaks reference audio across partitions"
                 )
         seen.add(canonical_pair)
         normalized.append(
@@ -433,6 +441,10 @@ def _validate_inventory_shape(document):
         for item in document["references"]
     ):
         raise SpeakerIdentityError("Reference inventory contains an invalid entry")
+    if len({item["reference_id"] for item in document["references"]}) != len(
+        document["references"]
+    ):
+        raise SpeakerIdentityError("Reference inventory repeats an identity")
 
 
 def _validate_labels_shape(document):

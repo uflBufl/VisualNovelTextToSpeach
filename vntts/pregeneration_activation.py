@@ -74,10 +74,13 @@ class OfflinePackActivator:
                 )
             runtime_changed = True
             _raise_if_cancelled(cancellation)
-            if was_ready and controller.start() is not True:
-                raise OfflinePackActivationError(
-                    "The speech runtime could not start with the offline game pack"
-                )
+            if was_ready:
+                controller.prepare_startup()
+                _raise_if_cancelled(cancellation)
+                if controller.start() is not True:
+                    raise OfflinePackActivationError(
+                        "The speech runtime could not start with the offline game pack"
+                    )
             _raise_if_cancelled(cancellation)
             settings_path = Path(self.save_settings(candidate)).expanduser()
         except Exception as error:
@@ -108,8 +111,10 @@ def _restore_runtime(controller, settings, *, was_ready, restart_previous=None):
         if controller.apply_settings(settings) is False:
             raise RuntimeError("previous settings were not applied")
         should_restart = restart_previous is None or restart_previous.is_set()
-        if was_ready and should_restart and controller.start() is not True:
-            raise RuntimeError("previous speech runtime did not restart")
+        if was_ready and should_restart:
+            controller.prepare_startup()
+            if controller.start() is not True:
+                raise RuntimeError("previous speech runtime did not restart")
     except Exception as error:
         return error
     return None

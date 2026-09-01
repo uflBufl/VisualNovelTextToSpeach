@@ -63,7 +63,7 @@ jobs:
               scripts\build-windows-installer.ps1
           }
 
-      - name: Verify install, upgrade, and uninstall
+      - name: Verify install and uninstall
         shell: powershell
         run: |
           $Installer = Get-Item `

@@ -329,6 +329,12 @@ class AppController:
     def start(self):
         return self.runtime_lifecycle.start()
 
+    def prepare_startup(self):
+        self.shutdown_requested.clear()
+
+    def request_shutdown(self):
+        self.shutdown_requested.set()
+
     def apply_settings(self, settings, *, cancellation=None):
         return self.runtime_lifecycle.apply_settings(
             settings, cancellation=cancellation
@@ -1164,10 +1170,6 @@ class AppController:
                         or not self._reserve_generated_prefix(line)
                     )
                 ):
-                    # Early playback is allowed only for a unique cursor-bounded
-                    # prefix whose checksum-bound WAV has already passed preflight.
-                    # Auto-advance remains barred until a later observation proves
-                    # that the full canonical line is visible.
                     line = None
                 elif (
                     self.settings.live_sequence_mode == "audio-auto"
@@ -2153,9 +2155,7 @@ class AppController:
         return resolve_voice_label(self.voice_router, character)
 
     def _is_game_focused(self):
-        if self.capture_target is None:
-            return True
-        return self.capture_target.is_focused()
+        return self.capture_target is not None and self.capture_target.is_focused()
 
     def _live_auto_advance_callback(self):
         if (

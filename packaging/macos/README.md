@@ -9,7 +9,9 @@ scripts/build-macos.sh
 
 Artifacts and their SHA-256 checksum are written to `dist/`. The application
 contains Python, Qt, Tesseract English data, eSpeak-NG data, and the runtime
-Python packages.
+Python packages. Build on the target architecture; cross-architecture
+`--target-arch` is rejected because these native dependencies come from the
+build host.
 
 For distribution, import a Developer ID Application certificate and build with:
 

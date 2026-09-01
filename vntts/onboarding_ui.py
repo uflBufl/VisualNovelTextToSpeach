@@ -75,7 +75,7 @@ class ConfigurationPage(QWizardPage):
             QSizePolicy.Policy.Fixed,
         )
         self.capture_mode.addItem("Selected game window", "window")
-        self.capture_mode.addItem("Calibrated screen region", "screen")
+        self.capture_mode.addItem("Screen region (no auto advance)", "screen")
         initial_capture_mode = (
             settings.capture_mode if settings.onboarding_completed else "window"
         )
@@ -557,6 +557,7 @@ class ConfigurationPage(QWizardPage):
             {
                 **asdict(self.original_settings),
                 "capture_mode": self.capture_mode.currentData(),
+                "auto_advance_enabled": self.capture_mode.currentData() == "window",
                 "game_window_title": self.game_window.currentText().strip() or None,
                 "game_pack": optional_text(self.game_pack),
                 "read_hotkey": hotkeys["Read once"],

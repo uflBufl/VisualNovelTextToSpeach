@@ -139,6 +139,58 @@ class SpeakerIdentityTest(unittest.TestCase):
             with self.assertRaisesRegex(SpeakerIdentityError, "leaks"):
                 build_labelled_pairs(inventory, [pair, leaked])
 
+    def test_inventory_rejects_duplicate_reference_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = _fixture(root)
+            document = json.loads(manifest.read_text("utf-8"))
+            document["voices"][0]["references"] *= 2
+            manifest.write_text(json.dumps(document), "utf-8")
+
+            with self.assertRaisesRegex(SpeakerIdentityError, "repeats"):
+                build_reference_inventory(manifest)
+
+    def test_identical_audio_cannot_cross_fit_and_held_out(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = _fixture(root)
+            duplicate = root / "references/reference-duplicate.wav"
+            duplicate.write_bytes((root / "references/reference-0.wav").read_bytes())
+            document = json.loads(manifest.read_text("utf-8"))
+            document["voices"].append(
+                {
+                    "character": "Duplicate audio",
+                    "speaker": "speaker-duplicate",
+                    "references": ["references/reference-duplicate.wav"],
+                }
+            )
+            manifest.write_text(json.dumps(document), "utf-8")
+            inventory = build_reference_inventory(manifest)
+            by_path = {item["path"]: item for item in inventory["references"]}
+            fit = {
+                "left_reference_id": by_path["references/reference-0.wav"][
+                    "reference_id"
+                ],
+                "right_reference_id": by_path["references/reference-1.wav"][
+                    "reference_id"
+                ],
+                "partition": "fit",
+                "relationship": "same-speaker",
+            }
+            held_out = {
+                "left_reference_id": by_path["references/reference-duplicate.wav"][
+                    "reference_id"
+                ],
+                "right_reference_id": by_path["references/reference-3.wav"][
+                    "reference_id"
+                ],
+                "partition": "held-out",
+                "relationship": "different-speaker",
+            }
+
+            with self.assertRaisesRegex(SpeakerIdentityError, "leaks"):
+                build_labelled_pairs(inventory, [fit, held_out])
+
     def test_runtime_rejects_non_cpu_before_loading_optional_dependency(self):
         with self.assertRaisesRegex(SpeakerIdentityError, "require CPU"):
             make_speechbrain_embedder("missing", device="cuda")

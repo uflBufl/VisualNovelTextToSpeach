@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 from vntts.asset_ui import AssetManagerDialog
 from vntts.assets import ModelDownloadCancelled
 from vntts.async_ui import LatestTaskRunner
+from vntts.auto_advance_policy import auto_advance_control_state
 from vntts.calibration import show_calibration_overlay
 from vntts.configuration_apply import ConfigurationApplyMixin
 from vntts.controller import AppController
@@ -223,7 +224,7 @@ class SettingsDialog(QDialog):
         self.retain_uncertain_frames.setChecked(settings.retain_uncertain_frames)
         self.ocr_diagnostics_directory = QLineEdit(settings.ocr_diagnostics_directory)
         self.capture_mode = QComboBox()
-        self.capture_mode.addItem("Calibrated screen region", "screen")
+        self.capture_mode.addItem("Screen region (no auto advance)", "screen")
         self.capture_mode.addItem("Selected game window", "window")
         self.capture_mode.setCurrentIndex(
             max(0, self.capture_mode.findData(settings.capture_mode))
@@ -912,22 +913,13 @@ class SettingsDialog(QDialog):
         self.diagnostics_browse_button.setEnabled(enabled)
 
     def update_auto_advance_controls(self):
-        sequence_mode = self.live_sequence_mode.currentData()
-        manual_sequence = sequence_mode == "audio-manual"
-        self.auto_advance.setEnabled(not manual_sequence)
-        self.auto_advance.setToolTip(
-            "Sequence-first canonical routing never sends advance keys in the "
-            "manual recovery mode."
-            if manual_sequence
-            else (
-                "Guarded sequence control sends at most one key for the "
-                "current automatic event, only while the selected game window is "
-                "focused and its dialogue frame remains visible and stable."
-                if sequence_mode == "audio-auto"
-                else ""
-            )
+        allowed, enabled, tooltip = auto_advance_control_state(
+            self.capture_mode.currentData(),
+            self.live_sequence_mode.currentData(),
+            self.auto_advance.isChecked(),
         )
-        enabled = self.auto_advance.isChecked() and not manual_sequence
+        self.auto_advance.setEnabled(allowed)
+        self.auto_advance.setToolTip(tooltip)
         self.auto_advance_key.setEnabled(enabled)
         self.auto_advance_delay.setEnabled(enabled)
 
@@ -944,7 +936,10 @@ class SettingsDialog(QDialog):
             self.game_window.setCurrentText(selected_title)
 
     def update_capture_controls(self):
-        self.game_window.setEnabled(self.capture_mode.currentData() == "window")
+        window_capture = self.capture_mode.currentData() == "window"
+        self.game_window.setEnabled(window_capture)
+        self.auto_advance.setChecked(window_capture and self.auto_advance.isChecked())
+        self.update_auto_advance_controls()
 
     def update_terms_control(self):
         backend = self.speech_backend.currentData()
@@ -1130,21 +1125,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._onboarding_test_active = False
         self.profile_store = profile_store or GameProfileStore.load()
         self.correction_store = correction_store or OCRCorrectionStore.load()
-        self.hotkey_listener = None
-        self.calibration_overlay = None
-        self.onboarding_wizard = None
-        self.diagnostics_dialog = None
+        self.hotkey_listener = self.calibration_overlay = None
+        self.onboarding_wizard = self.diagnostics_dialog = None
         self.diagnostics_refresh_generation = 0
-        self.readiness_dialog = None
-        self.pregeneration_dialog = None
-        self.support_dialog = None
-        self.unknown_speaker_prompt = None
-        self.unknown_speaker_choose_button = None
-        self.unknown_speaker_continue_button = None
+        self.readiness_dialog = self.pregeneration_dialog = self.support_dialog = None
+        self.unknown_speaker_prompt = self.unknown_speaker_choose_button = None
+        self.unknown_speaker_continue_button = self.pending_unknown_speaker = None
         self.unknown_speaker_mapping_in_progress = None
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
-        self.pending_unknown_speaker = None
         self.live_voice_preflight_prompt = None
         self.live_voice_preflight_assign_button = None
         self.live_voice_preflight_narrator_button = None
@@ -1356,6 +1345,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             except OSError as error:
                 self.show_error(f"Unable to configure launch at login: {error}")
         if self.settings.onboarding_completed:
+            self.controller.prepare_startup()
             generation = self._begin_controller_lifecycle()
             self._initial_start_generation = generation
             self.initial_start_runner.start(self._initialize_controller, generation)
@@ -1925,6 +1915,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if cancelled():
                     return
                 self.last_controller_error = None
+                self.controller.prepare_startup()
+                if cancelled():
+                    self.controller.request_shutdown()
+                    return
                 started = self.controller.start()
                 if cancelled():
                     return
@@ -1961,6 +1955,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def cancel_onboarding_download(self):
         self.onboarding_cancel_event.set()
+        self.controller.request_shutdown()
         self.set_status("Cancelling setup test in background...")
 
     def _create_settings_dialog(self):
@@ -2164,6 +2159,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return False
         self.controller.apply_settings(settings)
         if not self._lifecycle_is_current(generation):
+            return False
+        self.controller.prepare_startup()
+        if not self._lifecycle_is_current(generation):
+            self.controller.request_shutdown()
             return False
         ready = self.controller.start()
         if not self._lifecycle_is_current(generation):
@@ -2697,6 +2696,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._shutting_down:
             return
         self._shutting_down = True
+        self.controller.request_shutdown()
         self._lifecycle_generation += 1
         self._controller_busy = True
         self._live_stop_continuation = None

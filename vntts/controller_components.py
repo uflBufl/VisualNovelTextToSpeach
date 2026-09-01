@@ -340,8 +340,8 @@ class RuntimeLifecycleComponent:
         controller = self.controller
         if controller.is_ready:
             return True
-
-        controller.shutdown_requested.clear()
+        if controller.shutdown_requested.is_set():
+            return False
         use_xtts = controller.settings.speech_backend == "coqui-xtts"
         controller.status_handler(
             {
@@ -689,9 +689,7 @@ class RuntimeLifecycleComponent:
         controller._interrupt_speech()
         controller._set_backend_live_mode(False)
         if controller.live_reader is not None:
-            controller.live_reader.stop()
-            controller.live_reader.clear_queue()
-            controller.live_reader.release_waiters()
+            controller.live_reader.emergency_stop()
             try:
                 controller.live_reader.wait()
             except Exception as error:

@@ -36,6 +36,10 @@ preview lifecycle. Backend preview, narrator application and cache invalidation
 remain injected low-level collaborators rather than parallel public operations.
 `RuntimeLifecycleComponent` owns startup, runtime settings reconfiguration, its
 exact cancellation/commit boundary, ordered shutdown and executor cleanup.
+Startup cancellation is terminal until an explicit `prepare_startup()` begins a
+new user-requested start. Quit sets that cancellation before UI task invalidation
+and applies the live reader's persistent emergency-stop guard before executor
+shutdown, so late OCR or synthesis completions cannot enqueue playback.
 `AppController` injects backend, executor, reader, registry/router and scheduler
 factories as the composition root; lifecycle public operations no longer proxy
 back into controller implementations.

@@ -52,6 +52,11 @@ changed and settled dialogue frame may confirm that event without depending on
 OCR's ability to read three dots. The same focus-checked auto-advance gate may
 then continue. Other punctuation-only glyphs remain filtered.
 
+Auto advance requires an exact captured game window that is still the foreground
+window at dispatch time. A calibrated screen region has no authoritative window
+identity and therefore never sends a global advance key; Settings and onboarding
+disable that combination instead of treating a missing target as focused.
+
 Playback outcomes are `completed`, `interrupted`, `failed`, or
 `passthrough-unobserved`. Generated playback alone owns the local output device.
 Stopping source pass-through cancels only its completion timer. A guard or stop

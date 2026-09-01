@@ -43,6 +43,11 @@ if [[ $target_arch != "arm64" && $target_arch != "x86_64" ]]; then
     echo "Unsupported macOS architecture: $target_arch" >&2
     exit 1
 fi
+host_arch=$(uname -m)
+if [[ $target_arch != "$host_arch" ]]; then
+    echo "Target architecture $target_arch requires a $target_arch build host; current host is $host_arch." >&2
+    exit 1
+fi
 
 project_root=$(cd "$(dirname "$0")/.." && pwd)
 tesseract_directory=${VNTTS_TESSERACT_DIR:-$(brew --prefix tesseract)}

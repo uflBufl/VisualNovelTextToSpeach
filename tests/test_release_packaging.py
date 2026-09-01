@@ -57,6 +57,7 @@ class ReleasePackagingTest(unittest.TestCase):
         )
         self.assertIn('find "$runtime_bundle_path" -type f -print0', script)
         self.assertIn('codesign "${app_codesign_arguments[@]}" "$app_path"', script)
+        self.assertIn('target_arch != "$host_arch"', script)
 
     def test_bundle_verifiers_clear_developer_runtime_overrides(self):
         for relative_path in (
@@ -94,6 +95,14 @@ class ReleasePackagingTest(unittest.TestCase):
         self.assertIn("AppController._auto_advance_dialog", verifier)
         self.assertIn("ElevatedSmokeTest", qualification)
         self.assertIn("auto_advance_acknowledged", qualification)
+        self.assertIn("SmokeEvidenceReport", qualification)
+        self.assertIn("PreviousInstallerPath", qualification)
+        self.assertIn("installer_sha256", qualification)
+
+        workflow = (
+            PROJECT_ROOT / ".github/workflows/windows-release-test.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("previous_installer_run_id", workflow)
 
 
 if __name__ == "__main__":

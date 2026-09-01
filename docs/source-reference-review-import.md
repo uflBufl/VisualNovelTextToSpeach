@@ -120,8 +120,10 @@ reach its end. The card shows exact original/generated heard counts beside the
 disabled actions. This in-dialog heard ledger is deliberately non-authoritative
 and is not serialized: reopening a pending card requires hearing its evidence
 again. A card without a generated sample cannot be accepted. Decisions are
-serialized through an exclusive lock and copied audio is revalidated whenever
-the review is loaded or played.
+serialized through a cross-platform advisory lock and copied audio is revalidated
+whenever the review is loaded or played. The lock file may remain on disk after
+a crash; only an active OS-held lock blocks another writer, so a stale
+`.review.json.lock` cannot permanently strand the review.
 
 Decision persistence runs outside the Qt thread. The current card and
 checksum-verified playback remain available while its decision buttons show a

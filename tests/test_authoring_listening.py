@@ -6,7 +6,7 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, Lock, Thread
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -543,6 +543,67 @@ class AuthoringListeningTest(unittest.TestCase):
             saved = load_listening_session(session_path)
             self.assertEqual(saved["trials"][0]["rating"]["preference"], "a")
             self.assertFalse(report_path.exists())
+
+    def test_concurrent_preferences_preserve_both_trials(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            session_path = create_listening_session_from_reports(
+                write_model_reports(root, item_count=2), root / "session"
+            )
+            trial_ids = [
+                trial["trial_id"]
+                for trial in load_listening_session(session_path)["trials"]
+            ]
+            from vntts.authoring import listening as listening_module
+
+            original_load = listening_module.load_listening_session
+            first_loaded = Event()
+            release_first = Event()
+            calls_lock = Lock()
+            calls = 0
+
+            def coordinated_load(path):
+                nonlocal calls
+                session = original_load(path)
+                with calls_lock:
+                    calls += 1
+                    call_number = calls
+                if call_number == 1:
+                    first_loaded.set()
+                    release_first.wait(2)
+                return session
+
+            errors = []
+
+            def record(trial_id, preference):
+                try:
+                    record_trial_preference(session_path, trial_id, preference)
+                except Exception as error:
+                    errors.append(error)
+
+            with patch.object(
+                listening_module,
+                "load_listening_session",
+                side_effect=coordinated_load,
+            ):
+                first = Thread(target=record, args=(trial_ids[0], "a"))
+                second = Thread(target=record, args=(trial_ids[1], "b"))
+                first.start()
+                self.assertTrue(first_loaded.wait(1))
+                second.start()
+                time.sleep(0.05)
+                release_first.set()
+                first.join(2)
+                second.join(2)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            saved = load_listening_session(session_path)
+            self.assertEqual(saved["completed_count"], 2)
+            self.assertTrue(
+                all(trial["rating"] is not None for trial in saved["trials"])
+            )
 
 
 @unittest.skipIf(QApplication is None, "PySide6 is not installed")

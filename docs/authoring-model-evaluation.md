@@ -397,6 +397,10 @@ that persisted state explicitly and instructs the operator to regenerate the
 derived report; it never claims that the rating was rolled back. The workbench
 reloads that persisted session and advances to the next unrated trial (or the
 completed state), preventing a second click on the already-saved rating.
+The complete session load, validation and atomic rating write are serialized by
+a cross-platform advisory lock. Concurrent UI/CLI decisions therefore either
+merge in order or observe the newly completed trial instead of both succeeding
+while one rating is lost.
 
 `Neither acceptable` is a distinct verdict, not a tie. On disk it retains the
 wire-v1-compatible `preference: tie` value and adds

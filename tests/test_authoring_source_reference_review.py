@@ -19,6 +19,7 @@ from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
+from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.bulk_generation import load_generation_state, run_bulk_generation
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.listening import (
@@ -847,13 +848,16 @@ class AuthoringSourceReferenceReviewTest(unittest.TestCase):
             variant = session["variants"][0]
             lock = result.session.with_name(f".{result.session.name}.lock")
             lock.write_text("other-reviewer", encoding="utf-8")
-            with self.assertRaisesRegex(
-                SourceReferenceQualityError, "Another source-reference decision"
-            ):
-                record_source_reference_quality_decision(
-                    result.session, variant["variant_id"], "accept"
-                )
-            lock.unlink()
+            with exclusive_advisory_lock(lock):
+                with self.assertRaisesRegex(
+                    SourceReferenceQualityError, "Another source-reference decision"
+                ):
+                    record_source_reference_quality_decision(
+                        result.session, variant["variant_id"], "accept"
+                    )
+            record_source_reference_quality_decision(
+                result.session, variant["variant_id"], "accept"
+            )
             audio = result.directory / variant["generated_samples"][0]["audio"]
             audio.write_bytes(b"tampered")
 

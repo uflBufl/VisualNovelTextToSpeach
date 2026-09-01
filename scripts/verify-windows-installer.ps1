@@ -1,11 +1,13 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$InstallerPath,
+    [string]$PreviousInstallerPath,
     [switch]$AllowUnsigned,
     [string]$SmokeTestImage,
     [string]$SmokeTestWindowTitle,
     [string]$SmokeTestModel = "tts_models/en/vctk/vits",
     [string]$ExpectedSpeaker,
+    [string]$SmokeEvidenceReport,
     [switch]$VerifyAutoAdvance,
     [switch]$ElevatedSmokeTest
 )
@@ -22,6 +24,21 @@ $Signature = Get-AuthenticodeSignature $InstallerPath
 if (-not $AllowUnsigned -and $Signature.Status -ne "Valid") {
     throw "Installer signature is not valid: $($Signature.Status)"
 }
+$InitialInstallerPath = $InstallerPath
+if ($PreviousInstallerPath) {
+    $PreviousInstallerPath = (Resolve-Path $PreviousInstallerPath).Path
+    if (
+        (Get-FileHash $PreviousInstallerPath -Algorithm SHA256).Hash -eq
+        (Get-FileHash $InstallerPath -Algorithm SHA256).Hash
+    ) {
+        throw "Previous and candidate installers must be different artifacts."
+    }
+    $PreviousSignature = Get-AuthenticodeSignature $PreviousInstallerPath
+    if (-not $AllowUnsigned -and $PreviousSignature.Status -ne "Valid") {
+        throw "Previous installer signature is not valid: $($PreviousSignature.Status)"
+    }
+    $InitialInstallerPath = $PreviousInstallerPath
+}
 
 $VerificationId = [guid]::NewGuid().ToString("N")
 $InstallDirectory = Join-Path $env:TEMP "vntts-install-$VerificationId"
@@ -31,12 +48,13 @@ $StartMenuShortcut = Join-Path $env:APPDATA `
     "Microsoft\Windows\Start Menu\Programs\Visual Novel Text to Speech\Visual Novel Text to Speech.lnk"
 $StartupShortcut = Join-Path $env:APPDATA `
     "Microsoft\Windows\Start Menu\Programs\Startup\Visual Novel Text to Speech.lnk"
+$SmokeReport = $null
 
 try {
     New-Item -ItemType Directory -Path $LocalDataDirectory -Force | Out-Null
     Set-Content -Path $Marker -Value "preserve during upgrade and uninstall"
 
-    $Install = Start-Process -FilePath $InstallerPath `
+    $Install = Start-Process -FilePath $InitialInstallerPath `
         -ArgumentList @(
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
@@ -50,6 +68,23 @@ try {
         -PassThru
     if ($Install.ExitCode -ne 0) {
         throw "Installer exited with code $($Install.ExitCode)."
+    }
+
+    if ($PreviousInstallerPath) {
+        $Upgrade = Start-Process -FilePath $InstallerPath `
+            -ArgumentList @(
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                "/SP-",
+                "/CURRENTUSER",
+                ('/DIR="{0}"' -f $InstallDirectory)
+            ) `
+            -Wait `
+            -PassThru
+        if ($Upgrade.ExitCode -ne 0 -or -not (Test-Path $Marker -PathType Leaf)) {
+            throw "Upgrade did not preserve application data."
+        }
     }
 
     & (Join-Path $PSScriptRoot "verify-windows-bundle.ps1") `
@@ -67,8 +102,12 @@ try {
         if ($SmokeTestImage -and $SmokeTestWindowTitle) {
             throw "Choose either a smoke-test image or a window title."
         }
-        $SmokeReport = Join-Path $env:TEMP `
-            "vntts-release-smoke-$VerificationId.json"
+        $SmokeReport = if ($SmokeEvidenceReport) {
+            [System.IO.Path]::GetFullPath($SmokeEvidenceReport)
+        }
+        else {
+            Join-Path $env:TEMP "vntts-release-smoke-$VerificationId.json"
+        }
         $SmokeArguments = @(
             "--release-smoke-test-report",
             ('"{0}"' -f $SmokeReport),
@@ -140,21 +179,6 @@ try {
         throw "Optional startup shortcut was not created."
     }
 
-    $Upgrade = Start-Process -FilePath $InstallerPath `
-        -ArgumentList @(
-            "/VERYSILENT",
-            "/SUPPRESSMSGBOXES",
-            "/NORESTART",
-            "/SP-",
-            "/CURRENTUSER",
-            ('/DIR="{0}"' -f $InstallDirectory)
-        ) `
-        -Wait `
-        -PassThru
-    if ($Upgrade.ExitCode -ne 0 -or -not (Test-Path $Marker -PathType Leaf)) {
-        throw "Upgrade did not preserve application data."
-    }
-
     $Uninstaller = Join-Path $InstallDirectory "unins000.exe"
     $Uninstall = Start-Process -FilePath $Uninstaller `
         -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") `
@@ -175,8 +199,12 @@ try {
     if (-not (Test-Path $Marker -PathType Leaf)) {
         throw "Uninstaller removed downloaded models or user data."
     }
-    Write-Host "Installer, upgrade, data preservation, and uninstall checks passed."
+    $UpgradeLabel = if ($PreviousInstallerPath) { "upgrade, " } else { "" }
+    Write-Host "Installer, ${UpgradeLabel}data preservation, and uninstall checks passed."
 }
 finally {
     Remove-Item $Marker -Force -ErrorAction SilentlyContinue
+    if (-not $SmokeEvidenceReport -and $SmokeReport) {
+        Remove-Item $SmokeReport -Force -ErrorAction SilentlyContinue
+    }
 }

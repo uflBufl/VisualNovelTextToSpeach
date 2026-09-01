@@ -5,10 +5,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
 import shutil
 import struct
-import uuid
 import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -18,6 +16,11 @@ from pathlib import Path, PurePosixPath
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 from vntts_artifacts.file_integrity import sha256_file
+
+from vntts.authoring.advisory_lock import (
+    AdvisoryLockBusyError,
+    exclusive_advisory_lock,
+)
 
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
 QUALITY_REVIEW_VERSION = 1
@@ -487,29 +490,13 @@ def _aware_timestamp(value, label):
 @contextmanager
 def _decision_lock(session_path):
     lock_path = session_path.with_name(f".{session_path.name}.lock")
-    token = uuid.uuid4().hex
     try:
-        descriptor = os.open(
-            lock_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-    except FileExistsError as error:
+        with exclusive_advisory_lock(lock_path):
+            yield
+    except AdvisoryLockBusyError as error:
         raise SourceReferenceQualityError(
             "Another source-reference decision is being saved"
         ) from error
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(token)
-            stream.flush()
-            os.fsync(stream.fileno())
-        yield
-    finally:
-        try:
-            if lock_path.read_text(encoding="utf-8") == token:
-                lock_path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _utc_now():

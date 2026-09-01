@@ -324,6 +324,8 @@ class ReplayFrameSource:
             self.focus_probe_calls += 1
             return self.focus_probes.pop(0) if self.focus_probes else True
 
+    is_focused = focus_probe
+
     def is_final_declared_frame(self, frame):
         identity = frame.image.info.get("vntts_replay_declared_identity")
         if identity is None:
@@ -757,10 +759,8 @@ class LiveReplayRunner:
         )
         router.set_live_mode_active(True)
         pipeline = ReplayPipelineRecorder(len(self.corpus.dialogue) + 1)
-        routes = []
-        errors = []
-        statuses = []
-        sequence_statuses = []
+        routes, errors = [], []
+        statuses, sequence_statuses = [], []
         advance_states = []
         recognized_frames = []
         routed_frames = []
@@ -841,6 +841,7 @@ class LiveReplayRunner:
             live_sequence_plan=str(plan_path),
             live_sequence_mode=mode,
             auto_advance_enabled=mode in {"shadow", "audio-auto"},
+            capture_mode="window",
             audio_source_policy=self.audio_source_policy,
             live_interval_ms=max(1, round(self.interval_seconds * 1000)),
             live_idle_flush_ms=max(1, round(self.interval_seconds * 10_000)),
@@ -860,6 +861,7 @@ class LiveReplayRunner:
             route_trace_handler=record_route,
             pipeline_event_handler=pipeline.record,
             live_sequence_plan_factory=lambda _plan, _story: plan,
+            capture_target_factory=lambda _title: frame_source,
         )
         controller.tts = live_backend
         controller.voice_router = live_backend
