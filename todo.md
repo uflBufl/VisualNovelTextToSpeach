@@ -37,12 +37,11 @@ measurements and completed-work history in `docs/` and Git, not here.
 ## P0 - Make the Windows test gate non-admin portable
 
 - [ ] Make the full build/test gate pass from an ordinary Windows account.
-  - Resolve the current Windows-only failures in asset validation's stale-path
-    race, cache pruning order, and the render/silence CLI JSON path contracts;
-    bind each change to the exact assertion from the unbuffered CI report.
-  - Replace only Windows-failing POSIX fixture paths with platform-neutral
-    temporary paths after binding each change to an exact traceback; do not
-    rewrite harmless virtual paths used solely as mocked values.
+  - Make source-reference decisions finish within the UI worker bound and release
+    their advisory lock by avoiding repeated full audio validation during one
+    checksum-bound write.
+  - Keep live replay assertions independent of whether canonical text completion
+    or generated playback completion wins a valid scheduling race.
   - Gate: `scripts/run_ci_unittests.py discover -s tests` and
     `scripts/build-windows.ps1` complete as a non-admin user without requiring
     Developer Mode. Retain the ordinary macOS full-suite gate.
