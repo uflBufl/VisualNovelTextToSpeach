@@ -43,6 +43,13 @@ intentional omission as distinct terminal authorities.
       natural seed 0 all miss EOS for that line. Judge speaker similarity,
       pronunciation, prosody, artifacts, repetition and trailing silence before
       changing sampling controls or automatically escalating the MOSS profile.
+  - [ ] Complete the prepared one-trial session at
+        `authoring/listening-sessions/rhiannon-short-profile-vs-pocket-20260901`;
+        choose only by the short hesitation's voice match, prosody and artifacts.
+        Do not reveal A/B identity before the decision is committed.
+  - [ ] After that decision, add only one representative full-line trial for the
+        stable/reference-codec/original question. Do not ask the player to review
+        a broad Rhiannon cohort.
 
 ## P1 - Resolve project-wide code-review findings
 

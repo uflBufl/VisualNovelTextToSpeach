@@ -46,6 +46,7 @@ MODEL_REPORT_SCHEMA = "vntts.voice-model-report"
 BENCHMARK_SCHEMA = "vntts.voice-model-benchmark"
 SCHEMA_VERSION = 1
 default_output = get_local_data_directory() / "authoring" / "model-benchmark"
+UNSEEDED_BACKENDS = frozenset({"coqui-xtts", "pocket-tts"})
 
 
 class ModelBenchmarkError(RuntimeError):
@@ -536,7 +537,7 @@ def _benchmark_renderer_staged(
     rendered_samples = []
     for index, sample in enumerate(samples, start=1):
         synthesis_voice = variant.voice or sample["character"]
-        request_seed = None if variant.backend == "coqui-xtts" else seed
+        request_seed = None if variant.backend in UNSEEDED_BACKENDS else seed
         request = SynthesisRequest(
             voice=synthesis_voice,
             text=sample["text"],
@@ -549,7 +550,7 @@ def _benchmark_renderer_staged(
             "synthesis_voice": synthesis_voice,
             "requested_shared_seed": seed,
             "seed_policy": (
-                "unsupported" if variant.backend == "coqui-xtts" else "shared"
+                "unsupported" if variant.backend in UNSEEDED_BACKENDS else "shared"
             ),
         }
         try:
@@ -650,7 +651,9 @@ def _benchmark_renderer_staged(
         "terms_accepted": variant.terms_accepted,
         "require_cuda": variant.require_cuda,
         "voice_controls_sha256": voice_controls_sha256,
-        "seed_policy": ("unsupported" if variant.backend == "coqui-xtts" else "shared"),
+        "seed_policy": (
+            "unsupported" if variant.backend in UNSEEDED_BACKENDS else "shared"
+        ),
         "runtime": _runtime_identity(backend),
         "summary": {"total": len(rendered_samples), **outcomes},
         "group_summary": group_summary,

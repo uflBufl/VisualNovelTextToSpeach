@@ -31,6 +31,11 @@ SHA-256, PCM timing, sample rate, sample count, duration, peak, seed and
 generation profile. Completion diagnostics must return the requested seed and
 profile. Model IDs are converted to contained output/cache directory names;
 dot paths, path escape and case-insensitive destination collisions are rejected.
+MOSS receives the shared comparison seed. Pocket TTS and XTTS declare seed
+support as `unsupported`, receive `seed=None`, and retain the requested shared
+seed only as report context; asking either backend to fake deterministic seeded
+generation is an error.
+
 The aggregate `vntts.voice-model-benchmark` version 1 document records the exact
 corpus and per-model report paths; model selection remains a manual decision.
 For any voice-cloning backend, every used manifest reference is captured once
@@ -283,6 +288,20 @@ is therefore profile-specific, not evidence of missing source audio, changed
 references or a playback fault. Keep the three-second guard and the ordinary
 typed fallback until a blind comparison authorizes automatic profile
 escalation; do not publish a limited waveform.
+
+The comparison's ordinary Pocket fallback report is retained under
+`benchmarks/models/rhiannon-pocket-short-v2-20260901`. Its report SHA-256 is
+`ec1095d8433df49833ebe5639b4631ba37271102ad74a4aad21898b5ec02e2f5`;
+the unseeded 1.52-second WAV SHA-256 is
+`6ac0b0923d9d092548248b9ada62735ce237d4dd38686127f79dec508a050d8d`.
+The one-trial blind session is retained under
+`authoring/listening-sessions/rhiannon-short-profile-vs-pocket-20260901`.
+Its public session SHA-256 is
+`2f0d2beea87dec2d33acd902d2450dc6afce6a56c09d2eb750e4e4a6e760af71`;
+the mode-0600 blind-key SHA-256 is
+`63ddb22d43c0c5cd89886f3c303828e529a631b07bf4ca8b95f434f263c9a743`.
+The verified state is `0/1` pending, and neither public trial metadata nor the UI
+reveals the expressive-MOSS/Pocket orientation before scoring.
 
 The engine NFKC-normalizes text, normalizes the Unicode ellipsis to three ASCII
 dots and collapses whitespace before matching the same stable sample across

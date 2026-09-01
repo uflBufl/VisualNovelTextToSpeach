@@ -370,6 +370,25 @@ class AuthoringModelBenchmarkTest(unittest.TestCase):
         self.assertEqual(report["samples"][0]["sample_rate"], 16_000)
         self.assertRegex(report["samples"][0]["audio_sha256"], r"^[0-9a-f]{64}$")
 
+    def test_pocket_renderer_does_not_request_unsupported_seed(self):
+        backend = FakeRenderBackend(backend_name="pocket-tts")
+        variant = ModelVariant(
+            "pocket/fallback", "pocket-tts", generation_profile="default"
+        )
+        with TemporaryDirectory() as directory:
+            report = benchmark_renderer(
+                variant,
+                backend,
+                [{"id": "sample", "character": "Voice", "text": "A line."}],
+                directory,
+                seed=11,
+            )
+
+        self.assertIsNone(backend.requests[0].seed)
+        self.assertEqual(report["seed_policy"], "unsupported")
+        self.assertEqual(report["samples"][0]["requested_shared_seed"], 11)
+        self.assertEqual(report["samples"][0]["seed_policy"], "unsupported")
+
     def test_renderer_applies_explicit_variant_voice_without_changing_corpus_identity(
         self,
     ):
