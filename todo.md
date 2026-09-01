@@ -33,13 +33,6 @@ intentional omission as distinct terminal authorities.
       checksum-bound import of Chapter 13 plus `The Eaglet Takes Wing` has 1,205
       synthesis candidates; never resume the 1,220-item queue across that changed
       story-index identity.
-  - [ ] Create an isolated current job with the saved player settings and voice
-        decisions, then require every selected line to be original audio,
-        runnable offline synthesis, explicit live fallback or intentional
-        omission. Record unresolved voice choices instead of silently guessing.
-  - [ ] Materialize and validate the current private input; require queue count,
-        ready count, source hashes and narrator-fallback roles to agree before
-        any synthesis starts.
   - [ ] Run a bounded canary through generation, recovery, automatic acceptance,
         publication and activation. Resume the same exact job after an
         interruption and prove completed WAVs are not regenerated.

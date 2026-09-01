@@ -1,6 +1,7 @@
 import hashlib
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -255,6 +256,56 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 for relative in voice["references"]:
                     probe_pcm16_mono_wav(result.directory / relative)
             self.assertNotIn("not-selected", result.story_index.read_text())
+
+    def test_materializes_distinct_voices_for_same_character_variants(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            story_path = write_content(root / "content")
+            story = load_story_index_document(story_path)
+            records = [record.to_record() for record in story.records]
+            next(
+                record for record in records if record["line_id"] == "not-selected"
+            ).update(portrait="young", source_bank="young.bnk")
+            write_story_index_document(story_path, story.metadata, records)
+            content = inspect_story_index(story_path)
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("selected", "later"))
+            manifest = write_manifest(root / "voices")
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
+                manifest_path=manifest,
+            )
+            variants = [group for group in plan.groups if group.character == "Rhiannon"]
+            self.assertEqual(len(variants), 2)
+            centurion_reference = sha256_file(
+                manifest.parent / "references" / "centurion.wav"
+            )
+            replacement = replace(
+                variants[1],
+                source_id="character:centurion",
+                source_character="Centurion",
+                source_speaker="centurion-v1",
+                reference_sha256s=(centurion_reference,),
+            )
+            plan = replace(
+                plan,
+                groups=tuple(
+                    replacement if group is variants[1] else group
+                    for group in plan.groups
+                ),
+            )
+
+            result = PregenerationInputStore(jobs).materialize(job, plan)
+            queue = VoiceGenerationQueue.load(result.queue)
+            routes = {item.line_id: item for item in queue.items}
+
+        self.assertEqual(routes["rhiannon"].speaker, "Aderyn")
+        self.assertEqual(routes["rhiannon"].voice_character, "Rhiannon")
+        self.assertEqual(routes["not-selected"].speaker, "Rhiannon")
+        self.assertTrue(
+            routes["not-selected"].voice_character.startswith("Rhiannon__vntts_")
+        )
 
     def test_projects_semantic_evidence_to_selected_lines(self):
         with TemporaryDirectory() as temporary_directory:

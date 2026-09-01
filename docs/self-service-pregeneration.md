@@ -403,3 +403,12 @@ only the cancelled line, then completes acceptance and publication with no
 duplicate generation or player review. Pocket may safely resume that cancelled
 attempt once; a completed Pocket failure still proceeds directly to live
 fallback.
+
+The 2026-09-01 full-scale preflight rebuilt Chapter 13 plus `The Eaglet Takes
+Wing` from the installed game and selected 3,395 dialogue records: 2,190 exact
+original tracks and 1,205 synthesis candidates. After eight ambiguous groups
+were resolved through the ordinary automatic-choice path, the private input
+reopened with all 1,205 queue items runnable and 15 explicit narrator-fallback
+roles. Distinct selected voices for the same displayed character receive
+checksum-derived, exact-line internal manifest routes; the queue keeps the
+original `speaker`, so this routing identity is not exposed as dialogue UI.

@@ -48,7 +48,7 @@ from vntts.voices import (
     synthesis_character_for_line,
 )
 
-generation_input_schema_version = 2
+generation_input_schema_version = 3
 
 
 class PregenerationQueueError(RuntimeError):
@@ -118,11 +118,15 @@ class PregenerationInputStore:
             story_path = staging / "story-index.jsonl"
             voice_path = staging / "voice-manifest.json"
             queue_path = staging / "queue.jsonl"
+            routed_records = _routed_story_records(
+                selected,
+                effective["line_voice_characters"],
+            )
             story_metadata, selected_records, semantic_evidence = (
                 project_source_audio_semantics(
                     Path(job.story_index).expanduser().resolve(),
                     story.metadata,
-                    [record.to_record() for record in selected],
+                    routed_records,
                     staging,
                 )
             )
@@ -256,7 +260,7 @@ def _selected_records(story, selected_line_ids):
 
 
 def _effective_voice_routes(plan, registry):
-    routes = {}
+    selections = []
     narrator_roles = set()
     for group in plan.groups:
         target = "Narrator" if group.route == "narrator" else group.character
@@ -295,17 +299,45 @@ def _effective_voice_routes(plan, registry):
                         f"The selected voice reference changed for {group.character}"
                     )
         speaker = embedded or voice.speaker
-        previous = routes.get(target)
         choice = (voice, observed, speaker)
-        if previous is not None and (previous[2] != speaker or previous[1] != observed):
-            raise PregenerationQueueError(
-                f"Choose one voice for all {target} variants before generation"
+        selections.append((group, target, choice))
+
+    routes = {}
+    line_voice_characters = {}
+    choices_by_target = {}
+    for group, target, choice in selections:
+        choices_by_target.setdefault(target, []).append((group, choice))
+    for target, values in choices_by_target.items():
+        distinct = {(choice[2], choice[1]) for _group, choice in values}
+        if target == "Narrator" and len(distinct) > 1:
+            raise PregenerationQueueError("Choose one narrator voice before generation")
+        canonical = (values[0][1][2], values[0][1][1])
+        for group, choice in values:
+            effective_target = (
+                target
+                if len(distinct) == 1 or (choice[2], choice[1]) == canonical
+                else f"{target}__vntts_{group.group_id[:12]}"
             )
-        routes[target] = choice
+            routes[effective_target] = choice
+            if effective_target != group.character and group.route != "narrator":
+                line_voice_characters.update(
+                    {line_id: effective_target for line_id in group.line_ids}
+                )
     return {
         "routes": routes,
         "narrator_roles": tuple(sorted(narrator_roles, key=str.casefold)),
+        "line_voice_characters": line_voice_characters,
     }
+
+
+def _routed_story_records(records, line_voice_characters):
+    result = []
+    for record in records:
+        value = record.to_record()
+        if target := line_voice_characters.get(record.line_id):
+            value["voice_character"] = target
+        result.append(value)
+    return result
 
 
 def _write_effective_voices(staging, effective):
