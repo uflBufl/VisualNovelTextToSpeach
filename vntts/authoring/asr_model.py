@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-import copy
-import json
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import mkdtemp
-
-from vntts_artifacts.atomic_io import atomic_write_json, atomic_write_text
 
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.bulk_generation import BulkGenerationError, sha256_control_path
-from vntts.authoring.publication import (
-    AtomicPublicationError,
-    rename_directory_no_replace,
+from vntts.authoring.managed_model_installation import (
+    ManagedModelFiles,
+    install_managed_model,
+    managed_model_status,
+    model_installation,
 )
 from vntts.settings import get_local_data_directory
 
@@ -76,7 +71,17 @@ def managed_asr_root(root=None):
 
 def managed_asr_installation(model=WHISPER_TINY_EN, *, root=None):
     """Return the immutable installation directory for ``model``."""
-    return managed_asr_root(root) / model.model_id / model.revision
+    return model_installation(managed_asr_root(root), _files(model))
+
+
+def _files(model):
+    return ManagedModelFiles(
+        model.model_id,
+        model.repository,
+        model.revision,
+        model.files,
+        tree_sha256=model.tree_sha256,
+    )
 
 
 def _metadata(model):
@@ -115,56 +120,19 @@ def _notice(model):
     )
 
 
-def _tree_sha256(path):
-    try:
-        return sha256_control_path(path)
-    except BulkGenerationError as error:
-        raise ManagedAsrModelError(str(error)) from error
-
-
 def managed_asr_status(model=WHISPER_TINY_EN, *, root=None):
     """Return a deterministic, read-only status document."""
     installation = managed_asr_installation(model, root=root)
-    model_directory = installation / "model"
-    metadata_path = installation / "managed-model.json"
-    notice_path = installation / "THIRD_PARTY_NOTICES.txt"
-    status = "missing"
-    actual_sha256 = None
-    reason = None
-    if installation.exists():
-        if not installation.is_dir() or not model_directory.is_dir():
-            status = "invalid"
-            reason = "installation shape is invalid"
-        else:
-            actual_sha256 = _tree_sha256(model_directory)
-            if actual_sha256 != model.tree_sha256:
-                status = "invalid"
-                reason = "model tree checksum changed"
-            else:
-                try:
-                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                    notice = notice_path.read_text(encoding="utf-8")
-                except (OSError, ValueError) as error:
-                    status = "invalid"
-                    reason = f"installation metadata is unavailable: {error}"
-                else:
-                    if metadata != _metadata(model) or notice != _notice(model):
-                        status = "invalid"
-                        reason = "installation metadata changed"
-                    else:
-                        status = "installed"
-    return {
-        "model_id": model.model_id,
-        "repository": model.repository,
-        "revision": model.revision,
-        "installation": str(installation),
-        "model_directory": str(model_directory),
-        "status": status,
-        "expected_tree_sha256": model.tree_sha256,
-        "actual_tree_sha256": actual_sha256,
-        "reason": reason,
-        "licenses": copy.deepcopy(_metadata(model)["licenses"]),
-    }
+    metadata = _metadata(model)
+    status = managed_model_status(
+        installation,
+        _files(model),
+        metadata=metadata,
+        notice=_notice(model),
+        error_type=ManagedAsrModelError,
+    )
+    status["licenses"] = metadata["licenses"]
+    return status
 
 
 def resolve_managed_asr_model(model=WHISPER_TINY_EN, *, root=None):
@@ -204,57 +172,20 @@ def install_managed_asr_model(
     fetch_file=None,
 ):
     """Atomically import or download and verify one pinned model snapshot."""
-    existing = managed_asr_status(model, root=root)
-    if existing["status"] == "installed":
-        return existing
-    if existing["status"] == "invalid":
-        raise ManagedAsrModelError(
-            "Refusing to overwrite an invalid managed ASR installation: "
-            f"{existing['installation']}"
-        )
-
     installation = managed_asr_installation(model, root=root)
-    installation.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(mkdtemp(prefix=f".{model.model_id}-", dir=installation.parent))
-    source_directory = None if source is None else Path(source).expanduser().resolve()
     fetch = _download_file if fetch_file is None else fetch_file
-    try:
-        model_directory = staging / "model"
-        model_directory.mkdir()
-        for filename in model.files:
-            candidate = (
-                source_directory / filename
-                if source_directory is not None
-                else Path(fetch(model, filename))
-            )
-            if not candidate.is_file():
-                raise ManagedAsrModelError(
-                    f"Pinned ASR source file is missing: {candidate}"
-                )
-            shutil.copyfile(candidate, model_directory / filename)
-        actual_sha256 = _tree_sha256(model_directory)
-        if actual_sha256 != model.tree_sha256:
-            raise ManagedAsrModelError(
-                "Pinned ASR model checksum mismatch: "
-                f"expected {model.tree_sha256}, got {actual_sha256}"
-            )
-        atomic_write_json(
-            staging / "managed-model.json", _metadata(model), sort_keys=True
-        )
-        atomic_write_text(staging / "THIRD_PARTY_NOTICES.txt", _notice(model))
-        try:
-            rename_directory_no_replace(staging, installation)
-        except AtomicPublicationError as error:
-            if not installation.exists():
-                raise ManagedAsrModelError(str(error)) from error
-            if managed_asr_status(model, root=root)["status"] != "installed":
-                raise ManagedAsrModelError(
-                    "Managed ASR installation raced with a different publication"
-                ) from None
-        return managed_asr_status(model, root=root)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
+    result = install_managed_model(
+        installation,
+        _files(model),
+        metadata=_metadata(model),
+        notice=_notice(model),
+        source=source,
+        fetch_file=lambda filename: fetch(model, filename),
+        error_type=ManagedAsrModelError,
+        model_label="ASR model",
+    )
+    result["licenses"] = _metadata(model)["licenses"]
+    return result
 
 
 __all__ = [

@@ -1,7 +1,9 @@
 import json
+import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts.authoring.asr_model import (
     ManagedAsrModel,
@@ -12,6 +14,7 @@ from vntts.authoring.asr_model import (
 )
 from vntts.authoring.bulk_generation import sha256_control_path
 from vntts.authoring.cli import create_parser
+from vntts.authoring.publication import AtomicPublicationError
 
 
 def _model(source):
@@ -113,6 +116,29 @@ class ManagedAsrModelTest(unittest.TestCase):
                     root=root / "managed",
                     source=source,
                 )
+
+    def test_matching_concurrent_publication_is_accepted(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = self._source(root)
+            model = _model(source)
+
+            def publish_first(staging, installation):
+                shutil.copytree(staging, installation)
+                raise AtomicPublicationError("simulated race")
+
+            with patch(
+                "vntts.authoring.managed_model_installation."
+                "rename_directory_no_replace",
+                side_effect=publish_first,
+            ):
+                status = install_managed_asr_model(
+                    model,
+                    root=root / "managed",
+                    source=source,
+                )
+
+            self.assertEqual(status["status"], "installed")
 
     def test_missing_model_has_actionable_offline_error(self):
         with TemporaryDirectory() as directory:

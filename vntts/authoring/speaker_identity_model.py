@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import json
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import mkdtemp
-
-from vntts_artifacts.atomic_io import atomic_write_json, atomic_write_text
-from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.publication import (
-    AtomicPublicationError,
-    rename_directory_no_replace,
+from vntts.authoring.managed_model_installation import (
+    ManagedModelFiles,
+    install_managed_model,
+    managed_model_status,
+    model_installation,
 )
 from vntts.settings import get_local_data_directory
 
@@ -55,6 +51,16 @@ class ManagedSpeakerIdentityModel:
     implementation_revision: str = IMPLEMENTATION_REVISION
 
 
+def _files():
+    return ManagedModelFiles(
+        MODEL_ID,
+        REPOSITORY,
+        REVISION,
+        tuple(MODEL_FILES),
+        file_sha256s=MODEL_FILES,
+    )
+
+
 def managed_speaker_identity_root(root=None):
     if root is not None:
         return Path(root).expanduser().resolve()
@@ -64,7 +70,7 @@ def managed_speaker_identity_root(root=None):
 
 
 def managed_speaker_identity_installation(*, root=None):
-    return managed_speaker_identity_root(root) / MODEL_ID / REVISION
+    return model_installation(managed_speaker_identity_root(root), _files())
 
 
 def _metadata():
@@ -114,51 +120,17 @@ def _notice():
 
 def managed_speaker_identity_status(*, root=None):
     installation = managed_speaker_identity_installation(root=root)
-    model_directory = installation / "model"
-    metadata_path = installation / "managed-model.json"
-    notice_path = installation / "THIRD_PARTY_NOTICES.txt"
-    status = "missing"
-    reason = None
-    actual_files = {}
-    if installation.exists():
-        if not installation.is_dir() or not model_directory.is_dir():
-            status = "invalid"
-            reason = "installation shape is invalid"
-        else:
-            for filename, expected in MODEL_FILES.items():
-                path = model_directory / filename
-                actual = sha256_file(path) if path.is_file() else None
-                actual_files[filename] = actual
-                if actual != expected:
-                    status = "invalid"
-                    reason = f"model file changed: {filename}"
-                    break
-            else:
-                try:
-                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                    notice = notice_path.read_text(encoding="utf-8")
-                except (OSError, ValueError) as error:
-                    status = "invalid"
-                    reason = f"installation metadata is unavailable: {error}"
-                else:
-                    if metadata != _metadata() or notice != _notice():
-                        status = "invalid"
-                        reason = "installation metadata changed"
-                    else:
-                        status = "installed"
-    return {
-        "model_id": MODEL_ID,
-        "repository": REPOSITORY,
-        "revision": REVISION,
-        "installation": str(installation),
-        "model_directory": str(model_directory),
-        "status": status,
-        "expected_files": MODEL_FILES,
-        "actual_files": actual_files,
-        "reason": reason,
-        "licenses": _metadata()["licenses"],
-        "runtime": _metadata()["runtime"],
-    }
+    metadata = _metadata()
+    status = managed_model_status(
+        installation,
+        _files(),
+        metadata=metadata,
+        notice=_notice(),
+        error_type=SpeakerIdentityModelError,
+    )
+    status["licenses"] = metadata["licenses"]
+    status["runtime"] = metadata["runtime"]
+    return status
 
 
 def resolve_managed_speaker_identity_model(*, root=None):
@@ -190,51 +162,22 @@ def _download_file(filename):
 
 
 def install_managed_speaker_identity_model(*, root=None, source=None, fetch_file=None):
-    existing = managed_speaker_identity_status(root=root)
-    if existing["status"] == "installed":
-        return existing
-    if existing["status"] == "invalid":
-        raise SpeakerIdentityModelError(
-            "Refusing to overwrite an invalid speaker-model installation: "
-            f"{existing['installation']}"
-        )
     installation = managed_speaker_identity_installation(root=root)
-    installation.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(mkdtemp(prefix=f".{MODEL_ID}-", dir=installation.parent))
-    source_directory = None if source is None else Path(source).expanduser().resolve()
     fetch = _download_file if fetch_file is None else fetch_file
-    try:
-        model_directory = staging / "model"
-        model_directory.mkdir()
-        for filename, expected in MODEL_FILES.items():
-            candidate = (
-                source_directory / filename
-                if source_directory is not None
-                else Path(fetch(filename))
-            )
-            if not candidate.is_file():
-                raise SpeakerIdentityModelError(
-                    f"Pinned speaker-model source file is missing: {candidate}"
-                )
-            if sha256_file(candidate) != expected:
-                raise SpeakerIdentityModelError(
-                    f"Pinned speaker-model checksum mismatch: {filename}"
-                )
-            shutil.copyfile(candidate, model_directory / filename)
-        atomic_write_json(staging / "managed-model.json", _metadata(), sort_keys=True)
-        atomic_write_text(staging / "THIRD_PARTY_NOTICES.txt", _notice())
-        try:
-            rename_directory_no_replace(staging, installation)
-        except AtomicPublicationError as error:
-            if (
-                not installation.exists()
-                or managed_speaker_identity_status(root=root)["status"] != "installed"
-            ):
-                raise SpeakerIdentityModelError(str(error)) from error
-        return managed_speaker_identity_status(root=root)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
+    result = install_managed_model(
+        installation,
+        _files(),
+        metadata=_metadata(),
+        notice=_notice(),
+        source=source,
+        fetch_file=fetch,
+        error_type=SpeakerIdentityModelError,
+        model_label="speaker-model",
+    )
+    metadata = _metadata()
+    result["licenses"] = metadata["licenses"]
+    result["runtime"] = metadata["runtime"]
+    return result
 
 
 __all__ = [

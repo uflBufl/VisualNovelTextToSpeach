@@ -61,6 +61,16 @@ line extraction for self-service import and generation workers. Domain modules
 retain command construction and error wording rather than duplicating these
 mechanics.
 
+## Managed local-model installation
+
+`managed_model_installation` owns the shared immutable filesystem lifecycle for
+pinned authoring models: allowlisted file copying, checksum verification,
+metadata and notice validation, no-replace directory publication, race recovery
+and staging cleanup. ASR and speaker-identity modules retain their descriptors,
+licenses, download adapters, public status shapes, commands and domain-specific
+error types. A concurrent installer is accepted only when its published model,
+metadata and notice match the same pinned controls.
+
 ## Terminal-conflict record semantics
 
 `terminal_conflict_records.is_terminal_review_outcome()` owns the shared

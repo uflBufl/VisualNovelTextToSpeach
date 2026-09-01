@@ -55,10 +55,6 @@ intentional omission as distinct terminal authorities.
 Keep wire schemas, public compatibility aliases and domain-specific validation
 messages stable. Prefer existing leaf modules over new abstraction layers.
 
-- [ ] Share the pinned local-model installation lifecycle between managed ASR and
-      speaker-identity models while leaving their descriptors, checksums, notices,
-      public APIs and domain errors explicit. Gate: both installer/status suites
-      pass, including races, invalid installations and local-source imports.
 - [ ] Extract the common workspace-successor mechanics used by audio-event,
       known-role, reviewed-rejection, explicit-fallback and reviewed-waveform
       publication: checksum-validated base-WAV copying and lexically scoped
