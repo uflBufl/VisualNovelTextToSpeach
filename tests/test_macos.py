@@ -2,7 +2,7 @@ import plistlib
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from vntts.macos import (
     MacOSLaunchAtLogin,
@@ -19,10 +19,12 @@ class MacOSIntegrationTest(unittest.TestCase):
     def test_launch_arguments_support_source_and_packaged_app(self):
         executable = "/Applications/VNTTS.app/Contents/MacOS/VNTTS"
 
-        self.assertEqual(
-            get_launch_arguments(executable=executable, frozen=True),
-            [executable],
-        )
+        with patch("vntts.macos.Path.resolve") as resolve:
+            self.assertEqual(
+                get_launch_arguments(executable=executable, frozen=True),
+                [executable],
+            )
+        resolve.assert_not_called()
         self.assertEqual(
             get_launch_arguments(executable=executable, frozen=False),
             [executable, "-m", "vntts.app"],

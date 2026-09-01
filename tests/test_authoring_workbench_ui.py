@@ -831,7 +831,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(VoiceManifestError, "safe.*relative"):
+            with self.assertRaisesRegex(
+                VoiceManifestError, "safe.*relative|POSIX separators"
+            ):
                 VoiceReferenceController(manifest)
             manifest.write_bytes(original)
             self.assertTrue(

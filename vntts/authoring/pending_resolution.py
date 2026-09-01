@@ -301,6 +301,7 @@ def _required_text(value, label):
         raise PendingResolutionError(f"{label} must be non-empty text")
     return value
 
+
 def _required_sha256(value, label):
     if (
         not isinstance(value, str)

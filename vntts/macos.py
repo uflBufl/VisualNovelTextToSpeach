@@ -15,7 +15,9 @@ def get_launch_agent_path(home=None):
 
 
 def get_launch_arguments(*, executable=None, frozen=None):
-    executable = str(Path(executable or sys.executable).resolve())
+    executable = (
+        str(Path(sys.executable).resolve()) if executable is None else str(executable)
+    )
     frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
     return [executable] if frozen else [executable, "-m", "vntts.app"]
 

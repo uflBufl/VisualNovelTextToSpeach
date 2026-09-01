@@ -1561,8 +1561,7 @@ def _validate_audio_event_projection_fallback_evidence(
         or base_result.get("status") != "generated"
         or base_result.get("review_status") != "rejected"
         or isinstance(base_result.get("live_fallback"), dict)
-        or canonical_document_sha256(base_result)
-        != evidence.get("base_result_sha256")
+        or canonical_document_sha256(base_result) != evidence.get("base_result_sha256")
     ):
         raise ValueError(
             "Generated-audio event projection fallback evidence is malformed"
@@ -1640,8 +1639,7 @@ def _validate_reviewed_rejection_fallback_evidence(
         or base_result.get("status") != "generated"
         or base_result.get("review_status") != "rejected"
         or isinstance(base_result.get("live_fallback"), dict)
-        or canonical_document_sha256(base_result)
-        != evidence.get("base_result_sha256")
+        or canonical_document_sha256(base_result) != evidence.get("base_result_sha256")
         or not isinstance(references, list)
         or not references
         or references != sorted(set(references))
@@ -1740,8 +1738,7 @@ def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
         review = hypothesis["review"]
         decision = hypothesis["decision_document"]
         if (
-            canonical_document_sha256(review)
-            != hypothesis["review_document_sha256"]
+            canonical_document_sha256(review) != hypothesis["review_document_sha256"]
             or canonical_document_sha256(decision)
             != hypothesis["decision_document_sha256"]
             or review.get("review_id") != hypothesis["review_id"]
