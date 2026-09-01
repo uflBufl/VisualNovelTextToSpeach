@@ -10,11 +10,8 @@ from PySide6.QtCore import (
     QBuffer,
     QByteArray,
     QIODevice,
-    QObject,
-    QRunnable,
     QThreadPool,
     QUrl,
-    Signal,
 )
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -36,6 +33,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.failure_reference_audit import (
     load_failure_reference_audit,
@@ -48,27 +46,6 @@ from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewService,
 )
 from vntts.authoring.review_context_ui import ReviewDecisionContext
-
-
-class _TaskSignals(QObject):
-    finished = Signal(int, object, object)
-
-
-class _Task(QRunnable):
-    def __init__(self, serial, operation, arguments, signals):
-        super().__init__()
-        self.serial = serial
-        self.operation = operation
-        self.arguments = arguments
-        self.signals = signals
-
-    def run(self):
-        try:
-            result = self.operation(*self.arguments)
-        except Exception as error:
-            self.signals.finished.emit(self.serial, None, error)
-        else:
-            self.signals.finished.emit(self.serial, result, None)
 
 
 def _load_public_document(audit):
@@ -101,11 +78,8 @@ class FailureReferenceAuditDialog(QDialog):
         self.decision_recorder = decision_recorder
         self.preview_service = preview_service_factory(self.audit.directory)
         self.decisions = {value["group_id"]: value for value in decisions["decisions"]}
-        self._playback_serial = 0
-        self._save_serial = 0
         self._playback_active = False
         self._save_active = False
-        self._preview_serial = 0
         self._preview_active = False
         self._preview_result = None
         self._playback_buffer = None
@@ -264,14 +238,14 @@ class FailureReferenceAuditDialog(QDialog):
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._media_error)
 
-        self._playback_signals = _TaskSignals(self)
-        self._playback_signals.finished.connect(self._playback_finished)
-        self._save_signals = _TaskSignals(self)
-        self._save_signals.finished.connect(self._save_finished)
-        self._preview_signals = _TaskSignals(self)
-        self._preview_signals.finished.connect(self._preview_finished)
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(2)
+        self._playback_runner = LatestTaskRunner(self, thread_pool=self.thread_pool)
+        self._playback_runner.finished.connect(self._playback_finished)
+        self._save_runner = LatestTaskRunner(self, thread_pool=self.thread_pool)
+        self._save_runner.finished.connect(self._save_finished)
+        self._preview_runner = LatestTaskRunner(self, thread_pool=self.thread_pool)
+        self._preview_runner.finished.connect(self._preview_finished)
 
         QShortcut(QKeySequence("Ctrl+Alt+R"), self, activated=self.play_selected)
         QShortcut(QKeySequence("Ctrl+Alt+S"), self, activated=self.stop_playback)
@@ -458,23 +432,17 @@ class FailureReferenceAuditDialog(QDialog):
         if group is None or not isinstance(candidate_id, str):
             return
         self.stop_playback()
-        self._playback_serial += 1
-        serial = self._playback_serial
         self._playback_active = True
         self.status.setText("Loading and verifying copied reference audio...")
-        self.thread_pool.start(
-            _Task(
-                serial,
-                self.audio_preparer,
-                (self.audit.directory, group["group_id"], candidate_id),
-                self._playback_signals,
-            )
+        self._playback_runner.start(
+            self.audio_preparer,
+            self.audit.directory,
+            group["group_id"],
+            candidate_id,
         )
         self._update_actions()
 
-    def _playback_finished(self, serial, audio, error):
-        if serial != self._playback_serial:
-            return
+    def _playback_finished(self, audio, error):
         self._playback_active = False
         if error is not None:
             self.status.setText(f"BLOCKED: {error}")
@@ -538,20 +506,16 @@ class FailureReferenceAuditDialog(QDialog):
         ):
             return
         self.stop_playback()
-        self._preview_serial += 1
-        serial = self._preview_serial
         self._preview_active = True
         self.status.setText(
             "GENERATING: loading the workspace model if needed and rendering one "
             "deterministic sample in the background. No authoring state is written."
         )
-        self.thread_pool.start(
-            _Task(
-                serial,
-                self.preview_service.generate,
-                (group["group_id"], candidate_id, text),
-                self._preview_signals,
-            )
+        self._preview_runner.start(
+            self.preview_service.generate,
+            group["group_id"],
+            candidate_id,
+            text,
         )
         self._update_actions()
 
@@ -564,9 +528,7 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self._update_actions()
 
-    def _preview_finished(self, serial, preview, error):
-        if serial != self._preview_serial:
-            return
+    def _preview_finished(self, preview, error):
         self._preview_active = False
         if error is not None:
             if isinstance(error, FailureReferencePreviewCancelled):
@@ -649,26 +611,20 @@ class FailureReferenceAuditDialog(QDialog):
             )
             self._update_actions()
             return
-        self._save_serial += 1
-        serial = self._save_serial
         self._save_active = True
         self.status.setText(
             "Saving checksum-bound reference decision in the background; playback "
             "remains available."
         )
-        self.thread_pool.start(
-            _Task(
-                serial,
-                self.decision_recorder,
-                (self.audit.directory, group["group_id"], decision),
-                self._save_signals,
-            )
+        self._save_runner.start(
+            self.decision_recorder,
+            self.audit.directory,
+            group["group_id"],
+            decision,
         )
         self._update_actions()
 
-    def _save_finished(self, serial, document, error):
-        if serial != self._save_serial:
-            return
+    def _save_finished(self, document, error):
         self._save_active = False
         if error is not None:
             self.status.setText(f"BLOCKED: decision was not saved: {error}")

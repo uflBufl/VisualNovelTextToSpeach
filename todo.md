@@ -55,10 +55,6 @@ intentional omission as distinct terminal authorities.
 Keep wire schemas, public compatibility aliases and domain-specific validation
 messages stable. Prefer existing leaf modules over new abstraction layers.
 
-- [ ] Replace private Qt `QRunnable`/signal copies in the cohort, reference-audit
-      and workbench interfaces with the existing `LatestTaskRunner`, retaining
-      independent operation lanes, latest-result-wins behavior and close safety.
-      Gate: focused UI tests cover success, error, stale completion and close.
 - [ ] Share the pinned local-model installation lifecycle between managed ASR and
       speaker-identity models while leaving their descriptors, checksums, notices,
       public APIs and domain errors explicit. Gate: both installer/status suites

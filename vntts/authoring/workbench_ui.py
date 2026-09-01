@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
 )
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
+from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.bulk_generation import ReviewCommit
 from vntts.authoring.cohort_bundle import (
     CohortReviewBundle,
@@ -442,27 +443,6 @@ class _ReviewTask(QRunnable):
             self.signals.finished.emit(self.serial, result, None)
 
 
-class _SpecialistTaskSignals(QObject):
-    finished = Signal(int, object, object)
-
-
-class _SpecialistTask(QRunnable):
-    def __init__(self, serial, function, arguments, signals):
-        super().__init__()
-        self.serial = serial
-        self.function = function
-        self.arguments = arguments
-        self.signals = signals
-
-    def run(self):
-        try:
-            result = self.function(*self.arguments)
-        except Exception as error:
-            self.signals.finished.emit(self.serial, None, error)
-        else:
-            self.signals.finished.emit(self.serial, result, None)
-
-
 class AuthoringWorkbenchDialog(QDialog):
     """Thin Qt shell over the validated authoring workspace boundary."""
 
@@ -542,11 +522,8 @@ class AuthoringWorkbenchDialog(QDialog):
         self._review_thread_pool.setMaxThreadCount(1)
         self._review_shortcuts = []
         self._specialist_active = False
-        self._specialist_serial = 0
-        self._specialist_signals = _SpecialistTaskSignals(self)
-        self._specialist_signals.finished.connect(self._specialist_task_finished)
-        self._specialist_thread_pool = QThreadPool(self)
-        self._specialist_thread_pool.setMaxThreadCount(1)
+        self._specialist_runner = LatestTaskRunner(self)
+        self._specialist_runner.finished.connect(self._specialist_task_finished)
         self._cohort_bundle_builder = (
             cohort_bundle_builder or build_cohort_review_bundle
         )
@@ -1907,23 +1884,14 @@ class AuthoringWorkbenchDialog(QDialog):
 
     def _start_specialist_task(self, function, *arguments):
         self._specialist_active = True
-        self._specialist_serial += 1
-        serial = self._specialist_serial
         self.specialist_review_status.setText(
             "Building a checksum-bound bundle from the current workspace..."
         )
         self._update_specialist_action()
-        self._specialist_thread_pool.start(
-            _SpecialistTask(
-                serial,
-                function,
-                arguments,
-                self._specialist_signals,
-            )
-        )
+        self._specialist_runner.start(function, *arguments)
 
-    def _specialist_task_finished(self, serial, result, error):
-        if serial != self._specialist_serial or not self._specialist_active:
+    def _specialist_task_finished(self, result, error):
+        if not self._specialist_active:
             return
         self._specialist_active = False
         if error is not None:

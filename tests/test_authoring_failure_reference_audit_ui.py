@@ -126,9 +126,8 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
                 audit, group["group_id"], candidate_id
             )
 
-            dialog._playback_serial = 1
             dialog._playback_active = True
-            dialog._playback_finished(1, prepared, None)
+            dialog._playback_finished(prepared, None)
 
             self.assertEqual(dialog._playback_buffer.data().data(), prepared.payload)
             self.assertFalse(dialog.choose.isEnabled())

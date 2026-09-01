@@ -15,13 +15,10 @@ from PySide6.QtCore import (
     QBuffer,
     QByteArray,
     QIODevice,
-    QObject,
-    QRunnable,
     Qt,
     QThreadPool,
     QTimer,
     QUrl,
-    Signal,
 )
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -46,6 +43,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.cohort_bundle import (
     CohortBundleSample,
     CohortReviewBundle,
@@ -75,27 +73,6 @@ def _display_required_reason(reason):
     if reason.startswith(prefix):
         return "advisory measurement; listening decides: " + reason.removeprefix(prefix)
     return reason
-
-
-class _TaskSignals(QObject):
-    finished = Signal(int, object, object)
-
-
-class _Task(QRunnable):
-    def __init__(self, serial, operation, arguments, signals):
-        super().__init__()
-        self.serial = serial
-        self.operation = operation
-        self.arguments = arguments
-        self.signals = signals
-
-    def run(self):
-        try:
-            result = self.operation(*self.arguments)
-        except Exception as error:
-            self.signals.finished.emit(self.serial, None, error)
-        else:
-            self.signals.finished.emit(self.serial, result, None)
 
 
 @dataclass(frozen=True)
@@ -356,10 +333,7 @@ class CohortReviewBundleDialog(QDialog):
         self._playback_prepare_active = False
         self._decision_active = False
         self._observation_active = False
-        self._load_serial = 0
         self._playback_serial = 0
-        self._decision_serial = 0
-        self._observation_serial = 0
         self._pending_observation = None
         self._close_after_observation = False
         self._decision_started_at = None
@@ -607,16 +581,16 @@ class CohortReviewBundleDialog(QDialog):
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._media_error)
 
-        self._load_signals = _TaskSignals(self)
-        self._load_signals.finished.connect(self._load_finished)
-        self._playback_signals = _TaskSignals(self)
-        self._playback_signals.finished.connect(self._playback_finished)
-        self._decision_signals = _TaskSignals(self)
-        self._decision_signals.finished.connect(self._decision_finished)
-        self._observation_signals = _TaskSignals(self)
-        self._observation_signals.finished.connect(self._observation_finished)
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(2)
+        self._load_runner = LatestTaskRunner(self, thread_pool=self.thread_pool)
+        self._load_runner.finished.connect(self._load_finished)
+        self._playback_runner = LatestTaskRunner(self, thread_pool=self.thread_pool)
+        self._playback_runner.finished.connect(self._playback_finished)
+        self._decision_runner = LatestTaskRunner(self, thread_pool=self.thread_pool)
+        self._decision_runner.finished.connect(self._decision_finished)
+        self._observation_runner = LatestTaskRunner(self, thread_pool=self.thread_pool)
+        self._observation_runner.finished.connect(self._observation_finished)
         self._operation_timer = QTimer(self)
         self._operation_timer.setInterval(250)
         self._operation_timer.timeout.connect(self._update_operation_status)
@@ -660,8 +634,6 @@ class CohortReviewBundleDialog(QDialog):
         if self._load_active or self._decision_active:
             return
         self._load_active = True
-        self._load_serial += 1
-        serial = self._load_serial
         self.status.setText("Loading and checksum-validating all bundle sources...")
         self._update_actions()
         operation = self.sample_loader
@@ -673,10 +645,10 @@ class CohortReviewBundleDialog(QDialog):
             else:
                 operation = _load_quality_gated_review_session
                 arguments = (self.bundle_path, self.quality_gate_path)
-        self.thread_pool.start(_Task(serial, operation, arguments, self._load_signals))
+        self._load_runner.start(operation, *arguments)
 
-    def _load_finished(self, serial, result, error):
-        if serial != self._load_serial or not self._load_active:
+    def _load_finished(self, result, error):
+        if not self._load_active:
             return
         self._load_active = False
         if error is not None:
@@ -973,20 +945,12 @@ class CohortReviewBundleDialog(QDialog):
             return
         self._playback_prepare_active = True
         self._playback_serial += 1
-        serial = self._playback_serial
         self.status.setText(f"Preparing exact WAV: {sample.item.line_id}")
         self._update_actions()
-        self.thread_pool.start(
-            _Task(
-                serial,
-                self.playback_preparer,
-                (sample,),
-                self._playback_signals,
-            )
-        )
+        self._playback_runner.start(self.playback_preparer, sample)
 
-    def _playback_finished(self, serial, result, error):
-        if serial != self._playback_serial or not self._playback_prepare_active:
+    def _playback_finished(self, result, error):
+        if not self._playback_prepare_active:
             return
         self._playback_prepare_active = False
         if error is not None:
@@ -1186,22 +1150,13 @@ class CohortReviewBundleDialog(QDialog):
 
     def _start_observation_checkpoint(self, snapshot):
         self._observation_active = True
-        self._observation_serial += 1
-        serial = self._observation_serial
         self.operation.setText(
             "Saving listening progress in background; replay and decisions remain available."
         )
-        self.thread_pool.start(
-            _Task(
-                serial,
-                self.observation_writer,
-                snapshot,
-                self._observation_signals,
-            )
-        )
+        self._observation_runner.start(self.observation_writer, *snapshot)
 
-    def _observation_finished(self, serial, _result, error):
-        if serial != self._observation_serial or not self._observation_active:
+    def _observation_finished(self, _result, error):
+        if not self._observation_active:
             return
         self._observation_active = False
         if error is not None:
@@ -1303,10 +1258,8 @@ class CohortReviewBundleDialog(QDialog):
                 f"{len(reviewed)} heard samples"
             )
         self._decision_active = True
-        self._decision_serial += 1
         self._decision_started_at = time.perf_counter()
         self._operation_timer.start()
-        serial = self._decision_serial
         self.status.setText(
             f"SAVING {decision}: audio replay and navigation remain available"
         )
@@ -1328,12 +1281,10 @@ class CohortReviewBundleDialog(QDialog):
                 self.original_bundle,
                 *arguments,
             )
-        self.thread_pool.start(
-            _Task(serial, operation, arguments, self._decision_signals)
-        )
+        self._decision_runner.start(operation, *arguments)
 
-    def _decision_finished(self, serial, result, error):
-        if serial != self._decision_serial or not self._decision_active:
+    def _decision_finished(self, result, error):
+        if not self._decision_active:
             return
         self._decision_active = False
         self._operation_timer.stop()

@@ -54,6 +54,12 @@ High-consequence review interfaces must use the same operator contract:
 Daily application and setup surfaces use the same status, busy, recovery,
 accessibility and compact-layout conventions, but do not need the review ledger.
 
+Blocking UI operations use `LatestTaskRunner` as the shared Qt worker boundary.
+Each independent operation lane owns one runner, so a newer launch invalidates
+only its older result while replay, decision, checkpoint and projection work
+remain independent. The cohort reviewer, failure-reference audit and workbench
+specialist launcher do not maintain private `QRunnable`/signal copies.
+
 ## Decision-context implementation, 2026-08-28
 
 The specialist cohort, missing-voice/failed-line, failed-reference audit,
