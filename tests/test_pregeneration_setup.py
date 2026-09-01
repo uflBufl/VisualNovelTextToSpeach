@@ -494,9 +494,18 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 voice_plan_store=voice_plan_store,
             )
 
-            with patch(
-                "vntts.pregeneration_ui.find_default_voice_manifest",
-                return_value=None,
+            effective_settings = AppSettings(
+                speech_backend="pocket-tts", tts_profile="default"
+            )
+            with (
+                patch(
+                    "vntts.pregeneration_ui.find_default_voice_manifest",
+                    return_value=None,
+                ),
+                patch(
+                    "vntts.pregeneration_ui.resolve_pregeneration_settings",
+                    return_value=effective_settings,
+                ),
             ):
                 result = dialog._create_voice_plan(job)
 
@@ -509,6 +518,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 voice_plan_store.create.call_args.kwargs["manifest_path"],
                 manifest,
             )
+            self.assertIs(voice_plan_store.create.call_args.args[1], effective_settings)
             dialog.deleteLater()
 
     def test_generation_input_cancel_waits_for_its_worker(self):

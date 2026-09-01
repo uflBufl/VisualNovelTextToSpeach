@@ -21,12 +21,11 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
   - [ ] Opportunistically pre-render the next unresolved comparison after the
         current A/B card becomes usable, without delaying a decision or making
         cancellation wait for speculative work.
-- [ ] Complete automatic quality recovery after the resumable first pass. Select
-      a supported local backend/profile from hardware capabilities instead of
-      blindly trusting stale settings; classify truncation, repetition,
-      artifacts, clipping, abnormal silence and pacing; apply only bounded typed
-      repairs; then use the configured offline fallback. A residual bad/failed
-      line must receive an explicit live fallback and must not stop the pack.
+- [ ] Complete automatic quality recovery after the resumable first pass.
+      Classify truncation, repetition, artifacts, clipping, abnormal silence and
+      pacing; apply only bounded typed repairs; then use the configured offline
+      fallback. A residual bad/failed line must receive an explicit live fallback
+      and must not stop the pack.
 - [ ] Add one fixed preview corpus per resolved voice and retain only
       low-confidence voice or quality exceptions as optional auditions. Normal
       completion already accepts technically valid generated WAVs atomically and

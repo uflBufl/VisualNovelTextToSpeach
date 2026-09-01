@@ -24,6 +24,7 @@ from vntts.pregeneration_voices import (
     PregenerationVoiceError,
     VoiceDecisionStore,
     VoicePlanStore,
+    resolve_pregeneration_settings,
 )
 from vntts.settings import AppSettings
 
@@ -324,6 +325,28 @@ class VoicePlanStoreTest(unittest.TestCase):
         jobs = PregenerationJobStore(root / "jobs")
         job = jobs.create_or_resume(content, ("story",))
         return job, jobs
+
+    def test_self_service_uses_a_supported_backend_and_profile(self):
+        unsupported_moss = resolve_pregeneration_settings(
+            AppSettings(
+                speech_backend="moss-tts",
+                tts_model="local-moss",
+                tts_profile="stable",
+            ),
+            platform_name="win32",
+            machine="AMD64",
+        )
+        invalid_profile = resolve_pregeneration_settings(
+            AppSettings(speech_backend="coqui-xtts", tts_profile="obsolete"),
+            platform_name="linux",
+            machine="x86_64",
+        )
+
+        self.assertEqual(unsupported_moss.speech_backend, "pocket-tts")
+        self.assertIsNone(unsupported_moss.tts_model)
+        self.assertEqual(unsupported_moss.tts_profile, "default")
+        self.assertEqual(invalid_profile.speech_backend, "coqui-xtts")
+        self.assertEqual(invalid_profile.tts_profile, "stable")
 
     def test_source_audio_is_excluded_and_lines_are_grouped_by_voice_variant(self):
         with TemporaryDirectory() as temporary_directory:

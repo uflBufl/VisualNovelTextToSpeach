@@ -50,6 +50,7 @@ from vntts.pregeneration_voices import (
     PregenerationVoiceCancelled,
     VoiceDecisionStore,
     VoicePlanStore,
+    resolve_pregeneration_settings,
 )
 from vntts.voices import find_default_voice_manifest
 
@@ -477,7 +478,11 @@ class OfflineAudioPreparationDialog(QDialog):
         }
         if manifest is not None:
             options["manifest_path"] = manifest
-        return self.voice_plan_store.create(job, self.settings, **options)
+        return self.voice_plan_store.create(
+            job,
+            resolve_pregeneration_settings(self.settings),
+            **options,
+        )
 
     def _voice_plan_finished(self, plan, error):
         self.planning_voices = False

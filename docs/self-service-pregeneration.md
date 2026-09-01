@@ -81,6 +81,11 @@ character variant under identical synthesis controls. The second phrase is
 optional, has its own checksum-bound cache identity and never adds a mandatory
 decision.
 
+Voice planning normalizes stale synthesis controls before any preview or bulk
+work starts. Pocket always uses its native `default` profile; invalid clone-model
+profiles fall back to `stable`; and MOSS selected on non-Apple-Silicon hosts
+falls back to Pocket instead of starting a backend that cannot run there.
+
 ## Progress and recovery
 
 Before generation, the wizard shows selected chapters, dialogue-line count, an
