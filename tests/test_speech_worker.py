@@ -461,6 +461,14 @@ class SpeechWorkerTest(unittest.TestCase):
         self.assertEqual(backend.generation_profile, "stable")
         self.assertEqual(backend.model_name, "moss-tts")
 
+    def test_pocket_worker_ignores_an_inapplicable_saved_profile(self):
+        backend = object.__new__(IsolatedSpeechBackend)
+        backend.name = "pocket-tts"
+        backend.generation_profile = "default"
+
+        self.assertFalse(backend.set_generation_profile("stable"))
+        self.assertEqual(backend.generation_profile, "default")
+
     def test_worker_exposes_the_exact_configured_model_identity(self):
         backend = object.__new__(IsolatedSpeechBackend)
 

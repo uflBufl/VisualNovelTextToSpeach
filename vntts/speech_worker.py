@@ -1046,7 +1046,11 @@ class IsolatedSpeechBackend:
         self.speed = validate_speed(speed)
 
     def set_generation_profile(self, profile):
-        profile = str(profile).strip().casefold()
+        profile = (
+            str(profile).strip().casefold()
+            if self.name in {"moss-tts", "moss-tts-delay"}
+            else "default"
+        )
         changed = profile != self.generation_profile
         self.generation_profile = profile
         return changed
