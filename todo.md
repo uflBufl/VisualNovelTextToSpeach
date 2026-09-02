@@ -28,13 +28,6 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       event identity, routes, recovery and advance counts exact; do not hide
       correctness failures behind retries.
 
-## P0 - Make the Windows Pocket runtime genuinely portable
-
-- [ ] Qualify the self-contained Pocket runtime on Windows: build the portable
-      package, require its relocation self-test to keep the interpreter,
-      prefixes and imported modules inside the copied package, then complete
-      one clean-cache Pocket render from that package.
-
 ## P1 - Improve the self-service generation engine
 
 Follow
@@ -60,10 +53,8 @@ Every retained upper bound or exact pin must name the observed incompatibility
 in the same commit.
 
 - [ ] Complete the remaining packaged/runtime qualification of the upgraded
-      Python 3.14 root application. Windows, Linux and macOS CI pass; the unsigned
-      macOS app and mounted DMG pass clean-cache Pocket rendering and all package
-      self-tests. Require the packaged Windows self-test and one CPU XTTS render;
-      retain Transformers `<5` until Coqui stops importing the removed
+      Python 3.14 root application with one CPU XTTS render on Windows. Retain
+      Transformers `<5` until Coqui stops importing the removed
       `isin_mps_friendly` API.
 - [ ] Qualify Pocket TTS 3.0.2 in the packaged Windows runtime. Compare a fixed
       preset-voice render with the last release and require no truncation,
