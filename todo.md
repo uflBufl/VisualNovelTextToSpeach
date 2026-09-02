@@ -45,17 +45,6 @@ blindly upgrading an atomic model stack beyond its upstream-supported versions.
 Every retained upper bound or exact pin must name the observed incompatibility
 in the same commit.
 
-- [ ] Fix the dependency baseline before upgrading packages.
-  - Change the stale root `.python-version` from 3.11 to 3.14 and make CI check
-    every `pyproject.toml`/`uv.lock` pair with its declared Python version on all
-    supported operating systems.
-  - Add one read-only dependency report that lists outdated direct packages,
-    unsupported Python constraints and release-platform wheel availability.
-    Release environments must not silently build Torch, TorchCodec, NumPy,
-    SciPy, MLX, ONNX Runtime or Qt from source.
-  - Upgrade one runtime per commit. For each runtime, lock first, run its unit
-    tests and import probe, then render a fixed short WAV and verify finite PCM,
-    sample rate, duration and clean worker shutdown before moving to the next.
 - [ ] Complete cross-platform qualification of the upgraded Python 3.14 root
       application. Acceptance requires macOS, Windows and Linux unit jobs,
       packaged application self-tests and one CPU XTTS render; retain
