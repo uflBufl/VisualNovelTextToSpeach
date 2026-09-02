@@ -163,7 +163,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
         voice_result = next(
             result for result in results if result.name == "Character voices"
         )
-        self.assertEqual(voice_result.status, "warning")
+        self.assertEqual(voice_result.status, "ok")
         self.assertIn("built-in Alba", voice_result.message)
 
     def test_missing_macos_permissions_block_setup_with_actionable_guidance(self):
