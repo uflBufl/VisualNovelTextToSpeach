@@ -61,11 +61,9 @@ in the same commit.
       packaged application self-tests and one CPU XTTS render; retain
       Transformers `<5` until Coqui stops importing the removed
       `isin_mps_friendly` API.
-- [ ] Upgrade Pocket TTS from 2.1.0 to 3.0.2 on Python 3.14.
-  - Adapt only confirmed API changes, retain the existing isolated worker and
-    compare a fixed preset-voice render before and after the upgrade.
-  - Acceptance: startup/cancellation/cache tests pass and the new render has no
-    truncation, invalid PCM or material latency regression.
+- [ ] Qualify Pocket TTS 3.0.2 in the packaged Windows runtime. Compare a fixed
+      preset-voice render with the last release and require no truncation,
+      invalid PCM or material latency regression.
 - [ ] Move Chatterbox Nano from Python `<3.13` to Python 3.14.
   - The pinned upstream revision already declares a Python-3.14 Torch branch;
     regenerate its lock on 3.14, then consider a newer immutable upstream commit
