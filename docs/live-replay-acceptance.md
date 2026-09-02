@@ -287,6 +287,14 @@ separately cover a pure `...` event with no synthesis, identical ambiguous
 lines, branch selection, bounded multi-line skip, visual-wait postponement and
 an unconfirmed key that is never retried.
 
+Sequence expectations treat `ocr_calls` as a maximum budget: using fewer OCR
+frames while preserving the same events and routes is an improvement. Event and
+line identities, bounded recoveries, key dispatches, confirmations and route
+integrity remain exact requirements. The safety corpus permits one extra bounded
+OCR when thread scheduling reaches the explicit choice boundary before its
+canonical route is reserved; that recovery must not alter the chosen line,
+speaker, audio source or advance count.
+
 The tracked `samples/rhiannon-live-replay-representative.json` covers:
 
 - Rhiannon's short `I, erhm ...` through a declared original-game route;

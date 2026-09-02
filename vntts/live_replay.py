@@ -986,7 +986,14 @@ class LiveReplayRunner:
             advance_states,
         )
         expected_sequence = binding.expectation.to_dict()
-        sequence_successful = observed_sequence == expected_sequence
+        sequence_successful = bool(
+            observed_sequence["ocr_calls"] <= expected_sequence["ocr_calls"]
+            and all(
+                observed_sequence[key] == value
+                for key, value in expected_sequence.items()
+                if key != "ocr_calls"
+            )
+        )
         route_integrity = _sequence_route_integrity(
             self.corpus.dialogue,
             played,

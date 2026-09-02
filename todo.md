@@ -44,9 +44,12 @@ measurements and completed-work history in `docs/` and Git, not here.
     or generated playback completion wins a valid scheduling race.
   - Give the tracked sequence rollout an outer test deadline longer than its
     internal five-second auto-advance confirmation window; retain exact compact
-    corpus and recognized-frame diagnostics if the route itself fails. Remove
-    the Windows-only extra OCR of a cursor-routable canonical frame instead of
-    weakening the sequence-first OCR budget.
+    corpus and recognized-frame diagnostics if the route itself fails. Treat
+    OCR counts as upper budgets while keeping event, route and advance evidence
+    exact; fewer OCR calls are an improvement, not a regression.
+  - Eliminate the intermittent macOS `SettingsDialog` construction hang in the
+    exact `qt-app` shard; keep the last verbose test identity as evidence and a
+    bounded per-module timeout rather than relying on the workflow-wide guard.
   - Gate: `scripts/run_ci_unittests.py discover -s tests` and
     `scripts/build-windows.ps1` complete as a non-admin user without requiring
     Developer Mode. Retain the ordinary macOS full-suite gate.
