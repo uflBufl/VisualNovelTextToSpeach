@@ -1,7 +1,7 @@
 {
   "schema": "vntts.generated-audio",
-  "schema_version": 1,
   "fixture": "representative-device-free",
+  "schema_version": 1,
   "entry_count": 1,
   "entries": [
     {

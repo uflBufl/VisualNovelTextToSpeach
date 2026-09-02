@@ -4,7 +4,7 @@
   "fixture_kind": "checksum-bound-production-controller-audio-auto-safety",
   "generated_audio_manifest": {
     "path": "rhiannon-live-replay-generated.json",
-    "sha256": "8a3fba8c0ba96fac31b1a8d40e87e3b423a39786eb46da71ce2705cc44541840"
+    "sha256": "a8020a4610f459393e06b010386ee57deb217fc77974f331524b53f954862ca7"
   },
   "live_sequence": {
     "mode": "audio-auto",
