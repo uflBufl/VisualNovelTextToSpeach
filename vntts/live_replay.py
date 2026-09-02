@@ -644,6 +644,12 @@ class LiveReplayRunner:
         try:
             reader.start()
             completed = frame_source.completed.wait(self.timeout_seconds)
+            if not completed:
+                errors.append(
+                    TimeoutError(
+                        f"Live replay timed out after {self.timeout_seconds:g} seconds"
+                    )
+                )
             frame_source.stop()
             reader.stop()
             reader.wait()
@@ -956,6 +962,12 @@ class LiveReplayRunner:
         try:
             reader.start()
             completed = frame_source.completed.wait(self.timeout_seconds)
+            if not completed:
+                errors.append(
+                    TimeoutError(
+                        f"Live replay timed out after {self.timeout_seconds:g} seconds"
+                    )
+                )
             frame_source.stop()
             reader.stop()
             reader.wait()

@@ -462,6 +462,7 @@ class LiveReplayTest(unittest.TestCase):
             ).run()
 
         self.assertFalse(report["successful"])
+        self.assertEqual(report["errors"], ["Live replay timed out after 0.2 seconds"])
         self.assertEqual(report["observed_dialogue"], [])
         self.assertEqual(report["route_sources"], [])
         self.assertEqual(report["sequence"]["observed"]["event_ids"], [])
@@ -755,7 +756,7 @@ class LiveReplayTest(unittest.TestCase):
             report = LiveReplayRunner(
                 load_live_replay_corpus(root / corpus_name),
                 interval_seconds=0.002,
-                timeout_seconds=10,
+                timeout_seconds=30,
             ).run()
             reports.append(report)
             self.assertTrue(
@@ -1002,6 +1003,7 @@ class LiveReplayTest(unittest.TestCase):
             ).run()
 
         self.assertFalse(report["successful"])
+        self.assertEqual(report["errors"], ["Live replay timed out after 0.1 seconds"])
         self.assertEqual(report["route_sources"], ["game"])
         self.assertEqual(report["advance_requests"], 0)
 
