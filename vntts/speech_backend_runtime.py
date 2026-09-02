@@ -12,6 +12,7 @@ from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.runtime_paths import find_bundled_speech_runtime, get_bundle_root
 from vntts.services.tts_engine import TTSConfigurationError
 
 
@@ -48,17 +49,20 @@ def activate_backend_runtime(
     missing_message,
 ):
     """Expose one standalone backend environment to the current interpreter."""
+    configured = runtime_directory or os.environ.get(environment_variable, "")
+    bundle_root = get_bundle_root() if not configured else None
+    bundled = (
+        find_bundled_speech_runtime(backend_directory, bundle_root)
+        if bundle_root is not None
+        else None
+    )
+    source_runtime = (
+        Path(__file__).resolve().parents[1] / "backends" / backend_directory / ".venv"
+        if bundle_root is None
+        else bundle_root / "speech-runtimes" / backend_directory
+    )
     runtime_directory = (
-        Path(
-            runtime_directory
-            or os.environ.get(environment_variable, "")
-            or Path(__file__).resolve().parents[1]
-            / "backends"
-            / backend_directory
-            / ".venv"
-        )
-        .expanduser()
-        .resolve()
+        Path(configured or bundled or source_runtime).expanduser().resolve()
     )
     if sys.platform == "win32":
         site_packages = runtime_directory / "Lib" / "site-packages"
@@ -70,6 +74,11 @@ def activate_backend_runtime(
             / "site-packages"
         )
     if not site_packages.is_dir():
+        if bundle_root is not None:
+            raise TTSConfigurationError(
+                f"{backend_directory} runtime is missing from the application "
+                "package. Reinstall the application from a complete release package."
+            )
         raise TTSConfigurationError(missing_message)
     site_packages_text = str(site_packages)
     if site_packages_text not in sys.path:

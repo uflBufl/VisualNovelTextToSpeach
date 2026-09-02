@@ -1,10 +1,13 @@
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts.services.tts_engine import TTSConfigurationError
 from vntts.speech_backend_runtime import (
     BoundedCache,
+    activate_backend_runtime,
     validate_speed,
     validate_volume,
     voice_artifact_cache_path,
@@ -13,6 +16,51 @@ from vntts.speech_backend_runtime import (
 
 
 class SpeechBackendRuntimeTest(unittest.TestCase):
+    def test_activation_uses_runtime_from_frozen_bundle(self):
+        with TemporaryDirectory() as directory:
+            bundle_root = Path(directory)
+            runtime = bundle_root / "speech-runtimes/pocket-tts"
+            site_packages = runtime / "Lib/site-packages"
+            site_packages.mkdir(parents=True)
+
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("vntts.speech_backend_runtime.sys.platform", "win32"),
+                patch(
+                    "vntts.speech_backend_runtime.get_bundle_root",
+                    return_value=bundle_root,
+                ),
+            ):
+                activated = activate_backend_runtime(
+                    None,
+                    environment_variable="VNTTS_TEST_RUNTIME",
+                    backend_directory="pocket-tts",
+                    missing_message="run uv sync",
+                )
+
+            self.assertEqual(activated, site_packages.resolve())
+
+    def test_missing_frozen_runtime_does_not_recommend_uv(self):
+        with TemporaryDirectory() as directory:
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "vntts.speech_backend_runtime.get_bundle_root",
+                    return_value=Path(directory),
+                ),
+                self.assertRaisesRegex(
+                    TTSConfigurationError, "complete release package"
+                ) as raised,
+            ):
+                activate_backend_runtime(
+                    None,
+                    environment_variable="VNTTS_TEST_RUNTIME",
+                    backend_directory="pocket-tts",
+                    missing_message="run uv sync",
+                )
+
+            self.assertNotIn("uv sync", str(raised.exception))
+
     def test_bounded_cache_evicts_the_least_recently_used_value(self):
         cache = BoundedCache(2)
         cache.put("first", 1)
