@@ -77,6 +77,7 @@ for distribution in (
     "ko-speech-tools",
     "torch",
     "torchaudio",
+    "torchcodec",
     "trainer",
     "transformers",
     "reverse1999-extractor",

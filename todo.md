@@ -45,11 +45,12 @@ blindly upgrading an atomic model stack beyond its upstream-supported versions.
 Every retained upper bound or exact pin must name the observed incompatibility
 in the same commit.
 
-- [ ] Complete cross-platform qualification of the upgraded Python 3.14 root
-      application. Acceptance requires macOS, Windows and Linux unit jobs,
-      packaged application self-tests and one CPU XTTS render; retain
-      Transformers `<5` until Coqui stops importing the removed
-      `isin_mps_friendly` API.
+- [ ] Complete the remaining cross-platform qualification of the upgraded
+      Python 3.14 root application. The unsigned macOS app and mounted DMG now
+      pass clean-cache Pocket rendering and all package self-tests. Still require
+      successful Windows and Linux CI, the packaged Windows self-test and one
+      CPU XTTS render; retain Transformers `<5` until Coqui stops importing the
+      removed `isin_mps_friendly` API.
 - [ ] Qualify Pocket TTS 3.0.2 in the packaged Windows runtime. Compare a fixed
       preset-voice render with the last release and require no truncation,
       invalid PCM or material latency regression.
@@ -57,15 +58,12 @@ in the same commit.
       Dependency resolution must use wheels, worker start/stop must pass and a
       reference-conditioned render must succeed before release packaging.
 - [ ] Qualify the Python 3.14 MOSS Delay candidate on Windows CUDA. It retains
-      upstream's Torch/TorchAudio 2.9.1, CUDA 12.8 and Transformers 5.0 pins but
-      trials TorchCodec 0.9.1, which upstream MOSS has not validated. Install a
-      supported full-shared FFmpeg 4-8 build, run the CUDA probe and require one
-      real checksum-bound reference-conditioned render before accepting it.
-  - Treat 0.9.1 only as the smallest Python-3.14 bridge, not the final upgrade.
-    After that render passes, trial the latest atomic stack, currently including
-    TorchCodec 0.16 with a compatible Torch/TorchAudio `>=2.11` and the newest
-    compatible Transformers. Keep older upstream pins only if output, VRAM,
-    loading or generation compatibility regresses.
+      an upstream-compatible Transformers 5.0 pin while trialling the current
+      Torch/TorchAudio 2.11, TorchCodec 0.16 and CUDA 13.0 atomic stack. Install
+      a supported full-shared FFmpeg 4-8 build, run the CUDA probe and require
+      one real checksum-bound reference-conditioned render before accepting it.
+      Trial the newest Transformers only after that baseline passes, and retain
+      5.0 if output, VRAM, loading or generation compatibility regresses.
   - Acceptance: CUDA import and one checksum-bound render pass on Windows, with
     a CPU-only host producing a clear unsupported-backend result rather than
     loading the 8B model.

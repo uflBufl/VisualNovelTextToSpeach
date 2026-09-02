@@ -35,6 +35,15 @@ class ReleasePackagingTest(unittest.TestCase):
                 self.assertIn('collect_all("r1999extractor")', spec)
                 self.assertIn('"reverse1999-extractor"', spec)
 
+    def test_platform_specs_copy_torchcodec_metadata(self):
+        for relative_path in (
+            "packaging/macos/vntts.spec",
+            "packaging/windows/vntts.spec",
+        ):
+            with self.subTest(path=relative_path):
+                spec = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn('"torchcodec"', spec)
+
     def test_windows_spec_collects_staged_runtime(self):
         spec = (PROJECT_ROOT / "packaging/windows/vntts.spec").read_text(
             encoding="utf-8"

@@ -281,7 +281,7 @@ class RuntimePathsTest(unittest.TestCase):
                             b"tokenizer",
                         ),
                         (
-                            "e041936c75475d350b405bc870bcf7c22da4e9e6",
+                            "e81d79e8194ad4c7ce879c87a4258ef20cbf2487",
                             "languages/english/embeddings/alba.safetensors",
                             b"voice",
                         ),
