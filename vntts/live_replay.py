@@ -986,14 +986,7 @@ class LiveReplayRunner:
             advance_states,
         )
         expected_sequence = binding.expectation.to_dict()
-        sequence_successful = bool(
-            observed_sequence["ocr_calls"] <= expected_sequence["ocr_calls"]
-            and all(
-                observed_sequence[key] == value
-                for key, value in expected_sequence.items()
-                if key != "ocr_calls"
-            )
-        )
+        sequence_successful = _sequence_matches(observed_sequence, expected_sequence)
         route_integrity = _sequence_route_integrity(
             self.corpus.dialogue,
             played,
@@ -1826,6 +1819,12 @@ def _sequence_replay_metrics(mode, events, recognized_frames, advance_states):
             state["state"] == "confirmed" for state in advance_states
         ),
     }
+
+
+def _sequence_matches(observed, expected):
+    return observed["ocr_calls"] <= expected["ocr_calls"] and all(
+        observed[key] == value for key, value in expected.items() if key != "ocr_calls"
+    )
 
 
 def _json_safe(value):
