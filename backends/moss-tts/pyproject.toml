@@ -1,9 +1,9 @@
 [project]
 name = "vntts-moss-tts-runtime"
 version = "0.1.0"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.14,<3.15"
 dependencies = [
-    "mlx-audio==0.4.6",
+    "mlx-audio==0.5.1",
     "platformdirs>=4.3,<5",
     "scipy>=1.11,<2",
     "vntts-artifacts[audio]",

@@ -67,13 +67,6 @@ in the same commit.
 - [ ] Qualify the Python 3.14 Chatterbox Nano runtime on Windows and Linux.
       Dependency resolution must use wheels, worker start/stop must pass and a
       reference-conditioned render must succeed before release packaging.
-- [ ] Move MOSS Local to Python 3.14 and MLX Audio 0.5.1 or the newest compatible
-      release.
-  - Upgrade MLX, MLX Audio and Transformers together because their APIs are
-    coupled; remove compatibility shims only after both native and quantized
-    model-loading paths pass.
-  - Acceptance: Apple Silicon lock/import tests and the fixed reference render
-    pass with matching sample-rate/channel metadata and no quality regression.
 - [ ] Move MOSS Delay to Python 3.14 without changing its proven model stack in
       the first step.
   - Trial TorchCodec 0.9.1 as a Python-3.14 candidate while initially retaining
