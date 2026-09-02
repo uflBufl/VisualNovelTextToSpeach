@@ -33,9 +33,9 @@ class FakeCuda:
 class FakeTorch:
     __version__ = "2.9.0+cu128"
 
-    def __init__(self, available=True):
+    def __init__(self, available=True, cuda_runtime="12.8"):
         self.cuda = FakeCuda(available)
-        self.version = type("Version", (), {"cuda": "12.8"})()
+        self.version = type("Version", (), {"cuda": cuda_runtime})()
         cudnn = type("Cudnn", (), {"version": staticmethod(lambda: 91002)})()
         self.backends = type("Backends", (), {"cudnn": cudnn})()
 
@@ -52,8 +52,12 @@ class CudaProbeTest(unittest.TestCase):
         self.assertEqual(report["total_vram_bytes"], 34)
         self.assertTrue(report["bf16_supported"])
 
-    def test_rejects_cpu_runtime_before_model_loading(self):
-        with self.assertRaisesRegex(CudaProbeError, "unavailable"):
+    def test_rejects_cpu_only_torch_before_model_loading(self):
+        with self.assertRaisesRegex(CudaProbeError, "CPU-only PyTorch"):
+            inspect_cuda(FakeTorch(cuda_runtime=None))
+
+    def test_reports_cuda_wheel_without_visible_device(self):
+        with self.assertRaisesRegex(CudaProbeError, "includes CUDA 12.8"):
             inspect_cuda(FakeTorch(available=False))
 
     def test_cli_returns_failure_without_traceback(self):

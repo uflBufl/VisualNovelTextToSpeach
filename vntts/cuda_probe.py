@@ -27,8 +27,20 @@ def inspect_cuda(torch_module=None):
     cuda = getattr(torch_module, "cuda", None)
     if cuda is None or not callable(getattr(cuda, "is_available", None)):
         raise CudaProbeError("This PyTorch build does not expose CUDA")
+    version = getattr(torch_module, "version", None)
+    cuda_runtime = getattr(version, "cuda", None)
+    if not cuda_runtime:
+        raise CudaProbeError(
+            "This runtime has a CPU-only PyTorch build "
+            f"({getattr(torch_module, '__version__', 'unknown')}); run the probe "
+            "from the CUDA speech runtime"
+        )
     if not cuda.is_available():
-        raise CudaProbeError("CUDA is unavailable; model weights were not loaded")
+        raise CudaProbeError(
+            f"PyTorch includes CUDA {cuda_runtime}, but no CUDA device is "
+            "available; check the NVIDIA driver, GPU visibility and selected "
+            "runtime. Model weights were not loaded"
+        )
     try:
         device_index = int(cuda.current_device())
         properties = cuda.get_device_properties(device_index)
@@ -38,7 +50,6 @@ def inspect_cuda(torch_module=None):
         )
     except (AttributeError, RuntimeError, TypeError, ValueError) as error:
         raise CudaProbeError(f"Unable to inspect the CUDA device: {error}") from error
-    version = getattr(torch_module, "version", None)
     cudnn = getattr(getattr(torch_module, "backends", None), "cudnn", None)
     cudnn_version = (
         cudnn.version() if callable(getattr(cudnn, "version", None)) else None
@@ -54,7 +65,7 @@ def inspect_cuda(torch_module=None):
         "python": platform.python_version(),
         "platform": platform.platform(),
         "torch": str(getattr(torch_module, "__version__", "unknown")),
-        "cuda_runtime": str(getattr(version, "cuda", None) or "unknown"),
+        "cuda_runtime": str(cuda_runtime),
         "cudnn": cudnn_version,
         "device_index": device_index,
         "device_name": str(getattr(properties, "name", "unknown")),

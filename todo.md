@@ -67,14 +67,11 @@ in the same commit.
 - [ ] Qualify the Python 3.14 Chatterbox Nano runtime on Windows and Linux.
       Dependency resolution must use wheels, worker start/stop must pass and a
       reference-conditioned render must succeed before release packaging.
-- [ ] Move MOSS Delay to Python 3.14 without changing its proven model stack in
-      the first step.
-  - Trial TorchCodec 0.9.1 as a Python-3.14 candidate while initially retaining
-    upstream's Torch/TorchAudio 2.9.1, CUDA 12.8 and Transformers 5.0 pins.
-    TorchCodec documents that pair, but upstream MOSS pins 0.8.1 and does not
-    claim MOSS compatibility with 0.9.1, so accept it only after a real MOSS
-    reference-conditioned render. Regenerate Windows and Linux locks and make
-    the CUDA probe distinguish a CPU wheel, missing driver and wrong runtime.
+- [ ] Qualify the Python 3.14 MOSS Delay candidate on Windows CUDA. It retains
+      upstream's Torch/TorchAudio 2.9.1, CUDA 12.8 and Transformers 5.0 pins but
+      trials TorchCodec 0.9.1, which upstream MOSS has not validated. Install a
+      supported full-shared FFmpeg 4-8 build, run the CUDA probe and require one
+      real checksum-bound reference-conditioned render before accepting it.
   - Treat 0.9.1 only as the smallest Python-3.14 bridge, not the final upgrade.
     After that render passes, trial the latest atomic stack, currently including
     TorchCodec 0.16 with a compatible Torch/TorchAudio `>=2.11` and the newest
