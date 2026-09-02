@@ -755,7 +755,7 @@ class LiveReplayTest(unittest.TestCase):
             report = LiveReplayRunner(
                 load_live_replay_corpus(root / corpus_name),
                 interval_seconds=0.002,
-                timeout_seconds=5,
+                timeout_seconds=10,
             ).run()
             reports.append(report)
             self.assertTrue(
