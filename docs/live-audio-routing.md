@@ -109,6 +109,12 @@ until an explicit reanchor or a transition gives the cursor a new event. Live
 synthesis continues to use the backend's existing cache policy; source and
 generated routes bypass live synthesis caches.
 
+The persistent live-synthesis cache implements bounded LRU eviction with file
+mtimes. Each successful read or write advances its entry past the newest known
+cache timestamp by at least one millisecond. This preserves ordering on Windows
+and other filesystems that assign identical mtimes to rapid writes; eviction
+never falls back to arbitrary or lexical cache-key order.
+
 Speaker-change announcements are an optional layer above this selector and are
 disabled by default. `all-speakers` is the broad accessibility mode: for the
 first chunk after any visible speaker changes, the controller prepares a

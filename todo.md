@@ -3,63 +3,6 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements and completed-work history in `docs/` and Git, not here.
 
-## P0 - Restore Python 3.14 CI dependency sync
-
-- [ ] Make the frozen Python 3.14 lock installable on macOS, Windows and Linux.
-  - Use a matching Torch/Torchaudio release that publishes CPython 3.14 wheels
-    for every target; keep the CUDA 12.9 index Linux-only because it has no
-    Windows wheels for the selected release.
-  - Run the Linux X11 suite under Xvfb with EGL available; `offscreen` alone
-    does not provide the display required by `pynput`.
-  - Install PipeWire's runtime library in Linux CI so importing Qt Multimedia
-    does not emit loader failures during clean CLI help smoke tests.
-  - Preserve failing macOS shard output as a GitHub annotation so CI identifies
-    the exact test instead of reporting only the shard exit code, including
-    both ends within GitHub's 4,096-character annotation limit when a large
-    assertion would otherwise hide the test name. Keep every unittest
-    `FAIL:`/`ERROR:` identity at the front even when buffered test stdout would
-    otherwise displace the final failure summary.
-  - Keep crash-prone Qt modules in exact once-only macOS shards and prevent UI
-    unit tests from starting a real FFmpeg/CoreAudio player on headless runners;
-    the runner otherwise exits with signal 11 instead of a Python traceback.
-  - Give the 1,896-test macOS remainder shard a realistic 15-minute bound; a
-    five-minute cutoff aborts a healthy full run on slower machines. Preserve
-    the last verbose test ID when that bound is exceeded so a real hang is
-    actionable instead of producing an empty shard timeout. Capture child
-    output in a temporary file rather than a pipe so an inherited descriptor
-    from a test subprocess cannot keep `communicate()` waiting after tests end.
-  - Accept a not-yet-created screenshot directory; capture already creates the
-    full path recursively.
-  - Gate: `uv sync --frozen --dry-run` resolves for Windows x64 and Linux x64,
-    the local Python 3.14 quality/full-suite gate passes, and the pushed CI run
-    completes successfully on all three operating systems.
-
-## P0 - Make the Windows test gate non-admin portable
-
-- [ ] Make the full build/test gate pass from an ordinary Windows account.
-  - Make source-reference decisions finish within the UI worker bound and release
-    their advisory lock by avoiding repeated full audio validation during one
-    checksum-bound write.
-  - Keep live replay assertions independent of whether canonical text completion
-    or generated playback completion wins a valid scheduling race.
-  - Give the tracked sequence rollout an outer test deadline longer than its
-    internal five-second auto-advance confirmation window; retain exact compact
-    corpus and recognized-frame diagnostics if the route itself fails. Treat
-    OCR counts as upper budgets while keeping event, route and advance evidence
-    exact; fewer OCR calls are an improvement, not a regression.
-  - Eliminate the intermittent macOS `SettingsDialog` construction hang in the
-    exact `qt-app` shard; keep the last verbose test identity as evidence and a
-    bounded per-module timeout rather than relying on the workflow-wide guard.
-  - Run the Windows Qt app/assets modules and remainder in the same exact
-    once-only fresh-process shards so native Qt state cannot strand the whole
-    suite without a bounded last-test diagnostic.
-  - Make persistent-audio-cache LRU timestamps monotonic when the filesystem
-    gives rapid writes the same mtime; Windows must retain the two newest entries
-    without depending on lexical cache-key order.
-  - Gate: `scripts/run_ci_unittests.py discover -s tests` and
-    `scripts/build-windows.ps1` complete as a non-admin user without requiring
-    Developer Mode. Retain the ordinary macOS full-suite gate.
-
 ## P0 - Make pregeneration self-service
 
 Follow
@@ -104,8 +47,9 @@ intentional omission as distinct terminal authorities.
   - Complete the Developer ID signed/notarized macOS build plus the Windows
     portable and installer builds before removing this item. Acceptance requires
     startup and render without uv, a checkout, backend environment variables or
-    an existing user model cache; retain checksum-bound self-test reports for
-    both platforms.
+    an existing user model cache; `scripts/build-windows.ps1` must complete from
+    an ordinary account without Developer Mode. Retain checksum-bound self-test
+    reports for both platforms.
 
 ## P2 - Deferred audio experiments
 

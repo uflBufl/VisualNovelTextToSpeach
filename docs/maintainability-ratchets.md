@@ -42,3 +42,21 @@ Its reviewed integration growth is recorded as exact per-symbol ceilings in the
 baseline; the global thresholds and private-import inventory were not relaxed.
 These ceilings describe remaining debt, not preferred sizes, and any further
 growth still fails CI.
+
+## Cross-platform quality execution
+
+CI uses the frozen CPython 3.14 dependency graph described in
+`release-speech-runtime.md`. Linux runs under Xvfb with EGL, PipeWire and
+PortAudio runtime libraries so window input and Qt Multimedia imports exercise
+their real X11 path. macOS and Windows discover the repository suite once, then
+run the Qt application module, Qt asset module and remainder as three fresh
+processes from an exact test-ID inventory. Every discovered ID must appear once;
+overlap, omission or a duplicate fails before tests start. Fresh processes keep
+native Qt/audio lifetime state from stranding unrelated tests.
+
+Each shard has a bounded timeout and captures output in a temporary file rather
+than a pipe that a child process can inherit. A failure or timeout publishes the
+exact unittest traceback or last verbose test identity as a GitHub annotation,
+preserving both the start and end within the workflow annotation limit. UI unit
+tests mock native media players unless native playback is the behavior under
+test; real device qualification remains a release/soak gate.
