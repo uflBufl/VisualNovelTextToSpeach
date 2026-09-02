@@ -45,12 +45,13 @@ blindly upgrading an atomic model stack beyond its upstream-supported versions.
 Every retained upper bound or exact pin must name the observed incompatibility
 in the same commit.
 
-- [ ] Complete the remaining cross-platform qualification of the upgraded
-      Python 3.14 root application. The unsigned macOS app and mounted DMG now
-      pass clean-cache Pocket rendering and all package self-tests. Still require
-      successful Windows and Linux CI, the packaged Windows self-test and one
-      CPU XTTS render; retain Transformers `<5` until Coqui stops importing the
-      removed `isin_mps_friendly` API.
+- [ ] Complete the remaining packaged/runtime qualification of the upgraded
+      Python 3.14 root application. Windows and Linux CI pass; the unsigned
+      macOS app and mounted DMG pass clean-cache Pocket rendering and all package
+      self-tests. Require one clean macOS CI rerun after a one-off Qt shard
+      timeout, the packaged Windows self-test and one CPU XTTS render; retain
+      Transformers `<5` until Coqui stops importing the removed
+      `isin_mps_friendly` API.
 - [ ] Qualify Pocket TTS 3.0.2 in the packaged Windows runtime. Compare a fixed
       preset-voice render with the last release and require no truncation,
       invalid PCM or material latency regression.
