@@ -462,6 +462,8 @@ class LiveReplayTest(unittest.TestCase):
             ).run()
 
         self.assertFalse(report["successful"])
+        self.assertIn("completion", report["failed_gates"])
+        self.assertIn("errors", report["failed_gates"])
         self.assertEqual(report["errors"], ["Live replay timed out after 0.2 seconds"])
         self.assertEqual(report["observed_dialogue"], [])
         self.assertEqual(report["route_sources"], [])
@@ -759,25 +761,34 @@ class LiveReplayTest(unittest.TestCase):
                 timeout_seconds=30,
             ).run()
             reports.append(report)
+            diagnostics = {
+                "corpus": corpus_name,
+                "failed_gates": report["failed_gates"],
+                "errors": report["errors"],
+            }
+            if "dialogue" in report["failed_gates"]:
+                diagnostics["dialogue"] = (
+                    report["expected_dialogue"],
+                    report["observed_dialogue"],
+                )
+            if "route_sources" in report["failed_gates"]:
+                diagnostics["route_sources"] = report["route_sources"]
+            if "advance_requests" in report["failed_gates"]:
+                diagnostics["advance_requests"] = report["advance_requests"]
+            if "sequence" in report["failed_gates"]:
+                diagnostics["sequence"] = {
+                    key: report["sequence"][key]
+                    for key in ("mode", "expected", "observed")
+                }
+            if "route_integrity" in report["failed_gates"]:
+                diagnostics["route_integrity"] = report["route_integrity"]
+            if "frame_consumption" in report["failed_gates"]:
+                diagnostics["frame_consumption"] = report["media_integrity"][
+                    "frame_consumption"
+                ]
             self.assertTrue(
                 report["successful"],
-                {
-                    "corpus": corpus_name,
-                    "errors": report["errors"],
-                    "dialogue": (
-                        report["expected_dialogue"],
-                        report["observed_dialogue"],
-                    ),
-                    "route_sources": report["route_sources"],
-                    "advance_requests": report["advance_requests"],
-                    "sequence": {
-                        key: report["sequence"][key]
-                        for key in ("mode", "expected", "observed")
-                    },
-                    "recognized_frames": report["media_integrity"]["recognized_frames"],
-                    "route_integrity": report["route_integrity"],
-                    "frame_consumption": report["media_integrity"]["frame_consumption"],
-                },
+                diagnostics,
             )
 
         self.assertTrue(

@@ -1004,15 +1004,15 @@ class LiveReplayRunner:
             played,
             routes,
         )
-        successful = bool(
-            completed
-            and frame_consumption["complete"]
-            and not errors
-            and observed == expected
-            and route_sources == expected_sources
-            and sequence_successful
-            and route_integrity["successful"]
-            and (
+        gates = {
+            "completion": completed,
+            "frame_consumption": frame_consumption["complete"],
+            "errors": not errors,
+            "dialogue": observed == expected,
+            "route_sources": route_sources == expected_sources,
+            "sequence": sequence_successful,
+            "route_integrity": route_integrity["successful"],
+            "advance_requests": (
                 frame_source.manual_advance_requests == len(self.corpus.dialogue)
                 if mode == "audio-manual"
                 else (
@@ -1021,13 +1021,15 @@ class LiveReplayRunner:
                     if mode == "audio-auto"
                     else frame_source.advance_requests == len(self.corpus.dialogue)
                 )
-            )
-        )
+            ),
+        }
+        failed_gates = [name for name, passed in gates.items() if not passed]
         return {
             "schema_version": 2,
             "corpus": self.corpus.name,
             "fixture_kind": self.corpus.fixture_kind,
-            "successful": successful,
+            "successful": not failed_gates,
+            "failed_gates": failed_gates,
             "expected_dialogue": expected,
             "observed_dialogue": observed,
             "route_sources": route_sources,
