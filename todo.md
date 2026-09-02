@@ -30,12 +30,10 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
 
 ## P0 - Make the Windows Pocket runtime genuinely portable
 
-- [ ] Replace the Windows venv plus external managed-Python layout with one
-      self-contained Pocket runtime whose interpreter, prefix, base prefix and
-      imported modules remain inside the relocated package. Update packaged
-      runtime discovery and the PyInstaller contract, cover the flattened
-      Windows layout in tests, and require the existing relocation probe to
-      pass without weakening its containment checks.
+- [ ] Qualify the self-contained Pocket runtime on Windows: build the portable
+      package, require its relocation self-test to keep the interpreter,
+      prefixes and imported modules inside the copied package, then complete
+      one clean-cache Pocket render from that package.
 
 ## P1 - Improve the self-service generation engine
 

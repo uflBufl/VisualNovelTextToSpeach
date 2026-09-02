@@ -171,6 +171,17 @@ class ReleaseRuntimeTest(unittest.TestCase):
             self.assertTrue(
                 any(command[1:3] == ["pip", "sync"] for command in commands)
             )
+            windows_installs = [
+                command
+                for command in commands
+                if command[1:3] in (["pip", "sync"], ["pip", "install"])
+            ]
+            self.assertEqual(len(windows_installs), 2)
+            self.assertTrue(
+                all(
+                    "--break-system-packages" in command for command in windows_installs
+                )
+            )
             self.assertFalse(any(command[1] == "venv" for command in commands))
 
     def test_runtime_paths_are_platform_specific(self):
