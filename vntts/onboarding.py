@@ -173,8 +173,7 @@ class OnboardingDiagnostics:
     def _check_voice_manifest(self, settings):
         if not settings.voice_manifest:
             if (
-                settings.tts_model
-                and "xtts" in settings.tts_model.casefold()
+                settings.speech_backend == "coqui-xtts"
                 and not settings.narrator_speaker
             ):
                 return DiagnosticResult(
@@ -186,7 +185,12 @@ class OnboardingDiagnostics:
             return DiagnosticResult(
                 "Character voices",
                 "warning",
-                "No voice pack selected; unknown speakers will use the narrator",
+                (
+                    "No voice pack selected; Pocket's built-in Alba voice will "
+                    "narrate and cover unknown speakers"
+                    if settings.speech_backend == "pocket-tts"
+                    else "No voice pack selected; unknown speakers will use the narrator"
+                ),
                 "settings",
             )
         try:

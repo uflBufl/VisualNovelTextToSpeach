@@ -138,7 +138,9 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
             permission_status_provider=granted_permissions,
         )
 
-        results = diagnostics.run(AppSettings(tts_model="xtts_v2"))
+        results = diagnostics.run(
+            AppSettings(speech_backend="coqui-xtts", tts_model="xtts_v2")
+        )
 
         voice_result = next(
             result for result in results if result.name == "Character voices"
@@ -146,6 +148,23 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
         self.assertEqual(voice_result.status, "error")
         self.assertIn("narrator speaker", voice_result.message)
         self.assertEqual(voice_result.remediation, "settings")
+
+    def test_pocket_ignores_stale_xtts_model_when_using_default_narrator(self):
+        diagnostics = OnboardingDiagnostics(
+            tesseract_probe=lambda: "5.5.0",
+            audio_probe=lambda: "Speakers",
+            permission_status_provider=granted_permissions,
+        )
+
+        results = diagnostics.run(
+            AppSettings(speech_backend="pocket-tts", tts_model="xtts_v2")
+        )
+
+        voice_result = next(
+            result for result in results if result.name == "Character voices"
+        )
+        self.assertEqual(voice_result.status, "warning")
+        self.assertIn("built-in Alba", voice_result.message)
 
     def test_missing_macos_permissions_block_setup_with_actionable_guidance(self):
         diagnostics = OnboardingDiagnostics(
