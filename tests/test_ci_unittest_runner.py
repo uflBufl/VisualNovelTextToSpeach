@@ -89,6 +89,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             self.assertEqual(_run_exact_test_file(path), 0)
 
     def test_macos_shard_timeout_fails_instead_of_hanging(self):
+        run = Mock(side_effect=subprocess.TimeoutExpired(("python",), 60))
         with (
             patch(
                 "scripts.run_ci_unittests._flatten_suite",
@@ -100,10 +101,14 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             ),
             patch(
                 "scripts.run_ci_unittests.subprocess.run",
-                side_effect=subprocess.TimeoutExpired(("python",), 60),
+                run,
             ),
         ):
             self.assertEqual(_run_sharded_full_discovery("Darwin"), 124)
+        self.assertEqual(
+            run.call_args.args[0][-3:],
+            ["unittest", "-v", "tests.test_app"],
+        )
 
 
 if __name__ == "__main__":

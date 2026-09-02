@@ -8,7 +8,7 @@ from unittest.mock import ANY, Mock, call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt, QTimer  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox  # noqa: E402
@@ -28,6 +28,12 @@ from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
+
+
+def delete_dialog(dialog):
+    dialog.close()
+    dialog.deleteLater()
+    QCoreApplication.sendPostedEvents(dialog, QEvent.Type.DeferredDelete)
 
 
 class TrayApplicationTest(unittest.TestCase):
@@ -956,7 +962,7 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.settings().ocr_diagnostics_directory,
             "custom/ocr-diagnostics",
         )
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_are_scrollable_and_grouped_into_visual_regions(self):
         dialog = SettingsDialog(AppSettings())
@@ -995,7 +1001,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(dialog.section_navigation.currentIndex(), 4)
         self.assertGreater(dialog.settings_scroll.verticalScrollBar().value(), 0)
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_paths_share_browse_and_accessibility_contract(self):
         dialog = SettingsDialog(AppSettings())
@@ -1029,7 +1035,7 @@ class TrayApplicationTest(unittest.TestCase):
             ):
                 dialog.story_index_button.click()
             self.assertEqual(dialog.story_index.text(), str(selected))
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_inline_validation_lists_all_errors_and_focuses_first(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1065,7 +1071,7 @@ class TrayApplicationTest(unittest.TestCase):
             )
             dialog.validate_and_accept()
             self.assertEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
-            dialog.deleteLater()
+            delete_dialog(dialog)
 
     def test_settings_allow_nested_screenshot_directory_to_be_created(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1105,7 +1111,7 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.narrator_speaker,
         ):
             self.assertIn("require", field.accessibleDescription().casefold())
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_fit_scaled_fonts_with_navigation_and_validation_visible(self):
         base_font = QApplication.font()
@@ -1125,8 +1131,7 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertTrue(dialog.settings_scroll.isVisibleTo(dialog))
                 self.assertTrue(dialog.save_button.isVisibleTo(dialog))
 
-                dialog.close()
-                dialog.deleteLater()
+                delete_dialog(dialog)
 
     def test_settings_expose_output_volume_and_speech_rate(self):
         dialog = SettingsDialog(
@@ -1140,7 +1145,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertEqual(dialog.settings().output_volume_percent, 45)
         self.assertEqual(dialog.settings().speech_rate_percent, 125)
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_expose_guarded_auto_advance_controls(self):
         dialog = SettingsDialog(
@@ -1164,7 +1169,7 @@ class TrayApplicationTest(unittest.TestCase):
         settings = dialog.settings()
         self.assertEqual(settings.auto_advance_key, "right")
         self.assertEqual(settings.auto_advance_delay_ms, 250)
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_expose_disabled_by_default_speaker_announcements(self):
         dialog = SettingsDialog(AppSettings(announce_speaker_changes=True))
@@ -1179,7 +1184,7 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.settings().speaker_announcement_mode,
             "narrator-fallback-roles",
         )
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_control_startup_voice_warmup(self):
         dialog = SettingsDialog(AppSettings(warm_up_voices=True))
@@ -1187,7 +1192,7 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.warm_up_voices.setChecked(False)
 
         self.assertFalse(dialog.settings().warm_up_voices)
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_select_low_latency_speech_backend(self):
         dialog = SettingsDialog(AppSettings(speech_backend="chatterbox-nano"))
@@ -1199,7 +1204,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.tts_profile.isEnabled())
         self.assertFalse(dialog.speech_rate.isEnabled())
         self.assertEqual(dialog.settings().speech_backend, "chatterbox-nano")
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_offer_default_streaming_backend(self):
         dialog = SettingsDialog(AppSettings(speech_backend="pocket-tts"))
@@ -1211,7 +1216,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.pocket_gated_model.isChecked())
         dialog.pocket_gated_model.setChecked(True)
         self.assertTrue(dialog.settings().pocket_gated_model_accepted)
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_select_explicit_audio_source_policy(self):
         dialog = SettingsDialog(AppSettings(audio_source_policy="prefer-game-audio"))
@@ -1225,7 +1230,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
 
         self.assertEqual(dialog.settings().audio_source_policy, "live-tts-only")
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_preserve_explicit_live_speaker_corpus(self):
         dialog = SettingsDialog(
@@ -1237,7 +1242,7 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.settings().live_speaker_corpus,
             "session-speakers.json",
         )
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_sequence_shadow_requires_plan_and_story_index(self):
         dialog = SettingsDialog(AppSettings(live_sequence_mode="shadow"))
@@ -1262,7 +1267,7 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertEqual(settings.live_sequence_mode, "shadow")
         self.assertEqual(settings.live_sequence_plan, str(plan))
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_sequence_audio_manual_disables_auto_advance_controls(self):
         dialog = SettingsDialog(
@@ -1279,7 +1284,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.auto_advance_key.isEnabled())
         self.assertFalse(dialog.auto_advance_delay.isEnabled())
         self.assertIn("never sends advance keys", dialog.auto_advance.toolTip())
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_sequence_audio_auto_keeps_guarded_auto_advance_opt_in(self):
         dialog = SettingsDialog(
@@ -1299,7 +1304,7 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.auto_advance.setChecked(True)
         self.assertTrue(dialog.auto_advance_key.isEnabled())
         self.assertTrue(dialog.auto_advance_delay.isEnabled())
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_new_install_settings_recommend_guarded_sequence_auto(self):
         dialog = SettingsDialog(
@@ -1313,7 +1318,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("recommended", dialog.live_sequence_mode.currentText().casefold())
         self.assertTrue(dialog.auto_advance.isChecked())
         self.assertFalse(dialog.validation_errors())
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_screen_capture_disables_auto_advance(self):
         dialog = SettingsDialog(
@@ -1324,7 +1329,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.auto_advance.isChecked())
         self.assertIn("selected game window", dialog.auto_advance.toolTip())
         self.assertFalse(dialog.settings().auto_advance_enabled)
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_offer_moss_with_model_language_and_reference(self):
         dialog = SettingsDialog(
@@ -1342,7 +1347,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("MOSS-TTS-Local-Transformer", dialog.tts_model.text())
         self.assertFalse(dialog.speech_rate.isEnabled())
         self.assertEqual(dialog.settings().tts_speaker_wav, "matilda.wav")
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_switch_default_model_between_xtts_and_moss(self):
         dialog = SettingsDialog(
@@ -1363,7 +1368,7 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.tts_model.text(),
             "tts_models/multilingual/multi-dataset/xtts_v2",
         )
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_control_macos_launch_at_login(self):
         dialog = SettingsDialog(AppSettings(launch_at_login=True))
@@ -1372,7 +1377,7 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.launch_at_login.setChecked(False)
 
         self.assertFalse(dialog.settings().launch_at_login)
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_macos_settings_explain_control_window_only_hotkeys(self):
         with patch("vntts.app.sys.platform", "darwin"):
@@ -1387,7 +1392,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(
             all(not recorder.isEnabled() for recorder in dialog.hotkey_recorders)
         )
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_composite_settings_fields_have_accessible_labels(self):
         dialog = SettingsDialog(AppSettings())
@@ -1425,7 +1430,7 @@ class TrayApplicationTest(unittest.TestCase):
         ):
             self.assertTrue(button.accessibleName())
             self.assertTrue(button.accessibleDescription())
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_settings_change_updates_macos_launch_at_login(self):
         controller = Mock()
@@ -1745,7 +1750,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("duplicates", dialog.validation_summary.text())
         self.assertEqual(dialog.section_navigation.currentIndex(), 0)
         self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
-        dialog.deleteLater()
+        delete_dialog(dialog)
 
     def test_recognized_dialog_has_a_dedicated_tray_status(self):
         tray_application = TrayApplication(

@@ -3,6 +3,14 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements and completed-work history in `docs/` and Git, not here.
 
+## P0 - Eliminate the cross-platform Qt test lifetime hang
+
+- [ ] Close and drain deletion for each test-owned `SettingsDialog`, and run Qt
+      modules through standard unittest module loading instead of rebuilding one
+      class from individual method IDs. Gate on repeated module subprocesses, a
+      clean local app shard and a green pushed macOS, Linux and Windows Actions
+      run.
+
 ## P0 - Make pregeneration self-service
 
 Follow

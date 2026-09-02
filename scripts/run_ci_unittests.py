@@ -98,24 +98,29 @@ def _run_sharded_full_discovery(system):
     with tempfile.TemporaryDirectory(prefix="vntts-unittest-shards-") as directory:
         root = Path(directory)
         shards = (
-            ("qt-app", app_ids),
-            ("qt-assets", asset_ids),
-            ("remainder", remainder_ids),
+            ("qt-app", app_ids, "tests.test_app"),
+            ("qt-assets", asset_ids, "tests.test_asset_ui"),
+            ("remainder", remainder_ids, None),
         )
-        for name, ids in shards:
+        for name, ids, module in shards:
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
             print(f"Running {system} unittest shard {name}: {len(ids)} tests")
+            command = (
+                [sys.executable, "-u", "-m", "unittest", "-v", module]
+                if module
+                else [
+                    sys.executable,
+                    "-m",
+                    "scripts.run_ci_unittests",
+                    "--exact-test-ids-file",
+                    str(inventory),
+                ]
+            )
             with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as transcript:
                 try:
                     completed = subprocess.run(
-                        [
-                            sys.executable,
-                            "-m",
-                            "scripts.run_ci_unittests",
-                            "--exact-test-ids-file",
-                            str(inventory),
-                        ],
+                        command,
                         timeout=SHARD_TIMEOUTS[system][name],
                         stdout=transcript,
                         stderr=subprocess.STDOUT,

@@ -60,3 +60,8 @@ exact unittest traceback or last verbose test identity as a GitHub annotation,
 preserving both the start and end within the workflow annotation limit. UI unit
 tests mock native media players unless native playback is the behavior under
 test; real device qualification remains a release/soak gate.
+Top-level PySide dialogs owned by unit tests are closed and receive their scoped
+deferred-delete event; bare `deleteLater()` is insufficient without a continuously
+running Qt event loop. Cross-platform Qt shards use standard unittest module
+loading because rebuilding a Qt test class from individual method IDs can leave
+native signal cycles to hang or crash interpreter shutdown.
