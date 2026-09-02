@@ -21,13 +21,6 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
       until then keep existing signals diagnostic-only and use safe sentence
       repair, one bounded provider-local retry, then typed XTTS/Pocket fallback.
 
-## P0 - Eliminate the Windows cold-run replay race
-
-- [ ] Verify that `sequence-live-replay-audio-auto-safety.json` passes on the
-      first Windows run with its scheduling-safe one-OCR-per-frame budget. Keep
-      event identity, routes, recovery and advance counts exact; do not hide
-      correctness failures behind retries.
-
 ## P1 - Improve the self-service generation engine
 
 Follow
