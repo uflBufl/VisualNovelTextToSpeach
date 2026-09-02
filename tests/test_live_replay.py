@@ -769,7 +769,11 @@ class LiveReplayTest(unittest.TestCase):
                     ),
                     "route_sources": report["route_sources"],
                     "advance_requests": report["advance_requests"],
-                    "sequence": report["sequence"],
+                    "sequence": {
+                        key: report["sequence"][key]
+                        for key in ("mode", "expected", "observed")
+                    },
+                    "recognized_frames": report["media_integrity"]["recognized_frames"],
                     "route_integrity": report["route_integrity"],
                     "frame_consumption": report["media_integrity"]["frame_consumption"],
                 },

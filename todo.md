@@ -44,7 +44,9 @@ measurements and completed-work history in `docs/` and Git, not here.
     or generated playback completion wins a valid scheduling race.
   - Give the tracked sequence rollout an outer test deadline longer than its
     internal five-second auto-advance confirmation window; retain exact compact
-    corpus diagnostics if the route itself fails.
+    corpus and recognized-frame diagnostics if the route itself fails. Remove
+    the Windows-only extra OCR of a cursor-routable canonical frame instead of
+    weakening the sequence-first OCR budget.
   - Gate: `scripts/run_ci_unittests.py discover -s tests` and
     `scripts/build-windows.ps1` complete as a non-admin user without requiring
     Developer Mode. Retain the ordinary macOS full-suite gate.
