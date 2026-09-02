@@ -64,12 +64,9 @@ in the same commit.
 - [ ] Qualify Pocket TTS 3.0.2 in the packaged Windows runtime. Compare a fixed
       preset-voice render with the last release and require no truncation,
       invalid PCM or material latency regression.
-- [ ] Move Chatterbox Nano from Python `<3.13` to Python 3.14.
-  - The pinned upstream revision already declares a Python-3.14 Torch branch;
-    regenerate its lock on 3.14, then consider a newer immutable upstream commit
-    only after reviewing API, model and license changes.
-  - Acceptance: Windows and Linux dependency resolution uses wheels, worker
-    import/start/stop passes and a reference-conditioned render succeeds.
+- [ ] Qualify the Python 3.14 Chatterbox Nano runtime on Windows and Linux.
+      Dependency resolution must use wheels, worker start/stop must pass and a
+      reference-conditioned render must succeed before release packaging.
 - [ ] Move MOSS Local to Python 3.14 and MLX Audio 0.5.1 or the newest compatible
       release.
   - Upgrade MLX, MLX Audio and Transformers together because their APIs are
