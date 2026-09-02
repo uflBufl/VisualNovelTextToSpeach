@@ -53,6 +53,9 @@ measurements and completed-work history in `docs/` and Git, not here.
   - Run the Windows Qt app/assets modules and remainder in the same exact
     once-only fresh-process shards so native Qt state cannot strand the whole
     suite without a bounded last-test diagnostic.
+  - Make persistent-audio-cache LRU timestamps monotonic when the filesystem
+    gives rapid writes the same mtime; Windows must retain the two newest entries
+    without depending on lexical cache-key order.
   - Gate: `scripts/run_ci_unittests.py discover -s tests` and
     `scripts/build-windows.ps1` complete as a non-admin user without requiring
     Developer Mode. Retain the ordinary macOS full-suite gate.

@@ -1,6 +1,8 @@
 import json
+import os
 from hashlib import blake2b
 from pathlib import Path
+from time import time_ns
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_output_path
@@ -39,7 +41,7 @@ class PersistentAudioCache:
                 or not np.all(np.isfinite(audio))
             ):
                 return None
-            path.touch()
+            self._touch_newest(path)
             return audio
         except OSError, ValueError, TypeError:
             return None
@@ -59,10 +61,22 @@ class PersistentAudioCache:
             with atomic_output_path(path) as temporary:
                 with temporary.open("wb") as destination:
                     np.save(destination, audio, allow_pickle=False)
+            self._touch_newest(path)
             self._prune()
         except OSError:
             return None
         return path
+
+    def _touch_newest(self, path):
+        newest = max(
+            (
+                candidate.stat().st_mtime_ns
+                for candidate in self.directory.glob("*.npy")
+            ),
+            default=0,
+        )
+        timestamp = max(time_ns(), newest + 1_000_000)
+        os.utime(path, ns=(timestamp, timestamp))
 
     def _prune(self):
         files = sorted(

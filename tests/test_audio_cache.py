@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 
@@ -58,9 +59,10 @@ class PersistentAudioCacheTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             cache = PersistentAudioCache(root, max_entries=2)
-            cache.put("one", np.array([0.1], dtype=np.float32))
-            cache.put("two", np.array([0.2], dtype=np.float32))
-            cache.put("three", np.array([0.3], dtype=np.float32))
+            with patch("vntts.audio_cache.time_ns", return_value=1_000_000_000):
+                cache.put("one", np.array([0.1], dtype=np.float32))
+                cache.put("two", np.array([0.2], dtype=np.float32))
+                cache.put("three", np.array([0.3], dtype=np.float32))
             (root / "three.npy").write_bytes(b"corrupt")
 
             files = sorted(path.stem for path in root.glob("*.npy"))
