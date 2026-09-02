@@ -23,10 +23,10 @@ VNTTS build and activate a local game pack without exposing authoring concepts.
 
 ## P0 - Eliminate the Windows cold-run replay race
 
-- [ ] Make `sequence-live-replay-audio-auto-safety.json` deterministic on the
-      first Windows run. Report every failed completion, media, dialogue, route,
-      sequence and advance gate explicitly; reproduce the cold-process mismatch
-      and fix its shared ordering/lifecycle cause rather than retrying the test.
+- [ ] Verify that `sequence-live-replay-audio-auto-safety.json` passes on the
+      first Windows run with its scheduling-safe one-OCR-per-frame budget. Keep
+      event identity, routes, recovery and advance counts exact; do not hide
+      correctness failures behind retries.
 
 ## P1 - Improve the self-service generation engine
 
