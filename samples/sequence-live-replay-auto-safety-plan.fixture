@@ -1,0 +1,76 @@
+{
+  "schema": "vntts.live-sequence-plan",
+  "schema_version": 1,
+  "game_id": "reverse1999-replay-auto-safety",
+  "producer": {
+    "name": "vntts",
+    "version": "1"
+  },
+  "story_index_sha256": "5e2f586889911619a3cc9c09823f188a2bc1bfacdda2b0e6f1e1c18126c61c0d",
+  "source_extract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "chapters": [
+    {
+      "chapter": "fixture",
+      "entry_event_ids": [
+        "auto-safety-event-1"
+      ],
+      "events": [
+        {
+          "event_id": "auto-safety-event-1",
+          "sequence": 1,
+          "kind": "speech",
+          "control": "automatic",
+          "successors": [
+            "auto-safety-silent-2"
+          ],
+          "line_id": "fixture:rhiannon:1"
+        },
+        {
+          "event_id": "auto-safety-silent-2",
+          "sequence": 2,
+          "kind": "silent",
+          "control": "automatic",
+          "successors": [
+            "auto-safety-transition-2"
+          ]
+        },
+        {
+          "event_id": "auto-safety-transition-2",
+          "sequence": 2,
+          "kind": "transition",
+          "control": "passive",
+          "successors": [
+            "auto-safety-event-3"
+          ]
+        },
+        {
+          "event_id": "auto-safety-event-3",
+          "sequence": 3,
+          "kind": "speech",
+          "control": "automatic",
+          "successors": [
+            "auto-safety-choice-3"
+          ],
+          "line_id": "fixture:fledgling:1"
+        },
+        {
+          "event_id": "auto-safety-choice-3",
+          "sequence": 3,
+          "kind": "choice",
+          "control": "manual",
+          "successors": [
+            "auto-safety-event-4"
+          ]
+        },
+        {
+          "event_id": "auto-safety-event-4",
+          "sequence": 4,
+          "kind": "speech",
+          "control": "terminal",
+          "successors": [],
+          "line_id": "fixture:narrator:1"
+        }
+      ]
+    }
+  ]
+}

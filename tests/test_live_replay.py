@@ -794,6 +794,7 @@ class LiveReplayTest(unittest.TestCase):
                 "fixture:narrator:1",
             ],
         )
+
         self.assertEqual(
             [report["sequence"]["mode"] for report in reports],
             ["shadow", "audio-manual", "audio-auto", "audio-auto"],
@@ -812,6 +813,24 @@ class LiveReplayTest(unittest.TestCase):
             ],
             [0, 2, 1, 1],
         )
+
+    def test_tracked_checksum_bound_text_uses_binary_fixtures(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertIn(
+            "samples/*.fixture -text -eol",
+            (root / ".gitattributes").read_text(encoding="utf-8").splitlines(),
+        )
+        for path in sorted((root / "samples").glob("sequence-live-replay-*.json")):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            sequence = document.get("live_sequence")
+            if sequence is None:
+                continue
+            for binding in (
+                document["generated_audio_manifest"],
+                sequence["story_index"],
+                sequence["plan"],
+            ):
+                self.assertEqual(Path(binding["path"]).suffix, ".fixture", path)
 
     def test_sequence_route_integrity_reports_every_unsafe_outcome(self):
         dialogue = (

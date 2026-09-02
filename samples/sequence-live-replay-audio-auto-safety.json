@@ -9,11 +9,11 @@
   "live_sequence": {
     "mode": "audio-auto",
     "story_index": {
-      "path": "sequence-live-replay-story.jsonl",
+      "path": "sequence-live-replay-story.fixture",
       "sha256": "5e2f586889911619a3cc9c09823f188a2bc1bfacdda2b0e6f1e1c18126c61c0d"
     },
     "plan": {
-      "path": "sequence-live-replay-auto-safety-plan.json",
+      "path": "sequence-live-replay-auto-safety-plan.fixture",
       "sha256": "c730f4d06a6f488fdc9e4e58d539ec417d9256bda60a285d85753838a7054361"
     },
     "focus_probes": [

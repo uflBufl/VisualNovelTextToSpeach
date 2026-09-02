@@ -1,0 +1,59 @@
+{
+  "schema": "vntts.live-sequence-plan",
+  "schema_version": 1,
+  "game_id": "reverse1999-replay-fixture",
+  "producer": {
+    "name": "vntts",
+    "version": "1"
+  },
+  "story_index_sha256": "5e2f586889911619a3cc9c09823f188a2bc1bfacdda2b0e6f1e1c18126c61c0d",
+  "source_extract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "chapters": [
+    {
+      "chapter": "fixture",
+      "entry_event_ids": [
+        "fixture-event-1"
+      ],
+      "events": [
+        {
+          "event_id": "fixture-event-1",
+          "sequence": 1,
+          "kind": "speech",
+          "control": "automatic",
+          "successors": [
+            "fixture-event-2"
+          ],
+          "line_id": "fixture:rhiannon:1"
+        },
+        {
+          "event_id": "fixture-event-2",
+          "sequence": 2,
+          "kind": "speech",
+          "control": "automatic",
+          "successors": [
+            "fixture-event-3"
+          ],
+          "line_id": "fixture:hotelier:1"
+        },
+        {
+          "event_id": "fixture-event-3",
+          "sequence": 3,
+          "kind": "speech",
+          "control": "automatic",
+          "successors": [
+            "fixture-event-4"
+          ],
+          "line_id": "fixture:fledgling:1"
+        },
+        {
+          "event_id": "fixture-event-4",
+          "sequence": 4,
+          "kind": "speech",
+          "control": "terminal",
+          "successors": [],
+          "line_id": "fixture:narrator:1"
+        }
+      ]
+    }
+  ]
+}
