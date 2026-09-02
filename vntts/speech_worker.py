@@ -172,12 +172,18 @@ def _runtime_paths(backend, runtime_directory=None):
         else Path(__file__).resolve().parents[1] / "backends" / folder / ".venv"
     )
     root = Path(configured_root or bundled_root or default_root).expanduser().resolve()
-    interpreter = root / (
-        "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
-    )
     if sys.platform == "win32":
+        interpreter = next(
+            (
+                candidate
+                for candidate in (root / "python.exe", root / "Scripts/python.exe")
+                if candidate.is_file()
+            ),
+            root / "python.exe",
+        )
         site_packages_candidates = (root / "Lib/site-packages",)
     else:
+        interpreter = root / "bin/python"
         site_packages_candidates = tuple(
             sorted((root / "lib").glob("python*/site-packages"))
         )

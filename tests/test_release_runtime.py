@@ -10,6 +10,7 @@ from tests.symlink_support import symlink_or_skip
 from vntts.release_runtime import (
     _find_managed_interpreter,
     _probe_relocated_runtime,
+    _promote_windows_runtime,
     _prune_managed_runtime,
     _prune_runtime_entrypoints,
     _replace_posix_interpreter_link,
@@ -98,13 +99,108 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 1,
             )
 
+    def test_windows_stage_installs_into_the_portable_base_distribution(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            backend = project / "backends" / "pocket-tts"
+            backend.mkdir(parents=True)
+            (backend / "uv.lock").write_text("locked", encoding="utf-8")
+            (project / "pyproject.toml").write_text("[project]", encoding="utf-8")
+            destination = Path(directory) / "build" / "speech-runtimes"
+            calls = []
+
+            def runner(command, **options):
+                calls.append((command, options))
+                if command[1:3] == ["python", "install"]:
+                    managed_root = Path(command[command.index("--install-dir") + 1])
+                    distribution = managed_root / "cpython-3.14-test"
+                    (distribution / "Lib/site-packages").mkdir(parents=True)
+                    (distribution / "python.exe").write_bytes(b"python")
+                    return SimpleNamespace(stdout="")
+                if command[1] == "export":
+                    requirements = Path(command[command.index("--output-file") + 1])
+                    requirements.write_text("locked==1\n", encoding="utf-8")
+                    return SimpleNamespace(stdout="")
+                if command[1:3] in (["pip", "sync"], ["pip", "install"]):
+                    runtime = destination / "pocket-tts"
+                    scripts = runtime / "Scripts"
+                    scripts.mkdir(exist_ok=True)
+                    (scripts / "generated.exe").write_bytes(b"entrypoint")
+                    return SimpleNamespace(stdout="")
+                interpreter = Path(command[0])
+                runtime = interpreter.parent
+                site = runtime / "Lib/site-packages"
+                report = {
+                    "executable": str(interpreter),
+                    "prefix": str(runtime),
+                    "base_prefix": str(runtime),
+                    "modules": {
+                        name: str(site / name / "__init__.py")
+                        for name in (
+                            "durable_file",
+                            "numpy",
+                            "platformdirs",
+                            "pocket_tts",
+                            "safetensors",
+                            "scipy",
+                            "torch",
+                            "vntts",
+                            "vntts_artifacts",
+                        )
+                    },
+                }
+                return SimpleNamespace(stdout=json.dumps(report))
+
+            manifest_path = stage_pocket_runtime(
+                project,
+                destination,
+                platform_name="win32",
+                run=runner,
+            )
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            commands = [command for command, _options in calls]
+            self.assertTrue((destination / "pocket-tts/python.exe").is_file())
+            self.assertFalse((destination / "pocket-tts/Scripts").exists())
+            self.assertFalse((destination / "_python").exists())
+            self.assertEqual(
+                manifest["probe"]["base_prefix"],
+                manifest["probe"]["prefix"],
+            )
+            self.assertTrue(any(command[1] == "export" for command in commands))
+            self.assertTrue(
+                any(command[1:3] == ["pip", "sync"] for command in commands)
+            )
+            self.assertFalse(any(command[1] == "venv" for command in commands))
+
     def test_runtime_paths_are_platform_specific(self):
         root = Path("runtime")
 
-        self.assertEqual(
-            _runtime_interpreter(root, "win32"), root / "Scripts/python.exe"
-        )
+        self.assertEqual(_runtime_interpreter(root, "win32"), root / "python.exe")
         self.assertEqual(_runtime_interpreter(root, "darwin"), root / "bin/python")
+
+    def test_promotes_managed_windows_distribution_without_a_venv(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            managed_root = root / "_python"
+            distribution = managed_root / "cpython-3.14-test"
+            interpreter = distribution / "python.exe"
+            site = distribution / "Lib/site-packages"
+            site.mkdir(parents=True)
+            interpreter.write_bytes(b"python")
+            (site / "package.py").write_text("value = 1", encoding="utf-8")
+            runtime = root / "pocket-tts"
+
+            promoted = _promote_windows_runtime(
+                managed_root,
+                interpreter,
+                runtime,
+            )
+
+            self.assertEqual(promoted, runtime / "python.exe")
+            self.assertTrue(promoted.is_file())
+            self.assertTrue((runtime / "Lib/site-packages/package.py").is_file())
+            self.assertFalse(managed_root.exists())
 
     def test_managed_interpreter_must_be_unique_and_contained(self):
         with TemporaryDirectory() as directory:
@@ -220,17 +316,15 @@ class ReleaseRuntimeTest(unittest.TestCase):
     def test_windows_entrypoint_pruning_preserves_distribution_root(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            managed_root = root / "_python"
-            managed_interpreter = managed_root / "cpython/python.exe"
+            managed_root = root / "removed-managed-root"
+            runtime = root / "pocket-tts"
+            managed_interpreter = runtime / "python.exe"
             managed_interpreter.parent.mkdir(parents=True)
             managed_interpreter.write_bytes(b"python")
             runtime_library = managed_interpreter.parent / "python314.dll"
             runtime_library.write_bytes(b"library")
-            runtime = root / "pocket-tts"
-            interpreter = runtime / "Scripts/python.exe"
-            interpreter.parent.mkdir(parents=True)
-            interpreter.write_bytes(b"launcher")
             entrypoint = runtime / "Scripts/vntts.exe"
+            entrypoint.parent.mkdir(parents=True)
             entrypoint.write_bytes(b"entrypoint")
 
             _prune_runtime_entrypoints(
@@ -240,8 +334,9 @@ class ReleaseRuntimeTest(unittest.TestCase):
                 "win32",
             )
 
-            self.assertTrue(interpreter.exists())
+            self.assertTrue(managed_interpreter.exists())
             self.assertFalse(entrypoint.exists())
+            self.assertFalse(entrypoint.parent.exists())
             self.assertTrue(runtime_library.exists())
 
     def test_runtime_site_rejects_ambiguous_posix_layout(self):

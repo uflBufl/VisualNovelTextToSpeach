@@ -231,6 +231,23 @@ class SpeechWorkerTest(unittest.TestCase):
             self.assertEqual(resolved_python, interpreter)
             self.assertEqual(resolved_site, site_packages.resolve())
 
+    def test_windows_runtime_prefers_portable_base_interpreter(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            interpreter = root / "python.exe"
+            interpreter.touch()
+            site_packages = root / "Lib/site-packages"
+            site_packages.mkdir(parents=True)
+
+            with patch("vntts.speech_worker.sys.platform", "win32"):
+                resolved_root, resolved_python, resolved_site = _runtime_paths(
+                    "pocket-tts", root
+                )
+
+            self.assertEqual(resolved_root, root)
+            self.assertEqual(resolved_python, interpreter)
+            self.assertEqual(resolved_site, site_packages.resolve())
+
     def test_runtime_path_prefers_frozen_bundle_over_source_checkout(self):
         with TemporaryDirectory() as directory:
             bundle_root = Path(directory).resolve()

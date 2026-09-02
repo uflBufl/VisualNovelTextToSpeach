@@ -50,6 +50,8 @@ class ReleasePackagingTest(unittest.TestCase):
         )
 
         self.assertIn('"speech-runtimes"', spec)
+        self.assertIn('/ "pocket-tts" / "python.exe"', spec)
+        self.assertNotIn('/ "Scripts" / "python.exe"', spec)
 
     def test_windows_build_discovers_tesseract_before_standard_locations(self):
         script = (PROJECT_ROOT / "scripts/build-windows.ps1").read_text(

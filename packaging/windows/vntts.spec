@@ -22,7 +22,7 @@ if not espeak_executables:
 if not espeak_data_directories:
     raise SystemExit(f"eSpeak-NG voice data is missing under: {espeak_directory}")
 for required_path in (
-    speech_runtimes_directory / "pocket-tts" / "Scripts" / "python.exe",
+    speech_runtimes_directory / "pocket-tts" / "python.exe",
     speech_runtimes_directory / "runtime-manifest.json",
 ):
     if not required_path.is_file():

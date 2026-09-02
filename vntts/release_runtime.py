@@ -28,9 +28,7 @@ PROBE_MODULES = (
 
 
 def _runtime_interpreter(runtime_root: Path, platform_name: str) -> Path:
-    return runtime_root / (
-        "Scripts/python.exe" if platform_name == "win32" else "bin/python"
-    )
+    return runtime_root / ("python.exe" if platform_name == "win32" else "bin/python")
 
 
 def _runtime_site(runtime_root: Path, platform_name: str) -> Path:
@@ -96,6 +94,19 @@ def _prune_managed_runtime(managed_root: Path, managed_interpreter: Path) -> Non
             candidate.unlink()
 
 
+def _promote_windows_runtime(
+    managed_root: Path,
+    managed_interpreter: Path,
+    runtime_root: Path,
+) -> Path:
+    distribution_root = managed_interpreter.parent
+    if not distribution_root.resolve().is_relative_to(managed_root.resolve()):
+        raise RuntimeError("Managed Python distribution escaped its staging root")
+    shutil.move(distribution_root, runtime_root)
+    shutil.rmtree(managed_root)
+    return _runtime_interpreter(runtime_root, "win32")
+
+
 def _prune_runtime_entrypoints(
     managed_root: Path,
     managed_interpreter: Path,
@@ -103,6 +114,8 @@ def _prune_runtime_entrypoints(
     platform_name: str,
 ) -> None:
     for root in (managed_root, runtime_root):
+        if not root.is_dir():
+            continue
         for candidate in root.iterdir():
             if candidate.name.startswith("."):
                 if candidate.is_dir() and not candidate.is_symlink():
@@ -110,14 +123,17 @@ def _prune_runtime_entrypoints(
                 else:
                     candidate.unlink()
     runtime_interpreter = _runtime_interpreter(runtime_root, platform_name)
-    scripts = runtime_interpreter.parent
-    for candidate in scripts.iterdir():
-        if candidate != runtime_interpreter:
-            if candidate.is_dir() and not candidate.is_symlink():
-                shutil.rmtree(candidate)
-            else:
-                candidate.unlink()
+    scripts = runtime_root / ("Scripts" if platform_name == "win32" else "bin")
+    if scripts.is_dir():
+        for candidate in scripts.iterdir():
+            if platform_name == "win32" or candidate != runtime_interpreter:
+                if candidate.is_dir() and not candidate.is_symlink():
+                    shutil.rmtree(candidate)
+                else:
+                    candidate.unlink()
     if platform_name == "win32":
+        if scripts.is_dir():
+            scripts.rmdir()
         return
     for candidate in managed_interpreter.parent.iterdir():
         if candidate != managed_interpreter:
@@ -247,38 +263,72 @@ def stage_pocket_runtime(
     )
     _prune_managed_runtime(managed_root, managed_interpreter)
 
-    _run_checked(
-        run,
-        (
-            uv_executable,
-            "venv",
-            "--relocatable",
-            "--python",
+    if platform_name == "win32":
+        runtime_interpreter = _promote_windows_runtime(
+            managed_root,
             managed_interpreter,
             runtime_root,
-        ),
-    )
-    if platform_name != "win32":
+        )
+        with TemporaryDirectory(prefix="vntts-pocket-lock-") as directory:
+            requirements = Path(directory) / "requirements.txt"
+            _run_checked(
+                run,
+                (
+                    uv_executable,
+                    "export",
+                    "--quiet",
+                    "--project",
+                    backend_project,
+                    "--frozen",
+                    "--no-dev",
+                    "--no-emit-project",
+                    "--output-file",
+                    requirements,
+                ),
+            )
+            _run_checked(
+                run,
+                (
+                    uv_executable,
+                    "pip",
+                    "sync",
+                    "--python",
+                    runtime_interpreter,
+                    "--compile-bytecode",
+                    requirements,
+                ),
+            )
+    else:
+        _run_checked(
+            run,
+            (
+                uv_executable,
+                "venv",
+                "--relocatable",
+                "--python",
+                managed_interpreter,
+                runtime_root,
+            ),
+        )
         _replace_posix_interpreter_link(runtime_root, managed_interpreter)
-    runtime_interpreter = _runtime_interpreter(runtime_root, platform_name)
+        runtime_interpreter = _runtime_interpreter(runtime_root, platform_name)
+        sync_environment = dict(os.environ)
+        sync_environment["VIRTUAL_ENV"] = str(runtime_root)
+        _run_checked(
+            run,
+            (
+                uv_executable,
+                "sync",
+                "--project",
+                backend_project,
+                "--active",
+                "--frozen",
+                "--no-install-project",
+                "--compile-bytecode",
+            ),
+            environment=sync_environment,
+        )
     _runtime_site(runtime_root, platform_name)
-
-    sync_environment = dict(os.environ)
-    sync_environment["VIRTUAL_ENV"] = str(runtime_root)
-    _run_checked(
-        run,
-        (
-            uv_executable,
-            "sync",
-            "--project",
-            backend_project,
-            "--active",
-            "--frozen",
-            "--no-install-project",
-            "--compile-bytecode",
-        ),
-        environment=sync_environment,
-    )
     _run_checked(
         run,
         (
