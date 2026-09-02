@@ -194,6 +194,54 @@ class TTSBenchmarkTest(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("No complete voice manifest", errors.getvalue())
 
+    def test_cli_forwards_explicit_xtts_terms_acceptance(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        report = {"backend": "coqui-xtts", "samples": []}
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            with (
+                patch(
+                    "vntts.tts_benchmark.CharacterVoiceRegistry.from_file",
+                    return_value=registry,
+                ),
+                patch("vntts.tts_benchmark.create_backend") as create,
+                patch(
+                    "vntts.tts_benchmark.benchmark_backend", return_value=report
+                ) as benchmark,
+                patch(
+                    "vntts.tts_benchmark.write_report",
+                    return_value=output / "coqui-xtts.json",
+                ),
+            ):
+                exit_code = main(
+                    [
+                        "--backend",
+                        "coqui-xtts",
+                        "--manifest",
+                        str(output / "voices.json"),
+                        "--character",
+                        "Kamuta",
+                        "--output",
+                        str(output),
+                        "--accept-xtts-terms",
+                    ]
+                )
+                factory = benchmark.call_args.kwargs["backend_factory"]
+                factory("coqui-xtts", registry, output)
+
+        self.assertEqual(exit_code, 0)
+        create.assert_called_once_with(
+            "coqui-xtts",
+            registry,
+            output,
+            model_name=None,
+            moss_streaming_first_chunk_frames=None,
+            moss_streaming_interval=None,
+            terms_accepted=True,
+        )
+
     def test_reads_audio_only_from_typed_render_result(self):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]

@@ -594,7 +594,7 @@ def build_parser():
     parser.add_argument(
         "--backend",
         required=True,
-        choices=("pocket-tts", "chatterbox-nano", "moss-tts"),
+        choices=("pocket-tts", "chatterbox-nano", "moss-tts", "coqui-xtts"),
     )
     parser.add_argument("--character", action="append", dest="characters")
     parser.add_argument("--text", default=default_text)
@@ -603,6 +603,11 @@ def build_parser():
     parser.add_argument(
         "--model",
         help="Local model path or backend model identifier (recommended offline)",
+    )
+    parser.add_argument(
+        "--accept-xtts-terms",
+        action="store_true",
+        help="Accept the Coqui Public Model License required by XTTS v2",
     )
     parser.add_argument("--moss-first-chunk-frames", type=int)
     parser.add_argument("--moss-streaming-interval", type=float)
@@ -639,6 +644,7 @@ def main(argv=None):
             arguments.model,
             arguments.moss_first_chunk_frames,
             arguments.moss_streaming_interval,
+            arguments.accept_xtts_terms or None,
         )
     ):
 
@@ -650,6 +656,7 @@ def main(argv=None):
                 model_name=arguments.model,
                 moss_streaming_first_chunk_frames=(arguments.moss_first_chunk_frames),
                 moss_streaming_interval=arguments.moss_streaming_interval,
+                terms_accepted=arguments.accept_xtts_terms,
             )
 
     report = benchmark_backend(
