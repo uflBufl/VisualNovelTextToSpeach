@@ -45,10 +45,6 @@ blindly upgrading an atomic model stack beyond its upstream-supported versions.
 Every retained upper bound or exact pin must name the observed incompatibility
 in the same commit.
 
-- [ ] Complete the remaining packaged/runtime qualification of the upgraded
-      Python 3.14 root application with one CPU XTTS render on Windows. Retain
-      Transformers `<5` until Coqui stops importing the removed
-      `isin_mps_friendly` API.
 - [ ] Qualify Pocket TTS 3.0.2 in the packaged Windows runtime. Compare a fixed
       preset-voice render with the last release and require no truncation,
       invalid PCM or material latency regression.
