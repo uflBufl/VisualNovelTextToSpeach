@@ -37,6 +37,88 @@ intentional omission as distinct terminal authorities.
       if the fit groups separate and held-out evaluation preserves every known
       age/identity boundary; until then keep all current variants separate.
 
+## P1 - Upgrade and unify Python runtimes
+
+Use Python 3.14 for the application and every speech runtime that can pass its
+real model smoke test. Select the newest compatible stable release rather than
+blindly upgrading an atomic model stack beyond its upstream-supported versions.
+Every retained upper bound or exact pin must name the observed incompatibility
+in the same commit.
+
+- [ ] Fix the dependency baseline before upgrading packages.
+  - Change the stale root `.python-version` from 3.11 to 3.14 and make CI check
+    every `pyproject.toml`/`uv.lock` pair with its declared Python version on all
+    supported operating systems.
+  - Add one read-only dependency report that lists outdated direct packages,
+    unsupported Python constraints and release-platform wheel availability.
+    Release environments must not silently build Torch, TorchCodec, NumPy,
+    SciPy, MLX, ONNX Runtime or Qt from source.
+  - Upgrade one runtime per commit. For each runtime, lock first, run its unit
+    tests and import probe, then render a fixed short WAV and verify finite PCM,
+    sample rate, duration and clean worker shutdown before moving to the next.
+- [ ] Upgrade the Python 3.14 root application independently of model runtimes.
+  - First update compatible non-model direct dependencies and development tools,
+    including Coqui TTS 0.27.5, PySide6 6.11, sounddevice 0.5.6, soundfile 0.14,
+    mss 10.2, PyInstaller 6.22, Ruff 0.16 and the latest compatible releases of
+    the remaining direct packages.
+  - Then test Torch, TorchAudio and Transformers as one stack against Coqui XTTS,
+    Whisper/ASR and speaker-identity paths. Use their newest mutually compatible
+    stable versions; isolate Coqui or authoring ASR only if an observed version
+    conflict prevents the root environment from advancing.
+  - Acceptance: macOS, Windows and Linux unit jobs, frozen lock checks, packaged
+    application self-tests and one CPU XTTS render all pass on Python 3.14.
+- [ ] Upgrade Pocket TTS from 2.1.0 to 3.0.2 on Python 3.14.
+  - Adapt only confirmed API changes, retain the existing isolated worker and
+    compare a fixed preset-voice render before and after the upgrade.
+  - Acceptance: startup/cancellation/cache tests pass and the new render has no
+    truncation, invalid PCM or material latency regression.
+- [ ] Move Chatterbox Nano from Python `<3.13` to Python 3.14.
+  - The pinned upstream revision already declares a Python-3.14 Torch branch;
+    regenerate its lock on 3.14, then consider a newer immutable upstream commit
+    only after reviewing API, model and license changes.
+  - Acceptance: Windows and Linux dependency resolution uses wheels, worker
+    import/start/stop passes and a reference-conditioned render succeeds.
+- [ ] Move MOSS Local to Python 3.14 and MLX Audio 0.5.1 or the newest compatible
+      release.
+  - Upgrade MLX, MLX Audio and Transformers together because their APIs are
+    coupled; remove compatibility shims only after both native and quantized
+    model-loading paths pass.
+  - Acceptance: Apple Silicon lock/import tests and the fixed reference render
+    pass with matching sample-rate/channel metadata and no quality regression.
+- [ ] Move MOSS Delay to Python 3.14 without changing its proven model stack in
+      the first step.
+  - Trial TorchCodec 0.9.1 as a Python-3.14 candidate while initially retaining
+    upstream's Torch/TorchAudio 2.9.1, CUDA 12.8 and Transformers 5.0 pins.
+    TorchCodec documents that pair, but upstream MOSS pins 0.8.1 and does not
+    claim MOSS compatibility with 0.9.1, so accept it only after a real MOSS
+    reference-conditioned render. Regenerate Windows and Linux locks and make
+    the CUDA probe distinguish a CPU wheel, missing driver and wrong runtime.
+  - Treat 0.9.1 only as the smallest Python-3.14 bridge, not the final upgrade.
+    After that render passes, trial the latest atomic stack, currently including
+    TorchCodec 0.16 with a compatible Torch/TorchAudio `>=2.11` and the newest
+    compatible Transformers. Keep older upstream pins only if output, VRAM,
+    loading or generation compatibility regresses.
+  - Acceptance: CUDA import and one checksum-bound render pass on Windows, with
+    a CPU-only host producing a clear unsupported-backend result rather than
+    loading the 8B model.
+- [ ] Port MOSS SoundEffect v2 to Python 3.14 or retain 3.12 as the sole documented
+      temporary exception with reproducible evidence.
+  - Test a small upstream-compatible patch replacing NumPy 1.26 with NumPy 2 and
+    TorchCodec 0.8 with 0.9 while keeping the Torch 2.9/CUDA 12.8 family aligned;
+    check `descript-audiotools` and all compiled wheels before changing model
+    code. Prefer an upstream release/commit if it removes these pins.
+  - Acceptance: Linux CUDA lock/import and one fixed-seed effect render pass on
+    Python 3.14. If they fail, record the exact incompatible dependency and keep
+    the isolated 3.12 runtime without blocking all other upgrades.
+- [ ] Make runtime installation automatic after the upgrades are proven.
+  - First-run setup should detect platform and NVIDIA-driver availability,
+    provision the appropriate locked CPU/CUDA runtime, verify it through the
+    worker, remember the result and offer a clear retry. Users must not select a
+    Python or CUDA wheel manually.
+  - Add dependency and smoke-test coverage for every runtime to CI; keep actual
+    CUDA generation on a self-hosted Windows/Linux runner and make CPU-only CI
+    validate resolution plus the typed no-CUDA path.
+
 ## P1 - Complete distributable release packages
 
 - [ ] Make release packages able to run the backend they recommend by default.
