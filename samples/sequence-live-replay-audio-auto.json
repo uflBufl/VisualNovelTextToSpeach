@@ -3,7 +3,7 @@
   "name": "Sequence-first guarded automatic route matrix",
   "fixture_kind": "checksum-bound-production-controller-audio-auto",
   "generated_audio_manifest": {
-    "path": "rhiannon-live-replay-generated.json",
+    "path": "rhiannon-live-replay-generated.fixture",
     "sha256": "a8020a4610f459393e06b010386ee57deb217fc77974f331524b53f954862ca7"
   },
   "live_sequence": {

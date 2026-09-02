@@ -1,0 +1,17 @@
+{
+  "schema": "vntts.generated-audio",
+  "fixture": "representative-device-free",
+  "schema_version": 1,
+  "entry_count": 1,
+  "entries": [
+    {
+      "line_id": "fixture:fledgling:1",
+      "text_sha256": "fc57bb43146c7286f77d88ca0858da9ef9a856cb26d663444a3392c86e918bf6",
+      "audio": "speakers/01.wav",
+      "audio_format": "wav-pcm16-mono",
+      "audio_sha256": "b55d3054483d05b19e00ed7581159398f07802c6f2700c6a2bce273440541b0b",
+      "sample_rate": 22050,
+      "sample_count": 194973
+    }
+  ]
+}

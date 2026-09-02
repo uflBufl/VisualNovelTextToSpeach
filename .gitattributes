@@ -3,6 +3,5 @@
 *.ipynb diff=ipynb
 *.json text eol=lf
 *.jsonl text eol=lf
-# This manifest is intentionally hashed byte-for-byte by the tracked replay
-# corpus. Never let checkout settings rewrite it.
-samples/rhiannon-live-replay-generated.json -text -eol
+# Checksum-bound replay fixtures must not be rewritten by checkout settings.
+samples/*.fixture -text -eol
