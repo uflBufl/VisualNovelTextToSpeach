@@ -60,7 +60,14 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(
             dashboard.live_button.toolTip(), dashboard.action_reason.text()
         )
-        self.assertTrue(all(button.isEnabled() for button in dashboard.setup_buttons))
+        self.assertFalse(dashboard.narrator_voice_button.isEnabled())
+        self.assertTrue(
+            all(
+                button.isEnabled()
+                for button in dashboard.setup_buttons
+                if button is not dashboard.narrator_voice_button
+            )
+        )
         self.assertEqual(
             {group.title() for group in dashboard.findChildren(QGroupBox)},
             {

@@ -226,6 +226,8 @@ class ControlDashboard(QMainWindow):
             button.clicked.connect(signal.emit)
             setup_secondary.addWidget(button)
             self.setup_buttons.append(button)
+            if label == "Narrator voice":
+                self.narrator_voice_button = button
         quit_button = QPushButton("Quit VNTTS")
         quit_button.clicked.connect(self.request_quit)
         setup_secondary.addWidget(quit_button)
@@ -401,6 +403,7 @@ class ControlDashboard(QMainWindow):
 
     def set_ready(self, ready, *, reason=None):
         self._ready = bool(ready)
+        self.narrator_voice_button.setEnabled(self._ready)
         for button in (
             self.read_button,
             self.live_button,
