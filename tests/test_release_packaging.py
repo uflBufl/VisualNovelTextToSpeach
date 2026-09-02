@@ -65,6 +65,16 @@ class ReleasePackagingTest(unittest.TestCase):
             script.index('Join-Path $env:ProgramFiles "Tesseract-OCR"'),
         )
 
+    def test_chatterbox_windows_qualification_uses_locked_runtime_and_benchmark(self):
+        script = (PROJECT_ROOT / "scripts/qualify-chatterbox-nano.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("uv sync --project backends/chatterbox-nano --frozen", script)
+        self.assertIn("--backend chatterbox-nano", script)
+        self.assertIn("data\\reverse1999-voices\\manifest.json", script)
+        self.assertIn("Test-Path $AudioPath -PathType Leaf", script)
+
     def test_macos_runtime_is_injected_without_pyinstaller_reclassification(self):
         spec = (PROJECT_ROOT / "packaging/macos/vntts.spec").read_text(encoding="utf-8")
         script = (PROJECT_ROOT / "scripts/build-macos.sh").read_text(encoding="utf-8")
