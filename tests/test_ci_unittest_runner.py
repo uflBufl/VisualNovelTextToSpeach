@@ -8,8 +8,8 @@ from unittest.mock import Mock, patch
 from scripts.run_ci_unittests import (
     _flatten_suite,
     _run_exact_test_file,
-    _run_macos_full_discovery,
-    partition_macos_test_ids,
+    _run_sharded_full_discovery,
+    partition_ui_test_ids,
     workflow_failure_details,
     workflow_failure_sections,
 )
@@ -28,7 +28,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
             "tests.test_zed.ZedTest.test_two",
         ]
         values.insert(1, "tests.test_asset_ui.AssetTest.test_dialog")
-        app, assets, remainder = partition_macos_test_ids(values)
+        app, assets, remainder = partition_ui_test_ids(values)
         self.assertEqual(app, (values[0],))
         self.assertEqual(assets, (values[1],))
         self.assertEqual(remainder, tuple(values[2:]))
@@ -36,9 +36,9 @@ class CiUnitTestRunnerTest(unittest.TestCase):
 
     def test_partition_rejects_duplicates_and_missing_app_shard(self):
         with self.assertRaisesRegex(ValueError, "duplicate"):
-            partition_macos_test_ids(["tests.test_app.X.test_a"] * 2)
+            partition_ui_test_ids(["tests.test_app.X.test_a"] * 2)
         with self.assertRaisesRegex(ValueError, "incomplete"):
-            partition_macos_test_ids(["tests.test_alpha.X.test_a"])
+            partition_ui_test_ids(["tests.test_alpha.X.test_a"])
 
     def test_failure_details_keep_both_ends(self):
         value = (
@@ -95,7 +95,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 return_value=(Mock(id=Mock(return_value="test-id")),),
             ),
             patch(
-                "scripts.run_ci_unittests.partition_macos_test_ids",
+                "scripts.run_ci_unittests.partition_ui_test_ids",
                 return_value=(("app-id",), ("asset-id",), ("other-id",)),
             ),
             patch(
@@ -103,7 +103,7 @@ class CiUnitTestRunnerTest(unittest.TestCase):
                 side_effect=subprocess.TimeoutExpired(("python",), 60),
             ),
         ):
-            self.assertEqual(_run_macos_full_discovery(), 124)
+            self.assertEqual(_run_sharded_full_discovery("Darwin"), 124)
 
 
 if __name__ == "__main__":

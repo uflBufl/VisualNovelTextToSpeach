@@ -10,7 +10,10 @@ from pathlib import Path
 
 from vntts.cli import cli_message
 
-MACOS_SHARD_TIMEOUTS = {"qt-app": 180, "qt-assets": 60, "remainder": 900}
+SHARD_TIMEOUTS = {
+    "Darwin": {"qt-app": 180, "qt-assets": 60, "remainder": 900},
+    "Windows": {"qt-app": 180, "qt-assets": 60, "remainder": 900},
+}
 
 
 def escape_workflow_command(value):
@@ -41,7 +44,7 @@ def _flatten_suite(suite):
             yield value
 
 
-def partition_macos_test_ids(test_ids):
+def partition_ui_test_ids(test_ids):
     """Assign every exact test once, isolating the crash-prone Qt app module."""
     values = list(test_ids)
     if len(values) != len(set(values)):
@@ -53,9 +56,9 @@ def partition_macos_test_ids(test_ids):
     isolated = set((*app, *assets))
     remainder = tuple(value for value in values if value not in isolated)
     if not app or not assets or not remainder or isolated.intersection(remainder):
-        raise ValueError("macOS unittest shards are incomplete or overlap")
+        raise ValueError("UI unittest shards are incomplete or overlap")
     if sorted((*app, *assets, *remainder)) != sorted(values):
-        raise ValueError("macOS unittest shards do not cover exact discovery")
+        raise ValueError("UI unittest shards do not cover exact discovery")
     return app, assets, remainder
 
 
@@ -84,11 +87,11 @@ def _run_exact_test_file(path):
     return 0 if result.wasSuccessful() else 1
 
 
-def _run_macos_full_discovery():
+def _run_sharded_full_discovery(system):
     suite = unittest.defaultTestLoader.discover("tests", top_level_dir=".")
     test_ids = tuple(value.id() for value in _flatten_suite(suite))
     try:
-        app_ids, asset_ids, remainder_ids = partition_macos_test_ids(test_ids)
+        app_ids, asset_ids, remainder_ids = partition_ui_test_ids(test_ids)
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
@@ -102,7 +105,7 @@ def _run_macos_full_discovery():
         for name, ids in shards:
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
-            print(f"Running macOS unittest shard {name}: {len(ids)} tests")
+            print(f"Running {system} unittest shard {name}: {len(ids)} tests")
             with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as transcript:
                 try:
                     completed = subprocess.run(
@@ -113,7 +116,7 @@ def _run_macos_full_discovery():
                             "--exact-test-ids-file",
                             str(inventory),
                         ],
-                        timeout=MACOS_SHARD_TIMEOUTS[name],
+                        timeout=SHARD_TIMEOUTS[system][name],
                         stdout=transcript,
                         stderr=subprocess.STDOUT,
                         text=True,
@@ -124,13 +127,13 @@ def _run_macos_full_discovery():
                     print(output, end="")
                     if os.environ.get("GITHUB_ACTIONS"):
                         print(
-                            f"::error title=macOS {name} tests timed out::"
+                            f"::error title={system} {name} tests timed out::"
                             f"{escape_workflow_command(workflow_failure_details(output))}",
                             file=sys.stderr,
                         )
                     print(
-                        f"macOS unittest shard {name} exceeded "
-                        f"{MACOS_SHARD_TIMEOUTS[name]} seconds",
+                        f"{system} unittest shard {name} exceeded "
+                        f"{SHARD_TIMEOUTS[system][name]} seconds",
                         file=sys.stderr,
                     )
                     return 124
@@ -141,10 +144,11 @@ def _run_macos_full_discovery():
                 if os.environ.get("GITHUB_ACTIONS"):
                     sections = workflow_failure_sections(output)
                     for details in sections or (
-                        output or f"macOS unittest shard {name} exited without output.",
+                        output
+                        or f"{system} unittest shard {name} exited without output.",
                     ):
                         print(
-                            f"::error title=macOS {name} tests failed::"
+                            f"::error title={system} {name} tests failed::"
                             f"{escape_workflow_command(workflow_failure_details(details))}",
                             file=sys.stderr,
                         )
@@ -159,8 +163,9 @@ def main(arguments=None):
         if len(arguments) != 2:
             return 2
         return _run_exact_test_file(arguments[1])
-    if platform.system() == "Darwin" and arguments == ["discover", "-s", "tests"]:
-        return _run_macos_full_discovery()
+    system = platform.system()
+    if system in SHARD_TIMEOUTS and arguments == ["discover", "-s", "tests"]:
+        return _run_sharded_full_discovery(system)
     completed = subprocess.run(
         [sys.executable, "-u", "-m", "unittest", *arguments],
         stdout=subprocess.PIPE,

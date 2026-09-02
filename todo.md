@@ -50,6 +50,9 @@ measurements and completed-work history in `docs/` and Git, not here.
   - Eliminate the intermittent macOS `SettingsDialog` construction hang in the
     exact `qt-app` shard; keep the last verbose test identity as evidence and a
     bounded per-module timeout rather than relying on the workflow-wide guard.
+  - Run the Windows Qt app/assets modules and remainder in the same exact
+    once-only fresh-process shards so native Qt state cannot strand the whole
+    suite without a bounded last-test diagnostic.
   - Gate: `scripts/run_ci_unittests.py discover -s tests` and
     `scripts/build-windows.ps1` complete as a non-admin user without requiring
     Developer Mode. Retain the ordinary macOS full-suite gate.
