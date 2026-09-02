@@ -124,6 +124,20 @@ imports cannot add bytecode caches to the sealed application. The clean-bundle
 verifier runs only after that injection and signature pass, and verifies the
 seal again after inference.
 
+## Cross-platform source quality execution
+
+CI uses the frozen CPython 3.14 dependency graph. Linux runs under Xvfb with
+EGL, PipeWire and PortAudio runtime libraries so window input and Qt Multimedia
+imports exercise their X11 path. macOS and Windows run the Qt application
+module, Qt asset module and remainder in three fresh processes. Each shard has
+a bounded timeout and captures output in a temporary file; failures publish the
+unittest traceback or last verbose test identity as a GitHub annotation.
+
+UI tests mock native media players unless native playback is under test. Test-
+owned top-level PySide dialogs receive their scoped deferred-delete event because
+the suite has no continuously running Qt event loop. Real display, hotkey, GPU
+and audio-device qualification remains a release gate.
+
 ## Verified unsigned macOS evidence
 
 On 2026-08-31 the arm64 build completed both the direct-app and mounted-DMG
