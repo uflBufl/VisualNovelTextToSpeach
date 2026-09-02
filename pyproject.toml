@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=84"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -17,22 +17,24 @@ authors = [
 
 dependencies = [
     # Core
-    "coqui-tts>=0.27.3",
-    "sounddevice>=0.5.3",
-    "mss>=10.1.0",
-    "pyobjc-framework-quartz>=10.3 ; sys_platform == 'darwin'",
+    "coqui-tts[codec]>=0.27.5,<0.28",
+    "sounddevice>=0.5.6,<0.6",
+    "mss>=10.2,<11",
+    "pyobjc-framework-quartz>=12.2.2,<13 ; sys_platform == 'darwin'",
     "python-xlib>=0.33 ; sys_platform == 'linux'",
-    "pynput>=1.8.1",
-    "torch>=2.10,<2.11",
-    "torchaudio>=2.10,<2.11",
-    "transformers==4.57.3",
+    "pynput>=1.8.2,<2",
+    "torch>=2.11,<2.12",
+    "torchaudio>=2.11,<2.12",
+    "torchcodec>=0.16,<0.17",
+    # Coqui XTTS 0.27.5 imports an API removed in Transformers 5.
+    "transformers>=4.57.6,<5",
     "pytesseract>=0.3.13",
-    "numpy>=1.24",
-    "soundfile>=0.13",
-    "platformdirs>=4.3,<5",
+    "numpy>=2.5,<3",
+    "soundfile>=0.14,<0.15",
+    "platformdirs>=4.11,<5",
     "reverse1999-extractor",
     # Inteface
-    "PySide6==6.10.1",
+    "PySide6==6.11.2",
     # Needs eSpeak to run
     # "pyttsx3>=2.90",
     "vntts-artifacts[audio]",
@@ -41,10 +43,10 @@ dependencies = [
 [project.optional-dependencies]
 rapidocr = [
     "rapidocr>=3.8.1,<4",
-    "onnxruntime>=1.23,<2",
+    "onnxruntime>=1.29,<2",
 ]
 speaker-identity = [
-    "speechbrain==1.0.3",
+    "speechbrain==1.1.1",
 ]
 
 [project.scripts]
@@ -75,11 +77,15 @@ vntts-conflict-review = "vntts.authoring.terminal_conflict_review_ui:main"
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
 torchaudio = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { index = "pytorch-cu129", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
+]
+torchcodec = [
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
 vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "dd0459df41d596d649a5a3e33fb03f93024d5af9" }
 reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "a17a9121a09d1a43c0d977589f934f706af5e523" }
@@ -87,10 +93,10 @@ reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.gi
 [dependency-groups]
 dev = [
     "deptree>=0.0.12",
-    "mypy>=1.19,<2",
-    "nbstripout>=0.8.2",
-    "pyinstaller",
-    "ruff==0.16.2",
+    "mypy>=2.3,<3",
+    "nbstripout>=0.9.1,<1",
+    "pyinstaller>=6.22,<7",
+    "ruff>=0.16.5,<0.17",
 ]
 notebook = [
     "jupyter>=1.1",
@@ -100,8 +106,8 @@ notebook = [
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu129"
-url = "https://download.pytorch.org/whl/cu129"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [[tool.uv.index]]

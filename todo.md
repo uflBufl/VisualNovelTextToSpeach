@@ -56,17 +56,11 @@ in the same commit.
   - Upgrade one runtime per commit. For each runtime, lock first, run its unit
     tests and import probe, then render a fixed short WAV and verify finite PCM,
     sample rate, duration and clean worker shutdown before moving to the next.
-- [ ] Upgrade the Python 3.14 root application independently of model runtimes.
-  - First update compatible non-model direct dependencies and development tools,
-    including Coqui TTS 0.27.5, PySide6 6.11, sounddevice 0.5.6, soundfile 0.14,
-    mss 10.2, PyInstaller 6.22, Ruff 0.16 and the latest compatible releases of
-    the remaining direct packages.
-  - Then test Torch, TorchAudio and Transformers as one stack against Coqui XTTS,
-    Whisper/ASR and speaker-identity paths. Use their newest mutually compatible
-    stable versions; isolate Coqui or authoring ASR only if an observed version
-    conflict prevents the root environment from advancing.
-  - Acceptance: macOS, Windows and Linux unit jobs, frozen lock checks, packaged
-    application self-tests and one CPU XTTS render all pass on Python 3.14.
+- [ ] Complete cross-platform qualification of the upgraded Python 3.14 root
+      application. Acceptance requires macOS, Windows and Linux unit jobs,
+      packaged application self-tests and one CPU XTTS render; retain
+      Transformers `<5` until Coqui stops importing the removed
+      `isin_mps_friendly` API.
 - [ ] Upgrade Pocket TTS from 2.1.0 to 3.0.2 on Python 3.14.
   - Adapt only confirmed API changes, retain the existing isolated worker and
     compare a fixed preset-voice render before and after the upgrade.
