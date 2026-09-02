@@ -80,15 +80,13 @@ in the same commit.
   - Acceptance: CUDA import and one checksum-bound render pass on Windows, with
     a CPU-only host producing a clear unsupported-backend result rather than
     loading the 8B model.
-- [ ] Port MOSS SoundEffect v2 to Python 3.14 or retain 3.12 as the sole documented
-      temporary exception with reproducible evidence.
-  - Test a small upstream-compatible patch replacing NumPy 1.26 with NumPy 2 and
-    TorchCodec 0.8 with 0.9 while keeping the Torch 2.9/CUDA 12.8 family aligned;
-    check `descript-audiotools` and all compiled wheels before changing model
-    code. Prefer an upstream release/commit if it removes these pins.
-  - Acceptance: Linux CUDA lock/import and one fixed-seed effect render pass on
-    Python 3.14. If they fail, record the exact incompatible dependency and keep
-    the isolated 3.12 runtime without blocking all other upgrades.
+- [ ] Qualify the Python 3.14 MOSS SoundEffect v2 candidate on Linux CUDA. The
+      lock now overrides upstream's wheel-less NumPy 1.26.4 pin with NumPy 2 and
+      keeps the Torch 2.9/CUDA 12.8 family aligned while trialling TorchCodec
+      0.9.1. Require import plus one fixed-seed effect render with finite PCM and
+      clean worker shutdown. If `descript-audiotools` or model code fails under
+      NumPy 2, record the exact failure and retain Python 3.12 for this isolated
+      runtime without blocking the other upgrades.
 - [ ] Make runtime installation automatic after the upgrades are proven.
   - First-run setup should detect platform and NVIDIA-driver availability,
     provision the appropriate locked CPU/CUDA runtime, verify it through the
@@ -129,7 +127,7 @@ These tasks are useful but do not block the current Character Story release.
   - [ ] Only after the offline gate passes, reuse the same classifier and safe
         segmentation in live mode between cancellation/staleness guards.
 - [ ] Evaluate typed non-verbal events on a CUDA host with official
-      MOSS-SoundEffect v2 in its separate Python 3.12 environment. Use a fixed
+      MOSS-SoundEffect v2 in its isolated environment. Use a fixed
       isolated-effect corpus and multiple checksum-bound seeds; record model,
       prompt, requested/actual duration, latency, VRAM, unwanted speech,
       artifacts and adherence. Require technical and blinded perceptual approval

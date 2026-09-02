@@ -1,22 +1,26 @@
 [project]
 name = "vntts-moss-soundeffect-v2-runtime"
 version = "0.1.0"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "moss-soundeffect-v2 @ git+https://github.com/OpenMOSS/MOSS-TTS.git@c0880299e8b8d0f7119efab17e4e776fffe7b8fa#subdirectory=moss_soundeffect_v2",
-    "torch==2.9.0+cu128 ; sys_platform == 'linux'",
-    "torchaudio==2.9.0+cu128 ; sys_platform == 'linux'",
-    "torchcodec==0.8.0 ; sys_platform == 'linux'",
-    "torchvision==0.24.0+cu128 ; sys_platform == 'linux'",
+    "torch==2.9.1+cu128 ; sys_platform == 'linux'",
+    "torchaudio==2.9.1+cu128 ; sys_platform == 'linux'",
+    "torchcodec==0.9.1 ; sys_platform == 'linux'",
+    "torchvision==0.24.1+cu128 ; sys_platform == 'linux'",
 ]
 
 [tool.uv]
 package = false
+# Upstream pins NumPy 1.26.4, which has no Python 3.14 wheel. Remove this
+# override when MOSS SoundEffect publishes compatible metadata.
+override-dependencies = ["numpy>=2,<3"]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 torchaudio = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
+torchcodec = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
