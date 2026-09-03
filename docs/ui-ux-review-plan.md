@@ -25,8 +25,8 @@ Include shipped PySide6 interfaces and distribution UI in:
 - `vntts-artifacts`, which currently has no UI and therefore contributes no
   surfaces.
 
-Also include the shipped Windows installer/uninstaller and the application's
-background-mode, unmapped-speaker and critical-error tray notifications.
+Also include the application's background-mode, unmapped-speaker and
+critical-error tray notifications.
 
 Exclude example/demo windows, notebooks, CLI-only commands and OS UI that the
 applications do not control. Include every native file chooser, name prompt,
@@ -48,14 +48,13 @@ part of the journey.
 | Authoring | `vntts-pregenerate missing-voice-reuse-review-ui` | Missing-voice and failed-line fallback review |
 | Source extraction | `r1999-audition` | Source clip review and speaker mapping |
 | Source extraction | `r1999-story-voice-review-ui` | Character Story reference review |
-| Distribution | Windows installer/uninstaller | Install, upgrade, startup choice, launch and removal |
+| Distribution | Windows portable bundle | Extract and launch |
 
 ### Surface groups
 
 The initial source inventory contains 31 application-designed
-surfaces/components, three tray notification states and one Windows
-installer/uninstaller flow. Runtime inspection may split stateful surfaces into
-more ledger rows.
+surfaces/components and three tray notification states. Runtime inspection may
+split stateful surfaces into more ledger rows.
 
 | Group | Surfaces to review | Source |
 | --- | --- | --- |
@@ -65,7 +64,7 @@ more ledger rows.
 | Evidence, history and support | Uncertain OCR review; OCR correction editor; dialogue history; live diagnostics; support/log center | `vntts/ocr_review_ui.py`, `vntts/ocr_corrections_ui.py`, `vntts/history_ui.py`, `vntts/diagnostics_ui.py`, `vntts/support_ui.py` |
 | Authoring and evidence decisions | Authoring workbench; cohort review; missing-voice/failed-line review; failed-reference audit; source-reference quality review; blind A/B listening; terminal conflict review | `vntts/authoring/*_ui.py` |
 | Source extraction | Reverse: 1999 voice mapping manager; Character Story voice reference review | `reverse1999-extractor/r1999extractor/reverse1999_audition_ui.py`, `reverse1999-extractor/r1999extractor/story_voice_review_ui.py` |
-| Distribution and notifications | Windows install/upgrade/uninstall; optional startup task; post-install launch; background-mode, unmapped-speaker and critical-error notifications | `packaging/windows/installer.iss`, `vntts/app.py` |
+| Distribution and notifications | Windows portable extraction/launch; background-mode, unmapped-speaker and critical-error notifications | `packaging/windows/README.md`, `vntts/app.py` |
 | Shared/transient | Review decision-context disclosure; workbench disclosures; sequence selectors; profile-name prompts; file/folder/export choosers; confirmations; validation warnings and fatal-open errors | All UI modules above |
 
 The shared decision-context and disclosure components are reviewed once as
@@ -244,7 +243,7 @@ has resolved duplicate findings and cross-app conflicts.
 - Reconcile source and runtime lists. Every mismatch becomes an explicit ledger
   row or exclusion with a reason.
 
-Gate: all 11 application launch routes and the Windows installer/uninstaller
+Gate: all 11 application launch routes and the Windows portable first-launch
 flow open or have a reproduced, owned blocker; every designed surface,
 notification state and native-dialog call site has a stable ID.
 

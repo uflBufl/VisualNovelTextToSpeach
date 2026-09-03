@@ -1,8 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$InstallerPath,
+    [string]$BundleDirectory,
     [Parameter(Mandatory = $true)]
-    [string]$PreviousInstallerPath,
+    [string]$BundleArchive,
     [Parameter(Mandatory = $true)]
     [string]$ProfileName,
     [Parameter(Mandatory = $true)]
@@ -31,8 +31,25 @@ if ($MinimumDisplayCount -lt 1) {
 }
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$InstallerPath = (Resolve-Path $InstallerPath).Path
-$PreviousInstallerPath = (Resolve-Path $PreviousInstallerPath).Path
+$BundleDirectory = (Resolve-Path $BundleDirectory).Path
+$BundleArchive = (Resolve-Path $BundleArchive).Path
+$Executable = Join-Path $BundleDirectory "VisualNovelTextToSpeech.exe"
+if (-not (Test-Path $Executable -PathType Leaf)) {
+    throw "Portable executable is missing: $Executable"
+}
+$ChecksumPath = "$BundleArchive.sha256"
+if (-not (Test-Path $ChecksumPath -PathType Leaf)) {
+    throw "Portable bundle checksum file is missing: $ChecksumPath"
+}
+$ArchiveSha256 = (Get-FileHash $BundleArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+$ExpectedSha256 = (Get-Content $ChecksumPath).Split()[0].ToLowerInvariant()
+if ($ArchiveSha256 -ne $ExpectedSha256) {
+    throw "Portable bundle checksum does not match."
+}
+$Signature = Get-AuthenticodeSignature $Executable
+if (-not $AllowUnsigned -and $Signature.Status -ne "Valid") {
+    throw "Portable executable signature is not valid: $($Signature.Status)"
+}
 if (-not $EvidenceReport) {
     $EvidenceReport = Join-Path $ProjectRoot "build\windows\release-evidence.json"
 }
@@ -143,8 +160,7 @@ try {
     }
 
     $VerifyArguments = @{
-        InstallerPath = $InstallerPath
-        PreviousInstallerPath = $PreviousInstallerPath
+        BundleDirectory = $BundleDirectory
         SmokeTestWindowTitle = $WindowTitle
         SmokeTestModel = $SmokeTestModel
         ExpectedSpeaker = "Marcus"
@@ -154,21 +170,8 @@ try {
     if ($GameProcessLevel -eq "elevated") {
         $VerifyArguments.ElevatedSmokeTest = $true
     }
-    if ($AllowUnsigned) {
-        $VerifyArguments.AllowUnsigned = $true
-    }
-    & (Join-Path $PSScriptRoot "verify-windows-installer.ps1") @VerifyArguments
+    & (Join-Path $PSScriptRoot "verify-windows-bundle.ps1") @VerifyArguments
 
-    $Signature = Get-AuthenticodeSignature $InstallerPath
-    $InstallerVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo(
-        $InstallerPath
-    ).ProductVersion
-    $PreviousInstallerVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo(
-        $PreviousInstallerPath
-    ).ProductVersion
-    if (-not $InstallerVersion -or -not $PreviousInstallerVersion) {
-        throw "Both installers must expose a product version."
-    }
     $SmokeEvidence = Get-Content $SmokeEvidenceReport -Raw | ConvertFrom-Json
     $Evidence = [ordered]@{
         success = $true
@@ -183,18 +186,14 @@ try {
         dpi_scale_percent = $DpiScale
         capture_mode = $CaptureMode
         game_process_level = $GameProcessLevel
-        installer_signature = $Signature.Status.ToString()
-        installer_sha256 = (Get-FileHash $InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        installer_product_version = $InstallerVersion
-        installer_signer_subject = if ($Signature.SignerCertificate) {
+        executable_signature = $Signature.Status.ToString()
+        portable_archive_sha256 = $ArchiveSha256
+        executable_signer_subject = if ($Signature.SignerCertificate) {
             $Signature.SignerCertificate.Subject
         } else { $null }
-        installer_signer_thumbprint = if ($Signature.SignerCertificate) {
+        executable_signer_thumbprint = if ($Signature.SignerCertificate) {
             $Signature.SignerCertificate.Thumbprint.ToLowerInvariant()
         } else { $null }
-        previous_installer_sha256 = (Get-FileHash $PreviousInstallerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        previous_installer_product_version = $PreviousInstallerVersion
-        upgrade_verified = $true
         smoke_test_model = $SmokeTestModel
         smoke_test_process_level = $GameProcessLevel
         auto_advance_dispatched = $SmokeEvidence.auto_advance_dispatched

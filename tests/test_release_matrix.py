@@ -33,14 +33,10 @@ class ReleaseMatrixTest(unittest.TestCase):
             "dpi_scale_percent": profile["dpi_scale_percent"],
             "capture_mode": profile["capture_mode"],
             "game_process_level": profile["game_process_level"],
-            "installer_signature": "Valid",
-            "installer_sha256": "a" * 64,
-            "installer_product_version": "0.2.0",
-            "installer_signer_subject": "CN=VNTTS Release",
-            "installer_signer_thumbprint": "c" * 40,
-            "previous_installer_sha256": "b" * 64,
-            "previous_installer_product_version": "0.1.0",
-            "upgrade_verified": True,
+            "executable_signature": "Valid",
+            "portable_archive_sha256": "a" * 64,
+            "executable_signer_subject": "CN=VNTTS Release",
+            "executable_signer_thumbprint": "c" * 40,
             "smoke_test_model": "tts_models/en/vctk/vits",
             "smoke_test_process_level": profile["game_process_level"],
             "auto_advance_dispatched": True,
@@ -68,7 +64,7 @@ class ReleaseMatrixTest(unittest.TestCase):
     def test_rejects_missing_mismatched_and_unsigned_evidence(self):
         report = self.evidence_for(self.profiles[0])
         report["dpi_scale_percent"] = 200
-        report["installer_signature"] = "NotSigned"
+        report["executable_signature"] = "NotSigned"
         reports = [(Path("bad.json"), report)]
 
         errors = validate_release_evidence(self.profiles, reports)
@@ -97,9 +93,9 @@ class ReleaseMatrixTest(unittest.TestCase):
         reports = []
         for profile in self.profiles:
             report = self.evidence_for(profile)
-            report["installer_signature"] = "NotSigned"
-            report["installer_signer_subject"] = None
-            report["installer_signer_thumbprint"] = None
+            report["executable_signature"] = "NotSigned"
+            report["executable_signer_subject"] = None
+            report["executable_signer_thumbprint"] = None
             reports.append((Path(f"{profile['name']}.json"), report))
 
         self.assertEqual(
@@ -111,19 +107,17 @@ class ReleaseMatrixTest(unittest.TestCase):
             [],
         )
 
-    def test_rejects_evidence_from_different_candidate_installers(self):
+    def test_rejects_evidence_from_different_portable_artifacts(self):
         reports = []
         for index, profile in enumerate(self.profiles):
             report = self.evidence_for(profile)
             if index == 1:
-                report["installer_sha256"] = "d" * 64
+                report["portable_archive_sha256"] = "d" * 64
             reports.append((Path(f"{profile['name']}.json"), report))
 
         errors = validate_release_evidence(self.profiles, reports)
 
-        self.assertTrue(
-            any("identical installer artifact" in error for error in errors)
-        )
+        self.assertTrue(any("identical portable artifact" in error for error in errors))
 
 
 if __name__ == "__main__":

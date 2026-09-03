@@ -1,6 +1,12 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$BundleDirectory
+    [string]$BundleDirectory,
+    [string]$SmokeTestWindowTitle,
+    [string]$SmokeTestModel = "tts_models/en/vctk/vits",
+    [string]$ExpectedSpeaker,
+    [string]$SmokeEvidenceReport,
+    [switch]$VerifyAutoAdvance,
+    [switch]$ElevatedSmokeTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -144,6 +150,64 @@ foreach ($Name in $RequiredChecks) {
     $Check = @($Report.checks | Where-Object { $_.name -eq $Name })
     if ($Check.Count -ne 1 -or $Check[0].status -ne "ok") {
         throw "Required standalone check did not pass: $Name"
+    }
+}
+if ($SmokeTestWindowTitle) {
+    $SmokeReport = if ($SmokeEvidenceReport) {
+        [System.IO.Path]::GetFullPath($SmokeEvidenceReport)
+    }
+    else {
+        Join-Path $env:TEMP "vntts-release-smoke-$([guid]::NewGuid().ToString('N')).json"
+    }
+    $SmokeArguments = @(
+        "--release-smoke-test-report",
+        ('"{0}"' -f $SmokeReport),
+        "--release-smoke-test-model",
+        ('"{0}"' -f $SmokeTestModel),
+        "--release-smoke-test-window-title",
+        ('"{0}"' -f $SmokeTestWindowTitle)
+    )
+    if ($ExpectedSpeaker) {
+        $SmokeArguments += @(
+            "--release-smoke-test-expected-speaker",
+            ('"{0}"' -f $ExpectedSpeaker)
+        )
+    }
+    if ($VerifyAutoAdvance) {
+        $SmokeArguments += @(
+            "--release-smoke-test-auto-advance-expected-text",
+            '"Auto advance acknowledged."'
+        )
+    }
+    $SmokeParameters = @{
+        FilePath = $Executable
+        ArgumentList = $SmokeArguments
+        Wait = $true
+        PassThru = $true
+    }
+    if ($ElevatedSmokeTest) {
+        $SmokeParameters.Verb = "RunAs"
+    }
+    $Smoke = Start-Process @SmokeParameters
+    if ($Smoke.ExitCode -ne 0) {
+        throw "Portable OCR-to-speech smoke test failed."
+    }
+    if ($VerifyAutoAdvance) {
+        if (-not (Test-Path $SmokeReport -PathType Leaf)) {
+            throw "Portable auto-advance smoke report is missing."
+        }
+        $SmokeEvidence = Get-Content $SmokeReport -Raw | ConvertFrom-Json
+        if (
+            $SmokeEvidence.auto_advance_dispatched -ne $true -or
+            $SmokeEvidence.auto_advance_acknowledged -ne $true -or
+            $SmokeEvidence.auto_advance_controller -ne
+                "AppController._auto_advance_dialog"
+        ) {
+            throw "Portable production auto advance was not acknowledged."
+        }
+    }
+    if (-not $SmokeEvidenceReport) {
+        Remove-Item $SmokeReport -Force -ErrorAction SilentlyContinue
     }
 }
 Write-Host "Standalone package self-test passed without development tools on PATH."

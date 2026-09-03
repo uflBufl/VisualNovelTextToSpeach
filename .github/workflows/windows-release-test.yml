@@ -3,12 +3,8 @@ name: Windows release compatibility test
 on:
   workflow_dispatch:
     inputs:
-      installer_run_id:
-        description: Run ID containing the Windows installer artifact
-        required: true
-        type: string
-      previous_installer_run_id:
-        description: Run ID containing the previous released installer
+      bundle_run_id:
+        description: Run ID containing the Windows portable artifact
         required: true
         type: string
       profile:
@@ -31,7 +27,7 @@ on:
         type: string
         default: tts_models/en/vctk/vits
       allow_unsigned:
-        description: Development only; signed installers are required by default
+        description: Development only; a signed executable is required by default
         required: true
         type: boolean
         default: false
@@ -44,29 +40,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download installer
+      - name: Download portable application
         uses: actions/download-artifact@v4
         with:
-          name: VisualNovelTextToSpeech-windows-x64-installer
+          name: VisualNovelTextToSpeech-windows-x64
           path: dist/release
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.installer_run_id }}
+          run-id: ${{ inputs.bundle_run_id }}
 
-      - name: Download previous installer
-        uses: actions/download-artifact@v4
-        with:
-          name: VisualNovelTextToSpeech-windows-x64-installer
-          path: dist/previous
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.previous_installer_run_id }}
-
-      - name: Run installed OCR-to-speech compatibility test
+      - name: Run portable OCR-to-speech compatibility test
         shell: powershell
         run: |
-          $Installer = Get-Item `
-              "dist\release\VisualNovelTextToSpeech-*-windows-x64-setup.exe"
-          $PreviousInstaller = Get-Item `
-              "dist\previous\VisualNovelTextToSpeech-*-windows-x64-setup.exe"
+          $Archive = Resolve-Path `
+              "dist\release\VisualNovelTextToSpeech-windows-x64.zip"
+          $Extracted = Join-Path $env:RUNNER_TEMP "vntts-portable-release"
+          Expand-Archive -Path $Archive -DestinationPath $Extracted
           $Matrix = Get-Content `
               "packaging\windows\release-matrix.json" | ConvertFrom-Json
           $Profile = $Matrix.required_profiles | Where-Object {
@@ -76,8 +64,8 @@ jobs:
               throw "Release profile was not found."
           }
           $Arguments = @{
-              InstallerPath = $Installer.FullName
-              PreviousInstallerPath = $PreviousInstaller.FullName
+              BundleDirectory = Join-Path $Extracted "VisualNovelTextToSpeech"
+              BundleArchive = $Archive
               ProfileName = $Profile.name
               ExpectedGpuVendor = $Profile.gpu_vendor
               CaptureMode = $Profile.capture_mode

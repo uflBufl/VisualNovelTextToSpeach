@@ -8,7 +8,7 @@ measurements and completed-work history in `docs/` and Git, not here.
 Follow [`docs/ui-ux-review-plan.md`](docs/ui-ux-review-plan.md) and the ranked
 backlog in [`docs/ui-ux-control-audit.md`](docs/ui-ux-control-audit.md).
 
-- [ ] Qualify UI-032 and the resulting journeys on real macOS and Windows with
+- [ ] Qualify the resulting journeys on real macOS and Windows with
       native dialogs/tray behavior, fullscreen and multi-monitor use,
       VoiceOver/Windows Narrator, physical 100%/150%/200% scaling, and
       representative novice, returning-player and specialist tasks.
@@ -88,8 +88,8 @@ in the same commit.
     Retain repository/revision/checksum evidence for every downloaded model and
     voice. Do not bundle gated weights or unclear/non-commercial voices without
     a release-owner approval covering those exact files.
-  - Complete the Developer ID signed/notarized macOS build plus the Windows
-    portable and installer builds before removing this item. Acceptance requires
+  - Complete the Developer ID signed/notarized macOS build plus the signed
+    Windows portable build before removing this item. Acceptance requires
     startup and render without uv, a checkout, backend environment variables or
     an existing user model cache; `scripts/build-windows.ps1` must complete from
     an ordinary account without Developer Mode. Retain checksum-bound self-test
@@ -140,12 +140,9 @@ These tasks are useful but do not block the current Character Story release.
       underruns, no stale speech/advance, cached CPU speech within 2 seconds,
       supported CUDA speech within 750 ms, and an already-visible second sentence
       within 300 ms of the first ending.
-- [ ] Create and sign a Windows installer with Start Menu shortcuts, optional
-      startup, upgrades and clean uninstall. Preserve downloaded models and user
-      settings across upgrades.
 - [ ] Record Windows release evidence across Windows 11, common GPU vendors,
       multiple displays, DPI scaling, windowed/borderless modes, normal/elevated
-      game processes, installation and OCR-to-speech smoke tests. The elevated
+      game processes, portable first launch and OCR-to-speech smoke tests. The elevated
       profile must send and acknowledge an auto-advance key through the
       production controller, not merely capture/OCR the fixture and invoke the
       legacy TTS engine; otherwise explicitly mark cross-integrity input as

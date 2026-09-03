@@ -25,9 +25,8 @@ not build a new UI framework.
 ## Evidence and coverage
 
 The audit covers 11 application launch routes, 31 application-designed
-surfaces/components, three tray notification states, the shipped Windows
-installer/uninstaller flow, and every identified native chooser, name prompt,
-confirmation and warning call site in `VisualNovelTextToSpeach` and
+surfaces/components, three tray notification states, and every identified
+native chooser, name prompt, confirmation and warning call site in `VisualNovelTextToSpeach` and
 `reverse1999-extractor`. `vntts-artifacts` has no UI.
 
 Parallel evidence:
@@ -129,7 +128,6 @@ Detailed control accounting is retained in:
 | UI-028 | Dashboard hides the detected speaker in Technical details even though speaker attribution is ordinary dialogue context. | Move speaker into the current-dialogue card; keep voice/source/confidence/latency technical. |
 | UI-029 | Readiness clips the component name that must be fixed; granted macOS permissions continue to show Request/Open actions. | Size status/component columns before details; reduce granted permission rows to a quiet state plus only intentional management action. |
 | UI-030 | Character Story A/B buttons start enabled with empty slots, allow duplicate/cross-character comparisons, and notes can be lost on selection change. | Gate Play A/B, prevent duplicate/undefined comparisons, add Clear, and protect labelled unsaved notes. |
-| UI-032 | The Windows installer/uninstaller is a shipped user journey but was absent from the original Qt-only inventory. It uses the native Inno Setup wizard, an optional startup task and post-install launch. | Keep the native wizard; test install, upgrade, startup choice, launch and uninstall on real Windows, including scale/accessibility and preservation consequences. Change wording or defaults only when that evidence shows a failure. |
 | UI-033 | Background-mode, unmapped-speaker and critical-error tray notifications are owned transient UI. The unmapped-speaker state also opens a prompt, so it can duplicate attention and error notifications may expose unbounded text. | Define one notification policy: when a balloon adds value, bounded/privacy-safe text, whether activation opens the relevant recovery surface, and when a visible prompt suppresses the duplicate balloon. |
 
 ## Preserve these working contracts
@@ -177,8 +175,6 @@ Implemented 2026-09-03:
 - Verification passed all 2,062 discovered `VisualNovelTextToSpeach` tests and
   all 21 extractor UI tests with the main UI runtime, plus Ruff and diff checks
   in both repositories.
-- UI-032 intentionally made no speculative installer change: its acceptance
-  gate is real Windows install, upgrade, startup, launch and uninstall evidence.
 
 The remaining work is platform and human qualification, not another source
 inventory or UI redesign.
@@ -190,7 +186,7 @@ requires:
 
 - real Windows and Cocoa tray/native-dialog behavior, including notification
   activation and duplication;
-- real Windows install, upgrade, startup-task and uninstall journeys;
+- real Windows portable extraction and first-launch journeys;
 - fullscreen and multi-monitor floating prompts/compact controls;
 - VoiceOver and Windows Narrator journeys;
 - physical 100%, 150% and 200% scaling with platform fonts;

@@ -153,7 +153,7 @@ The downloaded public preset inventory was exactly:
 - `alba` voice `69c32db63ca56843d994f81f343f62e0bf2d73f7e4c9bc73e44bb1110b1d8845`.
 
 This evidence closes the unsigned arm64 packaging mechanics only. Developer ID
-signing/notarization and the Windows portable/installer gates remain separate.
+signing/notarization and the Windows portable gate remain separate.
 
 ## Windows auto-advance qualification
 
@@ -175,10 +175,8 @@ auto-advance evidence.
 Every Windows matrix report must now record matching smoke/game process levels,
 `auto_advance_dispatched=true`, `auto_advance_acknowledged=true` and the exact
 production controller name. The matrix validator rejects absent, legacy or
-unacknowledged evidence. It also requires one identical candidate installer
-SHA-256, product version and signer identity across every profile. Qualification
-installs a separately hashed, declared previous-release installer first, upgrades
-it with the candidate, and rejects a same-artifact reinstall as upgrade evidence.
+unacknowledged evidence. It also requires one identical portable archive
+SHA-256 and executable signer identity across every profile.
 macOS packaging accepts only the build host's native architecture until every
 native dependency is staged independently. These checks implement the gate;
 real signed reports for every GPU/display/DPI profile are still required before

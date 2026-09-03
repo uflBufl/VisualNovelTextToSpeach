@@ -1,7 +1,9 @@
 param(
     [string]$TesseractDirectory,
     [string]$EspeakDirectory,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$Sign,
+    [switch]$RequireSignature
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,6 +14,13 @@ if ($env:OS -ne "Windows_NT") {
 }
 if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
     throw "Only 64-bit Windows builds are currently supported."
+}
+$SigningConfigured = [bool](
+    $env:VNTTS_SIGNING_CERTIFICATE_PATH -or
+    $env:VNTTS_SIGNING_CERTIFICATE_THUMBPRINT
+)
+if ($RequireSignature -and -not $SigningConfigured) {
+    throw "A signed release requires an Authenticode certificate."
 }
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
@@ -98,6 +107,9 @@ try {
 
     $Executable = Join-Path $DistPath `
         "VisualNovelTextToSpeech\VisualNovelTextToSpeech.exe"
+    if ($Sign -or $RequireSignature) {
+        & (Join-Path $PSScriptRoot "sign-windows.ps1") -Files $Executable
+    }
     $ReportPath = Join-Path $ProjectRoot "build\windows\package-self-test.json"
     $SelfTest = Start-Process -FilePath $Executable `
         -ArgumentList @(

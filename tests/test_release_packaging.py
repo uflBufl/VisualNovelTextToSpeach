@@ -117,7 +117,7 @@ class ReleasePackagingTest(unittest.TestCase):
         fixture = (PROJECT_ROOT / "scripts/windows-capture-fixture.ps1").read_text(
             encoding="utf-8"
         )
-        verifier = (PROJECT_ROOT / "scripts/verify-windows-installer.ps1").read_text(
+        verifier = (PROJECT_ROOT / "scripts/verify-windows-bundle.ps1").read_text(
             encoding="utf-8"
         )
         qualification = (
@@ -130,13 +130,13 @@ class ReleasePackagingTest(unittest.TestCase):
         self.assertIn("ElevatedSmokeTest", qualification)
         self.assertIn("auto_advance_acknowledged", qualification)
         self.assertIn("SmokeEvidenceReport", qualification)
-        self.assertIn("PreviousInstallerPath", qualification)
-        self.assertIn("installer_sha256", qualification)
+        self.assertIn("BundleDirectory", qualification)
+        self.assertIn("portable_archive_sha256", qualification)
 
         workflow = (
             PROJECT_ROOT / ".github/workflows/windows-release-test.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("previous_installer_run_id", workflow)
+        self.assertIn("bundle_run_id", workflow)
 
 
 if __name__ == "__main__":
