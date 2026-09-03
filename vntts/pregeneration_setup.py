@@ -168,6 +168,16 @@ def discover_game_content(settings, *, environment=None, extra_paths=()):
         else user_data_path("Reverse1999Extractor", appauthor=False)
     )
     candidates.append(
+        (
+            get_local_data_directory()
+            / "game-content"
+            / "reverse1999"
+            / "reverse1999"
+            / "story-index.jsonl",
+            "reverse1999",
+        )
+    )
+    candidates.append(
         (extractor_root / "reverse1999" / "story-index.jsonl", "reverse1999")
     )
 

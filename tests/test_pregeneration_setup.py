@@ -126,25 +126,39 @@ class PregenerationSetupTest(unittest.TestCase):
         self.assertEqual(main.generation_lines, 1)
         self.assertEqual(main.speakers, ("Rhiannon",))
 
-    def test_discovery_uses_bounded_configured_and_extractor_locations(self):
+    def test_discovery_uses_configured_app_import_and_extractor_locations(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             configured = write_story_index(root / "configured")
+            app_data = root / "LocalAppData" / "VisualNovelTextToSpeech"
+            app_story = (
+                app_data
+                / "game-content"
+                / "reverse1999"
+                / "reverse1999"
+                / "story-index.jsonl"
+            )
+            app_story.parent.mkdir(parents=True)
+            app_story.write_bytes(configured.read_bytes())
             extractor = root / "extractor"
             extractor_story = extractor / "reverse1999" / "story-index.jsonl"
             extractor_story.parent.mkdir(parents=True)
             extractor_story.write_bytes(configured.read_bytes())
 
-            discovery = discover_game_content(
-                AppSettings(story_index=str(configured)),
-                environment={"R1999_EXTRACTOR_DATA": str(extractor)},
-            )
+            with patch(
+                "vntts.pregeneration_setup.get_local_data_directory",
+                return_value=app_data,
+            ):
+                discovery = discover_game_content(
+                    AppSettings(story_index=str(configured)),
+                    environment={"R1999_EXTRACTOR_DATA": str(extractor)},
+                )
 
-        self.assertEqual(len(discovery.content), 2)
+        self.assertEqual(len(discovery.content), 3)
         self.assertEqual(discovery.errors, ())
         self.assertEqual(
-            {value.provider_id for value in discovery.content},
-            {"configured-story-index", "reverse1999"},
+            [value.provider_id for value in discovery.content],
+            ["configured-story-index", "reverse1999", "reverse1999"],
         )
 
     def test_preparation_estimate_and_job_are_checksum_bound_and_resumable(self):
@@ -298,6 +312,35 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     store.path_for(dialog.job().job_id).parent / "voice-plan.json"
                 ).is_file()
             )
+            dialog.deleteLater()
+
+    def test_app_import_and_story_selection_restore_after_restart(self):
+        with TemporaryDirectory() as temporary_directory:
+            app_data = (
+                Path(temporary_directory) / "LocalAppData" / "VisualNovelTextToSpeech"
+            )
+            write_story_index(app_data / "game-content" / "reverse1999" / "reverse1999")
+            jobs = PregenerationJobStore(app_data / "pregeneration" / "jobs")
+            with patch(
+                "vntts.pregeneration_setup.get_local_data_directory",
+                return_value=app_data,
+            ):
+                environment = {"R1999_EXTRACTOR_DATA": str(app_data / "unused")}
+                content = discover_game_content(
+                    AppSettings(), environment=environment
+                ).content[0]
+                jobs.create_or_resume(content, ("rhiannon",))
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    discovery=lambda: discover_game_content(
+                        AppSettings(), environment=environment
+                    ),
+                    job_store=jobs,
+                )
+
+            self.assertEqual(dialog.source.count(), 1)
+            self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
+            self.assertIn("Preparation incomplete", dialog.stories.item(1).text())
             dialog.deleteLater()
 
     def test_progress_card_polls_durable_counts_during_slow_generation(self):
