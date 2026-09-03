@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from math import gcd
 from pathlib import Path
 from threading import Lock
@@ -98,10 +99,22 @@ class PersistentPcmPlayer:
             samples, sample_rate = sf.read(path, dtype="float32", always_2d=True)
         except (OSError, RuntimeError, sf.SoundFileError) as error:
             raise PcmPlaybackError(f"Unable to decode {path.name}: {error}") from error
+        return self._prepare(samples, sample_rate, path.name)
+
+    def load_bytes(self, payload, *, name="audio"):
+        try:
+            samples, sample_rate = sf.read(
+                BytesIO(payload), dtype="float32", always_2d=True
+            )
+        except (OSError, RuntimeError, sf.SoundFileError) as error:
+            raise PcmPlaybackError(f"Unable to decode {name}: {error}") from error
+        return self._prepare(samples, sample_rate, name)
+
+    def _prepare(self, samples, sample_rate, name):
         if not len(samples) or sample_rate <= 0 or samples.shape[1] not in {1, 2}:
-            raise PcmPlaybackError(f"Unsupported PCM layout in {path.name}")
+            raise PcmPlaybackError(f"Unsupported PCM layout in {name}")
         if not np.isfinite(samples).all():
-            raise PcmPlaybackError(f"Non-finite PCM samples in {path.name}")
+            raise PcmPlaybackError(f"Non-finite PCM samples in {name}")
         if sample_rate != self.sample_rate:
             divisor = gcd(sample_rate, self.sample_rate)
             samples = resample_poly(

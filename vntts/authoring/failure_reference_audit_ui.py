@@ -7,15 +7,10 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QBuffer,
-    QByteArray,
-    QIODevice,
     Qt,
     QThreadPool,
-    QUrl,
 )
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -51,6 +46,8 @@ from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewService,
 )
 from vntts.authoring.review_context_ui import ReviewDecisionContext
+from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
+from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
 
 def _load_public_document(audit):
@@ -312,9 +309,7 @@ class FailureReferenceAuditDialog(QDialog):
         layout.addWidget(self.review_scroll, 1)
         layout.addWidget(buttons)
 
-        self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
-        self.player.setAudioOutput(self.audio_output)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._media_error)
 
@@ -542,17 +537,16 @@ class FailureReferenceAuditDialog(QDialog):
             )
             self._update_actions()
             return
-        playback = QBuffer(self)
-        playback.setData(QByteArray(audio.payload))
-        if not playback.open(QIODevice.OpenModeFlag.ReadOnly):
+        playback = play_audio_bytes(
+            self.player, self, audio.payload, f"memory:{audio.path.name}"
+        )
+        if playback is None:
             self.status.setText("BLOCKED: unable to open immutable audio buffer")
             self._update_actions()
             return
         self._playback_buffer = playback
         self._playback_target = (audio.group_id, audio.candidate_id, audio.sha256)
         self._playback_kind = "reference"
-        self.player.setSourceDevice(playback, QUrl(f"memory:{audio.path.name}"))
-        self.player.play()
         candidate = next(
             (
                 (index, value)
@@ -571,6 +565,8 @@ class FailureReferenceAuditDialog(QDialog):
 
     def stop_playback(self):
         self.player.stop() if hasattr(self, "player") else None
+        if hasattr(self, "player"):
+            release_audio_buffer(self.player, self._playback_buffer)
         self._playback_buffer = None
         self._playback_target = None
         self._playback_kind = None
@@ -644,9 +640,10 @@ class FailureReferenceAuditDialog(QDialog):
 
     def _play_generated_preview(self, preview):
         self.stop_playback()
-        playback = QBuffer(self)
-        playback.setData(QByteArray(preview.payload))
-        if not playback.open(QIODevice.OpenModeFlag.ReadOnly):
+        playback = play_audio_bytes(
+            self.player, self, preview.payload, "memory:generated-preview.wav"
+        )
+        if playback is None:
             self.status.setText("BLOCKED: unable to open immutable generated preview")
             self._update_actions()
             return
@@ -657,8 +654,6 @@ class FailureReferenceAuditDialog(QDialog):
             preview.audio_sha256,
         )
         self._playback_kind = "generated"
-        self.player.setSourceDevice(playback, QUrl("memory:generated-preview.wav"))
-        self.player.play()
         self.status.setText(
             f"PLAYING GENERATED SAMPLE: {preview.backend}, "
             f"{preview.generation_profile}, seed {preview.seed}. This is optional "

@@ -7,9 +7,8 @@ import hashlib
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt, QUrl
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -33,6 +32,8 @@ from vntts.authoring.terminal_conflict_review import (
     load_terminal_conflict_review_progress,
     record_terminal_conflict_decision,
 )
+from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
+from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
 
 class TerminalConflictReviewDialog(QDialog):
@@ -173,9 +174,7 @@ class TerminalConflictReviewDialog(QDialog):
         self.setTabOrder(self.choose_buttons[1], self.neither)
         self.setTabOrder(self.neither, self.close_button)
 
-        self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
-        self.player.setAudioOutput(self.audio_output)
         self.player.errorOccurred.connect(self._playback_error)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self._load_next()
@@ -314,15 +313,18 @@ class TerminalConflictReviewDialog(QDialog):
             self.status.setText("PLAYBACK CANCELLED: candidate selection changed")
             self._set_actions(True)
             return
-        self._audio_buffer = QBuffer(self)
-        self._audio_buffer.setData(QByteArray(payload))
-        self._audio_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+        self._audio_buffer = play_audio_bytes(
+            self.player,
+            self,
+            payload,
+            f"memory:terminal-candidate-{index + 1}.wav",
+        )
+        if self._audio_buffer is None:
+            self.status.setText("PLAYBACK BLOCKED: immutable audio buffer failed")
+            self._set_actions(True)
+            return
         self._playing_candidate = candidate["candidate_id"]
         self.stop.setEnabled(True)
-        self.player.setSourceDevice(
-            self._audio_buffer, QUrl(f"memory:terminal-candidate-{index + 1}.wav")
-        )
-        self.player.play()
         self.evidence.setText(
             f"Playing candidate {chr(65 + index)}. It counts only after audio ends."
         )
@@ -331,9 +333,7 @@ class TerminalConflictReviewDialog(QDialog):
         if hasattr(self, "playback_runner"):
             self.playback_runner.cancel()
         self.player.stop()
-        self.player.setSource(QUrl())
-        if self._audio_buffer is not None:
-            self._audio_buffer.close()
+        release_audio_buffer(self.player, self._audio_buffer)
         self._audio_buffer = None
         self._playing_candidate = None
         self.stop.setEnabled(False)

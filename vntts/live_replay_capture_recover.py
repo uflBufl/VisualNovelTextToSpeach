@@ -11,6 +11,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from os.path import commonprefix
 from pathlib import Path
 
 from PIL import Image
@@ -22,6 +23,7 @@ from vntts.dialog_capture import (
     detect_standalone_ellipsis_frame,
     dialog_glyphs_visible,
     ellipsis_speaker_hint,
+    is_standalone_ellipsis_text,
 )
 from vntts.live_replay_sequence_seal import (
     SequenceReplaySealError,
@@ -30,7 +32,6 @@ from vntts.live_replay_sequence_seal import (
     _read_contained,
     _read_regular_file,
     _required_sha256,
-    _standalone_ellipsis,
     _validate_capture_report,
     _write_bytes,
     _write_json,
@@ -485,7 +486,7 @@ def _candidate_events(observations, resolver, plan):
             observation.status
             in {"punctuation-only", "visual-ellipsis", "legacy-dialogue"}
             and observation.text
-            and _standalone_ellipsis(observation.text)
+            and is_standalone_ellipsis_text(observation.text)
         ):
             candidates.append((observation, None, observation.status))
             continue
@@ -649,7 +650,7 @@ def _frontier_bounded_match(observation, resolver, expected):
             continue
         if canonical in candidate:
             return "expected-frontier-speaker-text"
-        prefix_length = _common_prefix_length(candidate, canonical)
+        prefix_length = len(commonprefix((candidate, canonical)))
         if len(canonical) <= 12:
             if prefix_length >= 3 and prefix_length / len(canonical) >= 0.6:
                 return "expected-frontier-short-prefix"
@@ -663,13 +664,6 @@ def _frontier_bounded_match(observation, resolver, expected):
         if len(candidate) >= 20 and coverage >= 0.65 and similarity >= 0.8:
             return "expected-frontier-similarity"
     return None
-
-
-def _common_prefix_length(left, right):
-    for index, (left_character, right_character) in enumerate(zip(left, right)):
-        if left_character != right_character:
-            return index
-    return min(len(left), len(right))
 
 
 def _same_silent_observation(current, observation):

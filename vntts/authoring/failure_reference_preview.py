@@ -25,6 +25,7 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
 )
+from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
@@ -301,13 +302,7 @@ class FailureReferencePreviewService:
         backend = self._backend
         self._backend = None
         self._backend_config = None
-        shutdown = getattr(backend, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
-            return
-        stop = getattr(backend, "stop", None)
-        if callable(stop):
-            stop()
+        shutdown_speech_backend(backend)
 
 
 def _read_audit_document(directory):

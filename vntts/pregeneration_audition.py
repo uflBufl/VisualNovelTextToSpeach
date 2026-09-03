@@ -21,6 +21,7 @@ from vntts.authoring.generation_manifest import inspect_generated_wav
 from vntts.authoring.speech_quality import inspect_generated_speech
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference
+from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import SynthesisCompletion, SynthesisRequest
 from vntts.tts_benchmark import create_backend
 from vntts.voices import CharacterVoiceRegistry
@@ -225,13 +226,7 @@ class VoiceAuditionPreviewService:
         backend = self._backend
         self._backend = None
         self._backend_config = None
-        shutdown = getattr(backend, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
-            return
-        stop = getattr(backend, "stop", None)
-        if callable(stop):
-            stop()
+        shutdown_speech_backend(backend)
 
 
 class _CombinedCancellation:

@@ -372,6 +372,12 @@ def detect_standalone_ellipsis_frame(image):
     ) <= 2.5 and all(4 <= gap <= 9 for gap in gaps)
 
 
+def is_standalone_ellipsis_text(value):
+    """Accept Unicode or ASCII ellipsis with arbitrary surrounding whitespace."""
+    text = "".join(str(value).split())
+    return text.replace("…", "...") == "..."
+
+
 def ellipsis_speaker_hint(character, raw_text, story_resolver):
     """Recover an ellipsis nameplate only from checksum-bound story speakers."""
     observed = str(character or "Narrator").strip() or "Narrator"

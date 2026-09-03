@@ -21,6 +21,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.private_files import private_file_is_restricted
+from vntts.document_identity import is_lowercase_sha256
 from vntts.settings import get_local_data_directory
 
 SESSION_SCHEMA = "vntts.model-listening-session"
@@ -337,7 +338,11 @@ def load_listening_session(path):
                 raise ModelListeningError(
                     f"Listening trial line identity is invalid: {trial['trial_id']}"
                 )
-            if not isinstance(text, str) or not text or not _is_sha256(text_hash):
+            if (
+                not isinstance(text, str)
+                or not text
+                or not is_lowercase_sha256(text_hash)
+            ):
                 raise ModelListeningError(
                     f"Listening trial text identity is invalid: {trial['trial_id']}"
                 )
@@ -437,7 +442,7 @@ def _load_blind_key(session_path, session):
                 )
             if session.get("schema") == SESSION_SCHEMA:
                 expected_hash = value.get("audio_sha256")
-                if not _is_sha256(expected_hash):
+                if not is_lowercase_sha256(expected_hash):
                     raise ModelListeningError(
                         "Listening session blind assignment audio hash is invalid"
                     )
@@ -733,7 +738,7 @@ def _load_model_report(path):
         if not isinstance(text, str) or not text:
             raise ModelListeningError(f"Model report sample {index} text is invalid")
         if (
-            not _is_sha256(text_hash)
+            not is_lowercase_sha256(text_hash)
             or hashlib.sha256(text.encode("utf-8")).hexdigest() != text_hash
         ):
             raise ModelListeningError(
@@ -744,7 +749,7 @@ def _load_model_report(path):
             raise ModelListeningError(f"Model report sample {index} outcome is invalid")
         if outcome != "complete":
             continue
-        if not _is_sha256(audio_hash):
+        if not is_lowercase_sha256(audio_hash):
             raise ModelListeningError(
                 f"Model report sample {index} audio_sha256 is invalid"
             )
@@ -785,7 +790,7 @@ def _verify_pcm_audio(path, expected_hash, label):
             f"{label.title()} is not a supported WAV: {path}"
         ) from error
     if expected_hash is not None and (
-        not _is_sha256(expected_hash) or sha256_file(path) != expected_hash
+        not is_lowercase_sha256(expected_hash) or sha256_file(path) != expected_hash
     ):
         raise ModelListeningError(f"{label.title()} checksum changed: {path}")
 
@@ -850,7 +855,7 @@ def _legacy_import_audio_hashes(root):
         relative = artifact.get("path")
         digest = artifact.get("sha256")
         _within(root, relative, "imported blind audio")
-        if not _is_sha256(digest):
+        if not is_lowercase_sha256(digest):
             raise ModelListeningError("Imported blind audio hash is invalid")
         result[relative] = digest
     return result
@@ -867,10 +872,6 @@ def _atomic_write_private_json(path, value):
             stream.write(rendered)
         temporary.chmod(0o600)
     return path
-
-
-def _is_sha256(value):
-    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
 def _within(root, value, label):

@@ -142,17 +142,12 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
         cls.media_player_patcher = patch(
             "vntts.authoring.source_reference_quality_ui.QMediaPlayer"
         )
-        cls.audio_output_patcher = patch(
-            "vntts.authoring.source_reference_quality_ui.QAudioOutput"
-        )
         media_player = cls.media_player_patcher.start()
         media_player.MediaStatus = QMediaPlayer.MediaStatus
-        cls.audio_output_patcher.start()
         cls.application = QApplication.instance() or QApplication([])
 
     @classmethod
     def tearDownClass(cls):
-        cls.audio_output_patcher.stop()
         cls.media_player_patcher.stop()
 
     def wait_for(self, predicate, timeout=3.0):

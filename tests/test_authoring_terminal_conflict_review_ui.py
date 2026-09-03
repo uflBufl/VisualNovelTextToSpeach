@@ -40,7 +40,16 @@ except ModuleNotFoundError as error:
 class TerminalConflictReviewUiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.media_player_patcher = patch(
+            "vntts.authoring.terminal_conflict_review_ui.QMediaPlayer"
+        )
+        media_player = cls.media_player_patcher.start()
+        media_player.MediaStatus = QMediaPlayer.MediaStatus
         cls.application = QApplication.instance() or QApplication([])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.media_player_patcher.stop()
 
     def wait_for(self, predicate, timeout=3.0):
         deadline = time.monotonic() + timeout

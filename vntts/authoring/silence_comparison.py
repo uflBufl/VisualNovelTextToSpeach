@@ -27,6 +27,7 @@ from vntts.authoring.listening import (
     ModelListeningError,
     create_listening_session_from_reports,
 )
+from vntts.document_identity import is_lowercase_sha256
 
 SILENCE_COMPARISON_SCHEMA = "vntts.authoring-silence-comparison"
 SILENCE_COMPARISON_VERSION = 1
@@ -165,7 +166,7 @@ def publish_silence_comparison(
     input_plan_sha256=None,
 ):
     """Publish immutable segmentation/compression reports for later blind review."""
-    if input_plan_sha256 is not None and not _is_sha256(input_plan_sha256):
+    if input_plan_sha256 is not None and not is_lowercase_sha256(input_plan_sha256):
         raise SilenceComparisonError(
             "Silence comparison input plan checksum is invalid"
         )
@@ -398,7 +399,7 @@ def load_silence_comparison(directory):
         frozenset((*required_document_fields, "input_plan_sha256")),
     }:
         raise SilenceComparisonError("Silence comparison document is malformed")
-    if "input_plan_sha256" in document and not _is_sha256(
+    if "input_plan_sha256" in document and not is_lowercase_sha256(
         document["input_plan_sha256"]
     ):
         raise SilenceComparisonError(
@@ -463,7 +464,7 @@ def load_silence_comparison(directory):
             raise SilenceComparisonError("Silence comparison artifact is duplicated")
         path = _contained_file(root, relative)
         digest = artifact["sha256"]
-        if not _is_sha256(digest) or sha256_file(path) != digest:
+        if not is_lowercase_sha256(digest) or sha256_file(path) != digest:
             raise SilenceComparisonError(
                 f"Silence comparison artifact checksum changed: {relative}"
             )
@@ -526,7 +527,7 @@ def load_silence_comparison(directory):
         ):
             relative = sample[path_field]
             if (
-                not _is_sha256(sample[digest_field])
+                not is_lowercase_sha256(sample[digest_field])
                 or seen.get(relative) != sample[digest_field]
             ):
                 raise SilenceComparisonError(
@@ -704,7 +705,7 @@ def _validate_sample(value):
             raise SilenceComparisonError(f"Silence comparison {field} is invalid")
     for field in ("raw_audio_sha256", "segmented_audio_sha256"):
         digest = getattr(value, field)
-        if digest is not None and not _is_sha256(digest):
+        if digest is not None and not is_lowercase_sha256(digest):
             raise SilenceComparisonError(f"Silence comparison {field} is invalid")
     return value
 
@@ -735,7 +736,7 @@ def _planned_audio_path(root, value, label):
 
 
 def _validate_planned_audio(path, expected_sha256, label):
-    if not _is_sha256(expected_sha256):
+    if not is_lowercase_sha256(expected_sha256):
         raise SilenceComparisonError(
             f"Silence comparison input {label} audio checksum is invalid"
         )
@@ -834,11 +835,3 @@ def _contained_file(root, relative):
             f"Silence comparison artifact is missing: {relative}"
         )
     return path
-
-
-def _is_sha256(value):
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )

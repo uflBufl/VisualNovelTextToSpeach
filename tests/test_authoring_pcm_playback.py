@@ -1,4 +1,5 @@
 import unittest
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -102,6 +103,16 @@ class PersistentPcmPlayerTest(unittest.TestCase):
             prepared_mono.samples[:, 0], prepared_mono.samples[:, 1]
         )
         self.assertEqual(prepared_stereo.samples.shape, (4_800, 2))
+
+    def test_load_bytes_uses_the_same_preparation(self):
+        _audio, player = self.create_player()
+        payload = BytesIO()
+        sf.write(payload, np.linspace(-0.5, 0.5, 2_400), 24_000, format="WAV")
+
+        clip = player.load_bytes(payload.getvalue(), name="captured.wav")
+
+        self.assertEqual(clip.sample_rate, 48_000)
+        self.assertEqual(clip.samples.shape, (4_800, 2))
 
     def test_first_frames_and_reverse_switch_use_the_same_warm_stream(self):
         audio, player = self.create_player()

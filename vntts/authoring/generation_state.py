@@ -31,7 +31,11 @@ from vntts.authoring.failure_repair import (
     safe_sentence_segments,
 )
 from vntts.authoring.generation_lease import BulkGenerationError
-from vntts.authoring.generation_manifest import validate_success_file_with_samples
+from vntts.authoring.generation_manifest import (
+    contained_generation_path,
+    safe_generation_relative_path,
+    validate_success_file_with_samples,
+)
 from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicy,
     MissingVoicePolicyError,
@@ -2142,8 +2146,10 @@ def _validate_success_item(
             raise BulkGenerationError(
                 f"State item {queue_id!r} prompt_applied must be false"
             )
-    relative = _safe_relative(result.get("path"), f"State item {queue_id!r} path")
-    audio = _within(output_directory, relative, "Generated WAV")
+    relative = safe_generation_relative_path(
+        result.get("path"), f"State item {queue_id!r} path"
+    )
+    audio = contained_generation_path(output_directory, relative, "Generated WAV")
     quality, samples = validate_success_file_with_samples(queue_id, result, audio)
     if state_schema == STATE_SCHEMA:
         stored_speech_quality = result.get("speech_quality")
@@ -2193,29 +2199,6 @@ def _validate_success_item(
             )
         except module.AudioEventWorkspaceError as error:
             raise BulkGenerationError(str(error)) from error
-
-
-def _safe_relative(value, label):
-    if not isinstance(value, str) or not value:
-        raise BulkGenerationError(f"{label} must be a relative POSIX path")
-    if "\\" in value:
-        raise BulkGenerationError(f"{label} must use POSIX separators")
-    path = Path(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise BulkGenerationError(f"{label} must stay within generation output")
-    return path
-
-
-def _within(root, relative, label):
-    root = Path(root).resolve()
-    candidate = (root / relative).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as error:
-        raise BulkGenerationError(
-            f"{label} must stay within generation output"
-        ) from error
-    return candidate
 
 
 def _control_directory_digest(records):
@@ -2297,8 +2280,8 @@ validate_seed_application = _validate_seed_application
 validate_active_attempt = _validate_active_attempt
 validate_synthesis_controls = _validate_synthesis_controls
 validate_success_item = _validate_success_item
-safe_state_relative_path = _safe_relative
-contained_state_path = _within
+safe_state_relative_path = safe_generation_relative_path
+contained_state_path = contained_generation_path
 control_directory_digest = _control_directory_digest
 required_state_text = _required_text
 required_state_sha256 = _required_sha256

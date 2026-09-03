@@ -22,6 +22,7 @@ from vntts.dialog_capture import (
     ellipsis_speaker_hint,
     fingerprint_dialog_frame,
     get_screenshot_directory,
+    is_standalone_ellipsis_text,
     recognize_screenshot_result,
 )
 from vntts.ocr_corrections import OCRCorrectionStore
@@ -153,7 +154,7 @@ class LiveReplayCaptureSession:
                     story_match=match_result,
                 )
                 return True
-            if _standalone_ellipsis(text):
+            if is_standalone_ellipsis_text(text):
                 self._record_observation(
                     frame_spec,
                     status="punctuation-only",
@@ -569,11 +570,6 @@ def _write_payload_no_replace(path, payload):
 
 def _write_json_no_replace(path, document):
     _write_payload_no_replace(path, _json_payload(document))
-
-
-def _standalone_ellipsis(value):
-    text = "".join(str(value).split())
-    return text.replace("…", "...") == "..."
 
 
 def build_parser():

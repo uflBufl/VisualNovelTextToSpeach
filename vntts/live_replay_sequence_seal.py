@@ -17,6 +17,7 @@ from vntts_artifacts.generated_audio import GeneratedAudioDocument
 
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
+from vntts.dialog_capture import is_standalone_ellipsis_text
 from vntts.live_replay import LiveReplayRunner, load_live_replay_corpus
 from vntts.live_sequence import LiveSequencePlan
 from vntts.settings import audio_source_policies, load_app_settings
@@ -330,7 +331,7 @@ def _map_dialogue(raw_dialogue, resolver, plan):
                     f"Raw replay dialogue {index} reaches an ambiguous or skipped "
                     "visible sequence frontier"
                 )
-            if _standalone_ellipsis(text):
+            if is_standalone_ellipsis_text(text):
                 silent = tuple(event for event in candidates if event.kind == "silent")
                 if len(silent) != 1 or len(candidates) != 1:
                     raise SequenceReplaySealError(
@@ -824,11 +825,6 @@ def _validate_recovery_authority(root, recovery, report):
 
 def _normalized_exact(value):
     return " ".join(unicodedata.normalize("NFKC", str(value)).split()).casefold()
-
-
-def _standalone_ellipsis(value):
-    text = "".join(str(value).split())
-    return text.replace("…", "...") == "..."
 
 
 def _decode_json(payload, label):

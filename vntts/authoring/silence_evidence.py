@@ -17,7 +17,7 @@ from pathlib import Path
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 SILENCE_FAILURE_EVIDENCE_SCHEMA = "vntts.authoring-silence-failure-evidence"
 SILENCE_FAILURE_EVIDENCE_VERSION = 1
@@ -123,11 +123,11 @@ def load_silence_failure_evidence(directory):
                 "Silence-failure evidence identity is malformed"
             )
     if (
-        not _is_sha256(metadata["queue_sha256"])
-        or not _is_sha256(metadata["state_sha256"])
-        or not _is_sha256(metadata["text_sha256"])
-        or not _is_sha256(metadata["state_item_sha256"])
-        or not _is_sha256(metadata["synthesis_controls_sha256"])
+        not is_lowercase_sha256(metadata["queue_sha256"])
+        or not is_lowercase_sha256(metadata["state_sha256"])
+        or not is_lowercase_sha256(metadata["text_sha256"])
+        or not is_lowercase_sha256(metadata["state_item_sha256"])
+        or not is_lowercase_sha256(metadata["synthesis_controls_sha256"])
         or hashlib.sha256(metadata["text"].encode("utf-8")).hexdigest()
         != metadata["text_sha256"]
     ):
@@ -184,14 +184,6 @@ def _probe_pcm16_mono_bytes(payload):
         raise SilenceFailureEvidenceError(
             f"Silence-failure WAV is invalid: {error}"
         ) from error
-
-
-def _is_sha256(value):
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 def _new_directory(value):

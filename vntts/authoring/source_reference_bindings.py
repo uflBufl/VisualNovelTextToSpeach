@@ -7,6 +7,8 @@ import json
 
 from vntts_artifacts.voice_manifest import normalize_character_name
 
+from vntts.document_identity import is_lowercase_sha256
+
 SOURCE_REFERENCE_BINDINGS_FIELD = "vntts.authoring.source_reference_bindings"
 SOURCE_REFERENCE_BINDINGS_SCHEMA = "vntts.authoring-source-reference-bindings"
 SOURCE_REFERENCE_BINDINGS_VERSION = 1
@@ -65,7 +67,7 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
             reuse.get("target_mode") != "failed"
             or not isinstance(controls, dict)
             or not set(reuse_overrides).issubset(controls)
-            or any(not _is_sha256(value) for value in controls.values())
+            or any(not is_lowercase_sha256(value) for value in controls.values())
         ):
             raise SourceReferenceBindingError(
                 "Source-reference and missing-voice reuse bindings overlap queue IDs: "
@@ -78,7 +80,7 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
         if (
             not isinstance(controls, dict)
             or not overlap.issubset(controls)
-            or any(not _is_sha256(controls[queue_id]) for queue_id in overlap)
+            or any(not is_lowercase_sha256(controls[queue_id]) for queue_id in overlap)
         ):
             raise SourceReferenceBindingError(
                 "Source-reference and known-role reuse bindings overlap queue IDs: "
@@ -92,7 +94,7 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
             reuse.get("target_mode") == "failed"
             and isinstance(controls, dict)
             and overlap.issubset(controls)
-            and all(_is_sha256(controls[queue_id]) for queue_id in overlap)
+            and all(is_lowercase_sha256(controls[queue_id]) for queue_id in overlap)
             and all(
                 normalize_character_name(reuse_overrides[queue_id])
                 == normalize_character_name(known_role_overrides[queue_id])
@@ -201,7 +203,7 @@ def _known_role_reuse_overrides_from_manifest(document, *, queue_ids=None, voice
         not isinstance(cohort_ids, list)
         or not cohort_ids
         or cohort_ids != sorted(set(cohort_ids))
-        or any(not _is_sha256(value) for value in cohort_ids)
+        or any(not is_lowercase_sha256(value) for value in cohort_ids)
         or not isinstance(unresolved_ids, list)
         or not unresolved_ids
         or unresolved_ids != sorted(set(unresolved_ids))
@@ -214,7 +216,7 @@ def _known_role_reuse_overrides_from_manifest(document, *, queue_ids=None, voice
     if (
         not isinstance(rejected, dict)
         or list(rejected) != sorted(rejected)
-        or any(not _is_sha256(digest) for digest in rejected.values())
+        or any(not is_lowercase_sha256(digest) for digest in rejected.values())
     ):
         raise SourceReferenceBindingError(
             "Known-role rejected-item authority is malformed"
@@ -260,7 +262,9 @@ def _known_role_reuse_overrides_from_manifest(document, *, queue_ids=None, voice
                 )
             absent_ids.append(queue_id)
         elif source_state == "rejected":
-            if rejected.get(queue_id) != state_digest or not _is_sha256(state_digest):
+            if rejected.get(queue_id) != state_digest or not is_lowercase_sha256(
+                state_digest
+            ):
                 raise SourceReferenceBindingError(
                     "Rejected known-role target lacks exact state authority"
                 )
@@ -369,7 +373,9 @@ def _source_reference_overrides_from_manifest(document, *, queue_ids=None, voice
             )
         }
         quality_review_sha256 = value.get("source_reference_quality_review_sha256")
-        if quality_review_sha256 is not None and not _is_sha256(quality_review_sha256):
+        if quality_review_sha256 is not None and not is_lowercase_sha256(
+            quality_review_sha256
+        ):
             raise SourceReferenceBindingError(
                 "Source-reference bindings quality-review SHA-256 is invalid"
             )
@@ -583,7 +589,7 @@ def _missing_voice_reuse_overrides_from_manifest(
         not isinstance(cohort_ids, list)
         or not cohort_ids
         or cohort_ids != sorted(set(cohort_ids))
-        or any(not _is_sha256(cohort_id) for cohort_id in cohort_ids)
+        or any(not is_lowercase_sha256(cohort_id) for cohort_id in cohort_ids)
     ):
         raise SourceReferenceBindingError(
             "Missing-voice reuse cohort IDs are not canonical"
@@ -794,7 +800,7 @@ def _validate_approved_reuse_authority(value):
         if (
             not isinstance(controls, dict)
             or set(controls) != observed_queue_ids
-            or any(not _is_sha256(digest) for digest in controls.values())
+            or any(not is_lowercase_sha256(digest) for digest in controls.values())
         ):
             raise SourceReferenceBindingError(
                 "Failed missing-voice decisions lack exact source-item authority"
@@ -849,16 +855,8 @@ def _text(value, label):
     return value.strip()
 
 
-def _is_sha256(value):
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
 def _required_sha256(value, label):
-    if not _is_sha256(value):
+    if not is_lowercase_sha256(value):
         raise SourceReferenceBindingError(f"{label} is invalid")
     return value
 

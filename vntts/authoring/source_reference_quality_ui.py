@@ -6,9 +6,8 @@ import hashlib
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt, QUrl
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QPixmap
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -32,6 +31,8 @@ from vntts.authoring.source_reference_quality_records import (
     quality_review_progress,
     record_source_reference_quality_decision,
 )
+from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
+from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
 
 class SourceReferenceQualityDialog(QDialog):
@@ -198,9 +199,7 @@ class SourceReferenceQualityDialog(QDialog):
         self.setTabOrder(self.reject_reference, self.needs_sample)
         self.setTabOrder(self.needs_sample, self.close_button)
 
-        self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
-        self.player.setAudioOutput(self.audio_output)
         self.player.playbackStateChanged.connect(self._playback_state_changed)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._playback_error)
@@ -499,15 +498,14 @@ class SourceReferenceQualityDialog(QDialog):
         ):
             self.status.setText("Playback cancelled: audio selection changed")
             return
-        self._audio_buffer = QBuffer(self)
-        self._audio_buffer.setData(QByteArray(payload))
-        if not self._audio_buffer.open(QIODevice.OpenModeFlag.ReadOnly):
+        self._audio_buffer = play_audio_bytes(
+            self.player, self, payload, "buffer:review.wav"
+        )
+        if self._audio_buffer is None:
             self.status.setText("Playback blocked: audio buffer could not be opened")
             return
         self._playing_token = token
         self.stop.setEnabled(True)
-        self.player.setSourceDevice(self._audio_buffer, QUrl("buffer:review.wav"))
-        self.player.play()
         self.status.setText("Starting checksum-verified audio.")
 
     def _playback_state_changed(self, state):
@@ -546,11 +544,10 @@ class SourceReferenceQualityDialog(QDialog):
             self.playback_runner.cancel()
         if hasattr(self, "player"):
             self.player.stop()
+            release_audio_buffer(self.player, self._audio_buffer)
         self._playing_token = None
         self.stop.setEnabled(False)
-        if self._audio_buffer is not None:
-            self._audio_buffer.close()
-            self._audio_buffer = None
+        self._audio_buffer = None
 
     def _decide(self, decision):
         if self.current is None:

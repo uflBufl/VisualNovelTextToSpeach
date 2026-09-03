@@ -19,6 +19,7 @@ from vntts_artifacts import (
     write_voice_generation_queue,
 )
 from vntts_artifacts.audio import probe_pcm16_mono_wav
+from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import (
     VoiceManifestEntry,
     VoiceManifestError,
@@ -316,9 +317,9 @@ def plan_generation_queue(
     if document.language is not None:
         metadata["language"] = document.language
     metadata["source_story_index"] = str(document_path)
-    metadata["source_story_index_sha256"] = _sha256_file(document_path)
+    metadata["source_story_index_sha256"] = sha256_file(document_path)
     metadata["source_voice_manifest"] = str(voice_manifest_path)
-    metadata["source_voice_manifest_sha256"] = _sha256_file(voice_manifest_path)
+    metadata["source_voice_manifest_sha256"] = sha256_file(voice_manifest_path)
     if delivery_policy != PRESERVE_DELIVERY_POLICY:
         metadata["delivery_annotation_policy"] = {
             "name": delivery_policy,
@@ -480,11 +481,6 @@ def _queue_item(
 
 def _counts(values):
     return dict(sorted(Counter(str(value) for value in values).items()))
-
-
-def _sha256_file(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def _json_sha256(value):

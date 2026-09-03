@@ -11,13 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QBuffer,
-    QByteArray,
-    QIODevice,
-    QObject,
     QProcess,
     QProcessEnvironment,
-    QRunnable,
     QSettings,
     Qt,
     QThreadPool,
@@ -34,7 +29,6 @@ from PySide6.QtGui import (
     QShortcut,
     QTextCursor,
 )
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -89,6 +83,8 @@ from vntts.authoring.workbench import (
     review_technical_summary,
     workspace_voice_snapshot,
 )
+from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
+from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
@@ -353,95 +349,15 @@ def _load_workbench_projection(
     )
 
 
-class _ProjectionTaskSignals(QObject):
-    finished = Signal(int, object, object)
-
-
-class _ProjectionTask(QRunnable):
-    def __init__(self, serial, loader, arguments, signals):
-        super().__init__()
-        self.serial = serial
-        self.loader = loader
-        self.arguments = arguments
-        self.signals = signals
-
-    def run(self):
-        try:
-            result = self.loader(*self.arguments)
-        except Exception as error:
-            self.signals.finished.emit(self.serial, None, error)
-        else:
-            self.signals.finished.emit(self.serial, result, None)
-
-
 def _prepare_review_playback(workspace_directory, selected):
     del workspace_directory
     return selected, prepare_review_audio(selected)
 
 
-class _PlaybackTaskSignals(QObject):
-    finished = Signal(int, object, object)
-
-
-class _PlaybackTask(QRunnable):
-    def __init__(self, serial, preparer, workspace, selected, signals):
-        super().__init__()
-        self.serial = serial
-        self.preparer = preparer
-        self.workspace = workspace
-        self.selected = selected
-        self.signals = signals
-
-    def run(self):
-        try:
-            result = self.preparer(self.workspace, self.selected)
-        except Exception as error:
-            self.signals.finished.emit(self.serial, None, error)
-        else:
-            self.signals.finished.emit(self.serial, result, None)
-
-
-class _ReviewTaskSignals(QObject):
-    finished = Signal(int, object, object)
-
-
-class _ReviewTask(QRunnable):
-    def __init__(
-        self,
-        serial,
-        reviewer,
-        workspace,
-        queue_id,
-        decision,
-        authority,
-        selected,
-        signals,
-    ):
-        super().__init__()
-        self.serial = serial
-        self.reviewer = reviewer
-        self.workspace = workspace
-        self.queue_id = queue_id
-        self.decision = decision
-        self.authority = authority
-        self.selected = selected
-        self.signals = signals
-
-    def run(self):
-        try:
-            if self.reviewer is None:
-                result = review_selected_item(self.selected, self.decision)
-            else:
-                result = self.reviewer(
-                    self.workspace,
-                    self.queue_id,
-                    self.decision,
-                    self.authority,
-                )
-        except Exception as error:
-            self.signals.finished.emit(self.serial, None, error)
-        else:
-            self.signals.finished.emit(self.serial, result, None)
+def _save_review(reviewer, workspace, queue_id, decision, authority, selected):
+    if reviewer is None:
+        return review_selected_item(selected, decision)
+    return reviewer(workspace, queue_id, decision, authority)
 
 
 class AuthoringWorkbenchDialog(QDialog):
@@ -489,11 +405,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self._review_playback_buffer = None
         self._review_evidence = ReviewPlaybackEvidence()
         self._playback_prepare_active = False
-        self._playback_prepare_serial = 0
         self._playback_preparer = playback_preparer or _prepare_review_playback
-        self._playback_signals = _PlaybackTaskSignals()
-        self._playback_signals.finished.connect(self._playback_preparation_finished)
-        self._playback_thread_pool = QThreadPool.globalInstance()
+        self._playback_runner = LatestTaskRunner(self)
+        self._playback_runner.finished.connect(self._playback_preparation_finished)
         self._selected_collection_ids = self._recent_reference_choices = None
         self._collection_selection_version = 0
         self._loading_collections = self._selection_refresh_pending = False
@@ -506,24 +420,21 @@ class AuthoringWorkbenchDialog(QDialog):
         self._selected_review_queue_id = self._integrity_error = None
         self._history = ()
         self._projection_active = self._projection_pending = False
-        self._projection_serial = 0
         self._projection_selection_version = 0
         self._projection_loader = projection_loader or _load_workbench_projection
         self._synchronous_projection = bool(synchronous_projection)
-        self._projection_signals = _ProjectionTaskSignals()
-        self._projection_signals.finished.connect(self._projection_finished)
-        self._projection_thread_pool = (
-            projection_thread_pool or QThreadPool.globalInstance()
+        self._projection_runner = LatestTaskRunner(
+            self, thread_pool=projection_thread_pool
         )
+        self._projection_runner.finished.connect(self._projection_finished)
         self._review_save_active = False
-        self._review_save_serial = 0
         self._review_save_queue_id = self._review_save_decision = None
         self._review_advance_queue_id = self._specialist_reviewer = None
         self._reviewer = reviewer
-        self._review_signals = _ReviewTaskSignals(self)
-        self._review_signals.finished.connect(self._review_save_finished)
-        self._review_thread_pool = review_thread_pool or QThreadPool(self)
-        self._review_thread_pool.setMaxThreadCount(1)
+        review_thread_pool = review_thread_pool or QThreadPool(self)
+        review_thread_pool.setMaxThreadCount(1)
+        self._review_runner = LatestTaskRunner(self, thread_pool=review_thread_pool)
+        self._review_runner.finished.connect(self._review_save_finished)
         self._review_shortcuts = []
         self._specialist_active = False
         self._specialist_runner = LatestTaskRunner(self)
@@ -628,9 +539,7 @@ class AuthoringWorkbenchDialog(QDialog):
             "Select the next contained local reference for this character",
         )
 
-        self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
-        self.player.setAudioOutput(self.audio_output)
         self.player.errorOccurred.connect(self._media_error)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
 
@@ -1055,21 +964,12 @@ class AuthoringWorkbenchDialog(QDialog):
         arguments = self._projection_arguments()
         if not self._synchronous_projection:
             self._projection_active = True
-            self._projection_serial += 1
-            serial = self._projection_serial
             self._projection_selection_version = self._collection_selection_version
             self.reload_authority.setEnabled(False)
             if self.summary is None:
                 self.status.setText("LOADING: validating authoritative workspace")
             self._update_review_actions(preserve_queue_id=True)
-            self._projection_thread_pool.start(
-                _ProjectionTask(
-                    serial,
-                    self._projection_loader,
-                    arguments,
-                    self._projection_signals,
-                )
-            )
+            self._projection_runner.start(self._projection_loader, *arguments)
             return
         try:
             projection = self._projection_loader(*arguments)
@@ -1078,8 +978,8 @@ class AuthoringWorkbenchDialog(QDialog):
             return
         self._apply_projection(projection)
 
-    def _projection_finished(self, serial, projection, error):
-        if serial != self._projection_serial or not self._projection_active:
+    def _projection_finished(self, projection, error):
+        if not self._projection_active:
             return
         self._projection_active = False
         if error is not None:
@@ -1120,9 +1020,11 @@ class AuthoringWorkbenchDialog(QDialog):
 
     def _fail_closed(self, error):
         self._projection_pending = False
-        self._playback_prepare_serial += 1
+        self._projection_runner.cancel()
+        self._projection_active = False
+        self._playback_runner.cancel()
         self._playback_prepare_active = False
-        self._review_save_serial += 1
+        self._review_runner.cancel()
         self._review_save_active = False
         self._review_save_queue_id = None
         self._review_save_decision = None
@@ -2011,10 +1913,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self._review_evidence.cancel()
         playback = self._review_playback_buffer
         self._review_playback_buffer = None
-        if playback is not None:
-            self.player.setSource(QUrl())
-            playback.close()
-            playback.deleteLater()
+        release_audio_buffer(self.player, playback)
 
     def _row_for_queue_id(self, queue_id):
         if queue_id is None:
@@ -2103,7 +2002,7 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         if selected_identity != self._selected_review_identity:
             if self._playback_prepare_active:
-                self._playback_prepare_serial += 1
+                self._playback_runner.cancel()
                 self._playback_prepare_active = False
             self._discard_review_playback_copy()
             self._preview_active = False
@@ -2209,21 +2108,13 @@ class AuthoringWorkbenchDialog(QDialog):
             self._fail_closed("Selected review row has no exact authority snapshot")
             return
         self._playback_prepare_active = True
-        self._playback_prepare_serial += 1
-        serial = self._playback_prepare_serial
         self._update_review_actions(preserve_queue_id=True)
-        self._playback_thread_pool.start(
-            _PlaybackTask(
-                serial,
-                self._playback_preparer,
-                self.workspace_directory,
-                selected,
-                self._playback_signals,
-            )
+        self._playback_runner.start(
+            self._playback_preparer, self.workspace_directory, selected
         )
 
-    def _playback_preparation_finished(self, serial, result, error):
-        if serial != self._playback_prepare_serial or not self._playback_prepare_active:
+    def _playback_preparation_finished(self, result, error):
+        if not self._playback_prepare_active:
             return
         self._playback_prepare_active = False
         if error is not None:
@@ -2248,18 +2139,14 @@ class AuthoringWorkbenchDialog(QDialog):
             self._fail_closed("Replay worker returned bytes with the wrong digest")
             return
         self._discard_review_playback_copy()
-        playback = QBuffer(self)
-        playback.setData(QByteArray(audio_bytes))
-        if not playback.open(QIODevice.OpenModeFlag.ReadOnly):
-            playback.deleteLater()
+        playback = play_audio_bytes(self.player, self, audio_bytes, "vntts-review.wav")
+        if playback is None:
             self._fail_closed(
                 "Unable to open immutable generated-audio playback buffer"
             )
             return
         self._review_playback_buffer = playback
         self._review_evidence.begin(current)
-        self.player.setSourceDevice(playback, QUrl("vntts-review.wav"))
-        self.player.play()
         self._preview_active = True
         self.media_outcome = f"PLAYING GENERATED REVIEW AUDIO: {current.line_id}"
         self.status.setText(self._status_text())
@@ -2292,27 +2179,22 @@ class AuthoringWorkbenchDialog(QDialog):
         self._preview_active = False
         self.media_outcome = None
         self._review_save_active = True
-        self._review_save_serial += 1
-        serial = self._review_save_serial
         self._review_save_queue_id = selected.queue_id
         self._review_save_decision = decision
         self._review_advance_queue_id = self._next_pending_queue_id()
         self._update_review_actions(preserve_queue_id=True)
-        self._review_thread_pool.start(
-            _ReviewTask(
-                serial,
-                self._reviewer,
-                self.workspace_directory,
-                selected.queue_id,
-                decision,
-                selected.authority,
-                selected,
-                self._review_signals,
-            )
+        self._review_runner.start(
+            _save_review,
+            self._reviewer,
+            self.workspace_directory,
+            selected.queue_id,
+            decision,
+            selected.authority,
+            selected,
         )
 
-    def _review_save_finished(self, serial, result, error):
-        if serial != self._review_save_serial or not self._review_save_active:
+    def _review_save_finished(self, result, error):
+        if not self._review_save_active:
             return
         queue_id = self._review_save_queue_id
         decision = self._review_save_decision

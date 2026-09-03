@@ -55,17 +55,12 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
         cls.media_player_patcher = patch(
             "vntts.authoring.cohort_bundle_ui.QMediaPlayer"
         )
-        cls.audio_output_patcher = patch(
-            "vntts.authoring.cohort_bundle_ui.QAudioOutput"
-        )
         media_player = cls.media_player_patcher.start()
         media_player.MediaStatus = QMediaPlayer.MediaStatus
-        cls.audio_output_patcher.start()
         cls.application = QApplication.instance() or QApplication([])
 
     @classmethod
     def tearDownClass(cls):
-        cls.audio_output_patcher.stop()
         cls.media_player_patcher.stop()
 
     def tearDown(self):

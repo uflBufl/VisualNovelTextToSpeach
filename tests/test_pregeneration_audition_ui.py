@@ -71,7 +71,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
         with (
             TemporaryDirectory() as temporary_directory,
             patch("vntts.pregeneration_audition_ui.QMediaPlayer") as media_player,
-            patch("vntts.pregeneration_audition_ui.QAudioOutput") as audio_output,
         ):
             panel = VoiceAuditionPanel(
                 VoiceDecisionStore(Path(temporary_directory) / "decisions.json"),
@@ -79,7 +78,6 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
 
             media_player.assert_not_called()
-            audio_output.assert_not_called()
             panel.shutdown()
             panel.deleteLater()
 

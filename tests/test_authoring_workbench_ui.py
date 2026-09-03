@@ -150,7 +150,14 @@ class FakeProcess:
 class AuthoringWorkbenchUiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.media_player_patcher = patch("vntts.authoring.workbench_ui.QMediaPlayer")
+        media_player = cls.media_player_patcher.start()
+        media_player.MediaStatus = QMediaPlayer.MediaStatus
         cls.application = QApplication.instance() or QApplication([])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.media_player_patcher.stop()
 
     def tearDown(self):
         for widget in self.application.topLevelWidgets():
@@ -1603,11 +1610,11 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             dialog.play_selected_outcome()
             self.wait_for(lambda: not dialog._playback_prepare_active)
-            played = bytes(dialog._review_playback_buffer.data())
+            played = dialog.player.play_bytes.call_args.args[0]
             self.assertEqual(
                 hashlib.sha256(played).hexdigest(), selected.authority.audio_sha256
             )
-            dialog.player.setSourceDevice.assert_called_once()
+            dialog.player.play_bytes.assert_called_once()
             self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
             dialog.refresh()
             self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
@@ -1750,7 +1757,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 self.wait_for(lambda: not dialog._playback_prepare_active)
 
             self.assertIsNotNone(dialog.summary)
-            self.assertEqual(dialog._review_playback_buffer.data().data(), expected)
+            self.assertEqual(dialog.player.play_bytes.call_args.args[0], expected)
             self.assertIn("PLAYING GENERATED REVIEW AUDIO", dialog.status.text())
 
     def test_workbench_builds_and_opens_dedicated_specialist_bundle(self):

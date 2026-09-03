@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -20,6 +19,7 @@ from vntts.pregeneration_audition import (
     VoiceAuditionPreviewService,
 )
 from vntts.pregeneration_voices import VoicePlan
+from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.voices import default_voice_choice_id
 
 
@@ -49,7 +49,6 @@ class VoiceAuditionPanel(QGroupBox):
         self.prefetch_runner.finished.connect(self._prefetch_finished)
         self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.decision_runner.finished.connect(self._decision_finished)
-        self.audio_output = None
         self.player = player
         self._plan = None
         self._groups = ()
@@ -747,9 +746,7 @@ class VoiceAuditionPanel(QGroupBox):
 
     def _ensure_player(self):
         if self.player is None:
-            self.audio_output = QAudioOutput(self)
             self.player = QMediaPlayer(self)
-            self.player.setAudioOutput(self.audio_output)
         return self.player
 
     def _stop_player(self):

@@ -17,7 +17,7 @@ from vntts_artifacts.generated_audio import (
     load_generated_audio_document,
 )
 
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.playback import PlaybackOutcome, PlaybackStatus
 from vntts.services.tts_engine import match_output_sample_rate
 from vntts.settings import audio_source_policies
@@ -1213,8 +1213,8 @@ def _validate_automatic_recovery_fallback_evidence(
         or evidence.get("schema_version") != 1
         or evidence.get("queue_id") != queue_id
         or evidence.get("base_result_sha256") != previous_result_sha256
-        or not _lowercase_sha256(evidence.get("queue_sha256"))
-        or not _lowercase_sha256(evidence.get("base_result_sha256"))
+        or not is_lowercase_sha256(evidence.get("queue_sha256"))
+        or not is_lowercase_sha256(evidence.get("base_result_sha256"))
         or not isinstance(base_result, dict)
         or base_result.get("status") != "failed"
         or base_result.get("provider") != "pocket-tts"
@@ -1304,7 +1304,7 @@ def _audio_event_omission_index(metadata):
                 "Generated-audio audio-event omission text fields are malformed"
             )
         if any(
-            not _lowercase_sha256(raw.get(field))
+            not is_lowercase_sha256(raw.get(field))
             for field in (
                 "text_sha256",
                 "plan_sha256",
@@ -1312,7 +1312,7 @@ def _audio_event_omission_index(metadata):
                 "decision_sha256",
             )
         ) or any(
-            not _lowercase_sha256(authority.get(field))
+            not is_lowercase_sha256(authority.get(field))
             for field in (
                 "batch_id",
                 "base_workspace_sha256",
@@ -1358,8 +1358,8 @@ def _validate_live_fallback_evidence(evidence, previous_result_sha256):
         or evidence.get("schema") != "vntts.authoring-live-fallback-evidence"
         or evidence.get("schema_version") != 1
         or evidence.get("base_result_sha256") != previous_result_sha256
-        or not _lowercase_sha256(evidence.get("queue_sha256"))
-        or not _lowercase_sha256(evidence.get("base_result_sha256"))
+        or not is_lowercase_sha256(evidence.get("queue_sha256"))
+        or not is_lowercase_sha256(evidence.get("base_result_sha256"))
     ):
         raise ValueError("Generated-audio live fallback evidence is malformed")
     hypotheses = evidence.get("hypotheses")
@@ -1384,7 +1384,7 @@ def _validate_live_fallback_evidence(evidence, previous_result_sha256):
             or hypothesis.get("strategy") != "sentence_boundary_segmentation"
             or hypothesis.get("queue_sha256") != evidence["queue_sha256"]
             or any(
-                not _lowercase_sha256(hypothesis.get(field))
+                not is_lowercase_sha256(hypothesis.get(field))
                 for field in ("workspace_sha256", "state_sha256", "result_sha256")
             )
             or not isinstance(hypothesis.get("result"), dict)
@@ -1456,7 +1456,7 @@ def _validate_missing_voice_live_fallback_evidence(
         "cohort_id",
         "batch_id",
     ):
-        if not _lowercase_sha256(evidence.get(field)):
+        if not is_lowercase_sha256(evidence.get(field)):
             raise ValueError("Generated-audio missing-voice fallback hash is malformed")
     for field in (
         "source_workspace_id",
@@ -1510,7 +1510,7 @@ def _validate_known_role_live_fallback_evidence(
         "evidence_state_sha256",
         "evidence_item_sha256",
     ):
-        if not _lowercase_sha256(evidence.get(field)):
+        if not is_lowercase_sha256(evidence.get(field)):
             raise ValueError("Generated-audio known-role fallback hash is malformed")
     for field in (
         "source_character",
@@ -1575,7 +1575,7 @@ def _validate_audio_event_projection_fallback_evidence(
         "plan_sha256",
         "spoken_text_sha256",
     ):
-        if not _lowercase_sha256(evidence.get(field)):
+        if not is_lowercase_sha256(evidence.get(field)):
             raise ValueError(
                 "Generated-audio event projection fallback hash is malformed"
             )
@@ -1655,7 +1655,7 @@ def _validate_reviewed_rejection_fallback_evidence(
         "voice_manifest_sha256",
         "base_result_sha256",
     ):
-        if not _lowercase_sha256(evidence.get(field)):
+        if not is_lowercase_sha256(evidence.get(field)):
             raise ValueError(
                 "Generated-audio reviewed-rejection fallback hash is malformed"
             )
@@ -1664,7 +1664,7 @@ def _validate_reviewed_rejection_fallback_evidence(
             raise ValueError(
                 "Generated-audio reviewed-rejection fallback text is malformed"
             )
-    if any(not _lowercase_sha256(digest) for digest in references):
+    if any(not is_lowercase_sha256(digest) for digest in references):
         raise ValueError(
             "Generated-audio reviewed-rejection reference hash is malformed"
         )
@@ -1695,8 +1695,8 @@ def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
         or evidence.get("schema") != "vntts.authoring-live-fallback-evidence"
         or evidence.get("schema_version") != 2
         or evidence.get("base_result_sha256") != previous_result_sha256
-        or not _lowercase_sha256(evidence.get("queue_sha256"))
-        or not _lowercase_sha256(evidence.get("base_result_sha256"))
+        or not is_lowercase_sha256(evidence.get("queue_sha256"))
+        or not is_lowercase_sha256(evidence.get("base_result_sha256"))
     ):
         raise ValueError("Generated-audio live fallback review evidence is malformed")
     hypotheses = evidence.get("hypotheses")
@@ -1727,7 +1727,7 @@ def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
             or not isinstance(hypothesis.get("review"), dict)
             or not isinstance(hypothesis.get("decision_document"), dict)
             or any(
-                not _lowercase_sha256(hypothesis.get(field))
+                not is_lowercase_sha256(hypothesis.get(field))
                 for field in hypothesis_fields
                 - {"kind", "decision", "review", "decision_document"}
             )
@@ -1762,14 +1762,6 @@ def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
         raise ValueError(
             "Generated-audio live fallback render-review hypotheses are not canonical"
         )
-
-
-def _lowercase_sha256(value):
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 def _validate_live_fallback_backend(backend, decision):

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 FAILED_VOICE_DECISION_SCHEMA = "vntts.authoring-missing-voice-reuse-decision"
 FAILED_PROMPT_SELECTION_SCHEMA = "vntts.authoring-failed-prompt-selection"
@@ -177,7 +177,7 @@ def validate_offline_fallback_authority_records(records, directory, source_items
         source_item = source_items.get(queue_id)
         source_item_sha256 = (
             source_item
-            if _is_sha256(source_item)
+            if is_lowercase_sha256(source_item)
             else canonical_document_sha256(source_item)
             if isinstance(source_item, dict)
             else None
@@ -291,7 +291,7 @@ def _load_authority(path):
     if (
         not isinstance(decision_hashes, dict)
         or set(decision_hashes) != set(queue_ids)
-        or any(not _is_sha256(value) for value in decision_hashes.values())
+        or any(not is_lowercase_sha256(value) for value in decision_hashes.values())
     ):
         raise OfflineFallbackAuthorityError(
             "Offline fallback authority source hashes are incomplete"
@@ -314,21 +314,13 @@ def _load_authority(path):
 
 def _canonical_id(document, field):
     claimed = document.get(field)
-    if not _is_sha256(claimed) or claimed != canonical_document_sha256(
+    if not is_lowercase_sha256(claimed) or claimed != canonical_document_sha256(
         {key: value for key, value in document.items() if key != field}
     ):
         raise OfflineFallbackAuthorityError(
             "Offline fallback authority identity changed"
         )
     return claimed
-
-
-def _is_sha256(value):
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 def _required_text(value, label):

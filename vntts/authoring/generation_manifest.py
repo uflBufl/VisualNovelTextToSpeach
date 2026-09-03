@@ -73,9 +73,13 @@ def approved_manifest_entries(state, output_directory, *, validate_files=True):
             or result.get("review_status") != "approved"
         ):
             continue
-        relative = _safe_relative(result.get("path"), f"State item {queue_id!r} path")
+        relative = safe_generation_relative_path(
+            result.get("path"), f"State item {queue_id!r} path"
+        )
         if validate_files:
-            audio = _within(output_directory, relative, "Generated WAV")
+            audio = contained_generation_path(
+                output_directory, relative, "Generated WAV"
+            )
             quality = validate_success_file(queue_id, result, audio)
             sample_rate = quality.sample_rate
             sample_count = quality.sample_count
@@ -212,7 +216,7 @@ def validate_success_file_with_samples(queue_id, result, audio):
     return quality, samples
 
 
-def _safe_relative(value, label):
+def safe_generation_relative_path(value, label):
     if not isinstance(value, str) or not value:
         raise BulkGenerationError(f"{label} must be a relative POSIX path")
     if "\\" in value:
@@ -223,7 +227,7 @@ def _safe_relative(value, label):
     return path
 
 
-def _within(root, relative, label):
+def contained_generation_path(root, relative, label):
     root = Path(root).resolve()
     candidate = (root / relative).resolve()
     try:
@@ -251,7 +255,9 @@ def _nonnegative_int(value, label):
 __all__ = [
     "AudioQuality",
     "approved_manifest_entries",
+    "contained_generation_path",
     "inspect_generated_wav",
+    "safe_generation_relative_path",
     "validate_success_file",
     "write_generated_manifest_from_state",
 ]

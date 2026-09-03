@@ -44,6 +44,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
 )
+from vntts.document_identity import is_lowercase_sha256
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.pregeneration_generation import (
@@ -361,7 +362,9 @@ def _load_incremental_base(path, job, selected_story):
     try:
         imported = import_game_pack(path)
         extension = imported.pack.extensions.get("vntts.self-service")
-        if not isinstance(extension, dict) or not _is_sha256(extension.get("identity")):
+        if not isinstance(extension, dict) or not is_lowercase_sha256(
+            extension.get("identity")
+        ):
             return None, None
         if imported.pack.game_id != (
             selected_story.game or job.game
@@ -723,14 +726,6 @@ def _load_existing(destination, identity):
 def _raise_if_cancelled(cancel_event):
     if cancel_event is not None and cancel_event.is_set():
         raise OfflineGenerationCancelled("Offline pack publication was cancelled")
-
-
-def _is_sha256(value):
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
 
 
 __all__ = [

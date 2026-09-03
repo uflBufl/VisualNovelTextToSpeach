@@ -7,7 +7,6 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QCloseEvent, QKeySequence
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -34,6 +33,7 @@ from vntts.authoring.missing_voice_reuse_review import (
     record_missing_voice_reuse_heard,
 )
 from vntts.authoring.review_context_ui import ReviewDecisionContext
+from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 
 
 class MissingVoiceReuseReviewDialog(QDialog):
@@ -271,9 +271,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         layout.addWidget(self.review_scroll, 1)
         layout.addWidget(close_buttons)
 
-        self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
-        self.player.setAudioOutput(self.audio_output)
         self.player.playbackStateChanged.connect(self._playback_state_changed)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._playback_error)

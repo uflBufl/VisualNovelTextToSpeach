@@ -18,6 +18,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_bytes, atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
+from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError
 
@@ -287,11 +288,11 @@ def build_failure_comparison_corpus(
         "samples": samples,
     }
     if (
-        _sha256_file(queue_path) != queue_sha256
-        or _sha256_file(state_path) != state_sha256
+        sha256_file(queue_path) != queue_sha256
+        or sha256_file(state_path) != state_sha256
         or (
             voice_context is not None
-            and _sha256_file(voice_context["path"]) != voice_context["sha256"]
+            and sha256_file(voice_context["path"]) != voice_context["sha256"]
         )
     ):
         raise ModelBenchmarkError(
@@ -609,7 +610,7 @@ def _benchmark_renderer_staged(
                 **base_record,
                 "outcome": "complete",
                 "audio": str(reported_audio_path),
-                "audio_sha256": _sha256_file(staged_audio_path),
+                "audio_sha256": sha256_file(staged_audio_path),
                 "sample_rate": info.sample_rate,
                 "sample_count": info.sample_count,
                 "duration_seconds": round(info.duration_seconds, 6),
@@ -826,7 +827,7 @@ def benchmark_model_variants(
             "schema_version": SCHEMA_VERSION,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "corpus": str(output_directory / "benchmark-corpus.json"),
-            "corpus_sha256": _sha256_file(published_corpus),
+            "corpus_sha256": sha256_file(published_corpus),
             "voice_controls": voice_controls,
             "voice_controls_sha256": voice_controls_sha256,
             "voice_controls_content_sha256": voice_controls_content_sha256,
@@ -895,7 +896,7 @@ def _snapshot_voice_registry(
             destination.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_bytes(destination, payload)
             digest = hashlib.sha256(payload).hexdigest()
-            if _sha256_file(destination) != digest:
+            if sha256_file(destination) != digest:
                 raise ModelBenchmarkError(
                     f"Captured comparison voice reference changed: {source}"
                 )
@@ -1024,11 +1025,6 @@ def _required_sha256(value, label):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
         raise ModelBenchmarkError(f"Benchmark corpus {label} must be lowercase SHA-256")
     return value
-
-
-def _sha256_file(path):
-    with Path(path).open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def _mono_pcm(value):

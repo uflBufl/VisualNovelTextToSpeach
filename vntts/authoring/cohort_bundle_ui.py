@@ -12,16 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QBuffer,
-    QByteArray,
-    QIODevice,
     Qt,
     QThreadPool,
     QTimer,
-    QUrl,
 )
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -66,6 +61,8 @@ from vntts.authoring.voice_quality_gate import (
     load_voice_quality_gate,
 )
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
+from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
+from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
 
 def _display_required_reason(reason):
@@ -644,9 +641,7 @@ class CohortReviewBundleDialog(QDialog):
             "QPushButton#rejectCohort { font-weight: 700; }"
         )
 
-        self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
-        self.player.setAudioOutput(self.audio_output)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._media_error)
 
@@ -1079,10 +1074,10 @@ class CohortReviewBundleDialog(QDialog):
             self._update_actions()
             return
         self._discard_playback_buffer()
-        playback = QBuffer(self)
-        playback.setData(QByteArray(audio_bytes))
-        if not playback.open(QIODevice.OpenModeFlag.ReadOnly):
-            playback.deleteLater()
+        playback = play_audio_bytes(
+            self.player, self, audio_bytes, "vntts-bundle-review.wav"
+        )
+        if playback is None:
             self.status.setText("REPLAY BLOCKED: immutable audio buffer failed")
             self._update_actions()
             return
@@ -1093,8 +1088,6 @@ class CohortReviewBundleDialog(QDialog):
             sample.item.queue_id,
             sample.item.authority.audio_sha256,
         )
-        self.player.setSourceDevice(playback, QUrl("vntts-bundle-review.wav"))
-        self.player.play()
         self.status.setText(f"PLAYING: {sample.item.line_id}")
         self._update_actions()
 
@@ -1156,9 +1149,7 @@ class CohortReviewBundleDialog(QDialog):
     def _discard_playback_buffer(self):
         playback = self._playback_buffer
         self._playback_buffer = None
-        if playback is not None:
-            playback.close()
-            playback.deleteLater()
+        release_audio_buffer(self.player, playback)
 
     def _select_queue_id(self, queue_id):
         for row in range(self.table.rowCount()):

@@ -81,17 +81,12 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
         cls.media_player_patcher = patch(
             "vntts.authoring.failure_reference_audit_ui.QMediaPlayer"
         )
-        cls.audio_output_patcher = patch(
-            "vntts.authoring.failure_reference_audit_ui.QAudioOutput"
-        )
         media_player = cls.media_player_patcher.start()
         media_player.MediaStatus = QMediaPlayer.MediaStatus
-        cls.audio_output_patcher.start()
         cls.application = QApplication.instance() or QApplication([])
 
     @classmethod
     def tearDownClass(cls):
-        cls.audio_output_patcher.stop()
         cls.media_player_patcher.stop()
 
     def tearDown(self):
@@ -144,7 +139,10 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             dialog._playback_active = True
             dialog._playback_finished(prepared, None)
 
-            self.assertEqual(dialog._playback_buffer.data().data(), prepared.payload)
+            self.assertEqual(
+                dialog.player.play_bytes.call_args.args,
+                (prepared.payload, f"memory:{prepared.path.name}"),
+            )
             self.assertFalse(dialog.choose.isEnabled())
             self.assertFalse(dialog.neither.isEnabled())
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
@@ -299,7 +297,10 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
                 [(group["group_id"], candidate_id, text)],
             )
             self.assertEqual(dialog._playback_kind, "generated")
-            self.assertEqual(dialog._playback_buffer.data().data(), _wav_payload())
+            self.assertEqual(
+                dialog.player.play_bytes.call_args.args,
+                (_wav_payload(), "memory:generated-preview.wav"),
+            )
             self.assertIn("does not select the reference", dialog.status.text())
             self.assertFalse(dialog.choose.isEnabled())
             self.assertFalse(dialog.neither.isEnabled())

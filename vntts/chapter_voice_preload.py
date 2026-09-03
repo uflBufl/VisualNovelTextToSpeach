@@ -5,6 +5,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from os.path import commonprefix
 
 from vntts_artifacts.story_index import StoryIndexError, load_story_index
 
@@ -610,7 +611,7 @@ def _speaker_bounded_text_match(
         if canonical in candidate and (len(canonical) >= 7 or specific_speaker):
             match = (1.2, "expected-bounded-speaker-text")
         else:
-            prefix_length = _common_prefix_length(candidate, canonical)
+            prefix_length = len(commonprefix((candidate, canonical)))
             if (
                 specific_speaker
                 and len(canonical) <= 12
@@ -637,13 +638,6 @@ def _speaker_bounded_text_match(
         if best is None or match[0] > best[0]:
             best = match
     return best
-
-
-def _common_prefix_length(left, right):
-    for index, (left_character, right_character) in enumerate(zip(left, right)):
-        if left_character != right_character:
-            return index
-    return min(len(left), len(right))
 
 
 def _source_audio_status(entry):
