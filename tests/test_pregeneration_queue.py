@@ -447,6 +447,27 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 ("Hotelier", "Rhiannon"),
             )
 
+    def test_equivalent_display_roles_share_one_narrator_fallback(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            story_path = write_content(root / "content")
+            story = load_story_index_document(story_path)
+            records = [record.to_record() for record in story.records]
+            next(record for record in records if record["line_id"] == "unknown").update(
+                speaker='"Hotelier"',
+                voice_character='"Hotelier"',
+                portrait="disguise",
+            )
+            write_story_index_document(story_path, story.metadata, records)
+            content = inspect_story_index(story_path)
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("selected",))
+            plan = VoicePlanStore(jobs).create(job, AppSettings())
+
+            result = PregenerationInputStore(jobs).materialize(job, plan)
+
+        self.assertEqual(result.narrator_fallback_roles, ("Hotelier", "Rhiannon"))
+
     def test_changed_reference_is_rejected_before_publication(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

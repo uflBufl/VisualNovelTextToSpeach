@@ -22,7 +22,11 @@ from vntts_artifacts.story_index import (
     write_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
-from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestError,
+    normalize_character_name,
+    write_voice_manifest,
+)
 
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.publication import (
@@ -272,11 +276,14 @@ def _selected_records(story, selected_line_ids):
 
 def _effective_voice_routes(plan, registry):
     selections = []
-    narrator_roles = set()
+    narrator_roles = {}
     for group in plan.groups:
         target = "Narrator" if group.route == "narrator" else group.character
         if group.route == "narrator" and group.character != "Narrator":
-            narrator_roles.add(group.character)
+            key = normalize_character_name(group.character)
+            previous = narrator_roles.get(key)
+            if previous is None or len(group.character) < len(previous):
+                narrator_roles[key] = group.character
         if not group.source_character:
             if group.route == "narrator" and plan.synthesis_backend == "pocket-tts":
                 voice = None
@@ -336,7 +343,7 @@ def _effective_voice_routes(plan, registry):
                 )
     return {
         "routes": routes,
-        "narrator_roles": tuple(sorted(narrator_roles, key=str.casefold)),
+        "narrator_roles": tuple(sorted(narrator_roles.values(), key=str.casefold)),
         "line_voice_characters": line_voice_characters,
     }
 
