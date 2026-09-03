@@ -55,9 +55,6 @@ blindly upgrading an atomic model stack beyond its upstream-supported versions.
 Every retained upper bound or exact pin must name the observed incompatibility
 in the same commit.
 
-- [ ] Qualify the locked Python 3.14 Chatterbox Nano runtime on Linux. Require
-      worker start/stop, a valid reference-conditioned WAV/report and one
-      listening verdict before release packaging.
 - [ ] Qualify the Python 3.14 MOSS Delay candidate on Windows CUDA. It retains
       an upstream-compatible Transformers 5.0 pin while trialling the current
       Torch/TorchAudio 2.11, TorchCodec 0.16 and CUDA 13.0 atomic stack. Install
