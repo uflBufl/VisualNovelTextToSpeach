@@ -194,6 +194,54 @@ class TTSBenchmarkTest(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("No complete voice manifest", errors.getvalue())
 
+    def test_cli_allows_narrator_reference_without_a_voice_manifest(self):
+        report = {"backend": "chatterbox-nano", "samples": []}
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            reference = output / "narrator.wav"
+            reference.touch()
+            with (
+                patch(
+                    "vntts.tts_benchmark.find_default_voice_manifest",
+                    return_value=None,
+                ),
+                patch("vntts.tts_benchmark.create_backend") as create,
+                patch(
+                    "vntts.tts_benchmark.benchmark_backend", return_value=report
+                ) as benchmark,
+                patch(
+                    "vntts.tts_benchmark.write_report",
+                    return_value=output / "chatterbox-nano.json",
+                ),
+            ):
+                exit_code = main(
+                    [
+                        "--backend",
+                        "chatterbox-nano",
+                        "--character",
+                        "Narrator",
+                        "--narrator-reference",
+                        str(reference),
+                        "--output",
+                        str(output),
+                    ]
+                )
+                factory = benchmark.call_args.kwargs["backend_factory"]
+                registry = CharacterVoiceRegistry()
+                factory("chatterbox-nano", registry, output)
+
+        self.assertEqual(exit_code, 0)
+        create.assert_called_once_with(
+            "chatterbox-nano",
+            registry,
+            output,
+            model_name=None,
+            moss_streaming_first_chunk_frames=None,
+            moss_streaming_interval=None,
+            terms_accepted=False,
+            narrator_reference=reference.resolve(),
+        )
+
     def test_cli_forwards_explicit_xtts_terms_acceptance(self):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]

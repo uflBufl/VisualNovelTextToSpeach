@@ -1,5 +1,4 @@
 param(
-    [string]$Character = "Rhiannon",
     [string]$Text = "The tide is turning. We should return before the storm arrives.",
     [string]$OutputDirectory
 )
@@ -18,7 +17,7 @@ if (-not $OutputDirectory) {
         "build\windows\chatterbox-nano-$RunId"
 }
 $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
-$Manifest = Join-Path $ProjectRoot "data\reverse1999-voices\manifest.json"
+$NarratorReference = Join-Path $ProjectRoot "samples\speakers\01.wav"
 
 Push-Location $ProjectRoot
 try {
@@ -29,9 +28,9 @@ try {
 
     uv run --frozen vntts-benchmark-tts `
         --backend chatterbox-nano `
-        --character $Character `
+        --character Narrator `
         --text $Text `
-        --manifest $Manifest `
+        --narrator-reference $NarratorReference `
         --output $OutputDirectory
     if ($LASTEXITCODE -ne 0) {
         throw "Chatterbox Nano worker/render qualification failed."

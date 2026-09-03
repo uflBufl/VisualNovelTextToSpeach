@@ -72,7 +72,8 @@ class ReleasePackagingTest(unittest.TestCase):
 
         self.assertIn("uv sync --project backends/chatterbox-nano --frozen", script)
         self.assertIn("--backend chatterbox-nano", script)
-        self.assertIn("data\\reverse1999-voices\\manifest.json", script)
+        self.assertIn("samples\\speakers\\01.wav", script)
+        self.assertIn("--narrator-reference $NarratorReference", script)
         self.assertIn("Test-Path $AudioPath -PathType Leaf", script)
 
     def test_macos_runtime_is_injected_without_pyinstaller_reclassification(self):

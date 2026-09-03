@@ -39,6 +39,7 @@ from vntts.voices import (
     CharacterVoiceRegistry,
     CharacterVoiceRouter,
     find_default_voice_manifest,
+    is_narrator,
 )
 
 default_output = get_local_data_directory() / "benchmarks" / "tts"
@@ -600,6 +601,7 @@ def build_parser():
     parser.add_argument("--text", default=default_text)
     parser.add_argument("--corpus", type=Path)
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--narrator-reference", type=Path)
     parser.add_argument(
         "--model",
         help="Local model path or backend model identifier (recommended offline)",
@@ -619,9 +621,20 @@ def build_parser():
 def main(argv=None):
     arguments = build_parser().parse_args(argv)
     manifest = arguments.manifest or find_default_voice_manifest()
-    if manifest is None:
+    narrator_reference = (
+        arguments.narrator_reference.expanduser().resolve()
+        if arguments.narrator_reference is not None
+        else None
+    )
+    if narrator_reference is not None and not narrator_reference.is_file():
+        return cli_error(f"Narrator reference does not exist: {narrator_reference}")
+    if manifest is None and narrator_reference is None:
         return cli_error("No complete voice manifest is available")
-    registry = CharacterVoiceRegistry.from_file(manifest)
+    registry = (
+        CharacterVoiceRegistry.from_file(manifest)
+        if manifest is not None
+        else CharacterVoiceRegistry()
+    )
     corpus = (
         load_tts_benchmark_corpus(arguments.corpus)
         if arguments.corpus is not None
@@ -633,7 +646,9 @@ def main(argv=None):
         else arguments.characters or ["Kamuta", "Fatutu"]
     )
     missing = [
-        character for character in characters if registry.resolve(character) is None
+        character
+        for character in characters
+        if not is_narrator(character) and registry.resolve(character) is None
     ]
     if missing:
         return cli_error(f"Voice is not available: {missing[0]}")
@@ -645,6 +660,7 @@ def main(argv=None):
             arguments.moss_first_chunk_frames,
             arguments.moss_streaming_interval,
             arguments.accept_xtts_terms or None,
+            narrator_reference,
         )
     ):
 
@@ -657,6 +673,11 @@ def main(argv=None):
                 moss_streaming_first_chunk_frames=(arguments.moss_first_chunk_frames),
                 moss_streaming_interval=arguments.moss_streaming_interval,
                 terms_accepted=arguments.accept_xtts_terms,
+                **(
+                    {"narrator_reference": narrator_reference}
+                    if narrator_reference is not None
+                    else {}
+                ),
             )
 
     report = benchmark_backend(
