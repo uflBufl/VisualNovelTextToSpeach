@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from vntts.authoring.audio_event_composition import (
     AudioEventCompositionError,
@@ -14,6 +14,7 @@ from vntts.authoring.authority import (
     canonical_document_sha256,
     capture_authority_file,
 )
+from vntts.authoring.workspace_foundation import contained_regular_file
 
 AUDIO_EVENT_WORKSPACE_SCHEMA = "vntts.authoring-audio-event-workspace"
 AUDIO_EVENT_WORKSPACE_VERSION = 2
@@ -225,26 +226,12 @@ def validate_audio_event_composition_state_item(workspace_directory, queue_id, r
 
 
 def _contained_file(root, value, label):
-    if not isinstance(value, str) or not value:
-        raise AudioEventWorkspaceError(f"Workspace audio-event {label} path is invalid")
-    pure = PurePosixPath(value)
-    if (
-        pure.is_absolute()
-        or not pure.parts
-        or any(part in {"", ".", ".."} for part in pure.parts)
-    ):
-        raise AudioEventWorkspaceError(f"Workspace audio-event {label} path is unsafe")
-    path = root.joinpath(*pure.parts)
-    if path.is_symlink() or not path.is_file():
-        raise AudioEventWorkspaceError(f"Workspace audio-event {label} is missing")
-    resolved = path.resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as error:
-        raise AudioEventWorkspaceError(
-            f"Workspace audio-event {label} leaves its workspace"
-        ) from error
-    return resolved
+    return contained_regular_file(
+        root,
+        value,
+        f"workspace audio-event {label}",
+        error_type=AudioEventWorkspaceError,
+    )
 
 
 __all__ = [

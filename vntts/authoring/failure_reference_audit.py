@@ -31,6 +31,7 @@ from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
 )
+from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.reference_quality import analyze_reference_bytes
 
 FAILURE_REFERENCE_AUDIT_SCHEMA = "vntts.authoring-failure-reference-audit"
@@ -811,27 +812,9 @@ def _resolve_voice(voices, character):
 
 
 def _contained_regular_file(directory, relative):
-    directory = Path(directory).resolve()
-    if not isinstance(relative, str) or not relative or "\\" in relative:
-        raise FailureReferenceAuditError("Reference audit audio path is malformed")
-    relative_path = Path(relative)
-    if relative_path.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative_path.parts
-    ):
-        raise FailureReferenceAuditError("Reference audit audio path is malformed")
-    raw = directory / relative_path
-    current = directory
-    for part in relative_path.parts:
-        current = current / part
-        if current.is_symlink():
-            raise FailureReferenceAuditError("Reference audit audio is unsafe")
-    path = raw.resolve()
-    try:
-        path.relative_to(directory)
-    except ValueError as error:
-        raise FailureReferenceAuditError(
-            "Reference audit audio leaves its directory"
-        ) from error
-    if not path.is_file():
-        raise FailureReferenceAuditError("Reference audit audio changed")
-    return path
+    return contained_regular_file(
+        directory,
+        relative,
+        "reference audit audio",
+        error_type=FailureReferenceAuditError,
+    )

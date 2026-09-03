@@ -270,6 +270,21 @@ def _generation_output(generation_input):
     )
 
 
+def validate_offline_generation_result(
+    generation_input, generation_result, action, *, error_type=OfflineGenerationError
+):
+    """Bind a typed generation result to its one deterministic output directory."""
+    if not isinstance(generation_input, PregenerationInput):
+        raise error_type("Offline generation input is invalid")
+    if not isinstance(generation_result, OfflineGenerationResult):
+        raise error_type("Offline generation result is invalid")
+    if (
+        generation_result.output.resolve()
+        != _generation_output(generation_input).resolve()
+    ):
+        raise error_type(f"Offline {action} output identity changed")
+
+
 def _synthesis_cache_directory(generation_input):
     job_directory = generation_input.directory.parent
     name = job_directory.name
@@ -358,4 +373,5 @@ __all__ = [
     "OfflineGenerationProgress",
     "OfflineGenerationResult",
     "OfflineGenerationWorker",
+    "validate_offline_generation_result",
 ]

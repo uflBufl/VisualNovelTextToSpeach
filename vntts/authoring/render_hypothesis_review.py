@@ -32,6 +32,7 @@ from vntts.authoring.reference_render_comparison import (
     ReferenceRenderComparisonError,
     load_reference_render_comparison_document,
 )
+from vntts.authoring.workspace_foundation import contained_regular_file
 
 RENDER_HYPOTHESIS_REVIEW_SCHEMA = "vntts.authoring-render-hypothesis-review"
 RENDER_HYPOTHESIS_REVIEW_VERSION = 1
@@ -900,24 +901,10 @@ def _validate_decision_document(decision, review, review_sha256):
 
 
 def _contained_file(root, value, label):
-    root = Path(root).resolve()
     text = _required_text(value, label)
-    relative = Path(text)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise RenderHypothesisReviewError(f"{label.capitalize()} leaves its root")
-    path = root / relative
-    if path.is_symlink():
-        raise RenderHypothesisReviewError(f"{label.capitalize()} is a symlink")
-    resolved = path.resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as error:
-        raise RenderHypothesisReviewError(
-            f"{label.capitalize()} leaves its root"
-        ) from error
-    if not resolved.is_file():
-        raise RenderHypothesisReviewError(f"{label.capitalize()} is missing")
-    return resolved
+    return contained_regular_file(
+        root, text, label, error_type=RenderHypothesisReviewError
+    )
 
 
 def _safe_directory(value, label):

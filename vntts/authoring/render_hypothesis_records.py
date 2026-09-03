@@ -13,6 +13,7 @@ from vntts.authoring.authority import (
     canonical_document_sha256,
     capture_authority_file,
 )
+from vntts.authoring.workspace_foundation import contained_regular_file
 
 
 class RenderHypothesisRecordError(RuntimeError):
@@ -260,22 +261,9 @@ def _validate_decision(decision, review, review_sha256):
 
 def _contained_file(root, value, label):
     text = _required_text(value, label)
-    relative = Path(text)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise RenderHypothesisRecordError(f"{label.capitalize()} leaves its root")
-    path = root / relative
-    if path.is_symlink():
-        raise RenderHypothesisRecordError(f"{label.capitalize()} is a symlink")
-    resolved = path.resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as error:
-        raise RenderHypothesisRecordError(
-            f"{label.capitalize()} leaves its root"
-        ) from error
-    if not resolved.is_file():
-        raise RenderHypothesisRecordError(f"{label.capitalize()} is missing")
-    return resolved
+    return contained_regular_file(
+        root, text, label, error_type=RenderHypothesisRecordError
+    )
 
 
 def _required_text(value, label):

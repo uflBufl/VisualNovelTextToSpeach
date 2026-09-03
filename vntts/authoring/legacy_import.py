@@ -27,6 +27,7 @@ from vntts_artifacts.voice_generation_queue import (
 
 from vntts.authoring.generation_lease import inspect_process_status
 from vntts.authoring.import_paths import default_import_root
+from vntts.authoring.workspace_foundation import load_json_object
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
 LEGACY_JOB_SCHEMA_VERSION = 1
@@ -1275,16 +1276,7 @@ def _relative_within(root, path, label):
 
 
 def _load_json(path, description):
-    path = Path(path)
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise LegacyAuthoringImportError(
-            f"Unable to read {description} {path}: {error}"
-        ) from error
-    if not isinstance(value, dict):
-        raise LegacyAuthoringImportError(f"{description.title()} must be a JSON object")
-    return value
+    return load_json_object(path, description, error_type=LegacyAuthoringImportError)
 
 
 def _load_json_snapshot(path, description):

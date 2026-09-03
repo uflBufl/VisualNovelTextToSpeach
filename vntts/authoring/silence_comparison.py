@@ -11,7 +11,7 @@ import tempfile
 import wave
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -27,6 +27,7 @@ from vntts.authoring.listening import (
     ModelListeningError,
     create_listening_session_from_reports,
 )
+from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256
 
 SILENCE_COMPARISON_SCHEMA = "vntts.authoring-silence-comparison"
@@ -809,29 +810,9 @@ def _new_directory(value):
 
 
 def _contained_file(root, relative):
-    if not isinstance(relative, str) or not relative or "\\" in relative:
-        raise SilenceComparisonError("Silence comparison path is invalid")
-    pure = PurePosixPath(relative)
-    if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
-        raise SilenceComparisonError("Silence comparison path leaves its directory")
-    root = Path(root).resolve()
-    unresolved = root / Path(*pure.parts)
-    current = root
-    for part in pure.parts:
-        current /= part
-        if current.is_symlink():
-            raise SilenceComparisonError(
-                "Silence comparison artifacts must not use symlinks"
-            )
-    path = unresolved.resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as error:
-        raise SilenceComparisonError(
-            "Silence comparison path leaves its directory"
-        ) from error
-    if not path.is_file():
-        raise SilenceComparisonError(
-            f"Silence comparison artifact is missing: {relative}"
-        )
-    return path
+    return contained_regular_file(
+        root,
+        relative,
+        "silence comparison artifact",
+        error_type=SilenceComparisonError,
+    )

@@ -4,28 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
-
-def safe_relative_path(value, label, *, error_type=ValueError):
-    """Validate one canonical POSIX-relative path without touching the filesystem."""
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
-        raise error_type(f"{label} must be a POSIX-relative path")
-    pure = PurePosixPath(value)
-    if pure.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
-        raise error_type(f"{label} must stay inside its workspace")
-    return Path(*pure.parts)
-
-
-def contained_path(root, relative, label, *, error_type=ValueError):
-    """Resolve a relative path and require it to stay inside its canonical root."""
-    root = Path(root).resolve()
-    path = (root / relative).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as error:
-        raise error_type(f"{label} leaves its owning directory") from error
-    return path
+from vntts.path_safety import contained_path, contained_regular_file, safe_relative_path
 
 
 def read_regular_file(path, label, *, error_type=ValueError):
@@ -154,6 +135,7 @@ def copy_generation_wavs(
 
 __all__ = [
     "contained_path",
+    "contained_regular_file",
     "copy_generation_wavs",
     "copy_workspace_tree_snapshot",
     "load_json_object",

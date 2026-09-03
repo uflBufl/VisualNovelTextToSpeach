@@ -42,14 +42,15 @@ class BoundedCache:
 
 
 def shutdown_speech_backend(backend):
-    """Prefer a backend's full shutdown hook, falling back to stop."""
+    """Shut down a backend if present and return the cleared slot value."""
     shutdown = getattr(backend, "shutdown", None)
     if callable(shutdown):
         shutdown()
-        return
-    stop = getattr(backend, "stop", None)
-    if callable(stop):
-        stop()
+    else:
+        stop = getattr(backend, "stop", None)
+        if callable(stop):
+            stop()
+    return None
 
 
 def activate_backend_runtime(

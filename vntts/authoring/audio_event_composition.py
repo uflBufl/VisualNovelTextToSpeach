@@ -26,6 +26,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
 )
+from vntts.authoring.workspace_foundation import contained_regular_file
 
 AUDIO_EVENT_COMPOSITION_SCHEMA = "vntts.authoring-audio-event-composition"
 AUDIO_EVENT_COMPOSITION_VERSION = 1
@@ -484,25 +485,11 @@ def _contained_directory(root, relative, label):
 
 
 def _contained_file(root, value, label):
-    root = Path(root).resolve()
     if not isinstance(value, str) or not value or value != value.strip():
         raise AudioEventCompositionError(f"{label.capitalize()} path is invalid")
-    relative = Path(value)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise AudioEventCompositionError(f"{label.capitalize()} leaves its root")
-    path = root / relative
-    if path.is_symlink():
-        raise AudioEventCompositionError(f"{label.capitalize()} is a symlink")
-    resolved = path.resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as error:
-        raise AudioEventCompositionError(
-            f"{label.capitalize()} leaves its root"
-        ) from error
-    if not resolved.is_file():
-        raise AudioEventCompositionError(f"{label.capitalize()} is missing")
-    return resolved
+    return contained_regular_file(
+        root, value, label, error_type=AudioEventCompositionError
+    )
 
 
 __all__ = [

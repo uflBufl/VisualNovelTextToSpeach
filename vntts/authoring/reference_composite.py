@@ -11,7 +11,7 @@ import tempfile
 import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import numpy as np
 from vntts_artifacts import (
@@ -34,6 +34,7 @@ from vntts.authoring.source_reference_quality_records import (
     load_source_reference_quality_review,
 )
 from vntts.authoring.source_reference_review import FIXED_EVALUATION_CORPUS
+from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.cli import cli_error, cli_success
 from vntts.reference_quality import analyze_reference_bytes
 
@@ -627,24 +628,9 @@ def _trim_edges(samples, sample_rate, *, silence_dbfs, trigger_ms, padding_ms):
 
 def _contained_file(root, relative):
     relative = _text(relative, "Reference path")
-    pure = PurePosixPath(relative)
-    if pure.is_absolute() or ".." in pure.parts or "\\" in relative:
-        raise ReferenceCompositeError(f"Reference path is not contained: {relative}")
-    cursor = Path(root).resolve()
-    for part in pure.parts:
-        cursor = cursor / part
-        if cursor.is_symlink():
-            raise ReferenceCompositeError(f"Reference path uses a symlink: {relative}")
-    resolved = cursor.resolve()
-    try:
-        resolved.relative_to(Path(root).resolve())
-    except ValueError as error:
-        raise ReferenceCompositeError(
-            f"Reference path escapes its root: {relative}"
-        ) from error
-    if not resolved.is_file():
-        raise ReferenceCompositeError(f"Reference file is missing: {relative}")
-    return resolved
+    return contained_regular_file(
+        root, relative, "reference path", error_type=ReferenceCompositeError
+    )
 
 
 def _text(value, label):

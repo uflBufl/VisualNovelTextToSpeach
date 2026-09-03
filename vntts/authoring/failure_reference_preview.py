@@ -158,7 +158,8 @@ class FailureReferencePreviewService:
             )
             backend_config = (backend_name, model, profile)
             if self._backend is None or self._backend_config != backend_config:
-                self._stop_backend()
+                self._backend = shutdown_speech_backend(self._backend)
+                self._backend_config = None
                 self._backend = self.backend_factory(
                     backend_name,
                     registry,
@@ -248,7 +249,8 @@ class FailureReferencePreviewService:
                 return
             self._closed = True
             self._cache.clear()
-            self._stop_backend()
+            self._backend = shutdown_speech_backend(self._backend)
+            self._backend_config = None
             shutil.rmtree(self._root, ignore_errors=True)
 
     def __del__(self):
@@ -297,12 +299,6 @@ class FailureReferencePreviewService:
                 "Unable to bind the ephemeral preview reference"
             )
         return target
-
-    def _stop_backend(self):
-        backend = self._backend
-        self._backend = None
-        self._backend_config = None
-        shutdown_speech_backend(backend)
 
 
 def _read_audit_document(directory):

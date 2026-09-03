@@ -17,6 +17,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.import_paths import default_import_root
 from vntts.authoring.private_files import private_file_is_restricted
+from vntts.authoring.workspace_foundation import load_json_object
 
 SESSION_SCHEMA = "r1999.model-listening-session"
 KEY_SCHEMA = "r1999.model-listening-key"
@@ -593,15 +594,7 @@ def _load_schema_snapshot(path, schema, description):
 
 
 def _load_json(path, description):
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ListeningImportError(
-            f"Unable to read {description} {path}: {error}"
-        ) from error
-    if not isinstance(value, dict):
-        raise ListeningImportError(f"{description.title()} must be a JSON object")
-    return value
+    return load_json_object(path, description, error_type=ListeningImportError)
 
 
 def _safe_relative(value, label):

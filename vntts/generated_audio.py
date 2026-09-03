@@ -17,9 +17,9 @@ from vntts_artifacts.generated_audio import (
     load_generated_audio_document,
 )
 
+from vntts.audio_output import match_output_sample_rate
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.playback import PlaybackOutcome, PlaybackStatus
-from vntts.services.tts_engine import match_output_sample_rate
 from vntts.settings import audio_source_policies
 from vntts.speech_backend_runtime import BoundedCache, validate_speed, validate_volume
 from vntts.voices import is_unattributed_speaker, synthesis_character

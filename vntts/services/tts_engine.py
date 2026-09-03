@@ -2,18 +2,13 @@ import re
 import warnings
 from collections import OrderedDict
 from os import PathLike
-from threading import Event, Lock
+from threading import Lock
 from time import monotonic
 
 import numpy as np
-from scipy.signal import resample_poly
 
-from vntts.audio_output import playback_underflowed, resolve_audio_output
-from vntts.playback import (
-    PlaybackStatus,
-    PreparedPlayback,
-    outcome_for_prepared,
-)
+from vntts.audio_output import SynchronousPcmPlaybackMixin
+from vntts.playback import PlaybackStatus, PreparedPlayback
 from vntts.synthesis import SynthesisCachePolicy
 
 
@@ -85,33 +80,10 @@ def get_tts_profile(name):
         ) from error
 
 
-def match_output_sample_rate(audio_output, audio, source_sample_rate):
-    """Resample once in Python instead of relying on a live device converter."""
-    query_devices = getattr(audio_output, "query_devices", None)
-    if not callable(query_devices):
-        return audio, source_sample_rate
-    try:
-        device = query_devices(kind="output")
-        target_sample_rate = int(round(float(device["default_samplerate"])))
-    except KeyError, TypeError, ValueError, RuntimeError:
-        return audio, source_sample_rate
-    if target_sample_rate <= 0 or target_sample_rate == source_sample_rate:
-        return audio, source_sample_rate
+class TTSEngine(SynchronousPcmPlaybackMixin):
+    playback_configuration_error = TTSConfigurationError
+    invalid_playback_message = "TTS playback received an invalid payload"
 
-    divisor = np.gcd(source_sample_rate, target_sample_rate)
-    resampled = resample_poly(
-        np.asarray(audio, dtype=np.float32),
-        target_sample_rate // divisor,
-        source_sample_rate // divisor,
-        axis=0,
-    ).astype(np.float32, copy=False)
-    peak = float(np.max(np.abs(resampled))) if resampled.size else 0.0
-    if peak > 0.95:
-        resampled *= 0.95 / peak
-    return resampled, target_sample_rate
-
-
-class TTSEngine:
     def __init__(
         self,
         model_name="tts_models/en/vctk/vits",
@@ -207,78 +179,6 @@ class TTSEngine:
         if outcome.status is PlaybackStatus.FAILED:
             raise AudioPlaybackError(outcome.error or "Audio playback failed")
         return outcome.successful
-
-    def play_prepared(self, prepared, *, playback_guard=None):
-        """Play one typed PCM payload and return call-bound device metrics."""
-        if not isinstance(prepared, PreparedPlayback):
-            raise TTSConfigurationError("TTS playback received an invalid payload")
-        if playback_guard is not None and not playback_guard():
-            return outcome_for_prepared(prepared, PlaybackStatus.INTERRUPTED, None)
-
-        with self.playback_lock:
-            if playback_guard is not None and not playback_guard():
-                return outcome_for_prepared(prepared, PlaybackStatus.INTERRUPTED, None)
-            stop_requested = Event()
-            playback_started = self.clock()
-            underflowed = False
-            first_audio_ms = None
-            try:
-                with self.playback_state_lock:
-                    self.playback_active = True
-                    self.active_playback_stop = stop_requested
-                audio_output = self._resolve_audio_output()
-                audio, playback_sample_rate = match_output_sample_rate(
-                    audio_output,
-                    self._prepare_audio(prepared.payload),
-                    self.sample_rate,
-                )
-                with self.playback_state_lock:
-                    interrupted = stop_requested.is_set() or (
-                        playback_guard is not None and not playback_guard()
-                    )
-                    if not interrupted:
-                        audio_output.play(
-                            audio,
-                            playback_sample_rate,
-                            latency=self.playback_latency,
-                        )
-                        first_audio_ms = (self.clock() - playback_started) * 1000
-                if not interrupted:
-                    playback_status = audio_output.wait()
-                    underflowed = self._playback_underflowed(playback_status)
-                    interrupted = stop_requested.is_set() or (
-                        playback_guard is not None and not playback_guard()
-                    )
-            except Exception as error:
-                if stop_requested.is_set():
-                    return outcome_for_prepared(
-                        prepared,
-                        PlaybackStatus.INTERRUPTED,
-                        (self.clock() - playback_started) * 1000,
-                        first_audio_ms=first_audio_ms,
-                    )
-                return outcome_for_prepared(
-                    prepared,
-                    PlaybackStatus.FAILED,
-                    (self.clock() - playback_started) * 1000,
-                    error=str(error),
-                    error_type=type(error),
-                )
-            finally:
-                with self.playback_state_lock:
-                    self.playback_active = False
-                    if self.active_playback_stop is stop_requested:
-                        self.active_playback_stop = None
-        return outcome_for_prepared(
-            prepared,
-            PlaybackStatus.INTERRUPTED if interrupted else PlaybackStatus.COMPLETED,
-            (self.clock() - playback_started) * 1000,
-            underflowed=underflowed,
-            first_audio_ms=first_audio_ms,
-        )
-
-    def _playback_underflowed(self, playback_status=None):
-        return playback_underflowed(self.audio_output, playback_status)
 
     def synthesize(
         self,
@@ -570,17 +470,3 @@ class TTSEngine:
         prepared[:fade_samples] *= fade.reshape(shape)
         prepared[-fade_samples:] *= fade[::-1].reshape(shape)
         return prepared
-
-    def stop(self):
-        with self.playback_state_lock:
-            was_playing = self.playback_active
-            stop_requested = self.active_playback_stop
-            if was_playing and stop_requested is not None:
-                stop_requested.set()
-            if was_playing and self.audio_output is not None:
-                self.audio_output.stop()
-        return was_playing
-
-    def _resolve_audio_output(self):
-        self.audio_output = resolve_audio_output(self.audio_output)
-        return self.audio_output

@@ -26,6 +26,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
 )
+from vntts.authoring.workspace_foundation import contained_regular_file
 
 AUDIO_EVENT_REVIEW_SCHEMA = "vntts.authoring-audio-event-review"
 AUDIO_EVENT_REVIEW_VERSION = 1
@@ -523,22 +524,9 @@ def _load_queue_snapshot(payload):
 
 
 def _contained_file(root, relative, label):
-    if not isinstance(relative, str) or not relative.strip():
-        raise AudioEventReviewError(f"{label.capitalize()} path is invalid")
-    path = Path(relative)
-    if path.is_absolute() or ".." in path.parts:
-        raise AudioEventReviewError(f"{label.capitalize()} leaves its review")
-    candidate = root / path
-    if candidate.is_symlink() or not candidate.is_file():
-        raise AudioEventReviewError(f"{label.capitalize()} is unavailable")
-    resolved = candidate.resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as error:
-        raise AudioEventReviewError(
-            f"{label.capitalize()} leaves its review"
-        ) from error
-    return resolved
+    return contained_regular_file(
+        root, relative, label, error_type=AudioEventReviewError
+    )
 
 
 def _required_text(value, label):

@@ -12,6 +12,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.document_identity import canonical_document_sha256
+from vntts.path_safety import contained_regular_file
 
 FAILURE_REFERENCE_BINDING_SCHEMA = "vntts.authoring-failure-reference-binding"
 FAILURE_REFERENCE_BINDING_VERSION = 2
@@ -333,25 +334,9 @@ def load_failure_reference_binding_document(directory):
 
 
 def _contained_regular_file(directory, relative, label):
-    directory = Path(directory).resolve()
-    candidate = directory / _safe_relative(relative, label)
-    current = directory
-    for part in candidate.relative_to(directory).parts:
-        current /= part
-        if current.is_symlink():
-            raise FailureReferenceBindingError(
-                f"{label.capitalize()} is missing or unsafe"
-            )
-    path = candidate.resolve()
-    try:
-        path.relative_to(directory)
-    except ValueError as error:
-        raise FailureReferenceBindingError(
-            f"{label.capitalize()} leaves its root"
-        ) from error
-    if not path.is_file():
-        raise FailureReferenceBindingError(f"{label.capitalize()} is missing or unsafe")
-    return path
+    return contained_regular_file(
+        directory, relative, label, error_type=FailureReferenceBindingError
+    )
 
 
 def _safe_relative(value, label):

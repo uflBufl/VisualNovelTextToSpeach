@@ -11,7 +11,7 @@ import zlib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
@@ -21,6 +21,7 @@ from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
+from vntts.path_safety import contained_regular_file
 
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
 QUALITY_REVIEW_VERSION = 1
@@ -429,24 +430,9 @@ def _read_json(path, label):
 
 def _contained_file(root, value, label):
     value = _required_text(value, label)
-    if "\\" in value:
-        raise SourceReferenceQualityError(f"{label.title()} must use POSIX separators")
-    relative = PurePosixPath(value)
-    if relative.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative.parts
-    ):
-        raise SourceReferenceQualityError(
-            f"{label.title()} must be a safe relative path"
-        )
-    root = Path(root).expanduser().resolve()
-    candidate = (root / Path(*relative.parts)).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as error:
-        raise SourceReferenceQualityError(f"{label.title()} leaves its root") from error
-    if not candidate.is_file():
-        raise SourceReferenceQualityError(f"{label.title()} is missing: {candidate}")
-    return candidate
+    return contained_regular_file(
+        root, value, label, error_type=SourceReferenceQualityError
+    )
 
 
 def _required_text(value, label):

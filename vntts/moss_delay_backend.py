@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 from threading import Event, Lock
 from time import monotonic
 
@@ -28,7 +27,7 @@ from vntts.synthesis import (
     SynthesisResult,
     SynthesisTiming,
 )
-from vntts.voices import is_narrator
+from vntts.voices import resolve_required_voice_reference
 
 default_moss_tts_delay_model = "OpenMOSS-Team/MOSS-TTS-v1.5"
 delay_audio_tokens_per_second = 12.5
@@ -272,24 +271,17 @@ class MossTTSDelayVoiceRouterBackend:
         )
 
     def _resolve_voice_source(self, character):
-        voice = self.registry.resolve(character)
-        if is_narrator(character) or voice is None:
-            voice_key = "narrator"
-            source = self.narrator_reference
-        else:
-            voice_key = voice.speaker
-            source = voice.references[0] if voice.references else None
-        if source is None:
-            raise TTSConfigurationError(
+        return resolve_required_voice_reference(
+            self.registry,
+            character,
+            self.narrator_reference,
+            backend_name="MOSS Delay",
+            missing_message=(
                 "MOSS Delay requires one voice reference. Use a model variant "
                 "voice override for narration or configure a narrator reference."
-            )
-        source_path = Path(source).expanduser()
-        if not source_path.is_file():
-            raise TTSConfigurationError(
-                f"MOSS Delay voice reference does not exist: {source_path}"
-            )
-        return voice_key, source_path.resolve()
+            ),
+            error_type=TTSConfigurationError,
+        )
 
     @staticmethod
     def _generated_token_count(outputs, input_ids):

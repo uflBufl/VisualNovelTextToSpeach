@@ -8,7 +8,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from vntts_artifacts import (
     VoiceGenerationQueue,
@@ -45,6 +45,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_sha256,
     retired_source_reference_variants_from_manifest,
 )
+from vntts.authoring.workspace_foundation import contained_regular_file
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
 SOURCE_REPORT_VERSIONS = frozenset({1, 2})
@@ -1909,26 +1910,9 @@ def _sha256(value, label):
 
 def _contained_file(root, relative):
     relative = _text(relative, "Reference path")
-    pure = PurePosixPath(relative)
-    if pure.is_absolute() or ".." in pure.parts or "\\" in relative:
-        raise SourceReferenceReviewError(f"Reference path is not contained: {relative}")
-    cursor = Path(root).resolve()
-    for part in pure.parts:
-        cursor = cursor / part
-        if cursor.is_symlink():
-            raise SourceReferenceReviewError(
-                f"Reference path uses a symlink: {relative}"
-            )
-    resolved = cursor.resolve()
-    try:
-        resolved.relative_to(Path(root).resolve())
-    except ValueError as error:
-        raise SourceReferenceReviewError(
-            f"Reference path escapes its root: {relative}"
-        ) from error
-    if not resolved.is_file():
-        raise SourceReferenceReviewError(f"Reference file is missing: {relative}")
-    return resolved
+    return contained_regular_file(
+        root, relative, "reference path", error_type=SourceReferenceReviewError
+    )
 
 
 def _assert_source_unchanged(path, expected_sha256, label):

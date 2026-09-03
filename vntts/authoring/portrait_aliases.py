@@ -6,7 +6,7 @@ import copy
 import hashlib
 from dataclasses import dataclass
 from itertools import combinations
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QImage
@@ -21,6 +21,7 @@ from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityError,
     load_source_reference_quality_review,
 )
+from vntts.authoring.workspace_foundation import contained_regular_file
 
 PORTRAIT_ALIAS_PLAN_SCHEMA = "vntts.authoring-portrait-alias-plan"
 PORTRAIT_ALIAS_PLAN_VERSION = 1
@@ -314,20 +315,9 @@ def _hamming(first, second):
 
 
 def _contained_file(root, relative):
-    if not isinstance(relative, str) or not relative or "\\" in relative:
-        raise PortraitAliasError("Portrait image path is invalid")
-    pure = PurePosixPath(relative)
-    if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
-        raise PortraitAliasError("Portrait image path is invalid")
-    root = Path(root).resolve()
-    path = (root / Path(*pure.parts)).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as error:
-        raise PortraitAliasError("Portrait image leaves its review root") from error
-    if not path.is_file() or path.is_symlink():
-        raise PortraitAliasError(f"Portrait image is missing: {path}")
-    return path
+    return contained_regular_file(
+        root, relative, "portrait image", error_type=PortraitAliasError
+    )
 
 
 def _read(path, label):

@@ -15,8 +15,8 @@ from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
     OfflineGenerationWorker,
+    validate_offline_generation_result,
 )
-from vntts.pregeneration_queue import PregenerationInput
 
 
 class OfflineAcceptanceError(OfflineGenerationError):
@@ -34,7 +34,12 @@ class OfflineAcceptanceWorker:
         self.generator = generator or OfflineGenerationWorker()
 
     def accept(self, generation_input, generation_result, cancel_event=None):
-        _validate_inputs(generation_input, generation_result)
+        validate_offline_generation_result(
+            generation_input,
+            generation_result,
+            "acceptance",
+            error_type=OfflineAcceptanceError,
+        )
         _raise_if_cancelled(cancel_event)
         if generation_result.pending_review == 0:
             return OfflineAcceptanceResult(generation_result, 0)
@@ -87,18 +92,6 @@ class OfflineAcceptanceWorker:
             replace(generation_result, pending_review=0),
             len(pending),
         )
-
-
-def _validate_inputs(generation_input, generation_result):
-    if not isinstance(generation_input, PregenerationInput):
-        raise OfflineAcceptanceError("Offline generation input is invalid")
-    if not isinstance(generation_result, OfflineGenerationResult):
-        raise OfflineAcceptanceError("Offline generation result is invalid")
-    expected_output = generation_input.directory.parent / (
-        f"generation-output-{generation_input.identity[:16]}"
-    )
-    if generation_result.output.resolve() != expected_output.resolve():
-        raise OfflineAcceptanceError("Offline acceptance output identity changed")
 
 
 def _raise_if_cancelled(cancel_event):

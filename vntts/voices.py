@@ -531,3 +531,28 @@ def synthesis_character_for_line(speaker, voice_character=None):
 
 def is_narrator(character):
     return normalize_character_name(synthesis_character(character)) == "narrator"
+
+
+def resolve_required_voice_reference(
+    registry,
+    character,
+    narrator_reference,
+    *,
+    backend_name,
+    missing_message,
+    error_type=ValueError,
+):
+    """Resolve one narrator/character reference required by a cloning backend."""
+    voice = registry.resolve(character)
+    if is_narrator(character) or voice is None:
+        voice_key = "narrator"
+        source = narrator_reference
+    else:
+        voice_key = voice.speaker
+        source = voice.references[0] if voice.references else None
+    if source is None:
+        raise error_type(missing_message)
+    source = Path(source).expanduser()
+    if not source.is_file():
+        raise error_type(f"{backend_name} voice reference does not exist: {source}")
+    return voice_key, source.resolve()

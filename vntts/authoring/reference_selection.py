@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
@@ -16,6 +16,7 @@ from vntts_artifacts.voice_manifest import (
     validate_voice_manifest,
 )
 
+from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.reference_quality import analyze_reference_bytes
 
 REFERENCE_SELECTION_SCHEMA_VERSION = 1
@@ -315,30 +316,9 @@ def _capture_manifest(manifest_path, character):
 
 
 def _contained_reference(root, relative):
-    if not isinstance(relative, str) or not relative.strip() or "\\" in relative:
-        raise ReferenceSelectionError("Voice reference path is malformed")
-    pure = PurePosixPath(relative)
-    if pure.is_absolute() or ".." in pure.parts:
-        raise ReferenceSelectionError(
-            f"Voice reference leaves its manifest: {relative}"
-        )
-    cursor = root
-    for part in pure.parts:
-        cursor = cursor / part
-        if cursor.is_symlink():
-            raise ReferenceSelectionError(
-                f"Voice reference must not use symlinks: {relative}"
-            )
-    resolved = cursor.resolve()
-    try:
-        resolved.relative_to(root.resolve())
-    except ValueError as error:
-        raise ReferenceSelectionError(
-            f"Voice reference leaves its manifest: {relative}"
-        ) from error
-    if not resolved.is_file():
-        raise ReferenceSelectionError(f"Voice reference is missing: {relative}")
-    return resolved
+    return contained_regular_file(
+        root, relative, "voice reference", error_type=ReferenceSelectionError
+    )
 
 
 def _assert_snapshot_unchanged(snapshot):

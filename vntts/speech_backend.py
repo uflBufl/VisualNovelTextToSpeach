@@ -13,7 +13,10 @@ from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.application_directories import get_local_data_directory
 from vntts.audio_cache import PersistentAudioCache
-from vntts.audio_output import playback_underflowed, resolve_audio_output
+from vntts.audio_output import (
+    SynchronousPcmPlaybackMixin,
+    resolve_audio_output,
+)
 from vntts.playback import (
     PlaybackStatus,
     PreparedPlayback,
@@ -24,7 +27,6 @@ from vntts.services.tts_engine import (
     TTSConfigurationError,
     TTSSynthesisError,
     get_tts_profile,
-    match_output_sample_rate,
 )
 from vntts.speech_backend_contract import SpeechBackend, SpeechBackendCapabilities
 from vntts.speech_backend_runtime import (
@@ -52,6 +54,7 @@ from vntts.voices import (
     is_narrator,
     normalize_character_name,
     pocket_tts_preset_voices,
+    resolve_required_voice_reference,
 )
 
 __all__ = ["SpeechBackend", "SpeechBackendCapabilities"]
@@ -338,11 +341,13 @@ class XTTSVoiceRouterBackend:
         return bool(getattr(self.voice_router.tts, "last_playback_underrun", False))
 
 
-class ChatterboxNanoVoiceRouterBackend:
+class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
     """Low-latency English voice cloning with persistent voice conditioning."""
 
     name = "chatterbox-nano"
     generation_profile = "default"
+    playback_configuration_error = TTSConfigurationError
+    invalid_playback_message = "Chatterbox received invalid playback"
     capabilities = SpeechBackendCapabilities(
         voice_cloning=True,
         streaming=False,
@@ -619,73 +624,6 @@ class ChatterboxNanoVoiceRouterBackend:
             raise AudioPlaybackError(outcome.error or "Chatterbox playback failed")
         return outcome.successful
 
-    def play_prepared(self, prepared, *, playback_guard=None):
-        if not isinstance(prepared, PreparedPlayback):
-            raise TTSConfigurationError("Chatterbox received invalid playback")
-        if playback_guard is not None and not playback_guard():
-            return outcome_for_prepared(prepared, PlaybackStatus.INTERRUPTED, None)
-        with self.playback_lock:
-            if playback_guard is not None and not playback_guard():
-                return outcome_for_prepared(prepared, PlaybackStatus.INTERRUPTED, None)
-            stop_requested = Event()
-            started = self.clock()
-            underflowed = False
-            first_audio_ms = None
-            try:
-                with self.playback_state_lock:
-                    self.playback_active = True
-                    self.active_playback_stop = stop_requested
-                audio_output = self._resolve_audio_output()
-                audio, playback_sample_rate = match_output_sample_rate(
-                    audio_output,
-                    self._prepare_audio(prepared.payload),
-                    self.sample_rate,
-                )
-                with self.playback_state_lock:
-                    interrupted = stop_requested.is_set() or (
-                        playback_guard is not None and not playback_guard()
-                    )
-                    if not interrupted:
-                        audio_output.play(
-                            audio,
-                            playback_sample_rate,
-                            latency=self.playback_latency,
-                        )
-                        first_audio_ms = (self.clock() - started) * 1000
-                if not interrupted:
-                    playback_status = audio_output.wait()
-                    underflowed = self._playback_underflowed(playback_status)
-                    interrupted = stop_requested.is_set() or (
-                        playback_guard is not None and not playback_guard()
-                    )
-            except Exception as error:
-                if stop_requested.is_set():
-                    return outcome_for_prepared(
-                        prepared,
-                        PlaybackStatus.INTERRUPTED,
-                        (self.clock() - started) * 1000,
-                        first_audio_ms=first_audio_ms,
-                    )
-                return outcome_for_prepared(
-                    prepared,
-                    PlaybackStatus.FAILED,
-                    (self.clock() - started) * 1000,
-                    error=str(error),
-                    error_type=type(error),
-                )
-            finally:
-                with self.playback_state_lock:
-                    self.playback_active = False
-                    if self.active_playback_stop is stop_requested:
-                        self.active_playback_stop = None
-        return outcome_for_prepared(
-            prepared,
-            PlaybackStatus.INTERRUPTED if interrupted else PlaybackStatus.COMPLETED,
-            (self.clock() - started) * 1000,
-            underflowed=underflowed,
-            first_audio_ms=first_audio_ms,
-        )
-
     def warm_up(self, *, progress=None, text="Voice ready."):
         progress = progress or (lambda _current, _total, _character: None)
         voices = sorted(
@@ -715,23 +653,6 @@ class ChatterboxNanoVoiceRouterBackend:
         if target is not None:
             self.torch_module.set_num_threads(target)
         return self.live_mode_active
-
-    def stop(self):
-        with self.playback_state_lock:
-            was_playing = self.playback_active
-            stop_requested = self.active_playback_stop
-            if was_playing and stop_requested is not None:
-                stop_requested.set()
-            if was_playing and self.audio_output is not None:
-                self.audio_output.stop()
-        return was_playing
-
-    def _resolve_audio_output(self):
-        self.audio_output = resolve_audio_output(self.audio_output)
-        return self.audio_output
-
-    def _playback_underflowed(self, playback_status=None):
-        return playback_underflowed(self.audio_output, playback_status)
 
     def _resolve_conditionals(self, character):
         voice = self.registry.resolve(character)
@@ -2330,24 +2251,17 @@ class MossTTSVoiceRouterBackend:
         return voice_key, codes
 
     def _resolve_voice_source(self, character):
-        voice = self.registry.resolve(character)
-        if is_narrator(character) or voice is None:
-            voice_key = "narrator"
-            source = self.narrator_reference
-        else:
-            voice_key = voice.speaker
-            source = voice.references[0] if voice.references else None
-        if source is None:
-            raise TTSConfigurationError(
+        return resolve_required_voice_reference(
+            self.registry,
+            character,
+            self.narrator_reference,
+            backend_name="MOSS-TTS",
+            missing_message=(
                 "MOSS-TTS requires a narrator reference recording. Assign an "
                 "imported character voice to Narrator or configure TTS speaker WAV."
-            )
-        source_path = Path(source).expanduser()
-        if not source_path.is_file():
-            raise TTSConfigurationError(
-                f"MOSS-TTS voice reference does not exist: {source_path}"
-            )
-        return voice_key, source_path.resolve()
+            ),
+            error_type=TTSConfigurationError,
+        )
 
     def _prompt_cache_path(self, voice_key, source):
         return voice_artifact_cache_path(

@@ -21,6 +21,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.authoring.private_files import private_file_is_restricted
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.document_identity import is_lowercase_sha256
 from vntts.settings import get_local_data_directory
 
@@ -900,15 +901,7 @@ def _load_schema(path, schemas, description):
 
 
 def _load_json(path, description):
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ModelListeningError(
-            f"Unable to read {description} {path}: {error}"
-        ) from error
-    if not isinstance(value, dict):
-        raise ModelListeningError(f"{description.title()} must be a JSON object")
-    return value
+    return load_json_object(path, description, error_type=ModelListeningError)
 
 
 def main(argv=None):

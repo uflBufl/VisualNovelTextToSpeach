@@ -113,7 +113,8 @@ class VoiceAuditionPreviewService:
                 plan.synthesis_profile,
             )
             if self._backend is None or self._backend_config != backend_config:
-                self._stop_backend()
+                self._backend = shutdown_speech_backend(self._backend)
+                self._backend_config = None
                 try:
                     self._backend = self.backend_factory(
                         plan.synthesis_backend,
@@ -220,13 +221,8 @@ class VoiceAuditionPreviewService:
             if self._closed:
                 return
             self._closed = True
-            self._stop_backend()
-
-    def _stop_backend(self):
-        backend = self._backend
-        self._backend = None
-        self._backend_config = None
-        shutdown_speech_backend(backend)
+            self._backend = shutdown_speech_backend(self._backend)
+            self._backend_config = None
 
 
 class _CombinedCancellation:

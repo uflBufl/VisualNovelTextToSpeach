@@ -5,7 +5,8 @@ from __future__ import annotations
 import copy
 import re
 from datetime import datetime
-from pathlib import Path, PurePosixPath
+
+from vntts.authoring.workspace_foundation import contained_regular_file
 
 TERMINAL_CONFLICT_MERGE_SCHEMA = "vntts.authoring-terminal-conflict-workspace-merge"
 TERMINAL_CONFLICT_MERGE_VERSION = 1
@@ -69,27 +70,7 @@ def require_terminal_conflict_file(
     root, value, label, *, error_type=TerminalConflictRecordError
 ):
     """Resolve one symlink-free contained terminal-conflict file."""
-    if not isinstance(value, str) or not value or "\\" in value:
-        raise error_type(f"{label.title()} path is invalid")
-    relative = PurePosixPath(value)
-    if relative.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative.parts
-    ):
-        raise error_type(f"{label.title()} path is invalid")
-    root = Path(root).resolve()
-    current = root
-    for part in relative.parts:
-        current /= part
-        if current.is_symlink():
-            raise error_type(f"{label.title()} is unavailable")
-    path = current.resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as error:
-        raise error_type(f"{label.title()} leaves its root") from error
-    if not path.is_file():
-        raise error_type(f"{label.title()} is unavailable")
-    return path
+    return contained_regular_file(root, value, label, error_type=error_type)
 
 
 def is_terminal_review_outcome(result):

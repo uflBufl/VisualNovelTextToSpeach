@@ -19,8 +19,8 @@ from vntts.pregeneration_generation import (
     OfflineGenerationError,
     OfflineGenerationResult,
     OfflineGenerationWorker,
+    validate_offline_generation_result,
 )
-from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_voices import VoicePlan
 
 AUTOMATIC_ACTION_ORDER = (
@@ -73,7 +73,12 @@ class OfflineRecoveryResult:
 
 def plan_automatic_recovery(generation_input, voice_plan, generation_result):
     """Derive exact safe batches from current checksum-bound failure evidence."""
-    _validate_inputs(generation_input, generation_result)
+    validate_offline_generation_result(
+        generation_input,
+        generation_result,
+        "recovery",
+        error_type=OfflineRecoveryError,
+    )
     if not isinstance(voice_plan, VoicePlan):
         raise OfflineRecoveryError("Offline voice plan is invalid")
     try:
@@ -170,7 +175,12 @@ class OfflineRecoveryWorker:
         generation_result,
         cancel_event=None,
     ):
-        _validate_inputs(generation_input, generation_result)
+        validate_offline_generation_result(
+            generation_input,
+            generation_result,
+            "recovery",
+            error_type=OfflineRecoveryError,
+        )
         if not isinstance(voice_plan, VoicePlan):
             raise OfflineRecoveryError("Offline voice plan is invalid")
         if generation_result.failed == 0:
@@ -250,7 +260,12 @@ def _terminalize_pocket_failures(
     *,
     generator,
 ):
-    _validate_inputs(generation_input, generation_result)
+    validate_offline_generation_result(
+        generation_input,
+        generation_result,
+        "recovery",
+        error_type=OfflineRecoveryError,
+    )
     for queue_id in sorted(set(queue_ids)):
         if cancel_event is not None and cancel_event.is_set():
             raise OfflineGenerationCancelled("Automatic recovery was cancelled")
@@ -267,18 +282,6 @@ def _terminalize_pocket_failures(
                 f"Unable to preserve live fallback for {queue_id!r}: {error}"
             ) from error
     return generator.inspect(generation_input)
-
-
-def _validate_inputs(generation_input, generation_result):
-    if not isinstance(generation_input, PregenerationInput):
-        raise OfflineRecoveryError("Offline generation input is invalid")
-    if not isinstance(generation_result, OfflineGenerationResult):
-        raise OfflineRecoveryError("Offline generation result is invalid")
-    expected_output = generation_input.directory.parent / (
-        f"generation-output-{generation_input.identity[:16]}"
-    )
-    if generation_result.output.resolve() != expected_output.resolve():
-        raise OfflineRecoveryError("Offline recovery output identity changed")
 
 
 def _sha256(value, label):
