@@ -81,9 +81,14 @@ class OfflineAudioPreparationDialog(QDialog):
     ):
         super().__init__(parent)
         self.settings = settings
-        self._background_discovery = discovery is None
-        self.discovery = discovery or (lambda: discover_game_content(settings))
         self.job_store = job_store or PregenerationJobStore()
+        self._background_discovery = discovery is None
+        self.discovery = discovery or (
+            lambda: discover_game_content(
+                settings,
+                extra_paths=self.job_store.source_story_indexes(),
+            )
+        )
         self.voice_decisions = voice_decisions or VoiceDecisionStore(
             get_local_data_directory() / "pregeneration" / "voice-decisions.json"
         )
@@ -351,7 +356,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source.clear()
         for content in self._content:
             self.source.addItem(
-                f"{content.display_name} - {content.story_index.name}",
+                _content_label(content),
                 content.story_index_sha256,
             )
         if previous_sha:
@@ -397,7 +402,7 @@ class OfflineAudioPreparationDialog(QDialog):
         if existing is None:
             self._content = (*self._content, content)
             self.source.addItem(
-                f"{content.display_name} - {content.story_index.name}",
+                _content_label(content),
                 content.story_index_sha256,
             )
             existing = len(self._content) - 1
@@ -1122,7 +1127,7 @@ class OfflineAudioPreparationDialog(QDialog):
         if existing is None:
             self._content = (*self._content, content)
             self.source.addItem(
-                f"{content.display_name} - {content.story_index.name}",
+                _content_label(content),
                 content.story_index_sha256,
             )
             existing = len(self._content) - 1
@@ -1219,6 +1224,14 @@ class OfflineAudioPreparationDialog(QDialog):
         if not self.voice_panel.active:
             self.voice_panel.shutdown()
         super().done(result)
+
+
+def _content_label(content):
+    count = len(content.selections)
+    return (
+        f"{content.display_name} - {count} "
+        f"{'story' if count == 1 else 'stories'} - {content.story_index.name}"
+    )
 
 
 __all__ = ["OfflineAudioPreparationDialog"]

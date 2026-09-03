@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
@@ -189,10 +190,17 @@ def discover_game_content(settings, *, environment=None, extra_paths=()):
         if path in seen or not path.is_file():
             continue
         seen.add(path)
+        if _is_outdated_reverse1999_index(path):
+            errors.append(
+                "Outdated Reverse: 1999 story content was ignored. Import the "
+                "installed game again to rebuild its story catalog."
+            )
+            continue
         try:
             discovered.append(inspect_story_index(path, provider_id=provider_id))
         except PregenerationSetupError as error:
             errors.append(str(error))
+    discovered.sort(key=lambda content: len(content.selections), reverse=True)
     return ContentDiscovery(tuple(discovered), tuple(errors))
 
 
@@ -306,6 +314,20 @@ class PregenerationJobStore:
                 matches.append(job)
         return tuple(matches)
 
+    def source_story_indexes(self):
+        if not self.root.is_dir():
+            return ()
+        sources = []
+        for path in self.root.glob("*/job.json"):
+            try:
+                job = self.load(path.parent.name)
+            except PregenerationSetupError:
+                continue
+            source = Path(job.story_index).expanduser()
+            if source.is_file():
+                sources.append(source)
+        return tuple(dict.fromkeys(sources))
+
     def prepared_story_ids(self, content):
         return frozenset(
             selection_id
@@ -316,12 +338,27 @@ class PregenerationJobStore:
     def story_statuses(self, content):
         statuses = {}
         for job in self.jobs_for_content(content):
+            prepared = job.status == "prepared" or self._has_published_pack(job)
             for selection_id in job.selected_story_ids:
-                if job.status == "prepared":
+                if prepared:
                     statuses[selection_id] = "ready"
                 elif statuses.get(selection_id) != "ready":
                     statuses[selection_id] = "in_progress"
         return statuses
+
+    def _has_published_pack(self, job):
+        root = self.path_for(job.job_id).parent / "game-packs"
+        if not root.is_dir():
+            return False
+        for manifest in root.glob("pack-*/game-pack.json"):
+            identity = manifest.parent.name.removeprefix("pack-")
+            if len(identity) == 24 and manifest.is_file():
+                try:
+                    int(identity, 16)
+                except ValueError:
+                    continue
+                return True
+        return False
 
     def mark_prepared(self, job):
         if not isinstance(job, PregenerationJob):
@@ -369,23 +406,38 @@ def _story_selections(document):
             for collection in document.collections
         ]
     else:
-        chapters = sorted({record.chapter for record in document.records})
+        records_by_chapter = {}
+        for record in document.records:
+            records_by_chapter.setdefault(record.chapter, []).append(record)
         groups = [
             (
                 f"chapter:{chapter}",
                 f"Chapter {chapter}",
                 "chapter",
                 order,
-                tuple(
-                    record for record in document.records if record.chapter == chapter
-                ),
+                tuple(records),
             )
-            for order, chapter in enumerate(chapters)
+            for order, (chapter, records) in enumerate(
+                sorted(records_by_chapter.items())
+            )
         ]
     return tuple(
         _selection_from_records(selection_id, title, kind, order, records)
         for selection_id, title, kind, order, records in groups
         if records
+    )
+
+
+def _is_outdated_reverse1999_index(path):
+    try:
+        with path.open(encoding="utf-8") as stream:
+            metadata = json.loads(next(stream))
+    except OSError, StopIteration, json.JSONDecodeError:
+        return False
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("game") == "Reverse: 1999"
+        and not metadata.get("collections")
     )
 
 

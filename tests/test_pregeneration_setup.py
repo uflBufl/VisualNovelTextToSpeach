@@ -161,6 +161,43 @@ class PregenerationSetupTest(unittest.TestCase):
         self.assertEqual(selections[0].original_audio_lines, 1)
         self.assertEqual(selections[0].generation_lines, 1)
 
+    def test_legacy_chapter_records_are_grouped_in_one_pass(self):
+        class CountingRecords(tuple):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        records = CountingRecords(
+            (
+                SimpleNamespace(
+                    chapter="2",
+                    speakable=True,
+                    source_audio_status="absent",
+                    voice_character="Rhiannon",
+                    speaker="Rhiannon",
+                    line_id="second",
+                ),
+                SimpleNamespace(
+                    chapter="1",
+                    speakable=True,
+                    source_audio_status="available",
+                    voice_character="Centurion",
+                    speaker="Centurion",
+                    line_id="first",
+                ),
+            )
+        )
+
+        selections = _story_selections(SimpleNamespace(collections=(), records=records))
+
+        self.assertEqual(records.iterations, 1)
+        self.assertEqual(
+            [(selection.selection_id, selection.line_ids) for selection in selections],
+            [("chapter:1", ("first",)), ("chapter:2", ("second",))],
+        )
+
     def test_story_content_reports_player_level_collection_coverage(self):
         with TemporaryDirectory() as temporary_directory:
             path = write_story_index(Path(temporary_directory))
@@ -210,6 +247,37 @@ class PregenerationSetupTest(unittest.TestCase):
             [value.provider_id for value in discovery.content],
             ["configured-story-index", "reverse1999", "reverse1999"],
         )
+
+    def test_discovery_rejects_outdated_reverse1999_index_before_full_parse(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "story-index.jsonl"
+            write_story_index_document(
+                path,
+                {
+                    "game": "Reverse: 1999",
+                    "language": "en",
+                },
+                [
+                    {
+                        "record_type": "line",
+                        "line_id": "legacy:1",
+                        "chapter": "1001",
+                        "sequence": 1,
+                        "speaker": "Rhiannon",
+                        "text": "Legacy line.",
+                        "kind": "dialogue",
+                    }
+                ],
+            )
+            with patch("vntts.pregeneration_setup.inspect_story_index") as inspect:
+                discovery = discover_game_content(
+                    AppSettings(story_index=str(path)),
+                    environment={"R1999_EXTRACTOR_DATA": str(path.parent / "unused")},
+                )
+
+        self.assertEqual(discovery.content, ())
+        self.assertIn("Outdated Reverse: 1999", discovery.errors[0])
+        inspect.assert_not_called()
 
     def test_preparation_estimate_and_job_are_checksum_bound_and_resumable(self):
         with TemporaryDirectory() as temporary_directory:
@@ -327,6 +395,85 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertFalse(dialog.discovery_panel.isVisible())
             self.assertTrue(dialog.selection_panel.isVisible())
             self.assertTrue(dialog.refresh_button.isEnabled())
+            dialog.close()
+            dialog.deleteLater()
+
+    def test_reopen_prefers_saved_full_source_over_active_one_story_pack(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source_path = write_story_index(root / "full-source")
+            source = inspect_story_index(source_path)
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(source, ("rhiannon",))
+            published = (
+                jobs.path_for(job.job_id).parent
+                / "game-packs"
+                / f"pack-{'1' * 24}"
+                / "game-pack.json"
+            )
+            published.parent.mkdir(parents=True)
+            published.write_text("{}", encoding="utf-8")
+            pack_path = root / "active-pack" / "story-index.jsonl"
+            write_story_index_document(
+                pack_path,
+                {
+                    "game": "Reverse: 1999",
+                    "language": "en",
+                    "collections": [
+                        {
+                            "collection_id": "rhiannon",
+                            "title": "Rhiannon",
+                            "kind": "character-story",
+                            "order": 2,
+                        }
+                    ],
+                },
+                [
+                    {
+                        "record_type": "line",
+                        "line_id": "reverse1999:3",
+                        "chapter": "2",
+                        "sequence": 1,
+                        "speaker": "Aderyn",
+                        "voice_character": "Rhiannon child",
+                        "text": "A child line.",
+                        "kind": "dialogue",
+                        "collection_id": "rhiannon",
+                        "source_audio_status": "absent",
+                        "speakable": True,
+                    }
+                ],
+            )
+            pool = ManualThreadPool()
+            app_data = root / "app-data"
+            with (
+                patch.dict(
+                    os.environ,
+                    {"R1999_EXTRACTOR_DATA": str(root / "unused-extractor")},
+                ),
+                patch(
+                    "vntts.pregeneration_setup.get_local_data_directory",
+                    return_value=app_data,
+                ),
+            ):
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(story_index=str(pack_path)),
+                    job_store=jobs,
+                    thread_pool=pool,
+                )
+                dialog.show()
+                self.application.processEvents()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+
+            self.assertEqual(dialog.source.count(), 2)
+            self.assertEqual(
+                dialog.current_content().story_index, source_path.resolve()
+            )
+            self.assertIn("2 stories", dialog.source.currentText())
+            self.assertEqual(dialog.stories.count(), 2)
+            self.assertIn("Needs speech", dialog.stories.item(0).text())
+            self.assertIn("Ready offline", dialog.stories.item(1).text())
             dialog.close()
             dialog.deleteLater()
 
