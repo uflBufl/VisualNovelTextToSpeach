@@ -764,7 +764,17 @@ class ChatterboxNanoVoiceRouterBackend:
             self.conditionals[key] = cached
             return cached
 
-        self.model.prepare_conditionals(str(reference))
+        normalizer = getattr(self.model, "norm_loudness", None)
+        if callable(normalizer):
+            self.model.norm_loudness = lambda wav, *args, **kwargs: np.asarray(
+                normalizer(wav, *args, **kwargs),
+                dtype=np.asarray(wav).dtype,
+            )
+        try:
+            self.model.prepare_conditionals(str(reference))
+        finally:
+            if callable(normalizer):
+                self.model.norm_loudness = normalizer
         conditionals = self.model.conds
         self.conditionals[key] = conditionals
         self._save_conditionals(conditionals, cache_path)

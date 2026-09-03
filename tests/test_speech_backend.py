@@ -61,6 +61,17 @@ class FakeChatterboxModel:
         return FakeTensor([[0.0, 0.25, -0.25, 0.0]])
 
 
+class DtypePromotingChatterboxModel(FakeChatterboxModel):
+    def norm_loudness(self, wav, _sample_rate):
+        return np.asarray(wav, dtype=np.float64)
+
+    def prepare_conditionals(self, reference):
+        normalized = self.norm_loudness(np.ones(8, dtype=np.float32), 24_000)
+        if normalized.dtype != np.float32:
+            raise RuntimeError("reference dtype was promoted")
+        super().prepare_conditionals(reference)
+
+
 class CacheableConditionals:
     def __init__(self, value):
         self.value = value
@@ -256,6 +267,22 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
             backend.prepare("Narrator", "Once upon a time.")
 
         self.assertEqual(model.prepared_references, [str(reference)])
+
+    def test_reference_loudness_normalization_preserves_model_input_dtype(self):
+        with TemporaryDirectory() as temporary_directory:
+            reference = Path(temporary_directory) / "narrator.wav"
+            reference.touch()
+            model = DtypePromotingChatterboxModel()
+            backend, model = self.create_backend(CharacterVoiceRegistry(), model=model)
+            backend.narrator_reference = reference
+
+            backend.prepare("Narrator", "Once upon a time.")
+
+        self.assertEqual(model.prepared_references, [str(reference)])
+        self.assertEqual(
+            model.norm_loudness(np.ones(1, dtype=np.float32), 24_000).dtype,
+            np.float64,
+        )
 
     def test_reserves_cpu_threads_for_ocr_and_playback(self):
         torch_module = Mock()
