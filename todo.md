@@ -55,12 +55,9 @@ blindly upgrading an atomic model stack beyond its upstream-supported versions.
 Every retained upper bound or exact pin must name the observed incompatibility
 in the same commit.
 
-- [ ] Qualify the Python 3.14 Chatterbox Nano runtime on Windows and Linux.
-      Dependency resolution must use wheels, worker start/stop must pass and a
-      reference-conditioned render must succeed before release packaging.
-  - Run `scripts/qualify-chatterbox-nano.ps1` on Windows and require a valid
-    published WAV/report, clean worker shutdown and one listening verdict;
-    repeat the same locked render on Linux.
+- [ ] Qualify the locked Python 3.14 Chatterbox Nano runtime on Linux. Require
+      worker start/stop, a valid reference-conditioned WAV/report and one
+      listening verdict before release packaging.
 - [ ] Qualify the Python 3.14 MOSS Delay candidate on Windows CUDA. It retains
       an upstream-compatible Transformers 5.0 pin while trialling the current
       Torch/TorchAudio 2.11, TorchCodec 0.16 and CUDA 13.0 atomic stack. Install
