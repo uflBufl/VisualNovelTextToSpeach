@@ -3,6 +3,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -24,6 +25,7 @@ from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
     PregenerationSetupError,
+    _story_selections,
     discover_game_content,
     estimate_preparation,
     inspect_story_index,
@@ -111,6 +113,54 @@ class ManualThreadPool:
 
 
 class PregenerationSetupTest(unittest.TestCase):
+    def test_story_records_are_grouped_in_one_pass(self):
+        class CountingRecords(tuple):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                return super().__iter__()
+
+        class Record(SimpleNamespace):
+            def __init__(self, line_id, collection_id, status):
+                super().__init__(
+                    collection_id=collection_id,
+                    line_id=line_id,
+                    speakable=True,
+                    source_audio_status=status,
+                    voice_character=line_id,
+                    speaker=line_id,
+                )
+
+            def __eq__(self, _other):
+                raise AssertionError("story partitioning must not search by equality")
+
+        collections = tuple(
+            SimpleNamespace(
+                collection_id=value,
+                title=value.title(),
+                kind="character-story",
+                order=index,
+            )
+            for index, value in enumerate(("first", "second"), start=1)
+        )
+        records = CountingRecords(
+            (
+                Record("original", "first", "available"),
+                Record("generated", "first", "absent"),
+                Record("other", "second", "absent"),
+            )
+        )
+
+        selections = _story_selections(
+            SimpleNamespace(collections=collections, records=records)
+        )
+
+        self.assertEqual(records.iterations, 1)
+        self.assertEqual(len(selections), 2)
+        self.assertEqual(selections[0].original_audio_lines, 1)
+        self.assertEqual(selections[0].generation_lines, 1)
+
     def test_story_content_reports_player_level_collection_coverage(self):
         with TemporaryDirectory() as temporary_directory:
             path = write_story_index(Path(temporary_directory))
@@ -228,6 +278,57 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def test_default_discovery_runs_after_the_window_opens(self):
+        with TemporaryDirectory() as temporary_directory:
+            content = inspect_story_index(
+                write_story_index(Path(temporary_directory) / "content")
+            )
+            pool = ManualThreadPool()
+            with patch(
+                "vntts.pregeneration_ui.discover_game_content",
+                return_value=ContentDiscovery((content,)),
+            ) as discovery:
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    job_store=PregenerationJobStore(Path(temporary_directory) / "jobs"),
+                    thread_pool=pool,
+                )
+
+                self.assertFalse(discovery.called)
+                dialog.show()
+                self.application.processEvents()
+                self.assertEqual(len(pool.tasks), 1)
+                self.assertEqual(dialog.stories.count(), 0)
+                self.assertTrue(dialog.discovery_panel.isVisible())
+                self.assertFalse(dialog.selection_panel.isVisible())
+                self.assertFalse(dialog.continue_button.isEnabled())
+                self.assertTrue(dialog.cancel_button.isEnabled())
+                self.assertEqual(dialog.discovery_progress.minimum(), 0)
+                self.assertEqual(dialog.discovery_progress.maximum(), 0)
+
+                pool.tasks.pop().run()
+                self.application.processEvents()
+
+                self.assertFalse(dialog.discovery_panel.isVisible())
+                self.assertTrue(dialog.selection_panel.isVisible())
+                self.assertTrue(dialog.continue_button.isEnabled())
+                dialog.refresh_button.click()
+                self.assertEqual(len(pool.tasks), 1)
+                self.assertTrue(dialog.discovery_panel.isVisible())
+                self.assertFalse(dialog.selection_panel.isVisible())
+                self.assertFalse(dialog.continue_button.isEnabled())
+                self.assertTrue(dialog.cancel_button.isEnabled())
+
+                pool.tasks.pop().run()
+                self.application.processEvents()
+
+            self.assertEqual(dialog.stories.count(), 2)
+            self.assertFalse(dialog.discovery_panel.isVisible())
+            self.assertTrue(dialog.selection_panel.isVisible())
+            self.assertTrue(dialog.refresh_button.isEnabled())
+            dialog.close()
+            dialog.deleteLater()
 
     def test_default_path_selects_content_and_saves_resumable_player_choice(self):
         with TemporaryDirectory() as temporary_directory:

@@ -81,6 +81,7 @@ class OfflineAudioPreparationDialog(QDialog):
     ):
         super().__init__(parent)
         self.settings = settings
+        self._background_discovery = discovery is None
         self.discovery = discovery or (lambda: discover_game_content(settings))
         self.job_store = job_store or PregenerationJobStore()
         self.voice_decisions = voice_decisions or VoiceDecisionStore(
@@ -96,6 +97,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.acceptance = acceptance or OfflineAcceptanceWorker(self.generator)
         self.publisher = publisher or OfflinePackPublisher(base_pack=settings.game_pack)
         self.importer = importer or Reverse1999GameImporter()
+        self.discovery_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.discovery_runner.finished.connect(self._discovery_finished)
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.import_runner.finished.connect(self._import_finished)
         self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -248,6 +251,23 @@ class OfflineAudioPreparationDialog(QDialog):
         progress_layout.addWidget(self.progress_coverage)
         self.progress_panel.hide()
 
+        self.discovery_panel = QGroupBox("Loading game content")
+        self.discovery_panel.setAccessibleName("Loading game content")
+        discovery_message = QLabel(
+            "Please wait while VNTTS finds local game content. Story selection "
+            "and preparation controls will be available after loading finishes."
+        )
+        discovery_message.setWordWrap(True)
+        discovery_message.setStyleSheet("font-weight: 600;")
+        self.discovery_progress = QProgressBar()
+        self.discovery_progress.setRange(0, 0)
+        self.discovery_progress.setTextVisible(False)
+        self.discovery_progress.setAccessibleName("Finding local game content")
+        discovery_layout = QVBoxLayout(self.discovery_panel)
+        discovery_layout.addWidget(discovery_message)
+        discovery_layout.addWidget(self.discovery_progress)
+        self.discovery_panel.hide()
+
         self.buttons = QDialogButtonBox()
         self.cancel_button = self.buttons.addButton(
             "Cancel",
@@ -277,6 +297,7 @@ class OfflineAudioPreparationDialog(QDialog):
         selection_layout.addWidget(self.selection_status)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(self.discovery_panel)
         layout.addWidget(self.coverage_summary)
         layout.addWidget(self.selection_panel, 1)
         layout.addWidget(self.voice_panel)
@@ -287,15 +308,42 @@ class OfflineAudioPreparationDialog(QDialog):
         self.import_button.setToolTip(availability.message)
         self.game_folder_button.setEnabled(availability.available)
         self.game_folder_button.setToolTip(availability.message)
-        self.refresh()
+        if self._background_discovery:
+            self._set_discovery_loading(True)
+            QTimer.singleShot(0, self.refresh)
+        else:
+            self.refresh()
 
     def refresh(self):
+        if self._background_discovery:
+            self._set_discovery_loading(True)
+            self.discovery_runner.start(self._discover_content)
+            return
+        self._apply_discovery(self._discover_content())
+
+    def _discover_content(self):
         try:
             discovery = self.discovery()
         except (OSError, PregenerationSetupError) as error:
             discovery = ContentDiscovery((), (str(error),))
         if not isinstance(discovery, ContentDiscovery):
             raise TypeError("discovery must return ContentDiscovery")
+        return discovery
+
+    def _discovery_finished(self, discovery, error):
+        if error is not None:
+            discovery = ContentDiscovery((), (str(error),))
+        self._apply_discovery(discovery)
+        self._set_discovery_loading(False)
+
+    def _set_discovery_loading(self, loading):
+        self.discovery_panel.setVisible(loading)
+        self.coverage_summary.setVisible(not loading)
+        self.selection_panel.setVisible(not loading)
+        self.selection_panel.setEnabled(not loading)
+        self.continue_button.setEnabled(not loading and bool(self.selected_story_ids()))
+
+    def _apply_discovery(self, discovery):
         previous = self.current_content()
         previous_sha = previous.story_index_sha256 if previous else None
         self._content = discovery.content
@@ -1154,6 +1202,7 @@ class OfflineAudioPreparationDialog(QDialog):
             event.ignore()
             return
         self.import_runner.cancel()
+        self.discovery_runner.cancel()
         self.voice_runner.cancel()
         self.input_runner.cancel()
         self.generation_runner.cancel()
@@ -1165,6 +1214,7 @@ class OfflineAudioPreparationDialog(QDialog):
         super().closeEvent(event)
 
     def done(self, result):
+        self.discovery_runner.cancel()
         self.progress_timer.stop()
         if not self.voice_panel.active:
             self.voice_panel.shutdown()

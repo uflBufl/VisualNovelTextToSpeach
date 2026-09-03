@@ -355,17 +355,16 @@ class PregenerationJobStore:
 
 def _story_selections(document):
     if document.collections:
+        records_by_collection = {}
+        for record in document.records:
+            records_by_collection.setdefault(record.collection_id, []).append(record)
         groups = [
             (
                 collection.collection_id,
                 collection.title,
                 collection.kind,
                 collection.order,
-                tuple(
-                    record
-                    for record in document.records
-                    if record.collection_id == collection.collection_id
-                ),
+                tuple(records_by_collection.get(collection.collection_id, ())),
             )
             for collection in document.collections
         ]
@@ -395,7 +394,9 @@ def _selection_from_records(selection_id, title, kind, order, records):
     original = tuple(
         record for record in speakable if record.source_audio_status == "available"
     )
-    generation = tuple(record for record in speakable if record not in original)
+    generation = tuple(
+        record for record in speakable if record.source_audio_status != "available"
+    )
     speakers = {
         (record.voice_character or record.speaker).strip()
         for record in generation
