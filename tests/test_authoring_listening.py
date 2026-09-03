@@ -633,6 +633,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
 
     def create_dialog(self, root, **kwargs):
         item_count = kwargs.pop("item_count", 1)
+        kwargs.setdefault("confirmer", lambda _preference: True)
         session = create_listening_session_from_reports(
             write_model_reports(root, item_count=item_count), root / "session"
         )
@@ -751,6 +752,19 @@ class AuthoringListeningDialogTest(unittest.TestCase):
         self.assertEqual(rating["preference"], "tie")
         self.assertEqual(rating["acceptability"], "neither")
 
+    def test_irreversible_preference_can_be_cancelled(self):
+        with TemporaryDirectory() as directory:
+            _session, dialog = self.create_dialog(
+                Path(directory), confirmer=lambda _preference: False
+            )
+            dialog.completed_sides = {"a", "b"}
+
+            dialog.save_preference("a")
+
+            self.assertFalse(dialog._preference_active)
+            self.assertIn("cancelled", dialog.status.text())
+            dialog.deleteLater()
+
     def test_autoplays_a_then_b_and_tracks_controls(self):
         with TemporaryDirectory() as directory:
             _session, dialog = self.create_dialog(Path(directory))
@@ -766,7 +780,7 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             self.assertTrue(dialog.tie.isEnabled())
             dialog.toggle_playback()
             self.assertEqual(len(dialog.playback.play_calls), 3)
-            self.assertEqual(dialog.stop.text(), "Stop")
+            self.assertEqual(dialog.stop.text(), "Pause")
             dialog.deleteLater()
 
     def test_seek_skip_and_track_click(self):
@@ -818,6 +832,42 @@ class AuthoringListeningDialogTest(unittest.TestCase):
             dialog.poll_playback()
             self.assertIn("b", dialog.completed_sides)
             self.assertEqual(dialog.seek.value(), dialog.seek.maximum())
+            dialog.deleteLater()
+
+    def test_decision_requires_uninterrupted_initial_playback_not_seek_to_end(self):
+        with TemporaryDirectory() as directory:
+            _session, dialog = self.create_dialog(Path(directory))
+            dialog.play("a")
+            dialog.playback.started = True
+            dialog.playback.position = dialog.playback.clip.frames // 2
+            dialog.poll_playback()
+
+            self.assertNotIn("a", dialog.completed_sides)
+            self.assertFalse(dialog.prefer_a.isEnabled())
+
+            dialog.seek_to(dialog.audio_clips["a"].duration_ms)
+            dialog.playback.finish()
+            dialog.poll_playback()
+
+            self.assertNotIn("a", dialog.completed_sides)
+            self.assertFalse(dialog.prefer_a.isEnabled())
+            self.assertIn("without seeking", dialog.decision_reason.text())
+
+            dialog.play("a")
+            dialog.playback.finish()
+            dialog.poll_playback()
+            self.assertEqual(dialog.completed_sides, {"a"})
+            self.assertIn("sample B", dialog.decision_reason.text())
+
+            dialog.play("b")
+            dialog.playback.finish()
+            dialog.poll_playback()
+            self.assertTrue(dialog.prefer_a.isEnabled())
+
+            dialog.seek_to(0)
+            dialog.play("a")
+            self.assertTrue(dialog.seek.isEnabled())
+            self.assertTrue(dialog.prefer_a.isEnabled())
             dialog.deleteLater()
 
     def test_report_failure_advances_from_the_persisted_score(self):

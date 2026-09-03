@@ -59,8 +59,12 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=controller_factory,
         )
 
-        self.assertEqual(tray_application.read_action.text(), "Read current dialog")
-        self.assertEqual(tray_application.dialog_action.text(), "No dialog detected")
+        self.assertEqual(tray_application.read_action.text(), "Read current dialogue")
+        self.assertEqual(tray_application.dialog_action.text(), "No dialogue detected")
+        self.assertEqual(tray_application.show_dashboard_action.text(), "Full controls")
+        self.assertEqual(
+            tray_application.show_compact_action.text(), "Compact controls"
+        )
         self.assertEqual(tray_application.live_action.text(), "Start live reading")
         self.assertEqual(tray_application.pause_action.text(), "Pause speech")
         self.assertEqual(
@@ -77,13 +81,14 @@ class TrayApplicationTest(unittest.TestCase):
         )
         self.assertEqual(
             tray_application.calibrate_action.text(),
-            "Calibrate dialog region",
+            "Calibrate dialogue region...",
         )
         self.assertEqual(
             tray_application.diagnostics_action.text(),
-            "Live diagnostics...",
+            "Live diagnostics",
         )
-        self.assertEqual(tray_application.setup_action.text(), "Run setup...")
+        self.assertEqual(tray_application.readiness_action.text(), "Check readiness")
+        self.assertEqual(tray_application.setup_action.text(), "Run setup")
         self.assertEqual(tray_application.profiles_action.text(), "Game profiles...")
         self.assertEqual(
             tray_application.corrections_action.text(),
@@ -109,7 +114,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(tray_application.history_action.text(), "Dialogue history...")
         self.assertEqual(
             tray_application.support_action.text(),
-            "Diagnostics and logs...",
+            "Support and logs",
         )
         self.assertEqual(
             tray_application.macos_permissions_action.text(),
@@ -119,8 +124,169 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.live_action.isEnabled())
         self.assertFalse(tray_application.sequence_resync_action.isVisible())
         self.assertFalse(tray_application.pause_action.isEnabled())
+        top_level = {
+            action.text()
+            for action in tray_application.menu.actions()
+            if not action.isSeparator()
+        }
+        self.assertIn("Playback", top_level)
+        self.assertIn("Setup", top_level)
+        self.assertIn("Support", top_level)
+        self.assertNotIn("Settings...", top_level)
+        self.assertIn(
+            tray_application.repeat_action,
+            tray_application.playback_menu.actions(),
+        )
+        self.assertIn(
+            tray_application.readiness_action,
+            tray_application.setup_menu.actions(),
+        )
+        self.assertIn(
+            tray_application.diagnostics_action,
+            tray_application.support_menu.actions(),
+        )
         tray_application.shutdown()
         controller.shutdown.assert_called_once_with()
+
+    def test_runtime_capabilities_match_all_three_control_surfaces(self):
+        controller = Mock()
+        controller.is_live_running = False
+        controller.live_reader.runtime_control_snapshot.return_value = {}
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application._controller_ready = True
+        cases = (
+            ("idle", False, {}, (True, True, False, False, False, False)),
+            ("live", True, {}, (True, True, True, False, False, True)),
+            (
+                "speaking",
+                False,
+                {"speaking": True},
+                (True, True, True, True, False, True),
+            ),
+            (
+                "paused",
+                False,
+                {"paused": True},
+                (True, True, True, False, False, True),
+            ),
+            (
+                "queued",
+                False,
+                {"queued": True},
+                (True, True, True, False, False, True),
+            ),
+            (
+                "replayable",
+                False,
+                {"replayable": True},
+                (True, True, False, False, True, False),
+            ),
+        )
+        for name, live, snapshot, expected in cases:
+            with self.subTest(state=name):
+                controller.is_live_running = live
+                controller.live_reader.runtime_control_snapshot.return_value = snapshot
+                tray_application._apply_controller_action_state()
+                tray_state = tuple(
+                    action.isEnabled()
+                    for action in (
+                        tray_application.read_action,
+                        tray_application.live_action,
+                        tray_application.pause_action,
+                        tray_application.skip_action,
+                        tray_application.repeat_action,
+                        tray_application.emergency_stop_action,
+                    )
+                )
+                dashboard_state = tuple(
+                    button.isEnabled()
+                    for button in (
+                        tray_application.dashboard.read_button,
+                        tray_application.dashboard.live_button,
+                        tray_application.dashboard.pause_button,
+                        tray_application.dashboard.skip_button,
+                        tray_application.dashboard.repeat_button,
+                        tray_application.dashboard.stop_button,
+                    )
+                )
+                compact_state = tuple(
+                    button.isEnabled()
+                    for button in (
+                        tray_application.compact_controller.read_button,
+                        tray_application.compact_controller.live_button,
+                        tray_application.compact_controller.pause_button,
+                        tray_application.compact_controller.skip_button,
+                        tray_application.compact_controller.repeat_button,
+                        tray_application.compact_controller.stop_button,
+                    )
+                )
+                self.assertEqual(tray_state, expected)
+                self.assertEqual(dashboard_state, expected)
+                self.assertEqual(compact_state, expected)
+        tray_application.shutdown()
+
+    def test_tray_non_action_text_is_bounded_without_losing_full_tooltip(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        long_status = "Private diagnostic detail " * 20
+        long_dialogue = "A private dialogue sentence " * 20
+
+        tray_application.set_status(long_status)
+        tray_application.set_dialog("An especially long speaker", long_dialogue)
+
+        self.assertLessEqual(len(tray_application.status_action.text()), 96)
+        self.assertLessEqual(len(tray_application.dialog_action.text()), 96)
+        self.assertEqual(tray_application.status_action.toolTip(), long_status)
+        self.assertIn(long_dialogue, tray_application.dialog_action.toolTip())
+        tray_application.shutdown()
+
+    def test_notifications_are_bounded_private_and_open_recovery_surface(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        private_error = "/Users/player/private/story.txt: " + "failure " * 80
+        with (
+            patch.object(tray_application.tray, "showMessage") as notification,
+            patch.object(tray_application, "open_support_center") as support,
+        ):
+            tray_application.show_error(private_error)
+            title, body, _icon = notification.call_args.args
+            self.assertLessEqual(len(title), 64)
+            self.assertLessEqual(len(body), 180)
+            self.assertNotIn("/Users/player", body)
+            self.assertIn("Support and logs", body)
+            tray_application.tray.messageClicked.emit()
+
+        support.assert_called_once_with()
+        self.assertIn(private_error, tray_application.status_action.toolTip())
+        tray_application.shutdown()
+
+    def test_background_notification_activation_opens_full_controls(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        with (
+            patch.object(tray_application.tray, "showMessage") as notification,
+            patch.object(tray_application, "show_dashboard") as full_controls,
+        ):
+            tray_application.notify_background_mode()
+            tray_application.notify_background_mode()
+            tray_application.tray.messageClicked.emit()
+
+        notification.assert_called_once()
+        full_controls.assert_called_once_with()
+        tray_application.shutdown()
 
     def test_packaged_content_import_worker_runs_without_creating_qt(self):
         package = ModuleType("r1999extractor")
@@ -423,7 +589,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
-    def test_unknown_speaker_adds_mapping_action_and_notification(self):
+    def test_unknown_speaker_prompt_suppresses_duplicate_notification(self):
         controller = Mock()
         tray_application = TrayApplication(
             self.application,
@@ -443,7 +609,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(
             tray_application.speaker_mapping_action.text(), "Manage voice for Selone..."
         )
-        self.assertIn("narrator voice", notification.call_args.args[1])
+        notification.assert_not_called()
         self.assertIn("No voice is assigned", tray_application.dashboard.status.text())
         self.assertEqual(
             tray_application.compact_controller.status.text(),
@@ -466,9 +632,79 @@ class TrayApplicationTest(unittest.TestCase):
         configure_window.assert_called_once_with(
             tray_application.unknown_speaker_prompt
         )
+        self.assertEqual(
+            tray_application.unknown_speaker_continue_button.text(),
+            "Use narrator for Selone this session",
+        )
+        self.assertIs(
+            tray_application.unknown_speaker_prompt.escapeButton(),
+            tray_application.unknown_speaker_cancel_button,
+        )
         tray_application.unknown_speaker_continue_button.click()
         self.application.processEvents()
         controller.allow_narrator_fallback.assert_called_once_with("Selone")
+        tray_application.shutdown()
+
+    def test_unknown_speaker_close_and_escape_pause_without_fallback(self):
+        for dismissal in ("close", "escape"):
+            with self.subTest(dismissal=dismissal):
+                controller = Mock(is_live_running=True)
+                controller.live_reader = None
+
+                def stop_live():
+                    controller.is_live_running = False
+                    return False
+
+                controller.toggle_live.side_effect = stop_live
+                tray_application = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=controller),
+                )
+                with patch("vntts.app.configure_floating_window"):
+                    tray_application.offer_speaker_mapping("Selone")
+                    self.application.processEvents()
+                    prompt = tray_application.unknown_speaker_prompt
+                    if dismissal == "escape":
+                        QTest.keyClick(prompt, Qt.Key.Key_Escape)
+                    else:
+                        prompt.close()
+                    self.wait_until(
+                        lambda: (
+                            "live reading is paused"
+                            in tray_application.status_action.text()
+                        )
+                    )
+
+                controller.allow_narrator_fallback.assert_not_called()
+                controller.toggle_live.assert_called_once_with()
+                self.assertFalse(controller.is_live_running)
+                self.assertEqual(tray_application.pending_unknown_speaker, "Selone")
+                self.assertIn(
+                    "live reading is paused", tray_application.status_action.text()
+                )
+                tray_application.shutdown()
+
+    def test_pending_speaker_mapping_passes_a_locked_context(self):
+        controller = Mock(is_live_running=False)
+        controller.available_voice_characters.return_value = ["Narrator", "Marcus"]
+        controller.available_voice_choices.return_value = []
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.pending_unknown_speaker = "Selone"
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+
+        with patch("vntts.app.VoicePreviewDialog", return_value=dialog) as factory:
+            assigned = tray_application.open_speaker_mapping()
+
+        self.assertTrue(assigned)
+        self.assertEqual(factory.call_args.kwargs["initial_character"], "Selone")
+        self.assertEqual(factory.call_args.kwargs["fixed_character"], "Selone")
+        self.assertIsNone(tray_application.pending_unknown_speaker)
         tray_application.shutdown()
 
     def test_live_preflight_blocks_start_until_named_speakers_are_approved(self):
@@ -1073,6 +1309,93 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
             delete_dialog(dialog)
 
+    def test_settings_invalid_game_pack_stays_open_with_focused_inline_error(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            game_pack = root / "game-pack.json"
+            game_pack.write_text("{}", encoding="utf-8")
+            dialog = SettingsDialog(AppSettings(screenshot_directory=str(root)))
+            dialog.game_pack.setText(str(game_pack))
+            dialog.show()
+            self.application.processEvents()
+
+            dialog.validate_and_accept()
+            self.application.processEvents()
+
+            self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
+            self.assertIn("Game pack:", dialog.validation_summary.text())
+            self.assertEqual(dialog.section_navigation.currentIndex(), 2)
+            self.assertTrue(dialog.game_pack.hasFocus())
+            delete_dialog(dialog)
+
+    def test_settings_new_game_pack_owns_all_derived_paths(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            game_pack = root / "game-pack.json"
+            voice_manifest = root / "pack-voices.json"
+            story_index = root / "pack-story.jsonl"
+            generated_audio = root / "pack-generated.json"
+            for path in (voice_manifest, story_index, generated_audio):
+                path.touch()
+
+            def apply(settings, path=None):
+                self.assertEqual(path, str(game_pack))
+                return settings.updated(
+                    game_pack=str(game_pack),
+                    voice_manifest=str(voice_manifest),
+                    story_index=str(story_index),
+                    live_sequence_plan=None,
+                    live_sequence_mode="off",
+                    generated_audio_manifest=str(generated_audio),
+                )
+
+            dialog = SettingsDialog(AppSettings(screenshot_directory=str(root)))
+            dialog.voice_manifest.setText("hidden-stale-voices.json")
+            dialog.story_index.setText("hidden-stale-story.jsonl")
+            dialog.live_sequence_plan.setText("hidden-stale-sequence.json")
+            dialog.generated_audio_manifest.setText("hidden-stale-generated.json")
+            with patch("vntts.app.apply_game_pack", side_effect=apply):
+                dialog.game_pack.setText(str(game_pack))
+                dialog.validate_and_accept()
+                saved = dialog.settings()
+
+            self.assertEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
+            self.assertEqual(saved.voice_manifest, str(voice_manifest))
+            self.assertEqual(saved.story_index, str(story_index))
+            self.assertIsNone(saved.live_sequence_plan)
+            self.assertEqual(saved.live_sequence_mode, "off")
+            self.assertEqual(saved.generated_audio_manifest, str(generated_audio))
+            delete_dialog(dialog)
+
+    def test_settings_existing_pack_preserves_external_sequence_override(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            game_pack = root / "game-pack.json"
+            external_sequence = root / "external-sequence.json"
+            external_sequence.touch()
+
+            def apply(settings, path=None):
+                self.assertIsNone(path)
+                return settings.updated(
+                    voice_manifest=None,
+                    story_index=None,
+                    generated_audio_manifest=None,
+                )
+
+            original = AppSettings(
+                screenshot_directory=str(root),
+                game_pack=str(game_pack),
+                live_sequence_plan=str(external_sequence),
+                live_sequence_mode="shadow",
+            )
+            with patch("vntts.app.apply_game_pack", side_effect=apply):
+                dialog = SettingsDialog(original)
+                saved = dialog.settings()
+
+            self.assertEqual(saved.live_sequence_plan, str(external_sequence))
+            self.assertEqual(saved.live_sequence_mode, "shadow")
+            delete_dialog(dialog)
+
     def test_settings_allow_nested_screenshot_directory_to_be_created(self):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory) / "missing" / "screenshots"
@@ -1281,9 +1604,13 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertEqual(dialog.live_sequence_mode.currentData(), "audio-manual")
         self.assertFalse(dialog.auto_advance.isEnabled())
+        self.assertFalse(dialog.auto_advance.isChecked())
         self.assertFalse(dialog.auto_advance_key.isEnabled())
         self.assertFalse(dialog.auto_advance_delay.isEnabled())
         self.assertIn("never sends advance keys", dialog.auto_advance.toolTip())
+        self.assertFalse(dialog.auto_advance_reason.isHidden())
+        self.assertIn("never sends advance keys", dialog.auto_advance_reason.text())
+        self.assertFalse(dialog.settings().auto_advance_enabled)
         delete_dialog(dialog)
 
     def test_sequence_audio_auto_keeps_guarded_auto_advance_opt_in(self):
@@ -1328,6 +1655,8 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.auto_advance.isEnabled())
         self.assertFalse(dialog.auto_advance.isChecked())
         self.assertIn("selected game window", dialog.auto_advance.toolTip())
+        self.assertFalse(dialog.auto_advance_reason.isHidden())
+        self.assertIn("selected game window", dialog.auto_advance_reason.text())
         self.assertFalse(dialog.settings().auto_advance_enabled)
         delete_dialog(dialog)
 
@@ -1511,7 +1840,9 @@ class TrayApplicationTest(unittest.TestCase):
         controller.apply_settings.assert_called_once_with(updated, cancellation=ANY)
         self.assertEqual(tray_application.settings.speech_backend, "moss-tts")
         self.assertIn("restart required", tray_application.status_action.text())
-        self.assertIn("still uses pocket-tts", tray_application.status_action.text())
+        self.assertLessEqual(len(tray_application.status_action.text()), 96)
+        self.assertTrue(tray_application.status_action.text().endswith("..."))
+        self.assertIn("still uses pocket-tts", tray_application.status_action.toolTip())
         tray_application.shutdown()
 
     def test_macos_permission_action_opens_recovery_dialog(self):
@@ -1794,7 +2125,11 @@ class TrayApplicationTest(unittest.TestCase):
         controller = Mock()
         tray_application = TrayApplication(
             self.application,
-            AppSettings(auto_advance_enabled=False),
+            AppSettings(
+                capture_mode="window",
+                game_window_title="Reverse: 1999",
+                auto_advance_enabled=False,
+            ),
             controller_factory=Mock(return_value=controller),
         )
 
@@ -1810,7 +2145,11 @@ class TrayApplicationTest(unittest.TestCase):
         controller = Mock()
         tray_application = TrayApplication(
             self.application,
-            AppSettings(auto_advance_enabled=False),
+            AppSettings(
+                capture_mode="window",
+                game_window_title="Reverse: 1999",
+                auto_advance_enabled=False,
+            ),
             controller_factory=Mock(return_value=controller),
         )
 
@@ -1825,6 +2164,40 @@ class TrayApplicationTest(unittest.TestCase):
         controller.set_auto_advance_enabled.assert_not_called()
         self.assertIn("read-only directory", tray_application.status_action.text())
         tray_application.shutdown()
+
+    def test_tray_rejects_auto_advance_without_capture_authority(self):
+        cases = (
+            ("screen", "audio-auto", "selected game window"),
+            ("window", "audio-manual", "never sends advance keys"),
+        )
+        for capture_mode, sequence_mode, expected_reason in cases:
+            with self.subTest(capture_mode=capture_mode, sequence_mode=sequence_mode):
+                controller = Mock()
+                controller_factory = Mock(return_value=controller)
+                tray_application = TrayApplication(
+                    self.application,
+                    AppSettings(
+                        capture_mode=capture_mode,
+                        game_window_title="Reverse: 1999",
+                        live_sequence_mode=sequence_mode,
+                        auto_advance_enabled=True,
+                    ),
+                    controller_factory=controller_factory,
+                )
+
+                self.assertFalse(tray_application.auto_advance_action.isEnabled())
+                self.assertFalse(tray_application.auto_advance_action.isChecked())
+                self.assertTrue(tray_application.auto_advance_reason_action.isVisible())
+                self.assertIn(
+                    expected_reason,
+                    tray_application.auto_advance_reason_action.text(),
+                )
+                with patch("vntts.app.AppSettings.save") as save:
+                    tray_application.toggle_auto_advance(True)
+                save.assert_not_called()
+                controller.set_auto_advance_enabled.assert_not_called()
+                self.assertFalse(tray_application.auto_advance_action.isChecked())
+                tray_application.shutdown()
 
     def test_failed_profile_asset_and_compact_writes_do_not_publish(self):
         original = AppSettings(compact_controls=False)
@@ -2037,6 +2410,28 @@ class TrayApplicationTest(unittest.TestCase):
 
         diagnostics_dialog.set_snapshot.assert_called_once_with(snapshot)
         diagnostics_dialog.restore_after_capture.assert_called_once_with()
+        tray_application.shutdown()
+
+    def test_diagnostic_warning_routes_one_typed_recovery_action(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        diagnostics_dialog = Mock()
+        tray_application.diagnostics_dialog = diagnostics_dialog
+        remediation = ("settings", "Open Settings")
+
+        with patch("vntts.app.diagnostic_remediation", return_value=remediation):
+            tray_application.set_diagnostics_error("Window unavailable")
+
+        diagnostics_dialog.set_warning.assert_called_once_with(
+            "Window unavailable",
+            remediation=remediation,
+        )
+        with patch.object(tray_application, "open_settings") as settings:
+            tray_application._run_diagnostics_remediation("settings")
+        settings.assert_called_once_with()
         tray_application.shutdown()
 
     def test_invalid_saved_hotkey_falls_back_without_preventing_startup(self):

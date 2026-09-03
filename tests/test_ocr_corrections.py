@@ -187,6 +187,7 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
                 Path(temporary_directory) / "ocr-corrections.json"
             )
             dialog = OCRCorrectionsDialog("game", "Game", store)
+            self.assertEqual(dialog.tabs.currentIndex(), 1)
             dialog._append_row(dialog.global_table, "Mareus", "Marcus")
             dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
 

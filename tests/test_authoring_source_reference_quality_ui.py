@@ -177,11 +177,14 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
     def test_decisions_require_exact_completed_audio_evidence(self):
         with TemporaryDirectory() as directory:
             session = write_quality_session(Path(directory))
-            dialog = SourceReferenceQualityDialog(session)
+            dialog = SourceReferenceQualityDialog(
+                session, confirmer=lambda _decision: True
+            )
 
             self.assertFalse(dialog.accept.isEnabled())
-            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.reject_reference.isEnabled())
             self.assertFalse(dialog.needs_sample.isEnabled())
+            self.assertFalse(dialog.stop.isEnabled())
             self.assertIn("original 0/1", dialog.evidence_progress.text())
             self.assertFalse(dialog.portrait_image.pixmap().isNull())
             self.assertNotIn("534704", dialog.identity.text())
@@ -199,14 +202,15 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             )
 
             self.finish_audio(dialog, "reference")
+            self.assertFalse(dialog.stop.isEnabled())
             self.assertFalse(dialog.accept.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.reject_reference.isEnabled())
             self.assertTrue(dialog.needs_sample.isEnabled())
             self.finish_audio(dialog, "queue-1")
             self.assertFalse(dialog.accept.isEnabled())
             self.finish_audio(dialog, "queue-2")
             self.assertTrue(dialog.accept.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.reject_reference.isEnabled())
             self.assertTrue(dialog.needs_sample.isEnabled())
             dialog._decide("reject")
             self.wait_for(lambda: not dialog._decision_active)
@@ -228,6 +232,20 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             dialog.close()
 
         self.assertIn("checksum changed", message)
+
+    def test_irreversible_decision_can_be_cancelled(self):
+        with TemporaryDirectory() as directory:
+            session = write_quality_session(Path(directory))
+            dialog = SourceReferenceQualityDialog(
+                session, confirmer=lambda _decision: False
+            )
+            self.authorize_accept(dialog)
+
+            dialog._decide("accept")
+
+            self.assertFalse(dialog._decision_active)
+            self.assertIn("cancelled", dialog.status.text())
+            dialog.close()
 
     def test_generated_playback_is_cancelled_when_row_changes_during_prepare(self):
         with TemporaryDirectory() as directory:
@@ -291,14 +309,16 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
 
             self.assertTrue(dialog.generated.isHidden())
             self.assertIn("No published generated", dialog.generated_details.text())
-            self.assertEqual(dialog.technical_toggle.text(), "Technical exclusions (1)")
+            self.assertEqual(
+                dialog.technical_toggle.text(), "Technical diagnostics (1)"
+            )
             self.assertTrue(dialog.failures.isHidden())
             dialog.technical_toggle.setChecked(True)
             self.assertFalse(dialog.failures.isHidden())
             self.assertIn("No WAV was published", dialog.failures.text())
             self.finish_audio(dialog, "reference")
             self.assertFalse(dialog.accept.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.reject_reference.isEnabled())
             self.assertTrue(dialog.needs_sample.isEnabled())
             dialog.close()
 
@@ -324,7 +344,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 dialog.failures,
                 dialog.status,
                 dialog.accept,
-                dialog.reject,
+                dialog.reject_reference,
                 dialog.needs_sample,
             ):
                 self.assertTrue(widget.accessibleName(), type(widget).__name__)
@@ -337,6 +357,45 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 dialog.play_reference.nextInFocusChain(), dialog.play_generated
             )
             dialog.close()
+
+    def test_scaled_font_keeps_keyboard_journey_scroll_reachable(self):
+        with TemporaryDirectory() as directory:
+            session = write_quality_session(Path(directory))
+            dialog = SourceReferenceQualityDialog(session)
+            base_point_size = dialog.font().pointSizeF()
+            for scale in (1.5, 2.0):
+                font = dialog.font()
+                font.setPointSizeF(base_point_size * scale)
+                dialog.setFont(font)
+                dialog.resize(dialog.minimumSize())
+                dialog.show()
+                self.application.processEvents()
+                self.assertEqual(
+                    dialog.review_scroll.horizontalScrollBar().maximum(), 0
+                )
+
+            self.assertGreater(dialog.review_scroll.verticalScrollBar().maximum(), 0)
+            self.assertTrue(dialog.close_button.isVisible())
+            self.assertIs(dialog.generated_label.buddy(), dialog.generated)
+            self.assertIs(
+                dialog.decision_context.technical_toggle.nextInFocusChain(),
+                dialog.generated,
+            )
+            self.assertIs(dialog.needs_sample.nextInFocusChain(), dialog.close_button)
+            for button in (
+                dialog.play_reference,
+                dialog.play_generated,
+                dialog.stop,
+                dialog.technical_toggle,
+                dialog.accept,
+                dialog.reject_reference,
+                dialog.needs_sample,
+                dialog.close_button,
+            ):
+                self.assertTrue(button.accessibleName(), button.text())
+                self.assertTrue(button.accessibleDescription(), button.text())
+            dialog.close_button.click()
+            self.assertFalse(dialog.isVisible())
 
     def test_slow_decision_keeps_qt_responsive_and_defers_close(self):
         with TemporaryDirectory() as directory:
@@ -355,7 +414,9 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 return record_source_reference_quality_decision(*args)
 
             dialog = SourceReferenceQualityDialog(
-                session, decision_recorder=slow_recorder
+                session,
+                decision_recorder=slow_recorder,
+                confirmer=lambda _decision: True,
             )
             self.authorize_accept(dialog)
             heartbeat = []
@@ -398,7 +459,9 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
                 return record_source_reference_quality_decision(*args)
 
             dialog = SourceReferenceQualityDialog(
-                session, decision_recorder=flaky_recorder
+                session,
+                decision_recorder=flaky_recorder,
+                confirmer=lambda _decision: True,
             )
             self.authorize_accept(dialog)
             dialog._decide("accept")

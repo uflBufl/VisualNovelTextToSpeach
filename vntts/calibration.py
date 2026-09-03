@@ -62,6 +62,8 @@ def pixmap_from_pil(image):
 
 
 class CalibrationReviewDialog(QDialog):
+    DrawAgain = 2
+
     def __init__(
         self,
         image,
@@ -130,8 +132,11 @@ class CalibrationReviewDialog(QDialog):
         )
         self.retry_button.setShortcut(QKeySequence("Ctrl+R"))
         self.cancel_button.setAccessibleName("Cancel calibration")
-        buttons.accepted.connect(self.accept)
-        self.retry_button.clicked.connect(self.reject)
+        self.cancel_button.setAccessibleDescription(
+            "Close calibration without saving the selected region"
+        )
+        self.save_button.clicked.connect(self.accept)
+        self.retry_button.clicked.connect(lambda: self.done(self.DrawAgain))
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
         layout.addWidget(self.preview)
@@ -248,8 +253,12 @@ class DialogRegionOverlay(QWidget):
         crop = region.crop(self.background)
         self.hide()
         review = self.reviewer(crop)
-        if review.exec() == QDialog.DialogCode.Accepted:
+        result = review.exec()
+        if result == QDialog.DialogCode.Accepted:
             self.selected.emit(region)
+            self.close()
+            return
+        if result == QDialog.DialogCode.Rejected:
             self.close()
             return
         self.show()

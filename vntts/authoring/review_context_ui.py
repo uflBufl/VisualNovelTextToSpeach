@@ -39,16 +39,16 @@ class ReviewDecisionContext(QGroupBox):
         self.effect = self._summary_label("Decision consequence")
 
         self.technical_toggle = QToolButton()
-        self.technical_toggle.setText("Technical authority details")
+        self.technical_toggle.setText("Decision provenance")
         self.technical_toggle.setCheckable(True)
         self.technical_toggle.setChecked(False)
-        self.technical_toggle.setAccessibleName("Show technical authority details")
+        self.technical_toggle.setAccessibleName("Show decision provenance")
         self.technical = QLabel()
         self.technical.setWordWrap(True)
         self.technical.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.technical.setAccessibleName("Technical authoring authority details")
+        self.technical.setAccessibleName("Decision provenance details")
         self.technical.hide()
         self.technical_toggle.toggled.connect(self.technical.setVisible)
 

@@ -22,6 +22,7 @@ try:
     )
     from vntts.authoring.missing_voice_reuse_review_ui import (
         MissingVoiceReuseReviewDialog,
+        launch_missing_voice_reuse_review,
     )
 except ModuleNotFoundError as error:
     if error.name != "PySide6":
@@ -76,6 +77,87 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             )
             dialog.deleteLater()
 
+    def test_candidate_controls_expose_accessible_task_names(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(Path(directory))
+            dialog = MissingVoiceReuseReviewDialog(session_path)
+
+            buttons = tuple(dialog.play_buttons.values())
+            self.assertTrue(dialog.sample_selector.accessibleName())
+            self.assertTrue(dialog.sample_text.accessibleName())
+            self.assertTrue(all(button.accessibleName() for button in buttons))
+            dialog.deleteLater()
+
+    def test_scaled_font_keeps_keyboard_journey_scroll_reachable(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(Path(directory))
+            dialog = MissingVoiceReuseReviewDialog(session_path)
+            base_point_size = dialog.font().pointSizeF()
+            for scale in (1.5, 2.0):
+                font = dialog.font()
+                font.setPointSizeF(base_point_size * scale)
+                dialog.setFont(font)
+                dialog.resize(dialog.minimumSize())
+                dialog.show()
+                self.application.processEvents()
+                self.assertEqual(
+                    dialog.review_scroll.horizontalScrollBar().maximum(), 0
+                )
+
+            self.assertGreater(dialog.review_scroll.verticalScrollBar().maximum(), 0)
+            self.assertTrue(dialog.close_button.isVisible())
+            self.assertIs(dialog.sample_label.buddy(), dialog.sample_selector)
+            self.assertIs(
+                dialog.decision_context.technical_toggle.nextInFocusChain(),
+                dialog.previous,
+            )
+            self.assertIs(dialog.neither.nextInFocusChain(), dialog.close_button)
+            for button in (
+                dialog.previous,
+                dialog.next,
+                dialog.stop,
+                *dialog.play_buttons.values(),
+                *dialog.decision_buttons.values(),
+                dialog.neither,
+                dialog.close_button,
+            ):
+                self.assertTrue(button.accessibleName(), button.text())
+                self.assertTrue(button.accessibleDescription(), button.text())
+            dialog.close()
+
+    def test_irreversible_decision_can_be_cancelled(self):
+        with TemporaryDirectory() as directory:
+            session_path, _queue_id = self.create_review(Path(directory))
+            dialog = MissingVoiceReuseReviewDialog(
+                session_path, confirmer=lambda _decision: False
+            )
+
+            dialog._save_decision("neither")
+
+            self.assertFalse(dialog.decision_runner.active)
+            self.assertIn("cancelled", dialog.status.text())
+            dialog.deleteLater()
+
+    @patch("vntts.authoring.missing_voice_reuse_review_ui.QMessageBox.critical")
+    @patch(
+        "vntts.authoring.missing_voice_reuse_review_ui.MissingVoiceReuseReviewDialog"
+    )
+    def test_launch_failure_stays_visible_without_a_terminal(self, dialog, critical):
+        dialog.side_effect = RuntimeError("wrong error type")
+        with self.assertRaisesRegex(RuntimeError, "wrong error type"):
+            launch_missing_voice_reuse_review("broken/session.json")
+        critical.assert_not_called()
+
+        from vntts.authoring.missing_voice_reuse_review import (
+            MissingVoiceReuseReviewError,
+        )
+
+        dialog.side_effect = MissingVoiceReuseReviewError("authority changed")
+        self.assertEqual(launch_missing_voice_reuse_review("broken/session.json"), 2)
+        message = critical.call_args.args[2]
+        self.assertIn("broken/session.json", message)
+        self.assertIn("authority changed", message)
+
     def test_decision_context_explains_speaker_voice_and_synthesis_controls(self):
         with TemporaryDirectory() as directory:
             session_path, _queue_id = self.create_review(Path(directory))
@@ -117,7 +199,9 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             session_path, _queue_id = self.create_review(Path(directory))
             dialog = MissingVoiceReuseReviewDialog(
-                session_path, decision_recorder=slow_decision
+                session_path,
+                decision_recorder=slow_decision,
+                confirmer=lambda _decision: True,
             )
             dialog.player = Mock()
             bundle, _session = load_missing_voice_reuse_review(session_path)

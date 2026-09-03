@@ -35,6 +35,7 @@ class SupportCenterDialogTest(unittest.TestCase):
     def test_new_events_preserve_manual_selection_until_requested(self):
         log = FakeEventLog(event(index) for index in range(100))
         dialog = SupportCenterDialog(log)
+        self.assertEqual(dialog.windowTitle(), "Support and logs")
         dialog.show()
         self.application.processEvents()
         dialog.refresh()

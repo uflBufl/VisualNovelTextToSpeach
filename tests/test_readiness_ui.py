@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel  # noqa: E402
 
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.readiness_ui import ReadinessDialog  # noqa: E402
@@ -25,6 +25,7 @@ class ReadinessDialogTest(unittest.TestCase):
         )
         labels = [label.text() for label in dialog.findChildren(QLabel)]
 
+        self.assertEqual(dialog.windowTitle(), "Check readiness")
         self.assertTrue(any("before starting live reading" in text for text in labels))
         self.assertFalse(any("before starting the game" in text for text in labels))
         dialog.close()
@@ -52,6 +53,10 @@ class ReadinessDialogTest(unittest.TestCase):
 
         self.assertIn("1 error", dialog.summary.text())
         self.assertEqual(dialog.table.rowCount(), 2)
+        self.assertEqual(
+            dialog.table.horizontalHeader().sectionResizeMode(1),
+            QHeaderView.ResizeMode.ResizeToContents,
+        )
         dialog.deleteLater()
 
     def test_changed_settings_discard_stale_probe_results(self):

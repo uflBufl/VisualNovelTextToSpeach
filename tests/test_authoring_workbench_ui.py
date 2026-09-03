@@ -286,18 +286,107 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.review_collection.setCurrentText("main")
             dialog.review_search.setText("dialogue")
             dialog.technical.setChecked(True)
+            dialog.show_technical_columns.setChecked(True)
             dialog.splitter.setSizes([321, 654])
             dialog._save_settings()
             dialog.close()
             replacement = AuthoringWorkbenchDialog(workspace, settings=settings)
 
             self.assertTrue(replacement.technical.isChecked())
+            self.assertFalse(replacement.review_table.isColumnHidden(6))
+            self.assertFalse(replacement.review_table.isColumnHidden(8))
             self.assertGreater(replacement.splitter.sizes()[0], 0)
             self.assertEqual(replacement.review_status.currentText(), "All statuses")
             self.assertEqual(replacement.review_character.currentText(), "Rhiannon")
             self.assertEqual(replacement.review_collection.currentText(), "main")
             self.assertEqual(replacement.review_search.text(), "dialogue")
             replacement.close()
+
+    def test_primary_review_hides_technical_controls_and_columns_by_default(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            base_point_size = dialog.font().pointSizeF()
+            for scale in (1.5, 2.0):
+                font = dialog.font()
+                font.setPointSizeF(base_point_size * scale)
+                dialog.setFont(font)
+                dialog.resize(dialog.minimumSize())
+                dialog.show()
+                self.application.processEvents()
+
+            self.assertFalse(hasattr(dialog, "narrator_only"))
+            self.assertFalse(hasattr(dialog, "exclude_narrator"))
+            self.assertEqual(dialog.review_character.currentText(), "All speakers")
+            self.assertTrue(dialog.review_table.isColumnHidden(6))
+            self.assertTrue(dialog.review_table.isColumnHidden(8))
+            self.assertEqual(
+                dialog.review_actions_layout.indexOf(dialog.reload_authority), -1
+            )
+            self.assertFalse(dialog.technical.isChecked())
+            self.assertEqual(dialog.reload_authority.text(), "Reload workspace")
+            self.assertEqual(dialog.reset_layout.text(), "Reset layout")
+            self.assertEqual(dialog.approve.text(), "Approve")
+            self.assertEqual(dialog.reject.text(), "Reject")
+            self.assertEqual(dialog.review_play.text(), "Replay")
+            for label, control in zip(
+                dialog.review_filter_labels,
+                (
+                    dialog.review_character,
+                    dialog.review_status,
+                    dialog.review_collection,
+                    dialog.review_search,
+                ),
+            ):
+                self.assertIs(label.buddy(), control)
+            self.assertIs(
+                dialog.specialist_review.nextInFocusChain(),
+                dialog.outcome_details.header,
+            )
+            self.assertIs(
+                dialog.outcome_details.header.nextInFocusChain(),
+                dialog.generation_section.header,
+            )
+            self.assertIs(
+                dialog.generation_section.header.nextInFocusChain(),
+                dialog.collection_tree,
+            )
+            review_panel = dialog.splitter.widget(0)
+            for control in (
+                dialog.review_table,
+                dialog.approve,
+                dialog.reject,
+                dialog.specialist_section,
+            ):
+                bottom = control.mapTo(review_panel, QPoint(0, control.height())).y()
+                self.assertLessEqual(bottom, review_panel.height())
+
+            dialog.technical.setChecked(True)
+            dialog.show_technical_columns.setChecked(True)
+            self.assertFalse(dialog.review_table.isColumnHidden(6))
+            self.assertFalse(dialog.review_table.isColumnHidden(8))
+
+    def test_legacy_narrator_filter_migrates_to_single_speaker_scope(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            settings = self.settings(root)
+            settings.beginGroup("authoring/workbench")
+            settings.setValue("review-character", "Narrator")
+            settings.setValue("review-exclude-narrator", True)
+            settings.endGroup()
+
+            dialog = AuthoringWorkbenchDialog(workspace, settings=settings)
+
+            self.assertEqual(dialog.review_character.currentText(), "Characters only")
+            dialog._save_settings()
+            settings.beginGroup("authoring/workbench")
+            self.assertEqual(
+                settings.value("review-character"), dialog.characters_scope
+            )
+            self.assertIsNone(settings.value("review-exclude-narrator"))
+            settings.endGroup()
 
     def test_scrollable_inspector_keeps_every_expanded_section_reachable(self):
         with TemporaryDirectory() as directory:
@@ -345,6 +434,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.recent_choice,
                 dialog.process_log,
                 dialog.copy_diagnostics,
+                dialog.reload_authority,
+                dialog.reset_layout,
+                dialog.show_technical_columns,
             ):
                 self.assertTrue(control.isVisibleTo(dialog.inspector_scroll))
                 self.assert_inspector_control_reachable(dialog, control)
@@ -365,6 +457,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 reopened.readiness_text,
                 reopened.recent_choice,
                 reopened.process_log,
+                reopened.reload_authority,
+                reopened.reset_layout,
+                reopened.show_technical_columns,
             ):
                 self.assert_inspector_control_reachable(reopened, control)
 
@@ -374,6 +469,8 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(reopened.readiness_details.isChecked())
             self.assertFalse(reopened.voice_box.isChecked())
             self.assertFalse(reopened.technical.isChecked())
+            self.assertTrue(reopened.review_table.isColumnHidden(6))
+            self.assertTrue(reopened.review_table.isColumnHidden(8))
             self.assertEqual(reopened.inspector_scroll.verticalScrollBar().value(), 0)
 
     def test_current_attempt_projects_exact_fields_and_live_elapsed_time(self):
@@ -535,7 +632,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             self.assertIsNotNone(dialog.summary)
             self.assertEqual(dialog.review_table.rowCount(), 0)
-            self.assertEqual(dialog.reload_authority.text(), "Refresh authority")
+            self.assertEqual(dialog.reload_authority.text(), "Reload workspace")
             self.assertIn("Review complete", dialog.review_scope.text())
             self.assertIn("no review outcomes", dialog.review_action_reason.text())
 
@@ -626,15 +723,13 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog._selected_review_item().queue_id, "rhiannon-pending"
             )
             self.assertFalse(hasattr(dialog, "rhiannon_only"))
-            dialog.review_character.setCurrentText("All characters")
-            dialog.narrator_only.click()
+            dialog.review_character.setCurrentText("Narrator only")
             self.assertEqual(dialog.review_table.rowCount(), 1)
             self.assertEqual(
                 dialog._selected_review_item().queue_id, "narrator-pending"
             )
             self.assertEqual(dialog.review_table.item(0, 2).text(), "Rhiannon")
-            dialog.exclude_narrator.setChecked(True)
-            self.assertEqual(dialog.review_character.currentText(), "All characters")
+            dialog.review_character.setCurrentText("Characters only")
             self.assertEqual(dialog.review_table.rowCount(), 1)
             dialog.review_collection.setCurrentText("side")
             self.assertEqual(dialog.review_table.rowCount(), 0)
@@ -642,7 +737,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.review_table.rowCount(), 0)
             self.assertIn("No outcomes match", dialog.review_scope.text())
             dialog.review_search.clear()
-            dialog.exclude_narrator.setChecked(False)
+            dialog.review_character.setCurrentText("All speakers")
             dialog.review_status.setCurrentText("Failed: audio limit")
             self.assertEqual(dialog.review_table.rowCount(), 1)
             self.assertEqual(dialog._selected_review_item().queue_id, "narrator-failed")
@@ -725,6 +820,12 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.review_table.editTriggers(),
                 QAbstractItemView.EditTrigger.NoEditTriggers,
             )
+            self.assertEqual(dialog.review_play.text(), "Replay")
+            self.assertEqual(dialog.approve.text(), "Approve")
+            self.assertEqual(dialog.reject.text(), "Reject")
+            self.assertIn("Ctrl+R", dialog.review_play.accessibleDescription())
+            self.assertIn("Ctrl+Enter", dialog.approve.accessibleDescription())
+            self.assertIn("Ctrl+Backspace", dialog.reject.accessibleDescription())
             modifiers = (
                 Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
             )
@@ -1171,11 +1272,12 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIsNone(dialog.summary)
             self.assertTrue(dialog.reload_authority.isEnabled())
             self.assertEqual(dialog.reload_authority.text(), "Retry workspace load")
+            self.assertTrue(dialog.technical.isChecked())
             self.assertIn("transient review worker failure", dialog.status.text())
             dialog.reload_authority.click()
 
             self.assertIsNotNone(dialog.summary)
-            self.assertEqual(dialog.reload_authority.text(), "Refresh authority")
+            self.assertEqual(dialog.reload_authority.text(), "Reload workspace")
             self.assertEqual(dialog._selected_review_item().queue_id, queue_id)
             self.assertTrue(dialog.approve.isEnabled())
 
@@ -1553,7 +1655,6 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.review_stop,
                 dialog.approve,
                 dialog.reject,
-                dialog.reload_authority,
             )
             self.assertEqual(
                 [dialog.review_actions_layout.indexOf(control) for control in controls],

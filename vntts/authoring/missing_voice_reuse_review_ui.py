@@ -17,13 +17,17 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.missing_voice_reuse_review import (
     AUTOMATIC_UNRESOLVED_ORIGIN,
+    MissingVoiceReuseReviewError,
     load_missing_voice_reuse_review,
     missing_voice_reuse_review_progress,
     record_missing_voice_reuse_decision,
@@ -43,11 +47,13 @@ class MissingVoiceReuseReviewDialog(QDialog):
         thread_pool=None,
         heard_recorder=record_missing_voice_reuse_heard,
         decision_recorder=record_missing_voice_reuse_decision,
+        confirmer=None,
     ):
         super().__init__(parent)
         self.session_path = Path(session_path).expanduser().resolve()
         self.heard_recorder = heard_recorder
         self.decision_recorder = decision_recorder
+        self.confirmer = confirmer or self._confirm_decision
         self.bundle, self.session = load_missing_voice_reuse_review(self.session_path)
         self.heard_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.heard_runner.finished.connect(self._heard_saved)
@@ -61,6 +67,9 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self._close_pending = False
 
         self.failed_control_mode = self.bundle.get("target_mode") == "failed"
+        self._decision_name = (
+            "failed-line fallback" if self.failed_control_mode else "family voice"
+        )
         self.setWindowTitle(
             "Blind failed-line fallback review"
             if self.failed_control_mode
@@ -83,6 +92,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         )
         self.instructions = QLabel(instructions)
         self.instructions.setWordWrap(True)
+        self.instructions.setAccessibleName("Missing voice review instructions")
         self.decision_context = ReviewDecisionContext()
         self._show_decision_context()
         self.cohort_heading = QLabel()
@@ -91,7 +101,21 @@ class MissingVoiceReuseReviewDialog(QDialog):
 
         self.previous = QPushButton("Previous sample")
         self.sample_selector = QComboBox()
+        self.sample_selector.setAccessibleName("Exact review sample")
+        self.sample_selector.setAccessibleDescription(
+            "Choose one exact sample from the current review family"
+        )
+        self.sample_label = QLabel("Sample")
+        self.sample_label.setBuddy(self.sample_selector)
         self.next = QPushButton("Next sample")
+        self.previous.setAccessibleName("Previous exact review sample")
+        self.previous.setAccessibleDescription(
+            "Select the previous sample in the current family"
+        )
+        self.next.setAccessibleName("Next exact review sample")
+        self.next.setAccessibleDescription(
+            "Select the next sample in the current family"
+        )
         self.previous.setShortcut(QKeySequence("Alt+Left"))
         self.next.setShortcut(QKeySequence("Alt+Right"))
         self.previous.clicked.connect(lambda: self._move_sample(-1))
@@ -99,6 +123,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.sample_selector.currentIndexChanged.connect(self._select_sample)
         navigation = QHBoxLayout()
         navigation.addWidget(self.previous)
+        navigation.addWidget(self.sample_label)
         navigation.addWidget(self.sample_selector, 1)
         navigation.addWidget(self.next)
 
@@ -108,6 +133,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.sample_text.setMinimumHeight(80)
+        self.sample_text.setAccessibleName("Exact review sample text")
         sample_layout = QVBoxLayout()
         sample_layout.addLayout(navigation)
         sample_layout.addWidget(self.sample_text)
@@ -121,21 +147,29 @@ class MissingVoiceReuseReviewDialog(QDialog):
             label = candidate["label"]
             button = QPushButton(f"Play {label}")
             button.setMinimumWidth(180)
-            button.setShortcut(QKeySequence(f"Ctrl+{column + 1}"))
+            button.setAccessibleName(f"Play opaque candidate {label}")
+            button.setAccessibleDescription(
+                "Play this checksum-bound candidate to completion before deciding"
+            )
+            if column < 9:
+                button.setShortcut(QKeySequence(f"Ctrl+{column + 1}"))
             button.clicked.connect(
                 lambda _checked=False, value=label: self._play(value)
             )
             status = QLabel()
             status.setWordWrap(True)
             status.setAlignment(Qt.AlignmentFlag.AlignTop)
-            self.play_grid.addWidget(button, 0, column)
-            self.play_grid.addWidget(status, 1, column)
+            status.setAccessibleName(f"Opaque candidate {label} status")
+            row, grid_column = divmod(column, 2)
+            self.play_grid.addWidget(button, row * 2, grid_column)
+            self.play_grid.addWidget(status, row * 2 + 1, grid_column)
             self.play_buttons[label] = button
             self.arm_statuses[label] = status
         playback_box = QGroupBox("Opaque candidate evidence")
         playback_box.setLayout(self.play_grid)
 
         self.now_playing = QLabel("READY")
+        self.now_playing.setAccessibleName("Current missing voice playback")
         self.now_playing.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.now_playing.setMinimumHeight(42)
         self.now_playing.setStyleSheet(
@@ -143,6 +177,8 @@ class MissingVoiceReuseReviewDialog(QDialog):
             "font-weight: 700; border-radius: 5px; padding: 7px; }"
         )
         self.stop = QPushButton("Stop audio")
+        self.stop.setAccessibleName("Stop missing voice review audio")
+        self.stop.setAccessibleDescription("Stop the current candidate playback")
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.stop.clicked.connect(self._stop)
         playback_controls = QHBoxLayout()
@@ -151,9 +187,10 @@ class MissingVoiceReuseReviewDialog(QDialog):
 
         self.decision_reason = QLabel()
         self.decision_reason.setWordWrap(True)
+        self.decision_reason.setAccessibleName("Missing voice decision availability")
         self.decision_buttons = {}
-        decisions = QHBoxLayout()
-        for candidate in self.bundle["candidates"]:
+        decisions = QGridLayout()
+        for index, candidate in enumerate(self.bundle["candidates"]):
             label = candidate["label"]
             button = QPushButton(
                 f"Use fallback {label} for these lines"
@@ -163,7 +200,12 @@ class MissingVoiceReuseReviewDialog(QDialog):
             button.clicked.connect(
                 lambda _checked=False, value=label: self._save_decision(value)
             )
-            decisions.addWidget(button)
+            button.setAccessibleName(f"Choose opaque candidate {label}")
+            button.setAccessibleDescription(
+                f"Save candidate {label} as the {self._decision_name} decision"
+            )
+            row, column = divmod(index, 2)
+            decisions.addWidget(button, row, column)
             self.decision_buttons[label] = button
         self.neither = QPushButton(
             "Keep these lines unresolved"
@@ -171,8 +213,22 @@ class MissingVoiceReuseReviewDialog(QDialog):
             else "Neither voice is acceptable"
         )
         self.neither.setShortcut(QKeySequence("Alt+N"))
+        self.neither.setAccessibleName(
+            "Keep failed lines unresolved"
+            if self.failed_control_mode
+            else "Reject all missing voice candidates"
+        )
         self.neither.clicked.connect(lambda: self._save_decision("neither"))
-        decisions.addWidget(self.neither)
+        self.neither.setAccessibleDescription(
+            "Keep this review unresolved instead of selecting a candidate"
+        )
+        decisions.addWidget(
+            self.neither,
+            (len(self.decision_buttons) + 1) // 2,
+            0,
+            1,
+            2,
+        )
         decision_layout = QVBoxLayout()
         decision_layout.addWidget(self.decision_reason)
         decision_layout.addLayout(decisions)
@@ -186,17 +242,33 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.status.setAccessibleName("Missing voice review operation status")
         close_buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close_buttons.rejected.connect(self.close)
+        self.close_button = close_buttons.button(QDialogButtonBox.StandardButton.Close)
+        self.close_button.setAccessibleName("Close missing voice review")
+        self.close_button.setAccessibleDescription(
+            "Close this review without making another decision"
+        )
 
+        review_content = QWidget()
+        review_layout = QVBoxLayout(review_content)
+        review_layout.setContentsMargins(0, 0, 0, 0)
+        review_layout.addWidget(self.progress)
+        review_layout.addWidget(self.instructions)
+        review_layout.addWidget(self.decision_context)
+        review_layout.addWidget(self.cohort_heading)
+        review_layout.addWidget(sample_box)
+        review_layout.addWidget(playback_box)
+        review_layout.addLayout(playback_controls)
+        review_layout.addWidget(decision_box)
+        review_layout.addWidget(self.status)
+        self.review_scroll = QScrollArea()
+        self.review_scroll.setAccessibleName("Scrollable missing voice review")
+        self.review_scroll.setWidgetResizable(True)
+        self.review_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.review_scroll.setWidget(review_content)
         layout = QVBoxLayout(self)
-        layout.addWidget(self.progress)
-        layout.addWidget(self.instructions)
-        layout.addWidget(self.decision_context)
-        layout.addWidget(self.cohort_heading)
-        layout.addWidget(sample_box)
-        layout.addWidget(playback_box, 1)
-        layout.addLayout(playback_controls)
-        layout.addWidget(decision_box)
-        layout.addWidget(self.status)
+        layout.addWidget(self.review_scroll, 1)
         layout.addWidget(close_buttons)
 
         self.audio_output = QAudioOutput(self)
@@ -206,6 +278,20 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._playback_error)
         self._load_next_cohort()
+        self.setTabOrder(self.decision_context.technical_toggle, self.previous)
+        self.setTabOrder(self.previous, self.sample_selector)
+        self.setTabOrder(self.sample_selector, self.next)
+        prior = self.next
+        for button in self.play_buttons.values():
+            self.setTabOrder(prior, button)
+            prior = button
+        self.setTabOrder(prior, self.stop)
+        prior = self.stop
+        for button in self.decision_buttons.values():
+            self.setTabOrder(prior, button)
+            prior = button
+        self.setTabOrder(prior, self.neither)
+        self.setTabOrder(self.neither, self.close_button)
 
     def _show_decision_context(self):
         context = self.bundle.get("decision_context")
@@ -309,7 +395,8 @@ class MissingVoiceReuseReviewDialog(QDialog):
             f"{self._cohort['sample_count']} required sample(s)"
         )
         self.status.setText(
-            "Replay remains available while a family decision is saved in the background."
+            f"Replay remains available while the {self._decision_name} decision "
+            "is saved in the background."
         )
         self._refresh_sample()
 
@@ -520,7 +607,8 @@ class MissingVoiceReuseReviewDialog(QDialog):
             self.decision_reason.setText("Review complete.")
         elif self.decision_runner.active:
             self.decision_reason.setText(
-                "Saving the family decision in background. Replay remains available."
+                f"Saving the {self._decision_name} decision in background. "
+                "Replay remains available."
             )
         elif not complete:
             self.decision_reason.setText(
@@ -529,7 +617,8 @@ class MissingVoiceReuseReviewDialog(QDialog):
             )
         elif ready:
             self.decision_reason.setText(
-                "Decision ready. Choose one complete opaque voice or Neither."
+                f"Decision ready. Choose one complete {self._decision_name} "
+                "candidate or Neither."
             )
         else:
             remaining = len(self._required_heard() - self._heard_keys())
@@ -540,8 +629,12 @@ class MissingVoiceReuseReviewDialog(QDialog):
     def _save_decision(self, decision):
         if self._cohort is None or self.decision_runner.active:
             return
+        if not self.confirmer(decision):
+            self.status.setText("Decision cancelled; review evidence is unchanged.")
+            return
         self.status.setText(
-            "Saving family decision in background. Replay remains available."
+            f"Saving {self._decision_name} decision in background. "
+            "Replay remains available."
         )
         self.decision_runner.start(
             self.decision_recorder,
@@ -550,6 +643,20 @@ class MissingVoiceReuseReviewDialog(QDialog):
             decision,
         )
         self._update_decisions()
+
+    def _confirm_decision(self, decision):
+        label = "Neither" if decision == "neither" else f"candidate {decision}"
+        return (
+            QMessageBox.question(
+                self,
+                "Save irreversible review decision?",
+                f"Save {label} for this {self._decision_name}? "
+                "This review window cannot revise it afterward.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        )
 
     def _decision_saved(self, _result, error):
         if error is not None:
@@ -602,7 +709,15 @@ class MissingVoiceReuseReviewDialog(QDialog):
 
 def launch_missing_voice_reuse_review(session_path):
     app = QApplication.instance() or QApplication(sys.argv)
-    dialog = MissingVoiceReuseReviewDialog(session_path)
+    try:
+        dialog = MissingVoiceReuseReviewDialog(session_path)
+    except MissingVoiceReuseReviewError as error:
+        QMessageBox.critical(
+            None,
+            "Unable to open missing-voice review",
+            f"Session: {Path(session_path).expanduser()}\n\n{error}",
+        )
+        return 2
     dialog.show()
     return app.exec()
 

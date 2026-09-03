@@ -15,7 +15,10 @@ from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
     ImporterAvailability,
 )
-from vntts.pregeneration_generation import OfflineGenerationCancelled  # noqa: E402
+from vntts.pregeneration_generation import (  # noqa: E402
+    OfflineGenerationCancelled,
+    OfflineGenerationProgress,
+)
 from vntts.pregeneration_queue import PregenerationQueueCancelled  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
@@ -274,6 +277,48 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             dialog.deleteLater()
 
+    def test_progress_card_polls_durable_counts_during_slow_generation(self):
+        with TemporaryDirectory() as temporary_directory:
+            content = inspect_story_index(
+                write_story_index(Path(temporary_directory) / "content")
+            )
+            generator = Mock()
+            generator.inspect_progress.side_effect = (
+                OfflineGenerationProgress(generated=1, active_phase="generating"),
+                OfflineGenerationProgress(
+                    generated=2,
+                    failed=1,
+                    active_phase="validating",
+                ),
+            )
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                generator=generator,
+            )
+            dialog._generation_input = Mock(ready_items=4)
+            dialog.generating = True
+            dialog.show()
+
+            dialog._start_generation_progress()
+            self.assertEqual(dialog.progress_bar.value(), 1)
+            self.assertIn("1 of 4", dialog.progress_counts.text())
+            self.assertIn("saved on disk", dialog.progress_guarantee.text())
+
+            dialog._poll_generation_progress()
+
+            self.assertEqual(dialog.progress_bar.value(), 3)
+            self.assertEqual(dialog.progress_phase.text(), "Checking generated audio")
+            self.assertIn("2 prepared, 1 failed", dialog.progress_counts.text())
+            self.assertIn("automatic recovery", dialog.progress_failures.text())
+            self.assertIn(
+                "only unfinished lines", dialog.progress_cancel_consequence.text()
+            )
+            dialog.generating = False
+            dialog.progress_timer.stop()
+            dialog.close()
+            dialog.deleteLater()
+
     def test_reopening_restores_the_last_story_selection(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -296,9 +341,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             pool = ManualThreadPool()
-            first = Mock(generated=1, failed=2)
-            final = Mock(generated=2, failed=1)
-            recovery_result = Mock(generation=final, recovered=1)
+            first = Mock(generated=1, failed=2, other_terminal=0)
+            final = Mock(generated=2, failed=0, other_terminal=1)
+            recovery_result = Mock(
+                generation=final,
+                recovered=1,
+                live_fallbacks=1,
+                remaining_failed=0,
+            )
             generator = Mock()
             generator.generate.return_value = first
             recovery = Mock()
@@ -306,7 +356,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             acceptance_result = Mock(generation=final, approved=2)
             acceptance = Mock()
             acceptance.accept.return_value = acceptance_result
-            pack_result = Mock()
+            pack_result = Mock(
+                approved=2,
+                live_fallbacks=1,
+                story_lines=3,
+                omissions=0,
+            )
             publisher = Mock()
             publisher.publish.return_value = pack_result
             dialog = OfflineAudioPreparationDialog(
@@ -331,6 +386,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(dialog.recovering)
             self.assertEqual(dialog.cancel_button.text(), "Cancel automatic recovery")
             self.assertIn("2 unfinished lines", dialog.resume_status.text())
+            self.assertEqual(dialog.progress_phase.text(), "Recovering failed lines")
+            self.assertIn("2 failed items", dialog.progress_failures.text())
             pool.tasks.pop().run()
             self.application.processEvents()
 
@@ -348,6 +405,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIs(dialog.generation_result(), final)
             self.assertIs(dialog.recovery_result(), recovery_result)
             self.assertIs(dialog.pack_result(), pack_result)
+            self.assertEqual(dialog.progress_phase.text(), "Offline audio is ready")
+            self.assertIn("1 original-game-audio", dialog.progress_coverage.text())
+            self.assertIn("2 prepared lines", dialog.progress_coverage.text())
+            self.assertIn("1 live fallback", dialog.progress_coverage.text())
+            self.assertEqual(dialog.continue_button.text(), "Use prepared audio")
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+            dialog.continue_button.click()
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
             dialog.deleteLater()
 

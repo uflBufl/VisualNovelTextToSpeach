@@ -21,7 +21,7 @@ class SupportCenterDialog(QDialog):
     def __init__(self, event_log, parent=None):
         super().__init__(parent)
         self.event_log = event_log
-        self.setWindowTitle("Diagnostics and logs")
+        self.setWindowTitle("Support and logs")
         self.setMinimumSize(620, 420)
         self.resize(760, 520)
 

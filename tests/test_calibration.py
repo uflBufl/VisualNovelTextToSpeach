@@ -136,18 +136,19 @@ class DialogRegionOverlayTest(unittest.TestCase):
             dialog.cancel_button,
         ):
             self.assertTrue(widget.accessibleName())
-        rejected = []
-        dialog.rejected.connect(lambda: rejected.append(True))
+        finished = []
+        dialog.finished.connect(finished.append)
         dialog.show()
-        dialog.retry_button.setFocus()
-        QTest.keyClick(dialog.retry_button, Qt.Key.Key_Return)
+        dialog.retry_button.click()
         self.application.processEvents()
 
-        self.assertEqual(rejected, [True])
+        self.assertEqual(finished, [CalibrationReviewDialog.DrawAgain])
         dialog.deleteLater()
 
     def test_overlay_can_select_adjust_retry_and_accept_with_keyboard(self):
-        decisions = iter([QDialog.DialogCode.Rejected, QDialog.DialogCode.Accepted])
+        decisions = iter(
+            [CalibrationReviewDialog.DrawAgain, QDialog.DialogCode.Accepted]
+        )
         crop_sizes = []
 
         class Reviewer:
@@ -195,6 +196,35 @@ class DialogRegionOverlayTest(unittest.TestCase):
             self.assertAlmostEqual(selected[0].left, 0.08, places=2)
             self.assertAlmostEqual(selected[0].top, 0.62, places=2)
             self.assertTrue(Path(temporary_directory, "region.json").is_file())
+            overlay.deleteLater()
+
+    def test_review_cancel_closes_the_calibration_flow(self):
+        class Reviewer:
+            def __init__(self, _image):
+                pass
+
+            def exec(self):
+                return QDialog.DialogCode.Rejected
+
+        with TemporaryDirectory() as temporary_directory:
+            overlay = DialogRegionOverlay(
+                Path(temporary_directory) / "region.json",
+                background=Image.new("RGB", (1600, 900), "black"),
+                reviewer=Reviewer,
+            )
+            selected = []
+            closed = []
+            overlay.selected.connect(selected.append)
+            overlay.closed.connect(lambda: closed.append(True))
+            overlay.resize(800, 450)
+            overlay.show()
+
+            overlay._review_rectangle(QRect(80, 270, 640, 144))
+            self.application.processEvents()
+
+            self.assertEqual(selected, [])
+            self.assertEqual(closed, [True])
+            self.assertFalse(overlay.isVisible())
             overlay.deleteLater()
 
     def test_negative_monitor_and_scaled_pixels_keep_normalized_geometry(self):

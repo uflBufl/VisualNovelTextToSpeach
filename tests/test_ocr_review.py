@@ -151,7 +151,9 @@ class OCRReviewDialogTest(unittest.TestCase):
                 "Reverse: 1999",
                 corrections_changed,
             )
+            self.assertFalse(dialog.save_button.isEnabled())
             dialog.corrected_character.setText("Marcus")
+            self.assertTrue(dialog.save_button.isEnabled())
             dialog.corrected_text.setPlainText("Hello timekeeper.")
 
             dialog.save_correction()

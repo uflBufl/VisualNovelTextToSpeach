@@ -90,6 +90,8 @@ class DialogueHistoryDialogTest(unittest.TestCase):
         self.assertEqual(dialog.search_label.buddy(), dialog.search)
         self.assertEqual(dialog.details.accessibleName(), "Selected dialogue details")
         self.assertEqual(dialog.details_label.buddy(), dialog.details)
+        self.assertFalse(dialog.replay_button.isEnabled())
+        self.assertEqual(dialog.stop_button.text(), "Stop replay")
 
         dialog.deleteLater()
 

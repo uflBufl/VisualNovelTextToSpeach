@@ -1267,6 +1267,29 @@ class LiveDialogReaderTest(unittest.TestCase):
         options.update(overrides)
         return LiveDialogReader(**options)
 
+    def test_runtime_control_snapshot_reports_actual_playback_capabilities(self):
+        reader = self.create_reader()
+        chunk = SpeechChunk(3, "Alice", "Hello.")
+        pending = Future()
+        reader.active_generation = 3
+        reader.current_chunk = chunk
+        reader.last_spoken_chunk = chunk
+        reader.speech_futures[pending] = chunk
+        reader.paused = True
+
+        self.assertEqual(
+            reader.runtime_control_snapshot(),
+            {
+                "paused": True,
+                "speaking": True,
+                "queued": True,
+                "replayable": True,
+            },
+        )
+
+        reader.suppressed_generation = 3
+        self.assertFalse(reader.runtime_control_snapshot()["replayable"])
+
     def test_capture_loop_speaks_stable_text(self):
         stop_event = Event()
         snapshots = iter([("Alice", "Hello."), ("Alice", "Hello.")])

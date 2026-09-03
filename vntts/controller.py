@@ -9,6 +9,7 @@ from time import monotonic
 
 from vntts.assets import ModelAssetManager
 from vntts.auto_advance import DialogueAdvancer
+from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.controller_components import (
     DiagnosticsComponent,
@@ -2158,9 +2159,9 @@ class AppController:
         return self.capture_target is not None and self.capture_target.is_focused()
 
     def _live_auto_advance_callback(self):
-        if (
-            not self.settings.auto_advance_enabled
-            or self.settings.live_sequence_mode == "audio-manual"
+        if not self.settings.auto_advance_enabled or not auto_advance_allowed(
+            self.settings.capture_mode,
+            self.settings.live_sequence_mode,
         ):
             return None
         if self.settings.live_sequence_mode == "audio-auto":
@@ -2222,7 +2223,10 @@ class AppController:
     def _auto_advance_dialog(self, *, focus_verified=False):
         if (
             not self.settings.auto_advance_enabled
-            or self.settings.live_sequence_mode == "audio-manual"
+            or not auto_advance_allowed(
+                self.settings.capture_mode,
+                self.settings.live_sequence_mode,
+            )
             or (not focus_verified and not self._is_game_focused())
         ):
             return False

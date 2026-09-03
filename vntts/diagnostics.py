@@ -100,3 +100,24 @@ def diagnostic_error_guidance(error, *, platform=None):
             f"application, and restart it. Details: {message}"
         )
     return message
+
+
+def diagnostic_remediation(message, *, platform=None):
+    """Return the one recovery action appropriate for a diagnostics warning."""
+    normalized = str(message).casefold()
+    if (platform or sys.platform) == "darwin" and any(
+        phrase in normalized
+        for phrase in (
+            "permission",
+            "privacy & security",
+            "screen & system audio recording",
+            "accessibility",
+        )
+    ):
+        return "macos-permissions", "Open macOS permissions"
+    if "window" in normalized and any(
+        phrase in normalized
+        for phrase in ("not found", "unavailable", "minimized", "closed", "select")
+    ):
+        return "settings", "Open Settings"
+    return None

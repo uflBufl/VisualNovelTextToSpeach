@@ -57,6 +57,8 @@ class OCRCorrectionsDialog(QDialog):
         )
         profile_index = self.tabs.addTab(profile_page, profile_label)
         self.tabs.setTabEnabled(profile_index, profile_id is not None)
+        if profile_id is not None:
+            self.tabs.setCurrentIndex(profile_index)
 
         note = QLabel(
             "Corrections match complete words or phrases without changing case "

@@ -10,6 +10,7 @@ from PySide6.QtCore import (
     QBuffer,
     QByteArray,
     QIODevice,
+    Qt,
     QThreadPool,
     QUrl,
 )
@@ -22,15 +23,19 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QHBoxLayout,
+    QGridLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.async_ui import LatestTaskRunner
@@ -116,14 +121,26 @@ class FailureReferenceAuditDialog(QDialog):
         self.progress.setFormat("%v of %m groups decided")
         self.summary = QLabel()
         self.summary.setWordWrap(True)
+        self.summary.setAccessibleName("Current failed-reference review summary")
         self.status = QLabel(
             "READY: compare source audio or generate a non-authoritative voice sample."
         )
         self.status.setWordWrap(True)
+        self.status.setAccessibleName("Failed-reference review status")
         self.group_choice = QComboBox()
         self.group_choice.setAccessibleName("Failed-reference control group")
+        self.group_choice.setAccessibleDescription(
+            "Choose one failed-reference group to review"
+        )
+        self.group_label = QLabel("Reference group")
+        self.group_label.setBuddy(self.group_choice)
         self.candidate_choice = QComboBox()
         self.candidate_choice.setAccessibleName("Blinded reference candidate")
+        self.candidate_choice.setAccessibleDescription(
+            "Choose one blinded source recording from the current group"
+        )
+        self.candidate_label = QLabel("Candidate")
+        self.candidate_label.setBuddy(self.candidate_choice)
         self.group_choice.currentIndexChanged.connect(self._show_group)
         self.candidate_choice.currentIndexChanged.connect(self._candidate_changed)
         self.preview_text_choice = QComboBox()
@@ -131,7 +148,22 @@ class FailureReferenceAuditDialog(QDialog):
         self.preview_text_choice.setAccessibleDescription(
             "Choose one affected line to synthesize with the selected reference"
         )
+        self.preview_text_label = QLabel("Preview phrase")
+        self.preview_text_label.setBuddy(self.preview_text_choice)
         self.preview_text_choice.currentIndexChanged.connect(self._preview_text_changed)
+        for choice in (
+            self.group_choice,
+            self.candidate_choice,
+            self.preview_text_choice,
+        ):
+            choice.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            choice.setMinimumContentsLength(16)
+            choice.setSizePolicy(
+                QSizePolicy.Policy.Ignored,
+                QSizePolicy.Policy.Fixed,
+            )
 
         self.candidate_heading = QLabel()
         self.candidate_heading.setAccessibleName("Current blinded candidate")
@@ -153,14 +185,26 @@ class FailureReferenceAuditDialog(QDialog):
         self.cases.setColumnWidth(1, 150)
         self.technical_details = QCheckBox("Show affected failed lines")
         self.technical_details.setAccessibleName("Show affected failed line details")
+        self.technical_details.setAccessibleDescription(
+            "Reveal the exact failed lines affected by this reference decision"
+        )
         self.technical_details.toggled.connect(self.cases.setVisible)
         self.cases.setVisible(False)
 
         self.play = QPushButton("Play selected candidate")
         self.stop = QPushButton("Stop")
+        self.play.setAccessibleName("Play selected source candidate")
+        self.play.setAccessibleDescription(
+            "Play the selected checksum-bound source candidate through to the end"
+        )
+        self.stop.setAccessibleName("Stop source candidate playback")
+        self.stop.setAccessibleDescription("Stop source or generated preview playback")
         self.generate_preview = QPushButton("Generate voice sample")
         self.replay_preview = QPushButton("Replay generated sample")
         self.cancel_preview = QPushButton("Cancel generation")
+        self.generate_preview.setAccessibleName("Generate optional voice sample")
+        self.replay_preview.setAccessibleName("Replay optional generated sample")
+        self.cancel_preview.setAccessibleName("Cancel optional sample generation")
         self.generate_preview.setAccessibleDescription(
             "Render the selected affected phrase with this reference without saving "
             "authoring state or making a reference decision"
@@ -173,6 +217,8 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self.choose = QPushButton("Use selected candidate")
         self.neither = QPushButton("None of these references is suitable")
+        self.choose.setAccessibleName("Use selected source reference")
+        self.neither.setAccessibleName("Reject all source reference candidates")
         self.choose.setAccessibleDescription(
             "Select this source recording for later explicit voice binding"
         )
@@ -182,6 +228,10 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self.previous = QPushButton("Previous group")
         self.next = QPushButton("Next group")
+        self.previous.setAccessibleName("Previous failed-reference group")
+        self.previous.setAccessibleDescription("Select the previous reference group")
+        self.next.setAccessibleName("Next failed-reference group")
+        self.next.setAccessibleDescription("Select the next reference group")
         self.action_reason = QLabel()
         self.action_reason.setAccessibleName("Reference decision availability")
         self.action_reason.setWordWrap(True)
@@ -195,41 +245,71 @@ class FailureReferenceAuditDialog(QDialog):
         self.previous.clicked.connect(lambda: self._move_group(-1))
         self.next.clicked.connect(lambda: self._move_group(1))
 
-        playback = QHBoxLayout()
-        playback.addWidget(self.candidate_choice, 1)
-        playback.addWidget(self.play)
-        playback.addWidget(self.stop)
-        preview = QHBoxLayout()
-        preview.addWidget(self.preview_text_choice, 1)
-        preview.addWidget(self.generate_preview)
-        preview.addWidget(self.replay_preview)
-        preview.addWidget(self.cancel_preview)
-        decisions_row = QHBoxLayout()
-        decisions_row.addWidget(self.previous)
-        decisions_row.addStretch()
-        decisions_row.addWidget(self.choose)
-        decisions_row.addWidget(self.neither)
-        decisions_row.addStretch()
-        decisions_row.addWidget(self.next)
+        playback = QGridLayout()
+        playback.addWidget(self.candidate_label, 0, 0)
+        playback.addWidget(self.candidate_choice, 0, 1)
+        playback.addWidget(self.play, 1, 0)
+        playback.addWidget(self.stop, 1, 1)
+        self.preview_toggle = QToolButton()
+        self.preview_toggle.setText("Optional generated preview")
+        self.preview_toggle.setCheckable(True)
+        self.preview_toggle.setChecked(False)
+        self.preview_toggle.setAccessibleName("Show optional generated preview")
+        self.preview_toggle.setAccessibleDescription(
+            "Reveal non-authoritative generated preview controls"
+        )
+        self.preview_panel = QWidget()
+        preview = QGridLayout(self.preview_panel)
+        preview.setContentsMargins(0, 0, 0, 0)
+        preview.addWidget(self.preview_text_label, 0, 0)
+        preview.addWidget(self.preview_text_choice, 0, 1)
+        preview.addWidget(self.generate_preview, 1, 0, 1, 2)
+        preview.addWidget(self.replay_preview, 2, 0)
+        preview.addWidget(self.cancel_preview, 2, 1)
+        self.preview_panel.hide()
+        self.preview_toggle.toggled.connect(self.preview_panel.setVisible)
+        decisions_row = QGridLayout()
+        decisions_row.addWidget(self.choose, 0, 0)
+        decisions_row.addWidget(self.neither, 0, 1)
+        decisions_row.addWidget(self.previous, 1, 0)
+        decisions_row.addWidget(self.next, 1, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
+        self.close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        self.close_button.setAccessibleName("Close failed-reference audit")
+        self.close_button.setAccessibleDescription(
+            "Close this audit without making another reference decision"
+        )
 
+        review_content = QWidget()
+        review_layout = QVBoxLayout(review_content)
+        review_layout.setContentsMargins(0, 0, 0, 0)
+        review_layout.addWidget(self.heading)
+        review_layout.addWidget(self.explanation)
+        review_layout.addWidget(self.decision_context)
+        review_layout.addWidget(self.progress)
+        review_layout.addWidget(self.summary)
+        review_layout.addWidget(self.status)
+        review_layout.addWidget(self.group_label)
+        review_layout.addWidget(self.group_choice)
+        review_layout.addWidget(self.candidate_heading)
+        review_layout.addWidget(self.candidate_heard)
+        review_layout.addLayout(playback)
+        review_layout.addWidget(self.preview_toggle)
+        review_layout.addWidget(self.preview_panel)
+        review_layout.addWidget(self.action_reason)
+        review_layout.addLayout(decisions_row)
+        review_layout.addWidget(self.technical_details)
+        review_layout.addWidget(self.cases)
+        self.review_scroll = QScrollArea()
+        self.review_scroll.setAccessibleName("Scrollable failed-reference audit")
+        self.review_scroll.setWidgetResizable(True)
+        self.review_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.review_scroll.setWidget(review_content)
         layout = QVBoxLayout(self)
-        layout.addWidget(self.heading)
-        layout.addWidget(self.explanation)
-        layout.addWidget(self.decision_context)
-        layout.addWidget(self.progress)
-        layout.addWidget(self.summary)
-        layout.addWidget(self.status)
-        layout.addWidget(self.group_choice)
-        layout.addWidget(self.candidate_heading)
-        layout.addWidget(self.candidate_heard)
-        layout.addLayout(playback)
-        layout.addLayout(preview)
-        layout.addWidget(self.action_reason)
-        layout.addLayout(decisions_row)
-        layout.addWidget(self.technical_details)
-        layout.addWidget(self.cases, 1)
+        layout.addWidget(self.review_scroll, 1)
         layout.addWidget(buttons)
 
         self.audio_output = QAudioOutput(self)
@@ -262,10 +342,12 @@ class FailureReferenceAuditDialog(QDialog):
             QKeySequence("Ctrl+Alt+Right"), self, activated=lambda: self._move_group(1)
         )
 
+        self.setTabOrder(self.decision_context.technical_toggle, self.group_choice)
         self.setTabOrder(self.group_choice, self.candidate_choice)
         self.setTabOrder(self.candidate_choice, self.play)
         self.setTabOrder(self.play, self.stop)
-        self.setTabOrder(self.stop, self.preview_text_choice)
+        self.setTabOrder(self.stop, self.preview_toggle)
+        self.setTabOrder(self.preview_toggle, self.preview_text_choice)
         self.setTabOrder(self.preview_text_choice, self.generate_preview)
         self.setTabOrder(self.generate_preview, self.replay_preview)
         self.setTabOrder(self.replay_preview, self.cancel_preview)
@@ -274,6 +356,7 @@ class FailureReferenceAuditDialog(QDialog):
         self.setTabOrder(self.neither, self.previous)
         self.setTabOrder(self.previous, self.next)
         self.setTabOrder(self.next, self.technical_details)
+        self.setTabOrder(self.technical_details, self.close_button)
 
         for index, group in enumerate(self.document["groups"], start=1):
             voice = group["synthesis_voice_character"]

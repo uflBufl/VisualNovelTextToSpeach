@@ -58,7 +58,7 @@ class AssetManagerDialogTest(unittest.TestCase):
 
         model_manager.download.side_effect = download
         dialog = AssetManagerDialog(
-            AppSettings(xtts_terms_accepted=True),
+            AppSettings(speech_backend="coqui-xtts", xtts_terms_accepted=True),
             model_manager=model_manager,
             voice_manager=Mock(),
         )
@@ -69,6 +69,23 @@ class AssetManagerDialogTest(unittest.TestCase):
         self.assertEqual(dialog.progress.value(), 100)
         self.assertIn("Model ready", dialog.model_status.text())
         self.assertEqual(dialog.settings().tts_model, default_model)
+
+    def test_default_pocket_backend_offers_only_character_voice_assets(self):
+        model_manager = Mock()
+        model_manager.model_path.return_value = Path("managed/model")
+        dialog = AssetManagerDialog(
+            AppSettings(),
+            model_manager=model_manager,
+            voice_manager=Mock(),
+        )
+
+        self.assertEqual(dialog.windowTitle(), "Character voices")
+        self.assertEqual(dialog.tabs.count(), 1)
+        self.assertEqual(dialog.tabs.tabText(0), "Character voices")
+        dialog.download_model()
+        model_manager.download.assert_not_called()
+        dialog.accept_settings()
+        self.assertIsNone(dialog.settings().tts_model)
 
     def test_cancel_button_sets_download_event(self):
         model_manager = Mock()

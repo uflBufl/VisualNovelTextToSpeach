@@ -2,22 +2,37 @@
 
 from PySide6.QtWidgets import QDialog
 
+from vntts.auto_advance_policy import (
+    auto_advance_control_state,
+    guard_auto_advance_settings,
+)
+
 
 class DurableSettingsMixin:
     """Persist settings candidates before publishing them to runtime state."""
 
     def toggle_auto_advance(self, enabled):
-        candidate = self.settings.updated(auto_advance_enabled=bool(enabled))
+        allowed, effective, reason = auto_advance_control_state(
+            self.settings.capture_mode,
+            self.settings.live_sequence_mode,
+            enabled,
+        )
+        if not allowed:
+            self._update_auto_advance_action()
+            self.set_status(reason)
+            return
+        candidate = guard_auto_advance_settings(
+            self.settings.updated(auto_advance_enabled=effective)
+        )
         try:
             candidate.save()
         except OSError as error:
-            self.auto_advance_action.blockSignals(True)
-            self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
-            self.auto_advance_action.blockSignals(False)
+            self._update_auto_advance_action()
             self.show_error(f"Unable to save auto-advance setting: {error}")
             return
         self.settings = candidate
-        self.controller.set_auto_advance_enabled(enabled)
+        self._update_auto_advance_action()
+        self.controller.set_auto_advance_enabled(effective)
 
     def update_profile_region(self, region):
         profile_id = self.settings.active_profile_id
@@ -53,6 +68,7 @@ class DurableSettingsMixin:
             self.show_dashboard()
             return
         self.settings = candidate
+        self._update_auto_advance_action()
         self.controller.apply_settings(candidate)
         self.set_ready(self.controller.is_ready)
         wizard.deleteLater()

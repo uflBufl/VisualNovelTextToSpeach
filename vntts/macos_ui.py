@@ -119,6 +119,23 @@ class MacOSPermissionsDialog(QDialog):
             return
         self.screen_status.setText(self._status_text(status["screen_capture"]))
         self.accessibility_status.setText(self._status_text(status["accessibility"]))
+        self._set_permission_actions(
+            status["screen_capture"],
+            self.request_screen_button,
+            self.open_screen_button,
+        )
+        self._set_permission_actions(
+            status["accessibility"],
+            self.request_accessibility_button,
+            self.open_accessibility_button,
+        )
+
+    @staticmethod
+    def _set_permission_actions(granted, request_button, settings_button):
+        request_button.setVisible(granted is not True)
+        settings_button.setText(
+            "Manage in Settings" if granted is True else "Open Settings"
+        )
 
     def request_screen(self):
         self._request_permission(

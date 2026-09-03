@@ -81,9 +81,17 @@ class OCRReviewDialog(QDialog):
         form.addRow("Save correction for", self.scope)
 
         self.save_button = QPushButton("Save correction and resolve")
+        self.save_button.setAccessibleDescription(
+            "Enabled after the detected speaker or dialogue text is corrected"
+        )
+        self.save_button.setToolTip(
+            "Change the detected speaker or text before saving a correction."
+        )
         self.resolve_button = QPushButton("Resolve without correction")
         self.save_button.clicked.connect(self.save_correction)
         self.resolve_button.clicked.connect(self.resolve_without_correction)
+        self.corrected_character.textChanged.connect(self._update_save_enabled)
+        self.corrected_text.textChanged.connect(self._update_save_enabled)
         actions = QHBoxLayout()
         actions.addWidget(self.save_button)
         actions.addWidget(self.resolve_button)
@@ -148,9 +156,9 @@ class OCRReviewDialog(QDialog):
         sample = self.samples[row] if 0 <= row < len(self.samples) else None
         self._reset_resolve_confirmation()
         enabled = sample is not None
-        self.save_button.setEnabled(enabled and not self._write_active)
         self.resolve_button.setEnabled(enabled and not self._write_active)
         if sample is None:
+            self.save_button.setEnabled(False)
             self.progress.setText(f"Pending OCR samples: {len(self.samples)}")
             self.preview.setText("No uncertain screenshots to review")
             self.preview.setPixmap(QPixmap())
@@ -180,6 +188,18 @@ class OCRReviewDialog(QDialog):
         )
         self.corrected_character.setText(sample.character)
         self.corrected_text.setPlainText(sample.text)
+        self._update_save_enabled()
+
+    def _update_save_enabled(self, *_args):
+        sample = self.current_sample()
+        changed = bool(
+            sample is not None
+            and (
+                self.corrected_character.text().strip() != sample.character.strip()
+                or self.corrected_text.toPlainText().strip() != sample.text.strip()
+            )
+        )
+        self.save_button.setEnabled(changed and not self._write_active)
 
     def save_correction(self):
         sample = self.current_sample()

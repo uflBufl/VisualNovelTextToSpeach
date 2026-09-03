@@ -330,6 +330,7 @@ class CohortReviewBundleDialog(QDialog):
         self.bad_reasons = defaultdict(dict)
         self._updating_defect_controls = False
         self._load_active = False
+        self._load_failed = False
         self._playback_prepare_active = False
         self._decision_active = False
         self._observation_active = False
@@ -360,6 +361,7 @@ class CohortReviewBundleDialog(QDialog):
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         self.summary.setObjectName("reviewSummary")
+        self.summary.setAccessibleName("Cohort review summary")
         self.quality_baseline = QLabel()
         self.quality_baseline.setWordWrap(True)
         self.quality_baseline.setObjectName("qualityBaseline")
@@ -371,6 +373,7 @@ class CohortReviewBundleDialog(QDialog):
         self.status = QLabel("Loading exact review authorities...")
         self.status.setWordWrap(True)
         self.status.setObjectName("reviewStatus")
+        self.status.setAccessibleName("Cohort review status")
         self.operation = QLabel()
         self.operation.setWordWrap(True)
         self.operation.setAccessibleName("Cohort review operation status")
@@ -381,9 +384,15 @@ class CohortReviewBundleDialog(QDialog):
         self.progress.hide()
         self.cohort_choice = QComboBox()
         self.cohort_choice.setAccessibleName("Specialist review cohort")
+        self.cohort_choice.setAccessibleDescription(
+            "Choose one checksum-bound cohort from the current review bundle"
+        )
         self.cohort_choice.currentIndexChanged.connect(self._show_current_cohort)
         self.technical_details = QCheckBox("Show technical details")
         self.technical_details.setAccessibleName("Show cohort technical details")
+        self.technical_details.setAccessibleDescription(
+            "Reveal technical sample columns and cohort authority details"
+        )
         self.technical_details.toggled.connect(self._toggle_technical_details)
         self.cohort_audit = QLabel()
         self.cohort_audit.setWordWrap(True)
@@ -394,15 +403,18 @@ class CohortReviewBundleDialog(QDialog):
 
         self.sample_position = QLabel("No sample selected")
         self.sample_position.setObjectName("samplePosition")
+        self.sample_position.setAccessibleName("Selected sample position")
         self.sample_identity = QLabel()
         self.sample_identity.setWordWrap(True)
         self.sample_identity.setObjectName("sampleIdentity")
+        self.sample_identity.setAccessibleName("Selected sample identity")
         self.sample_text = QLabel()
         self.sample_text.setWordWrap(True)
         self.sample_text.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.sample_text.setObjectName("sampleText")
+        self.sample_text.setAccessibleName("Selected sample text")
         self.sample_text.setMinimumHeight(48)
 
         self.table = QTableWidget(0, 8)
@@ -419,6 +431,9 @@ class CohortReviewBundleDialog(QDialog):
             ]
         )
         self.table.setAccessibleName("Checksum-bound specialist review samples")
+        self.table.setAccessibleDescription(
+            "Select one exact generated sample for playback and assessment"
+        )
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -450,6 +465,53 @@ class CohortReviewBundleDialog(QDialog):
         self.reject.setObjectName("rejectCohort")
         self.retry_load = QPushButton("Retry bundle load")
         self.retry_load.hide()
+        for button, name, description in (
+            (self.previous, "Previous cohort sample", "Select the previous sample"),
+            (
+                self.replay,
+                "Play selected cohort sample",
+                "Play the selected checksum-bound sample through to the end",
+            ),
+            (self.stop, "Stop cohort sample", "Stop current sample playback"),
+            (self.next, "Next cohort sample", "Select the next sample"),
+            (
+                self.mark_bad,
+                "Mark selected cohort sample bad",
+                "Mark or clear speech-defect evidence for the selected sample",
+            ),
+            (
+                self.need_another,
+                "Request more cohort evidence",
+                "Keep this cohort unresolved and request more evidence",
+            ),
+            (
+                self.leave_undecided,
+                "Leave cohort review undecided",
+                "Close without making another cohort decision",
+            ),
+            (
+                self.repair_marked,
+                "Repair marked cohort samples",
+                "Repair marked WAVs while leaving unsampled items pending",
+            ),
+            (
+                self.accept,
+                "Accept current cohort",
+                "Accept every fully heard acceptable sample in this exact cohort",
+            ),
+            (
+                self.reject,
+                "Reject current cohort",
+                "Reject every WAV in this exact cohort after required listening",
+            ),
+            (
+                self.retry_load,
+                "Retry cohort bundle load",
+                "Retry loading and validating the current checksum-bound bundle",
+            ),
+        ):
+            button.setAccessibleName(name)
+            button.setAccessibleDescription(description)
         self.previous.clicked.connect(lambda: self._move(-1))
         self.replay.clicked.connect(self.play_selected)
         self.stop.clicked.connect(self.stop_playback)
@@ -481,6 +543,9 @@ class CohortReviewBundleDialog(QDialog):
         for index, (reason, label) in enumerate(_DEFECT_REASON_LABELS.items()):
             control = QCheckBox(label)
             control.setAccessibleName(f"Bad sample reason: {label}")
+            control.setAccessibleDescription(
+                "Record this speech defect for the selected heard sample"
+            )
             control.toggled.connect(self._defect_reasons_changed)
             self.defect_checks[reason] = control
             defect_layout.addWidget(control, index // 2, index % 2)
@@ -498,6 +563,7 @@ class CohortReviewBundleDialog(QDialog):
         )
         self.shortcuts_help.setWordWrap(True)
         self.shortcuts_help.setObjectName("shortcutHelp")
+        self.shortcuts_help.setAccessibleName("Cohort review keyboard shortcuts")
 
         progress_layout = QGridLayout()
         progress_layout.addWidget(self.summary, 0, 0)
@@ -511,6 +577,9 @@ class CohortReviewBundleDialog(QDialog):
         progress_group.setLayout(progress_layout)
 
         cohort_header = QHBoxLayout()
+        self.cohort_choice_label = QLabel("Cohort")
+        self.cohort_choice_label.setBuddy(self.cohort_choice)
+        cohort_header.addWidget(self.cohort_choice_label)
         cohort_header.addWidget(self.cohort_choice, 1)
         cohort_header.addWidget(self.technical_details)
         cohort_layout = QVBoxLayout()
@@ -595,6 +664,27 @@ class CohortReviewBundleDialog(QDialog):
         self._operation_timer.setInterval(250)
         self._operation_timer.timeout.connect(self._update_operation_status)
 
+        focus_order = [
+            self.decision_context.technical_toggle,
+            self.retry_load,
+            self.cohort_choice,
+            self.technical_details,
+            self.previous,
+            self.replay,
+            self.stop,
+            self.next,
+            self.table,
+            *self.defect_checks.values(),
+            self.mark_bad,
+            self.need_another,
+            self.leave_undecided,
+            self.repair_marked,
+            self.accept,
+            self.reject,
+        ]
+        for current, following in zip(focus_order, focus_order[1:]):
+            self.setTabOrder(current, following)
+
         previous_shortcut = QShortcut(
             QKeySequence("Left"), self.table, activated=lambda: self._move(-1)
         )
@@ -634,6 +724,7 @@ class CohortReviewBundleDialog(QDialog):
         if self._load_active or self._decision_active:
             return
         self._load_active = True
+        self._load_failed = False
         self.status.setText("Loading and checksum-validating all bundle sources...")
         self._update_actions()
         operation = self.sample_loader
@@ -652,6 +743,7 @@ class CohortReviewBundleDialog(QDialog):
             return
         self._load_active = False
         if error is not None:
+            self._load_failed = True
             self.quality_gate_context = None
             self.quality_baseline.hide()
             self.samples = ()
@@ -662,6 +754,7 @@ class CohortReviewBundleDialog(QDialog):
             self._update_actions()
             return
         self.retry_load.hide()
+        self._load_failed = False
         if self._resumable_load:
             if self.quality_gate_path is None:
                 _resume, bundle, samples, assessments = result
@@ -731,9 +824,13 @@ class CohortReviewBundleDialog(QDialog):
             f"{completed} of {total} cohorts completed in this review session"
         )
         self.summary.setText(
-            f"{remaining} required cohorts remain. Hear "
-            f"{self.bundle.document['sample_item_count']} samples to decide "
-            f"{self.bundle.document['pending_item_count']} pending WAVs."
+            "Review complete. All required cohorts were saved."
+            if remaining == 0
+            else (
+                f"{remaining} required cohorts remain. Hear "
+                f"{self.bundle.document['sample_item_count']} samples to decide "
+                f"{self.bundle.document['pending_item_count']} pending WAVs."
+            )
         )
         self.summary.setToolTip(
             f"{self.bundle.document['workspace_count']} source workspaces; "
@@ -755,7 +852,11 @@ class CohortReviewBundleDialog(QDialog):
                 f"Gate {context.gate_id}; matched {remaining} remaining cohorts"
             )
             self.quality_baseline.show()
-        self.status.setText(status or "READY: play the selected sample")
+        self.status.setText(
+            "COMPLETE: all required cohorts are saved"
+            if remaining == 0
+            else status or "READY: play the selected sample"
+        )
         self._populate_cohorts()
 
     def _populate_cohorts(self):
@@ -812,9 +913,16 @@ class CohortReviewBundleDialog(QDialog):
         samples = self._current_samples()
         key = self._current_key()
         if sample is None or key is None:
-            self.sample_position.setText("No sample selected")
+            completed = self.bundle.document["cohort_count"] == 0
+            self.sample_position.setText(
+                "Review complete" if completed else "No sample selected"
+            )
             self.sample_identity.clear()
-            self.sample_text.setText("Select a cohort and sample to begin.")
+            self.sample_text.setText(
+                "All required cohorts are complete."
+                if completed
+                else "Select a cohort and sample to begin."
+            )
             self.cohort_audit.clear()
             self.decision_context.set_context(
                 {
@@ -1297,11 +1405,21 @@ class CohortReviewBundleDialog(QDialog):
             return
         if self._checkpoint_decisions:
             task_result = result
+            if task_result.projection.next_bundle.document["cohort_count"] == 0:
+                self._resumable_load = False
+                self._load_failed = False
+                self.retry_load.hide()
+                self._apply_loaded_bundle(
+                    task_result.projection.next_bundle,
+                    (),
+                )
+                return
             if task_result.refresh_error is not None or task_result.bundle is None:
                 self.bundle = task_result.projection.next_bundle
                 self.samples = ()
                 self.samples_by_cohort = {}
                 self._resumable_load = True
+                self._load_failed = True
                 self.status.setText(
                     "SAVED, BUT REFRESH BLOCKED: source authority committed; "
                     f"press Retry after resolving {task_result.refresh_error}"
@@ -1327,6 +1445,7 @@ class CohortReviewBundleDialog(QDialog):
                 f"be recovered on reopen ({task_result.checkpoint_error}); {timing}"
             )
             self._resumable_load = task_result.checkpoint_error is not None
+            self._load_failed = False
             self.retry_load.hide()
             self._apply_loaded_bundle(
                 task_result.bundle,
@@ -1491,9 +1610,11 @@ class CohortReviewBundleDialog(QDialog):
             f"Reject all {item_count} WAVs" if item_count else "Reject cohort"
         )
         self.retry_load.setEnabled(
-            not self._load_active and not self.samples and not self._decision_active
+            self._load_failed and not self._load_active and not self._decision_active
         )
-        self.retry_load.setVisible(not self.samples and not self._load_active)
+        self.retry_load.setVisible(
+            self._load_failed and not self._load_active and not self._decision_active
+        )
         if key is not None and samples:
             self.cohort_choice.setToolTip(
                 f"Current cohort: {len(heard)}/{len(samples)} heard; "
@@ -1515,6 +1636,8 @@ class CohortReviewBundleDialog(QDialog):
                 "The selected checksum-bound WAV is being prepared. Decisions resume "
                 "as soon as its immutable playback buffer is ready."
             )
+        elif self.bundle.document["cohort_count"] == 0:
+            decision_text = "Review complete. All required cohorts are saved."
         elif not samples:
             decision_text = "No reviewable cohort is currently loaded."
         elif remaining:

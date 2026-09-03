@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -22,6 +23,9 @@ try:
     )
     from vntts.authoring.terminal_conflict_review_ui import (
         TerminalConflictReviewDialog,
+    )
+    from vntts.authoring.terminal_conflict_review_ui import (
+        main as terminal_conflict_main,
     )
 except ModuleNotFoundError as error:
     if error.name != "PySide6":
@@ -63,11 +67,15 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
     def test_requires_both_candidates_and_saves_neither_in_background(self):
         with TemporaryDirectory() as directory:
             review = self.create_review(Path(directory))
-            dialog = TerminalConflictReviewDialog(review)
+            dialog = TerminalConflictReviewDialog(
+                review, confirmer=lambda _decision: True
+            )
             dialog.show()
             self.application.processEvents()
 
             self.assertFalse(dialog.neither.isEnabled())
+            self.assertFalse(dialog.stop.isEnabled())
+            self.assertTrue(dialog.stop.accessibleName())
             self.assertEqual(
                 dialog.decision_context.values["game_speaker"].text(),
                 dialog._current["speaker"],
@@ -83,6 +91,7 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             dialog.play_buttons[0].click()
             self.assertFalse(dialog.neither.isEnabled())
             self.finish_playback(dialog)
+            self.assertFalse(dialog.stop.isEnabled())
             self.assertFalse(dialog.neither.isEnabled())
             dialog.play_buttons[1].click()
             self.assertFalse(dialog.neither.isEnabled())
@@ -101,6 +110,40 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             self.assertIn("All terminal conflicts", dialog.identity.text())
             dialog.close()
 
+    def test_scaled_font_keeps_keyboard_journey_scroll_reachable(self):
+        with TemporaryDirectory() as directory:
+            review = self.create_review(Path(directory))
+            dialog = TerminalConflictReviewDialog(review)
+            base_point_size = dialog.font().pointSizeF()
+            for scale in (1.5, 2.0):
+                font = dialog.font()
+                font.setPointSizeF(base_point_size * scale)
+                dialog.setFont(font)
+                dialog.resize(dialog.minimumSize())
+                dialog.show()
+                self.application.processEvents()
+                self.assertEqual(
+                    dialog.review_scroll.horizontalScrollBar().maximum(), 0
+                )
+
+            self.assertGreater(dialog.review_scroll.verticalScrollBar().maximum(), 0)
+            self.assertTrue(dialog.close_button.isVisible())
+            self.assertIs(
+                dialog.decision_context.technical_toggle.nextInFocusChain(),
+                dialog.play_buttons[0],
+            )
+            self.assertIs(dialog.neither.nextInFocusChain(), dialog.close_button)
+            for button in (
+                *dialog.play_buttons,
+                dialog.stop,
+                *dialog.choose_buttons,
+                dialog.neither,
+                dialog.close_button,
+            ):
+                self.assertTrue(button.accessibleName(), button.text())
+                self.assertTrue(button.accessibleDescription(), button.text())
+            dialog.close()
+
     def test_save_keeps_event_loop_responsive_and_defers_close(self):
         started = Event()
         release = Event()
@@ -113,7 +156,9 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             review = self.create_review(Path(directory))
             dialog = TerminalConflictReviewDialog(
-                review, decision_recorder=slow_recorder
+                review,
+                decision_recorder=slow_recorder,
+                confirmer=lambda _decision: True,
             )
             dialog.show()
             dialog.play_buttons[0].click()
@@ -134,6 +179,19 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             release.set()
             self.wait_for(lambda: not dialog._active)
 
+    def test_irreversible_decision_can_be_cancelled(self):
+        with TemporaryDirectory() as directory:
+            review = self.create_review(Path(directory))
+            dialog = TerminalConflictReviewDialog(
+                review, confirmer=lambda _decision: False
+            )
+            dialog._heard = {"candidate-a", "candidate-b"}
+
+            dialog._save("neither_acceptable")
+
+            self.assertFalse(dialog._active)
+            self.assertIn("cancelled", dialog.status.text())
+
     def test_copied_wav_tamper_blocks_playback_without_enabling_decision(self):
         with TemporaryDirectory() as directory:
             review = self.create_review(Path(directory))
@@ -142,6 +200,22 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
             audio.write_bytes(b"changed")
             with self.assertRaises(TerminalConflictReviewError):
                 TerminalConflictReviewDialog(review)
+
+    def test_main_reports_open_failure_in_a_native_dialog(self):
+        with (
+            patch(
+                "vntts.authoring.terminal_conflict_review_ui.launch_terminal_conflict_review",
+                side_effect=TerminalConflictReviewError("authority changed"),
+            ),
+            patch(
+                "vntts.authoring.terminal_conflict_review_ui.QMessageBox.critical"
+            ) as critical,
+        ):
+            self.assertEqual(terminal_conflict_main(["broken-review"]), 2)
+
+        message = critical.call_args.args[2]
+        self.assertIn("broken-review", message)
+        self.assertIn("authority changed", message)
 
 
 if __name__ == "__main__":

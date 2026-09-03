@@ -14,10 +14,13 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
-    QHBoxLayout,
+    QGridLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.async_ui import LatestTaskRunner
@@ -43,6 +46,7 @@ class TerminalConflictReviewDialog(QDialog):
         thread_pool=None,
         candidate_loader=load_terminal_conflict_candidate_audio,
         decision_recorder=record_terminal_conflict_decision,
+        confirmer=None,
     ):
         super().__init__(parent)
         self.directory = Path(directory).expanduser().resolve()
@@ -56,6 +60,7 @@ class TerminalConflictReviewDialog(QDialog):
         )
         self.candidate_loader = candidate_loader
         self.decision_recorder = decision_recorder
+        self.confirmer = confirmer or self._confirm_decision
         self._active = False
         self._close_pending = False
         self._audio_buffer = None
@@ -87,50 +92,86 @@ class TerminalConflictReviewDialog(QDialog):
         self.status.setAccessibleName("Terminal conflict review status")
 
         self.play_buttons = []
-        playback = QHBoxLayout()
+        playback = QGridLayout()
         for index in range(2):
             button = QPushButton(f"Play candidate {chr(65 + index)}")
             button.setAccessibleName(f"Play terminal conflict candidate {index + 1}")
+            button.setAccessibleDescription(
+                "Play this checksum-distinct blind candidate through to the end"
+            )
             button.setShortcut(QKeySequence(f"Ctrl+{index + 1}"))
             button.clicked.connect(
                 lambda _checked=False, value=index: self._play(value)
             )
-            playback.addWidget(button)
+            playback.addWidget(button, 0, index)
             self.play_buttons.append(button)
         self.stop = QPushButton("Stop audio")
+        self.stop.setAccessibleName("Stop terminal conflict audio")
+        self.stop.setAccessibleDescription("Stop blind candidate playback")
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.stop.clicked.connect(self._stop)
-        playback.addWidget(self.stop)
+        self.stop.setEnabled(False)
+        playback.addWidget(self.stop, 1, 0, 1, 2)
 
         self.choose_buttons = []
-        decisions = QHBoxLayout()
+        decisions = QGridLayout()
         for index in range(2):
             button = QPushButton(f"Choose candidate {chr(65 + index)}")
             button.setAccessibleName(f"Choose terminal conflict candidate {index + 1}")
+            button.setAccessibleDescription(
+                "Keep this candidate as the terminal authority after both are heard"
+            )
             button.setShortcut(QKeySequence(f"Alt+{index + 1}"))
             button.clicked.connect(
                 lambda _checked=False, value=index: self._choose(value)
             )
-            decisions.addWidget(button)
+            decisions.addWidget(button, 0, index)
             self.choose_buttons.append(button)
         self.neither = QPushButton("Neither candidate is acceptable")
         self.neither.setAccessibleName("Reject both terminal conflict candidates")
+        self.neither.setAccessibleDescription(
+            "Require repair instead of keeping either terminal candidate"
+        )
         self.neither.setShortcut(QKeySequence("Alt+N"))
         self.neither.clicked.connect(self._choose_neither)
-        decisions.addWidget(self.neither)
+        decisions.addWidget(self.neither, 1, 0, 1, 2)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
+        self.close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
+        self.close_button.setAccessibleName("Close terminal conflict review")
+        self.close_button.setAccessibleDescription(
+            "Close this review without resolving the current conflict"
+        )
+        review_content = QWidget()
+        review_layout = QVBoxLayout(review_content)
+        review_layout.setContentsMargins(0, 0, 0, 0)
+        review_layout.addWidget(self.progress)
+        review_layout.addWidget(self.decision_context)
+        review_layout.addWidget(self.identity)
+        review_layout.addWidget(self.text)
+        review_layout.addLayout(playback)
+        review_layout.addWidget(self.evidence)
+        review_layout.addWidget(self.status)
+        review_layout.addLayout(decisions)
+        self.review_scroll = QScrollArea()
+        self.review_scroll.setAccessibleName("Scrollable terminal conflict review")
+        self.review_scroll.setWidgetResizable(True)
+        self.review_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.review_scroll.setWidget(review_content)
         layout = QVBoxLayout(self)
-        layout.addWidget(self.progress)
-        layout.addWidget(self.decision_context)
-        layout.addWidget(self.identity)
-        layout.addWidget(self.text, 1)
-        layout.addLayout(playback)
-        layout.addWidget(self.evidence)
-        layout.addWidget(self.status)
-        layout.addLayout(decisions)
+        layout.addWidget(self.review_scroll, 1)
         layout.addWidget(buttons)
+
+        self.setTabOrder(self.decision_context.technical_toggle, self.play_buttons[0])
+        self.setTabOrder(self.play_buttons[0], self.play_buttons[1])
+        self.setTabOrder(self.play_buttons[1], self.stop)
+        self.setTabOrder(self.stop, self.choose_buttons[0])
+        self.setTabOrder(self.choose_buttons[0], self.choose_buttons[1])
+        self.setTabOrder(self.choose_buttons[1], self.neither)
+        self.setTabOrder(self.neither, self.close_button)
 
         self.audio_output = QAudioOutput(self)
         self.player = QMediaPlayer(self)
@@ -277,6 +318,7 @@ class TerminalConflictReviewDialog(QDialog):
         self._audio_buffer.setData(QByteArray(payload))
         self._audio_buffer.open(QIODevice.OpenModeFlag.ReadOnly)
         self._playing_candidate = candidate["candidate_id"]
+        self.stop.setEnabled(True)
         self.player.setSourceDevice(
             self._audio_buffer, QUrl(f"memory:terminal-candidate-{index + 1}.wav")
         )
@@ -294,6 +336,7 @@ class TerminalConflictReviewDialog(QDialog):
             self._audio_buffer.close()
         self._audio_buffer = None
         self._playing_candidate = None
+        self.stop.setEnabled(False)
 
     def _choose(self, index):
         if self._current is None:
@@ -306,6 +349,9 @@ class TerminalConflictReviewDialog(QDialog):
     def _save(self, decision):
         if self._active or self._current is None or len(self._heard) != 2:
             return
+        if not self.confirmer(decision):
+            self.status.setText("Decision cancelled; conflict evidence is unchanged.")
+            return
         self._stop()
         self._active = True
         self._set_actions(False)
@@ -317,6 +363,19 @@ class TerminalConflictReviewDialog(QDialog):
             self.directory,
             self._current["case_id"],
             decision,
+        )
+
+    def _confirm_decision(self, _decision):
+        return (
+            QMessageBox.question(
+                self,
+                "Save irreversible conflict decision?",
+                "Save this terminal conflict decision? This review window cannot "
+                "revise it afterward.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
         )
 
     def _decision_finished(self, _result, error):
@@ -348,7 +407,7 @@ class TerminalConflictReviewDialog(QDialog):
         self.stop.setEnabled(
             self._current is not None
             and not self._active
-            and (enabled or self.playback_runner.active)
+            and (self.playback_runner.active or self._playing_candidate is not None)
         )
         self._update_decision_buttons()
 
@@ -392,6 +451,7 @@ class TerminalConflictReviewDialog(QDialog):
             return
         self._heard.add(self._playing_candidate)
         self._playing_candidate = None
+        self.stop.setEnabled(False)
         self.evidence.setText(
             f"Heard {len(self._heard)}/2 candidates. Replay remains available."
         )
@@ -399,6 +459,7 @@ class TerminalConflictReviewDialog(QDialog):
 
     def _playback_error(self, _error, error_string):
         self._playing_candidate = None
+        self.stop.setEnabled(False)
         self.status.setText(f"PLAYBACK FAILED: {error_string}")
         self._update_decision_buttons()
 
@@ -434,7 +495,13 @@ def main(argv=None):
     try:
         return launch_terminal_conflict_review(options.directory)
     except TerminalConflictReviewError as error:
-        print(f"ERROR: {error}", file=sys.stderr)
+        app = QApplication.instance() or QApplication(sys.argv)
+        QMessageBox.critical(
+            None,
+            "Unable to open terminal conflict review",
+            f"Review directory: {options.directory.expanduser()}\n\n{error}",
+        )
+        app.processEvents()
         return 2
 
 

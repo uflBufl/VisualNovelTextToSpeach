@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -33,6 +34,18 @@ class OfflineGenerationResult:
 
     @property
     def total(self):
+        return self.generated + self.failed + self.other_terminal
+
+
+@dataclass(frozen=True)
+class OfflineGenerationProgress:
+    generated: int = 0
+    failed: int = 0
+    other_terminal: int = 0
+    active_phase: str | None = None
+
+    @property
+    def completed(self):
         return self.generated + self.failed + self.other_terminal
 
 
@@ -128,6 +141,45 @@ class OfflineGenerationWorker:
     def inspect(self, generation_input):
         """Reload the current validated terminal counts without starting work."""
         return _load_result(_generation_output(generation_input), generation_input)
+
+    def inspect_progress(self, generation_input):
+        """Reload durable per-item progress while generation is still running."""
+        output = _generation_output(generation_input)
+        state_path = output / "generation-state.json"
+        if not state_path.is_file():
+            return OfflineGenerationProgress()
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeError) as error:
+            raise OfflineGenerationError(
+                f"Unable to inspect offline generation progress: {error}"
+            ) from error
+        if (
+            not isinstance(state, dict)
+            or state.get("queue_sha256") != generation_input.queue_sha256
+            or not isinstance(state.get("items"), dict)
+        ):
+            raise OfflineGenerationError("Offline generation progress is invalid")
+        generated = failed = other_terminal = 0
+        for item in state["items"].values():
+            status = item.get("status") if isinstance(item, dict) else None
+            if status in {"generated", "approved"}:
+                generated += 1
+            elif status == "failed":
+                failed += 1
+            elif status in {"live_fallback", "omitted", "not_reproducible"}:
+                other_terminal += 1
+        active = state.get("active")
+        return OfflineGenerationProgress(
+            generated=generated,
+            failed=failed,
+            other_terminal=other_terminal,
+            active_phase=(
+                str(active.get("phase"))
+                if isinstance(active, dict) and active.get("phase")
+                else None
+            ),
+        )
 
     def _base_arguments(self, generation_input, voice_plan, output, *, retries=None):
         if not isinstance(generation_input, PregenerationInput):
@@ -241,7 +293,24 @@ def _load_result(output, generation_input):
         raise OfflineGenerationError(
             f"Offline generation result is invalid: {error}"
         ) from error
-    counts = {"generated": 0, "failed": 0, "other": 0, "pending": 0}
+    generated, failed, other_terminal = _terminal_counts(state)
+    pending = 0
+    for item in state.get("items", {}).values():
+        if isinstance(item, dict) and item.get("review_status") == "pending_review":
+            pending += 1
+    return OfflineGenerationResult(
+        output=output,
+        state=state_path,
+        manifest=manifest_path,
+        generated=generated,
+        failed=failed,
+        other_terminal=other_terminal,
+        pending_review=pending,
+    )
+
+
+def _terminal_counts(state):
+    counts = {"generated": 0, "failed": 0, "other": 0}
     for item in state.get("items", {}).values():
         status = item.get("status") if isinstance(item, dict) else None
         if status in {"generated", "approved"}:
@@ -250,17 +319,7 @@ def _load_result(output, generation_input):
             counts["failed"] += 1
         else:
             counts["other"] += 1
-        if isinstance(item, dict) and item.get("review_status") == "pending_review":
-            counts["pending"] += 1
-    return OfflineGenerationResult(
-        output=output,
-        state=state_path,
-        manifest=manifest_path,
-        generated=counts["generated"],
-        failed=counts["failed"],
-        other_terminal=counts["other"],
-        pending_review=counts["pending"],
-    )
+    return counts["generated"], counts["failed"], counts["other"]
 
 
 def _queue_ids(values):
@@ -296,6 +355,7 @@ def _repair_option(action):
 __all__ = [
     "OfflineGenerationCancelled",
     "OfflineGenerationError",
+    "OfflineGenerationProgress",
     "OfflineGenerationResult",
     "OfflineGenerationWorker",
 ]

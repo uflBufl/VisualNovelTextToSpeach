@@ -80,11 +80,13 @@ class ModelListeningDialog(QDialog):
         preference_recorder=record_trial_preference,
         playback_factory=PersistentPcmPlayer,
         thread_pool=None,
+        confirmer=None,
     ):
         super().__init__(parent)
         self.session_path = Path(session_path).expanduser().resolve()
         self.session = load_listening_session(self.session_path)
         self.preference_recorder = preference_recorder
+        self.confirmer = confirmer or self._confirm_preference
         self.preference_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.preference_runner.finished.connect(self._preference_finished)
         self._preference_active = False
@@ -95,6 +97,7 @@ class ModelListeningDialog(QDialog):
         self.active_side = None
         self.active_token = None
         self.active_started = False
+        self.active_initial_natural = False
         self.completed_sides = set()
         self.setWindowTitle("Blind voice-model listening workbench")
         self.setMinimumSize(640, 400)
@@ -128,7 +131,7 @@ class ModelListeningDialog(QDialog):
         self.current_trial_card.setLayout(current_trial_layout)
         self.play_a = QPushButton("Play A")
         self.play_b = QPushButton("Play B")
-        self.stop = QPushButton("Stop")
+        self.stop = QPushButton("Pause")
         self.play_a.setShortcut(QKeySequence("Ctrl+1"))
         self.play_b.setShortcut(QKeySequence("Ctrl+2"))
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
@@ -142,7 +145,7 @@ class ModelListeningDialog(QDialog):
         )
         width = max(
             self.stop.fontMetrics().horizontalAdvance(label)
-            for label in ("Stop", "Continue", "Start again")
+            for label in ("Pause", "Resume", "Replay")
         )
         self.stop.setFixedWidth(width + 36)
         self.play_a.clicked.connect(lambda: self.play("a"))
@@ -265,7 +268,10 @@ class ModelListeningDialog(QDialog):
             reason = (
                 "Decision ready: choose one result."
                 if enabled
-                else "Decision locked: start both anonymous samples first."
+                else (
+                    "Decision locked: play both anonymous samples completely from "
+                    "the beginning without seeking."
+                )
             )
         self.decision_reason.setText(reason)
         for button, description in decisions:
@@ -347,7 +353,7 @@ class ModelListeningDialog(QDialog):
             "loading": f"LOADING: {label}",
             "playing": f"NOW PLAYING: {label}",
             "finished": f"FINISHED: {label}",
-            "stopped": f"STOPPED: {label}" if label else "STOPPED",
+            "stopped": f"PAUSED: {label}" if label else "PAUSED",
             "complete": "SESSION COMPLETE",
         }
         background = self.side_colors.get(side, {}).get("normal", "#3f3f46")
@@ -357,7 +363,7 @@ class ModelListeningDialog(QDialog):
             " font-size: 18px; font-weight: 700; border-radius: 6px; padding: 8px; }"
         )
         self.stop.setText(
-            {"stopped": "Continue", "finished": "Start again"}.get(state, "Stop")
+            {"stopped": "Resume", "finished": "Replay"}.get(state, "Pause")
         )
         self.stop.setEnabled(state not in {"ready", "complete"})
         if side is not None and state in {"loading", "playing"}:
@@ -373,13 +379,15 @@ class ModelListeningDialog(QDialog):
         self.active_side = None
         self.active_token = None
         self.active_started = False
+        self.active_initial_natural = False
         self.completed_sides.clear()
         self.seek.setRange(0, 0)
         self.seek.setValue(0)
         self.time.setText("0:00 / 0:00")
         self.set_preference_buttons_enabled(
             False,
-            "Decision locked: start both anonymous samples before choosing.",
+            "Decision locked: play both anonymous samples completely from the "
+            "beginning without seeking.",
         )
         if self.current_trial is None:
             self.set_playback_indicator("complete")
@@ -435,6 +443,7 @@ class ModelListeningDialog(QDialog):
             self.auto_play_pending_b = False
         self.active_side = side
         self.active_started = False
+        self.active_initial_natural = True
         clip = self.audio_clips[side]
         self.active_token = self.playback.play(clip)
         self.seek.setRange(0, clip.duration_ms)
@@ -459,6 +468,7 @@ class ModelListeningDialog(QDialog):
         self.update_time_label(position, clip.duration_ms)
         if snapshot.error:
             self.active_token = None
+            self.active_initial_natural = False
             self.auto_play_pending_b = False
             self.set_playback_indicator("stopped", side)
             self.status.setText(
@@ -472,6 +482,7 @@ class ModelListeningDialog(QDialog):
             return
         self.active_token = None
         if snapshot.underflowed:
+            self.active_initial_natural = False
             self.auto_play_pending_b = False
             self.set_playback_indicator("stopped", side)
             self.status.setText(
@@ -479,18 +490,40 @@ class ModelListeningDialog(QDialog):
                 "making a decision."
             )
             return
-        self.completed_sides.add(side)
+        completed_naturally = snapshot.started and self.active_initial_natural
+        self.active_initial_natural = False
+        if completed_naturally:
+            self.completed_sides.add(side)
         if self.completed_sides == {"a", "b"}:
             self.set_preference_buttons_enabled(
                 True,
-                "Decision ready: both samples played completely.",
+                "Decision ready: both samples played completely from the beginning.",
+            )
+        elif side not in self.completed_sides:
+            self.set_preference_buttons_enabled(
+                False,
+                f"Decision locked: replay sample {side.upper()} completely from the "
+                "beginning without seeking.",
+            )
+        else:
+            remaining = ({"a", "b"} - self.completed_sides).pop().upper()
+            self.set_preference_buttons_enabled(
+                False,
+                f"Decision locked: play sample {remaining} completely from the "
+                "beginning without seeking.",
             )
         self.set_playback_indicator("finished", side)
-        if side == "a" and self.auto_play_pending_b:
+        if side == "a" and self.auto_play_pending_b and side in self.completed_sides:
             self.auto_play_pending_b = False
             QTimer.singleShot(0, lambda: self.play("b", automatic=True))
         elif self.completed_sides == {"a", "b"}:
             self.status.setText("Both samples completed. Choose a preference.")
+        elif side not in self.completed_sides:
+            self.auto_play_pending_b = False
+            self.status.setText(
+                f"Sample {side.upper()} reached the end after a seek. Replay it "
+                "completely from the beginning before choosing."
+            )
 
     @staticmethod
     def format_time(milliseconds):
@@ -505,6 +538,7 @@ class ModelListeningDialog(QDialog):
     def seek_to(self, position):
         if self.active_side is None:
             return
+        self.active_initial_natural = False
         clip = self.audio_clips[self.active_side]
         frame = round(max(0, position) * clip.sample_rate / 1000)
         self.active_token = self.playback.seek(frame)
@@ -521,6 +555,7 @@ class ModelListeningDialog(QDialog):
     def stop_audio(self):
         self.auto_play_pending_b = False
         self.active_token = None
+        self.active_initial_natural = False
         self.playback.stop()
         self.set_playback_indicator("stopped", self.active_side)
 
@@ -533,6 +568,7 @@ class ModelListeningDialog(QDialog):
             self.set_playback_indicator("loading", self.active_side)
         elif self.playback_control_state == "finished":
             self.active_started = False
+            self.active_initial_natural = True
             self.active_token = self.playback.play(self.audio_clips[self.active_side])
             self.set_playback_indicator("loading", self.active_side)
         elif self.playback_control_state in {"loading", "playing"}:
@@ -556,6 +592,11 @@ class ModelListeningDialog(QDialog):
         if self.completed_sides != {"a", "b"}:
             self.status.setText("Play both samples completely before choosing.")
             return
+        if not self.confirmer(preference):
+            self.status.setText(
+                "Preference cancelled; listening evidence is unchanged."
+            )
+            return
         trial_id = self.current_trial["trial_id"]
         self._preference_active = True
         self.set_preference_buttons_enabled(
@@ -572,6 +613,25 @@ class ModelListeningDialog(QDialog):
             trial_id,
             preference,
             report_path=self.session_path.with_name("report.json"),
+        )
+
+    def _confirm_preference(self, preference):
+        labels = {
+            "a": "A is better",
+            "b": "B is better",
+            "tie": "both are acceptable",
+            "neither": "neither is acceptable",
+        }
+        return (
+            QMessageBox.question(
+                self,
+                "Save irreversible blind preference?",
+                f"Save '{labels[preference]}' for this trial? "
+                "This listening window cannot revise it afterward.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
         )
 
     def _preference_finished(self, _result, error):

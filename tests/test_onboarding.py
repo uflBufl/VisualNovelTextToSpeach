@@ -179,6 +179,7 @@ class OnboardingDiagnosticsTest(unittest.TestCase):
 
         results = diagnostics.run(
             AppSettings(
+                capture_mode="window",
                 game_window_title="Reverse: 1999",
                 tts_model="xtts_v2",
                 narrator_speaker="Narrator",
@@ -382,6 +383,13 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(page.pocket_gated_model.isVisibleTo(wizard))
         self.assertFalse(page.pocket_gated_model.isChecked())
         self.assertFalse(page.terms.isVisibleTo(wizard))
+        self.assertEqual(page.manage_assets_button.text(), "Import character voices...")
+        page.speech_backend.setCurrentIndex(page.speech_backend.findData("coqui-xtts"))
+        self.assertEqual(
+            page.manage_assets_button.text(),
+            "Download model or import voices...",
+        )
+        page.speech_backend.setCurrentIndex(page.speech_backend.findData("pocket-tts"))
 
         page.pocket_gated_model.setChecked(True)
 
@@ -433,6 +441,34 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(page.advanced_content.isVisibleTo(wizard))
         self.assertTrue(page.speech_backend.isVisibleTo(wizard))
         self.assertEqual(page.advanced_toggle.text(), "Hide advanced options")
+        wizard.deleteLater()
+
+    def test_recommended_setup_discloses_auto_advance_before_diagnostics(self):
+        wizard = OnboardingWizard(AppSettings(auto_advance_key="space"))
+        wizard.show_page(1)
+        wizard.show()
+        self.application.processEvents()
+        page = wizard.configuration_page
+
+        self.assertLess(
+            wizard.pages.index(page),
+            wizard.pages.index(wizard.diagnostics_page),
+        )
+        self.assertTrue(page.auto_advance.isVisibleTo(wizard))
+        self.assertTrue(page.auto_advance.isChecked())
+        self.assertTrue(page.auto_advance_notice.isVisibleTo(wizard))
+        self.assertIn(
+            "automatically sends the Space key", page.auto_advance_notice.text()
+        )
+        self.assertIn("Accessibility permission", page.auto_advance_notice.text())
+
+        page.capture_mode.setCurrentIndex(page.capture_mode.findData("screen"))
+
+        self.assertFalse(page.auto_advance.isEnabled())
+        self.assertFalse(page.auto_advance.isChecked())
+        self.assertFalse(page.auto_advance_reason.isHidden())
+        self.assertIn("selected game window", page.auto_advance_reason.text())
+        self.assertFalse(page.settings().auto_advance_enabled)
         wizard.deleteLater()
 
     def test_window_discovery_runs_on_entry_and_preserves_manual_title(self):

@@ -173,6 +173,12 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertEqual(
                 dialog.sample_text.text(), dialog._selected_sample().item.text
             )
+            self.assertTrue(dialog.summary.accessibleName())
+            self.assertTrue(dialog.sample_text.accessibleName())
+            self.assertIs(
+                dialog.cohort_choice.nextInFocusChain(),
+                dialog.technical_details,
+            )
 
             dialog.technical_details.setChecked(True)
             self.assertFalse(dialog.table.isColumnHidden(5))
@@ -484,6 +490,48 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertTrue(dialog.accept.isVisible())
             self.assertTrue(dialog.reject.isVisible())
 
+    def test_scaled_font_and_accessibility_keep_journey_reachable(self):
+        with TemporaryDirectory() as directory:
+            bundle = self.create_bundle(Path(directory))
+            dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
+            base_point_size = dialog.font().pointSizeF()
+            for scale in (1.5, 2.0):
+                font = dialog.font()
+                font.setPointSizeF(base_point_size * scale)
+                dialog.setFont(font)
+                dialog.resize(dialog.minimumSize())
+                dialog.show()
+                self.wait_for(lambda: dialog.table.rowCount() == 1)
+                self.assertEqual(
+                    dialog.review_scroll.horizontalScrollBar().maximum(), 0
+                )
+
+            self.assertLessEqual(dialog.minimumSizeHint().width(), dialog.width())
+            self.assertLessEqual(dialog.minimumSizeHint().height(), dialog.height())
+            self.assertIs(dialog.cohort_choice_label.buddy(), dialog.cohort_choice)
+            self.assertIs(
+                dialog.decision_context.technical_toggle.nextInFocusChain(),
+                dialog.retry_load,
+            )
+            self.assertIs(
+                dialog.cohort_choice.nextInFocusChain(), dialog.technical_details
+            )
+            for button in (
+                dialog.previous,
+                dialog.replay,
+                dialog.stop,
+                dialog.next,
+                dialog.mark_bad,
+                dialog.need_another,
+                dialog.leave_undecided,
+                dialog.repair_marked,
+                dialog.accept,
+                dialog.reject,
+                dialog.retry_load,
+            ):
+                self.assertTrue(button.accessibleName(), button.text())
+                self.assertTrue(button.accessibleDescription(), button.text())
+
     def test_decision_is_source_local_and_navigation_remains_live_while_saving(self):
         calls = []
         started = threading.Event()
@@ -576,6 +624,48 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 dialog.overall_progress.format(),
                 "1 of 2 cohorts completed in this review session",
             )
+
+    def test_final_checkpoint_is_complete_even_when_refresh_has_nothing_to_load(self):
+        with TemporaryDirectory() as directory:
+            bundle = self.create_bundle(Path(directory))
+            dialog = CohortReviewBundleDialog(bundle)
+            dialog.show()
+            self.wait_for(lambda: dialog.table.rowCount() == 1)
+            document = deepcopy(bundle.document)
+            document.update(
+                cohort_count=0,
+                cohorts=[],
+                sample_item_count=0,
+                pending_item_count=0,
+            )
+            completed = replace(bundle, document=document)
+            dialog._checkpoint_decisions = True
+            dialog._decision_active = True
+
+            dialog._decision_finished(
+                SimpleNamespace(
+                    projection=SimpleNamespace(next_bundle=completed),
+                    checkpoint_error=None,
+                    bundle=None,
+                    samples=(),
+                    refresh_error=RuntimeError("no remaining cohort"),
+                    commit_seconds=0,
+                    checkpoint_seconds=0,
+                    refresh_seconds=0,
+                ),
+                None,
+            )
+
+            self.assertEqual(
+                dialog.status.text(),
+                "COMPLETE: all required cohorts are saved",
+            )
+            self.assertEqual(
+                dialog.summary.text(),
+                "Review complete. All required cohorts were saved.",
+            )
+            self.assertEqual(dialog.sample_position.text(), "Review complete")
+            self.assertFalse(dialog.retry_load.isVisible())
 
     def test_published_bundle_reopens_from_persisted_successor(self):
         with TemporaryDirectory() as directory:

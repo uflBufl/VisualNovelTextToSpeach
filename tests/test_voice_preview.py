@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from vntts.voice_preview_ui import VoicePreviewDialog  # noqa: E402
 from vntts.voices import VoiceChoice  # noqa: E402
@@ -24,6 +24,7 @@ class VoicePreviewDialogTest(unittest.TestCase):
         force_live_handler=None,
         current_force_live_handler=None,
         preview_stop_handler=None,
+        fixed_character=None,
     ):
         return VoicePreviewDialog(
             ["Narrator", "Marcus"],
@@ -38,6 +39,7 @@ class VoicePreviewDialogTest(unittest.TestCase):
             force_live_handler=force_live_handler,
             current_force_live_handler=current_force_live_handler,
             preview_stop_handler=preview_stop_handler,
+            fixed_character=fixed_character,
         )
 
     def test_plays_selected_candidate_and_reports_completion(self):
@@ -116,6 +118,37 @@ class VoicePreviewDialogTest(unittest.TestCase):
         self.assertEqual(dialog.status.text(), "Saved Marius for Selone")
         dialog.deleteLater()
 
+    def test_contextual_assignment_locks_and_resolves_exact_speaker_once(self):
+        assignment_handler = Mock()
+        dialog = self.create_dialog(
+            assignment_handler=assignment_handler,
+            clear_assignment_handler=Mock(),
+            fixed_character="Selone",
+        )
+        dialog.voice.setCurrentIndex(1)
+
+        self.assertFalse(dialog.character.isEditable())
+        self.assertFalse(dialog.character.isEnabled())
+        self.assertEqual(dialog.character.currentText(), "Selone")
+        self.assertIn("Selone", dialog.assign_button.text())
+        self.assertTrue(dialog.automatic_button.isHidden())
+
+        dialog.assign()
+        dialog.assign()
+
+        assignment_handler.assert_called_once_with("Selone", "preset:marius")
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        dialog.deleteLater()
+
+    def test_general_voice_management_keeps_target_editable(self):
+        dialog = self.create_dialog()
+
+        self.assertTrue(dialog.character.isEditable())
+        self.assertTrue(dialog.character.isEnabled())
+        dialog.character.setCurrentText("Selone")
+        self.assertEqual(dialog.character.currentText(), "Selone")
+        dialog.deleteLater()
+
     def test_reports_preview_start_failure(self):
         dialog = self.create_dialog(
             preview_handler=Mock(side_effect=RuntimeError("engine unavailable"))
@@ -146,7 +179,11 @@ class VoicePreviewDialogTest(unittest.TestCase):
         )
         self.assertFalse(dialog.force_live.isChecked())
         dialog.force_live.setChecked(True)
+        force_live_handler.assert_called_once_with(True)
+
         dialog.assign()
+        force_live_handler.assert_called_once_with(True)
+        dialog.close()
         force_live_handler.assert_called_once_with(True)
 
         dialog.automatic_button.click()

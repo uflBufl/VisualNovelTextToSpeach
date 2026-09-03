@@ -3,6 +3,16 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements and completed-work history in `docs/` and Git, not here.
 
+## P1 - Qualify the implemented desktop UX program
+
+Follow [`docs/ui-ux-review-plan.md`](docs/ui-ux-review-plan.md) and the ranked
+backlog in [`docs/ui-ux-control-audit.md`](docs/ui-ux-control-audit.md).
+
+- [ ] Qualify UI-032 and the resulting journeys on real macOS and Windows with
+      native dialogs/tray behavior, fullscreen and multi-monitor use,
+      VoiceOver/Windows Narrator, physical 100%/150%/200% scaling, and
+      representative novice, returning-player and specialist tasks.
+
 ## P0 - Make pregeneration self-service
 
 Follow

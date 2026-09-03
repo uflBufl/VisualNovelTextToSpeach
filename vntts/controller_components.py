@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Callable, Protocol
 
+from vntts.auto_advance_policy import auto_advance_control_state
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.dialog import is_empty, speak_dialog
 from vntts.dialog_capture import (
@@ -898,8 +899,13 @@ class LiveSessionComponent:
 
     def set_auto_advance_enabled(self, enabled: bool) -> Any:
         controller = self.controller
+        allowed, effective, reason = auto_advance_control_state(
+            controller.settings.capture_mode,
+            controller.settings.live_sequence_mode,
+            enabled,
+        )
         controller.settings = controller.settings.updated(
-            auto_advance_enabled=bool(enabled)
+            auto_advance_enabled=effective
         )
         if isinstance(controller.speech_backend, GeneratedAudioFallbackBackend):
             # Never replace audio already spoken by the game with live TTS just
@@ -911,13 +917,13 @@ class LiveSessionComponent:
                 controller._live_auto_advance_callback()
             )
         controller.status_handler(
-            "Auto advance saved but suppressed by sequence-first manual mode"
-            if enabled and controller.settings.live_sequence_mode == "audio-manual"
+            reason
+            if enabled and not allowed
             else "Auto advance enabled"
-            if enabled
+            if effective
             else "Auto advance disabled"
         )
-        return bool(enabled)
+        return effective
 
 
 @dataclass(frozen=True)

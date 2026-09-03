@@ -9,7 +9,11 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QGroupBox, QSizePolicy  # noqa: E402
 
 from vntts.controller import LiveSequenceStatus  # noqa: E402
-from vntts.dashboard_ui import CompactController, ControlDashboard  # noqa: E402
+from vntts.dashboard_ui import (  # noqa: E402
+    CompactController,
+    ControlDashboard,
+    RuntimeControlState,
+)
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 
@@ -56,7 +60,7 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertFalse(dashboard.live_button.isEnabled())
         self.assertIn("Speech model failed to load", dashboard.action_reason.text())
-        self.assertIn("Setup and diagnostics", dashboard.action_reason.text())
+        self.assertIn("Check readiness", dashboard.action_reason.text())
         self.assertEqual(
             dashboard.live_button.toolTip(), dashboard.action_reason.text()
         )
@@ -107,6 +111,8 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
 
         self.assertTrue(dashboard.dialogue.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.speaker.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.speaker.accessibleName(), "Current dialogue speaker")
         self.assertTrue(dashboard.live_button.isVisibleTo(dashboard))
         self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
         self.assertEqual(dashboard.details_toggle.text(), "Show technical details")
@@ -127,6 +133,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
 
         self.assertTrue(dashboard.setup_primary_button.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.setup_primary_button.text(), "Check readiness")
         self.assertTrue(dashboard.setup_more_button.isVisibleTo(dashboard))
         self.assertFalse(dashboard.setup_secondary_content.isVisibleTo(dashboard))
 
@@ -295,17 +302,24 @@ class ControlDashboardTest(unittest.TestCase):
         controller = CompactController(platform="darwin")
         requests = []
         controller.live_requested.connect(lambda: requests.append("live"))
+        controller.repeat_requested.connect(lambda: requests.append("repeat"))
         controller.set_ready(True)
         controller.set_dialogue("Selone", "I have returned.")
         controller.set_live(True)
         controller.set_paused(True)
 
         controller.live_button.click()
+        controller.set_runtime_controls(
+            RuntimeControlState(ready=True, replayable=True)
+        )
+        controller.repeat_button.click()
 
-        self.assertEqual(requests, ["live"])
+        self.assertEqual(requests, ["live", "repeat"])
         self.assertEqual(controller.speaker.text(), "Selone")
         self.assertEqual(controller.mode.text(), "Paused")
         self.assertEqual(controller.live_button.text(), "Stop live")
+        self.assertEqual(controller.stop_button.text(), "Emergency stop")
+        self.assertEqual(controller.full_button.text(), "Full controls")
         self.assertTrue(controller.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
         self.assertTrue(
             controller.testAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
@@ -350,11 +364,81 @@ class ControlDashboardTest(unittest.TestCase):
 
         controller.set_status("Speech model failed to load")
 
-        self.assertIn("Setup and diagnostics", controller.action_reason.text())
-        self.assertNotIn("Check readiness", controller.action_reason.text())
+        self.assertIn("Check readiness", controller.action_reason.text())
+        self.assertIn("Full controls", controller.action_reason.text())
         controller.close()
         controller.deleteLater()
         controller.deleteLater()
+
+    def test_runtime_capability_state_matches_dashboard_and_compact_controls(self):
+        dashboard = ControlDashboard(AppSettings())
+        compact = CompactController(platform="win32")
+        cases = (
+            (
+                "idle",
+                RuntimeControlState(ready=True),
+                (True, True, False, False, False, False),
+            ),
+            (
+                "live",
+                RuntimeControlState(ready=True, live=True),
+                (True, True, True, False, False, True),
+            ),
+            (
+                "speaking",
+                RuntimeControlState(ready=True, speaking=True),
+                (True, True, True, True, False, True),
+            ),
+            (
+                "paused",
+                RuntimeControlState(ready=True, paused=True),
+                (True, True, True, False, False, True),
+            ),
+            (
+                "queued",
+                RuntimeControlState(ready=True, queued=True),
+                (True, True, True, False, False, True),
+            ),
+            (
+                "replayable",
+                RuntimeControlState(ready=True, replayable=True),
+                (True, True, False, False, True, False),
+            ),
+        )
+        for name, state, expected in cases:
+            with self.subTest(state=name):
+                dashboard.set_runtime_controls(state)
+                compact.set_runtime_controls(state)
+                dashboard_state = tuple(
+                    button.isEnabled()
+                    for button in (
+                        dashboard.read_button,
+                        dashboard.live_button,
+                        dashboard.pause_button,
+                        dashboard.skip_button,
+                        dashboard.repeat_button,
+                        dashboard.stop_button,
+                    )
+                )
+                compact_state = tuple(
+                    button.isEnabled()
+                    for button in (
+                        compact.read_button,
+                        compact.live_button,
+                        compact.pause_button,
+                        compact.skip_button,
+                        compact.repeat_button,
+                        compact.stop_button,
+                    )
+                )
+                self.assertEqual(dashboard_state, expected)
+                self.assertEqual(compact_state, expected)
+                self.assertEqual(
+                    dashboard.repeat_button.toolTip(),
+                    compact.repeat_button.toolTip(),
+                )
+        dashboard.deleteLater()
+        compact.deleteLater()
 
     def test_compact_status_and_warning_remain_visible_during_live_mode(self):
         controller = CompactController(platform="win32")
@@ -453,6 +537,7 @@ class ControlDashboardTest(unittest.TestCase):
             controller.live_button,
             controller.pause_button,
             controller.skip_button,
+            controller.repeat_button,
             controller.stop_button,
             controller.full_button,
         )

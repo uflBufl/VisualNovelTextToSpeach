@@ -1,5 +1,10 @@
 # Desktop interface UX audit
 
+> Historical baseline: the 2026-09-03
+> [control-level audit](ui-ux-control-audit.md) supersedes this document's
+> surface inventory and completeness claims. Keep this file for the behavioral
+> decisions and regressions it records.
+
 This document records the baseline desktop-interface audit performed on
 2026-08-22. It covers every shipped Qt surface and the operator-facing CLI
 entry points that open those surfaces. It is a design and verification input,

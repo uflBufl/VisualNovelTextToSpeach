@@ -38,6 +38,10 @@ class MacOSPermissionsDialogTest(unittest.TestCase):
         screen_request.assert_called_once_with()
         self.assertEqual(dialog.screen_status.text(), "Granted")
         self.assertEqual(dialog.accessibility_status.text(), "Not granted")
+        self.assertTrue(dialog.request_screen_button.isHidden())
+        self.assertEqual(dialog.open_screen_button.text(), "Manage in Settings")
+        self.assertFalse(dialog.request_accessibility_button.isHidden())
+        self.assertEqual(dialog.open_accessibility_button.text(), "Open Settings")
         dialog.deleteLater()
 
     def test_dialog_opens_specific_system_settings_page(self):

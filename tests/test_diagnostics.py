@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from vntts.diagnostics import (  # noqa: E402
     DiagnosticSnapshot,
     diagnostic_error_guidance,
+    diagnostic_remediation,
     macos_permission_warnings,
     resolve_voice_label,
 )
@@ -133,9 +134,12 @@ class DiagnosticsTest(unittest.TestCase):
         dialog = DiagnosticsDialog(refresh_timeout_ms=60_000)
         refresh_requested = Mock()
         dialog.refresh_requested.connect(refresh_requested)
+        dialog.show()
+        self.application.processEvents()
 
         dialog.request_refresh()
         first_generation = dialog.refresh_generation
+        dialog.conceal_for_capture()
 
         self.assertFalse(dialog.refresh_button.isEnabled())
         self.assertIn("Capturing", dialog.refresh_status.text())
@@ -144,6 +148,7 @@ class DiagnosticsTest(unittest.TestCase):
 
         self.assertTrue(dialog.refresh_button.isEnabled())
         self.assertIn("timed out", dialog.refresh_status.text())
+        self.assertTrue(dialog.isVisible())
         dialog.request_refresh()
         dialog.set_warning("Selected window is unavailable")
         dialog._refresh_timed_out(first_generation)
@@ -151,6 +156,24 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertTrue(dialog.refresh_button.isEnabled())
         self.assertIn("Refresh failed", dialog.refresh_status.text())
         self.assertEqual(refresh_requested.call_count, 2)
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_fresh_snapshot_clears_stale_image_and_warning(self):
+        dialog = DiagnosticsDialog()
+        dialog.set_snapshot(
+            DiagnosticSnapshot(Image.new("RGB", (32, 10), "black"), text="Old")
+        )
+        dialog.set_warning("Old warning")
+
+        dialog.set_snapshot(DiagnosticSnapshot(None, text="Fresh"))
+
+        self.assertIsNone(dialog.source_pixmap)
+        self.assertTrue(dialog.preview.pixmap().isNull())
+        self.assertIn("No capture image", dialog.preview.text())
+        self.assertFalse(dialog.warning.isVisible())
+        self.assertFalse(dialog.warning_action.isVisible())
+        self.assertEqual(dialog.warning.text(), "")
         dialog.close()
         dialog.deleteLater()
 
@@ -201,6 +224,45 @@ class DiagnosticsTest(unittest.TestCase):
 
         self.assertIn("Start or restore the game", guidance)
         self.assertIn("borderless", guidance)
+
+    def test_warning_exposes_only_its_contextual_typed_remediation(self):
+        dialog = DiagnosticsDialog()
+        remediations = []
+        dialog.remediation_requested.connect(remediations.append)
+
+        dialog.set_warning(
+            "The selected game window is unavailable.",
+            remediation=("settings", "Open Settings"),
+        )
+
+        self.assertFalse(dialog.warning_action.isHidden())
+        self.assertEqual(dialog.warning_action.text(), "Open Settings")
+        dialog.warning_action.click()
+        self.assertEqual(remediations, ["settings"])
+
+        dialog.set_warning("Unclassified warning")
+        self.assertTrue(dialog.warning_action.isHidden())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_diagnostic_remediation_is_typed_by_failure_context(self):
+        self.assertEqual(
+            diagnostic_remediation(
+                "Screen Recording permission is missing",
+                platform="darwin",
+            ),
+            ("macos-permissions", "Open macOS permissions"),
+        )
+        self.assertEqual(
+            diagnostic_remediation(
+                "The selected game window is unavailable",
+                platform="win32",
+            ),
+            ("settings", "Open Settings"),
+        )
+        self.assertIsNone(
+            diagnostic_remediation("OCR confidence is low", platform="win32")
+        )
 
     def test_voice_label_reports_character_and_narrator_routes(self):
         voice = CharacterVoice("Marcus", "reverse1999-marcus")

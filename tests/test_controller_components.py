@@ -223,6 +223,33 @@ class ControllerComponentsTest(unittest.TestCase):
         for name in migrated:
             self.assertFalse(hasattr(AppController, name), name)
 
+    def test_auto_advance_enable_fails_closed_without_capture_authority(self):
+        for capture_mode, sequence_mode, expected_reason in (
+            ("screen", "off", "selected game window"),
+            ("window", "audio-manual", "never sends advance keys"),
+        ):
+            with self.subTest(capture_mode=capture_mode, sequence_mode=sequence_mode):
+                controller = Mock()
+                controller.settings = AppSettings(
+                    capture_mode=capture_mode,
+                    live_sequence_mode=sequence_mode,
+                    auto_advance_enabled=False,
+                )
+                controller.speech_backend = None
+                controller.live_reader = Mock()
+                component = LiveSessionComponent(controller)
+
+                self.assertFalse(component.set_auto_advance_enabled(True))
+
+                self.assertFalse(controller.settings.auto_advance_enabled)
+                controller.live_reader.set_auto_advance.assert_called_once_with(
+                    controller._live_auto_advance_callback.return_value
+                )
+                self.assertIn(
+                    expected_reason,
+                    controller.status_handler.call_args.args[0],
+                )
+
     def test_basic_voice_actions_are_not_retained_on_controller(self):
         migrated = (
             "_available_voice_characters_impl",

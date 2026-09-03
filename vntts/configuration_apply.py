@@ -169,9 +169,7 @@ class ConfigurationApplyMixin:
         self.sequence_expected_action.setVisible(
             is_live_sequence_audio_mode(self.settings.live_sequence_mode)
         )
-        self.auto_advance_action.blockSignals(True)
-        self.auto_advance_action.setChecked(self.settings.auto_advance_enabled)
-        self.auto_advance_action.blockSignals(False)
+        self._update_auto_advance_action()
         profile_synced = self._sync_active_profile(updated_settings)
         profile_suffix = ""
         if not profile_synced:

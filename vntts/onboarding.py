@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vntts.assets import ModelAssetManager
+from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.macos import get_macos_permission_status
 from vntts.release_backends import packaged_speech_backend_available
@@ -238,7 +239,10 @@ def probe_audio_output():
 
 
 def _auto_advance_requires_accessibility(settings):
-    if not settings.auto_advance_enabled:
+    if not settings.auto_advance_enabled or not auto_advance_allowed(
+        settings.capture_mode,
+        settings.live_sequence_mode,
+    ):
         return False
     if settings.live_sequence_mode == "audio-auto":
         return bool(settings.story_index and settings.live_sequence_plan)

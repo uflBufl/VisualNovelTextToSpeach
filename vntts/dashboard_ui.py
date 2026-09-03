@@ -1,5 +1,6 @@
 import ctypes
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
@@ -20,6 +21,59 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.settings import is_live_sequence_audio_mode
+
+
+@dataclass(frozen=True)
+class RuntimeControlState:
+    ready: bool = False
+    live: bool = False
+    paused: bool = False
+    speaking: bool = False
+    queued: bool = False
+    replayable: bool = False
+    unavailable_reason: str | None = None
+
+    @property
+    def can_read(self):
+        return self.ready
+
+    @property
+    def can_toggle_live(self):
+        return self.ready
+
+    @property
+    def can_pause(self):
+        return self.ready and (self.live or self.paused or self.speaking or self.queued)
+
+    @property
+    def can_skip(self):
+        return self.ready and self.speaking
+
+    @property
+    def can_clear_queue(self):
+        return self.ready and (self.speaking or self.queued)
+
+    @property
+    def can_replay(self):
+        return self.ready and self.replayable
+
+    @property
+    def can_emergency_stop(self):
+        return self.ready and (self.live or self.paused or self.speaking or self.queued)
+
+    def reason_for(self, control):
+        if not self.ready:
+            return (
+                self.unavailable_reason or "VNTTS is not ready. Select Check readiness."
+            )
+        reasons = {
+            "pause": "Pause is available during live reading or active playback.",
+            "skip": "Skip is available while dialogue is speaking.",
+            "queue": "The speech queue is empty.",
+            "replay": "Replay becomes available after dialogue has been spoken.",
+            "emergency": "Nothing is currently running or speaking.",
+        }
+        return reasons.get(control, "Control is unavailable in the current state.")
 
 
 class ControlDashboard(QMainWindow):
@@ -64,6 +118,8 @@ class ControlDashboard(QMainWindow):
         )
         self.mode = QLabel("Stopped")
         self.speaker = QLabel("Narrator")
+        self.speaker.setAccessibleName("Current dialogue speaker")
+        self.speaker.setWordWrap(True)
         self.voice = QLabel("Not loaded")
         self.audio_source = QLabel("Not selected")
         self.confidence = QLabel("-")
@@ -92,7 +148,6 @@ class ControlDashboard(QMainWindow):
 
         details = QFormLayout()
         details.addRow("Mode", self.mode)
-        details.addRow("Speaker", self.speaker)
         details.addRow("Voice", self.voice)
         details.addRow("Audio source", self.audio_source)
         details.addRow("OCR confidence", self.confidence)
@@ -199,7 +254,7 @@ class ControlDashboard(QMainWindow):
         setup_group = QGroupBox("Setup and support")
         setup = QVBoxLayout(setup_group)
         setup_primary = QHBoxLayout()
-        self.setup_primary_button = QPushButton("Setup and diagnostics...")
+        self.setup_primary_button = QPushButton("Check readiness")
         self.setup_primary_button.setAccessibleDescription(
             "Check readiness and open the direct fix for any setup problem"
         )
@@ -239,6 +294,7 @@ class ControlDashboard(QMainWindow):
         card.setFrameShape(QFrame.Shape.StyledPanel)
         card_layout = QVBoxLayout(card)
         card_layout.addWidget(QLabel("Current dialogue"))
+        card_layout.addWidget(self.speaker)
         card_layout.addWidget(self.dialogue)
 
         central = QWidget()
@@ -394,7 +450,7 @@ class ControlDashboard(QMainWindow):
         if not self._ready:
             self._set_action_reason(
                 f"Reading controls are unavailable: {message}. "
-                "Open Setup and diagnostics to recover."
+                "Select Check readiness to recover."
             )
 
     def set_dialogue(self, speaker, text):
@@ -402,31 +458,44 @@ class ControlDashboard(QMainWindow):
         self.dialogue.setText(text or "No dialogue detected")
 
     def set_ready(self, ready, *, reason=None):
-        self._ready = bool(ready)
-        self.narrator_voice_button.setEnabled(self._ready)
-        for button in (
-            self.read_button,
-            self.live_button,
-            self.pause_button,
-            self.skip_button,
-            self.repeat_button,
-            self.stop_button,
-            self.sequence_resync_button,
-            self.sequence_expected_button,
-        ):
-            button.setEnabled(self._ready)
-        self.sequence_expected_button.setEnabled(
-            self._ready and self._sequence_expected_candidate_count > 0
+        self.set_runtime_controls(
+            RuntimeControlState(
+                ready=bool(ready),
+                unavailable_reason=reason,
+            )
         )
-        if self._ready:
+
+    def set_runtime_controls(self, state):
+        self._ready = state.ready
+        self.narrator_voice_button.setEnabled(state.ready)
+        self.read_button.setEnabled(state.can_read)
+        self.live_button.setEnabled(state.can_toggle_live)
+        self.pause_button.setEnabled(state.can_pause)
+        self.skip_button.setEnabled(state.can_skip)
+        self.repeat_button.setEnabled(state.can_replay)
+        self.stop_button.setEnabled(state.can_emergency_stop)
+        self.sequence_resync_button.setEnabled(state.ready)
+        self.sequence_expected_button.setEnabled(
+            state.ready and self._sequence_expected_candidate_count > 0
+        )
+        disabled_controls = (
+            (self.pause_button, state.can_pause, "pause"),
+            (self.skip_button, state.can_skip, "skip"),
+            (self.repeat_button, state.can_replay, "replay"),
+            (self.stop_button, state.can_emergency_stop, "emergency"),
+        )
+        for button, enabled, control in disabled_controls:
+            button.setToolTip("" if enabled else state.reason_for(control))
+        if state.ready:
             self._set_action_reason(
-                "Ready: start live reading, or read the current dialogue once."
+                "Ready. Playback controls activate when dialogue is speaking, "
+                "queued, paused, or available to replay."
             )
         else:
             self._set_action_reason(
-                reason
+                state.unavailable_reason
                 or "Reading controls are unavailable while VNTTS is starting. "
-                "Open Setup and diagnostics if this does not clear."
+                "Select Check readiness if this does not clear."
             )
 
     def _set_action_reason(self, message):
@@ -435,10 +504,6 @@ class ControlDashboard(QMainWindow):
         for button in (
             self.read_button,
             self.live_button,
-            self.pause_button,
-            self.skip_button,
-            self.repeat_button,
-            self.stop_button,
             self.sequence_resync_button,
             self.sequence_expected_button,
         ):
@@ -505,6 +570,7 @@ class CompactController(QWidget):
     live_requested = Signal()
     pause_requested = Signal()
     skip_requested = Signal()
+    repeat_requested = Signal()
     stop_requested = Signal()
     full_requested = Signal()
     sequence_expected_requested = Signal()
@@ -565,10 +631,11 @@ class CompactController(QWidget):
         self.live_button = QPushButton("Start live")
         self.pause_button = QPushButton("Pause")
         self.skip_button = QPushButton("Skip")
-        self.stop_button = QPushButton("Stop")
+        self.repeat_button = QPushButton("Replay")
+        self.stop_button = QPushButton("Emergency stop")
         self.sequence_expected_button = QPushButton("Use expected next line")
         self.sequence_expected_button.setVisible(False)
-        self.full_button = QPushButton("Full")
+        self.full_button = QPushButton("Full controls")
         self.stop_button.setStyleSheet(
             "QPushButton { color: #a21818; font-weight: 600; }"
         )
@@ -585,6 +652,7 @@ class CompactController(QWidget):
             self.live_button,
             self.pause_button,
             self.skip_button,
+            self.repeat_button,
             self.stop_button,
             self.sequence_expected_button,
             self.full_button,
@@ -597,6 +665,7 @@ class CompactController(QWidget):
         self.live_button.clicked.connect(self.live_requested.emit)
         self.pause_button.clicked.connect(self.pause_requested.emit)
         self.skip_button.clicked.connect(self.skip_requested.emit)
+        self.repeat_button.clicked.connect(self.repeat_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
         self.sequence_expected_button.clicked.connect(
             self.sequence_expected_requested.emit
@@ -618,6 +687,7 @@ class CompactController(QWidget):
             self.read_button,
             self.pause_button,
             self.skip_button,
+            self.repeat_button,
             self.stop_button,
             self.sequence_expected_button,
             self.full_button,
@@ -683,8 +753,8 @@ class CompactController(QWidget):
         self.setToolTip(message)
         if not self._ready:
             self._set_action_reason(
-                f"Controls unavailable: {message}. Open Full controls, then "
-                "open Setup and diagnostics."
+                f"Controls unavailable: {message}. Select Full controls, then "
+                "Check readiness."
             )
         self._fit_content()
 
@@ -699,28 +769,43 @@ class CompactController(QWidget):
         self._fit_content()
 
     def set_ready(self, ready, *, reason=None):
-        self._ready = bool(ready)
-        for button in (
-            self.read_button,
-            self.live_button,
-            self.pause_button,
-            self.skip_button,
-            self.stop_button,
-            self.sequence_expected_button,
-        ):
-            button.setEnabled(self._ready)
+        self.set_runtime_controls(
+            RuntimeControlState(
+                ready=bool(ready),
+                unavailable_reason=reason,
+            )
+        )
+
+    def set_runtime_controls(self, state):
+        self._ready = state.ready
+        self.read_button.setEnabled(state.can_read)
+        self.live_button.setEnabled(state.can_toggle_live)
+        self.pause_button.setEnabled(state.can_pause)
+        self.skip_button.setEnabled(state.can_skip)
+        self.repeat_button.setEnabled(state.can_replay)
+        self.stop_button.setEnabled(state.can_emergency_stop)
         self.sequence_expected_button.setEnabled(
-            self._ready
+            state.ready
             and not self.sequence_expected_button.isHidden()
             and self._sequence_expected_candidate_count > 0
         )
-        if self._ready:
-            self._set_action_reason("Ready: start live reading or read once.")
+        disabled_controls = (
+            (self.pause_button, state.can_pause, "pause"),
+            (self.skip_button, state.can_skip, "skip"),
+            (self.repeat_button, state.can_replay, "replay"),
+            (self.stop_button, state.can_emergency_stop, "emergency"),
+        )
+        for button, enabled, control in disabled_controls:
+            button.setToolTip("" if enabled else state.reason_for(control))
+        if state.ready:
+            self._set_action_reason(
+                "Ready. Playback controls activate as dialogue state changes."
+            )
         else:
             self._set_action_reason(
-                reason
-                or "Controls unavailable while VNTTS is starting. Open Full "
-                "controls if this does not clear."
+                state.unavailable_reason
+                or "Controls unavailable while VNTTS is starting. Select Full "
+                "controls and Check readiness if this does not clear."
             )
         self._fit_content()
 
@@ -729,9 +814,6 @@ class CompactController(QWidget):
         for button in (
             self.read_button,
             self.live_button,
-            self.pause_button,
-            self.skip_button,
-            self.stop_button,
             self.sequence_expected_button,
         ):
             button.setToolTip(message)

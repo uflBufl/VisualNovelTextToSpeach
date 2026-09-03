@@ -170,6 +170,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     )
                 )
 
+            self.assertEqual(dialog.progress_phase.text(), "Offline audio is ready")
+            self.assertEqual(dialog.continue_button.text(), "Use prepared audio")
+            dialog.continue_button.click()
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
             self.assertTrue(generator.rendered)
             self.assertEqual(dialog.voice_plan().audition_count, 0)
@@ -301,7 +304,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(second.voice_panel.a_use.isEnabled())
             second.voice_panel.a_use.click()
             for _step in range(8):
-                if second.result() == QDialog.DialogCode.Accepted:
+                if second.pack_result() is not None:
                     break
                 self.assertTrue(
                     pool.tasks,
@@ -310,6 +313,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
 
+            self.assertEqual(second.progress_phase.text(), "Offline audio is ready")
+            second.continue_button.click()
             self.assertEqual(second.result(), QDialog.DialogCode.Accepted)
             self.assertEqual(second.voice_plan().audition_count, 0)
             self.assertTrue(generator.rendered)
@@ -348,6 +353,12 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             interrupted_job_id = first.job().job_id
             interrupted_input_id = first.generation_input().identity
             self.assertIn("Generation cancelled", first.resume_status.text())
+            self.assertEqual(first.progress_phase.text(), "Generation paused")
+            self.assertIn("2 of 2", first.progress_counts.text())
+            self.assertIn(
+                "generate only unfinished lines",
+                first.progress_cancel_consequence.text(),
+            )
             self.assertEqual(len(interrupted.rendered_texts), 2)
             first.reject()
             first.deleteLater()
@@ -366,7 +377,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             second.continue_button.click()
             for _step in range(8):
-                if second.result() == QDialog.DialogCode.Accepted:
+                if second.pack_result() is not None:
                     break
                 self.assertTrue(
                     pool.tasks,
@@ -375,6 +386,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
 
+            self.assertEqual(second.progress_phase.text(), "Offline audio is ready")
+            second.continue_button.click()
             self.assertEqual(second.result(), QDialog.DialogCode.Accepted)
             self.assertEqual(second.job().job_id, interrupted_job_id)
             self.assertEqual(second.generation_input().identity, interrupted_input_id)

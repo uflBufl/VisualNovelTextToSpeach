@@ -121,12 +121,19 @@ class AssetManagerDialog(QDialog):
         self._voice_import_message = None
         self._validated_manifest_identity = None
         self._accept_after_manifest_validation = False
-        self.setWindowTitle("Models and character voices")
+        self.model_management_available = settings.speech_backend == "coqui-xtts"
+        self.setWindowTitle(
+            "Models and character voices"
+            if self.model_management_available
+            else "Character voices"
+        )
         self.setMinimumSize(680, 440)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._create_models_tab(), "Speech model")
-        tabs.addTab(self._create_voices_tab(), "Character voices")
+        self.tabs = QTabWidget()
+        self.models_tab = self._create_models_tab()
+        if self.model_management_available:
+            self.tabs.addTab(self.models_tab, "Speech model")
+        self.tabs.addTab(self._create_voices_tab(), "Character voices")
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -134,7 +141,7 @@ class AssetManagerDialog(QDialog):
         self.buttons.accepted.connect(self.accept_settings)
         self.buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
-        layout.addWidget(tabs)
+        layout.addWidget(self.tabs)
         layout.addWidget(self.buttons)
 
         self.signals.progress.connect(self.update_progress)
@@ -346,7 +353,7 @@ class AssetManagerDialog(QDialog):
         return self.model.currentText().strip()
 
     def download_model(self):
-        if self.operation_running:
+        if self.operation_running or not self.model_management_available:
             return
         if not self.model_name():
             QMessageBox.warning(self, "No model", "Choose a model to download.")
@@ -386,7 +393,7 @@ class AssetManagerDialog(QDialog):
         self.model_status.setText("Cancelling after the current network chunk...")
 
     def verify_model(self):
-        if self.operation_running:
+        if self.operation_running or not self.model_management_available:
             return
         self.set_operation_running(True, "verify")
         self.model_status.setText("Verifying model checksums...")
@@ -523,8 +530,13 @@ class AssetManagerDialog(QDialog):
 
     def _accept_validated_settings(self):
         manifest = self.voice_manifest.text().strip() or None
+        model = (
+            self.model_name() or None
+            if self.model_management_available
+            else self.settings_value.tts_model
+        )
         self.settings_value = self.settings_value.updated(
-            tts_model=self.model_name() or None,
+            tts_model=model,
             voice_manifest=manifest,
         )
         self.accept()

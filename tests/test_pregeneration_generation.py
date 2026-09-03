@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import unittest
@@ -83,6 +84,35 @@ def generation_inputs(root, *, backend="pocket-tts", model=None):
 
 
 class OfflineGenerationWorkerTest(unittest.TestCase):
+    def test_progress_reads_partial_durable_state_before_manifest_publication(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            generation_input, _plan = generation_inputs(root)
+            output = root / f"generation-output-{generation_input.identity[:16]}"
+            output.mkdir()
+            (output / "generation-state.json").write_text(
+                json.dumps(
+                    {
+                        "queue_sha256": generation_input.queue_sha256,
+                        "items": {
+                            "one": {"status": "generated"},
+                            "two": {"status": "failed"},
+                            "three": {"status": "live_fallback"},
+                        },
+                        "active": {"phase": "validating"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            progress = OfflineGenerationWorker().inspect_progress(generation_input)
+
+        self.assertEqual(progress.completed, 3)
+        self.assertEqual(progress.generated, 1)
+        self.assertEqual(progress.failed, 1)
+        self.assertEqual(progress.other_terminal, 1)
+        self.assertEqual(progress.active_phase, "validating")
+
     def test_runs_exact_private_inputs_and_reports_terminal_counts(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

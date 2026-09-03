@@ -27,6 +27,10 @@ from PySide6.QtWidgets import (
 
 from vntts.asset_ui import AssetManagerDialog
 from vntts.async_ui import LatestTaskRunner
+from vntts.auto_advance_policy import (
+    auto_advance_control_state,
+    guard_auto_advance_settings,
+)
 from vntts.calibration import show_calibration_overlay
 from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.hotkey_ui import HotkeyRecorder
@@ -127,6 +131,21 @@ class ConfigurationPage(QWizardPage):
             "pregenerated audio and story-aware reading."
         )
         self.game_pack_help.setWordWrap(True)
+        self.auto_advance = QCheckBox("Automatically advance after speech")
+        self.auto_advance.setChecked(
+            settings.auto_advance_enabled if settings.onboarding_completed else True
+        )
+        advance_key = settings.auto_advance_key.replace("-", " ").title()
+        self.auto_advance_notice = QLabel(
+            f"When enabled, VNTTS automatically sends the {advance_key} key to "
+            "the focused game after eligible spoken dialogue. On macOS, this "
+            "requires Accessibility permission."
+        )
+        self.auto_advance_notice.setWordWrap(True)
+        self.auto_advance_notice.setAccessibleName("Auto advance behavior")
+        self.auto_advance_reason = QLabel()
+        self.auto_advance_reason.setWordWrap(True)
+        self.auto_advance_reason.setAccessibleName("Auto advance availability")
 
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
@@ -244,6 +263,9 @@ class ConfigurationPage(QWizardPage):
             self.game_pack_layout,
         )
         recommended_form.addRow("", self.game_pack_help)
+        recommended_form.addRow("Auto advance", self.auto_advance)
+        recommended_form.addRow("", self.auto_advance_notice)
+        recommended_form.addRow("", self.auto_advance_reason)
 
         advanced_form = QFormLayout()
         advanced_form.setFieldGrowthPolicy(
@@ -402,6 +424,19 @@ class ConfigurationPage(QWizardPage):
 
     def update_capture_controls(self):
         self.game_window.setEnabled(self.capture_mode.currentData() == "window")
+        allowed, enabled, reason = auto_advance_control_state(
+            self.capture_mode.currentData(),
+            self.original_settings.live_sequence_mode,
+            self.auto_advance.isChecked(),
+        )
+        if self.auto_advance.isChecked() != enabled:
+            self.auto_advance.blockSignals(True)
+            self.auto_advance.setChecked(enabled)
+            self.auto_advance.blockSignals(False)
+        self.auto_advance.setEnabled(allowed)
+        self.auto_advance.setToolTip(reason)
+        self.auto_advance_reason.setText(reason)
+        self.auto_advance_reason.setVisible(not allowed)
 
     def update_terms_control(self):
         backend = self.speech_backend.currentData()
@@ -431,6 +466,11 @@ class ConfigurationPage(QWizardPage):
         self.tts_model.setEnabled(uses_xtts or uses_moss)
         self.tts_language.setEnabled(uses_xtts or uses_moss)
         self.narrator_speaker.setEnabled(uses_xtts)
+        self.manage_assets_button.setText(
+            "Download model or import voices..."
+            if uses_xtts
+            else "Import character voices..."
+        )
         self.update_terms_control()
 
     def _connect_validation_updates(self):
@@ -557,7 +597,7 @@ class ConfigurationPage(QWizardPage):
             {
                 **asdict(self.original_settings),
                 "capture_mode": self.capture_mode.currentData(),
-                "auto_advance_enabled": self.capture_mode.currentData() == "window",
+                "auto_advance_enabled": self.auto_advance.isChecked(),
                 "game_window_title": self.game_window.currentText().strip() or None,
                 "game_pack": optional_text(self.game_pack),
                 "read_hotkey": hotkeys["Read once"],
@@ -576,7 +616,9 @@ class ConfigurationPage(QWizardPage):
 
     def settings(self):
         settings = self._base_settings()
-        return apply_game_pack(settings) if settings.game_pack else settings
+        if settings.game_pack:
+            settings = apply_game_pack(settings)
+        return guard_auto_advance_settings(settings)
 
     def hotkey_assignments(self):
         return {

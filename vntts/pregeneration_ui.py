@@ -2,7 +2,7 @@
 
 from threading import Event
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -10,11 +10,14 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QProgressBar,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +33,7 @@ from vntts.pregeneration_acceptance import OfflineAcceptanceWorker
 from vntts.pregeneration_audition_ui import VoiceAuditionPanel, VoiceAuditionUIError
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
+    OfflineGenerationProgress,
     OfflineGenerationWorker,
 )
 from vntts.pregeneration_pack import OfflinePackPublisher
@@ -115,6 +119,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.acceptance_runner.finished.connect(self._acceptance_finished)
         self.publication_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.publication_runner.finished.connect(self._publication_finished)
+        self.progress_timer = QTimer(self)
+        self.progress_timer.setInterval(500)
+        self.progress_timer.timeout.connect(self._poll_generation_progress)
         self.import_cancel_event = Event()
         self.voice_cancel_event = Event()
         self.importing = False
@@ -193,8 +200,49 @@ class OfflineAudioPreparationDialog(QDialog):
         self.summary = QLabel("Select game content to continue.")
         self.summary.setWordWrap(True)
         self.summary.setAccessibleName("Offline preparation estimate")
+        self.selection_status = QLabel()
+        self.selection_status.setWordWrap(True)
         self.resume_status = QLabel()
         self.resume_status.setWordWrap(True)
+        self.resume_status.setAccessibleName("Offline preparation phase detail")
+
+        self.progress_panel = QGroupBox("Preparation progress")
+        self.progress_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Maximum,
+        )
+        self.progress_phase = QLabel()
+        self.progress_phase.setAccessibleName("Offline preparation phase")
+        self.progress_phase.setStyleSheet("font-weight: 600;")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setAccessibleName("Durably completed generation items")
+        self.progress_bar.setTextVisible(True)
+        self.progress_counts = QLabel()
+        self.progress_counts.setAccessibleName("Offline generation durable counts")
+        self.progress_counts.setWordWrap(True)
+        self.progress_guarantee = QLabel()
+        self.progress_guarantee.setWordWrap(True)
+        self.progress_cancel_consequence = QLabel()
+        self.progress_cancel_consequence.setAccessibleName(
+            "Cancel and resume consequence"
+        )
+        self.progress_cancel_consequence.setWordWrap(True)
+        self.progress_failures = QLabel()
+        self.progress_failures.setAccessibleName("Offline generation recovery status")
+        self.progress_failures.setWordWrap(True)
+        self.progress_coverage = QLabel()
+        self.progress_coverage.setAccessibleName("Final offline audio coverage")
+        self.progress_coverage.setWordWrap(True)
+        progress_layout = QVBoxLayout(self.progress_panel)
+        progress_layout.addWidget(self.progress_phase)
+        progress_layout.addWidget(self.progress_bar)
+        progress_layout.addWidget(self.progress_counts)
+        progress_layout.addWidget(self.resume_status)
+        progress_layout.addWidget(self.progress_guarantee)
+        progress_layout.addWidget(self.progress_failures)
+        progress_layout.addWidget(self.progress_cancel_consequence)
+        progress_layout.addWidget(self.progress_coverage)
+        self.progress_panel.hide()
 
         self.buttons = QDialogButtonBox()
         self.cancel_button = self.buttons.addButton(
@@ -222,11 +270,12 @@ class OfflineAudioPreparationDialog(QDialog):
         selection_layout.addWidget(self.stories, 1)
         selection_layout.addLayout(selection_actions)
         selection_layout.addWidget(self.summary)
+        selection_layout.addWidget(self.selection_status)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.selection_panel, 1)
         layout.addWidget(self.voice_panel)
-        layout.addWidget(self.resume_status)
+        layout.addWidget(self.progress_panel)
         layout.addWidget(self.buttons)
         availability = self.importer.availability()
         self.import_button.setEnabled(availability.available)
@@ -366,6 +415,143 @@ class OfflineAudioPreparationDialog(QDialog):
     def pack_result(self):
         return self._pack_result
 
+    def _show_phase(self, phase, detail, cancel_consequence):
+        self.progress_panel.show()
+        self.progress_phase.setText(phase)
+        self.resume_status.setText(detail)
+        self.progress_cancel_consequence.setText(cancel_consequence)
+
+    def _show_waiting_phase(self, phase, detail, cancel_consequence):
+        self._show_phase(phase, detail, cancel_consequence)
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat("")
+        self.progress_counts.setText("Generation has not started yet.")
+        self.progress_guarantee.setText(
+            "Your selected stories and completed voice choices are saved for restart."
+        )
+        self.progress_failures.clear()
+        self.progress_coverage.clear()
+
+    def _start_generation_progress(self):
+        total = self._generation_input.ready_items
+        self._show_phase(
+            "Generating offline audio",
+            f"Generating {total} offline lines.",
+            "Cancel stops generation and closes this window. Finished lines stay "
+            "saved; reopen and select Continue to generate only unfinished lines.",
+        )
+        self.progress_bar.setRange(0, max(1, total))
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat(f"0 of {total} durable items")
+        self.progress_counts.setText(f"0 of {total} generation items durably finished.")
+        self.progress_guarantee.setText(
+            "Each finished item is saved on disk; cancellation does not discard it."
+        )
+        self.progress_failures.clear()
+        self.progress_coverage.clear()
+        self._poll_generation_progress()
+        self.progress_timer.start()
+
+    def _poll_generation_progress(self):
+        if self._generation_input is None or not (self.generating or self.recovering):
+            return
+        inspect = getattr(self.generator, "inspect_progress", None)
+        if not callable(inspect):
+            return
+        try:
+            progress = inspect(self._generation_input)
+        except Exception:
+            return
+        if isinstance(progress, OfflineGenerationProgress):
+            self._render_generation_progress(progress)
+
+    def _render_generation_progress(self, progress):
+        total = self._generation_input.ready_items
+        completed = min(progress.completed, total)
+        if self.generating:
+            durable_phase = {
+                "generating": "Generating offline audio",
+                "validating": "Checking generated audio",
+                "publishing": "Saving generated audio",
+            }.get(progress.active_phase)
+            if durable_phase is not None:
+                self.progress_phase.setText(durable_phase)
+        self.progress_bar.setRange(0, max(1, total))
+        self.progress_bar.setValue(completed)
+        self.progress_bar.setFormat(f"{completed} of {total} durable items")
+        self.progress_counts.setText(
+            f"{completed} of {total} generation items durably finished: "
+            f"{progress.generated} prepared, {progress.failed} failed, "
+            f"{progress.other_terminal} routed without prepared audio."
+        )
+        if self.recovering:
+            self.progress_failures.setText(
+                f"Automatic recovery is working on {progress.failed} failed "
+                f"item{'s' if progress.failed != 1 else ''}."
+            )
+        elif progress.failed:
+            self.progress_failures.setText(
+                f"{progress.failed} failure{'s' if progress.failed != 1 else ''} "
+                "found so far; safe automatic recovery starts after generation."
+            )
+        else:
+            self.progress_failures.clear()
+
+    def _render_generation_result(self, result):
+        if self._generation_input is None or result is None:
+            return
+        values = tuple(
+            value if isinstance(value, int) and not isinstance(value, bool) else 0
+            for value in (
+                getattr(result, "generated", 0),
+                getattr(result, "failed", 0),
+                getattr(result, "other_terminal", 0),
+            )
+        )
+        self._render_generation_progress(OfflineGenerationProgress(*values))
+
+    def _show_final_handoff(self, result):
+        self.progress_timer.stop()
+        self.selection_panel.hide()
+        self.voice_panel.hide()
+        self._render_generation_result(self._generation_result)
+        original = self._job.estimate.original_audio_lines
+        prepared = getattr(result, "approved", 0)
+        live = getattr(result, "live_fallbacks", 0)
+        story_lines = getattr(result, "story_lines", 0)
+        omissions = getattr(result, "omissions", 0)
+        prepared = prepared if isinstance(prepared, int) else 0
+        live = live if isinstance(live, int) else 0
+        story_lines = story_lines if isinstance(story_lines, int) else 0
+        omissions = omissions if isinstance(omissions, int) else 0
+        self._show_phase(
+            "Offline audio is ready",
+            "The validated offline pack is saved and ready to activate.",
+            "Close leaves the current audio setup unchanged; the saved pack can be "
+            "activated by reopening this preparation later.",
+        )
+        self.progress_coverage.setText(
+            f"Final coverage: {original} original-game-audio lines in this selection; "
+            f"the saved pack has {prepared} prepared lines and {live} live "
+            f"fallbacks across {story_lines or self._job.estimate.selected_lines} "
+            f"story lines"
+            + (f", with {omissions} explicit omissions." if omissions else ".")
+        )
+        self.progress_failures.setText(
+            "Automatic recovery finished before this pack was validated."
+            if self._recovery_result is not None
+            else "No automatic recovery was needed."
+        )
+        self.continue_button.setText("Use prepared audio")
+        self.continue_button.setAccessibleDescription(
+            "Close this preparation and activate the saved offline audio pack"
+        )
+        self.continue_button.setEnabled(True)
+        self.continue_button.setDefault(True)
+        self.continue_button.setFocus()
+        self.cancel_button.setText("Close")
+        self.cancel_button.setEnabled(True)
+
     def _source_changed(self, _index):
         self._populate_stories(self.current_content())
 
@@ -388,12 +574,15 @@ class OfflineAudioPreparationDialog(QDialog):
                     else Qt.CheckState.Unchecked
                 )
                 self.stories.addItem(item)
-            self.resume_status.setText(
+            message = (
                 "Previous selection restored. Continue resumes the same preparation."
                 if resumed
                 else "Your selection will be saved and can be resumed after restart."
             )
+            self.selection_status.setText(message)
+            self.resume_status.setText(message)
         else:
+            self.selection_status.clear()
             self.resume_status.clear()
         self.stories.blockSignals(False)
         self._selection_changed()
@@ -430,6 +619,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.setEnabled(True)
 
     def _save_selection(self):
+        if self._pack_result is not None:
+            self.accept()
+            return
         content = self.current_content()
         if content is None:
             return
@@ -449,7 +641,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.selection_panel.setVisible(False)
         self.cancel_button.setText("Cancel voice matching")
         self.cancel_button.setEnabled(True)
-        self.resume_status.setText("Preparing and matching character voices...")
+        self._show_waiting_phase(
+            "Matching character voices",
+            "Preparing and matching character voices...",
+            "Cancel stops voice matching and closes this window. Reopen it to "
+            "reuse the saved story selection.",
+        )
         self.voice_runner.start(
             self._create_voice_plan,
             self._job,
@@ -492,6 +689,10 @@ class OfflineAudioPreparationDialog(QDialog):
             self.cancel_button.setEnabled(True)
             self._set_import_controls(True)
             self.selection_panel.setVisible(True)
+            self.progress_phase.setText("Voice matching paused")
+            self.progress_cancel_consequence.setText(
+                "Change the selection or choose Continue to retry."
+            )
             if isinstance(error, PregenerationVoiceCancelled):
                 if self._close_after_voice_cancel:
                     self.reject()
@@ -527,9 +728,19 @@ class OfflineAudioPreparationDialog(QDialog):
             self.auditioning_voices = True
             self.cancel_button.setText("Cancel voice selection")
             self.cancel_button.setEnabled(True)
-            self.resume_status.setText(
+            self._show_phase(
+                "Choose character voices",
                 f"Listen to {audition_count} ambiguous character voice"
-                f"{'s' if audition_count != 1 else ''}."
+                f"{'s' if audition_count != 1 else ''}.",
+                "Cancel stops voice selection and closes this window. Reopen it "
+                "to reuse the saved story selection and any completed choices.",
+            )
+            self.progress_bar.setRange(0, audition_count)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("Voice choices remain")
+            self.progress_counts.setText(
+                f"{audition_count} voice choice"
+                f"{'s' if audition_count != 1 else ''} require input before generation."
             )
             return
         self.replanning_voice_decisions = False
@@ -542,7 +753,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.planning_voices = True
         self.cancel_button.setText("Cancel voice matching")
         self.cancel_button.setEnabled(True)
-        self.resume_status.setText("Applying your saved voice choices...")
+        self._show_waiting_phase(
+            "Applying voice choices",
+            "Applying your saved voice choices...",
+            "Cancel stops voice matching and closes this window. Reopen it to "
+            "reuse the saved choices.",
+        )
         self.voice_runner.start(
             self._create_voice_plan,
             self._job,
@@ -558,12 +774,19 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setEnabled(True)
         self._set_import_controls(True)
         self.selection_panel.setVisible(True)
+        self.selection_status.setText("Voice selection cancelled.")
         self.resume_status.setText("Voice selection cancelled.")
+        self.progress_panel.hide()
 
     def _start_generation_input(self, plan):
         self.preparing_inputs = True
         self.cancel_button.setText("Cancel preparation")
-        self.resume_status.setText("Preparing the selected stories for generation...")
+        self._show_waiting_phase(
+            "Preparing selected stories",
+            "Preparing the selected stories for generation...",
+            "Cancel stops preparation and closes this window. Reopen it and choose "
+            "Continue to resume from the saved selection and voice choices.",
+        )
         self.input_runner.start(
             self.input_store.materialize,
             self._job,
@@ -581,6 +804,10 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if error is not None:
             self.selection_panel.setVisible(True)
+            self.progress_phase.setText("Preparation paused")
+            self.progress_cancel_consequence.setText(
+                "Choose Continue to retry from the saved selection."
+            )
             if isinstance(error, PregenerationQueueCancelled):
                 if self._close_after_voice_cancel:
                     self.reject()
@@ -594,10 +821,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel generation")
         self.cancel_button.setEnabled(True)
-        self.resume_status.setText(
-            f"Generating {generation_input.ready_items} offline lines. "
-            "Completed lines are saved automatically..."
-        )
+        self._start_generation_progress()
         self.generation_runner.start(
             self.generator.generate,
             generation_input,
@@ -606,6 +830,8 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _generation_finished(self, result, error):
+        if error is not None:
+            self._poll_generation_progress()
         self.generating = False
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
@@ -614,7 +840,13 @@ class OfflineAudioPreparationDialog(QDialog):
             self.reject()
             return
         if error is not None:
+            self.progress_timer.stop()
             self.selection_panel.setVisible(True)
+            self.progress_phase.setText("Generation paused")
+            self.progress_cancel_consequence.setText(
+                "Finished lines remain saved. Choose Continue to generate only "
+                "unfinished lines, or Close to resume later."
+            )
             if isinstance(error, OfflineGenerationCancelled):
                 self.resume_status.setText(
                     "Generation cancelled. Continue later to resume saved lines."
@@ -623,15 +855,24 @@ class OfflineAudioPreparationDialog(QDialog):
             self.resume_status.setText(f"Unable to generate offline audio: {error}")
             return
         self._generation_result = result
+        self._render_generation_result(result)
         if result.failed < 1:
+            self.progress_timer.stop()
             self._start_acceptance(result)
             return
         self.recovering = True
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel automatic recovery")
         self.cancel_button.setEnabled(True)
-        self.resume_status.setText(
-            f"Trying safe automatic fixes for {result.failed} unfinished lines..."
+        self._show_phase(
+            "Recovering failed lines",
+            f"Trying safe automatic fixes for {result.failed} unfinished lines...",
+            "Cancel stops recovery and closes this window. Finished lines remain "
+            "saved; reopen and choose Continue to retry unfinished lines.",
+        )
+        self.progress_failures.setText(
+            f"Automatic recovery is working on {result.failed} failed "
+            f"item{'s' if result.failed != 1 else ''}."
         )
         self.recovery_runner.start(
             self.recovery.recover,
@@ -642,7 +883,10 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _recovery_finished(self, result, error):
+        if error is not None:
+            self._poll_generation_progress()
         self.recovering = False
+        self.progress_timer.stop()
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
         self._set_import_controls(True)
@@ -651,6 +895,11 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if error is not None:
             self.selection_panel.setVisible(True)
+            self.progress_phase.setText("Automatic recovery paused")
+            self.progress_cancel_consequence.setText(
+                "Finished lines remain saved. Choose Continue to retry unfinished "
+                "lines, or Close to resume later."
+            )
             if isinstance(error, OfflineGenerationCancelled):
                 self.resume_status.setText(
                     "Automatic recovery cancelled. Continue later to resume saved lines."
@@ -660,6 +909,13 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self._recovery_result = result
         self._generation_result = result.generation
+        self._render_generation_result(result.generation)
+        self.progress_failures.setText(
+            f"Recovery repaired {result.recovered} item"
+            f"{'s' if result.recovered != 1 else ''}; "
+            f"{result.live_fallbacks} will use live fallback and "
+            f"{result.remaining_failed} remain failed."
+        )
         self._start_acceptance(result.generation)
 
     def _start_acceptance(self, generation_result):
@@ -667,8 +923,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel final checks")
         self.cancel_button.setEnabled(True)
-        self.resume_status.setText(
-            "Finishing technical checks and saving prepared audio..."
+        self._show_phase(
+            "Checking prepared audio",
+            "Finishing technical checks and saving prepared audio...",
+            "Cancel stops final checks and closes this window. Prepared lines stay "
+            "saved; reopen and choose Continue to rerun the checks.",
         )
         self.acceptance_runner.start(
             self.acceptance.accept,
@@ -687,6 +946,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if error is not None:
             self.selection_panel.setVisible(True)
+            self.progress_phase.setText("Final checks paused")
             if isinstance(error, OfflineGenerationCancelled):
                 self.resume_status.setText(
                     "Final checks cancelled. Continue later to resume saved lines."
@@ -703,7 +963,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel final save")
         self.cancel_button.setEnabled(True)
-        self.resume_status.setText("Creating and checking your offline game pack...")
+        self._show_phase(
+            "Saving offline pack",
+            "Creating and checking your offline game pack...",
+            "Cancel stops the final save and closes this window. Prepared lines stay "
+            "saved; reopen and choose Continue to retry the pack save.",
+        )
         self.publication_runner.start(
             self.publisher.publish,
             self._job,
@@ -722,6 +987,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if error is not None:
             self.selection_panel.setVisible(True)
+            self.progress_phase.setText("Final save paused")
             if isinstance(error, OfflineGenerationCancelled):
                 self.resume_status.setText(
                     "Final save cancelled. Continue later to reuse prepared lines."
@@ -730,7 +996,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.resume_status.setText(f"Unable to create offline game pack: {error}")
             return
         self._pack_result = result
-        self.accept()
+        self._show_final_handoff(result)
 
     def _import_finished(self, content, error):
         self.importing = False
@@ -841,10 +1107,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.recovery_runner.cancel()
         self.acceptance_runner.cancel()
         self.publication_runner.cancel()
+        self.progress_timer.stop()
         self.voice_panel.shutdown()
         super().closeEvent(event)
 
     def done(self, result):
+        self.progress_timer.stop()
         if not self.voice_panel.active:
             self.voice_panel.shutdown()
         super().done(result)

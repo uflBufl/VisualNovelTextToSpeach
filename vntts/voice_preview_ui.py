@@ -1,6 +1,6 @@
 from concurrent.futures import CancelledError
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QSignalBlocker, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -32,6 +32,7 @@ class VoicePreviewDialog(QDialog):
         current_force_live_handler=None,
         preview_stop_handler=None,
         initial_character=None,
+        fixed_character=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -46,14 +47,23 @@ class VoicePreviewDialog(QDialog):
         self._preview_target = None
         self._stop_requested = False
         self._close_pending = False
+        self.fixed_character = (fixed_character or "").strip() or None
+        self._assignment_completed = False
         self.signals = VoicePreviewSignals()
         self.setWindowTitle("Choose narrator or character voice")
         self.setMinimumWidth(560)
 
         self.character = QComboBox()
-        self.character.setEditable(True)
-        self.character.addItems(characters)
-        if initial_character:
+        if self.fixed_character:
+            self.character.addItem(self.fixed_character)
+            self.character.setEnabled(False)
+            self.character.setAccessibleDescription(
+                "This speaker is fixed by the pending voice decision"
+            )
+        else:
+            self.character.setEditable(True)
+            self.character.addItems(characters)
+        if initial_character and not self.fixed_character:
             self.character.setCurrentText(initial_character)
         self.voice = QComboBox()
         for choice in choices:
@@ -73,10 +83,16 @@ class VoicePreviewDialog(QDialog):
         self.stop_button.clicked.connect(self.stop_preview)
         self.assign_button.clicked.connect(self.assign)
         self.automatic_button.clicked.connect(self.clear_assignment)
-        self.automatic_button.setVisible(clear_assignment_handler is not None)
+        self.automatic_button.setVisible(
+            clear_assignment_handler is not None and not self.fixed_character
+        )
         self.force_live = QCheckBox(
             "Always use live TTS for Narrator (bypass pregenerated tracks)"
         )
+        self.force_live.setAccessibleDescription(
+            "Applies Narrator routing immediately without changing the selected voice"
+        )
+        self.force_live.toggled.connect(self.set_force_live)
         self.routing_note = QLabel()
         self.routing_note.setWordWrap(True)
         self.status = QLabel(
@@ -130,6 +146,7 @@ class VoicePreviewDialog(QDialog):
             self.assign_button.setText("Use selected Narrator fallback voice")
             self.automatic_button.setText("Use default Narrator voice")
             self.force_live.setVisible(self.force_live_handler is not None)
+            blocker = QSignalBlocker(self.force_live)
             self.force_live.setChecked(
                 bool(
                     self.current_force_live_handler()
@@ -137,12 +154,17 @@ class VoicePreviewDialog(QDialog):
                     else False
                 )
             )
+            del blocker
         else:
             self.routing_note.setText(
                 "A saved character override takes priority over original, "
                 "pregenerated, and automatic voice routing."
             )
-            self.assign_button.setText("Use for this character")
+            self.assign_button.setText(
+                f"Use selected voice for {self.fixed_character}"
+                if self.fixed_character
+                else "Use for this character"
+            )
             self.automatic_button.setText("Use automatic voice routing")
             self.force_live.setVisible(False)
         self.select_current_assignment()
@@ -150,7 +172,9 @@ class VoicePreviewDialog(QDialog):
     def preview(self):
         if self._preview_future is not None:
             return
-        target = self.character.currentText().strip() or "Narrator"
+        target = (
+            self.fixed_character or self.character.currentText().strip() or "Narrator"
+        )
         voice_id = self.voice.currentData()
         voice_label = self.voice.currentText()
         text = self.text.toPlainText()
@@ -220,7 +244,7 @@ class VoicePreviewDialog(QDialog):
                 )
 
     def _set_preview_controls(self, enabled):
-        self.character.setEnabled(enabled)
+        self.character.setEnabled(enabled and not self.fixed_character)
         self.voice.setEnabled(enabled)
         self.text.setEnabled(enabled)
         self.assign_button.setEnabled(enabled)
@@ -241,14 +265,11 @@ class VoicePreviewDialog(QDialog):
         super().closeEvent(event)
 
     def assign(self):
+        if self._assignment_completed:
+            return
         try:
-            character = self.character.currentText().strip()
+            character = self.fixed_character or self.character.currentText().strip()
             self.assignment_handler(character, self.voice.currentData())
-            if (
-                character.casefold() == "narrator"
-                and self.force_live_handler is not None
-            ):
-                self.force_live_handler(self.force_live.isChecked())
         except Exception as error:
             self.status.setText(f"Voice assignment failed: {error}")
             return
@@ -262,6 +283,35 @@ class VoicePreviewDialog(QDialog):
                 f"{character or 'the selected target'}"
             )
         self.status.setText(message)
+        if self.fixed_character:
+            self._assignment_completed = True
+            self.accept()
+
+    def set_force_live(self, enabled):
+        if (
+            self.force_live_handler is None
+            or self.character.currentText().strip().casefold() != "narrator"
+        ):
+            return
+        try:
+            self.force_live_handler(bool(enabled))
+        except Exception as error:
+            blocker = QSignalBlocker(self.force_live)
+            self.force_live.setChecked(
+                bool(
+                    self.current_force_live_handler()
+                    if self.current_force_live_handler is not None
+                    else not enabled
+                )
+            )
+            del blocker
+            self.status.setText(f"Unable to save Narrator routing: {error}")
+            return
+        self.status.setText(
+            "Narrator will always use live TTS."
+            if enabled
+            else "Pregenerated Narrator tracks restored with live fallback."
+        )
 
     def clear_assignment(self):
         if self.clear_assignment_handler is None:

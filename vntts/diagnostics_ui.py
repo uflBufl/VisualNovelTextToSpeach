@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 class DiagnosticsDialog(QDialog):
     refresh_requested = Signal()
+    remediation_requested = Signal(str)
 
     def __init__(self, parent=None, *, refresh_timeout_ms=10_000):
         super().__init__(parent)
@@ -28,7 +29,7 @@ class DiagnosticsDialog(QDialog):
         self.refresh_timer.setSingleShot(True)
         self.refresh_timer.timeout.connect(self._current_refresh_timed_out)
 
-        self.preview = QLabel("Waiting for a captured dialog region...")
+        self.preview = QLabel("Waiting for a captured dialogue region...")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumHeight(170)
         self.preview.setStyleSheet(
@@ -76,6 +77,11 @@ class DiagnosticsDialog(QDialog):
             "border: 1px solid #e3b37d; }"
         )
         self.warning.hide()
+        self.warning_action = QPushButton()
+        self.warning_action.setAccessibleName("Resolve diagnostics warning")
+        self.warning_action.clicked.connect(self._request_remediation)
+        self.warning_action.hide()
+        self.warning_remediation = None
 
         self.refresh_button = QPushButton("Refresh now")
         self.refresh_button.setAccessibleName("Refresh live diagnostics")
@@ -95,6 +101,7 @@ class DiagnosticsDialog(QDialog):
         layout.addWidget(self.preview)
         layout.addLayout(details)
         layout.addWidget(self.warning)
+        layout.addWidget(self.warning_action, 0, Qt.AlignmentFlag.AlignRight)
         layout.addLayout(controls)
         layout.addWidget(buttons)
 
@@ -110,9 +117,9 @@ class DiagnosticsDialog(QDialog):
         generation = self.refresh_generation
         self.refresh_button.setEnabled(False)
         self.refresh_status.setText("Capturing and inspecting the current dialogue...")
-        self.refresh_requested.emit()
         self.refresh_timer.setProperty("refresh_generation", generation)
         self.refresh_timer.start(self.refresh_timeout_ms)
+        self.refresh_requested.emit()
 
     def _current_refresh_timed_out(self):
         generation = self.refresh_timer.property("refresh_generation")
@@ -132,6 +139,7 @@ class DiagnosticsDialog(QDialog):
         self.refresh_generation += 1
         self.refresh_button.setEnabled(True)
         self.refresh_status.setText(message)
+        self.restore_after_capture()
 
     def closeEvent(self, event):
         self.refresh_timer.stop()
@@ -155,7 +163,13 @@ class DiagnosticsDialog(QDialog):
         self.activateWindow()
 
     def set_snapshot(self, snapshot):
+        source_pixmap = (
+            self._pixmap_from_image(snapshot.image)
+            if snapshot.image is not None
+            else None
+        )
         self._finish_refresh("Diagnostics refreshed from the latest current snapshot.")
+        self.set_warning("")
         self.speaker.setText(snapshot.character or "Narrator")
         self.text.setPlainText(snapshot.text)
         self.confidence.setText(f"{snapshot.confidence:.1f}%")
@@ -181,20 +195,30 @@ class DiagnosticsDialog(QDialog):
         self.corrections.setText(
             "\n".join(snapshot.corrections) if snapshot.corrections else "None"
         )
-        if snapshot.image is not None:
-            self.source_pixmap = self._pixmap_from_image(snapshot.image)
+        self.source_pixmap = source_pixmap
+        if source_pixmap is None:
+            self.preview.clear()
+            self.preview.setText("No capture image is available for this snapshot.")
+        else:
             self._scale_preview()
 
-    def set_warning(self, message):
+    def set_warning(self, message, *, remediation=None):
         if self.refresh_in_flight:
             self._finish_refresh(
                 "Refresh failed. Resolve the warning below, then select Refresh now."
             )
         self.warning.setText(message)
         self.warning.setVisible(bool(message))
+        self.warning_remediation = remediation[0] if remediation else None
+        self.warning_action.setText(remediation[1] if remediation else "")
+        self.warning_action.setVisible(bool(message and remediation))
 
-    def set_permission_warnings(self, warnings):
-        self.set_warning("\n\n".join(warnings))
+    def set_permission_warnings(self, warnings, *, remediation=None):
+        self.set_warning("\n\n".join(warnings), remediation=remediation)
+
+    def _request_remediation(self):
+        if self.warning_remediation:
+            self.remediation_requested.emit(self.warning_remediation)
 
     def _scale_preview(self):
         if self.source_pixmap is None:

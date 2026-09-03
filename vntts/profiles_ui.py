@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -30,7 +32,7 @@ class GameProfilesDialog(QDialog):
 
         self.profiles = QComboBox()
         self.profiles.currentIndexChanged.connect(self.update_summary)
-        self.create_button = QPushButton("New...")
+        self.create_button = QPushButton("Save current setup as profile...")
         self.duplicate_button = QPushButton("Duplicate...")
         self.rename_button = QPushButton("Rename...")
         self.remove_button = QPushButton("Remove selected profile")
@@ -38,7 +40,7 @@ class GameProfilesDialog(QDialog):
         self.duplicate_button.clicked.connect(self.duplicate_profile)
         self.rename_button.clicked.connect(self.rename_profile)
         self.remove_button.clicked.connect(self.remove_profile)
-        self.create_button.setAccessibleName("Create game profile")
+        self.create_button.setAccessibleName("Save current setup as a game profile")
         self.duplicate_button.setAccessibleName("Duplicate selected game profile")
         self.rename_button.setAccessibleName("Rename selected game profile")
         self.remove_button.setAccessibleName("Remove selected game profile")
@@ -93,7 +95,7 @@ class GameProfilesDialog(QDialog):
         return self.store.get(self.profiles.currentData())
 
     def create_profile(self):
-        name = self._ask_name("New game profile", "Profile name")
+        name = self._ask_name("Save current setup as profile", "Profile name")
         if name is None:
             return
         try:
@@ -149,12 +151,32 @@ class GameProfilesDialog(QDialog):
         profile = self.current_profile()
         if profile is None:
             return
-        answer = QMessageBox.question(
-            self,
-            "Remove game profile",
-            f"Remove {profile.name!r}?",
+        correction_count = (
+            len(self.correction_store.profile_entries.get(str(profile.id), {}))
+            if self.correction_store is not None
+            else 0
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        prompt = QMessageBox(
+            QMessageBox.Icon.Warning,
+            "Remove game profile",
+            "",
+            parent=self,
+        )
+        prompt.setText(f"Remove {profile.name!r}?")
+        prompt.setInformativeText(
+            "This permanently deletes the profile and "
+            f"{correction_count} profile-scoped OCR "
+            f"correction{'s' if correction_count != 1 else ''}."
+        )
+        remove_button = prompt.addButton(
+            "Remove profile",
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
+        cancel_button = prompt.addButton(QMessageBox.StandardButton.Cancel)
+        prompt.setDefaultButton(cancel_button)
+        prompt.setEscapeButton(cancel_button)
+        prompt.exec()
+        if prompt.clickedButton() is not remove_button:
             return
         try:
             self.store.remove(profile.id)
@@ -194,17 +216,38 @@ class GameProfilesDialog(QDialog):
         )
         if profile is None:
             self.summary.setText(
-                "No profiles yet. Create one from the current settings."
+                "No profiles yet. Save the current setup as a profile."
             )
             return
-        window = profile.game_window_title or "calibrated screen region"
-        voice_pack = profile.voice_manifest or "default narrator"
+        capture = (
+            f"window '{profile.game_window_title}'"
+            if profile.capture_mode == "window" and profile.game_window_title
+            else "full screen"
+        )
+        content = Path(profile.game_pack).name if profile.game_pack else "no game pack"
+        prepared = (
+            Path(profile.generated_audio_manifest).name
+            if profile.generated_audio_manifest
+            else "none"
+        )
+        voice_pack = (
+            Path(profile.voice_manifest).name
+            if profile.voice_manifest
+            else "default narrator"
+        )
+        narrator_routing = (
+            "always live" if profile.force_live_narrator else "prepared audio first"
+        )
         self.summary.setText(
             f"Selected: {profile.name}"
             f"{' (active)' if selected_is_active else ' (not active)'}\n"
-            f"Window: {window}\n"
+            "Activation applies:\n"
+            f"- Capture: {capture} with its calibrated dialogue area\n"
+            f"- Content: {content}; sequence mode {profile.live_sequence_mode}\n"
+            f"- Audio: {profile.audio_source_policy}; prepared tracks {prepared}\n"
+            f"- Voices: {voice_pack}; {len(profile.voice_assignments)} manual "
+            f"assignment(s); Narrator {narrator_routing}\n"
             f"OCR language: {profile.ocr_language}\n"
-            f"Voice pack: {voice_pack}"
         )
 
     def use_profile(self):

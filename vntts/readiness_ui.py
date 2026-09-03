@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QProgressBar,
     QPushButton,
@@ -31,7 +32,7 @@ class ReadinessDialog(QDialog):
         self._checks_running = False
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._checks_finished)
-        self.setWindowTitle("Ready to play")
+        self.setWindowTitle("Check readiness")
         self.resize(820, 500)
 
         intro = QLabel(
@@ -53,7 +54,10 @@ class ReadinessDialog(QDialog):
         self.table.setAccessibleDescription(
             "Select a check to see its exact remediation action"
         )
-        self.table.horizontalHeader().setStretchLastSection(True)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.itemSelectionChanged.connect(self._update_remediation)
 
         remediation = QHBoxLayout()

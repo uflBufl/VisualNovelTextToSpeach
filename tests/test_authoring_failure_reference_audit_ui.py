@@ -185,6 +185,13 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
                 dialog.decision_context.values["effect"].text(),
             )
             self.assertTrue(dialog.preview_text_choice.accessibleName())
+            self.assertEqual(
+                dialog.decision_context.technical_toggle.text(),
+                "Decision provenance",
+            )
+            self.assertFalse(dialog.preview_panel.isVisibleTo(dialog))
+            dialog.preview_toggle.setChecked(True)
+            self.assertTrue(dialog.preview_panel.isVisibleTo(dialog))
             self.assertIn(
                 "without saving authoring state",
                 dialog.generate_preview.accessibleDescription(),
@@ -196,6 +203,52 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
 
             dialog.technical_details.setChecked(True)
             self.assertTrue(dialog.cases.isVisibleTo(dialog))
+
+    def test_scaled_font_keeps_keyboard_journey_scroll_reachable(self):
+        with TemporaryDirectory() as directory:
+            audit = self.create_audit(Path(directory))
+            dialog = FailureReferenceAuditDialog(audit)
+            dialog.preview_toggle.setChecked(True)
+            dialog.technical_details.setChecked(True)
+            base_point_size = dialog.font().pointSizeF()
+            for scale in (1.5, 2.0):
+                font = dialog.font()
+                font.setPointSizeF(base_point_size * scale)
+                dialog.setFont(font)
+                dialog.resize(dialog.minimumSize())
+                dialog.show()
+                self.application.processEvents()
+                self.assertEqual(
+                    dialog.review_scroll.horizontalScrollBar().maximum(), 0
+                )
+
+            self.assertGreater(dialog.review_scroll.verticalScrollBar().maximum(), 0)
+            self.assertTrue(dialog.close_button.isVisible())
+            self.assertIs(dialog.group_label.buddy(), dialog.group_choice)
+            self.assertIs(dialog.candidate_label.buddy(), dialog.candidate_choice)
+            self.assertIs(dialog.preview_text_label.buddy(), dialog.preview_text_choice)
+            self.assertIs(
+                dialog.decision_context.technical_toggle.nextInFocusChain(),
+                dialog.group_choice,
+            )
+            self.assertIs(
+                dialog.technical_details.nextInFocusChain(), dialog.close_button
+            )
+            for button in (
+                dialog.play,
+                dialog.stop,
+                dialog.generate_preview,
+                dialog.replay_preview,
+                dialog.cancel_preview,
+                dialog.choose,
+                dialog.neither,
+                dialog.previous,
+                dialog.next,
+                dialog.close_button,
+            ):
+                self.assertTrue(button.accessibleName(), button.text())
+                self.assertTrue(button.accessibleDescription(), button.text())
+            dialog.close()
 
     def test_direct_decision_is_blocked_until_all_candidates_are_heard(self):
         with TemporaryDirectory() as directory:

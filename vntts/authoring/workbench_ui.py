@@ -38,6 +38,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QGridLayout,
@@ -447,6 +448,9 @@ class AuthoringWorkbenchDialog(QDialog):
     """Thin Qt shell over the validated authoring workspace boundary."""
 
     settings_group = "authoring/workbench"
+    all_speakers_scope = "review-scope:all"
+    narrator_scope = "review-scope:narrator"
+    characters_scope = "review-scope:characters"
 
     def __init__(
         self,
@@ -579,6 +583,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self.voice_search = QLineEdit()
         self.voice_search.setPlaceholderText("Search configured voices")
         self.voice_search.setAccessibleName("Search voice references")
+        self.voice_search.setAccessibleDescription(
+            "Filter the configured voice characters available for reference preview"
+        )
         self.voice_character = QComboBox()
         self.voice_character.setAccessibleName("Voice character")
         self.voice_character.setAccessibleDescription(
@@ -628,10 +635,18 @@ class AuthoringWorkbenchDialog(QDialog):
         self.player.mediaStatusChanged.connect(self._media_status_changed)
 
         voice_header = QHBoxLayout()
+        self.voice_search_label = QLabel("Find voice")
+        self.voice_search_label.setBuddy(self.voice_search)
+        self.voice_character_label = QLabel("Voice")
+        self.voice_character_label.setBuddy(self.voice_character)
+        voice_header.addWidget(self.voice_search_label)
         voice_header.addWidget(self.voice_search)
+        voice_header.addWidget(self.voice_character_label)
         voice_header.addWidget(self.voice_character, 1)
         recent_header = QHBoxLayout()
-        recent_header.addWidget(QLabel("Recent previews"))
+        self.recent_choice_label = QLabel("Recent previews")
+        self.recent_choice_label.setBuddy(self.recent_choice)
+        recent_header.addWidget(self.recent_choice_label)
         recent_header.addWidget(self.recent_choice, 1)
         voice_controls = QHBoxLayout()
         for widget in (
@@ -652,7 +667,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.voice_box.content_layout.addWidget(self.voice_content)
 
         self.review_character = QComboBox()
-        self.review_character.setAccessibleName("Filter review by character")
+        self.review_character.setAccessibleName("Filter review by source speaker")
         self.review_status = QComboBox()
         self.review_status.addItems(
             [
@@ -667,34 +682,39 @@ class AuthoringWorkbenchDialog(QDialog):
             ]
         )
         self.review_status.setAccessibleName("Filter review by status")
+        self.review_status.setAccessibleDescription(
+            "Show review outcomes with one decision or failure status"
+        )
         self.review_collection = QComboBox()
         self.review_collection.setAccessibleName("Filter review by collection")
+        self.review_collection.setAccessibleDescription(
+            "Show review outcomes from one source story collection"
+        )
         self.review_search = QLineEdit()
         self.review_search.setPlaceholderText("Search line text")
         self.review_search.setAccessibleName("Filter review by line text")
-        self.narrator_only = QPushButton("Narrator only")
-        self.exclude_narrator = QPushButton("Characters only")
-        self.exclude_narrator.setCheckable(True)
-        self._accessible_button(
-            self.narrator_only,
-            "Show only Narrator review items",
-            "Set the review voice filter to source Narrator lines",
+        self.review_search.setAccessibleDescription(
+            "Search dialogue text, line identity, or queue identity"
         )
-        self._accessible_button(
-            self.exclude_narrator,
-            "Show character review items only",
-            "Hide narrator outcomes without changing generation scope",
+        self.review_character.setAccessibleDescription(
+            "Show every source speaker, Narrator only, characters only, or one "
+            "named character without changing generation scope"
         )
-        review_filters = QHBoxLayout()
-        for widget in (
-            self.review_character,
-            self.review_status,
-            self.review_collection,
-            self.review_search,
-            self.narrator_only,
-            self.exclude_narrator,
+        review_filters = QGridLayout()
+        self.review_filter_labels = []
+        for column, (text, widget) in enumerate(
+            (
+                ("Speaker", self.review_character),
+                ("Status", self.review_status),
+                ("Collection", self.review_collection),
+                ("Search", self.review_search),
+            )
         ):
-            review_filters.addWidget(widget)
+            label = QLabel(text)
+            label.setBuddy(widget)
+            review_filters.addWidget(label, 0, column)
+            review_filters.addWidget(widget, 1, column)
+            self.review_filter_labels.append(label)
         self.review_scope = QLabel()
         self.review_scope.setAccessibleName("Independent review scope and counts")
         self.review_scope.setWordWrap(True)
@@ -735,13 +755,15 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.horizontalHeader().setSectionResizeMode(
             7, QHeaderView.ResizeMode.Stretch
         )
+        self.review_table.setColumnHidden(6, True)
+        self.review_table.setColumnHidden(8, True)
         self.previous_pending = QPushButton("Previous pending")
         self.next_pending = QPushButton("Next pending")
-        self.approve = QPushButton("Approve (Ctrl+Enter)")
-        self.reject = QPushButton("Reject (Ctrl+Backspace)")
-        self.review_play = QPushButton("Replay (Ctrl+R)")
+        self.approve = QPushButton("Approve")
+        self.reject = QPushButton("Reject")
+        self.review_play = QPushButton("Replay")
         self.review_stop = QPushButton("Stop selected audio")
-        self.reload_authority = QPushButton("Refresh authority")
+        self.reload_authority = QPushButton("Reload workspace")
         self.retry_failed = QPushButton("Retry failed")
         self.generate = QPushButton("Generate ready lines")
         self.stop_generation = QPushButton("Stop generation")
@@ -761,17 +783,20 @@ class AuthoringWorkbenchDialog(QDialog):
             (
                 self.approve,
                 "Approve selected audio",
-                "Make this generated line eligible for a later final game pack",
+                "Make this generated line eligible for a later final game pack. "
+                "Keyboard shortcut: Ctrl+Enter or Ctrl+Return",
             ),
             (
                 self.reject,
                 "Reject selected audio",
-                "Keep but unpublish this generated line",
+                "Keep but unpublish this generated line. Keyboard shortcut: "
+                "Ctrl+Backspace",
             ),
             (
                 self.review_play,
                 "Play selected generated audio",
-                "Play the exact validated generated WAV selected for review",
+                "Play the exact validated generated WAV selected for review. "
+                "Keyboard shortcut: Ctrl+R",
             ),
             (
                 self.review_stop,
@@ -780,7 +805,7 @@ class AuthoringWorkbenchDialog(QDialog):
             ),
             (
                 self.reload_authority,
-                "Retry authoritative workspace load",
+                "Reload workspace",
                 "Revalidate workspace authority after a transient load or save failure",
             ),
             (
@@ -824,7 +849,6 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_stop,
             self.approve,
             self.reject,
-            self.reload_authority,
         )
         for widget in review_buttons:
             widget.setMinimumWidth(widget.sizeHint().width())
@@ -832,7 +856,6 @@ class AuthoringWorkbenchDialog(QDialog):
             review_actions.addWidget(widget, 0, column)
         review_actions.addWidget(self.approve, 1, 0)
         review_actions.addWidget(self.reject, 1, 1)
-        review_actions.addWidget(self.reload_authority, 1, 2, 1, 2)
         generation_actions = QHBoxLayout()
         for widget in (
             self.retry_failed,
@@ -844,6 +867,13 @@ class AuthoringWorkbenchDialog(QDialog):
 
         self.technical = DisclosureSection("Technical details")
         self.technical.setAccessibleName("Technical process details")
+        self.show_technical_columns = QCheckBox("Show technical review columns")
+        self.show_technical_columns.setAccessibleName(
+            "Show technical and queue ID review columns"
+        )
+        self.show_technical_columns.setAccessibleDescription(
+            "Reveal the Technical and Queue ID columns in the review table"
+        )
         self.process_log = QPlainTextEdit()
         self.process_log.setReadOnly(True)
         self.process_log.setAccessibleName("Generation process log")
@@ -854,6 +884,11 @@ class AuthoringWorkbenchDialog(QDialog):
             "Copy the workspace status and raw child-process log",
         )
         technical_layout = self.technical.content_layout
+        technical_controls = QHBoxLayout()
+        technical_controls.addWidget(self.reload_authority)
+        technical_controls.addWidget(self.reset_layout)
+        technical_layout.addWidget(self.show_technical_columns)
+        technical_layout.addLayout(technical_controls)
         technical_layout.addWidget(self.process_log)
         technical_layout.addWidget(self.copy_diagnostics)
 
@@ -889,7 +924,6 @@ class AuthoringWorkbenchDialog(QDialog):
         secondary = QWidget()
         secondary_layout = QVBoxLayout(secondary)
         secondary_layout.setContentsMargins(4, 4, 4, 4)
-        secondary_layout.addWidget(self.reset_layout)
         secondary_layout.addWidget(self.outcome_details)
         secondary_layout.addWidget(self.generation_section)
         secondary_layout.addWidget(self.readiness_details)
@@ -927,8 +961,6 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_status.currentTextChanged.connect(self._apply_review_filters)
         self.review_collection.currentTextChanged.connect(self._apply_review_filters)
         self.review_search.textChanged.connect(self._apply_review_filters)
-        self.narrator_only.clicked.connect(self._show_narrator_reviews)
-        self.exclude_narrator.toggled.connect(self._exclude_narrator_changed)
         self.reference_previous.clicked.connect(lambda: self._move_reference(-1))
         self.reference_next.clicked.connect(lambda: self._move_reference(1))
         self.reference_play.clicked.connect(self.play_reference)
@@ -947,6 +979,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.open_output.clicked.connect(self.open_output_folder)
         self.reset_layout.clicked.connect(self._reset_layout)
         self.copy_diagnostics.clicked.connect(self.copy_diagnostic_text)
+        self.show_technical_columns.toggled.connect(self._show_technical_review_columns)
         self.technical.toggled.connect(self._technical_toggled)
         self.readiness_details.toggled.connect(self.readiness_text.setVisible)
         self.voice_box.toggled.connect(self.voice_content.setVisible)
@@ -1136,6 +1169,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.reload_authority.setEnabled(not self._projection_active)
         self.reload_authority.setText("Retry workspace load")
         self.reload_authority.setToolTip("Retry authoritative workspace validation")
+        self.technical.setChecked(True)
         self.stop_generation.setEnabled(
             self.process.state() != QProcess.ProcessState.NotRunning
         )
@@ -1208,7 +1242,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.stop_generation.setEnabled(running)
         self.open_output.setEnabled(True)
         self.reload_authority.setEnabled(True)
-        self.reload_authority.setText("Refresh authority")
+        self.reload_authority.setText("Reload workspace")
         self.reload_authority.setToolTip("Reload authoritative workspace state")
         self._update_review_actions(preserve_queue_id=True)
 
@@ -1745,14 +1779,30 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_table.setColumnWidth(column, width)
 
     def _populate_review_filter_choices(self):
-        self._replace_combo_values(
-            self.review_character,
-            "All characters",
-            sorted(
-                {item.voice_character for item in self._all_reviews},
-                key=str.casefold,
-            ),
+        current_scope = getattr(
+            self,
+            "_stored_review_character_scope",
+            self.review_character.currentData() or self.all_speakers_scope,
         )
+        self.review_character.blockSignals(True)
+        self.review_character.clear()
+        self.review_character.addItem("All speakers", self.all_speakers_scope)
+        self.review_character.addItem("Narrator only", self.narrator_scope)
+        self.review_character.addItem("Characters only", self.characters_scope)
+        for character in sorted(
+            {
+                item.voice_character
+                for item in self._all_reviews
+                if item.voice_character.casefold() != "narrator"
+            },
+            key=str.casefold,
+        ):
+            self.review_character.addItem(character, character)
+        index = self.review_character.findData(current_scope)
+        self.review_character.setCurrentIndex(index if index >= 0 else 0)
+        self.review_character.blockSignals(False)
+        if hasattr(self, "_stored_review_character_scope"):
+            del self._stored_review_character_scope
         self._replace_combo_values(
             self.review_collection,
             "All collections",
@@ -1765,10 +1815,6 @@ class AuthoringWorkbenchDialog(QDialog):
                 key=str.casefold,
             ),
         )
-        if hasattr(self, "_stored_review_character"):
-            index = self.review_character.findText(self._stored_review_character)
-            self.review_character.setCurrentIndex(index if index >= 0 else 0)
-            del self._stored_review_character
         if hasattr(self, "_stored_review_collection"):
             index = self.review_collection.findText(self._stored_review_collection)
             self.review_collection.setCurrentIndex(index if index >= 0 else 0)
@@ -1788,18 +1834,27 @@ class AuthoringWorkbenchDialog(QDialog):
     def _apply_review_filters(self, *_arguments):
         if not hasattr(self, "review_character"):
             return
-        character = self.review_character.currentText()
+        character_scope = self.review_character.currentData()
         status = self.review_status.currentText()
         collection = self.review_collection.currentText()
         needle = self.review_search.text().strip().casefold()
-        exclude_narrator = self.exclude_narrator.isChecked()
 
         def included(item):
-            if character not in {"", "All characters"} and (
-                item.voice_character != character
-            ):
+            narrator = item.voice_character.casefold() == "narrator"
+            if character_scope == self.narrator_scope and not narrator:
                 return False
-            if exclude_narrator and item.voice_character.casefold() == "narrator":
+            if character_scope == self.characters_scope and narrator:
+                return False
+            if (
+                character_scope
+                not in {
+                    None,
+                    self.all_speakers_scope,
+                    self.narrator_scope,
+                    self.characters_scope,
+                }
+                and item.voice_character != character_scope
+            ):
                 return False
             if collection not in {"", "All collections"} and (
                 item.collection_id != collection
@@ -1960,19 +2015,6 @@ class AuthoringWorkbenchDialog(QDialog):
             self.player.setSource(QUrl())
             playback.close()
             playback.deleteLater()
-
-    def _show_narrator_reviews(self):
-        index = self.review_character.findText("Narrator")
-        if index < 0:
-            self.review_character.addItem("Narrator")
-            index = self.review_character.findText("Narrator")
-        self.exclude_narrator.setChecked(False)
-        self.review_character.setCurrentIndex(index)
-
-    def _exclude_narrator_changed(self, checked):
-        if checked and self.review_character.currentText() == "Narrator":
-            self.review_character.setCurrentText("All characters")
-        self._apply_review_filters()
 
     def _row_for_queue_id(self, queue_id):
         if queue_id is None:
@@ -2532,6 +2574,10 @@ class AuthoringWorkbenchDialog(QDialog):
         self.process_log.setVisible(checked)
         self.copy_diagnostics.setVisible(checked)
 
+    def _show_technical_review_columns(self, checked):
+        self.review_table.setColumnHidden(6, not checked)
+        self.review_table.setColumnHidden(8, not checked)
+
     def _inspector_section_toggled(self, section, checked):
         if not checked:
             return
@@ -2565,6 +2611,9 @@ class AuthoringWorkbenchDialog(QDialog):
         expanded = self.settings.value("technical-expanded", False, type=bool)
         self.technical.setChecked(expanded)
         self._technical_toggled(expanded)
+        self.show_technical_columns.setChecked(
+            self.settings.value("technical-review-columns", False, type=bool)
+        )
         readiness_expanded = self.settings.value("readiness-expanded", False, type=bool)
         self.readiness_details.setChecked(readiness_expanded)
         self.readiness_text.setVisible(readiness_expanded)
@@ -2579,12 +2628,16 @@ class AuthoringWorkbenchDialog(QDialog):
             str(self.settings.value("review-status", "Awaiting review"))
         )
         self.review_search.setText(str(self.settings.value("review-search", "")))
-        self.exclude_narrator.setChecked(
-            self.settings.value("review-exclude-narrator", False, type=bool)
+        stored_character = str(
+            self.settings.value("review-character", self.all_speakers_scope)
         )
-        self._stored_review_character = str(
-            self.settings.value("review-character", "All characters")
-        )
+        if self.settings.value("review-exclude-narrator", False, type=bool):
+            stored_character = self.characters_scope
+        elif stored_character in {"", "All characters", "All speakers"}:
+            stored_character = self.all_speakers_scope
+        elif stored_character in {"Narrator", "Narrator only"}:
+            stored_character = self.narrator_scope
+        self._stored_review_character_scope = stored_character
         self._stored_review_collection = str(
             self.settings.value("review-collection", "All collections")
         )
@@ -2599,6 +2652,9 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self.settings.setValue("layout-version", 2)
         self.settings.setValue("technical-expanded", self.technical.isChecked())
+        self.settings.setValue(
+            "technical-review-columns", self.show_technical_columns.isChecked()
+        )
         self.settings.setValue("readiness-expanded", self.readiness_details.isChecked())
         self.settings.setValue(
             "outcome-details-expanded", self.outcome_details.isChecked()
@@ -2606,10 +2662,11 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.setValue("voice-expanded", self.voice_box.isChecked())
         self.settings.setValue("review-status", self.review_status.currentText())
         self.settings.setValue("review-search", self.review_search.text())
+        self.settings.remove("review-exclude-narrator")
         self.settings.setValue(
-            "review-exclude-narrator", self.exclude_narrator.isChecked()
+            "review-character",
+            self.review_character.currentData() or self.all_speakers_scope,
         )
-        self.settings.setValue("review-character", self.review_character.currentText())
         self.settings.setValue(
             "review-collection", self.review_collection.currentText()
         )
@@ -2623,12 +2680,14 @@ class AuthoringWorkbenchDialog(QDialog):
         self.technical.setChecked(False)
         self.readiness_details.setChecked(False)
         self.voice_box.setChecked(False)
+        self.show_technical_columns.setChecked(False)
         self.inspector_scroll.verticalScrollBar().setValue(0)
         self.settings.beginGroup(self.settings_group)
         self.settings.remove("splitter")
         self.settings.remove("generation-expanded")
         self.settings.setValue("layout-version", 2)
         self.settings.remove("technical-expanded")
+        self.settings.remove("technical-review-columns")
         self.settings.remove("readiness-expanded")
         self.settings.remove("outcome-details-expanded")
         self.settings.remove("voice-expanded")
@@ -2680,8 +2739,6 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_status,
             self.review_collection,
             self.review_search,
-            self.narrator_only,
-            self.exclude_narrator,
             self.review_table,
             self.previous_pending,
             self.next_pending,
@@ -2691,15 +2748,15 @@ class AuthoringWorkbenchDialog(QDialog):
             self.reject,
             self.specialist_section.header,
             self.specialist_review,
+            self.outcome_details.header,
+            self.generation_section.header,
             self.collection_tree,
             self.retry_failed,
             self.generate,
             self.stop_generation,
             self.open_output,
-            self.reset_layout,
-            self.outcome_details.header,
-            self.generation_section.header,
             self.readiness_details.header,
+            self.voice_box.header,
             self.recent_choice,
             self.voice_search,
             self.voice_character,
@@ -2707,8 +2764,10 @@ class AuthoringWorkbenchDialog(QDialog):
             self.reference_play,
             self.reference_stop,
             self.reference_next,
-            self.voice_box.header,
             self.technical.header,
+            self.show_technical_columns,
+            self.reload_authority,
+            self.reset_layout,
             self.copy_diagnostics,
         )
         for first, second in zip(widgets, widgets[1:]):
