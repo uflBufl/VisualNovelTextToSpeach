@@ -106,7 +106,7 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
         self.assertEqual(plan.deferred_action_counts, ())
         self.assertEqual(plan.deferred_batches, ())
 
-    def test_pocket_resumes_cancellation_once_and_defers_real_failures(self):
+    def test_pocket_runs_safe_repairs_before_deferring_real_failures(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, result, voice_plan = inputs(Path(temporary_directory))
             voice_plan = replace(
@@ -117,7 +117,7 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
             document = {
                 "state_sha256": "1" * 64,
                 "queue_sha256": "2" * 64,
-                "failure_count": 3,
+                "failure_count": 5,
                 "records": [
                     {
                         "queue_id": "b",
@@ -134,6 +134,16 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
                         "action": "safe_resume",
                         "provider": "pocket-tts",
                     },
+                    {
+                        "queue_id": "d",
+                        "action": "sentence_boundary_segmentation",
+                        "provider": "pocket-tts",
+                    },
+                    {
+                        "queue_id": "e",
+                        "action": "edge_silence_trim",
+                        "provider": "pocket-tts",
+                    },
                 ],
             }
 
@@ -145,7 +155,11 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
 
         self.assertEqual(
             plan.automatic_batches,
-            (OfflineRecoveryBatch("safe_resume", ("a",)),),
+            (
+                OfflineRecoveryBatch("safe_resume", ("a",)),
+                OfflineRecoveryBatch("sentence_boundary_segmentation", ("d",)),
+                OfflineRecoveryBatch("edge_silence_trim", ("e",)),
+            ),
         )
         self.assertEqual(
             plan.deferred_action_counts,

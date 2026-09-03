@@ -223,6 +223,17 @@ from vntts.voices import pocket_tts_preset_voices, synthesis_character_for_line
 
 NO_PROMPT_SHA256 = hashlib.sha256(b"").hexdigest()
 PURE_SOUND_EFFECT_PATTERN = re.compile(r'^\s*["“”]?\*[^*]+\*["“”]?[.!?]?\s*$')
+AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS = frozenset(
+    {
+        "backend_diagnosis",
+        "bounded_seed_retry",
+        "inline_pause_marker_comparison",
+        "offline_fallback_backend",
+        "provenance_recovery_or_regeneration",
+        "reference_comparison",
+        "reference_discovery",
+    }
+)
 
 
 class BulkGenerationSourceChangedError(BulkGenerationError):
@@ -2857,16 +2868,7 @@ def _automatic_recovery_fallback_evidence(
         None,
     )
     action = record.get("action") if isinstance(record, dict) else None
-    allowed_actions = {
-        "bounded_seed_retry",
-        "offline_fallback_backend",
-        "inline_pause_marker_comparison",
-        "reference_comparison",
-        "reference_discovery",
-        "backend_diagnosis",
-        "provenance_recovery_or_regeneration",
-    }
-    if action not in allowed_actions:
+    if action not in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS:
         raise BulkGenerationError(
             "Automatic live fallback cannot replace a remaining safe repair"
         )

@@ -561,10 +561,17 @@ class OfflineAudioPreparationDialog(QDialog):
         if content is not None:
             resumed = self.job_store.latest_for_content(content)
             resumed_ids = set(resumed.selected_story_ids) if resumed else set()
+            prepared_ids = (
+                resumed_ids if resumed and resumed.status == "prepared" else set()
+            )
             for selection in content.selections:
+                speech_status = (
+                    "offline audio ready"
+                    if selection.selection_id in prepared_ids
+                    else f"{selection.generation_lines} need speech"
+                )
                 item = QListWidgetItem(
-                    f"{selection.title} - {selection.line_count} lines; "
-                    f"{selection.generation_lines} need speech"
+                    f"{selection.title} - {selection.line_count} lines; {speech_status}"
                 )
                 item.setData(Qt.ItemDataRole.UserRole, selection.selection_id)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -575,7 +582,9 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
                 self.stories.addItem(item)
             message = (
-                "Previous selection restored. Continue resumes the same preparation."
+                "Offline audio is ready for the restored selection."
+                if prepared_ids
+                else "Previous selection restored. Continue resumes the same preparation."
                 if resumed
                 else "Your selection will be saved and can be resumed after restart."
             )
@@ -916,6 +925,24 @@ class OfflineAudioPreparationDialog(QDialog):
             f"{result.live_fallbacks} will use live fallback and "
             f"{result.remaining_failed} remain failed."
         )
+        if result.remaining_failed:
+            ready = max(0, self._generation_input.ready_items - result.remaining_failed)
+            self.progress_bar.setValue(ready)
+            self.progress_bar.setFormat(
+                f"{ready} of {self._generation_input.ready_items} ready"
+            )
+            self.selection_panel.setVisible(True)
+            self.progress_phase.setText("Automatic recovery paused")
+            self.progress_cancel_consequence.setText(
+                "Prepared lines remain saved. Choose Continue to retry only the "
+                "unfinished lines, or Close to resume later."
+            )
+            self.resume_status.setText(
+                f"Offline audio is not complete: {result.remaining_failed} line"
+                f"{'s' if result.remaining_failed != 1 else ''} still need a safe "
+                "automatic repair."
+            )
+            return
         self._start_acceptance(result.generation)
 
     def _start_acceptance(self, generation_result):
@@ -996,7 +1023,18 @@ class OfflineAudioPreparationDialog(QDialog):
             self.resume_status.setText(f"Unable to create offline game pack: {error}")
             return
         self._pack_result = result
+        status_error = None
+        try:
+            self._job = self.job_store.mark_prepared(self._job)
+            self._populate_stories(self.current_content())
+        except (OSError, PregenerationSetupError) as error:
+            status_error = error
         self._show_final_handoff(result)
+        if status_error is not None:
+            self.resume_status.setText(
+                "Offline audio was saved, but its story status could not be updated: "
+                f"{status_error}"
+            )
 
     def _import_finished(self, content, error):
         self.importing = False

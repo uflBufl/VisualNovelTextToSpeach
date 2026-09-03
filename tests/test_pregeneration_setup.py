@@ -405,6 +405,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIs(dialog.generation_result(), final)
             self.assertIs(dialog.recovery_result(), recovery_result)
             self.assertIs(dialog.pack_result(), pack_result)
+            self.assertEqual(dialog.job().status, "prepared")
+            self.assertTrue(
+                all(
+                    "offline audio ready" in dialog.stories.item(row).text()
+                    for row in range(dialog.stories.count())
+                )
+            )
             self.assertEqual(dialog.progress_phase.text(), "Offline audio is ready")
             self.assertIn("1 original-game-audio", dialog.progress_coverage.text())
             self.assertIn("2 prepared lines", dialog.progress_coverage.text())
@@ -413,6 +420,36 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
             dialog.continue_button.click()
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            dialog.deleteLater()
+
+    def test_remaining_safe_repair_keeps_preparation_incomplete(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            acceptance = Mock()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                acceptance=acceptance,
+            )
+            dialog._generation_input = Mock(ready_items=3)
+            dialog.recovering = True
+            generation = Mock(generated=2, failed=1, other_terminal=0)
+            result = Mock(
+                generation=generation,
+                recovered=1,
+                live_fallbacks=0,
+                remaining_failed=1,
+            )
+
+            dialog._recovery_finished(result, None)
+
+            self.assertEqual(dialog.progress_phase.text(), "Automatic recovery paused")
+            self.assertIn("not complete", dialog.resume_status.text())
+            self.assertEqual(dialog.progress_bar.value(), 2)
+            self.assertFalse(dialog.accepting_audio)
+            acceptance.accept.assert_not_called()
             dialog.deleteLater()
 
     def test_missing_content_has_one_plain_recovery_action(self):

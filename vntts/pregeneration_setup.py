@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -288,6 +288,26 @@ class PregenerationJobStore:
             if job.story_index_sha256 == content.story_index_sha256:
                 matches.append(job)
         return max(matches, key=lambda value: value.updated_at, default=None)
+
+    def mark_prepared(self, job):
+        if not isinstance(job, PregenerationJob):
+            raise PregenerationSetupError("Preparation job is invalid")
+        current = self.load(job.job_id)
+        if (
+            current.story_index_sha256 != job.story_index_sha256
+            or current.selected_story_ids != job.selected_story_ids
+            or current.selected_line_ids != job.selected_line_ids
+        ):
+            raise PregenerationSetupError("Saved preparation identity changed")
+        prepared = replace(
+            current,
+            status="prepared",
+            updated_at=self.clock().astimezone(timezone.utc).isoformat(),
+        )
+        write_versioned_json(
+            self.path_for(job.job_id), job_schema_version, prepared.to_document()
+        )
+        return prepared
 
     def path_for(self, job_id):
         if not isinstance(job_id, str) or len(job_id) != 24:
