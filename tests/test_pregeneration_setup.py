@@ -186,6 +186,29 @@ class PregenerationSetupTest(unittest.TestCase):
 
             self.assertFalse((root / "jobs").exists())
 
+    def test_prepared_story_coverage_accumulates_across_jobs(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            main = store.create_or_resume(content, ("main-1",))
+            rhiannon = store.create_or_resume(content, ("rhiannon",))
+
+            self.assertEqual(
+                store.story_statuses(content),
+                {"main-1": "in_progress", "rhiannon": "in_progress"},
+            )
+
+            store.mark_prepared(main)
+            self.assertEqual(store.prepared_story_ids(content), {"main-1"})
+            self.assertEqual(
+                store.story_statuses(content),
+                {"main-1": "ready", "rhiannon": "in_progress"},
+            )
+
+            store.mark_prepared(rhiannon)
+            self.assertEqual(store.prepared_story_ids(content), {"main-1", "rhiannon"})
+
 
 class OfflineAudioPreparationDialogTest(unittest.TestCase):
     @classmethod
@@ -324,7 +347,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             store = PregenerationJobStore(root / "jobs")
-            store.create_or_resume(content, ("rhiannon",))
+            store.create_or_resume(content, ("main-1",))
+            store.mark_prepared(store.create_or_resume(content, ("rhiannon",)))
 
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
@@ -333,7 +357,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
 
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
-            self.assertIn("Previous selection restored", dialog.resume_status.text())
+            self.assertIn(
+                "1 ready, 1 incomplete, 0 not started", dialog.coverage_summary.text()
+            )
+            self.assertIn("Saved offline audio found", dialog.resume_status.text())
+            self.assertIn("Ready offline", dialog.stories.item(1).text())
+            self.assertIn("Preparation incomplete", dialog.stories.item(0).text())
             dialog.deleteLater()
 
     def test_failed_first_pass_runs_automatic_recovery_before_accepting(self):
@@ -408,10 +437,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.job().status, "prepared")
             self.assertTrue(
                 all(
-                    "offline audio ready" in dialog.stories.item(row).text()
+                    "Ready offline" in dialog.stories.item(row).text()
                     for row in range(dialog.stories.count())
                 )
             )
+            self.assertIn(
+                "2 ready, 0 incomplete, 0 not started", dialog.coverage_summary.text()
+            )
+            self.assertFalse(dialog.selection_panel.isHidden())
             self.assertEqual(dialog.progress_phase.text(), "Offline audio is ready")
             self.assertIn("1 original-game-audio", dialog.progress_coverage.text())
             self.assertIn("2 prepared lines", dialog.progress_coverage.text())

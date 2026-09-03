@@ -176,6 +176,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source_status = QLabel()
         self.source_status.setWordWrap(True)
         self.source_status.setAccessibleName("Game content status")
+        self.coverage_summary = QLabel("Offline audio coverage is not available yet.")
+        self.coverage_summary.setWordWrap(True)
+        self.coverage_summary.setAccessibleName("Offline audio coverage by story")
+        self.coverage_summary.setStyleSheet("font-weight: 600;")
         self.stories = QListWidget()
         self.stories.setAccessibleName("Stories and chapters")
         self.stories.setAccessibleDescription(
@@ -273,6 +277,7 @@ class OfflineAudioPreparationDialog(QDialog):
         selection_layout.addWidget(self.selection_status)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(self.coverage_summary)
         layout.addWidget(self.selection_panel, 1)
         layout.addWidget(self.voice_panel)
         layout.addWidget(self.progress_panel)
@@ -512,7 +517,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _show_final_handoff(self, result):
         self.progress_timer.stop()
-        self.selection_panel.hide()
+        self.selection_panel.show()
         self.voice_panel.hide()
         self._render_generation_result(self._generation_result)
         original = self._job.estimate.original_audio_lines
@@ -561,15 +566,13 @@ class OfflineAudioPreparationDialog(QDialog):
         if content is not None:
             resumed = self.job_store.latest_for_content(content)
             resumed_ids = set(resumed.selected_story_ids) if resumed else set()
-            prepared_ids = (
-                resumed_ids if resumed and resumed.status == "prepared" else set()
-            )
+            story_statuses = self.job_store.story_statuses(content)
             for selection in content.selections:
-                speech_status = (
-                    "offline audio ready"
-                    if selection.selection_id in prepared_ids
-                    else f"{selection.generation_lines} need speech"
-                )
+                status = story_statuses.get(selection.selection_id)
+                speech_status = {
+                    "ready": "Ready offline",
+                    "in_progress": "Preparation incomplete - Continue to finish",
+                }.get(status, f"Needs speech: {selection.generation_lines} lines")
                 item = QListWidgetItem(
                     f"{selection.title} - {selection.line_count} lines; {speech_status}"
                 )
@@ -581,9 +584,18 @@ class OfflineAudioPreparationDialog(QDialog):
                     else Qt.CheckState.Unchecked
                 )
                 self.stories.addItem(item)
+            ready = sum(status == "ready" for status in story_statuses.values())
+            in_progress = sum(
+                status == "in_progress" for status in story_statuses.values()
+            )
+            remaining = len(content.selections) - ready - in_progress
+            self.coverage_summary.setText(
+                f"Offline audio: {ready} ready, {in_progress} incomplete, "
+                f"{remaining} not started ({len(content.selections)} stories total)."
+            )
             message = (
-                "Offline audio is ready for the restored selection."
-                if prepared_ids
+                "Saved offline audio found. Previous selection restored."
+                if ready
                 else "Previous selection restored. Continue resumes the same preparation."
                 if resumed
                 else "Your selection will be saved and can be resumed after restart."
@@ -591,6 +603,9 @@ class OfflineAudioPreparationDialog(QDialog):
             self.selection_status.setText(message)
             self.resume_status.setText(message)
         else:
+            self.coverage_summary.setText(
+                "Offline audio coverage is not available yet."
+            )
             self.selection_status.clear()
             self.resume_status.clear()
         self.stories.blockSignals(False)

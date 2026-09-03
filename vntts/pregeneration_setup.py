@@ -277,8 +277,15 @@ class PregenerationJobStore:
         return job
 
     def latest_for_content(self, content):
+        return max(
+            self.jobs_for_content(content),
+            key=lambda value: value.updated_at,
+            default=None,
+        )
+
+    def jobs_for_content(self, content):
         if not self.root.is_dir():
-            return None
+            return ()
         matches = []
         for path in self.root.glob("*/job.json"):
             try:
@@ -287,7 +294,24 @@ class PregenerationJobStore:
                 continue
             if job.story_index_sha256 == content.story_index_sha256:
                 matches.append(job)
-        return max(matches, key=lambda value: value.updated_at, default=None)
+        return tuple(matches)
+
+    def prepared_story_ids(self, content):
+        return frozenset(
+            selection_id
+            for selection_id, status in self.story_statuses(content).items()
+            if status == "ready"
+        )
+
+    def story_statuses(self, content):
+        statuses = {}
+        for job in self.jobs_for_content(content):
+            for selection_id in job.selected_story_ids:
+                if job.status == "prepared":
+                    statuses[selection_id] = "ready"
+                elif statuses.get(selection_id) != "ready":
+                    statuses[selection_id] = "in_progress"
+        return statuses
 
     def mark_prepared(self, job):
         if not isinstance(job, PregenerationJob):
