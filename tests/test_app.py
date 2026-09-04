@@ -27,6 +27,7 @@ from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.voices import VoiceChoice  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
 
@@ -386,6 +387,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIs(result, job)
         create_dialog.assert_called_once_with(
             tray_application.settings,
+            narrator_chooser=tray_application._choose_pregeneration_narrator,
             parent=tray_application.dashboard,
         )
         start_activation.assert_called_once()
@@ -396,6 +398,27 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("1 will use narrator", status)
         self.assertIn("38 have prepared voices", status)
         self.assertIn("1 will use live voice", status)
+        tray_application.shutdown()
+
+    def test_public_pocket_narrator_chooser_excludes_reference_voices(self):
+        controller = Mock()
+        controller.available_voice_choices.return_value = (
+            VoiceChoice("default", "Default"),
+            VoiceChoice("preset:alba", "Alba"),
+            VoiceChoice("character:centurion", "Centurion"),
+        )
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        dialog = Mock()
+
+        with patch("vntts.app.VoicePreviewDialog", return_value=dialog) as factory:
+            tray_application._choose_pregeneration_narrator()
+
+        self.assertEqual(factory.call_args.args[1], (VoiceChoice("preset:alba", "Alba"),))
+        dialog.exec.assert_called_once_with()
         tray_application.shutdown()
 
     def test_sequence_resync_action_selects_the_visible_canonical_event(self):

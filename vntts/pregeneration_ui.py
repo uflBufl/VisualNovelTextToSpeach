@@ -54,6 +54,7 @@ from vntts.pregeneration_voices import (
     PregenerationVoiceCancelled,
     VoiceDecisionStore,
     VoicePlanStore,
+    pregeneration_narrator_source_id,
     resolve_pregeneration_settings,
 )
 from vntts.voices import find_default_voice_manifest
@@ -76,6 +77,7 @@ class OfflineAudioPreparationDialog(QDialog):
         acceptance=None,
         publisher=None,
         importer=None,
+        narrator_chooser=None,
         thread_pool=None,
         parent=None,
     ):
@@ -102,6 +104,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.acceptance = acceptance or OfflineAcceptanceWorker(self.generator)
         self.publisher = publisher or OfflinePackPublisher(base_pack=settings.game_pack)
         self.importer = importer or Reverse1999GameImporter()
+        self.narrator_chooser = narrator_chooser
         self.discovery_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.discovery_runner.finished.connect(self._discovery_finished)
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -158,6 +161,17 @@ class OfflineAudioPreparationDialog(QDialog):
             "original game voices and ask only about ambiguous character voices."
         )
         intro.setWordWrap(True)
+
+        self.narrator_status = QLabel()
+        self.narrator_status.setAccessibleName("Selected narrator voice")
+        self.narrator_status.setWordWrap(True)
+        self.choose_narrator_button = QPushButton("Listen and choose narrator...")
+        self.choose_narrator_button.clicked.connect(self._choose_narrator)
+        self.choose_narrator_button.setVisible(narrator_chooser is not None)
+        narrator_row = QHBoxLayout()
+        narrator_row.addWidget(self.narrator_status, 1)
+        narrator_row.addWidget(self.choose_narrator_button)
+        self._refresh_narrator_status()
 
         self.source = QComboBox()
         self.source.setAccessibleName("Detected game content")
@@ -293,6 +307,7 @@ class OfflineAudioPreparationDialog(QDialog):
         selection_layout = QVBoxLayout(self.selection_panel)
         selection_layout.setContentsMargins(0, 0, 0, 0)
         selection_layout.addWidget(intro)
+        selection_layout.addLayout(narrator_row)
         selection_layout.addLayout(source_row)
         selection_layout.addWidget(self.source_status)
         selection_layout.addWidget(QLabel("Stories to prepare"))
@@ -325,6 +340,29 @@ class OfflineAudioPreparationDialog(QDialog):
             self.discovery_runner.start(self._discover_content)
             return
         self._apply_discovery(self._discover_content())
+
+    def _choose_narrator(self):
+        try:
+            settings = self.narrator_chooser()
+        except Exception as error:
+            self.narrator_status.setText(f"Unable to choose narrator: {error}")
+            return
+        if settings is not None:
+            self.settings = settings
+        self._refresh_narrator_status()
+
+    def _refresh_narrator_status(self):
+        settings = resolve_pregeneration_settings(self.settings)
+        source_id = pregeneration_narrator_source_id(settings)
+        source_type, _separator, value = source_id.partition(":")
+        label = value.replace("_", " ").title() if value else "Not configured"
+        if source_type == "preset":
+            detail = "Pocket built-in voice; no account or terms acceptance required"
+        elif source_type == "character":
+            detail = "reference-audio voice cloning"
+        else:
+            detail = "backend default"
+        self.narrator_status.setText(f"Narrator: {label} ({detail})")
 
     def _discover_content(self):
         try:
@@ -1148,6 +1186,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.select_all_button.setEnabled(enabled)
         self.select_none_button.setEnabled(enabled)
         self.change_voices.setEnabled(enabled)
+        self.choose_narrator_button.setEnabled(enabled)
         self.continue_button.setEnabled(enabled and bool(self.selected_story_ids()))
 
     def _cancel_or_reject(self):

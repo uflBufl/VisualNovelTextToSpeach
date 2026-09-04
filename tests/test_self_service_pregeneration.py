@@ -129,6 +129,28 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_pregeneration_shows_and_applies_narrator_choice(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            selected = AppSettings(voice_assignments={"Narrator": "preset:marius"})
+            chooser = Mock(return_value=selected)
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                narrator_chooser=chooser,
+            )
+
+            self.assertTrue(dialog.choose_narrator_button.isVisibleTo(dialog))
+            self.assertIn("Alba", dialog.narrator_status.text())
+            dialog.choose_narrator_button.click()
+
+            chooser.assert_called_once_with()
+            self.assertIs(dialog.settings, selected)
+            self.assertIn("Marius", dialog.narrator_status.text())
+            self.assertIn("no account", dialog.narrator_status.text())
+
     def test_zero_ambiguity_story_reaches_an_active_portable_pack(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -246,7 +268,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     16_000,
                     subtype="PCM_16",
                 )
-            settings = AppSettings(voice_manifest=str(manifest))
+            settings = AppSettings(
+                voice_manifest=str(manifest),
+                pocket_gated_model_accepted=True,
+            )
             jobs = PregenerationJobStore(root / "jobs")
             decisions = VoiceDecisionStore(root / "voice-decisions.json")
             voices = VoicePlanStore(jobs, decisions=decisions)

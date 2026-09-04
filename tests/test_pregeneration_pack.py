@@ -23,7 +23,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.pregeneration_generation import OfflineGenerationResult
-from vntts.pregeneration_pack import OfflinePackPublisher
+from vntts.pregeneration_pack import OfflinePackError, OfflinePackPublisher
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import (
     PregenerationJob,
@@ -49,7 +49,13 @@ def item(name, sequence):
     }
 
 
-def fixture(root, names=("generated", "fallback"), *, include_omission=False):
+def fixture(
+    root,
+    names=("generated", "fallback"),
+    *,
+    include_omission=False,
+    omission_source_audio_status="absent",
+):
     identity = "a" * 64
     directory = root / f"generation-input-{identity[:16]}"
     directory.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +67,14 @@ def fixture(root, names=("generated", "fallback"), *, include_omission=False):
         event.update(
             text=text,
             text_sha256=hashlib.sha256(text.encode()).hexdigest(),
+            source_audio_status=omission_source_audio_status,
+            source_audio_reason=f"fixture_{omission_source_audio_status}",
         )
+        event["action"] = {
+            "absent": "generate",
+            "unavailable": "prefer_source_audio",
+            "unknown": "resolve_audio",
+        }[omission_source_audio_status]
         event["queue_id"] = f"pack:omission:{event['text_sha256'][:16]}"
         event["vntts.authoring.audio_event_plan"] = audio_event_plan_for_record(event)
         items.append(event)
@@ -80,7 +93,10 @@ def fixture(root, names=("generated", "fallback"), *, include_omission=False):
                 "voice_character": value["voice_character"],
                 "text": value["text"],
                 "kind": "dialogue",
-                "source_audio_status": "absent",
+                "source_audio_status": value.get("source_audio_status", "absent"),
+                "source_audio_reason": value.get(
+                    "source_audio_reason", "fixture_absent"
+                ),
                 "speakable": True,
             }
             for value in items
@@ -219,6 +235,48 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 items[-1]["line_id"], items[-1]["text_sha256"]
             )
         )
+
+    def test_publishes_pure_event_omission_when_game_audio_is_unavailable(self):
+        with TemporaryDirectory() as temporary_directory:
+            job, generation_input, generation_result, items = fixture(
+                Path(temporary_directory),
+                include_omission=True,
+                omission_source_audio_status="unavailable",
+            )
+
+            pack = OfflinePackPublisher().publish(
+                job,
+                generation_input,
+                generation_result,
+            )
+            library = GeneratedAudioLibrary.load_optional(
+                pack.imported.generated_audio_manifest
+            )
+
+        self.assertEqual(pack.omissions, 1)
+        self.assertIsNotNone(
+            library.find_audio_event_omission(
+                items[-1]["line_id"], items[-1]["text_sha256"]
+            )
+        )
+
+    def test_rejects_unresolved_pure_event_omission(self):
+        with TemporaryDirectory() as temporary_directory:
+            job, generation_input, generation_result, _items = fixture(
+                Path(temporary_directory),
+                include_omission=True,
+                omission_source_audio_status="unknown",
+            )
+
+            with self.assertRaisesRegex(
+                OfflinePackError,
+                "Offline audio-event omission is invalid",
+            ):
+                OfflinePackPublisher().publish(
+                    job,
+                    generation_input,
+                    generation_result,
+                )
 
     def test_second_selection_publishes_an_immutable_cumulative_successor(self):
         with TemporaryDirectory() as temporary_directory:

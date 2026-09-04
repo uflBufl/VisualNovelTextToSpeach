@@ -227,6 +227,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
         manifest = write_manifest(root / "voices")
         settings = AppSettings(
             speech_backend=backend,
+            pocket_gated_model_accepted=backend == "pocket-tts",
             voice_assignments=({"Narrator": "character:centurion"} if narrator else {}),
         )
         voice_plan = VoicePlanStore(jobs).create(job, settings, manifest_path=manifest)
@@ -288,7 +289,10 @@ class PregenerationInputStoreTest(unittest.TestCase):
             job = jobs.create_or_resume(content, ("selected",))
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
+                AppSettings(
+                    pocket_gated_model_accepted=True,
+                    voice_assignments={"Narrator": "character:centurion"},
+                ),
                 manifest_path=write_manifest(root / "voices"),
             )
 
@@ -323,7 +327,10 @@ class PregenerationInputStoreTest(unittest.TestCase):
             manifest = write_manifest(root / "voices")
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
+                AppSettings(
+                    pocket_gated_model_accepted=True,
+                    voice_assignments={"Narrator": "character:centurion"},
+                ),
                 manifest_path=manifest,
             )
             variants = [group for group in plan.groups if group.character == "Rhiannon"]
@@ -368,6 +375,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             manifest = write_manifest(root / "voices")
             settings = AppSettings(
                 speech_backend="pocket-tts",
+                pocket_gated_model_accepted=True,
                 voice_assignments={"Narrator": "character:centurion"},
             )
             plan = VoicePlanStore(jobs).create(
@@ -446,6 +454,39 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 result.narrator_fallback_roles,
                 ("Hotelier", "Rhiannon"),
             )
+
+    def test_public_pocket_selected_narrator_never_stages_reference_audio(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_content(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("selected",))
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(
+                    voice_assignments={
+                        "Narrator": "preset:marius",
+                        "Rhiannon": "character:centurion",
+                    }
+                ),
+                manifest_path=write_manifest(root / "voices"),
+            )
+
+            result = PregenerationInputStore(jobs).materialize(job, plan)
+            manifest = json.loads(result.voice_manifest.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                manifest["voices"],
+                [
+                    {
+                        "aliases": [],
+                        "character": "Narrator",
+                        "references": [],
+                        "speaker": "marius",
+                    }
+                ],
+            )
+            self.assertEqual(result.narrator_fallback_roles, ("Hotelier", "Rhiannon"))
 
     def test_equivalent_display_roles_share_one_narrator_fallback(self):
         with TemporaryDirectory() as temporary_directory:

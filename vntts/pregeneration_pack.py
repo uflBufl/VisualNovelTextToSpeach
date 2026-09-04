@@ -599,7 +599,12 @@ def _self_service_omission_records(job, generation_input, state_sha256, queue):
         plan = None if item is None else audio_event_plan_for_record(item)
         if (
             item is None
-            or item.action != "generate"
+            or item.action not in {"generate", "prefer_source_audio"}
+            or (
+                item.action == "prefer_source_audio"
+                and item.source_audio_status
+                not in {"configured_unavailable", "unavailable"}
+            )
             or not isinstance(plan, dict)
             or not plan.get("requires_composition")
             or plan.get("spoken_text") != ""

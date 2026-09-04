@@ -81,6 +81,24 @@ def resolve_pregeneration_settings(
     return settings
 
 
+def pregeneration_narrator_source_id(settings):
+    """Return the narrator source that self-service generation will use."""
+    source_id = _effective_assignment_source(settings, "Narrator")
+    if source_id is not None:
+        return source_id
+    if settings.speech_backend != "pocket-tts":
+        return default_voice_choice_id
+    speaker = next(
+        (
+            value
+            for value in (settings.narrator_speaker, settings.tts_speaker, "alba")
+            if value in pocket_tts_preset_voices
+        ),
+        "alba",
+    )
+    return f"preset:{speaker}"
+
+
 @dataclass(frozen=True)
 class VoiceCandidate:
     """One immutable synthesis source that may be auditioned for a group."""
@@ -404,7 +422,7 @@ class VoicePlanStore:
         bound_source = values[0][3]
         portrait_image, portrait_image_sha256 = values[0][4:6]
         speakers = tuple(dict.fromkeys(record.speaker for record in records))
-        assignment_source = find_voice_assignment(settings.voice_assignments, character)
+        assignment_source = _effective_assignment_source(settings, character)
         candidate_inventory = _candidate_inventory(
             character,
             records,
@@ -593,7 +611,7 @@ def _load_registry(manifest_path):
 
 
 def _candidate_for(character, settings, registry):
-    source_id = find_voice_assignment(settings.voice_assignments, character)
+    source_id = _effective_assignment_source(settings, character)
     if source_id == default_voice_choice_id:
         return None
     if source_id:
@@ -616,7 +634,7 @@ def _candidate_inventory(
     registry,
     candidate_variants,
 ):
-    assignment = find_voice_assignment(settings.voice_assignments, character)
+    assignment = _effective_assignment_source(settings, character)
     if assignment and assignment != default_voice_choice_id:
         voice = _candidate_from_source(assignment, registry)
         return (
@@ -631,6 +649,9 @@ def _candidate_inventory(
             if voice is not None
             else ()
         )
+
+    if _public_pocket_mode(settings):
+        return ()
 
     candidates = {}
     candidate_ranks = {}
@@ -745,21 +766,31 @@ def _narrator_candidate(settings, registry):
         )
     if settings.speech_backend != "pocket-tts":
         return None
-    speaker = next(
-        (
-            value
-            for value in (settings.narrator_speaker, settings.tts_speaker, "alba")
-            if value in pocket_tts_preset_voices
-        ),
-        "alba",
-    )
-    source_id = f"preset:{speaker}"
+    source_id = pregeneration_narrator_source_id(settings)
     voice = _candidate_from_source(source_id, registry)
     return _ranked_candidate(
         source_id,
         voice,
         120,
         "Configured narrator voice",
+    )
+
+
+def _effective_assignment_source(settings, character):
+    source_id = find_voice_assignment(settings.voice_assignments, character)
+    if (
+        source_id
+        and _public_pocket_mode(settings)
+        and not source_id.startswith("preset:")
+    ):
+        return None
+    return source_id
+
+
+def _public_pocket_mode(settings):
+    return bool(
+        settings.speech_backend == "pocket-tts"
+        and not settings.pocket_gated_model_accepted
     )
 
 
@@ -1107,6 +1138,11 @@ def _synthesis_controls(settings):
             if settings.speech_backend == "pocket-tts"
             else settings.tts_profile
         ),
+        "pocket_voice_cloning": (
+            settings.pocket_gated_model_accepted
+            if settings.speech_backend == "pocket-tts"
+            else None
+        ),
         "narrator_speaker": settings.narrator_speaker,
         "narrator_reference": _path_identity(settings.tts_speaker_wav),
     }
@@ -1167,4 +1203,6 @@ __all__ = [
     "VoiceGroup",
     "VoicePlan",
     "VoicePlanStore",
+    "pregeneration_narrator_source_id",
+    "resolve_pregeneration_settings",
 ]

@@ -357,7 +357,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
 
@@ -414,13 +414,38 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(plan.audition_count, 0)
             self.assertEqual(plan.synthesis_profile, "default")
 
+    def test_public_pocket_uses_selected_preset_instead_of_reference_cloning(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(
+                    voice_assignments={
+                        "Narrator": "preset:marius",
+                        "Rhiannon": "character:centurion",
+                    }
+                ),
+                manifest_path=write_manifest(root / "voices"),
+            )
+
+            self.assertEqual(plan.audition_count, 0)
+            for group in plan.groups:
+                self.assertEqual(group.route, "narrator")
+                self.assertEqual(group.source_character, "marius")
+                self.assertEqual(group.source_speaker, "marius")
+                self.assertEqual(group.reference_sha256s, ())
+
     def test_saved_alias_assignment_is_reused_automatically(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(voice_assignments={"Rhiannon": "character:centurion"}),
+                AppSettings(
+                    pocket_gated_model_accepted=True,
+                    voice_assignments={"Rhiannon": "character:centurion"},
+                ),
                 manifest_path=write_manifest(root / "voices"),
             )
 
@@ -437,7 +462,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=write_conflicting_manifest(root / "voices"),
             )
 
@@ -475,7 +500,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
 
@@ -506,7 +531,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
 
@@ -558,7 +583,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             VoicePlanStore(jobs).create(
                 job,
-                AppSettings(),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
             portrait.write_bytes(b"changed")
@@ -580,7 +605,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=write_conflicting_manifest(
                     root / "voices",
                     bind_selected_lines=True,
@@ -605,13 +630,14 @@ class VoicePlanStoreTest(unittest.TestCase):
             manifest = write_conflicting_manifest(root / "voices")
             decisions = VoiceDecisionStore(root / "decisions.json")
             store = VoicePlanStore(jobs, decisions=decisions)
-            first = store.create(job, AppSettings(), manifest_path=manifest)
+            settings = AppSettings(pocket_gated_model_accepted=True)
+            first = store.create(job, settings, manifest_path=manifest)
             group = next(
                 value for value in first.groups if value.character == "Rhiannon"
             )
 
             decisions.remember(group, group.candidates[1].source_id)
-            second = store.create(job, AppSettings(), manifest_path=manifest)
+            second = store.create(job, settings, manifest_path=manifest)
             resolved = next(
                 value for value in second.groups if value.character == "Rhiannon"
             )
@@ -623,7 +649,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             reconsidered = store.create(
                 job,
-                AppSettings(),
+                settings,
                 manifest_path=manifest,
                 ignore_decisions=True,
             )
@@ -640,7 +666,8 @@ class VoicePlanStoreTest(unittest.TestCase):
             manifest = write_conflicting_manifest(root / "voices")
             decisions = VoiceDecisionStore(root / "decisions.json")
             store = VoicePlanStore(jobs, decisions=decisions)
-            first = store.create(job, AppSettings(), manifest_path=manifest)
+            settings = AppSettings(pocket_gated_model_accepted=True)
+            first = store.create(job, settings, manifest_path=manifest)
             group = next(
                 value for value in first.groups if value.character == "Rhiannon"
             )
@@ -649,7 +676,7 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             child_reference = manifest.parent / "references" / "child.wav"
             child_reference.write_bytes(b"changed dominated child reference")
-            second = store.create(job, AppSettings(), manifest_path=manifest)
+            second = store.create(job, settings, manifest_path=manifest)
             resolved = next(
                 value for value in second.groups if value.character == "Rhiannon"
             )
@@ -690,13 +717,14 @@ class VoicePlanStoreTest(unittest.TestCase):
             job, jobs = self.create_fixture(root)
             manifest = write_manifest(root / "voices", unrelated=b"first")
             store = VoicePlanStore(jobs)
-            first = store.create(job, AppSettings(), manifest_path=manifest)
+            settings = AppSettings(pocket_gated_model_accepted=True)
+            first = store.create(job, settings, manifest_path=manifest)
             first_group = next(
                 group for group in first.groups if group.character == "Rhiannon"
             )
 
             manifest = write_manifest(root / "voices", unrelated=b"changed")
-            second = store.create(job, AppSettings(), manifest_path=manifest)
+            second = store.create(job, settings, manifest_path=manifest)
             second_group = next(
                 group for group in second.groups if group.character == "Rhiannon"
             )
@@ -715,11 +743,12 @@ class VoicePlanStoreTest(unittest.TestCase):
             job, jobs = self.create_fixture(root)
             manifest = write_manifest(root / "voices", rhiannon=b"first")
             store = VoicePlanStore(jobs)
-            first = store.create(job, AppSettings(), manifest_path=manifest)
+            settings = AppSettings(pocket_gated_model_accepted=True)
+            first = store.create(job, settings, manifest_path=manifest)
             first_groups = {group.character: group for group in first.groups}
 
             manifest = write_manifest(root / "voices", rhiannon=b"changed")
-            second = store.create(job, AppSettings(), manifest_path=manifest)
+            second = store.create(job, settings, manifest_path=manifest)
             second_groups = {group.character: group for group in second.groups}
 
             self.assertNotEqual(
@@ -768,7 +797,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             manifest = write_manifest(root / "voices")
             plan = VoicePlanStore(jobs).create(
                 job,
-                AppSettings(),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
             selected = next(
@@ -788,7 +817,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             reused = VoicePlanStore(jobs, decisions=reloaded).create(
                 job,
-                AppSettings(),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
             reused_group = next(

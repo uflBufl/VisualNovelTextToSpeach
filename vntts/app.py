@@ -88,6 +88,7 @@ from vntts.pregeneration_activation import (
 )
 from vntts.pregeneration_pack import OfflinePackResult
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog
+from vntts.pregeneration_voices import pregeneration_narrator_source_id
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
 from vntts.readiness_ui import ReadinessDialog
@@ -2131,7 +2132,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return None
-        dialog = OfflineAudioPreparationDialog(self.settings, parent=self.dashboard)
+        dialog = OfflineAudioPreparationDialog(
+            self.settings,
+            narrator_chooser=self._choose_pregeneration_narrator,
+            parent=self.dashboard,
+        )
         self.pregeneration_dialog = dialog
         if dialog.exec() != QDialog.DialogCode.Accepted:
             self.pregeneration_dialog = None
@@ -2165,6 +2170,34 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self._start_pregeneration_activation(pack_result, status)
         return job
+
+    def _choose_pregeneration_narrator(self):
+        choices = self.controller.available_voice_choices()
+        if (
+            self.settings.speech_backend == "pocket-tts"
+            and not self.settings.pocket_gated_model_accepted
+        ):
+            choices = tuple(choice for choice in choices if choice.id.startswith("preset:"))
+        if not choices:
+            raise RuntimeError("No narrator voices are available")
+        dialog = VoicePreviewDialog(
+            ["Narrator"],
+            choices,
+            self.controller.preview_voice_choice,
+            self.assign_voice,
+            lambda _character: pregeneration_narrator_source_id(self.settings),
+            preview_stop_handler=self.controller.stop_voice_preview,
+            fixed_character="Narrator",
+            parent=self.pregeneration_dialog,
+        )
+        dialog.setWindowTitle("Choose narrator for offline audio")
+        dialog.routing_note.setText(
+            "This voice will narrate pregenerated dialogue that has no usable "
+            "character voice."
+        )
+        dialog.assign_button.setText("Use this narrator for offline audio")
+        dialog.exec()
+        return self.settings
 
     def _start_pregeneration_activation(self, pack_result, success_status):
         generation = self._begin_controller_lifecycle()
