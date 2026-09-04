@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from vntts.synthesis import SynthesisRequest
+
 
 class PlaybackStatus(str, Enum):
     COMPLETED = "completed"
@@ -45,6 +47,33 @@ class PlaybackOutcome:
             PlaybackStatus.COMPLETED,
             PlaybackStatus.PASSTHROUGH_UNOBSERVED,
         }
+
+
+def collect_synthesis(backend: Any, character: str, text: str) -> Any:
+    return backend.render(
+        SynthesisRequest(
+            voice=character,
+            text=text,
+            generation_profile=backend.generation_profile,
+        )
+    ).collect()
+
+
+def prepared_playback_from_render(
+    backend: Any, character: str, text: str
+) -> PreparedPlayback:
+    rendered = collect_synthesis(backend, character, text)
+    return PreparedPlayback(
+        rendered.pcm.reshape(-1),
+        rendered.timing.first_chunk_ms,
+        None,
+        rendered.diagnostics.cache_source,
+        f"live:{backend.name}",
+    )
+
+
+def synthesized_mono_pcm(backend: Any, character: str, text: str) -> Any:
+    return collect_synthesis(backend, character, text).pcm.reshape(-1)
 
 
 def outcome_for_prepared(

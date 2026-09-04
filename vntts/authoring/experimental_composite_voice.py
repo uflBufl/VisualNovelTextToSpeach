@@ -40,6 +40,7 @@ from vntts.authoring.workbench import (
     contained_workspace_path,
     safe_workspace_relative_path,
 )
+from vntts.document_identity import is_lowercase_sha256
 
 EXPERIMENTAL_COMPOSITE_VOICE_FIELD = "vntts.authoring.experimental_composite_voices"
 EXPERIMENTAL_COMPOSITE_VOICE_SCHEMA = "vntts.authoring-experimental-composite-voices"
@@ -536,11 +537,7 @@ def _text(value, label):
 
 
 def _sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    if not is_lowercase_sha256(value):
         raise ExperimentalCompositeVoiceError(f"{label} is invalid")
     return value
 

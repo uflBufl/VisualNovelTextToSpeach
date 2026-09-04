@@ -21,7 +21,7 @@ from vntts.authoring.audio_event_projection_fallback import (
     create_audio_event_projection_fallback_workspace,
 )
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
-from vntts.authoring.game_pack import _live_fallback_records
+from vntts.authoring.game_pack import _decision_records
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
@@ -151,7 +151,12 @@ class AudioEventProjectionFallbackTests(unittest.TestCase):
             state_path = first.directory / "generated-audio/generation-state.json"
             state = load_generation_state(state_path, first.directory / "queue.jsonl")
             queue = VoiceGenerationQueue.load(first.directory / "queue.jsonl")
-            records = _live_fallback_records(state, queue)
+            records = _decision_records(
+                state,
+                queue,
+                "live_fallback",
+                "Live fallback item",
+            )
             manifest = root / "generated-audio.json"
             write_generated_audio_manifest(
                 manifest,

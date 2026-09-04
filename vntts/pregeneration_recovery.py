@@ -14,6 +14,7 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
 )
+from vntts.document_identity import is_lowercase_sha256
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -285,11 +286,7 @@ def _terminalize_pocket_failures(
 
 
 def _sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    if not is_lowercase_sha256(value):
         raise OfflineRecoveryError(f"Offline recovery {label} hash is invalid")
     return value
 

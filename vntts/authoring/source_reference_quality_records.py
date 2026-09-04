@@ -21,6 +21,7 @@ from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
+from vntts.document_identity import is_lowercase_sha256
 from vntts.path_safety import contained_regular_file
 
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
@@ -443,9 +444,7 @@ def _required_text(value, label):
 
 def _required_sha256(value, label):
     value = _required_text(value, label)
-    if len(value) != 64 or any(
-        character not in "0123456789abcdef" for character in value
-    ):
+    if not is_lowercase_sha256(value):
         raise SourceReferenceQualityError(f"{label.title()} must be lowercase SHA-256")
     return value
 

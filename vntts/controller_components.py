@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from vntts.controller import AppController
 
 from vntts.auto_advance_policy import auto_advance_control_state
 from vntts.chapter_voice_preload import ChapterVoicePreloader
@@ -61,228 +64,6 @@ def speak_live_chunk(
     return play_typed_text(voice_router, chunk.character, chunk.text, playback_guard)
 
 
-class _RuntimeLifecyclePort(Protocol):
-    auto_advance_state_changed: Callable[..., Any]
-    chatterbox_backend_factory: Callable[..., Any]
-    capture_executor: Any
-    capture_target: Any
-    chapter_voice_preloader: Any
-    correction_dictionary: Any
-    dialog_read_scheduler_factory: Callable[..., Any]
-    error_handler: Callable[[Exception], Any]
-    is_ready: bool
-    is_live_running: bool
-    last_visible_speaker_key: Any
-    live_session: Any
-    live_reader: Any
-    live_reader_factory: Callable[..., Any]
-    live_speech_backpressure: Any
-    model_assets: Any
-    moss_backend_factory: Callable[..., Any]
-    ocr_executor: Any
-    playback_executor: Any
-    pipeline_event_handler: Callable[..., Any]
-    pocket_backend_factory: Callable[..., Any]
-    schedule_dialog_read: Any
-    settings: Any
-    shutdown_requested: Any
-    speaker_announcement_lock: Any
-    speech_backend: Any
-    speech_backpressure_factory: Callable[..., Any]
-    speech_executor: Any
-    status_handler: Callable[[str], Any]
-    thread_pool_executor_factory: Callable[..., Any]
-    tts: Any
-    tts_factory: Callable[..., Any]
-    uncertain_frame_recorder: Any
-    voice_router: Any
-    voice_registry_initializer: Callable[..., Any]
-    voice_router_initializer: Callable[..., Any]
-    voice_prime_futures: Any
-    voice_prime_lock: Any
-
-    def _auto_advance_state_changed(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _capture_live_frame(self) -> Any: ...
-
-    def _capture_state_changed(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _confirm_sequence_render_completion(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _configure_generated_audio_backend(self) -> Any: ...
-
-    def _create_capture_target(self) -> Any: ...
-
-    def _create_uncertain_frame_recorder(self) -> Any: ...
-
-    def _enqueue_dialog(self, character: str, text: str) -> Any: ...
-
-    def _get_live_configuration(self) -> Any: ...
-
-    def _interrupt_speech(self) -> Any: ...
-
-    def _is_game_focused(self) -> Any: ...
-
-    def _live_sequence_line_id(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _live_ocr_purpose(self) -> Any: ...
-
-    def _live_auto_advance_callback(self) -> Any: ...
-
-    def _live_sequence_audio_active(self) -> bool: ...
-
-    def _load_live_sequence_plan(self) -> Any: ...
-
-    def _load_live_speaker_corpus(self) -> Any: ...
-
-    def _ocr_uncertain(self, result: Any, minimum_confidence: float) -> Any: ...
-
-    def _play_live_chunk(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _prepare_live_chunk(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _publish_diagnostic(self, snapshot: Any, *, notify: bool = True) -> Any: ...
-
-    def _resolve_voice_label(self, character: str) -> Any: ...
-
-    def _sequence_prefix_recheck_required(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _set_backend_live_mode(self, active: bool) -> Any: ...
-
-    def _stop_tts(self) -> Any: ...
-
-    def _stable_live_frame_owner(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _stable_live_frame_route(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _speak_live_chunk(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _warmup_progress(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _dialog_observed(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def _recognize_live_frame(self, *args: Any, **kwargs: Any) -> Any: ...
-
-    def refresh_corrections(self) -> Any: ...
-
-
-class _LiveSessionPort(Protocol):
-    capture_target: Any
-    chapter_voice_preloader: Any
-    correction_dictionary: Any
-    dialog_handler: Callable[[str, str], Any]
-    error_handler: Callable[[Exception], Any]
-    explicit_sequence_anchor_pending: bool
-    is_ready: bool
-    is_live_running: bool
-    last_visible_speaker_key: Any
-    live_reader: Any
-    live_scope_identification_failure: str | None
-    live_speaker_corpus_error: Any
-    live_speech_backpressure: Any
-    narrator_fallback_names: dict[str, str]
-    narrator_fallback_speakers: set[str]
-    next_live_narrator_fallback_names: dict[str, str]
-    pending_unknown_speakers: set[str]
-    reported_unknown_speakers: set[str]
-    schedule_dialog_read: Callable[[], Any]
-    settings: Any
-    speaker_announcement_lock: Any
-    speech_backend: Any
-    status_handler: Callable[[str], Any]
-    story_cursor: Any
-    story_cursor_lock: Any
-    uncertain_frame_recorder: Any
-    voice_assignments: Any
-    voice_router: Any
-
-    def _canonical_observed_character(
-        self,
-        character: str | None,
-        text: str,
-    ) -> str: ...
-
-    def _ocr_uncertain(self, result: Any, minimum_confidence: float) -> Any: ...
-
-    def _publish_diagnostic(self, snapshot: Any, *, notify: bool = True) -> Any: ...
-
-    def _resolve_initial_live_sequence_line(
-        self,
-        character: str,
-        text: str,
-    ) -> tuple[Any, Any]: ...
-
-    def _resolve_voice_label(self, character: str) -> Any: ...
-
-    def _live_auto_advance_callback(self) -> Any: ...
-
-    def _publish_live_sequence_status(self) -> Any: ...
-
-    def _revalidate_live_speaker_corpus(self) -> bool: ...
-
-    def _set_backend_live_mode(self, active: bool) -> Any: ...
-
-
-class _VoiceAssignmentPort(Protocol):
-    chapter_voice_preloader: Any
-    is_ready: bool
-    is_live_running: bool
-    live_speaker_corpus: Any
-    live_speaker_corpus_error: Any
-    narrator_fallback_names: dict[str, str]
-    next_live_narrator_fallback_names: dict[str, str]
-    speech_backend: Any
-    speech_executor: Any
-    settings: Any
-    tts: Any
-    voice_router: Any
-    reported_unknown_speakers: set[str]
-    pending_unknown_speakers: set[str]
-    narrator_fallback_speakers: set[str]
-    status_handler: Callable[[str], Any]
-
-    def _apply_narrator_voice(self, voice: Any) -> Any: ...
-
-    def _clear_voice_runtime_cache(self) -> Any: ...
-
-    def _preview_voice(self, character: str, text: str) -> Any: ...
-
-    def _preview_voice_choice(self, choice: Any, text: str) -> Any: ...
-
-    def _speaker_requires_voice_decision(
-        self,
-        character: str,
-        text: str | None,
-        *,
-        live_preflight: bool = False,
-    ) -> bool: ...
-
-
-class _DiagnosticsPort(Protocol):
-    capture_target: Any
-    correction_dictionary: Any
-    diagnostic_lock: Any
-    is_ready: bool
-    last_diagnostic: Any
-    live_reader: Any
-    settings: Any
-    status_handler: Callable[[str], Any]
-    uncertain_frame_recorder: Any
-    voice_router: Any
-
-    def _publish_diagnostic(self, snapshot: Any, *, notify: bool = True) -> Any: ...
-
-    def _refresh_diagnostic_metrics(
-        self,
-        route_metrics: Any = None,
-        audio_source: Any = None,
-    ) -> Any: ...
-
-    def _resolve_voice_label(self, character: str) -> Any: ...
-
-    def _speak_with_live_backend(self, character: str, text: str) -> Any: ...
-
-
 class _RuntimeSettingsApplyGuard:
     def __init__(self) -> None:
         self.lock = Lock()
@@ -330,7 +111,7 @@ class _RuntimeSettingsApplyGuard:
 
 @dataclass(frozen=True)
 class RuntimeLifecycleComponent:
-    controller: _RuntimeLifecyclePort
+    controller: AppController
     settings_apply_guard: _RuntimeSettingsApplyGuard = field(
         default_factory=_RuntimeSettingsApplyGuard,
         compare=False,
@@ -713,7 +494,7 @@ class RuntimeLifecycleComponent:
 
 @dataclass(frozen=True)
 class LiveSessionComponent:
-    controller: _LiveSessionPort
+    controller: AppController
 
     def read_once(self) -> Any:
         controller = self.controller
@@ -928,7 +709,7 @@ class LiveSessionComponent:
 
 @dataclass(frozen=True)
 class VoiceAssignmentComponent:
-    controller: _VoiceAssignmentPort
+    controller: AppController
 
     def available_characters(self) -> Any:
         router = self.controller.voice_router
@@ -1210,7 +991,7 @@ class VoiceAssignmentComponent:
 
 @dataclass(frozen=True)
 class DiagnosticsComponent:
-    controller: _DiagnosticsPort
+    controller: AppController
 
     def capture_geometry(self) -> Any:
         target = self.controller.capture_target

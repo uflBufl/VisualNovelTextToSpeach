@@ -21,6 +21,8 @@ from vntts.playback import (
     PlaybackStatus,
     PreparedPlayback,
     outcome_for_prepared,
+    prepared_playback_from_render,
+    synthesized_mono_pcm,
 )
 from vntts.services.tts_engine import (
     AudioPlaybackError,
@@ -205,20 +207,7 @@ class XTTSVoiceRouterBackend:
         return prepared.payload
 
     def prepare_playback(self, character, text):
-        rendered = self.render(
-            SynthesisRequest(
-                voice=character,
-                text=text,
-                generation_profile=self.generation_profile,
-            )
-        ).collect()
-        return PreparedPlayback(
-            rendered.pcm.reshape(-1),
-            rendered.timing.first_chunk_ms,
-            None,
-            rendered.diagnostics.cache_source,
-            f"live:{self.name}",
-        )
+        return prepared_playback_from_render(self, character, text)
 
     def render(self, request):
         """Render Coqui/XTTS PCM through the configured voice router."""
@@ -457,20 +446,7 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
         return prepared.payload
 
     def prepare_playback(self, character, text):
-        rendered = self.render(
-            SynthesisRequest(
-                voice=character,
-                text=text,
-                generation_profile=self.generation_profile,
-            )
-        ).collect()
-        return PreparedPlayback(
-            rendered.pcm.reshape(-1),
-            rendered.timing.first_chunk_ms,
-            None,
-            rendered.diagnostics.cache_source,
-            f"live:{self.name}",
-        )
+        return prepared_playback_from_render(self, character, text)
 
     def render(self, request):
         """Render Chatterbox PCM without importing or opening an audio device."""
@@ -496,17 +472,7 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
             return True
 
     def synthesize(self, character, text):
-        return (
-            self.render(
-                SynthesisRequest(
-                    voice=character,
-                    text=text,
-                    generation_profile=self.generation_profile,
-                )
-            )
-            .collect()
-            .pcm.reshape(-1)
-        )
+        return synthesized_mono_pcm(self, character, text)
 
     def _validate_render_request(self, request):
         spoken_text = " ".join((request.text or "").split())

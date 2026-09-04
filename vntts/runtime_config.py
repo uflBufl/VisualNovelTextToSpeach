@@ -27,6 +27,23 @@ default_skip_hotkey = default_hotkey_for_key("s")
 default_repeat_hotkey = default_hotkey_for_key("r")
 default_clear_queue_hotkey = default_hotkey_for_key("x")
 default_emergency_stop_hotkey = default_hotkey_for_key("e")
+hotkey_settings = {
+    "read": ("VNTTS_HOTKEY", "read_hotkey", default_hotkey),
+    "live": ("VNTTS_LIVE_HOTKEY", "live_hotkey", default_live_hotkey),
+    "pause": ("VNTTS_PAUSE_HOTKEY", "pause_hotkey", default_pause_hotkey),
+    "skip": ("VNTTS_SKIP_HOTKEY", "skip_hotkey", default_skip_hotkey),
+    "repeat": ("VNTTS_REPEAT_HOTKEY", "repeat_hotkey", default_repeat_hotkey),
+    "clear queue": (
+        "VNTTS_CLEAR_QUEUE_HOTKEY",
+        "clear_queue_hotkey",
+        default_clear_queue_hotkey,
+    ),
+    "emergency stop": (
+        "VNTTS_EMERGENCY_STOP_HOTKEY",
+        "emergency_stop_hotkey",
+        default_emergency_stop_hotkey,
+    ),
+}
 default_live_interval_ms = 200
 default_live_stability_frames = 2
 default_live_idle_flush_ms = 400
@@ -53,64 +70,39 @@ def get_validated_hotkey(environment_variable, default):
     return hotkey
 
 
-def get_hotkey(settings=None):
+def get_configured_hotkey(name, settings=None):
+    environment_variable, attribute, default = hotkey_settings[name]
     if settings is None:
-        return get_validated_hotkey("VNTTS_HOTKEY", default_hotkey)
-    return validate_hotkey(settings.read_hotkey, default_hotkey, "read hotkey")
+        return get_validated_hotkey(environment_variable, default)
+    return validate_hotkey(getattr(settings, attribute), default, f"{name} hotkey")
+
+
+def get_hotkey(settings=None):
+    return get_configured_hotkey("read", settings)
 
 
 def get_live_hotkey(settings=None):
-    if settings is None:
-        return get_validated_hotkey("VNTTS_LIVE_HOTKEY", default_live_hotkey)
-    return validate_hotkey(settings.live_hotkey, default_live_hotkey, "live hotkey")
+    return get_configured_hotkey("live", settings)
 
 
 def get_pause_hotkey(settings=None):
-    if settings is None:
-        return get_validated_hotkey("VNTTS_PAUSE_HOTKEY", default_pause_hotkey)
-    return validate_hotkey(settings.pause_hotkey, default_pause_hotkey, "pause hotkey")
+    return get_configured_hotkey("pause", settings)
 
 
 def get_skip_hotkey(settings=None):
-    if settings is None:
-        return get_validated_hotkey("VNTTS_SKIP_HOTKEY", default_skip_hotkey)
-    return validate_hotkey(settings.skip_hotkey, default_skip_hotkey, "skip hotkey")
+    return get_configured_hotkey("skip", settings)
 
 
 def get_repeat_hotkey(settings=None):
-    if settings is None:
-        return get_validated_hotkey("VNTTS_REPEAT_HOTKEY", default_repeat_hotkey)
-    return validate_hotkey(
-        settings.repeat_hotkey,
-        default_repeat_hotkey,
-        "repeat hotkey",
-    )
+    return get_configured_hotkey("repeat", settings)
 
 
 def get_clear_queue_hotkey(settings=None):
-    if settings is None:
-        return get_validated_hotkey(
-            "VNTTS_CLEAR_QUEUE_HOTKEY",
-            default_clear_queue_hotkey,
-        )
-    return validate_hotkey(
-        settings.clear_queue_hotkey,
-        default_clear_queue_hotkey,
-        "clear queue hotkey",
-    )
+    return get_configured_hotkey("clear queue", settings)
 
 
 def get_emergency_stop_hotkey(settings=None):
-    if settings is None:
-        return get_validated_hotkey(
-            "VNTTS_EMERGENCY_STOP_HOTKEY",
-            default_emergency_stop_hotkey,
-        )
-    return validate_hotkey(
-        settings.emergency_stop_hotkey,
-        default_emergency_stop_hotkey,
-        "emergency stop hotkey",
-    )
+    return get_configured_hotkey("emergency stop", settings)
 
 
 def validate_hotkey(hotkey, default, label):

@@ -15,7 +15,7 @@ from tests import test_authoring_audio_event_projection_fallback
 from tests.test_authoring_workbench import create_test_workspace
 from tests.test_generated_audio import FakeAudioOutput
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
-from vntts.authoring.game_pack import _live_fallback_records
+from vntts.authoring.game_pack import _decision_records
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.reviewed_rejection_fallback import (
     _downstream_overlay_queue_ids,
@@ -77,7 +77,12 @@ class ReviewedRejectionFallbackTests(unittest.TestCase):
             state_path = first.directory / "generated-audio/generation-state.json"
             state = load_generation_state(state_path, first.directory / "queue.jsonl")
             queue = VoiceGenerationQueue.load(first.directory / "queue.jsonl")
-            records = _live_fallback_records(state, queue)
+            records = _decision_records(
+                state,
+                queue,
+                "live_fallback",
+                "Live fallback item",
+            )
             manifest = root / "generated-audio.json"
             write_generated_audio_manifest(
                 manifest,

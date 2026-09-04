@@ -328,16 +328,24 @@ def publish_final_game_pack(
                     except BulkGenerationError as error:
                         raise FinalGamePackError(str(error)) from error
                 generated_records = approved_manifest_entries(state, state_path.parent)
-                live_fallback_records = _live_fallback_records(state, queue)
-                omission_records = _audio_event_omission_records(state, queue)
+                live_fallback_records = _decision_records(
+                    state, queue, "live_fallback", "Live fallback item"
+                )
+                omission_records = _decision_records(
+                    state, queue, "audio_event_omission", "Audio-event omission"
+                )
                 reviewed_waveform_records = _reviewed_waveform_publication_records(
                     state, queue
                 )
-                _validate_generated_story_records(generated_records, story)
-                _validate_live_fallback_story_records(live_fallback_records, story)
-                _validate_audio_event_omission_story_records(omission_records, story)
-                _validate_reviewed_waveform_story_records(
-                    reviewed_waveform_records, story
+                _validate_story_records(
+                    generated_records, story, "Approved generated item"
+                )
+                _validate_story_records(
+                    live_fallback_records, story, "Live fallback item"
+                )
+                _validate_story_records(omission_records, story, "Audio-event omission")
+                _validate_story_records(
+                    reviewed_waveform_records, story, "Reviewed waveform"
                 )
                 for record in generated_records:
                     relative = _safe_relative(
@@ -713,37 +721,15 @@ def _reviewed_waveform_supersedes_legacy_authority(state):
     return bool(approved) and migrated == approved
 
 
-def _live_fallback_records(state, queue):
+def _decision_records(state, queue, field, label):
     queue_ids = {item.queue_id for item in queue.items}
     records = []
     for queue_id, item in state["items"].items():
-        decision = item.get("live_fallback")
+        decision = item.get(field)
         if not isinstance(decision, dict):
             continue
         if queue_id not in queue_ids:
-            raise FinalGamePackError(
-                f"Live fallback item {queue_id!r} is missing from the queue"
-            )
-        records.append(
-            {
-                **copy.deepcopy(decision),
-                "decision_sha256": canonical_document_sha256(decision),
-            }
-        )
-    return sorted(records, key=lambda value: (value["line_id"], value["text_sha256"]))
-
-
-def _audio_event_omission_records(state, queue):
-    queue_ids = {item.queue_id for item in queue.items}
-    records = []
-    for queue_id, item in state["items"].items():
-        decision = item.get("audio_event_omission")
-        if not isinstance(decision, dict):
-            continue
-        if queue_id not in queue_ids:
-            raise FinalGamePackError(
-                f"Audio-event omission {queue_id!r} is missing from the queue"
-            )
+            raise FinalGamePackError(f"{label} {queue_id!r} is missing from the queue")
         records.append(
             {
                 **copy.deepcopy(decision),
@@ -1328,43 +1314,13 @@ def _verify_voice_control_provenance(
     return {"character": character, "reference_sha256": digest}
 
 
-def _validate_generated_story_records(records, story):
+def _validate_story_records(records, story, label):
     lines = {record.line_id: record for record in story.records}
-    for generated in records:
-        line = lines.get(generated["line_id"])
-        if line is None or line.text_sha256 != generated["text_sha256"]:
+    for record in records:
+        line = lines.get(record["line_id"])
+        if line is None or line.text_sha256 != record["text_sha256"]:
             raise FinalGamePackError(
-                f"Approved generated item {generated['line_id']!r} does not match the story index"
-            )
-
-
-def _validate_live_fallback_story_records(records, story):
-    lines = {record.line_id: record for record in story.records}
-    for fallback in records:
-        line = lines.get(fallback["line_id"])
-        if line is None or line.text_sha256 != fallback["text_sha256"]:
-            raise FinalGamePackError(
-                f"Live fallback item {fallback['line_id']!r} does not match the story index"
-            )
-
-
-def _validate_audio_event_omission_story_records(records, story):
-    lines = {record.line_id: record for record in story.records}
-    for omission in records:
-        line = lines.get(omission["line_id"])
-        if line is None or line.text_sha256 != omission["text_sha256"]:
-            raise FinalGamePackError(
-                f"Audio-event omission {omission['line_id']!r} does not match the story index"
-            )
-
-
-def _validate_reviewed_waveform_story_records(records, story):
-    lines = {record.line_id: record for record in story.records}
-    for migrated in records:
-        line = lines.get(migrated["line_id"])
-        if line is None or line.text_sha256 != migrated["text_sha256"]:
-            raise FinalGamePackError(
-                f"Reviewed waveform {migrated['line_id']!r} does not match the story index"
+                f"{label} {record['line_id']!r} does not match the story index"
             )
 
 

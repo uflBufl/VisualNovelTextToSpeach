@@ -23,7 +23,12 @@ import numpy as np
 
 from vntts.audio_output import resolve_audio_output
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
-from vntts.playback import PlaybackStatus, PreparedPlayback, outcome_for_prepared
+from vntts.playback import (
+    PlaybackStatus,
+    PreparedPlayback,
+    outcome_for_prepared,
+    synthesized_mono_pcm,
+)
 from vntts.runtime_paths import find_bundled_speech_runtime, get_bundle_root
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
@@ -858,17 +863,7 @@ class IsolatedSpeechBackend:
         return self.prepare_playback(character, text).payload
 
     def synthesize(self, character, text):
-        return (
-            self.render(
-                SynthesisRequest(
-                    voice=character,
-                    text=text,
-                    generation_profile=self.generation_profile,
-                )
-            )
-            .collect()
-            .pcm.reshape(-1)
-        )
+        return synthesized_mono_pcm(self, character, text)
 
     def speak(self, character, text, *, playback_guard=None):
         return self.play_prepared(

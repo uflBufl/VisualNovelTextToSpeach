@@ -12,6 +12,7 @@ from vntts_artifacts.voice_generation_queue import (
 )
 
 from vntts.authoring.authority import canonical_document_sha256
+from vntts.document_identity import is_lowercase_sha256
 
 SCHEMA = "vntts.authoring-generation-queue-extension"
 SCHEMA_VERSION = 1
@@ -205,11 +206,7 @@ def _integer_order(value):
 
 
 def _sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    if not is_lowercase_sha256(value):
         raise QueueExtensionError(f"{label} is invalid")
     return value
 

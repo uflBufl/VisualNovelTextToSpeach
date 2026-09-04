@@ -29,6 +29,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
 )
 from vntts.authoring.workspace_config import workspace_config_fingerprint
+from vntts.document_identity import is_lowercase_sha256
 
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
 COHORT_REVIEW_PLAN_VERSION = 1
@@ -1210,9 +1211,7 @@ def _required_text(value, label):
 
 def _required_sha256(value, label):
     value = _required_text(value, label)
-    if len(value) != 64 or any(
-        character not in "0123456789abcdef" for character in value
-    ):
+    if not is_lowercase_sha256(value):
         raise CohortReviewError(f"{label} must be a lowercase SHA-256 digest")
     return value
 

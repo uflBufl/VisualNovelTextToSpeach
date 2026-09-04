@@ -26,22 +26,22 @@ class ControllerComponentsTest(unittest.TestCase):
         self.assertIs(controller.voice_assignments.controller, controller)
         self.assertIs(controller.diagnostics.controller, controller)
 
-    def test_each_component_uses_its_own_private_port(self):
+    def test_each_component_is_typed_to_the_composition_root(self):
         self.assertEqual(
             RuntimeLifecycleComponent.__annotations__["controller"],
-            "_RuntimeLifecyclePort",
+            "AppController",
         )
         self.assertEqual(
             LiveSessionComponent.__annotations__["controller"],
-            "_LiveSessionPort",
+            "AppController",
         )
         self.assertEqual(
             VoiceAssignmentComponent.__annotations__["controller"],
-            "_VoiceAssignmentPort",
+            "AppController",
         )
         self.assertEqual(
             DiagnosticsComponent.__annotations__["controller"],
-            "_DiagnosticsPort",
+            "AppController",
         )
 
     def test_public_operations_delegate_to_their_components(self):

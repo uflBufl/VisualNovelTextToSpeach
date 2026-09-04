@@ -33,6 +33,7 @@ from vntts.dialog_capture import (
     fingerprint_dialog_frame,
     recognize_live_frame,
 )
+from vntts.document_identity import is_lowercase_sha256
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
@@ -1324,11 +1325,7 @@ def _decode_json_object(payload, document_name):
 
 
 def _required_sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    if not is_lowercase_sha256(value):
         raise ValueError(f"{label} must be a lowercase SHA-256 digest")
     return value
 

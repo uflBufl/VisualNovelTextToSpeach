@@ -36,6 +36,7 @@ from vntts.authoring.source_reference_quality_records import (
 from vntts.authoring.source_reference_review import FIXED_EVALUATION_CORPUS
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.cli import cli_error, cli_success
+from vntts.document_identity import is_lowercase_sha256
 from vntts.reference_quality import analyze_reference_bytes
 
 COMPOSITE_SCHEMA = "vntts.authoring-exact-bank-reference-composite"
@@ -641,9 +642,7 @@ def _text(value, label):
 
 def _sha256(value, label):
     value = _text(value, label)
-    if len(value) != 64 or any(
-        character not in "0123456789abcdef" for character in value
-    ):
+    if not is_lowercase_sha256(value):
         raise ReferenceCompositeError(f"{label} must be lowercase SHA-256")
     return value
 

@@ -18,6 +18,7 @@ from vntts_artifacts.generated_audio import GeneratedAudioDocument
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import is_standalone_ellipsis_text
+from vntts.document_identity import is_lowercase_sha256
 from vntts.live_replay import LiveReplayRunner, load_live_replay_corpus
 from vntts.live_sequence import LiveSequencePlan
 from vntts.settings import audio_source_policies, load_app_settings
@@ -882,11 +883,7 @@ def _read_contained(root, value, label):
 
 
 def _required_sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    if not is_lowercase_sha256(value):
         raise SequenceReplaySealError(f"{label} must be a lowercase SHA-256")
     return value
 

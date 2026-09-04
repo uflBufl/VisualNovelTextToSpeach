@@ -51,6 +51,7 @@ from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
     validate_terminal_conflict_item_provenance,
 )
+from vntts.document_identity import is_lowercase_sha256
 from vntts.synthesis import SynthesisCompletion
 from vntts.voices import synthesis_character_for_line
 
@@ -2218,11 +2219,7 @@ def _required_text(value, label):
 
 
 def _required_sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    if not is_lowercase_sha256(value):
         raise BulkGenerationError(f"{label} must be a lowercase SHA-256 digest")
     return value
 

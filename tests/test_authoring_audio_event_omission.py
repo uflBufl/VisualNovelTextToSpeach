@@ -20,7 +20,7 @@ from vntts.authoring.bulk_generation import (
     load_generation_state,
 )
 from vntts.authoring.game_pack import (
-    _audio_event_omission_records,
+    _decision_records,
     _review_counts,
 )
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
@@ -67,7 +67,12 @@ class AudioEventOmissionTests(unittest.TestCase):
             state = load_generation_state(state_path, first.directory / "queue.jsonl")
             summary = inspect_workspace(first.directory)
             queue = VoiceGenerationQueue.load(first.directory / "queue.jsonl")
-            omission_records = _audio_event_omission_records(state, queue)
+            omission_records = _decision_records(
+                state,
+                queue,
+                "audio_event_omission",
+                "Audio-event omission",
+            )
             runtime_manifest = root / "generated-audio.json"
             write_generated_audio_manifest(
                 runtime_manifest,

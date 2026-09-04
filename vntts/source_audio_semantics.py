@@ -11,12 +11,11 @@ from pathlib import Path
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 SEMANTIC_EVIDENCE_SCHEMA = "r1999.source-audio-semantic-evidence"
 SEMANTIC_EVIDENCE_VERSION = 1
 SEMANTIC_EVIDENCE_METHOD = "local-asr-exact-normalized-transcript"
-SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 WORD_PATTERN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", flags=re.UNICODE)
 
 
@@ -194,6 +193,6 @@ def validate_story_semantic_evidence(story_index_path, evidence_path, evidence):
 
 
 def _require_sha256(value, label):
-    if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
+    if not is_lowercase_sha256(value):
         raise SourceAudioSemanticEvidenceError(f"{label} SHA-256 is invalid")
     return value

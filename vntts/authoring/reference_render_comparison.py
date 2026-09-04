@@ -33,7 +33,7 @@ from vntts.authoring.listening import (
     create_listening_session_from_reports,
     load_listening_session,
 )
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
 REFERENCE_RENDER_INPUT_VERSION = 1
@@ -1115,9 +1115,7 @@ def _required_text(value, label):
 
 def _required_sha256(value, label):
     text = _required_text(value, label)
-    if len(text) != 64 or any(
-        character not in "0123456789abcdef" for character in text
-    ):
+    if not is_lowercase_sha256(text):
         raise ReferenceRenderComparisonError(
             f"Reference render {label} must be lowercase SHA-256"
         )

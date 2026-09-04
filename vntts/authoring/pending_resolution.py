@@ -17,7 +17,7 @@ from vntts.authoring.workbench import (
     generation_command,
     list_review_items,
 )
-from vntts.document_identity import canonical_document_sha256
+from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 PENDING_RESOLUTION_PLAN_SCHEMA = "vntts.authoring-pending-resolution-plan"
 PENDING_RESOLUTION_PLAN_VERSION = 1
@@ -303,10 +303,6 @@ def _required_text(value, label):
 
 
 def _required_sha256(value, label):
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    if not is_lowercase_sha256(value):
         raise PendingResolutionError(f"{label} must be lowercase SHA-256")
     return value
