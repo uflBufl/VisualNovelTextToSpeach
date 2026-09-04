@@ -2483,6 +2483,29 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.shutdown()
 
+    def test_controller_lifecycle_shows_main_window_loading_state(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+
+        tray_application._begin_controller_lifecycle()
+
+        self.assertFalse(tray_application.dashboard.loading_panel.isHidden())
+        self.assertFalse(tray_application.dashboard.prepare_audio_button.isEnabled())
+        self.assertFalse(tray_application.pregeneration_action.isEnabled())
+        self.assertIn(
+            "unlock automatically", tray_application.dashboard.action_reason.text()
+        )
+
+        tray_application._finish_controller_lifecycle()
+
+        self.assertTrue(tray_application.dashboard.loading_panel.isHidden())
+        self.assertTrue(tray_application.dashboard.prepare_audio_button.isEnabled())
+        self.assertTrue(tray_application.pregeneration_action.isEnabled())
+        tray_application.shutdown()
+
     def test_quit_during_initial_start_forces_late_controller_cleanup(self):
         started = Event()
         release = Event()

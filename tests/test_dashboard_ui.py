@@ -84,6 +84,36 @@ class ControlDashboardTest(unittest.TestCase):
         )
         dashboard.deleteLater()
 
+    def test_loading_speech_engine_is_obvious_and_blocks_conflicting_actions(self):
+        dashboard = ControlDashboard(AppSettings())
+        dashboard.show()
+        self.application.processEvents()
+
+        dashboard.set_loading(True)
+
+        self.assertTrue(dashboard.loading_panel.isVisibleTo(dashboard))
+        self.assertEqual(
+            (
+                dashboard.loading_progress.minimum(),
+                dashboard.loading_progress.maximum(),
+            ),
+            (0, 0),
+        )
+        self.assertIn("unlock automatically", dashboard.loading_message.text())
+        self.assertTrue(
+            all(not button.isEnabled() for button in dashboard.loading_blocked_buttons)
+        )
+        self.assertTrue(dashboard.quit_button.isEnabled())
+
+        dashboard.set_loading(False)
+
+        self.assertTrue(dashboard.loading_panel.isHidden())
+        self.assertTrue(dashboard.prepare_audio_button.isEnabled())
+        self.assertTrue(dashboard.setup_primary_button.isEnabled())
+        self.assertFalse(dashboard.narrator_voice_button.isEnabled())
+        dashboard.close()
+        dashboard.deleteLater()
+
     def test_offline_audio_is_a_visible_player_action(self):
         dashboard = ControlDashboard(AppSettings())
         requests = []

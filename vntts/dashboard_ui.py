@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QMainWindow,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -110,6 +111,22 @@ class ControlDashboard(QMainWindow):
         self.status = QLabel("Starting...")
         self.status.setWordWrap(True)
         self.status.setStyleSheet("font-weight: 600; font-size: 15px;")
+        self.loading_panel = QFrame()
+        self.loading_panel.setFrameShape(QFrame.Shape.StyledPanel)
+        loading_layout = QVBoxLayout(self.loading_panel)
+        self.loading_message = QLabel(
+            "Loading the speech model and voices. Please wait; controls will "
+            "unlock automatically."
+        )
+        self.loading_message.setWordWrap(True)
+        self.loading_message.setStyleSheet("font-weight: 700;")
+        self.loading_message.setAccessibleName("Speech engine loading")
+        self.loading_progress = QProgressBar()
+        self.loading_progress.setRange(0, 0)
+        self.loading_progress.setTextVisible(False)
+        self.loading_progress.setAccessibleName("Speech engine loading progress")
+        loading_layout.addWidget(self.loading_message)
+        loading_layout.addWidget(self.loading_progress)
         self.action_reason = QLabel()
         self.action_reason.setWordWrap(True)
         self.action_reason.setAccessibleName("Reading control availability")
@@ -215,6 +232,7 @@ class ControlDashboard(QMainWindow):
         )
         self.prepare_audio_button.clicked.connect(self.pregeneration_requested.emit)
         offline.addWidget(self.prepare_audio_button)
+        self.loading_blocked_buttons = [self.prepare_audio_button]
 
         self.sequence_state = QLabel("Unavailable")
         self.sequence_position = QLabel("-")
@@ -260,6 +278,7 @@ class ControlDashboard(QMainWindow):
         )
         self.setup_primary_button.clicked.connect(self.readiness_requested.emit)
         setup_primary.addWidget(self.setup_primary_button, 1)
+        self.loading_blocked_buttons.append(self.setup_primary_button)
         self.setup_more_button = QPushButton("More setup options")
         self.setup_more_button.setCheckable(True)
         self.setup_more_button.setAccessibleDescription(
@@ -281,12 +300,14 @@ class ControlDashboard(QMainWindow):
             button.clicked.connect(signal.emit)
             setup_secondary.addWidget(button)
             self.setup_buttons.append(button)
+            if label != "Support and logs":
+                self.loading_blocked_buttons.append(button)
             if label == "Narrator voice":
                 self.narrator_voice_button = button
-        quit_button = QPushButton("Quit VNTTS")
-        quit_button.clicked.connect(self.request_quit)
-        setup_secondary.addWidget(quit_button)
-        self.setup_buttons.append(quit_button)
+        self.quit_button = QPushButton("Quit VNTTS")
+        self.quit_button.clicked.connect(self.request_quit)
+        setup_secondary.addWidget(self.quit_button)
+        self.setup_buttons.append(self.quit_button)
         setup.addWidget(self.setup_secondary_content)
         self.setup_more_button.toggled.connect(self._set_setup_expanded)
 
@@ -306,6 +327,7 @@ class ControlDashboard(QMainWindow):
         self.compact_button.clicked.connect(self.compact_requested.emit)
         header.addWidget(self.compact_button)
         layout.addLayout(header)
+        layout.addWidget(self.loading_panel)
         layout.addWidget(card)
         layout.addWidget(self.action_reason)
         layout.addWidget(reading_group)
@@ -325,6 +347,7 @@ class ControlDashboard(QMainWindow):
         self.setCentralWidget(self.content_scroll)
         self._set_details_expanded(False)
         self._set_setup_expanded(False)
+        self.set_loading(False)
         self.set_ready(False)
         self.set_configuration(settings)
 
@@ -456,6 +479,14 @@ class ControlDashboard(QMainWindow):
     def set_dialogue(self, speaker, text):
         self.speaker.setText(speaker or "Narrator")
         self.dialogue.setText(text or "No dialogue detected")
+
+    def set_loading(self, loading):
+        loading = bool(loading)
+        self.loading_panel.setVisible(loading)
+        for button in self.loading_blocked_buttons:
+            button.setEnabled(not loading)
+        if not loading:
+            self.narrator_voice_button.setEnabled(self._ready)
 
     def set_ready(self, ready, *, reason=None):
         self.set_runtime_controls(

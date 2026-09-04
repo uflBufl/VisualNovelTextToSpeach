@@ -1454,8 +1454,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             except OSError as error:
                 self.show_error(f"Unable to configure launch at login: {error}")
         if self.settings.onboarding_completed:
-            self.controller.prepare_startup()
             generation = self._begin_controller_lifecycle()
+            self.set_status(
+                "Loading the speech model and voices; controls will unlock "
+                "automatically when ready"
+            )
+            self.controller.prepare_startup()
             self._initial_start_generation = generation
             self.initial_start_runner.start(self._initialize_controller, generation)
         else:
@@ -2775,6 +2779,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _controller_configuration_actions(self):
         return (
+            self.pregeneration_action,
             self.calibrate_action,
             self.diagnostics_action,
             self.readiness_action,
@@ -2811,7 +2816,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             queued=bool(snapshot.get("queued", False)),
             replayable=bool(snapshot.get("replayable", False)),
             unavailable_reason=(
-                unavailable_reason or "Controller reconfiguration is in progress."
+                unavailable_reason
+                or "Speech model and voices are loading. Controls will unlock "
+                "automatically."
                 if self._controller_busy
                 else unavailable_reason or "VNTTS is shutting down."
                 if self._shutting_down
@@ -2844,6 +2851,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and not self._shutting_down
         )
         self._apply_runtime_control_state(self._runtime_control_state(enabled=enabled))
+        self.dashboard.set_loading(self._controller_busy)
         configuration_enabled = not self._controller_busy and not self._shutting_down
         for action in self._controller_configuration_actions():
             action.setEnabled(configuration_enabled)
