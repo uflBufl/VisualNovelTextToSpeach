@@ -24,6 +24,7 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
 )
 from vntts.authoring.terminal_conflict_records import (
+    require_terminal_conflict_directory,
     require_terminal_conflict_file,
     require_terminal_conflict_sha256,
     require_terminal_conflict_text,
@@ -48,6 +49,9 @@ class TerminalConflictResolutionError(RuntimeError):
 
 _contained_file = partial(
     require_terminal_conflict_file, error_type=TerminalConflictResolutionError
+)
+_directory = partial(
+    require_terminal_conflict_directory, error_type=TerminalConflictResolutionError
 )
 _text = partial(
     require_terminal_conflict_text, error_type=TerminalConflictResolutionError
@@ -268,16 +272,7 @@ def publish_terminal_conflict_resolution(review_directory, output_directory):
 def load_terminal_conflict_resolution(directory):
     """Load and fully validate one immutable resolution publication."""
     root = _directory(directory, "terminal conflict resolution")
-    try:
-        snapshot = capture_authority_file(
-            root / "resolution.json", "terminal conflict resolution"
-        )
-        document = validate_terminal_conflict_resolution_document(
-            snapshot.json_document("terminal conflict resolution"), root
-        )
-        assert_authority_snapshot(snapshot, "terminal conflict resolution")
-    except AuthoringAuthorityError as error:
-        raise TerminalConflictResolutionError(str(error)) from error
+    document = load_terminal_conflict_resolution_document(root)
     return TerminalConflictResolution(
         root,
         document["resolution_id"],
@@ -626,16 +621,6 @@ def validate_terminal_conflict_resolution_document(document, directory):
             "Terminal conflict resolution inventory changed"
         )
     return value
-
-
-def _directory(value, label):
-    argument = Path(value).expanduser()
-    if argument.is_symlink():
-        raise TerminalConflictResolutionError(f"{label.title()} must not be a symlink")
-    root = argument.resolve()
-    if not root.is_dir():
-        raise TerminalConflictResolutionError(f"{label.title()} is unavailable: {root}")
-    return root
 
 
 __all__ = [

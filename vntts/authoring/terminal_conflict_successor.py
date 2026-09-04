@@ -30,6 +30,7 @@ from vntts.authoring.reconciliation_schema import (
     validate_authoring_reconciliation_document,
 )
 from vntts.authoring.terminal_conflict_records import (
+    require_terminal_conflict_directory,
     require_terminal_conflict_sha256,
     require_terminal_conflict_text,
     require_terminal_conflict_timestamp,
@@ -61,6 +62,9 @@ class TerminalConflictSuccessorError(RuntimeError):
 
 _text = partial(
     require_terminal_conflict_text, error_type=TerminalConflictSuccessorError
+)
+_directory = partial(
+    require_terminal_conflict_directory, error_type=TerminalConflictSuccessorError
 )
 _sha256 = partial(
     require_terminal_conflict_sha256, error_type=TerminalConflictSuccessorError
@@ -255,16 +259,7 @@ def publish_terminal_conflict_successor(
 
 def load_terminal_conflict_successor(directory):
     root = _directory(directory, "terminal conflict successor")
-    try:
-        snapshot = capture_authority_file(
-            root / "successor.json", "terminal conflict successor"
-        )
-        document = validate_terminal_conflict_successor_document(
-            snapshot.json_document("terminal conflict successor"), root
-        )
-        assert_authority_snapshot(snapshot, "terminal conflict successor")
-    except AuthoringAuthorityError as error:
-        raise TerminalConflictSuccessorError(str(error)) from error
+    document = load_terminal_conflict_successor_document(root)
     return TerminalConflictSuccessor(
         root,
         document["successor_id"],
@@ -586,16 +581,6 @@ def _validate_resolution_projection(value, queue_id):
         APPLY_APPROVED_OUTCOME if authority == "approved" else RETAIN_EXPLICIT_REJECTION
     )
     return value, action
-
-
-def _directory(value, label):
-    argument = Path(value).expanduser()
-    if argument.is_symlink():
-        raise TerminalConflictSuccessorError(f"{label.title()} must not be a symlink")
-    root = argument.resolve()
-    if not root.is_dir():
-        raise TerminalConflictSuccessorError(f"{label.title()} is unavailable: {root}")
-    return root
 
 
 __all__ = [

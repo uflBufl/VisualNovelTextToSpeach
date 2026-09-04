@@ -76,6 +76,13 @@ def synthesized_mono_pcm(backend: Any, character: str, text: str) -> Any:
     return collect_synthesis(backend, character, text).pcm.reshape(-1)
 
 
+def prepare_playback_payload(backend: Any, character: str, text: str) -> Any:
+    prepared = backend.prepare_playback(character, text)
+    backend.last_synthesis_ms = prepared.synthesis_ms
+    backend.last_first_audio_ms = prepared.first_audio_ms
+    return prepared.payload
+
+
 def outcome_for_prepared(
     prepared: PreparedPlayback,
     status: PlaybackStatus,

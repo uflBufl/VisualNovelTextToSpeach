@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 from datetime import datetime
+from pathlib import Path
 
 from vntts.authoring.workspace_foundation import contained_regular_file
 
@@ -71,6 +72,19 @@ def require_terminal_conflict_file(
 ):
     """Resolve one symlink-free contained terminal-conflict file."""
     return contained_regular_file(root, value, label, error_type=error_type)
+
+
+def require_terminal_conflict_directory(
+    value, label, *, error_type=TerminalConflictRecordError
+):
+    """Resolve one existing non-symlink terminal-conflict directory."""
+    argument = Path(value).expanduser()
+    if argument.is_symlink():
+        raise error_type(f"{label.title()} must not be a symlink")
+    root = argument.resolve()
+    if not root.is_dir():
+        raise error_type(f"{label.title()} is unavailable: {root}")
+    return root
 
 
 def is_terminal_review_outcome(result):
@@ -180,6 +194,7 @@ __all__ = [
     "TERMINAL_CONFLICT_MERGE_VERSION",
     "TerminalConflictRecordError",
     "is_terminal_review_outcome",
+    "require_terminal_conflict_directory",
     "require_terminal_conflict_file",
     "require_terminal_conflict_sha256",
     "require_terminal_conflict_text",

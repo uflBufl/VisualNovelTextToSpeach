@@ -21,6 +21,7 @@ from vntts.playback import (
     PlaybackStatus,
     PreparedPlayback,
     outcome_for_prepared,
+    prepare_playback_payload,
     prepared_playback_from_render,
     synthesized_mono_pcm,
 )
@@ -201,10 +202,7 @@ class XTTSVoiceRouterBackend:
         self.last_first_audio_ms = None
 
     def prepare(self, character, text):
-        prepared = self.prepare_playback(character, text)
-        self.last_synthesis_ms = prepared.synthesis_ms
-        self.last_first_audio_ms = prepared.first_audio_ms
-        return prepared.payload
+        return prepare_playback_payload(self, character, text)
 
     def prepare_playback(self, character, text):
         return prepared_playback_from_render(self, character, text)
@@ -440,10 +438,7 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
         self.set_speed(1.0)
 
     def prepare(self, character, text):
-        prepared = self.prepare_playback(character, text)
-        self.last_synthesis_ms = prepared.synthesis_ms
-        self.last_first_audio_ms = prepared.first_audio_ms
-        return prepared.payload
+        return prepare_playback_payload(self, character, text)
 
     def prepare_playback(self, character, text):
         return prepared_playback_from_render(self, character, text)
@@ -903,10 +898,7 @@ class PocketTTSVoiceRouterBackend:
         self.set_speed(1.0)
 
     def prepare(self, character, text):
-        prepared = self.prepare_playback(character, text)
-        self.last_synthesis_ms = prepared.synthesis_ms
-        self.last_first_audio_ms = prepared.first_audio_ms
-        return prepared.payload
+        return prepare_playback_payload(self, character, text)
 
     def prepare_playback(self, character, text):
         payload = self._prepare_request(

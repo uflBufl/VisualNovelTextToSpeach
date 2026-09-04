@@ -53,6 +53,7 @@ from vntts.authoring.workbench import (
     safe_workspace_relative_path,
 )
 from vntts.authoring.workspace_config import selected_voice_manifest_path
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.voices import synthesis_character_for_line
 
 KNOWN_ROLE_REUSE_DECISION_SCHEMA = "vntts.authoring-known-role-reuse-decision"
@@ -580,13 +581,7 @@ def _decode_state(payload):
 
 
 def _read_json(path, label):
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise KnownRoleReuseError(f"Unable to read {label}: {error}") from error
-    if not isinstance(value, dict):
-        raise KnownRoleReuseError(f"{label.capitalize()} must be an object")
-    return value
+    return load_json_object(path, label, error_type=KnownRoleReuseError)
 
 
 def _required_text(value, label):

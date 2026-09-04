@@ -32,6 +32,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 
 REVIEW_BUNDLE_SCHEMA = "vntts.authoring-missing-voice-reuse-review-bundle"
@@ -947,15 +948,7 @@ def _cohort(bundle, cohort_id):
 
 
 def load_workspace_json(path, label):
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MissingVoiceReuseReviewError(
-            f"Unable to load {label}: {error}"
-        ) from error
-    if not isinstance(value, dict):
-        raise MissingVoiceReuseReviewError(f"{label.capitalize()} must be an object")
-    return value
+    return load_json_object(path, label, error_type=MissingVoiceReuseReviewError)
 
 
 def _write_private_json(path, value):

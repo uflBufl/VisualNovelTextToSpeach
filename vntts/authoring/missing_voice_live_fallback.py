@@ -41,6 +41,7 @@ from vntts.authoring.missing_voice_reuse_binding import (
     _validate_binding_bundle,
 )
 from vntts.authoring.workbench import inspect_workspace
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.voices import synthesis_character_for_line
 
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
@@ -486,15 +487,7 @@ def _decode_state(payload):
 
 
 def _read_json(path, label):
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MissingVoiceLiveFallbackError(
-            f"Unable to read {label}: {error}"
-        ) from error
-    if not isinstance(value, dict):
-        raise MissingVoiceLiveFallbackError(f"{label.capitalize()} must be an object")
-    return value
+    return load_json_object(path, label, error_type=MissingVoiceLiveFallbackError)
 
 
 def _required_text(value, label):

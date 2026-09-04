@@ -523,12 +523,20 @@ def _write_cumulative_routes(
                 )
         live_fallbacks.extend(
             value
-            for value in _document_live_fallbacks(base_generated)
+            for value in _document_records(
+                base_generated,
+                "vntts.authoring.live_fallback",
+                "live fallback",
+            )
             if value.get("line_id") not in current_line_ids
         )
         omissions.extend(
             value
-            for value in _document_audio_event_omissions(base_generated)
+            for value in _document_records(
+                base_generated,
+                "vntts.authoring.audio_event_omission",
+                "audio-event omission",
+            )
             if value.get("line_id") not in current_line_ids
         )
     for record in approved_manifest_entries(state, generation_result.output):
@@ -556,23 +564,13 @@ def _portable_generated_record(record, source, generated_copy):
     return candidate
 
 
-def _document_live_fallbacks(document):
-    extension = document.producer_metadata.get("vntts.authoring.live_fallback")
+def _document_records(document, field, label):
+    extension = document.producer_metadata.get(field)
     if extension is None:
         return []
     entries = extension.get("entries") if isinstance(extension, dict) else None
     if not isinstance(entries, list):
-        raise OfflinePackError("Active pack live fallback ledger is malformed")
-    return copy.deepcopy(entries)
-
-
-def _document_audio_event_omissions(document):
-    extension = document.producer_metadata.get("vntts.authoring.audio_event_omission")
-    if extension is None:
-        return []
-    entries = extension.get("entries") if isinstance(extension, dict) else None
-    if not isinstance(entries, list):
-        raise OfflinePackError("Active pack audio-event omission ledger is malformed")
+        raise OfflinePackError(f"Active pack {label} ledger is malformed")
     return copy.deepcopy(entries)
 
 
