@@ -77,6 +77,9 @@ class MossCppInstallationTest(unittest.TestCase):
             self.assertEqual((paths[0].parent / "ggml-cpu.dll").read_bytes(), b"dll")
             self.assertEqual(len(requests), 4)
             self.assertEqual(probe.call_count, 3)
+            probe.assert_called_with(
+                [str(paths[0]), "--help"], cancellation=None, timeout=30
+            )
 
     def test_cancelled_download_resumes_and_verifies_before_publication(self):
         data = b"A" * (2 * 1024 * 1024)
@@ -184,7 +187,8 @@ class MossCppInstallationTest(unittest.TestCase):
             patch.object(
                 setup, "_run", side_effect=TTSConfigurationError("missing DLL")
             ),
-            self.assertRaisesRegex(TTSConfigurationError, r"Visual C\+\+"),
+            self.assertRaisesRegex(TTSConfigurationError, "missing DLL") as raised,
         ):
             setup.ensure_moss_cpp(root=Path(directory))
         self.assertEqual(download.call_count, 1)
+        self.assertNotIn("Redistributable", str(raised.exception))

@@ -496,7 +496,7 @@ cancellation, and resumable downloads. Later launches reuse these files.
 The default runs generation and the audio codec on the CPU. No separate
 Python MOSS environment or manual model paths are needed. Windows must have
 the Microsoft Visual C++ x64 runtime; setup checks native loading before
-downloading the models and reports this prerequisite if it is missing.
+downloading the models and preserves the underlying error if the check fails.
 
 For custom runtime paths or GPU tuning, the same checkpoint can use the
 [openmoss C++ runtime](https://github.com/pwilkin/openmoss/releases/tag/v0.3.0).

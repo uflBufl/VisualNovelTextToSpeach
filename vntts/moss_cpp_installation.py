@@ -201,14 +201,12 @@ def ensure_moss_cpp(model_name=None, *, cancellation=None, progress=None, root=N
             progress("Checking MOSS native runtime...")
             try:
                 _run(
-                    [str(paths[0]), "--version"], cancellation=cancellation, timeout=30
+                    [str(paths[0]), "--help"], cancellation=cancellation, timeout=30
                 )
             except TTSConfigurationError as error:
                 raise TTSConfigurationError(
-                    "MOSS native runtime could not start. If Windows reports missing "
-                    "MSVCP140 or VCRUNTIME140 DLLs, install Microsoft's Visual C++ x64 "
-                    "Redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe), "
-                    f"then retry. Model downloads have not started. {error}"
+                    "MOSS native runtime check failed. "
+                    f"Model downloads have not started. {error}"
                 ) from error
             if not explicit_model:
                 for name, digest, size in MODELS:
