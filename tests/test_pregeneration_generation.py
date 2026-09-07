@@ -77,6 +77,7 @@ def generation_inputs(root, *, backend="pocket-tts", model=None):
         synthesis_model=model,
         synthesis_language="en",
         synthesis_profile="stable",
+        pocket_voice_cloning=False,
         synthesis_controls_sha256="e" * 64,
         groups=(),
     )
@@ -197,6 +198,19 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
 
         popen.assert_not_called()
         self.assertEqual(result.total, generation_input.ready_items)
+
+    def test_pocket_cloning_opt_in_reaches_isolated_worker(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, plan = generation_inputs(Path(temporary_directory))
+            plan = replace(plan, pocket_voice_cloning=True)
+
+            arguments = OfflineGenerationWorker(command=("worker",))._base_arguments(
+                generation_input,
+                plan,
+                generation_input.directory.parent / "output",
+            )
+
+        self.assertIn("--allow-gated-model-access", arguments)
 
     def test_selection_jobs_share_one_content_addressed_synthesis_cache(self):
         with TemporaryDirectory() as temporary_directory:

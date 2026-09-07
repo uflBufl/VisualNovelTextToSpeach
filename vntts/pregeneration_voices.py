@@ -35,7 +35,7 @@ from vntts.voices import (
     synthesis_character_for_line,
 )
 
-voice_plan_schema_version = 3
+voice_plan_schema_version = 4
 voice_decisions_schema_version = 1
 PLAYER_VOICE_CANDIDATES_FIELD = "vntts.player.voice_candidates"
 PLAYER_VOICE_CANDIDATES_SCHEMA = "vntts.player-voice-candidates"
@@ -175,6 +175,7 @@ class VoicePlan:
     synthesis_model: str | None
     synthesis_language: str | None
     synthesis_profile: str
+    pocket_voice_cloning: bool
     synthesis_controls_sha256: str
     groups: tuple[VoiceGroup, ...]
 
@@ -203,6 +204,7 @@ class VoicePlan:
             "synthesis_model": self.synthesis_model,
             "synthesis_language": self.synthesis_language,
             "synthesis_profile": self.synthesis_profile,
+            "pocket_voice_cloning": self.pocket_voice_cloning,
             "synthesis_controls_sha256": self.synthesis_controls_sha256,
             "groups": [group.to_document() for group in self.groups],
         }
@@ -395,6 +397,7 @@ class VoicePlanStore:
             synthesis_model=settings.tts_model,
             synthesis_language=settings.tts_language,
             synthesis_profile=controls["profile"],
+            pocket_voice_cloning=bool(controls["pocket_voice_cloning"]),
             synthesis_controls_sha256=controls_sha256,
             groups=groups,
         )

@@ -2,7 +2,7 @@
 
 from threading import Event
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -57,7 +57,15 @@ from vntts.pregeneration_voices import (
     pregeneration_narrator_source_id,
     resolve_pregeneration_settings,
 )
-from vntts.voices import find_default_voice_manifest
+from vntts.qt_audio import QtPcmPlayer
+from vntts.release_backends import SPEECH_BACKEND_LABELS
+from vntts.voices import (
+    CharacterVoiceRegistry,
+    VoiceChoice,
+    find_default_voice_manifest,
+    normalize_character_name,
+    pocket_tts_preset_voices,
+)
 
 
 class OfflineAudioPreparationDialog(QDialog):
@@ -148,11 +156,15 @@ class OfflineAudioPreparationDialog(QDialog):
         self._content = ()
         self._job = None
         self._voice_plan = None
+        self._prepared_voice_manifest = None
+        self._prepared_voice_job = None
         self._generation_input = None
         self._generation_result = None
         self._recovery_result = None
         self._acceptance_result = None
         self._pack_result = None
+        self._awaiting_voice_confirmation = False
+        self._narrator_player = preview_player
         self.setWindowTitle("Prepare offline audio")
         self.setMinimumSize(700, 500)
 
@@ -165,13 +177,36 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_status = QLabel()
         self.narrator_status.setAccessibleName("Selected narrator voice")
         self.narrator_status.setWordWrap(True)
-        self.choose_narrator_button = QPushButton("Listen and choose narrator...")
+        self.choose_narrator_button = QPushButton("Listen to built-in voices...")
         self.choose_narrator_button.clicked.connect(self._choose_narrator)
         self.choose_narrator_button.setVisible(narrator_chooser is not None)
         narrator_row = QHBoxLayout()
         narrator_row.addWidget(self.narrator_status, 1)
         narrator_row.addWidget(self.choose_narrator_button)
         self._refresh_narrator_status()
+
+        self.pocket_voice_cloning = QCheckBox(
+            "I accepted the Pocket TTS model terms; use original game voices"
+        )
+        self.pocket_voice_cloning.setChecked(settings.pocket_gated_model_accepted)
+        self.pocket_voice_cloning.setAccessibleDescription(
+            "Enable reference-audio voice cloning after accepting the Pocket TTS "
+            "model terms and signing in to Hugging Face"
+        )
+        self.pocket_voice_cloning.toggled.connect(self._pocket_cloning_toggled)
+        self.pocket_terms = QLabel(
+            "Game voice cloning requires accepting the "
+            '<a href="https://huggingface.co/kyutai/pocket-tts">Pocket TTS model '
+            "terms</a> and signing in to Hugging Face. VNTTS cannot accept legal "
+            "terms on your behalf."
+        )
+        self.pocket_terms.setWordWrap(True)
+        self.pocket_terms.setOpenExternalLinks(True)
+        uses_pocket = (
+            resolve_pregeneration_settings(settings).speech_backend == "pocket-tts"
+        )
+        self.pocket_voice_cloning.setVisible(uses_pocket)
+        self.pocket_terms.setVisible(uses_pocket)
 
         self.source = QComboBox()
         self.source.setAccessibleName("Detected game content")
@@ -270,6 +305,32 @@ class OfflineAudioPreparationDialog(QDialog):
         progress_layout.addWidget(self.progress_coverage)
         self.progress_panel.hide()
 
+        self.voice_confirmation = QGroupBox("Confirm voices before generation")
+        self.voice_confirmation.setVisible(False)
+        self.voice_configuration = QLabel()
+        self.voice_configuration.setWordWrap(True)
+        self.voice_configuration.setStyleSheet("font-weight: 600;")
+        self.narrator_choice = QComboBox()
+        self.narrator_choice.setAccessibleName("Narrator voice for offline generation")
+        self.narrator_choice.currentIndexChanged.connect(self._narrator_choice_changed)
+        self.play_narrator_reference = QPushButton("Play original game voice")
+        self.play_narrator_reference.clicked.connect(self._play_narrator_reference)
+        narrator_choice_row = QHBoxLayout()
+        narrator_choice_row.addWidget(QLabel("Narrator"))
+        narrator_choice_row.addWidget(self.narrator_choice, 1)
+        narrator_choice_row.addWidget(self.play_narrator_reference)
+        self.voice_routes = QListWidget()
+        self.voice_routes.setAccessibleName("Planned character voice routes")
+        self.voice_routes.setMinimumHeight(180)
+        self.voice_confirmation_status = QLabel()
+        self.voice_confirmation_status.setWordWrap(True)
+        confirmation_layout = QVBoxLayout(self.voice_confirmation)
+        confirmation_layout.addWidget(self.voice_configuration)
+        confirmation_layout.addLayout(narrator_choice_row)
+        confirmation_layout.addWidget(QLabel("Voices that will be generated"))
+        confirmation_layout.addWidget(self.voice_routes)
+        confirmation_layout.addWidget(self.voice_confirmation_status)
+
         self.discovery_panel = QGroupBox("Loading game content")
         self.discovery_panel.setAccessibleName("Loading game content")
         discovery_message = QLabel(
@@ -319,8 +380,11 @@ class OfflineAudioPreparationDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self.discovery_panel)
         layout.addWidget(self.coverage_summary)
+        layout.addWidget(self.pocket_voice_cloning)
+        layout.addWidget(self.pocket_terms)
         layout.addWidget(self.selection_panel, 1)
         layout.addWidget(self.voice_panel)
+        layout.addWidget(self.voice_confirmation, 1)
         layout.addWidget(self.progress_panel)
         layout.addWidget(self.buttons)
         availability = self.importer.availability()
@@ -349,7 +413,22 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if settings is not None:
             self.settings = settings
+            self.pocket_voice_cloning.setChecked(settings.pocket_gated_model_accepted)
         self._refresh_narrator_status()
+
+    def _pocket_cloning_toggled(self, enabled):
+        self.settings = self.settings.updated(pocket_gated_model_accepted=bool(enabled))
+        self._refresh_narrator_status()
+        if self._awaiting_voice_confirmation and self._voice_plan is not None:
+            self._show_voice_confirmation(self._voice_plan)
+            if not self._awaiting_voice_confirmation:
+                return
+            self.continue_button.setText("Update voice routes")
+            self.voice_confirmation_status.setText(
+                "Voice cloning changed. Update the routes before generation."
+            )
+        else:
+            self._voice_plan = None
 
     def _refresh_narrator_status(self):
         settings = resolve_pregeneration_settings(self.settings)
@@ -362,7 +441,206 @@ class OfflineAudioPreparationDialog(QDialog):
             detail = "reference-audio voice cloning"
         else:
             detail = "backend default"
-        self.narrator_status.setText(f"Narrator: {label} ({detail})")
+        backend = SPEECH_BACKEND_LABELS.get(
+            settings.speech_backend, settings.speech_backend
+        )
+        cloning = (
+            "; original game voice cloning enabled"
+            if settings.speech_backend == "pocket-tts"
+            and settings.pocket_gated_model_accepted
+            else "; original game voice cloning disabled"
+            if settings.speech_backend == "pocket-tts"
+            else ""
+        )
+        self.narrator_status.setText(
+            f"Speech engine: {backend}{cloning}. Narrator: {label} ({detail})."
+        )
+        self.choose_narrator_button.setVisible(
+            self.narrator_chooser is not None
+            and settings.speech_backend == "pocket-tts"
+            and not settings.pocket_gated_model_accepted
+        )
+
+    def _voice_choices(self, plan):
+        choices = []
+        backend = (
+            plan.synthesis_backend
+            if isinstance(plan.synthesis_backend, str)
+            else resolve_pregeneration_settings(self.settings).speech_backend
+        )
+        if backend == "pocket-tts":
+            choices.extend(
+                VoiceChoice(
+                    f"preset:{name}",
+                    name.replace("_", " ").title(),
+                    "Pocket TTS built-in voice",
+                )
+                for name in pocket_tts_preset_voices
+            )
+        if isinstance(plan.voice_manifest, (str, bytes)) and (
+            backend != "pocket-tts" or self.settings.pocket_gated_model_accepted
+        ):
+            registry = CharacterVoiceRegistry.from_file(plan.voice_manifest)
+            choices.extend(registry.choices())
+        return tuple(choices)
+
+    def _show_voice_confirmation(self, plan):
+        try:
+            choices = self._voice_choices(plan)
+        except (OSError, ValueError) as error:
+            self._awaiting_voice_confirmation = False
+            self.voice_confirmation.hide()
+            self.selection_panel.show()
+            self._set_import_controls(True)
+            self.continue_button.setText("Retry voice matching")
+            self.selection_status.setText(f"Unable to show character voices: {error}")
+            return
+        self._awaiting_voice_confirmation = True
+        self.pocket_voice_cloning.setEnabled(True)
+        self.selection_panel.hide()
+        self.voice_panel.hide()
+        self.progress_panel.hide()
+        self.voice_confirmation.show()
+        backend_id = (
+            plan.synthesis_backend
+            if isinstance(plan.synthesis_backend, str)
+            else resolve_pregeneration_settings(self.settings).speech_backend
+        )
+        backend = SPEECH_BACKEND_LABELS.get(backend_id, backend_id)
+        self.voice_configuration.setText(
+            f"Speech engine: {backend}. Nothing has been generated yet. "
+            "Review every route below, then start generation explicitly."
+        )
+        self.narrator_choice.blockSignals(True)
+        self.narrator_choice.clear()
+        self.narrator_choice.addItem("Choose a narrator voice...", None)
+        for choice in choices:
+            self.narrator_choice.addItem(choice.label, choice.id)
+            self.narrator_choice.setItemData(
+                self.narrator_choice.count() - 1,
+                choice.description,
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        current = pregeneration_narrator_source_id(self.settings)
+        selected = self.narrator_choice.findData(current)
+        self.narrator_choice.setCurrentIndex(max(0, selected))
+        self.narrator_choice.blockSignals(False)
+        self._render_voice_routes(plan)
+        self._narrator_choice_changed()
+        self.continue_button.setText("Generate with these voices")
+        self.continue_button.setAccessibleDescription(
+            "Start offline generation with the exact visible voice routes"
+        )
+        self.cancel_button.setText("Cancel")
+        self.cancel_button.setEnabled(True)
+
+    def _render_voice_routes(self, plan):
+        self.voice_routes.clear()
+        groups = plan.groups if isinstance(plan.groups, (tuple, list)) else ()
+        for group in sorted(
+            groups,
+            key=lambda value: (value.character.casefold(), value.group_id),
+        ):
+            lines = len(group.line_ids)
+            if group.route == "narrator":
+                source = self.narrator_choice.currentText()
+                route = f"Narrator ({source})"
+            else:
+                route = group.source_character or group.source_speaker or "No voice"
+            self.voice_routes.addItem(
+                f"{group.character} -> {route} - {lines} "
+                f"line{'s' if lines != 1 else ''}"
+            )
+
+    def _narrator_choice_changed(self, _index=None):
+        source_id = self.narrator_choice.currentData()
+        if self._narrator_player is not None:
+            self._narrator_player.stop()
+        self.play_narrator_reference.setEnabled(
+            isinstance(source_id, str) and source_id.startswith("character:")
+        )
+        if self._voice_plan is not None:
+            self._render_voice_routes(self._voice_plan)
+        needs_narrator = bool(
+            self._voice_plan
+            and isinstance(self._voice_plan.groups, (tuple, list))
+            and any(group.route == "narrator" for group in self._voice_plan.groups)
+        )
+        ready = source_id is not None or not needs_narrator
+        self.continue_button.setEnabled(ready)
+        self.voice_confirmation_status.setText(
+            "Choose a narrator before generation."
+            if not ready
+            else "Generation will use exactly the routes shown above."
+        )
+
+    def _play_narrator_reference(self):
+        source_id = self.narrator_choice.currentData()
+        if not (
+            self._voice_plan is not None
+            and self._voice_plan.voice_manifest
+            and isinstance(source_id, str)
+            and source_id.startswith("character:")
+        ):
+            return
+        try:
+            registry = CharacterVoiceRegistry.from_file(self._voice_plan.voice_manifest)
+            voice = registry.resolve_source(source_id)
+            reference = voice.references[0]
+            if self._narrator_player is None:
+                self._narrator_player = QtPcmPlayer(self)
+                self._narrator_player.errorOccurred.connect(
+                    lambda _code, message: self.voice_confirmation_status.setText(
+                        f"Unable to play the original game voice: {message}"
+                    )
+                )
+            self._narrator_player.stop()
+            self._narrator_player.setSource(QUrl.fromLocalFile(str(reference)))
+            self._narrator_player.play()
+        except Exception as error:
+            self.voice_confirmation_status.setText(
+                f"Unable to play the original game voice: {error}"
+            )
+
+    def _confirm_voice_plan(self):
+        if self._narrator_player is not None:
+            self._narrator_player.stop()
+        source_id = self.narrator_choice.currentData()
+        current = pregeneration_narrator_source_id(self.settings)
+        self._awaiting_voice_confirmation = False
+        self.pocket_voice_cloning.setEnabled(False)
+        self.voice_confirmation.hide()
+        planned_cloning = getattr(self._voice_plan, "pocket_voice_cloning", None)
+        controls_changed = (
+            self._voice_plan.synthesis_backend == "pocket-tts"
+            and isinstance(planned_cloning, bool)
+            and (planned_cloning != self.settings.pocket_gated_model_accepted)
+        )
+        narrator_changed = source_id is not None and source_id != current
+        if controls_changed or narrator_changed:
+            if narrator_changed:
+                assignments = {
+                    character: value
+                    for character, value in self.settings.voice_assignments.items()
+                    if normalize_character_name(character) != "narrator"
+                }
+                assignments["Narrator"] = source_id
+                self.settings = self.settings.updated(voice_assignments=assignments)
+                self._refresh_narrator_status()
+            self.planning_voices = True
+            self.replanning_voice_decisions = False
+            self._show_waiting_phase(
+                "Applying narrator voice",
+                "Updating the visible voice routes before generation...",
+                "Cancel stops voice matching. Nothing has been generated yet.",
+            )
+            self.voice_runner.start(
+                self._create_voice_plan,
+                self._job,
+                False,
+            )
+            return
+        self._start_generation_input(self._voice_plan)
 
     def _discover_content(self):
         try:
@@ -737,6 +1015,9 @@ class OfflineAudioPreparationDialog(QDialog):
         if self._pack_result is not None:
             self.accept()
             return
+        if self._awaiting_voice_confirmation:
+            self._confirm_voice_plan()
+            return
         content = self.current_content()
         if content is None:
             return
@@ -769,8 +1050,15 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _create_voice_plan(self, job, ignore_decisions=False):
-        manifest = None
-        if not self.settings.voice_manifest and find_default_voice_manifest() is None:
+        if self._prepared_voice_job != job.job_id:
+            self._prepared_voice_manifest = None
+            self._prepared_voice_job = job.job_id
+        manifest = self._prepared_voice_manifest
+        if (
+            manifest is None
+            and not self.settings.voice_manifest
+            and find_default_voice_manifest() is None
+        ):
             try:
                 manifest = self.importer.prepare_voice_candidates(
                     job,
@@ -782,6 +1070,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 ) from error
             except GameContentImportError:
                 manifest = None
+            self._prepared_voice_manifest = manifest
         options = {
             "cancellation": self.voice_cancel_event,
             "ignore_decisions": ignore_decisions,
@@ -859,8 +1148,7 @@ class OfflineAudioPreparationDialog(QDialog):
             )
             return
         self.replanning_voice_decisions = False
-        self.voice_panel.shutdown()
-        self._start_generation_input(plan)
+        self._show_voice_confirmation(plan)
 
     def _voice_auditions_completed(self):
         self.auditioning_voices = False
@@ -894,6 +1182,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_panel.hide()
 
     def _start_generation_input(self, plan):
+        self.voice_panel.shutdown()
         self.preparing_inputs = True
         self.cancel_button.setText("Cancel preparation")
         self._show_waiting_phase(
@@ -1187,6 +1476,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.select_none_button.setEnabled(enabled)
         self.change_voices.setEnabled(enabled)
         self.choose_narrator_button.setEnabled(enabled)
+        self.pocket_voice_cloning.setEnabled(enabled)
         self.continue_button.setEnabled(enabled and bool(self.selected_story_ids()))
 
     def _cancel_or_reject(self):
@@ -1254,10 +1544,14 @@ class OfflineAudioPreparationDialog(QDialog):
         self.acceptance_runner.cancel()
         self.publication_runner.cancel()
         self.progress_timer.stop()
+        if self._narrator_player is not None:
+            self._narrator_player.stop()
         self.voice_panel.shutdown()
         super().closeEvent(event)
 
     def done(self, result):
+        if self._narrator_player is not None:
+            self._narrator_player.stop()
         self.discovery_runner.cancel()
         self.progress_timer.stop()
         if not self.voice_panel.active:

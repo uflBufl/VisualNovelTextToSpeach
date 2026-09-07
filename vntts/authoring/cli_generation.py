@@ -117,6 +117,11 @@ def configure_parsers(subparsers) -> None:
         help="Manifest character whose first reference voices queue Narrator lines",
     )
     generate.add_argument("--generation-profile")
+    generate.add_argument(
+        "--allow-gated-model-access",
+        action="store_true",
+        help="Permit authenticated Pocket TTS voice-cloning model access",
+    )
     add_missing_voice_policy_arguments(generate)
     add_failure_repair_arguments(generate)
     generate.add_argument("--limit", type=int)
@@ -476,6 +481,7 @@ def _generate(arguments: argparse.Namespace) -> int:
             cache_directory,
             model_name=arguments.model,
             narrator_reference=narrator_reference,
+            allow_gated_model_access=arguments.allow_gated_model_access,
             persistent_audio_cache_max_entries=max(
                 512,
                 len(policy_queue.items) * 2,

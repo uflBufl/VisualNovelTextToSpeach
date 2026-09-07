@@ -123,6 +123,37 @@ def ambiguous_fixture(root):
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_pocket_permission_reaches_preview_and_invalidates_loaded_worker(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan = replace(
+                plan, synthesis_backend="pocket-tts", synthesis_profile="default"
+            )
+            created = []
+
+            def factory(_name, _registry, _root, **options):
+                backend = FakeBackend("pocket-tts")
+                created.append((backend, options["allow_gated_model_access"]))
+                return backend
+
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=factory
+            )
+            try:
+                source = group.candidates[0].source_id
+                service.generate(plan, group, source)
+                enabled = replace(plan, pocket_voice_cloning=True)
+                service.generate(
+                    enabled, group, source, text=group.alternate_sample_text
+                )
+                self.assertEqual(
+                    [permission for _, permission in created], [False, True]
+                )
+                self.assertEqual(created[0][0].shutdown_count, 1)
+            finally:
+                service.close()
+
     def test_returns_only_a_checksum_verified_playable_original_anchor(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

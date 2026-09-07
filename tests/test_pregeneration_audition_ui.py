@@ -67,6 +67,24 @@ class VoiceAuditionPanelTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_retry_after_shutdown_gets_a_usable_preview_service(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan, _group = with_second_candidate(plan, group)
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                VoiceDecisionStore(root / "decisions.json"), thread_pool=pool
+            )
+            previous = panel.preview_service
+            panel.shutdown()
+            panel.start(plan)
+            self.assertIsNot(panel.preview_service, previous)
+            self.assertFalse(panel.preview_service._closed)
+            self.assertTrue(pool.tasks)
+            panel.preview_runner.cancel()
+            panel.shutdown()
+
     def test_multimedia_output_is_lazy_when_no_audition_is_started(self):
         with (
             TemporaryDirectory() as temporary_directory,
@@ -529,13 +547,17 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertFalse(dialog.auditioning_voices)
-            self.assertTrue(dialog.preparing_inputs)
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.preparing_inputs)
+            self.assertEqual(
+                dialog.continue_button.text(), "Generate with these voices"
+            )
             self.assertEqual(voice_plan_store.create.call_count, 2)
             self.assertEqual(
                 decisions.choice_for(group.group_id, group.decision_context_sha256),
                 group.candidates[0].source_id,
             )
-            self.assertEqual(len(pool.tasks), 1)
+            self.assertEqual(len(pool.tasks), 0)
             dialog.voice_panel.shutdown()
             dialog.deleteLater()
 

@@ -217,6 +217,8 @@ class OfflineGenerationWorker:
         ]
         if voice_plan.synthesis_model:
             arguments.extend(("--model", voice_plan.synthesis_model))
+        if voice_plan.pocket_voice_cloning:
+            arguments.append("--allow-gated-model-access")
         for role in generation_input.narrator_fallback_roles:
             arguments.extend(("--narrator-fallback-role", role))
         return arguments

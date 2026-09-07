@@ -417,7 +417,9 @@ class TrayApplicationTest(unittest.TestCase):
         with patch("vntts.app.VoicePreviewDialog", return_value=dialog) as factory:
             tray_application._choose_pregeneration_narrator()
 
-        self.assertEqual(factory.call_args.args[1], (VoiceChoice("preset:alba", "Alba"),))
+        self.assertEqual(
+            factory.call_args.args[1], (VoiceChoice("preset:alba", "Alba"),)
+        )
         dialog.exec.assert_called_once_with()
         tray_application.shutdown()
 

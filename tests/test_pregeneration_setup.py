@@ -523,6 +523,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertFalse(dialog.planning_voices)
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            dialog.continue_button.click()
             self.assertTrue(dialog.preparing_inputs)
             self.assertEqual(dialog.cancel_button.text(), "Cancel preparation")
             pool.tasks.pop().run()
@@ -698,6 +700,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
+            dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
             pool.tasks.pop().run()
@@ -974,6 +977,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
+            dialog.continue_button.click()
             self.assertTrue(dialog.preparing_inputs)
 
             dialog.cancel_button.click()
@@ -1045,6 +1049,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
+            dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertTrue(dialog.generating)

@@ -1,7 +1,7 @@
 # TODO
 
 Keep this file limited to actionable, unfinished work. Put durable decisions,
-measurements and completed-work history in `docs/` and Git, not here.
+measurements in agent memory and completed-work history in Git, not here.
 
 ## P1 - Qualify the implemented desktop UX program
 

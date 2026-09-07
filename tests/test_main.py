@@ -1263,6 +1263,38 @@ class MainTest(unittest.TestCase):
         self.assertTrue(pocket_factory.call_args.kwargs["allow_gated_model_access"])
         controller.shutdown()
 
+    def test_controller_uses_pack_narrator_reference(self):
+        backend = Mock()
+        backend.registry = Mock()
+        backend.narrator_speaker = "Centurion"
+        backend.capabilities.concurrent_prepare_and_play = False
+        pocket_factory = Mock(return_value=backend)
+        reference = Path("centurion.wav")
+        registry = CharacterVoiceRegistry(
+            (CharacterVoice("Narrator", "Centurion", references=(reference,)),)
+        )
+        with (
+            patch("vntts.controller.initialize_voice_registry", return_value=registry),
+            patch("vntts.controller.ThreadPoolExecutor", return_value=Mock()),
+            patch("vntts.controller.LiveDialogReader", return_value=Mock()),
+            patch("vntts.controller.create_dialog_read_scheduler", return_value=Mock()),
+        ):
+            controller = AppController(
+                AppSettings(
+                    speech_backend="pocket-tts",
+                    pocket_gated_model_accepted=True,
+                ),
+                pocket_backend_factory=pocket_factory,
+                model_asset_manager_factory=Mock(),
+            )
+
+            self.assertTrue(controller.start())
+
+        self.assertEqual(
+            pocket_factory.call_args.kwargs["narrator_reference"], reference
+        )
+        controller.shutdown()
+
     def test_controller_loads_moss_with_model_language_and_huggingface_cache(self):
         backend = Mock()
         backend.registry = Mock()

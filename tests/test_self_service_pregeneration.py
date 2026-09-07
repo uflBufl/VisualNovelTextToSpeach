@@ -20,6 +20,7 @@ from tests.test_pregeneration_setup import (  # noqa: E402
 from tests.test_pregeneration_voices import (  # noqa: E402
     write_conflicting_manifest,
     write_content,
+    write_manifest,
 )
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.authoring.bulk_generation import run_bulk_generation  # noqa: E402
@@ -151,6 +152,177 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn("Marius", dialog.narrator_status.text())
             self.assertIn("no account", dialog.narrator_status.text())
 
+    def test_game_narrator_and_routes_are_confirmed_before_generation(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_content(root / "content"))
+            manifest = write_manifest(root / "voices")
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(
+                    voice_manifest=str(manifest),
+                ),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+            )
+
+            dialog.continue_button.click()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.voice_panel.preview_service._closed)
+            self.assertEqual(
+                dialog.continue_button.text(), "Generate with these voices"
+            )
+            self.assertFalse(dialog.generation_runner.active)
+            choices = {
+                dialog.narrator_choice.itemData(index)
+                for index in range(dialog.narrator_choice.count())
+            }
+            self.assertNotIn("character:centurion", choices)
+            self.assertIn("preset:alba", choices)
+            dialog.pocket_voice_cloning.setChecked(True)
+            self.assertEqual(dialog.continue_button.text(), "Update voice routes")
+            choices = {
+                dialog.narrator_choice.itemData(index)
+                for index in range(dialog.narrator_choice.count())
+            }
+            self.assertIn("character:centurion", choices)
+            self.assertIn("character:rhiannon", choices)
+            self.assertIn(
+                "Rhiannon",
+                " ".join(
+                    dialog.voice_routes.item(index).text()
+                    for index in range(dialog.voice_routes.count())
+                ),
+            )
+
+            dialog.narrator_choice.setCurrentIndex(
+                dialog.narrator_choice.findData("character:centurion")
+            )
+            dialog.continue_button.click()
+            self.assertTrue(pool.tasks)
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertEqual(
+                dialog.narrator_choice.currentData(), "character:centurion"
+            )
+            narrator_groups = tuple(
+                group
+                for group in dialog._voice_plan.groups
+                if group.route == "narrator"
+            )
+            self.assertTrue(narrator_groups)
+            self.assertTrue(
+                all(group.source_character == "Centurion" for group in narrator_groups)
+            )
+            self.assertFalse(dialog.input_runner.active)
+            dialog.reject()
+
+    def test_moss_confirmation_ignores_pocket_permission_and_stops_preview(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_content(root / "content"))
+            manifest = write_manifest(root / "voices")
+            pool = ManualThreadPool()
+            player = Mock()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(
+                    speech_backend="moss-tts",
+                    voice_manifest=str(manifest),
+                    pocket_gated_model_accepted=True,
+                    voice_assignments={"Narrator": "character:centurion"},
+                ),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+                preview_player=player,
+            )
+            with (
+                patch("vntts.pregeneration_voices.sys.platform", "darwin"),
+                patch(
+                    "vntts.pregeneration_voices.platform.machine", return_value="arm64"
+                ),
+            ):
+                dialog.continue_button.click()
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+                self.assertTrue(dialog._awaiting_voice_confirmation)
+                self.assertFalse(dialog.voice_panel.preview_service._closed)
+                player.reset_mock()
+                dialog.continue_button.click()
+            self.assertTrue(dialog.preparing_inputs)
+            self.assertFalse(dialog.planning_voices)
+            player.stop.assert_called()
+            self.assertTrue(dialog.voice_panel.preview_service._closed)
+            dialog.reject()
+            player.reset_mock()
+            dialog.reject()
+            player.stop.assert_called()
+
+    def test_broken_manifest_on_cloning_toggle_returns_to_retry(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_content(root / "content"))
+            manifest = write_manifest(root / "voices")
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(voice_manifest=str(manifest)),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+            )
+            dialog.continue_button.click()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            manifest.write_text("broken", encoding="utf-8")
+            dialog.pocket_voice_cloning.setChecked(True)
+            self.assertFalse(dialog._awaiting_voice_confirmation)
+            self.assertTrue(dialog.selection_panel.isVisibleTo(dialog))
+            self.assertFalse(dialog.narrator_choice.signalsBlocked())
+            self.assertIn("Unable to show", dialog.selection_status.text())
+            self.assertFalse(pool.tasks)
+            dialog.reject()
+
+    def test_prepared_candidates_are_reused_only_for_the_same_selection(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            importer = Mock()
+            importer.availability.return_value = Mock(
+                available=True, message="Available"
+            )
+            importer.prepare_voice_candidates.side_effect = (
+                root / "first.json",
+                root / "second.json",
+            )
+            plans = Mock()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                importer=importer,
+                voice_plan_store=plans,
+            )
+            first = jobs.create_or_resume(content, ("main-1",))
+            second = jobs.create_or_resume(content, ("rhiannon",))
+            with patch(
+                "vntts.pregeneration_ui.find_default_voice_manifest", return_value=None
+            ):
+                dialog._create_voice_plan(first)
+                dialog._create_voice_plan(first)
+                dialog._create_voice_plan(second)
+            self.assertEqual(importer.prepare_voice_candidates.call_count, 2)
+            self.assertEqual(
+                plans.create.call_args.kwargs["manifest_path"], root / "second.json"
+            )
+            dialog.reject()
+
     def test_zero_ambiguity_story_reaches_an_active_portable_pack(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -178,6 +350,11 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
 
             dialog.continue_button.click()
             for _step in range(6):
+                if dialog._awaiting_voice_confirmation:
+                    self.assertEqual(
+                        dialog.continue_button.text(), "Generate with these voices"
+                    )
+                    dialog.continue_button.click()
                 self.assertTrue(
                     pool.tasks,
                     f"step {_step}: {dialog.resume_status.text()}",
@@ -331,6 +508,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             for _step in range(8):
                 if second.pack_result() is not None:
                     break
+                if second._awaiting_voice_confirmation:
+                    second.continue_button.click()
                 self.assertTrue(
                     pool.tasks,
                     f"step {_step}: {second.resume_status.text()}",
@@ -373,6 +552,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
 
             first.continue_button.click()
             for _step in range(3):
+                if first._awaiting_voice_confirmation:
+                    first.continue_button.click()
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
             interrupted_job_id = first.job().job_id
@@ -404,6 +585,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             for _step in range(8):
                 if second.pack_result() is not None:
                     break
+                if second._awaiting_voice_confirmation:
+                    second.continue_button.click()
                 self.assertTrue(
                     pool.tasks,
                     f"step {_step}: {second.resume_status.text()}",

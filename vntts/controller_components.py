@@ -196,6 +196,11 @@ class RuntimeLifecycleComponent:
                     narrator_reference = narrator_voice.references[0]
                 elif controller.settings.speech_backend == "pocket-tts":
                     narrator_reference = narrator_voice.speaker
+            if narrator_reference is None:
+                narrator_voice = registry.resolve("Narrator")
+                references = getattr(narrator_voice, "references", ())
+                if isinstance(references, (tuple, list)) and references:
+                    narrator_reference = references[0]
             backend_options = {
                 "narrator_reference": narrator_reference,
                 "volume": controller.settings.output_volume_percent / 100,

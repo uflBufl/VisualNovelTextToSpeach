@@ -42,6 +42,7 @@ class VoiceAuditionPanel(QGroupBox):
     ):
         super().__init__("Choose character voices", parent)
         self.decisions = decisions
+        self._owns_preview_service = preview_service is None
         self.preview_service = preview_service or VoiceAuditionPreviewService()
         self.preview_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.preview_runner.finished.connect(self._previews_finished)
@@ -161,6 +162,8 @@ class VoiceAuditionPanel(QGroupBox):
             raise VoiceAuditionUIError(
                 "An unresolved voice must have at least two candidates"
             )
+        if self._shutdown_requested and self._owns_preview_service:
+            self.preview_service = VoiceAuditionPreviewService()
         self._plan = plan
         self._groups = groups
         self._group_index = 0
@@ -492,7 +495,6 @@ class VoiceAuditionPanel(QGroupBox):
             self.preview_service.close()
             return
         if self._terminal_emitted:
-            self.preview_service.close()
             return
         if self._ignore_prefetch_result:
             self._ignore_prefetch_result = False
@@ -739,6 +741,7 @@ class VoiceAuditionPanel(QGroupBox):
         if self._terminal_emitted:
             return
         self._terminal_emitted = True
+        self._shutdown_requested = True
         self.setVisible(False)
         if not self.prefetch_runner.active:
             self.preview_service.close()

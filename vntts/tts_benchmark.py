@@ -84,6 +84,7 @@ def create_backend(
     moss_streaming_interval=None,
     startup_cancellation=None,
     terms_accepted=False,
+    allow_gated_model_access=False,
     require_cuda=False,
     persistent_audio_cache_max_entries=None,
 ):
@@ -110,6 +111,7 @@ def create_backend(
         return create_pocket_worker_backend(
             registry,
             voice_state_cache_directory=cache_root / "voices",
+            allow_gated_model_access=allow_gated_model_access,
             **common,
         )
     if name == "chatterbox-nano":

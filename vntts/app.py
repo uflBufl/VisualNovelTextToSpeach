@@ -2168,7 +2168,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             f"Matched {len(voice_plan.groups)} voice groups; "
             f"{voice_plan.narrator_fallback_count} will use narrator."
         )
-        self._start_pregeneration_activation(pack_result, status)
+        generation_settings = getattr(dialog, "settings", None)
+        if not isinstance(generation_settings, AppSettings):
+            generation_settings = self.settings
+        self._start_pregeneration_activation(
+            pack_result,
+            status,
+            generation_settings,
+        )
         return job
 
     def _choose_pregeneration_narrator(self):
@@ -2177,7 +2184,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.settings.speech_backend == "pocket-tts"
             and not self.settings.pocket_gated_model_accepted
         ):
-            choices = tuple(choice for choice in choices if choice.id.startswith("preset:"))
+            choices = tuple(
+                choice for choice in choices if choice.id.startswith("preset:")
+            )
         if not choices:
             raise RuntimeError("No narrator voices are available")
         dialog = VoicePreviewDialog(
@@ -2199,7 +2208,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog.exec()
         return self.settings
 
-    def _start_pregeneration_activation(self, pack_result, success_status):
+    def _start_pregeneration_activation(
+        self, pack_result, success_status, generation_settings=None
+    ):
         generation = self._begin_controller_lifecycle()
         cancellation = Event()
         self._pregeneration_activation_generation = generation
@@ -2214,6 +2225,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.controller,
             cancellation,
             self._pregeneration_activation_restore_runtime,
+            generation_settings=generation_settings,
         )
 
     def _pregeneration_activation_finished(self, result, error):

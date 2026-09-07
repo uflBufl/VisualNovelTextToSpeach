@@ -51,6 +51,7 @@ def inputs(root):
         synthesis_model="model-id",
         synthesis_language="en",
         synthesis_profile="stable",
+        pocket_voice_cloning=False,
         synthesis_controls_sha256="e" * 64,
         groups=(),
     )

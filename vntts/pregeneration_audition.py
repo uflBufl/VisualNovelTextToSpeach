@@ -111,6 +111,7 @@ class VoiceAuditionPreviewService:
                 plan.synthesis_backend,
                 plan.synthesis_model,
                 plan.synthesis_profile,
+                plan.pocket_voice_cloning,
             )
             if self._backend is None or self._backend_config != backend_config:
                 self._backend = shutdown_speech_backend(self._backend)
@@ -122,6 +123,7 @@ class VoiceAuditionPreviewService:
                         self.root / "synthesis-cache",
                         model_name=plan.synthesis_model,
                         startup_cancellation=cancellation,
+                        allow_gated_model_access=plan.pocket_voice_cloning,
                     )
                 except Exception as error:
                     if cancellation.is_set():

@@ -8,6 +8,7 @@ from pathlib import Path
 from vntts.game_pack import GamePackError, import_game_pack
 from vntts.pregeneration_pack import OfflinePackResult
 from vntts.settings import AppSettings
+from vntts.voices import CharacterVoiceRegistry, normalize_character_name
 
 
 class OfflinePackActivationError(RuntimeError):
@@ -40,9 +41,15 @@ class OfflinePackActivator:
         controller,
         cancellation=None,
         restart_previous=None,
+        *,
+        generation_settings=None,
     ):
         if not isinstance(current_settings, AppSettings):
             raise OfflinePackActivationError("Current settings are invalid")
+        if generation_settings is not None and not isinstance(
+            generation_settings, AppSettings
+        ):
+            raise OfflinePackActivationError("Generation settings are invalid")
         if not isinstance(pack_result, OfflinePackResult):
             raise OfflinePackActivationError("Offline game pack result is invalid")
         try:
@@ -57,9 +64,22 @@ class OfflinePackActivator:
             or extension.get("identity") != pack_result.identity
         ):
             raise OfflinePackActivationError("Offline game pack identity changed")
-        candidate = imported.apply_to(current_settings).updated(
+        candidate = imported.apply_to(generation_settings or current_settings).updated(
             audio_source_policy="prefer-generated"
         )
+        narrator = CharacterVoiceRegistry.from_file(imported.voice_manifest).resolve(
+            "Narrator"
+        )
+        if narrator is not None:
+            assignments = {
+                character: source
+                for character, source in candidate.voice_assignments.items()
+                if normalize_character_name(character) != "narrator"
+            }
+            assignments["Narrator"] = "character:narrator"
+            candidate = candidate.updated(
+                voice_assignments=assignments, tts_speaker_wav=None
+            )
         _raise_if_cancelled(cancellation)
         was_ready = bool(controller.is_ready)
         runtime_changed = False
@@ -67,12 +87,12 @@ class OfflinePackActivator:
             if was_ready:
                 controller.shutdown()
             _raise_if_cancelled(cancellation)
+            runtime_changed = True
             applied = controller.apply_settings(candidate, cancellation=cancellation)
             if applied is False:
                 raise OfflinePackActivationCancelled(
                     "Offline game pack activation was cancelled"
                 )
-            runtime_changed = True
             _raise_if_cancelled(cancellation)
             if was_ready:
                 controller.prepare_startup()

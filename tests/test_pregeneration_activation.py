@@ -11,6 +11,7 @@ from vntts.pregeneration_activation import (
 )
 from vntts.pregeneration_pack import OfflinePackPublisher
 from vntts.settings import AppSettings
+from vntts.voices import CharacterVoiceRegistry
 
 
 def published_pack(root):
@@ -49,6 +50,54 @@ class OfflinePackActivatorTest(unittest.TestCase):
             cancellation=None,
         )
         controller.start.assert_called_once_with()
+
+    def test_new_choices_use_pack_narrator_and_rollback_keeps_old_settings(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            pack = published_pack(root)
+            previous = AppSettings(game_pack="previous-pack.json")
+            selected = previous.updated(
+                pocket_gated_model_accepted=True,
+                voice_assignments={"Narrator": "character:centurion"},
+                tts_speaker_wav="old-narrator.wav",
+            )
+            for failure in (None, "start", "save", "apply"):
+                with self.subTest(failure=failure):
+                    controller = Mock(is_ready=failure != "apply")
+                    controller.apply_settings.side_effect = (
+                        [RuntimeError("apply failed"), True]
+                        if failure == "apply"
+                        else None
+                    )
+                    controller.start.side_effect = (
+                        [False, True] if failure == "start" else None
+                    )
+                    controller.start.return_value = True
+                    save = Mock(return_value=root / "settings.json")
+                    if failure == "save":
+                        save.side_effect = OSError("disk full")
+                    activator = OfflinePackActivator(save_settings=save)
+                    if failure:
+                        with self.assertRaises(OfflinePackActivationError):
+                            activator.activate(
+                                previous, pack, controller, generation_settings=selected
+                            )
+                        self.assertEqual(
+                            controller.apply_settings.call_args.args, (previous,)
+                        )
+                    else:
+                        result = activator.activate(
+                            previous, pack, controller, generation_settings=selected
+                        )
+                        self.assertTrue(result.settings.pocket_gated_model_accepted)
+                        self.assertIsNone(result.settings.tts_speaker_wav)
+                        registry = CharacterVoiceRegistry.from_file(
+                            result.settings.voice_manifest
+                        )
+                        narrator = registry.resolve_source(
+                            result.settings.voice_assignments["Narrator"]
+                        )
+                        self.assertEqual(narrator, registry.resolve("Narrator"))
 
     def test_save_failure_restores_the_previous_running_pack(self):
         with TemporaryDirectory() as temporary_directory:
