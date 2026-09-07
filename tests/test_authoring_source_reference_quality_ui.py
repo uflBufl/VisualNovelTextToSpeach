@@ -281,6 +281,19 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
         self.assertEqual(message, "Exact game portrait is not installed")
         self.assertLessEqual(maximum_height, 48)
 
+    def test_model_label_shortens_both_native_path_formats(self):
+        from vntts.authoring.review_context_ui import review_model_label
+
+        for model in (
+            r"C:\Users\runner\AppData\Local\models\moss-test",
+            r"\\server\models\moss-test",
+            "/var/cache/models/moss-test",
+            "OpenMOSS/moss-test",
+            "moss-test",
+        ):
+            with self.subTest(model=model):
+                self.assertEqual(review_model_label(model), "moss-test")
+
     def test_empty_generated_evidence_and_technical_failures_stay_compact(self):
         with TemporaryDirectory() as directory:
             session = write_quality_session(Path(directory))

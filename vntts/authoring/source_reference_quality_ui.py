@@ -23,7 +23,11 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.authoring.review_context_ui import ReviewDecisionContext, review_form_layout
+from vntts.authoring.review_context_ui import (
+    ReviewDecisionContext,
+    review_form_layout,
+    review_model_label,
+)
 from vntts.authoring.source_reference_quality_records import (
     load_source_reference_quality_review,
     next_pending_quality_variant,
@@ -258,7 +262,7 @@ class SourceReferenceQualityDialog(QDialog):
                 "synthesis_voice": self.current["character"],
                 "reference": media,
                 "backend": synthesis.get("backend") or "Unknown (legacy review format)",
-                "model": Path(model).name if "/" in model else model,
+                "model": review_model_label(model),
                 "generation_profile": synthesis.get("generation_profile")
                 or "Unknown (legacy review format)",
                 "controls": (

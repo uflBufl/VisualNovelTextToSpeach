@@ -44,7 +44,11 @@ from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewCancelled,
     FailureReferencePreviewService,
 )
-from vntts.authoring.review_context_ui import ReviewDecisionContext, review_form_layout
+from vntts.authoring.review_context_ui import (
+    ReviewDecisionContext,
+    review_form_layout,
+    review_model_label,
+)
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
@@ -427,7 +431,7 @@ class FailureReferenceAuditDialog(QDialog):
                 "synthesis_voice": group["synthesis_voice_character"],
                 "reference": "Current candidate is blinded until decision import",
                 "backend": self._run_config.get("backend") or "Unknown",
-                "model": Path(model).name if "/" in model else model,
+                "model": review_model_label(model),
                 "generation_profile": (
                     self._run_config.get("generation_profile") or "Unknown"
                 ),

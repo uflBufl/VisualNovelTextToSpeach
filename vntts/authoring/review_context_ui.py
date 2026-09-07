@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import PureWindowsPath
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFormLayout, QGroupBox, QLabel, QToolButton, QVBoxLayout
@@ -14,6 +15,11 @@ def review_form_layout(parent=None):
     layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
     layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
     return layout
+
+
+def review_model_label(model):
+    """Shorten paths from either host without changing the recorded identity."""
+    return PureWindowsPath(model).name or model
 
 
 class ReviewDecisionContext(QGroupBox):

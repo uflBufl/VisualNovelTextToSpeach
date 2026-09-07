@@ -31,7 +31,11 @@ from vntts.authoring.missing_voice_reuse_review import (
     record_missing_voice_reuse_decision,
     record_missing_voice_reuse_heard,
 )
-from vntts.authoring.review_context_ui import ReviewDecisionContext, review_form_layout
+from vntts.authoring.review_context_ui import (
+    ReviewDecisionContext,
+    review_form_layout,
+    review_model_label,
+)
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 
 
@@ -326,7 +330,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
             )
             return
         model = str(context["model"])
-        model_label = Path(model).name if "/" in model else model
+        model_label = review_model_label(model)
         controls = f"{context['controls']} | Seed: {context['seed']}"
         technical = context["technical"]
         self.decision_context.set_context(

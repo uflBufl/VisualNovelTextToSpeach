@@ -55,7 +55,11 @@ from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     CohortReviewError,
 )
-from vntts.authoring.review_context_ui import ReviewDecisionContext, review_form_layout
+from vntts.authoring.review_context_ui import (
+    ReviewDecisionContext,
+    review_form_layout,
+    review_model_label,
+)
 from vntts.authoring.voice_quality_gate import (
     inspect_voice_quality_cohort,
     load_voice_quality_gate,
@@ -955,7 +959,7 @@ class CohortReviewBundleDialog(QDialog):
                     "synthesis_voice": identity["voice_character"],
                     "reference": reference,
                     "backend": identity["provider"],
-                    "model": Path(model).name if "/" in model else model,
+                    "model": review_model_label(model),
                     "generation_profile": identity["generation_profile"],
                     "controls": f"{repair} | Seed: {identity['seed']}",
                     "effect": (
