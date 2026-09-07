@@ -139,29 +139,31 @@ human-acceptable and none of the 13 human-bad WAVs were marked. It therefore
 also remains diagnostic-only and explicitly identifies its alignment as
 `proportional_word_position_without_asr` rather than claiming forced alignment.
 
-The first complete local Whisper `tiny.en` pass produced immutable report
-`124cce4df545bfa0d4c4c62b4ef7e8a57738b88a3f074e7b908bd0b8f17a49d9`
-for all 178 WAVs. Its exact report and resumable progress authority live outside
-the corpus under `authoring/robustness-reports`. The model was loaded from one
-offline tree whose SHA-256 is recorded in the report; CPU was used because MPS
-was unavailable in the active runtime.
+The corrected local Whisper `tiny.en` pass on 2026-09-08 produced report
+`e915bbbdcf2ad72b71c229b16881d96e2045874cf285a65b493b53f3cf7728bc`
+for all 178 WAVs, using the same corpus, model and listening labels on CPU.
+It supersedes the word-error measurements in report
+`124cce4df545bfa0d4c4c62b4ef7e8a57738b88a3f074e7b908bd0b8f17a49d9`.
+Transformers 4.57.6 incorrectly supplied the source sample rate twice to its
+resampler, then treated the unchanged PCM as 16 kHz. All 67 MOSS WAVs were
+48 kHz and all 111 Pocket WAVs were 24 kHz, so neither provider's old metrics
+were valid. The shared ASR input now explicitly resamples to 16 kHz; report
+and progress schema v2 prevent reuse of the old transcripts. Existing reports
+are preserved, not rewritten.
 
 | Provider and human verdict | Count | Median WER | Mean WER |
 | --- | ---: | ---: | ---: |
-| MOSS acceptable | 62 | 10.642857 | 13.176252 |
-| MOSS bad | 5 | 3.208333 | 6.970581 |
-| Pocket acceptable | 103 | 0.041667 | 0.076901 |
-| Pocket bad | 8 | 0.218750 | 0.367188 |
+| MOSS acceptable | 62 | 0.032143 | 0.059581 |
+| MOSS bad | 5 | 0 | 0.020833 |
+| Pocket acceptable | 103 | 0.034483 | 0.054981 |
+| Pocket bad | 8 | 0.093750 | 0.335938 |
 
-This is another negative production-gate result. Whisper frequently expanded
-accepted MOSS audio into long repeated transcripts. A post-hoc MOSS threshold
-of WER >= 2 found 4/5 bad WAVs but also falsely marked 43/62 accepted WAVs. For
-Pocket, the best exploratory WER >= 0.1875 split found 5/8 bad WAVs and falsely
-marked 12/103 accepted WAVs, but the threshold was selected on the same tiny
-eight-bad-WAV sample and three human-bad Pocket WAVs had exact transcripts.
-Those exact-transcript failures demonstrate that content ASR cannot detect
-every pacing, timbre or artifact defect even when transcription succeeds.
-Neither threshold is production authority.
+The earlier apparent MOSS transcript-repetition problem was invalid diagnostic
+evidence caused by resampling, not proof of poor intelligibility. Corrected ASR
+still cannot replace listening: 3/5 human-bad MOSS and 4/8 human-bad Pocket WAVs
+have exact transcripts. Content recognition cannot detect every pacing, timbre
+or artifact defect. These small diagnostic groups do not establish a production
+quality threshold or authorize automatic approval/rejection.
 
 Corpus v3
 `357847a8b7337afda0a7522eca30bd95d8b1e1de7e2516319d16f9c098f44040`

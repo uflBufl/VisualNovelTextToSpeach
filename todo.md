@@ -10,14 +10,9 @@ measurements in agent memory and completed-work history in Git, not here.
       latency. CPU codec remains enabled to limit VRAM use. Profile remaining
       codec/reference-encoding costs before changing native thread settings or
       placing the full sidecar on an 8 GB GPU; PyTorch settings do not tune GGUF.
-- [ ] Reduce residual pauses produced by the MOSS MLX generation path. Compare
-      existing stable controls against upstream Local v1.5 audio sampling and
-      separately test text/EOS sampling using the same references, texts and seed
-      set. Keep a held-out phrase set; check spoken-text completeness as well as
-      silence before changing a default or ranking a reference as reliable.
-      Do not substitute continuation mode, relax quality gates, increase output
-      limits or auto-approve a lower-silence but truncated result. Preserve raw
-      tokens and source/output hashes; Mac MLX results are not Windows evidence.
+- [ ] Listening check: spot-check a few Centurion previews with the updated MLX
+      stable profile for natural delivery and artifacts. Automated content/silence
+      checks are not listening approval; existing approved WAVs remain unchanged.
 
 ## P0 - Prefer spoken playable-character narrator references
 
