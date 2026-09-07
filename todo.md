@@ -19,8 +19,8 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Verify cross-platform CI repairs
 
-- [ ] Diagnose remaining Windows review widths using widget geometry in CI
-      failures; isolate the fake C++ HTTP server from reverse-DNS startup work.
+- [ ] Give Windows offscreen Qt a real font directory and verify proportional
+      glyph metrics before layout checks; confirm the hosted suite passes.
 - [ ] Publish the adaptive review layouts, scrollable settings help, native-path
       assertion and deterministic selected-WAV checks; confirm all hosted
       Windows/Linux/macOS CI jobs pass.

@@ -294,6 +294,16 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             with self.subTest(model=model):
                 self.assertEqual(review_model_label(model), "moss-test")
 
+    def test_offscreen_font_has_real_proportional_glyphs(self):
+        from PySide6.QtGui import QFont, QFontMetrics
+
+        metrics = QFontMetrics(QFont("Arial", 12))
+        self.assertLess(
+            metrics.horizontalAdvance("i"),
+            metrics.horizontalAdvance("W"),
+            "Qt is measuring missing-glyph boxes; check QT_QPA_FONTDIR",
+        )
+
     def test_empty_generated_evidence_and_technical_failures_stay_compact(self):
         with TemporaryDirectory() as directory:
             session = write_quality_session(Path(directory))
