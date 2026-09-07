@@ -10,13 +10,11 @@ measurements in agent memory and completed-work history in Git, not here.
       generated reference with the intended engine/account access, save, restart,
       then confirm both live fallback and offline preparation retain the choice.
 
-## P0 - Fix cross-platform CI regressions
+## P0 - Verify cross-platform CI repairs
 
-- [ ] Publish the settings label-wrapping and isolated MOSS engine-selection
-      fixture fixes; confirm the full Windows/Linux unit suites pass on hosted
-      runners. Check macOS for recurrence of the local `qt-app` timeout in
-      `test_settings_are_scrollable_and_grouped_into_visual_regions`; capture a
-      native stack if it recurs instead of increasing the timeout or adding retries.
+- [ ] Publish the adaptive review layouts, scrollable settings help, native-path
+      assertion and deterministic selected-WAV checks; confirm all hosted
+      Windows/Linux/macOS CI jobs pass.
 
 ## P1 - Qualify the implemented desktop UX program
 

@@ -55,7 +55,7 @@ from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     CohortReviewError,
 )
-from vntts.authoring.review_context_ui import ReviewDecisionContext
+from vntts.authoring.review_context_ui import ReviewDecisionContext, review_form_layout
 from vntts.authoring.voice_quality_gate import (
     inspect_voice_quality_cohort,
     load_voice_quality_gate,
@@ -521,17 +521,15 @@ class CohortReviewBundleDialog(QDialog):
         self.reject.clicked.connect(lambda: self.apply_decision("rejected"))
         self.retry_load.clicked.connect(self.reload_bundle)
 
-        navigation = QHBoxLayout()
-        for widget in (self.previous, self.replay, self.stop, self.next):
-            navigation.addWidget(widget)
-        evidence_actions = QHBoxLayout()
-        evidence_actions.addWidget(self.mark_bad)
-        evidence_actions.addWidget(self.need_another)
-        evidence_actions.addWidget(self.leave_undecided)
-        terminal_actions = QHBoxLayout()
-        terminal_actions.addWidget(self.repair_marked)
-        terminal_actions.addWidget(self.accept)
-        terminal_actions.addWidget(self.reject)
+        navigation = review_form_layout()
+        navigation.addRow(self.previous, self.next)
+        navigation.addRow(self.replay, self.stop)
+        evidence_actions = review_form_layout()
+        evidence_actions.addRow(self.mark_bad, self.need_another)
+        evidence_actions.addRow(self.leave_undecided)
+        terminal_actions = review_form_layout()
+        terminal_actions.addRow(self.repair_marked)
+        terminal_actions.addRow(self.accept, self.reject)
         decisions = QVBoxLayout()
         decisions.addLayout(evidence_actions)
         decisions.addLayout(terminal_actions)

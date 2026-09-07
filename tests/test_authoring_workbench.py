@@ -3,7 +3,6 @@ import json
 import os
 import shutil
 import subprocess
-import time
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import asdict
@@ -3240,8 +3239,18 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
             displayed = list_review_items(created.directory)[0]
 
-            started = time.monotonic()
+            read_bytes = Path.read_bytes
+            wav_reads = []
+
+            def track_audio_reads(path):
+                if path.suffix == ".wav":
+                    wav_reads.append(path)
+                return read_bytes(path)
+
             with (
+                patch.object(
+                    Path, "read_bytes", autospec=True, side_effect=track_audio_reads
+                ),
                 patch.object(
                     bulk_generation_module,
                     "load_generation_state",
@@ -3260,14 +3269,13 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             ):
                 audio = prepare_review_audio(displayed)
                 committed = review_selected_item(displayed, "approved")
-            elapsed = time.monotonic() - started
 
             self.assertEqual(
                 hashlib.sha256(audio).hexdigest(), displayed.authority.audio_sha256
             )
             self.assertEqual(committed.queue_id, queue_id)
             self.assertEqual(committed.review_status, "approved")
-            self.assertLess(elapsed, 0.25)
+            self.assertEqual(set(wav_reads), {displayed.audio})
 
     def test_review_decision_rejects_queue_change_before_state_or_manifest_write(self):
         with TemporaryDirectory() as directory:

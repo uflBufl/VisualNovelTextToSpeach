@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QGridLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
@@ -45,7 +44,7 @@ from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewCancelled,
     FailureReferencePreviewService,
 )
-from vntts.authoring.review_context_ui import ReviewDecisionContext
+from vntts.authoring.review_context_ui import ReviewDecisionContext, review_form_layout
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
@@ -213,7 +212,7 @@ class FailureReferenceAuditDialog(QDialog):
             "Cancel only the active optional reference-preview render"
         )
         self.choose = QPushButton("Use selected candidate")
-        self.neither = QPushButton("None of these references is suitable")
+        self.neither = QPushButton("No suitable reference")
         self.choose.setAccessibleName("Use selected source reference")
         self.neither.setAccessibleName("Reject all source reference candidates")
         self.choose.setAccessibleDescription(
@@ -242,11 +241,9 @@ class FailureReferenceAuditDialog(QDialog):
         self.previous.clicked.connect(lambda: self._move_group(-1))
         self.next.clicked.connect(lambda: self._move_group(1))
 
-        playback = QGridLayout()
-        playback.addWidget(self.candidate_label, 0, 0)
-        playback.addWidget(self.candidate_choice, 0, 1)
-        playback.addWidget(self.play, 1, 0)
-        playback.addWidget(self.stop, 1, 1)
+        playback = review_form_layout()
+        playback.addRow(self.candidate_label, self.candidate_choice)
+        playback.addRow(self.play, self.stop)
         self.preview_toggle = QToolButton()
         self.preview_toggle.setText("Optional generated preview")
         self.preview_toggle.setCheckable(True)
@@ -256,20 +253,16 @@ class FailureReferenceAuditDialog(QDialog):
             "Reveal non-authoritative generated preview controls"
         )
         self.preview_panel = QWidget()
-        preview = QGridLayout(self.preview_panel)
+        preview = review_form_layout(self.preview_panel)
         preview.setContentsMargins(0, 0, 0, 0)
-        preview.addWidget(self.preview_text_label, 0, 0)
-        preview.addWidget(self.preview_text_choice, 0, 1)
-        preview.addWidget(self.generate_preview, 1, 0, 1, 2)
-        preview.addWidget(self.replay_preview, 2, 0)
-        preview.addWidget(self.cancel_preview, 2, 1)
+        preview.addRow(self.preview_text_label, self.preview_text_choice)
+        preview.addRow(self.generate_preview)
+        preview.addRow(self.replay_preview, self.cancel_preview)
         self.preview_panel.hide()
         self.preview_toggle.toggled.connect(self.preview_panel.setVisible)
-        decisions_row = QGridLayout()
-        decisions_row.addWidget(self.choose, 0, 0)
-        decisions_row.addWidget(self.neither, 0, 1)
-        decisions_row.addWidget(self.previous, 1, 0)
-        decisions_row.addWidget(self.next, 1, 1)
+        decisions_row = review_form_layout()
+        decisions_row.addRow(self.choose, self.neither)
+        decisions_row.addRow(self.previous, self.next)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
         self.close_button = buttons.button(QDialogButtonBox.StandardButton.Close)
@@ -499,10 +492,10 @@ class FailureReferenceAuditDialog(QDialog):
         )
         if total == 1:
             self.choose.setText("Use this reference")
-            self.neither.setText("This reference is unsuitable")
+            self.neither.setText("Reject reference")
         else:
             self.choose.setText(f"Use Candidate {position}")
-            self.neither.setText("None of these references is suitable")
+            self.neither.setText("No suitable reference")
 
     def play_selected(self):
         group = self._current_group()

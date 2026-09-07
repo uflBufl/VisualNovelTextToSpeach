@@ -628,6 +628,7 @@ class SettingsDialog(QDialog):
             note_text = f"Hotkey changes take effect immediately. {note_text}"
         note = QLabel(note_text)
         note.setWordWrap(True)
+        settings_content_layout.insertWidget(settings_content_layout.count() - 1, note)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -640,7 +641,6 @@ class SettingsDialog(QDialog):
         layout.addLayout(section_navigation_layout)
         layout.addWidget(self.validation_summary)
         layout.addWidget(self.settings_scroll, 1)
-        layout.addWidget(note)
         layout.addWidget(buttons)
         self._resize_for_available_screen()
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)

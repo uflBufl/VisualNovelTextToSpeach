@@ -1268,6 +1268,12 @@ class TrayApplicationTest(unittest.TestCase):
         dialog = SettingsDialog(AppSettings())
 
         self.assertTrue(dialog.settings_scroll.widgetResizable())
+        restart_note = next(
+            label
+            for label in dialog.findChildren(QLabel)
+            if "Fields marked 'restart required'" in label.text()
+        )
+        self.assertTrue(dialog.settings_scroll.widget().isAncestorOf(restart_note))
         self.assertEqual(
             [region.title() for region in dialog.settings_regions],
             [

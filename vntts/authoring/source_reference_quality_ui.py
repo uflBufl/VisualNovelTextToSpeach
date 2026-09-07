@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
-    QGridLayout,
     QLabel,
     QListWidget,
     QMessageBox,
@@ -24,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.authoring.review_context_ui import ReviewDecisionContext
+from vntts.authoring.review_context_ui import ReviewDecisionContext, review_form_layout
 from vntts.authoring.source_reference_quality_records import (
     load_source_reference_quality_review,
     next_pending_quality_variant,
@@ -115,10 +114,9 @@ class SourceReferenceQualityDialog(QDialog):
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.stop.clicked.connect(self._stop)
         self.stop.setEnabled(False)
-        playback = QGridLayout()
-        playback.addWidget(self.play_reference, 0, 0)
-        playback.addWidget(self.play_generated, 0, 1)
-        playback.addWidget(self.stop, 1, 0, 1, 2)
+        playback = review_form_layout()
+        playback.addRow(self.play_reference, self.play_generated)
+        playback.addRow(self.stop)
 
         self.failures = QLabel()
         self.failures.setWordWrap(True)
@@ -150,10 +148,9 @@ class SourceReferenceQualityDialog(QDialog):
         self.accept.clicked.connect(lambda: self._decide("accept"))
         self.reject_reference.clicked.connect(lambda: self._decide("reject"))
         self.needs_sample.clicked.connect(lambda: self._decide("needs_sample"))
-        decisions = QGridLayout()
-        decisions.addWidget(self.accept, 0, 0)
-        decisions.addWidget(self.reject_reference, 0, 1)
-        decisions.addWidget(self.needs_sample, 1, 0, 1, 2)
+        decisions = review_form_layout()
+        decisions.addRow(self.accept, self.reject_reference)
+        decisions.addRow(self.needs_sample)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
         self.close_button = buttons.button(QDialogButtonBox.StandardButton.Close)

@@ -5,7 +5,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QGroupBox, QLabel, QToolButton, QVBoxLayout
+from PySide6.QtWidgets import QFormLayout, QGroupBox, QLabel, QToolButton, QVBoxLayout
+
+
+def review_form_layout(parent=None):
+    """Keep paired controls side by side only while their full labels fit."""
+    layout = QFormLayout(parent)
+    layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+    layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+    return layout
 
 
 class ReviewDecisionContext(QGroupBox):

@@ -209,9 +209,12 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             dialog.preview_toggle.setChecked(True)
             dialog.technical_details.setChecked(True)
             base_point_size = dialog.font().pointSizeF()
-            for scale in (1.5, 2.0):
+            for scale in (1.5, 2.0, None):
                 font = dialog.font()
-                font.setPointSizeF(base_point_size * scale)
+                if scale is None:
+                    font.setPixelSize(48)  # Exercise wide metrics on every host.
+                else:
+                    font.setPointSizeF(base_point_size * scale)
                 dialog.setFont(font)
                 dialog.resize(dialog.minimumSize())
                 dialog.show()
@@ -326,7 +329,7 @@ class FailureReferenceAuditUiTest(unittest.TestCase):
             dialog._update_candidate_card()
 
             self.assertEqual(dialog.choose.text(), "Use this reference")
-            self.assertEqual(dialog.neither.text(), "This reference is unsuitable")
+            self.assertEqual(dialog.neither.text(), "Reject reference")
 
     def test_preview_generation_does_not_block_reference_decision_controls(self):
         with TemporaryDirectory() as directory:

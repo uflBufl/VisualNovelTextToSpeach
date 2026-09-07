@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
-    QGridLayout,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -23,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.authoring.review_context_ui import ReviewDecisionContext
+from vntts.authoring.review_context_ui import ReviewDecisionContext, review_form_layout
 from vntts.authoring.terminal_conflict_review import (
     NEITHER_ACCEPTABLE,
     TerminalConflictReviewError,
@@ -93,7 +92,7 @@ class TerminalConflictReviewDialog(QDialog):
         self.status.setAccessibleName("Terminal conflict review status")
 
         self.play_buttons = []
-        playback = QGridLayout()
+        playback = review_form_layout()
         for index in range(2):
             button = QPushButton(f"Play candidate {chr(65 + index)}")
             button.setAccessibleName(f"Play terminal conflict candidate {index + 1}")
@@ -104,18 +103,18 @@ class TerminalConflictReviewDialog(QDialog):
             button.clicked.connect(
                 lambda _checked=False, value=index: self._play(value)
             )
-            playback.addWidget(button, 0, index)
             self.play_buttons.append(button)
+        playback.addRow(*self.play_buttons)
         self.stop = QPushButton("Stop audio")
         self.stop.setAccessibleName("Stop terminal conflict audio")
         self.stop.setAccessibleDescription("Stop blind candidate playback")
         self.stop.setShortcut(QKeySequence("Ctrl+Space"))
         self.stop.clicked.connect(self._stop)
         self.stop.setEnabled(False)
-        playback.addWidget(self.stop, 1, 0, 1, 2)
+        playback.addRow(self.stop)
 
         self.choose_buttons = []
-        decisions = QGridLayout()
+        decisions = review_form_layout()
         for index in range(2):
             button = QPushButton(f"Choose candidate {chr(65 + index)}")
             button.setAccessibleName(f"Choose terminal conflict candidate {index + 1}")
@@ -126,8 +125,8 @@ class TerminalConflictReviewDialog(QDialog):
             button.clicked.connect(
                 lambda _checked=False, value=index: self._choose(value)
             )
-            decisions.addWidget(button, 0, index)
             self.choose_buttons.append(button)
+        decisions.addRow(*self.choose_buttons)
         self.neither = QPushButton("Neither candidate is acceptable")
         self.neither.setAccessibleName("Reject both terminal conflict candidates")
         self.neither.setAccessibleDescription(
@@ -135,7 +134,7 @@ class TerminalConflictReviewDialog(QDialog):
         )
         self.neither.setShortcut(QKeySequence("Alt+N"))
         self.neither.clicked.connect(self._choose_neither)
-        decisions.addWidget(self.neither, 1, 0, 1, 2)
+        decisions.addRow(self.neither)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)

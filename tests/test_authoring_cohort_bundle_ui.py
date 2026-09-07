@@ -490,9 +490,12 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             bundle = self.create_bundle(Path(directory))
             dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
             base_point_size = dialog.font().pointSizeF()
-            for scale in (1.5, 2.0):
+            for scale in (1.5, 2.0, None):
                 font = dialog.font()
-                font.setPointSizeF(base_point_size * scale)
+                if scale is None:
+                    font.setPixelSize(48)  # Exercise wide metrics on every host.
+                else:
+                    font.setPointSizeF(base_point_size * scale)
                 dialog.setFont(font)
                 dialog.resize(dialog.minimumSize())
                 dialog.show()

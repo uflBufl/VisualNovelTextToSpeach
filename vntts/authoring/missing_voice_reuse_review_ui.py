@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -32,7 +31,7 @@ from vntts.authoring.missing_voice_reuse_review import (
     record_missing_voice_reuse_decision,
     record_missing_voice_reuse_heard,
 )
-from vntts.authoring.review_context_ui import ReviewDecisionContext
+from vntts.authoring.review_context_ui import ReviewDecisionContext, review_form_layout
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 
 
@@ -79,6 +78,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.resize(1050, 650)
 
         self.progress = QLabel()
+        self.progress.setWordWrap(True)
         self.progress.setAccessibleName("Missing voice review progress")
         instructions = (
             "The original production route failed its technical gate and has no "
@@ -121,11 +121,9 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.previous.clicked.connect(lambda: self._move_sample(-1))
         self.next.clicked.connect(lambda: self._move_sample(1))
         self.sample_selector.currentIndexChanged.connect(self._select_sample)
-        navigation = QHBoxLayout()
-        navigation.addWidget(self.previous)
-        navigation.addWidget(self.sample_label)
-        navigation.addWidget(self.sample_selector, 1)
-        navigation.addWidget(self.next)
+        navigation = review_form_layout()
+        navigation.addRow(self.sample_label, self.sample_selector)
+        navigation.addRow(self.previous, self.next)
 
         self.sample_text = QLabel()
         self.sample_text.setWordWrap(True)
@@ -140,7 +138,8 @@ class MissingVoiceReuseReviewDialog(QDialog):
         sample_box = QGroupBox("Current exact sample")
         sample_box.setLayout(sample_layout)
 
-        self.play_grid = QGridLayout()
+        self.play_grid = review_form_layout()
+        candidate_panels = []
         self.play_buttons = {}
         self.arm_statuses = {}
         for column, candidate in enumerate(self.bundle["candidates"]):
@@ -160,11 +159,16 @@ class MissingVoiceReuseReviewDialog(QDialog):
             status.setWordWrap(True)
             status.setAlignment(Qt.AlignmentFlag.AlignTop)
             status.setAccessibleName(f"Opaque candidate {label} status")
-            row, grid_column = divmod(column, 2)
-            self.play_grid.addWidget(button, row * 2, grid_column)
-            self.play_grid.addWidget(status, row * 2 + 1, grid_column)
+            panel = QWidget()
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(0, 0, 0, 0)
+            panel_layout.addWidget(button)
+            panel_layout.addWidget(status)
+            candidate_panels.append(panel)
             self.play_buttons[label] = button
             self.arm_statuses[label] = status
+        for index in range(0, len(candidate_panels), 2):
+            self.play_grid.addRow(*candidate_panels[index : index + 2])
         playback_box = QGroupBox("Opaque candidate evidence")
         playback_box.setLayout(self.play_grid)
 
@@ -189,7 +193,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.decision_reason.setWordWrap(True)
         self.decision_reason.setAccessibleName("Missing voice decision availability")
         self.decision_buttons = {}
-        decisions = QGridLayout()
+        decisions = review_form_layout()
         for index, candidate in enumerate(self.bundle["candidates"]):
             label = candidate["label"]
             button = QPushButton(
@@ -204,9 +208,10 @@ class MissingVoiceReuseReviewDialog(QDialog):
             button.setAccessibleDescription(
                 f"Save candidate {label} as the {self._decision_name} decision"
             )
-            row, column = divmod(index, 2)
-            decisions.addWidget(button, row, column)
             self.decision_buttons[label] = button
+        decision_buttons = tuple(self.decision_buttons.values())
+        for index in range(0, len(decision_buttons), 2):
+            decisions.addRow(*decision_buttons[index : index + 2])
         self.neither = QPushButton(
             "Keep these lines unresolved"
             if self.failed_control_mode
@@ -222,13 +227,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.neither.setAccessibleDescription(
             "Keep this review unresolved instead of selecting a candidate"
         )
-        decisions.addWidget(
-            self.neither,
-            (len(self.decision_buttons) + 1) // 2,
-            0,
-            1,
-            2,
-        )
+        decisions.addRow(self.neither)
         decision_layout = QVBoxLayout()
         decision_layout.addWidget(self.decision_reason)
         decision_layout.addLayout(decisions)

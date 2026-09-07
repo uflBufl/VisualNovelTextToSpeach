@@ -93,9 +93,12 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             session_path, _queue_id = self.create_review(Path(directory))
             dialog = MissingVoiceReuseReviewDialog(session_path)
             base_point_size = dialog.font().pointSizeF()
-            for scale in (1.5, 2.0):
+            for scale in (1.5, 2.0, None):
                 font = dialog.font()
-                font.setPointSizeF(base_point_size * scale)
+                if scale is None:
+                    font.setPixelSize(48)  # Exercise wide metrics on every host.
+                else:
+                    font.setPointSizeF(base_point_size * scale)
                 dialog.setFont(font)
                 dialog.resize(dialog.minimumSize())
                 dialog.show()
@@ -155,7 +158,7 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
         dialog.side_effect = MissingVoiceReuseReviewError("authority changed")
         self.assertEqual(launch_missing_voice_reuse_review("broken/session.json"), 2)
         message = critical.call_args.args[2]
-        self.assertIn("broken/session.json", message)
+        self.assertIn(str(Path("broken/session.json")), message)
         self.assertIn("authority changed", message)
 
     def test_decision_context_explains_speaker_voice_and_synthesis_controls(self):
