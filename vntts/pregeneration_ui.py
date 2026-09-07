@@ -3,8 +3,8 @@
 from threading import Event
 from time import monotonic
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.application_directories import get_local_data_directory
 from vntts.async_ui import LatestTaskRunner
@@ -437,6 +438,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_controls.setLayout(narrator_choice_row)
         self.narrator_controls.setVisible(game_narrator_chooser is None)
         self.voice_routes = QListWidget()
+        self.voice_routes.setIconSize(QSize(64, 64))
         self.voice_routes.setAccessibleName("Planned character voice routes")
         self.voice_routes.setMinimumHeight(90)
         self.voice_route_summary = QLabel()
@@ -754,10 +756,19 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
             else:
                 route = group.source_character or group.source_speaker or "No voice"
-            self.voice_routes.addItem(
+            item = QListWidgetItem(
                 f"{group.character} -> {route} - {lines} "
                 f"line{'s' if lines != 1 else ''}"
             )
+            if group.portrait_image and group.portrait_image_sha256:
+                try:
+                    if sha256_file(group.portrait_image) == group.portrait_image_sha256:
+                        pixmap = QPixmap(group.portrait_image)
+                        if not pixmap.isNull():
+                            item.setIcon(QIcon(pixmap))
+                except OSError:
+                    pass
+            self.voice_routes.addItem(item)
 
     def _narrator_choice_changed(self, _index=None):
         source_id = self.narrator_choice.currentData()

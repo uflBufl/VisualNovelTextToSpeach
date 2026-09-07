@@ -310,7 +310,6 @@ class VoicePlanStore:
             registry,
             manifest_path,
             job.story_index_sha256,
-            Path(job.story_index).resolve().parent,
         )
         controls = _synthesis_controls(settings)
         controls_sha256 = _digest(controls)
@@ -333,7 +332,9 @@ class VoicePlanStore:
                 record.speaker, record.voice_character
             )
             evidence = _variant_evidence(record)
-            bound_source = _bound_source_for_record(record, queue_bindings)
+            bound_source = _effective_assignment_source(
+                settings, character
+            ) or _bound_source_for_record(record, queue_bindings)
             portrait_image, portrait_image_sha256 = _portrait_snapshot(
                 Path(job.story_index).expanduser().resolve().parent,
                 evidence[0],
@@ -341,9 +342,7 @@ class VoicePlanStore:
             )
             identity = [
                 normalize_character_name(character),
-                *evidence,
                 bound_source,
-                portrait_image_sha256,
             ]
             group_id = _digest(identity)
             grouped.setdefault(group_id, []).append(
@@ -405,16 +404,20 @@ class VoicePlanStore:
         records = tuple(value[0] for value in values)
         character = values[0][1]
         portrait, age, source_bank, source_voice_id = values[0][2]
+        if any(value[2][1] != age for value in values):
+            age = None
+        if any(value[2][2] != source_bank for value in values):
+            source_bank = None
+        if any(value[2][3] != source_voice_id for value in values):
+            source_voice_id = None
         bound_source = values[0][3]
-        portrait_image, portrait_image_sha256 = values[0][4:6]
+        portrait_value = next((value for value in values if value[4]), values[0])
+        portrait = portrait_value[2][0]
+        portrait_image, portrait_image_sha256 = portrait_value[4:6]
         speakers = tuple(dict.fromkeys(record.speaker for record in records))
         assignment_source = _effective_assignment_source(settings, character)
         candidate_inventory = _candidate_inventory(
             character,
-            records,
-            portrait,
-            source_bank,
-            source_voice_id,
             bound_source,
             settings,
             registry,
@@ -611,10 +614,6 @@ def _candidate_for(character, settings, registry):
 
 def _candidate_inventory(
     character,
-    records,
-    portrait,
-    source_bank,
-    source_voice_id,
     bound_source,
     settings,
     registry,
@@ -696,37 +695,7 @@ def _candidate_inventory(
         if not isinstance(voice_character, str) or not voice_character.strip():
             continue
         source_id = f"character:{normalize_character_name(voice_character)}"
-        variant_portrait = _optional_variant(variant.get("portrait"))
-        variant_bank = _optional_variant(variant.get("source_bank"))
-        variant_voice_ids = variant.get("source_voice_ids", ())
-        voice = _candidate_from_source(source_id, registry)
-        if voice is None:
-            continue
-        if source_voice_id and any(
-            _same_identity(source_voice_id, value) for value in variant_voice_ids
-        ):
-            score = 110
-            reason = "Same original game voice ID"
-        elif (
-            portrait
-            and source_bank
-            and (
-                portrait == variant_portrait
-                and _same_identity(source_bank, variant_bank)
-            )
-        ):
-            score = 100
-            reason = "Same character portrait and original voice bank"
-        elif portrait and portrait == variant_portrait:
-            score = 75
-            reason = "Same character portrait"
-        elif source_bank and _same_identity(source_bank, variant_bank):
-            score = 65
-            reason = "Same original voice bank"
-        else:
-            score = 45
-            reason = "Reviewed voice from another variant of this character"
-        add(source_id, score, reason, variant)
+        add(source_id, 90, "Reviewed voice for this character", variant)
 
     return tuple(
         sorted(
@@ -910,7 +879,6 @@ def _manifest_candidate_variants(
     registry,
     manifest_path,
     story_index_sha256,
-    content_root,
 ):
     bindings = manifest_document.get(SOURCE_REFERENCE_BINDINGS_FIELD, {})
     variants = list(
@@ -976,18 +944,6 @@ def _manifest_candidate_variants(
             )
         voice_character = variant["voice_character"]
         reference_sha256 = variant["reference_sha256"]
-        portrait = variant["portrait"]
-        portrait_image_sha256 = variant.get("portrait_image_sha256")
-        if version >= 2:
-            _portrait_path, actual_portrait_sha256 = _portrait_snapshot(
-                content_root,
-                portrait,
-                {},
-            )
-            if portrait_image_sha256 != actual_portrait_sha256:
-                raise PregenerationVoiceError(
-                    f"Player voice candidate {index} portrait changed"
-                )
         source_id = f"character:{normalize_character_name(voice_character)}"
         voice = _candidate_from_source(source_id, registry)
         if voice is None or tuple(sha256_file(path) for path in voice.references) != (
@@ -1022,12 +978,6 @@ def _bound_source_for_record(record, bindings):
     if not voice_character:
         return None
     return f"character:{normalize_character_name(voice_character)}"
-
-
-def _same_identity(first, second):
-    return bool(first and second) and normalize_character_name(
-        str(first)
-    ) == normalize_character_name(str(second))
 
 
 def _candidate_from_source(source_id, registry):

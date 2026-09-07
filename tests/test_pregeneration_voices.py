@@ -345,6 +345,63 @@ class VoicePlanStoreTest(unittest.TestCase):
         self.assertEqual(invalid_profile.speech_backend, "coqui-xtts")
         self.assertEqual(invalid_profile.tts_profile, "stable")
 
+    def test_metadata_does_not_change_voice_groups_or_selection(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_conflicting_manifest(root / "voices")
+            planner = VoicePlanStore(jobs)
+            settings = AppSettings(pocket_gated_model_accepted=True)
+            original = planner.create(job, settings, manifest_path=manifest)
+            original_group = next(
+                group for group in original.groups if group.character == "Rhiannon"
+            )
+            path = Path(job.story_index)
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            first = next(row for row in rows if row.get("line_id") == "line:rhiannon:1")
+            second = next(
+                row for row in rows if row.get("line_id") == "line:rhiannon:2"
+            )
+            first.update(
+                source_bank="other.bnk", source_voice_id="audio-1", age="adult"
+            )
+            second["source_voice_id"] = "audio-2"
+            for different_portrait in (False, True):
+                if different_portrait:
+                    second.update(portrait=11, age="child")
+                path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+                changed_job = replace(job, story_index_sha256=sha256_file(path))
+                plan = planner.create(changed_job, settings, manifest_path=manifest)
+                groups = [
+                    group for group in plan.groups if group.character == "Rhiannon"
+                ]
+                self.assertEqual(len(groups), 1)
+                self.assertEqual(
+                    plan.generation_line_count, original.generation_line_count
+                )
+                group = groups[0]
+                self.assertEqual(group.group_id, original_group.group_id)
+                self.assertEqual(group.line_ids, original_group.line_ids)
+                self.assertIsNone(group.source_bank)
+                self.assertIsNone(group.source_voice_id)
+                self.assertEqual(group.candidates, original_group.candidates)
+                self.assertEqual(group.source_id, original_group.source_id)
+                self.assertEqual(
+                    group.decision_context_sha256,
+                    original_group.decision_context_sha256,
+                )
+            decisions = VoiceDecisionStore(root / "decisions.json")
+            chosen = original_group.candidates[-1].source_id
+            decisions.remember(original_group, chosen)
+            saved = VoicePlanStore(jobs, decisions=decisions).create(
+                changed_job, settings, manifest_path=manifest
+            )
+            saved_group = next(
+                group for group in saved.groups if group.character == "Rhiannon"
+            )
+            self.assertEqual(saved_group.source_id, chosen)
+            self.assertEqual(saved_group.resolution, "saved-player-decision")
+
     def test_source_audio_is_excluded_and_lines_are_grouped_by_voice_variant(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -469,20 +526,18 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(rhiannon.resolution, "ambiguous-voice-evidence")
             self.assertEqual(plan.audition_count, 1)
             self.assertEqual(len(rhiannon.candidate_inventory), 3)
-            self.assertEqual(len(rhiannon.candidates), 2)
-            self.assertEqual(rhiannon.candidates[0].match_score, 100)
+            self.assertEqual(len(rhiannon.candidates), 3)
             self.assertEqual(
-                rhiannon.candidates[0].recommendation,
-                "Same character portrait and original voice bank",
+                {candidate.match_score for candidate in rhiannon.candidates}, {90}
             )
-            self.assertEqual(rhiannon.candidates[1].source_character, "Rhiannon")
+            self.assertIsNone(rhiannon.anchor_source_id)
             self.assertEqual(
-                rhiannon.anchor_source_id,
-                rhiannon.candidates[0].source_id,
-            )
-            self.assertNotIn(
-                "Source reference Rhiannon child",
                 {candidate.source_character for candidate in rhiannon.candidates},
+                {
+                    "Rhiannon",
+                    "Source reference Rhiannon adult",
+                    "Source reference Rhiannon child",
+                },
             )
 
     def test_player_import_candidates_reach_the_same_bounded_audition(self):
@@ -563,7 +618,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                     manifest_path=manifest,
                 )
 
-    def test_player_import_candidate_portrait_is_checksum_bound(self):
+    def test_player_import_candidate_ignores_changed_portrait(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
@@ -577,22 +632,20 @@ class VoicePlanStoreTest(unittest.TestCase):
                 portrait_image_sha256=sha256_file(portrait),
             )
 
-            VoicePlanStore(jobs).create(
-                job,
-                AppSettings(pocket_gated_model_accepted=True),
-                manifest_path=manifest,
-            )
+            settings = AppSettings(pocket_gated_model_accepted=True)
+            before = VoicePlanStore(jobs).create(job, settings, manifest_path=manifest)
             portrait.write_bytes(b"changed")
-
-            with self.assertRaisesRegex(
-                PregenerationVoiceError,
-                "portrait changed",
-            ):
-                VoicePlanStore(jobs).create(
-                    job,
-                    AppSettings(),
-                    manifest_path=manifest,
-                )
+            after = VoicePlanStore(jobs).create(job, settings, manifest_path=manifest)
+            self.assertEqual(
+                [
+                    (group.group_id, group.source_id, group.decision_context_sha256)
+                    for group in before.groups
+                ],
+                [
+                    (group.group_id, group.source_id, group.decision_context_sha256)
+                    for group in after.groups
+                ],
+            )
 
     def test_exact_queue_voice_binding_wins_without_prompt(self):
         with TemporaryDirectory() as temporary_directory:
@@ -655,7 +708,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(reopened.route, "needs-audition")
             self.assertEqual(reconsidered.audition_count, 1)
 
-    def test_changed_dominated_candidate_does_not_repeat_a_saved_choice(self):
+    def test_changed_eligible_reference_requires_a_new_choice(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
@@ -667,24 +720,24 @@ class VoicePlanStoreTest(unittest.TestCase):
             group = next(
                 value for value in first.groups if value.character == "Rhiannon"
             )
-            dominated_before = group.candidate_inventory[-1].reference_sha256s
+            reference_before = group.candidate_inventory[-1].reference_sha256s
             decisions.remember(group, group.candidates[0].source_id)
 
             child_reference = manifest.parent / "references" / "child.wav"
-            child_reference.write_bytes(b"changed dominated child reference")
+            child_reference.write_bytes(b"changed child reference")
             second = store.create(job, settings, manifest_path=manifest)
             resolved = next(
                 value for value in second.groups if value.character == "Rhiannon"
             )
 
             self.assertNotEqual(
-                dominated_before,
+                reference_before,
                 resolved.candidate_inventory[-1].reference_sha256s,
             )
-            self.assertEqual(resolved.route, "voice")
-            self.assertEqual(resolved.resolution, "saved-player-decision")
+            self.assertEqual(resolved.route, "needs-audition")
+            self.assertEqual(resolved.resolution, "ambiguous-voice-evidence")
             self.assertEqual(resolved.source_id, group.candidates[0].source_id)
-            self.assertEqual(second.audition_count, 0)
+            self.assertEqual(second.audition_count, 1)
 
     def test_exact_installed_portrait_is_checksum_bound_for_the_comparison(self):
         with TemporaryDirectory() as temporary_directory:

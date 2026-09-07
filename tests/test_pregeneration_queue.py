@@ -1,7 +1,6 @@
 import hashlib
 import json
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -311,7 +310,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             (queue_by_line["pure-event"],),
         )
 
-    def test_materializes_distinct_voices_for_same_character_variants(self):
+    def test_materializes_one_voice_despite_portrait_and_bank_variants(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             story_path = write_content(root / "content")
@@ -334,24 +333,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 manifest_path=manifest,
             )
             variants = [group for group in plan.groups if group.character == "Rhiannon"]
-            self.assertEqual(len(variants), 2)
-            centurion_reference = sha256_file(
-                manifest.parent / "references" / "centurion.wav"
-            )
-            replacement = replace(
-                variants[1],
-                source_id="character:centurion",
-                source_character="Centurion",
-                source_speaker="centurion-v1",
-                reference_sha256s=(centurion_reference,),
-            )
-            plan = replace(
-                plan,
-                groups=tuple(
-                    replacement if group is variants[1] else group
-                    for group in plan.groups
-                ),
-            )
+            self.assertEqual(len(variants), 1)
 
             result = PregenerationInputStore(jobs).materialize(job, plan)
             queue = VoiceGenerationQueue.load(result.queue)
@@ -360,9 +342,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
         self.assertEqual(routes["rhiannon"].speaker, "Aderyn")
         self.assertEqual(routes["rhiannon"].voice_character, "Rhiannon")
         self.assertEqual(routes["not-selected"].speaker, "Rhiannon")
-        self.assertTrue(
-            routes["not-selected"].voice_character.startswith("Rhiannon__vntts_")
-        )
+        self.assertEqual(routes["not-selected"].voice_character, "Rhiannon")
 
     def test_projects_semantic_evidence_to_selected_lines(self):
         with TemporaryDirectory() as temporary_directory:

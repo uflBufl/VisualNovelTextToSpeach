@@ -10,6 +10,7 @@ import soundfile as sf
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QEvent  # noqa: E402
+from PySide6.QtGui import QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
@@ -267,6 +268,11 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_content(root / "content"))
+            portraits = root / "content" / "portraits"
+            portraits.mkdir()
+            portrait = QPixmap(40, 80)
+            portrait.fill()
+            self.assertTrue(portrait.save(str(portraits / "10.png")))
             manifest = write_manifest(root / "voices")
             for name in ("rhiannon", "centurion", "unrelated"):
                 sf.write(
@@ -305,6 +311,19 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.show_all_voice_routes.setChecked(True)
             self.assertEqual(
                 dialog.voice_routes.count(), len(dialog._voice_plan.groups)
+            )
+            for index in range(dialog.voice_routes.count()):
+                item = dialog.voice_routes.item(index)
+                self.assertEqual(
+                    not item.icon().isNull(), item.text().startswith("Rhiannon ->")
+                )
+            (portraits / "10.png").unlink()
+            dialog._render_voice_routes(dialog._voice_plan)
+            self.assertTrue(
+                all(
+                    dialog.voice_routes.item(index).icon().isNull()
+                    for index in range(dialog.voice_routes.count())
+                )
             )
             dialog.show_all_voice_routes.setChecked(False)
             self.assertIn("Step 2", dialog.step.text())
