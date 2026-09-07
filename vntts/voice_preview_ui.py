@@ -1,6 +1,6 @@
 from concurrent.futures import CancelledError
 
-from PySide6.QtCore import QObject, QSignalBlocker, Signal
+from PySide6.QtCore import QObject, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
 )
+
+from vntts.speech_presentation import speech_runtime_label
 
 
 class VoicePreviewSignals(QObject):
@@ -34,6 +36,7 @@ class VoicePreviewDialog(QDialog):
         initial_character=None,
         fixed_character=None,
         engine_description=None,
+        runtime_status_handler=None,
         game_narrator_handler=None,
         parent=None,
     ):
@@ -45,6 +48,7 @@ class VoicePreviewDialog(QDialog):
         self.force_live_handler = force_live_handler
         self.current_force_live_handler = current_force_live_handler
         self.preview_stop_handler = preview_stop_handler
+        self.runtime_status_handler = runtime_status_handler
         self._preview_future = None
         self._preview_target = None
         self._stop_requested = False
@@ -107,6 +111,10 @@ class VoicePreviewDialog(QDialog):
         self.engine_description = QLabel(engine_description or "Current speech engine")
         self.engine_description.setWordWrap(True)
         self.engine_description.setAccessibleName("Voice preview engine and model")
+        self.runtime = QLabel()
+        self.runtime.setWordWrap(True)
+        self.runtime.setTextFormat(Qt.TextFormat.PlainText)
+        self.runtime.setAccessibleName("Voice preview compute device")
         self.game_narrator_button = QPushButton(
             "Choose narrator from installed game..."
         )
@@ -118,6 +126,7 @@ class VoicePreviewDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("Generate preview with", self.engine_description)
+        form.addRow(self.runtime)
         form.addRow(self.game_narrator_button)
         form.addRow("Narrator or character", self.character)
         form.addRow("Routing", self.routing_note)
@@ -139,11 +148,24 @@ class VoicePreviewDialog(QDialog):
         self.signals.finished.connect(self.preview_finished)
         self.voice.currentIndexChanged.connect(self.update_description)
         self.character.currentTextChanged.connect(self.target_changed)
+        self.runtime_timer = QTimer(self)
+        self.runtime_timer.setInterval(500)
+        self.runtime_timer.timeout.connect(self._refresh_runtime)
+        self.finished.connect(self.runtime_timer.stop)
+        self.runtime_timer.start()
+        self._refresh_runtime()
         self.update_description()
         self.target_changed()
 
     def update_description(self):
         self.description.setText(self.voice.currentData(3) or "")
+
+    def _refresh_runtime(self):
+        self.runtime.setText(
+            self.runtime_status_handler()
+            if self.runtime_status_handler is not None
+            else speech_runtime_label(None)
+        )
 
     def _choose_game_narrator(self, handler):
         if handler(self):
@@ -214,6 +236,7 @@ class VoicePreviewDialog(QDialog):
             f"{target} using {voice_label}: {text.strip() or '(empty text)'}"
         )
         self.status.setText("Synthesizing and playing the exact preview above...")
+        self._refresh_runtime()
         future.add_done_callback(self._future_finished)
 
     def _future_finished(self, future):
@@ -236,6 +259,7 @@ class VoicePreviewDialog(QDialog):
         self._stop_requested = False
         self._set_preview_controls(True)
         self.stop_button.setEnabled(False)
+        self._refresh_runtime()
         self.status.setText(
             "Preview stopped."
             if message == "__stopped__"

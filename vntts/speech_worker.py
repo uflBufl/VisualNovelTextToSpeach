@@ -663,6 +663,7 @@ class IsolatedSpeechBackend:
     def _launch_worker(self):
         if self._closed:
             raise TTSSynthesisError(f"{self.name} isolated worker is shut down")
+        self.health = None
         command = [
             str(self.interpreter),
             "-I",

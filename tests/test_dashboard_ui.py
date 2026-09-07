@@ -66,6 +66,8 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
         self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
         self.assertTrue(dashboard.reading_defaults.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.speech_runtime.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.speech_runtime.textFormat(), Qt.TextFormat.PlainText)
         self.assertTrue(dashboard.audio_source.isVisibleTo(dashboard))
         self.assertIn("Centurion", dashboard.speech_configuration.text())
         dashboard.set_diagnostic(
@@ -77,6 +79,7 @@ class ControlDashboardTest(unittest.TestCase):
         )
         self.assertNotIn("Alba", dashboard.voice.text())
         self.assertIn("custom-model", dashboard.audio_source.text())
+        self.assertIn("no generation", dashboard.audio_source.text())
         self.assertIn("Saved recordings", dashboard.reading_help.text())
         dashboard.set_ready(True)
         self.assertTrue(dashboard.action_reason.isHidden())

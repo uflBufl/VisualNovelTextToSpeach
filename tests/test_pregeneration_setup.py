@@ -791,7 +791,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             generator = Mock()
             generator.inspect_progress.side_effect = (
-                OfflineGenerationProgress(generated=1, active_phase="generating"),
+                OfflineGenerationProgress(
+                    generated=1,
+                    active_phase="generating",
+                    runtime_status="GPU: RTX 2070 SUPER; auxiliary: CPU",
+                ),
                 OfflineGenerationProgress(
                     generated=2,
                     failed=1,
@@ -818,6 +822,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.progress_bar.value(), 1)
             self.assertIn("1 of 4", dialog.progress_counts.text())
             self.assertIn("saved on disk", dialog.progress_guarantee.text())
+            self.assertIn("RTX 2070 SUPER", dialog.progress_runtime.text())
+            self.assertTrue(dialog.progress_runtime.isVisible())
 
             dialog._poll_generation_progress()
             pool.tasks.pop().run()
@@ -825,6 +831,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.progress_bar.value(), 3)
             self.assertEqual(dialog.progress_phase.text(), "Checking generated audio")
+            self.assertNotIn("RTX 2070 SUPER", dialog.progress_runtime.text())
+            self.assertIn("confirm CPU/GPU", dialog.progress_runtime.text())
             self.assertIn("2 prepared, 1 failed", dialog.progress_counts.text())
             self.assertIn("automatic recovery", dialog.progress_failures.text())
             self.assertIn(

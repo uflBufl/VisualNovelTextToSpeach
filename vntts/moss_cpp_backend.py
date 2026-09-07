@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import http.client
 import io
 import json
 import math
 import os
 import platform
+import re
 import secrets
 import socket
 import subprocess
 import sys
 import wave
-from tempfile import TemporaryFile
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event, Lock, Thread
 from time import monotonic
 from types import SimpleNamespace
@@ -119,8 +122,10 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self.server_lock = Lock()
         self.server = None
         self.server_log = None
+        self.server_directory = None
         self.port = None
         self.server_info = None
+        self._runtime_status = None
         self.startup_cancellation = startup_cancellation
         self.startup_progress = startup_progress or (lambda _message: None)
         self.startup_progress("Checking MOSS C++ model and audio codec...")
@@ -134,6 +139,17 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             + f":layers={self.gpu_layers}:aux_cpu={self.aux_cpu}:ctx={self.context_size}"
         )
         try:
+            from vntts.runtime_installation import _run
+
+            help_output = _run(
+                [str(self.executable), "--help"],
+                cancellation=self._startup_cancelled,
+                timeout=min(30, self.startup_timeout),
+                include_stderr=True,
+            )
+            self.voice_registry_supported = bool(
+                re.search(rb"(?:^|\s)--voice-dir(?:\s|$)", help_output)
+            )
             self._start_server(self._startup_cancelled)
             super().__init__(
                 registry,
@@ -157,6 +173,43 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             else False
         )
 
+    @property
+    def runtime_status(self):
+        # The UI polls this property; never wait behind process shutdown.
+        server, status = self.server, self._runtime_status
+        if server is None or server.poll() is not None or self.server is not server:
+            return None
+        return status
+
+    def _confirmed_runtime_status(self):
+        # Read through a separate handle: seeking the child's shared log handle
+        # would move its write position and could overwrite earlier messages.
+        with open(self.server_log.name, "rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - 64 * 1024))
+            output = log.read(64 * 1024).decode("utf-8", errors="replace")
+        offload = re.search(r"offloaded (\d+)/(\d+) layers to GPU", output)
+        device = re.search(r"using device (\S+) \(([^\r\n]+?)\)", output)
+        if device:
+            gpu = f"{device[2]} ({device[1]})"
+        else:
+            device = re.search(r"pinning to GPU \d+ \(([^,\r\n]+),", output)
+            gpu = device[1] if device else "device name unreported"
+        if offload and 0 < int(offload[1]) <= int(offload[2]):
+            placement = "GPU" if offload[1] == offload[2] else "GPU + CPU"
+            backbone = f"{placement}: {gpu}, {offload[1]}/{offload[2]} GPU layers"
+        elif self.gpu_layers == 0:
+            backbone = "CPU (explicitly selected)"
+        elif "no GPU device found; using CPU backend" in output:
+            backbone = "CPU (no GPU detected)"
+        elif offload and int(offload[1]) == 0:
+            backbone = f"CPU (0/{offload[2]} GPU layers; GPU requested)"
+        else:
+            backbone = "device unconfirmed (GPU offload requested)"
+        aux = re.search(r"Model::load: aux backend = ([^\r\n]+)", output)
+        auxiliary = aux[1].strip() if aux else "device unconfirmed"
+        return f"MOSS C++: {backbone}; audio model/codec: {auxiliary}"
+
     def _start_server(self, cancelled):
         if cancelled():
             raise TTSSynthesisError("MOSS C++ startup cancelled")
@@ -164,6 +217,8 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if self.server is not None and self.server.poll() is None:
                 return
         self._stop_server()
+        self.server_directory = TemporaryDirectory(prefix="vntts-moss-")
+        (Path(self.server_directory.name) / "voices").mkdir()
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             self.port = reservation.getsockname()[1]
@@ -181,10 +236,14 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             "--n-ctx",
             str(self.context_size),
         ]
+        if self.voice_registry_supported:
+            command.extend(
+                ["--voice-dir", str(Path(self.server_directory.name) / "voices")]
+            )
         if self.aux_cpu:
             command.append("--aux-cpu")
         placement = (
-            "CPU only"
+            "CPU only for backbone"
             if self.gpu_layers == 0
             else "automatic GPU offload"
             if self.gpu_layers == -1
@@ -192,11 +251,13 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         )
         self.startup_progress(
             f"Loading MOSS Local v1.5: {placement}; "
-            f"audio codec {'on CPU' if self.aux_cpu else 'on the selected device'}. "
+            f"audio model/codec {'on CPU' if self.aux_cpu else 'on the selected device'}. "
             "Actual acceleration depends on available hardware and drivers."
         )
         with self.server_lock:
-            self.server_log = TemporaryFile(mode="w+b")
+            self.server_log = open(
+                Path(self.server_directory.name) / "server.log", "w+b"
+            )
             self.server = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
@@ -236,6 +297,8 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     "MOSS C++ requires Local v1.5 with its loaded 48 kHz stereo codec"
                 )
             self.server_info = info
+            self._runtime_status = self._confirmed_runtime_status()
+            self.startup_progress(self._runtime_status)
             return
         raise TTSConfigurationError("MOSS C++ model startup timed out")
 
@@ -309,7 +372,6 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             body = {
                 "text": prepared.text,
                 "language": self.language,
-                "reference_wav_b64": base64.b64encode(wav.getvalue()).decode("ascii"),
                 "response_format": "wav",
                 "stream": False,
                 "max_new_tokens": frame_limit + 1,
@@ -319,6 +381,28 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     "max_audio_frames": frame_limit,
                 },
             }
+            if (
+                self.voice_registry_supported
+                and self.server_info.get("voice_registry") is True
+            ):
+                # openmoss caches registered reference codes. Inline WAVs are
+                # encoded again on every line, even when the voice is unchanged.
+                # ponytail: codes/WAVs live until server shutdown; add eviction
+                # only if long-running sessions with many unique voices need it.
+                voice_id = hashlib.sha256(wav.getvalue()).hexdigest()
+                reference_path = (
+                    Path(self.server_directory.name) / "voices" / f"{voice_id}.wav"
+                )
+                if not reference_path.is_file():
+                    reference_path.with_suffix(".json").write_text(
+                        "{}", encoding="utf-8"
+                    )
+                    reference_path.write_bytes(wav.getvalue())
+                body["voice"] = voice_id
+            else:
+                body["reference_wav_b64"] = base64.b64encode(wav.getvalue()).decode(
+                    "ascii"
+                )
             done = Event()
             result = []
 
@@ -383,6 +467,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         with self.server_lock:
             server, self.server = self.server, None
             log, self.server_log = self.server_log, None
+            directory, self.server_directory = self.server_directory, None
+            self.server_info = None
+            self._runtime_status = None
             try:
                 if server is not None:
                     if server.poll() is None:
@@ -395,6 +482,8 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             finally:
                 if log is not None:
                     log.close()
+                if directory is not None:
+                    directory.cleanup()
 
     def shutdown(self):
         self.stop()

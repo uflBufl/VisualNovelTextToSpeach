@@ -31,7 +31,11 @@ from vntts.pregeneration_voices import (
     resolve_pregeneration_settings,
 )
 from vntts.qt_audio import QtPcmPlayer
-from vntts.speech_presentation import engine_model_label, narrator_voice_label
+from vntts.speech_presentation import (
+    engine_model_label,
+    narrator_voice_label,
+    speech_runtime_label,
+)
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
     CharacterVoiceRegistry,
@@ -80,10 +84,15 @@ class GameNarratorDialog(QDialog):
         self._playback_requested = False
         self._closing = False
         self._closed = False
+        self._preview_reused = False
 
         self.status = QLabel("Choose a candidate. Nothing changes until you save.")
         self.status.setWordWrap(True)
         self.status.setAccessibleName("Game narrator progress")
+        self.runtime = QLabel()
+        self.runtime.setWordWrap(True)
+        self.runtime.setTextFormat(Qt.TextFormat.PlainText)
+        self.runtime.setAccessibleName("Narrator preview compute device")
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.hide()
@@ -171,6 +180,7 @@ class GameNarratorDialog(QDialog):
         self.cancel_button.clicked.connect(self.reject)
         layout = QVBoxLayout(self)
         layout.addWidget(self.status)
+        layout.addWidget(self.runtime)
         layout.addWidget(self.progress)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -194,6 +204,11 @@ class GameNarratorDialog(QDialog):
             lambda _code, message: self.status.setText(message)
         )
         self.source.currentIndexChanged.connect(self._source_changed)
+        self.runtime_timer = QTimer(self)
+        self.runtime_timer.setInterval(500)
+        self.runtime_timer.timeout.connect(self._refresh_runtime)
+        self.finished.connect(self.runtime_timer.stop)
+        self.runtime_timer.start()
         self._update()
         QTimer.singleShot(0, self._source_changed)
 
@@ -219,6 +234,7 @@ class GameNarratorDialog(QDialog):
         )
 
     def _update(self):
+        self._refresh_runtime()
         settings = self._settings()
         preset = self.source.currentData() == "preset"
         self.engine.setText(
@@ -250,12 +266,24 @@ class GameNarratorDialog(QDialog):
         self.preview_button.setEnabled(ready and allowed and (idle or warming))
         self.save_button.setEnabled(ready and allowed and (idle or warming))
 
+    def _refresh_runtime(self):
+        if self._operation == "preview":
+            message = (
+                "Saved preview: no generation for this playback."
+                if self._preview_reused
+                else speech_runtime_label(getattr(self.previews, "backend", None))
+            )
+        else:
+            message = "No preview generation. Original recordings play without TTS."
+        self.runtime.setText(message)
+
     def _start(self, operation, message, function, *arguments):
         if self.runner.active:
             return
         self.player.stop()
         self.cancellation.clear()
         self._operation = operation
+        self._preview_reused = False
         self.status.setText(message)
         self.controls.setEnabled(operation == "warm")
         self.progress.show()
@@ -422,7 +450,7 @@ class GameNarratorDialog(QDialog):
             plan.groups[0].source_id,
             cancel_event=self.cancellation,
             progress=self.decoderProgress.emit,
-        ).path
+        )
 
     def _save(self):
         if self.source.currentData() == "preset":
@@ -517,6 +545,9 @@ class GameNarratorDialog(QDialog):
             )
             self._reference_changed()
         elif operation in {"audio", "preview"}:
+            if operation == "preview":
+                self._preview_reused = getattr(result, "reused", False) is True
+                result = result.path
             if not self._playback_requested:
                 self.status.setText("Audio ready. Playback stopped.")
                 self._update()
@@ -524,6 +555,8 @@ class GameNarratorDialog(QDialog):
             self.status.setText(
                 "Playing original reference."
                 if operation == "audio"
+                else "Playing saved preview (no generation)."
+                if self._preview_reused
                 else "Playing generated preview."
             )
             self.player.setSource(QUrl.fromLocalFile(str(result)))

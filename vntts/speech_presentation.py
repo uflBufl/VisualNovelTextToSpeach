@@ -11,6 +11,34 @@ from vntts.voices import (
 )
 
 
+def speech_runtime_label(backend):
+    """Describe reported compute placement without guessing from settings."""
+    from vntts.generated_audio import GeneratedAudioFallbackBackend
+
+    if isinstance(backend, GeneratedAudioFallbackBackend):
+        backend = backend.live_backend
+    if backend is None:
+        return "Compute: engine not loaded."
+    status = getattr(backend, "runtime_status", ...)
+    if isinstance(status, str) and status.strip():
+        return f"Compute: {status.strip()}"
+    if status is None:
+        return "Compute: engine not running (or still loading)."
+    health = getattr(backend, "health", None)
+    if isinstance(health, dict):
+        process = getattr(backend, "process", None)
+        if process is None or process.poll() is not None:
+            return "Compute: engine not running."
+        device = health.get("device")
+        if isinstance(device, str) and device not in {"", "unknown", "None"}:
+            accelerator = health.get("accelerator")
+            name = accelerator.get("name") if isinstance(accelerator, dict) else None
+            return f"Compute: {device.upper()}" + (
+                f" ({name})" if isinstance(name, str) and name else ""
+            )
+    return "Compute device: unknown (not reported by the engine yet)."
+
+
 def engine_model_label(backend, model=None, *, pocket_cloning=False):
     engine = SPEECH_BACKEND_LABELS.get(backend, backend)
     if backend == "pocket-tts":
@@ -19,16 +47,22 @@ def engine_model_label(backend, model=None, *, pocket_cloning=False):
             if pocket_cloning
             else "Pocket TTS preset-only"
         )
-    elif not model:
-        if backend == "moss-tts":
+    elif backend == "moss-tts":
+        from vntts.moss_cpp_backend import moss_cpp_requested
+
+        if moss_cpp_requested(model):
+            from vntts.moss_cpp_installation import configured_paths
+
+            model = configured_paths(model)[1].name
+        elif not model:
             from vntts.speech_backend import default_moss_tts_model
 
             model = default_moss_tts_model
-        else:
-            model = {
-                "coqui-xtts": "tts_models/multilingual/multi-dataset/xtts_v2",
-                "chatterbox-nano": "Chatterbox Nano (default model)",
-            }.get(backend, "Backend default")
+    elif not model:
+        model = {
+            "coqui-xtts": "tts_models/multilingual/multi-dataset/xtts_v2",
+            "chatterbox-nano": "Chatterbox Nano (default model)",
+        }.get(backend, "Backend default")
     return f"Engine: {engine}\nModel: {model}"
 
 

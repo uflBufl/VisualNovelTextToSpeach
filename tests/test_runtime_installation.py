@@ -558,6 +558,17 @@ class RuntimeInstallationTest(unittest.TestCase):
             _run(["uv"], cancellation=cancellation)
         terminate.assert_called_once_with(process)
 
+    def test_subprocess_stderr_is_only_included_when_requested(self):
+        process = Mock(returncode=0)
+        process.poll.return_value = 0
+        process.communicate.return_value = (b"stdout\n", b"stderr\n")
+        with patch("vntts.runtime_installation.subprocess.Popen", return_value=process):
+            self.assertEqual(_run(["tool"], cancellation=None), b"stdout\n")
+            self.assertEqual(
+                _run(["tool"], cancellation=None, include_stderr=True),
+                b"stdout\nstderr\n",
+            )
+
     def test_nvidia_discovery_is_bounded_and_never_swallows_cancellation(self):
         with (
             patch("vntts.runtime_installation.sys.platform", "win32"),

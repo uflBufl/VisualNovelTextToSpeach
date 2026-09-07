@@ -82,6 +82,7 @@ def _run(
     input_bytes=None,
     timeout=1800,
     runtime_use=None,
+    include_stderr=False,
 ):
     """Drain child output while keeping cancellation and shutdown bounded."""
     _check_cancelled(cancellation)
@@ -125,7 +126,7 @@ def _run(
                 f"Speech runtime preparation failed. Retry when ready. {details}"
             )
         _check_cancelled(cancellation)
-        return output
+        return output + error if include_stderr else output
     finally:
         if process.poll() is None:
             terminate_process(process)

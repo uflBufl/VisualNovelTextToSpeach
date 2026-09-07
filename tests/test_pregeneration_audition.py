@@ -210,7 +210,9 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                 root / "auditions", backend_factory=factory
             )
             source_id = group.candidates[0].source_id
+            self.assertIsNone(service.backend)
             first = service.generate(plan, group, source_id, progress=progress.append)
+            self.assertIs(service.backend, backend)
             self.assertEqual(
                 progress,
                 [
@@ -222,6 +224,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             )
             progress.clear()
             service.close()
+            self.assertIsNone(service.backend)
             second_service = VoiceAuditionPreviewService(
                 root / "auditions",
                 backend_factory=lambda *_args, **_kwargs: self.fail(

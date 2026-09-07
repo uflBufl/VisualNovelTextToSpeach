@@ -49,6 +49,22 @@ class TrayApplicationTest(unittest.TestCase):
             QTest.qWait(5)
         self.fail("Timed out waiting for an asynchronous UI operation")
 
+    def test_live_compute_tracks_backend_replacement_without_technical_details(self):
+        controller = Mock()
+        controller.speech_backend.runtime_status = "GPU: RTX 2070 SUPER"
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        self.assertIn("GPU: RTX 2070 SUPER", tray.dashboard.speech_runtime.text())
+        controller.speech_backend = None
+        tray._refresh_speech_runtime()
+        self.assertIn("not loaded", tray.dashboard.speech_runtime.text())
+        tray.shutdown()
+        delete_dialog(tray.dashboard)
+        delete_dialog(tray.compact_controller)
+
     def test_missing_saved_pack_opens_settings_without_starting_playback(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -118,7 +118,7 @@ from vntts.settings import (
     load_app_settings,
 )
 from vntts.speech_backend import default_moss_tts_model
-from vntts.speech_presentation import engine_model_label
+from vntts.speech_presentation import engine_model_label, speech_runtime_label
 from vntts.support import (
     GenerationTimelineLog,
     RuntimeSupportLog,
@@ -1500,6 +1500,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.choose_expected_sequence_event
         )
         self.compact_controller.full_requested.connect(self.show_dashboard)
+        self.speech_runtime_timer = QTimer(self)
+        self.speech_runtime_timer.setInterval(500)
+        self.speech_runtime_timer.timeout.connect(self._refresh_speech_runtime)
+        self.speech_runtime_timer.start()
+        self._refresh_speech_runtime()
+
+    def _speech_runtime_label(self):
+        return speech_runtime_label(
+            None
+            if self._shutting_down
+            else getattr(self.controller, "speech_backend", None)
+        )
+
+    def _refresh_speech_runtime(self):
+        self.dashboard.speech_runtime.setText(self._speech_runtime_label())
 
     def _update_auto_advance_action(self):
         allowed, enabled, reason = auto_advance_control_state(
@@ -2883,6 +2898,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.settings.tts_model,
                 pocket_cloning=self.settings.pocket_gated_model_accepted,
             ),
+            runtime_status_handler=self._speech_runtime_label,
         )
         result = dialog.exec()
         assigned = bool(contextual_character and result == QDialog.DialogCode.Accepted)
@@ -3021,6 +3037,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.status_action.setToolTip(message)
         self.tray.setToolTip(f"{application_name}\n{bounded}")
         self.dashboard.set_status(message)
+        self._refresh_speech_runtime()
         self.compact_controller.set_status(message)
         self._apply_runtime_control_state(
             self._runtime_control_state(
@@ -3174,6 +3191,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self._apply_runtime_control_state(self._runtime_control_state(enabled=enabled))
         self.dashboard.set_loading(self._controller_busy)
+        self._refresh_speech_runtime()
         preparing = (
             self.pregeneration_dialog is not None
             and self.pregeneration_dialog.has_pending_work()
@@ -3288,6 +3306,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def shutdown(self):
         if self._shutting_down:
             return
+        self.speech_runtime_timer.stop()
         self._shutting_down = True
         if self.narrator_dialog is not None:
             self.narrator_dialog.close()

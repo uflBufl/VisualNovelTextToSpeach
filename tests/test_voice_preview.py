@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from vntts.voice_preview_ui import VoicePreviewDialog  # noqa: E402
@@ -25,6 +26,7 @@ class VoicePreviewDialogTest(unittest.TestCase):
         current_force_live_handler=None,
         preview_stop_handler=None,
         fixed_character=None,
+        runtime_status_handler=None,
     ):
         return VoicePreviewDialog(
             ["Narrator", "Marcus"],
@@ -40,7 +42,30 @@ class VoicePreviewDialogTest(unittest.TestCase):
             current_force_live_handler=current_force_live_handler,
             preview_stop_handler=preview_stop_handler,
             fixed_character=fixed_character,
+            runtime_status_handler=runtime_status_handler,
         )
+
+    def test_compute_updates_during_preview_and_after_worker_stops(self):
+        future = Future()
+        runtime = Mock(return_value="Compute: CUDA <RTX 2070 SUPER>")
+        dialog = self.create_dialog(
+            preview_handler=Mock(return_value=future),
+            runtime_status_handler=runtime,
+        )
+        dialog.show()
+        dialog.preview()
+        self.assertTrue(dialog.runtime.isVisibleTo(dialog))
+        self.assertEqual(dialog.runtime.textFormat(), Qt.TextFormat.PlainText)
+        self.assertIn("CUDA", dialog.runtime.text())
+        runtime.return_value = "Compute: engine not running."
+        dialog._refresh_runtime()
+        self.assertIn("not running", dialog.runtime.text())
+        future.set_result(("Alba", "Hello"))
+        self.application.processEvents()
+        self.assertIn("not running", dialog.runtime.text())
+        dialog.close()
+        self.assertFalse(dialog.runtime_timer.isActive())
+        dialog.deleteLater()
 
     def test_plays_selected_candidate_and_reports_completion(self):
         future = Future()
