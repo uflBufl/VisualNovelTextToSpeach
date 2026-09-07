@@ -17,6 +17,24 @@ from vntts.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_last_main_section_is_validated_and_round_trips(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            for section in ("stories", "voices", "reading"):
+                AppSettings(last_main_section=section).save(path)
+                self.assertEqual(
+                    load_app_settings(path, environment={}).last_main_section, section
+                )
+        for section in ("missing", "", None, {}, False):
+            warnings = []
+            self.assertEqual(
+                AppSettings.from_mapping(
+                    {"last_main_section": section}, warn=warnings.append
+                ).last_main_section,
+                "stories",
+            )
+            self.assertTrue(warnings)
+
     def test_invalid_saved_pack_is_strict_unless_recovery_is_requested(self):
         from vntts.game_pack import GamePackError
 
@@ -52,16 +70,21 @@ class SettingsTest(unittest.TestCase):
             speech_backend="moss-tts",
             tts_model="local-moss",
             tts_language="English",
+            character_voice_defaults={"Hotelier": "default"},
             output_volume_percent=35,
         )
 
         changes = restart_required_setting_changes(current, requested)
         effective = preserve_loaded_runtime_settings(current, requested)
 
-        self.assertEqual(changes, ("speech_backend", "tts_model", "tts_language"))
+        self.assertEqual(
+            changes,
+            ("speech_backend", "tts_model", "tts_language", "character_voice_defaults"),
+        )
         self.assertEqual(effective.speech_backend, "pocket-tts")
         self.assertEqual(effective.tts_model, "pocket-tts")
         self.assertIsNone(effective.tts_language)
+        self.assertEqual(effective.character_voice_defaults, {})
         self.assertEqual(effective.output_volume_percent, 35)
 
     def test_schema_11_idle_delay_migrates_to_lower_live_latency(self):
@@ -291,6 +314,7 @@ class SettingsTest(unittest.TestCase):
                     "Narrator": "preset:alba",
                     "Marcus": "preset:anna",
                 },
+                character_voice_defaults={"Hotelier": "default"},
                 output_volume_percent=72,
                 speech_rate_percent=115,
             )
@@ -317,6 +341,32 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.voice_assignments, {})
         self.assertTrue(any("voice_assignments" in warning for warning in warnings))
+
+    def test_character_defaults_validate_and_leave_legacy_overrides_unchanged(self):
+        warnings = []
+        settings = AppSettings.from_mapping(
+            {
+                "voice_assignments": {"Marcus": "preset:anna"},
+                "character_voice_defaults": {
+                    " Hotelier ": " default ",
+                    "Narrator": "preset:alba",
+                    "???": "preset:alba",
+                },
+            },
+            warn=warnings.append,
+        )
+        self.assertEqual(settings.voice_assignments, {"Marcus": "preset:anna"})
+        self.assertEqual(settings.character_voice_defaults, {"Hotelier": "default"})
+        self.assertEqual(len(warnings), 2)
+        for invalid in ({"Marcus": 42}, "preset:alba"):
+            with self.subTest(invalid=invalid):
+                self.assertEqual(
+                    AppSettings.from_mapping(
+                        {"character_voice_defaults": invalid}
+                    ).character_voice_defaults,
+                    {},
+                )
+        self.assertEqual(AppSettings.from_mapping({}).character_voice_defaults, {})
 
     def test_malformed_settings_file_uses_defaults(self):
         warnings = []

@@ -159,22 +159,36 @@ def apply_game_pack(
     ):
         from vntts_artifacts.voice_manifest import load_voice_manifest
 
-        from vntts.voices import CharacterVoiceRegistry
+        from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
         document = load_voice_manifest(settings.voice_manifest)[0]
         narrator = document.get("vntts.game_narrator")
-        if isinstance(narrator, dict) and narrator.get(
-            "base_manifest_sha256"
-        ) == sha256_file(imported.voice_manifest):
+        characters = document.get("vntts.game_character_voices")
+        base_sha256 = sha256_file(imported.voice_manifest)
+        if any(
+            isinstance(binding, dict)
+            and binding.get("base_manifest_sha256") == base_sha256
+            for binding in (narrator, characters)
+        ):
             registry = CharacterVoiceRegistry.from_file(settings.voice_manifest)
-            source_id = narrator.get("source_id")
-            if (
-                not isinstance(source_id, str)
-                or registry.resolve_source(source_id) is None
-            ):
+            selected = [
+                source
+                for source in settings.character_voice_defaults.values()
+                if source.startswith("character:")
+            ]
+            if isinstance(narrator, dict):
+                selected.append(narrator.get("source_id"))
+            try:
+                if any(
+                    not isinstance(source, str)
+                    or registry.resolve_source(source) is None
+                    for source in selected
+                ):
+                    raise VoiceManifestError("Selected game voice is unavailable")
+            except VoiceManifestError as error:
                 raise GamePackError(
-                    "Selected game narrator is missing from its saved catalog"
-                )
+                    "Selected game voice is missing from its saved catalog"
+                ) from error
             result = result.updated(voice_manifest=settings.voice_manifest)
     return result
 

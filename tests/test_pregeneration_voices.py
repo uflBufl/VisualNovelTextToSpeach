@@ -508,6 +508,55 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(rhiannon.source_character, "Centurion")
             self.assertEqual(rhiannon.resolution, "saved-voice-assignment")
 
+    def test_character_defaults_apply_to_future_audio_with_manual_override_priority(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_manifest(root / "voices")
+            settings = AppSettings(
+                pocket_gated_model_accepted=True,
+                voice_assignments={"Narrator": "preset:marius"},
+                character_voice_defaults={"Rhiannon": "character:centurion"},
+            )
+            for manual, default, expected_route, expected_voice in (
+                ({}, "character:centurion", "voice", "Centurion"),
+                ({}, "default", "narrator", "marius"),
+                ({"rhiannon": "character:rhiannon"}, "default", "voice", "Rhiannon"),
+            ):
+                with self.subTest(manual=manual, default=default):
+                    plan = VoicePlanStore(jobs).create(
+                        job,
+                        settings.updated(
+                            voice_assignments={**settings.voice_assignments, **manual},
+                            character_voice_defaults={"Rhiannon": default},
+                        ),
+                        manifest_path=manifest,
+                    )
+                    role = next(g for g in plan.groups if g.character == "Rhiannon")
+                    self.assertEqual(role.route, expected_route)
+                    self.assertEqual(role.source_character, expected_voice)
+                    self.assertNotIn("line:original", role.line_ids)
+
+    def test_game_voice_default_requires_pocket_cloning_access(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, jobs = self.create_fixture(root)
+            settings = AppSettings(
+                character_voice_defaults={"Rhiannon": "character:centurion"}
+            )
+            with self.assertRaisesRegex(
+                PregenerationVoiceError, "requires Pocket voice cloning access"
+            ):
+                VoicePlanStore(jobs).create(
+                    job, settings, manifest_path=write_manifest(root / "voices")
+                )
+            self.assertEqual(
+                settings.character_voice_defaults,
+                {"Rhiannon": "character:centurion"},
+            )
+
     def test_close_variant_evidence_creates_one_informed_audition(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -24,6 +24,7 @@ from vntts.controller import LiveSequenceStatus  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.generated_audio import AudioRouteTrace  # noqa: E402
 from vntts.ocr import DialogRegion  # noqa: E402
+from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: E402
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
@@ -498,6 +499,70 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.pregeneration_dialog = None
         tray_application.shutdown()
 
+    def test_shared_voice_entry_and_reading_start_use_existing_actions(self):
+        controller = Mock(is_ready=False, is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        with (
+            patch.object(tray, "open_voice_previews") as voices,
+            patch("vntts.app.VoicePreviewDialog") as legacy_picker,
+        ):
+            self.assertFalse(tray.open_speaker_mapping())
+        voices.assert_called_once()
+        legacy_picker.assert_not_called()
+        with (
+            patch.object(AppSettings, "save"),
+            patch.object(tray, "prepare_reading") as prepare,
+            patch.object(tray, "toggle_live") as start_reading,
+        ):
+            tray._read_prepared_story()
+            prepare.assert_called_once()
+            start_reading.assert_not_called()
+            tray._controller_ready = True
+            tray._read_prepared_story()
+            start_reading.assert_called_once()
+            controller.is_live_running = True
+            tray._read_prepared_story()
+            start_reading.assert_called_once()
+        controller.start.assert_not_called()
+        tray.shutdown()
+
+    def test_preparation_card_cancels_only_explicit_pending_work(self):
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(
+                return_value=Mock(is_ready=False, is_live_running=False)
+            ),
+        )
+        preparation = Mock()
+        preparation.has_pending_work.return_value = True
+        tray.pregeneration_dialog = preparation
+        tray.dashboard.show()
+        tray.dashboard.set_preparation_phase("Generating 2/4; saved 1")
+        tray._preparation_activity_changed(True)
+        summary = tray.dashboard.preparation_summary.text()
+        self.assertTrue(tray.dashboard.preparation_cancel.isVisibleTo(tray.dashboard))
+        with patch.object(AppSettings, "save"):
+            tray.dashboard.show_voices()
+            tray.dashboard.show_reading()
+        preparation._cancel_or_reject.assert_not_called()
+        tray.dashboard.preparation_cancel.click()
+        preparation._cancel_or_reject.assert_called_once()
+        preparation.reject.assert_not_called()
+        preparation.has_pending_work.return_value = False
+        tray._preparation_activity_changed(False)
+        self.assertTrue(tray.dashboard.preparation_cancel.isHidden())
+        self.assertFalse(tray.dashboard.preparation_card.isHidden())
+        self.assertEqual(tray.dashboard.preparation_summary.text(), summary)
+        tray.dashboard.preparation_cancel_requested.emit()
+        preparation._cancel_or_reject.assert_called_once()
+        tray.pregeneration_dialog = None
+        tray.shutdown()
+
     def test_narrator_completion_returns_only_to_its_original_preparation(self):
         for result in (QDialog.DialogCode.Accepted, QDialog.DialogCode.Rejected):
             for origin in (0, 1, 2):
@@ -519,37 +584,68 @@ class TrayApplicationTest(unittest.TestCase):
                         tray.pregeneration_dialog = preparation
                         narrator = Mock(result_settings=candidate)
                         tray.dashboard.sections.setCurrentIndex(origin)
+                        saved_settings = []
                         with (
                             patch(
                                 "vntts.app.GameNarratorDialog", return_value=narrator
                             ),
                             patch.object(tray.dashboard, "embed_narrator"),
                             patch.object(tray.dashboard, "remove_narrator"),
-                            patch("vntts.app.AppSettings.save") as save,
+                            patch.object(
+                                AppSettings,
+                                "save",
+                                autospec=True,
+                                side_effect=lambda settings: (
+                                    saved_settings.append(settings)
+                                    or Path("settings.json")
+                                ),
+                            ),
                             patch.object(tray, "_reload_game_narrator") as reload,
                         ):
                             tray.open_voice_previews()
                             tray.dashboard.show_reading()
                             if not same_preparation:
                                 tray.pregeneration_dialog = None
+                            # Opening Voices refreshes already-saved settings first.
+                            preparation.apply_narrator_settings.reset_mock()
                             tray._narrator_finished(result)
                         self.assertEqual(
                             tray.dashboard.sections.currentIndex(),
                             0 if origin == 0 and same_preparation else 2,
                         )
                         if result == QDialog.DialogCode.Accepted:
-                            save.assert_called_once_with()
+                            self.assertTrue(
+                                any(
+                                    settings.tts_speaker == "marius"
+                                    for settings in saved_settings
+                                )
+                            )
                             reload.assert_called_once_with(True)
-                            self.assertIs(tray.settings, candidate)
                             if same_preparation:
                                 preparation.apply_narrator_settings.assert_called_once_with(
-                                    candidate
+                                    candidate.updated(last_main_section="reading")
                                 )
                         else:
-                            save.assert_not_called()
+                            self.assertTrue(
+                                all(
+                                    settings.tts_speaker is None
+                                    for settings in saved_settings
+                                )
+                            )
                             reload.assert_not_called()
-                            self.assertIs(tray.settings, original)
                             preparation.apply_narrator_settings.assert_not_called()
+                        self.assertEqual(
+                            tray.settings,
+                            (
+                                candidate
+                                if result == QDialog.DialogCode.Accepted
+                                else original
+                            ).updated(
+                                last_main_section="stories"
+                                if origin == 0 and same_preparation
+                                else "reading"
+                            ),
+                        )
                         tray.pregeneration_dialog = None
                         tray.shutdown()
 
@@ -575,9 +671,9 @@ class TrayApplicationTest(unittest.TestCase):
         ):
             tray._narrator_finished(QDialog.DialogCode.Accepted)
             self.wait_until(lambda: not tray._controller_busy)
-        self.assertIs(tray.settings, candidate)
+        self.assertEqual(tray.settings, candidate)
         controller.apply_settings.assert_called_once_with(candidate, cancellation=ANY)
-        self.assertIn("Narrator saved", tray.status_action.toolTip())
+        self.assertIn("Voices saved", tray.status_action.toolTip())
         self.assertIn(
             "Active profile could not be updated", tray.status_action.toolTip()
         )
@@ -1965,6 +2061,32 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertNotIn("Narrator", original.voice_assignments)
         delete_dialog(dialog)
 
+    def test_character_choice_keeps_manual_narrator_reference_in_settings(self):
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "narrator.wav"
+            reference.touch()
+            original = AppSettings(
+                tts_speaker_wav=str(reference),
+                voice_assignments={"Narrator": "preset:alba"},
+            )
+            candidate = original.updated(
+                character_voice_defaults={"Vertin": "preset:marius"}
+            )
+            dialog = SettingsDialog(original)
+            dialog.advanced_narrator.setChecked(True)
+            with patch("vntts.app.GameNarratorDialog") as picker:
+                picker.return_value.exec.return_value = QDialog.DialogCode.Accepted
+                picker.return_value.result_settings = candidate
+                dialog.choose_narrator_button.click()
+            draft = dialog._raw_settings()
+            self.assertEqual(draft.tts_speaker_wav, str(reference))
+            self.assertEqual(draft.voice_assignments, original.voice_assignments)
+            self.assertEqual(
+                draft.character_voice_defaults, candidate.character_voice_defaults
+            )
+            self.assertTrue(dialog.advanced_narrator.isChecked())
+            delete_dialog(dialog)
+
     def test_settings_missing_moss_voice_targets_picker_and_file_is_optional(self):
         dialog = SettingsDialog(
             AppSettings(
@@ -2584,6 +2706,28 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIs(tray_application.settings, original)
         self.assertIn("disk full", tray_application.status_action.text())
         tray_application.shutdown()
+
+    def test_voice_write_preserves_latest_section_from_stale_controller(self):
+        original = AppSettings(last_main_section="reading")
+        stale = AppSettings(voice_assignments={"Selone": "preset:alba"})
+        controller = Mock()
+
+        def commit_voice(*_args, commit_settings):
+            commit_settings(stale)
+            return stale
+
+        controller.assign_voice.side_effect = commit_voice
+        tray = TrayApplication(
+            self.application,
+            original,
+            controller_factory=Mock(return_value=controller),
+        )
+        with patch.object(AppSettings, "save", autospec=True) as save:
+            tray.assign_voice("Selone", "preset:alba")
+        expected = stale.updated(last_main_section="reading")
+        save.assert_called_once_with(expected)
+        self.assertEqual(tray.settings, expected)
+        tray.shutdown()
 
     def test_failed_voice_writes_do_not_publish_application_settings(self):
         original = AppSettings()
@@ -3273,6 +3417,94 @@ class TrayApplicationTest(unittest.TestCase):
         opened.assert_not_called()
         self.assertFalse(tray_application.history_action.isEnabled())
 
+    def test_main_section_restores_without_playback_and_survives_lazy_library_loading(
+        self,
+    ):
+        for section, index in (("voices", 1), ("reading", 2)):
+            with self.subTest(section=section), TemporaryDirectory() as directory:
+                path = Path(directory) / "settings.json"
+                controller = Mock(is_live_running=False)
+                settings = AppSettings(last_main_section=section)
+                settings.save(path)
+                with patch("vntts.settings.get_settings_path", return_value=path):
+                    tray = TrayApplication(
+                        self.application,
+                        settings,
+                        controller_factory=Mock(return_value=controller),
+                    )
+                    with (
+                        patch.object(tray.tray, "show"),
+                        patch("vntts.app.QTimer.singleShot"),
+                        patch.object(AppSettings, "save") as save,
+                    ):
+                        tray.start()
+                        self.assertEqual(tray.dashboard.sections.currentIndex(), index)
+                        with patch.object(
+                            tray,
+                            "open_pregeneration",
+                            side_effect=tray.dashboard.show_stories,
+                        ) as load_library:
+                            tray._load_initial_library()
+                        load_library.assert_called_once()
+                        save.assert_not_called()
+                    self.assertEqual(tray.dashboard.sections.currentIndex(), index)
+                    self.assertEqual(tray.settings.last_main_section, section)
+                    self.assertIsNone(tray.onboarding_wizard)
+                    controller.start.assert_not_called()
+                    controller.toggle_live.assert_not_called()
+                    tray.shutdown()
+
+    def test_main_section_navigation_saves_and_reports_write_failure(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            with patch("vntts.settings.get_settings_path", return_value=path):
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(return_value=Mock()),
+                )
+                tray.dashboard.show()
+                QTest.keyClick(tray.dashboard.sections.tabBar(), Qt.Key.Key_Right)
+                self.assertEqual(tray.settings.last_main_section, "voices")
+                self.assertIn('"last_main_section": "voices"', path.read_text())
+                with (
+                    patch.object(AppSettings, "save", side_effect=OSError("disk full")),
+                    patch.object(tray, "show_error") as error,
+                ):
+                    QTest.keyClick(tray.dashboard.sections.tabBar(), Qt.Key.Key_Right)
+                self.assertEqual(tray.dashboard.sections.currentIndex(), 2)
+                self.assertEqual(tray.settings.last_main_section, "voices")
+                self.assertIn("disk full", error.call_args.args[0])
+                tray.shutdown()
+
+    def test_pack_activation_keeps_reading_section_when_worker_saved_an_old_tab(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            with patch("vntts.settings.get_settings_path", return_value=path):
+                original = AppSettings()
+                controller = Mock(is_ready=False, is_live_running=False)
+                tray = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=controller),
+                )
+                tray._pregeneration_activation_generation = (
+                    tray._begin_controller_lifecycle()
+                )
+                tray.dashboard.show_reading()
+                candidate = original.updated(audio_source_policy="prefer-generated")
+                candidate.save(path)
+
+                tray._pregeneration_activation_finished(
+                    OfflinePackActivationResult(candidate, path, False), None
+                )
+
+                self.assertEqual(tray.settings.last_main_section, "reading")
+                self.assertEqual(tray.settings.audio_source_policy, "prefer-generated")
+                self.assertIn('"last_main_section": "reading"', path.read_text())
+                controller.toggle_live.assert_not_called()
+                tray.shutdown()
+
     def test_incomplete_setup_opens_stories_without_loading_model(self):
         controller = Mock()
         tray_application = TrayApplication(
@@ -3292,7 +3524,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.compact_controller.isVisible())
         self.assertEqual(single_shot.call_args.args[0], 0)
         self.assertEqual(
-            single_shot.call_args.args[1], tray_application.open_pregeneration
+            single_shot.call_args.args[1], tray_application._load_initial_library
         )
         tray_application.shutdown()
 
@@ -3372,7 +3604,9 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.dashboard.focusWidget(),
             tray_application.dashboard.live_button,
         )
-        self.assertIn("or click Start reading", tray_application.status_action.text())
+        self.assertIn(
+            "Click Start reading when ready", tray_application.status_action.text()
+        )
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
 

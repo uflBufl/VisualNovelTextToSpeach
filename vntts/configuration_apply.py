@@ -14,6 +14,11 @@ from vntts.settings import (
 
 
 class ConfigurationApplyMixin:
+    def _refresh_preparation_settings(self):
+        preparation = getattr(self, "pregeneration_dialog", None)
+        if preparation is not None and not preparation.has_pending_work():
+            preparation.apply_narrator_settings(self.settings)
+
     def _setup_configuration_apply(self):
         self.cancel_configuration_action = QAction("Cancel settings apply")
         self.cancel_configuration_action.setVisible(False)
@@ -55,6 +60,7 @@ class ConfigurationApplyMixin:
         refresh_hotkeys=False,
         restart=False,
     ):
+        self._refresh_preparation_settings()
         generation = self._begin_controller_lifecycle()
         self._configuration_generation = generation
         self._configuration_cancellation = Event()

@@ -733,8 +733,22 @@ def _narrator_candidate(settings, registry):
 
 def _effective_assignment_source(settings, character):
     source_id = find_voice_assignment(settings.voice_assignments, character)
+    if source_id is None and not is_narrator(character):
+        source_id = find_voice_assignment(settings.character_voice_defaults, character)
+        if (
+            source_id
+            and source_id != default_voice_choice_id
+            and _public_pocket_mode(settings)
+            and not source_id.startswith("preset:")
+        ):
+            raise PregenerationVoiceError(
+                f"The saved game voice for {character!r} requires Pocket voice "
+                "cloning access. Accept the model terms in Voices or choose an "
+                "available engine."
+            )
     if (
         source_id
+        and source_id != default_voice_choice_id
         and _public_pocket_mode(settings)
         and not source_id.startswith("preset:")
     ):

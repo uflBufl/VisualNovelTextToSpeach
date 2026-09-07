@@ -24,102 +24,27 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Measure first-play latency with actual Windows game audio after selection
       prefetch; synthetic Mac decoder timing is not a Windows performance gate.
 
-## P0 - Redesign the ordinary-player interface
+## P0 - Complete player-interface context
 
-Priority: redesign the experience before strengthening end-to-end UI tests.
-Scope is the main application, first launch, game import, voice selection,
-story preparation and reading; not specialist authoring/review tools. Existing
-control-level audit completion does not mean the overall journey is satisfactory.
-The user approved implementation. Next consolidate character assignments and
-fallback policy in the shared Voices editor, then finish contextual reading
-setup. Reuse the existing generation/playback services without adding another
-wizard or library implementation.
+Continue the approved Stories, Voices and Reading design using the existing
+Qt UI and generation/playback services. Keep the remaining work scoped to the
+ordinary player journey; native/platform qualification is tracked below.
 
-- [ ] Refine the target journey and screen layouts while integrating services.
-  - Use one main window with Stories, Voices and Reading sections and one shared
-    selected-game context. Settings/support are secondary actions, not extra
-    setup workflows. Default a new install to Stories; return an existing user
-    to the last relevant section without automatically starting playback.
-  - Produce reviewable layouts for the three sections with realistic short/long
-    content and empty, loading, ready, partial and error states. Specify primary
-    actions, back/cancel behavior and what persists across navigation.
-  - Keep one visible task/action hierarchy and consistent spacing, typography,
-    status vocabulary, button positions and preview transport. No new design
-    system, web frontend or general navigation framework.
-- [ ] Replace the up-front technical wizard with contextual setup.
-  - First launch asks for an installed game, with automatic discovery and one
-    folder fallback. Import exposes progress and populates a persistent story
-    library; it must not require a running game, calibrated OCR or a loaded TTS.
-  - Load expensive speech/runtime dependencies only for preview, preparation or
-    reading as needed. Browsing stories/settings must not wait for model startup.
-  - Offer the recommended supported speech engine with an understandable reason;
-    show its actual model and readiness. Keep alternate engines available without
-    exposing Python/CUDA/raw manifest fields in the ordinary path. Never silently
-    change a chosen game voice into a built-in voice to bypass missing setup.
-  - Request model download/access/license only at the action needing it. Show
-    what is missing and its direct remedy; retain consent and access boundaries.
-  - On first Start reading, guide game-window selection, necessary OS permissions,
-    capture-area confirmation and a short reading check in context; do not force
-    the entire setup sequence again after successful configuration.
-- [ ] Make Stories the preparation and readiness home.
-  - Show precise status for all imported stories: not prepared, preparing,
-    partially prepared, ready, or needs attention.
-    Integrate checked story coverage into list statuses and include unpublished
-    progress and the active Reading pack. Keep WAV verification on demand;
-    never call a live-dependent result fully offline-ready.
-  - Use one primary action appropriate to the selected story: Prepare, Continue
-    preparation or Start reading. Keep multi-story preparation as selection in
-    the same library, not another dialog or a separate queue product.
-- [ ] Consolidate all ordinary voice selection into one Voices editor.
-  - Separate narrator from character roles, using one shared editor/player from
-    every entry point. Clearly distinguish game voices and built-in voices;
-    show the selected source character, original sample and generated preview.
-  - Keep play/replay/stop in fixed positions. Explain when the app is loading a
-    reference versus generating a preview; changing a candidate never silently
-    applies it. Use an explicit save action and preserve the previous selection
-    on cancel. Render available portraits rather than showing image paths.
-  - Show automatic character assignments and only exceptional choices prominently.
-    Reuse accepted choices; optional listening to a few voices must suffice.
-    Do not require line/cohort reviews or ask users to approve known failures.
-  - Make fallback policy explicit before preparation/reading: which roles will use
-    narrator or live speech and whether the speaker name is announced (`???` is
-    announced as Unknown). Do not introduce routine blocking prompts mid-reading.
-  - Define changes as defaults for future preparation, not retroactive changes to
-    existing WAVs. Show affected stories and offer scoped regeneration; preserve
-    unrelated recordings and display their actual recorded voice/model provenance.
-- [ ] Put long-running work and recovery in a consistent visible location.
-  - Keep one compact task strip/card visible across main sections: operation,
-    phase, completed/total, saved progress, and Cancel/Continue where supported.
-    Show indeterminate progress honestly when totals/ETA are unknown.
-  - Disable only actions that conflict with the active operation and explain why
-    beside them. Keep safe navigation available; switching sections cannot cancel
-    work or lose its state. Define close/minimize/quit consequences explicitly.
-  - Hide editing-only license/settings forms while generation runs; foreground
-    progress and the final original/prepared/live-TTS coverage instead.
-  - Give errors a plain-language cause and next action in place; technical logs
-    are secondary. No success-looking partial failures or unexplained disabled
-    controls. Reuse existing cancellation/stale-result guards and durable jobs.
-- [ ] Simplify Reading and align it with the chosen story and voices.
-  - Show current story/position, dialogue speaker, actual playback voice and
-    source (original game audio, prepared recording or live generation). Keep
-    recording engine/model distinct from the engine configured for live fallback.
-  - Keep one Start/Stop reading action and a stable Pause/Replay/Skip transport;
-    retain a clearly separated emergency stop. Calibration, OCR internals and
-    manual resync belong to contextual recovery or details, not the main hierarchy.
-  - Derive compact/tray controls from the same actions/state; do not duplicate
-    independent setup or voice-selection workflows there.
-- [ ] Implement in reviewable slices after the design gate: shell/library and
-      deferred setup; shared Voices; preparation/progress/activation; Reading.
-  - Reuse current importer, generation stores, controller, voice binding and
-    playback services. Move only necessary UI-owned task lifetime into the main
-    application so navigation is safe; do not rewrite the synthesis pipeline.
-  - Visually inspect each slice at normal/minimum sizes and enlarged text, with
-    keyboard navigation and slow/error states. Preserve data safety and existing
-    checks; add only focused checks needed for changed behavior, not the deferred
-    end-to-end expansion below.
-  - Acceptance: the user can tell what is selected, what is running, what is
-    ready and what to do next without logs; can prepare before launching the game;
-    and can read with the chosen voices without repeated setup/ordinary review.
+- [ ] Show the active story title and current position on the main Reading page.
+  - Reuse canonical story/cursor state and the existing sequence-position label;
+    keep resync and OCR controls in details. Do not infer a story from whichever
+    library row is highlighted while another story is playing.
+- [ ] Display the recorded source voice identity when its provenance is available.
+  - Carry the historical, checksum-bound source character from recording
+    artifacts to Reading alongside the recorded engine/model and voice role.
+    Do not substitute the current Voices default for the voice in an old WAV;
+    keep missing historical identity explicit for older packs.
+- [ ] Show which prepared stories are affected by a changed voice default.
+  - Compare the changed role with saved story/recording provenance. Show the
+    affected stories and lines, then reuse the existing selected-story
+    preparation action; preserve unrelated recordings and accepted voice choices.
+  - Selected story titles alone are not an impact calculation. Keep regeneration
+    explicit and preserve the old playable recordings until replacement succeeds.
 
 ## P1 - Diagnose intermittent offscreen Qt test stalls
 

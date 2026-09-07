@@ -44,6 +44,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
 )
+from vntts.chapter_voice_preload import _source_audio_duration_seconds
 from vntts.document_identity import is_lowercase_sha256
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
@@ -105,7 +106,7 @@ class StoryAudioCoverage:
     missing: int = 0
 
 
-def inspect_story_audio(content, selection_id, job_store):
+def inspect_story_audio(content, selection_id, job_store, *, manifest=None):
     """Verify one story against one saved pack; never combine incompatible packs."""
     selection = next(
         value for value in content.selections if value.selection_id == selection_id
@@ -115,23 +116,28 @@ def inspect_story_audio(content, selection_id, job_store):
             "Story content changed. Refresh the story list and retry."
         )
     source = load_story_index_document(content.story_index)
-    manifests = [
-        manifest
-        for job in job_store.jobs_for_content(content)
-        if selection_id in job.selected_story_ids
-        for manifest in job_store.published_packs(job)
-    ]
-    manifest = max(
-        manifests, key=lambda path: (path.stat().st_mtime_ns, str(path)), default=None
-    )
+    explicit_pack = manifest is not None
+    if explicit_pack:
+        manifest = Path(manifest).expanduser().resolve()
+    else:
+        manifests = [
+            path
+            for job in job_store.jobs_for_content(content)
+            if selection_id in job.selected_story_ids
+            for path in job_store.published_packs(job)
+        ]
+        manifest = max(
+            manifests,
+            key=lambda path: (path.stat().st_mtime_ns, str(path)),
+            default=None,
+        )
     library = None
     pack_records = {}
+    pack_story = None
     if manifest is not None:
         imported = import_game_pack(manifest)
-        pack_records = {
-            record.line_id: record
-            for record in load_story_index_document(imported.story_index).records
-        }
+        pack_story = load_story_index_document(imported.story_index)
+        pack_records = {record.line_id: record for record in pack_story.records}
         if imported.generated_audio_manifest is not None:
             library = GeneratedAudioLibrary(
                 load_generated_audio_document(imported.generated_audio_manifest),
@@ -149,7 +155,12 @@ def inspect_story_audio(content, selection_id, job_store):
             )
         # Published source semantics can distinguish speech from a game sound cue.
         effective = saved or record
-        if library and library.find_audio_event_omission(
+        completion_contract = (
+            pack_story if saved is not None else source
+        ).metadata.get("source_audio_completion")
+        if explicit_pack and saved is None:
+            route = "missing"
+        elif library and library.find_audio_event_omission(
             record.line_id, record.text_sha256
         ):
             route = "omitted"
@@ -169,7 +180,17 @@ def inspect_story_audio(content, selection_id, job_store):
             route = "generated"
         elif library and library.find_live_fallback(record.line_id, record.text_sha256):
             route = "live"
-        elif effective.source_audio_status == "available":
+        elif (
+            effective.source_audio_status == "available"
+            and effective.document.get("source_audio_completeness") == "full"
+            and completion_contract
+            in {"duration-seconds", "verified-media-duration-seconds"}
+            and _source_audio_duration_seconds(
+                effective.document,
+                completion_contract=completion_contract,
+            )
+            is not None
+        ):
             route = "original"
         else:
             route = "missing"

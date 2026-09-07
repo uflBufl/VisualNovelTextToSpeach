@@ -10,8 +10,9 @@ from vntts.settings import (
     live_sequence_modes,
 )
 from vntts.versioned_json import load_versioned_json, write_versioned_json
+from vntts.voices import is_narrator
 
-profiles_schema_version = 6
+profiles_schema_version = 7
 
 
 def get_profiles_path():
@@ -34,6 +35,7 @@ class GameProfile:
     generated_audio_manifest: str | None
     audio_source_policy: str
     voice_assignments: dict[str, str]
+    character_voice_defaults: dict[str, str]
     force_live_narrator: bool
 
     @classmethod
@@ -53,6 +55,7 @@ class GameProfile:
             generated_audio_manifest=settings.generated_audio_manifest,
             audio_source_policy=settings.audio_source_policy,
             voice_assignments=dict(settings.voice_assignments),
+            character_voice_defaults=dict(settings.character_voice_defaults),
             force_live_narrator=settings.force_live_narrator,
         )
 
@@ -97,6 +100,13 @@ class GameProfile:
             ),
             audio_source_policy=_audio_source_policy(values.get("audio_source_policy")),
             voice_assignments=voice_assignments,
+            character_voice_defaults={
+                name: source
+                for name, source in _voice_assignments(
+                    values.get("character_voice_defaults")
+                ).items()
+                if not is_narrator(name)
+            },
             force_live_narrator=force_live_narrator,
         )
 
@@ -119,6 +129,7 @@ class GameProfile:
             generated_audio_manifest=self.generated_audio_manifest,
             audio_source_policy=self.audio_source_policy,
             voice_assignments=dict(self.voice_assignments),
+            character_voice_defaults=dict(self.character_voice_defaults),
             force_live_narrator=self.force_live_narrator,
         )
         if self.game_pack:
@@ -142,6 +153,7 @@ class GameProfile:
             generated_audio_manifest=settings.generated_audio_manifest,
             audio_source_policy=settings.audio_source_policy,
             voice_assignments=dict(settings.voice_assignments),
+            character_voice_defaults=dict(settings.character_voice_defaults),
             force_live_narrator=settings.force_live_narrator,
         )
 

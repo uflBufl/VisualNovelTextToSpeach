@@ -1,16 +1,33 @@
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
+from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.story_index import (
+    load_story_index_document,
+    write_story_index_document,
+)
+
+from tests.test_generated_audio import FakeAudioOutput
 from tests.test_pregeneration_pack import fixture
+from tests.test_pregeneration_voices import write_manifest
+from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.generated_audio import (
+    GeneratedAudioFallbackBackend,
+    GeneratedAudioLibrary,
+    GeneratedAudioRoute,
+    SourceAudioRoute,
+)
 from vntts.pregeneration_activation import (
     OfflinePackActivationError,
     OfflinePackActivator,
 )
 from vntts.pregeneration_pack import OfflinePackPublisher
-from vntts.settings import AppSettings
+from vntts.runtime_config import initialize_voice_registry
+from vntts.settings import AppSettings, load_app_settings
 from vntts.voices import CharacterVoiceRegistry
 
 
@@ -20,6 +37,128 @@ def published_pack(root):
 
 
 class OfflinePackActivatorTest(unittest.TestCase):
+    def test_activation_retains_selected_and_unrelated_character_reference_defaults(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack = published_pack(root / "pack")
+            sources = write_manifest(root / "sources")
+            original = AppSettings(
+                pocket_gated_model_accepted=True,
+                voice_manifest=str(sources),
+                character_voice_defaults={
+                    "Hotelier": "character:centurion",
+                    "Unrelated story": "character:rhiannon",
+                    "Narrator fallback role": "default",
+                    "Built-in role": "preset:anna",
+                },
+            )
+            controller = Mock(is_ready=False)
+            controller.apply_settings.return_value = True
+            activator = OfflinePackActivator(
+                save_settings=lambda value: value.save(root / "settings.json")
+            )
+            with patch(
+                "vntts.game_narrator.get_local_data_directory",
+                return_value=root / "local",
+            ):
+                result = activator.activate(original, pack, controller)
+            loaded = load_app_settings(root / "settings.json", environment={})
+            self.assertEqual(loaded.voice_manifest, result.settings.voice_manifest)
+            self.assertEqual(
+                loaded.character_voice_defaults,
+                result.settings.character_voice_defaults,
+            )
+            registry = initialize_voice_registry(loaded)
+            self.assertEqual(
+                registry.resolve("Hotelier").reference.read_bytes(), b"centurion"
+            )
+            self.assertEqual(
+                registry.resolve("Unrelated story").reference.read_bytes(), b"rhiannon"
+            )
+            self.assertIsNone(registry.resolve("Narrator fallback role"))
+            self.assertEqual(registry.resolve("Built-in role").speaker, "anna")
+            self.assertEqual(
+                original.character_voice_defaults["Hotelier"], "character:centurion"
+            )
+            controller.reset_mock()
+            missing = original.updated(
+                character_voice_defaults={"Hotelier": "character:missing"}
+            )
+            with self.assertRaisesRegex(
+                OfflinePackActivationError, "retain saved character voices"
+            ):
+                activator.activate(missing, pack, controller)
+            controller.shutdown.assert_not_called()
+            controller.apply_settings.assert_not_called()
+            self.assertEqual(
+                load_app_settings(root / "settings.json", environment={}), loaded
+            )
+
+    def test_mixed_pack_activation_routes_original_and_generated_without_live_synthesis(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            job, inputs, result, _items = fixture(root)
+            story = load_story_index_document(inputs.story_index)
+            original = {
+                "record_type": "line",
+                "line_id": "pack:original",
+                "chapter": "1",
+                "sequence": 3,
+                "speaker": "Ada",
+                "text": "Original spoken line.",
+                "kind": "dialogue",
+                "speakable": True,
+                "source_audio_status": "available",
+                "source_audio_id": "voice-7",
+                "source_audio_duration_seconds": 2.75,
+                "source_audio_completeness": "full",
+            }
+            write_story_index_document(
+                inputs.story_index,
+                {
+                    "game": story.game,
+                    "language": story.language,
+                    "source_audio_completion": "duration-seconds",
+                },
+                [*(record.to_record() for record in story.records), original],
+            )
+            job = replace(
+                job,
+                story_index_sha256=sha256_file(inputs.story_index),
+                selected_line_ids=(*job.selected_line_ids, "pack:original"),
+            )
+            pack = OfflinePackPublisher().publish(job, inputs, result)
+            controller = Mock(is_ready=False)
+            controller.apply_settings.return_value = True
+            activated = OfflinePackActivator(
+                save_settings=lambda _settings: root / "settings.json"
+            ).activate(AppSettings(), pack, controller)
+            self.assertEqual(
+                activated.settings.audio_source_policy, "prefer-game-audio"
+            )
+            live = Mock()
+            live.name = "unused-live"
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                GeneratedAudioLibrary.load_optional(
+                    activated.settings.generated_audio_manifest
+                ),
+                ChapterVoicePreloader.load_optional(activated.settings.story_index),
+                audio_source_policy=activated.settings.audio_source_policy,
+                audio_output=FakeAudioOutput(),
+            )
+            backend.set_live_mode_active(True)
+            source = backend.prepare_route("Ada", "Original spoken line.")
+            generated = backend.prepare_route("Narrator", "Prepared line generated.")
+            self.assertIsInstance(source, SourceAudioRoute)
+            self.assertGreater(source.prepared.completion_seconds, 2.75)
+            self.assertIsInstance(generated, GeneratedAudioRoute)
+            live.prepare_playback.assert_not_called()
+
     def test_activation_uses_saved_audio_instead_of_previous_live_overrides(self):
         from types import SimpleNamespace
 

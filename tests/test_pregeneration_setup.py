@@ -24,6 +24,7 @@ from vntts.pregeneration_generation import (  # noqa: E402
 from vntts.pregeneration_pack import (  # noqa: E402
     OfflinePackPublisher,
     OfflinePreparationChanges,
+    StoryAudioCoverage,
 )
 from vntts.pregeneration_queue import PregenerationQueueCancelled  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
@@ -50,6 +51,7 @@ def write_story_index(root):
             "game": "Reverse: 1999",
             "game_version": "3.7",
             "language": "en",
+            "source_audio_completion": "duration-seconds",
             "collections": [
                 {
                     "collection_id": "main-1",
@@ -77,6 +79,8 @@ def write_story_index(root):
                 "kind": "dialogue",
                 "collection_id": "main-1",
                 "source_audio_status": "available",
+                "source_audio_duration_seconds": 1.0,
+                "source_audio_completeness": "full",
                 "speakable": True,
             },
             {
@@ -426,7 +430,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.select_none_button.click()
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
             dialog.story_search.clear()
-            dialog.story_filter.setCurrentIndex(dialog.story_filter.findData("ready"))
+            dialog.story_filter.setCurrentIndex(
+                dialog.story_filter.findData("in_progress")
+            )
             self.assertTrue(dialog.stories.item(0).isHidden())
             self.assertFalse(dialog.stories.item(1).isHidden())
             dialog.select_none_button.click()
@@ -585,6 +591,413 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("No saved preparation pack", dialog.story_audio_status.text())
             self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
 
+    def test_checked_story_readiness_updates_list_and_primary_without_preparing(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            jobs.mark_prepared(jobs.create_or_resume(content, ("main-1",)))
+            pool = ManualThreadPool()
+            active_path = root / "active-game-pack.json"
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(
+                    game_pack=str(active_path), audio_source_policy="prefer-game-audio"
+                ),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            self.assertIn("Partially prepared", dialog.stories.item(0).text())
+            self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            dialog.stories.setCurrentRow(0)
+            ready = StoryAudioCoverage(
+                "Main Story 1", active_path, original=1, generated=1
+            )
+            with patch(
+                "vntts.pregeneration_ui.inspect_story_audio", return_value=ready
+            ) as inspect:
+                self.assertEqual(
+                    dialog._inspect_story_audio(content, "main-1", str(active_path)),
+                    (ready, ready, ("Centurion", "Rhiannon")),
+                )
+                inspect.assert_called_once_with(
+                    content, "main-1", jobs, manifest=str(active_path)
+                )
+            live = replace(ready, generated=0, live=1)
+            opened = Mock()
+            dialog.readingRequested.connect(opened)
+            with patch.object(
+                dialog,
+                "_inspect_story_audio",
+                return_value=(ready, live, ("Centurion", "Rhiannon")),
+            ):
+                dialog.check_story_audio.click()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+            self.assertIn("Partially prepared", dialog.stories.item(0).text())
+            self.assertIn("1 live speech", dialog.stories.item(0).text())
+            self.assertIn("active in Reading", dialog.stories.item(0).text())
+            self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            with (
+                patch.object(
+                    dialog,
+                    "_inspect_story_audio",
+                    return_value=(ready, ready, ("Centurion", "Rhiannon")),
+                ),
+                patch.object(
+                    dialog, "_generation_engine_available", return_value=False
+                ),
+            ):
+                dialog.check_story_audio.click()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+                self.assertEqual(
+                    dialog.stories.item(0).data(Qt.ItemDataRole.UserRole + 2), "ready"
+                )
+                self.assertEqual(dialog.continue_button.text(), "Start reading")
+                self.assertTrue(dialog.continue_button.isEnabled())
+                dialog.change_voices.setChecked(True)
+                self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+                dialog.change_voices.setChecked(False)
+                self.assertEqual(dialog.continue_button.text(), "Start reading")
+                dialog.continue_button.click()
+                opened.assert_called_once_with()
+                self.assertEqual(pool.tasks, [])
+            with patch.object(
+                dialog,
+                "_inspect_story_audio",
+                side_effect=ValueError("Saved audio damaged. Prepare again."),
+            ):
+                dialog.check_story_audio.click()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+            self.assertIn("Needs attention", dialog.stories.item(0).text())
+            self.assertIn("Saved audio damaged", dialog.story_audio_status.text())
+            self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            dialog.refresh()
+            self.assertIn("check readiness", dialog.stories.item(0).text())
+
+    def test_active_preparation_and_shared_progress_report_saved_counts_and_failure(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            self.assertEqual(dialog.continue_button.text(), "Prepare")
+            updates = []
+            dialog.phaseChanged.connect(updates.append)
+            dialog.continue_button.click()
+            self.assertTrue(
+                all("Preparing" in dialog.stories.item(row).text() for row in range(2))
+            )
+            dialog._generation_input = SimpleNamespace(ready_items=3)
+            dialog._render_generation_progress(
+                OfflineGenerationProgress(generated=1, failed=1)
+            )
+            self.assertIn("2 of 3 lines processed and saved", updates[-1])
+            dialog._voice_plan_finished(
+                None, ValueError("No character references. Import the game again.")
+            )
+            self.application.processEvents()
+            self.assertIn("Needs attention", dialog.stories.item(0).text())
+            self.assertIn("No character references", updates[-1])
+            self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            dialog.voice_runner.cancel()
+
+    def test_scoped_regeneration_keeps_story_scope_and_reuses_voice_decisions(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            jobs.mark_prepared(jobs.create_or_resume(content, ("main-1",)))
+            jobs.mark_prepared(jobs.create_or_resume(content, ("rhiannon",)))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(
+                    game_pack=str(root / "active.json"),
+                    audio_source_policy="prefer-game-audio",
+                ),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
+            ready = StoryAudioCoverage(
+                "Main Story 1", root / "active.json", original=1, generated=1
+            )
+            dialog._story_audio_checks[dialog._story_audio_key("main-1")] = (
+                ready,
+                ready,
+                None,
+            )
+            dialog._refresh_story_statuses()
+            dialog._selection_changed()
+            self.assertEqual(dialog.continue_button.text(), "Start reading")
+            self.assertTrue(dialog.prepare_again.isVisibleTo(dialog))
+            self.assertIn("recorded voice and model", dialog.summary.text())
+            self.assertEqual(
+                dialog.prepare_again.toolTip(), "Prepare again: Main Story 1"
+            )
+            reading = Mock()
+            dialog.readingRequested.connect(reading)
+            with patch.object(
+                dialog,
+                "_create_voice_plan",
+                side_effect=PregenerationVoiceCancelled("Paused after scope check"),
+            ) as prepare:
+                dialog.prepare_again.click()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+                self.assertEqual(
+                    prepare.call_args.args[0].selected_story_ids, ("main-1",)
+                )
+                self.assertFalse(prepare.call_args.args[1])
+            reading.assert_not_called()
+            self.assertIn("rhiannon", jobs.prepared_story_ids(content))
+
+    def test_checked_pack_keeps_artifact_evidence_but_respects_live_reading_overrides(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            settings = AppSettings(
+                game_pack=str(root / "active.json"),
+                audio_source_policy="prefer-game-audio",
+            )
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
+            dialog.stories.setCurrentRow(0)
+            ready = StoryAudioCoverage(
+                "Main Story 1", root / "active.json", original=1, generated=1
+            )
+            key = dialog._story_audio_key("main-1")
+            dialog._story_audio_checks[key] = (ready, ready, None)
+            dialog._story_playback_speakers[key] = ("Centurion", "Narrator")
+            for changed, blocked in (
+                ({"audio_source_policy": "live-tts-only"}, True),
+                ({"audio_source_policy": "prefer-generated"}, True),
+                ({"speech_rate_percent": 120}, True),
+                ({"voice_assignments": {"Centurion": "preset:alba"}}, True),
+                (
+                    {
+                        "voice_assignments": {"Narrator": "preset:alba"},
+                        "force_live_narrator": True,
+                    },
+                    True,
+                ),
+                (
+                    {
+                        "voice_assignments": {"Narrator": "preset:alba"},
+                        "force_live_narrator": False,
+                    },
+                    False,
+                ),
+                ({"voice_assignments": {"Unrelated": "preset:alba"}}, False),
+                ({"character_voice_defaults": {"Centurion": "preset:alba"}}, False),
+            ):
+                with self.subTest(changed=changed):
+                    dialog.settings = settings.updated(**changed)
+                    dialog._refresh_story_statuses()
+                    dialog._selection_changed()
+                    dialog._story_audio_changed()
+                    self.assertEqual(dialog._can_start_reading(), not blocked)
+                    self.assertEqual(
+                        dialog.stories.item(0).data(Qt.ItemDataRole.UserRole + 2),
+                        "attention" if blocked else "ready",
+                    )
+                    if blocked:
+                        self.assertNotIn(
+                            "No live speech needed", dialog.story_audio_status.text()
+                        )
+                        self.assertIn(
+                            "Reading needs attention", dialog.story_audio_status.text()
+                        )
+                    self.assertIs(dialog._story_audio_checks[key][1], ready)
+
+    def test_changed_character_default_prepares_new_inputs_only_for_selected_story(
+        self,
+    ):
+        from tests.test_pregeneration_voices import write_manifest
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            jobs.mark_prepared(jobs.create_or_resume(content, ("main-1",)))
+            settings = AppSettings(
+                voice_manifest=str(write_manifest(root / "voices")),
+                character_voice_defaults={"Rhiannon": "preset:alba"},
+            )
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.prepare_again.click()
+            for _ in range(2):
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            first = dialog.generation_input()
+            self.assertEqual(dialog.voice_plan().groups[0].source_id, "preset:alba")
+            other = jobs.create_or_resume(content, ("rhiannon",))
+            other_plan = dialog.voice_plan_store.create(other, settings)
+            other_input = dialog.input_store.materialize(other, other_plan)
+            other_bytes = other_input.voice_manifest.read_bytes()
+            dialog.apply_narrator_settings(
+                settings.updated(character_voice_defaults={"Rhiannon": "preset:jean"})
+            )
+            dialog.prepare_again.click()
+            for _ in range(2):
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertEqual(dialog.selected_story_ids(), ("main-1",))
+            self.assertEqual(dialog.voice_plan().audition_count, 0)
+            self.assertEqual(dialog.voice_plan().groups[0].source_id, "preset:jean")
+            self.assertNotEqual(dialog.generation_input().identity, first.identity)
+            self.assertTrue(first.directory.is_dir())
+            self.assertEqual(other_input.voice_manifest.read_bytes(), other_bytes)
+
+    def test_saving_unchanged_voice_settings_keeps_current_confirmation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            settings = AppSettings(last_main_section="stories")
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+            plan = SimpleNamespace(
+                synthesis_backend="pocket-tts", synthesis_model="pocket-tts"
+            )
+            prepared_input = object()
+            dialog._voice_plan = plan
+            dialog._generation_input = prepared_input
+            dialog._awaiting_voice_confirmation = True
+            dialog.voice_confirmation.show()
+            dialog.selection_panel.hide()
+            dialog.apply_narrator_settings(settings.updated(last_main_section="voices"))
+            self.assertIs(dialog.voice_plan(), plan)
+            self.assertIs(dialog.generation_input(), prepared_input)
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.voice_confirmation.isHidden())
+            self.assertTrue(dialog.selection_panel.isHidden())
+            self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
+
+    def test_saved_settings_refresh_story_readiness_without_changing_active_job_snapshot(
+        self,
+    ):
+        from vntts.app import TrayApplication
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            original = AppSettings(
+                game_pack=str(root / "active.json"),
+                audio_source_policy="prefer-game-audio",
+                last_main_section="stories",
+            )
+            preparation = OfflineAudioPreparationDialog(
+                original,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(preparation.deleteLater)
+            preparation.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
+            preparation.stories.setCurrentRow(0)
+            ready = StoryAudioCoverage(
+                "Main Story 1", root / "active.json", original=1, generated=1
+            )
+            preparation._story_audio_checks[preparation._story_audio_key("main-1")] = (
+                ready,
+                ready,
+                None,
+            )
+            preparation._refresh_story_statuses()
+            preparation._selection_changed()
+            self.assertTrue(preparation._can_start_reading())
+            controller = Mock(settings=original, is_ready=False, is_live_running=False)
+            tray = TrayApplication(
+                self.application,
+                original,
+                controller_factory=Mock(return_value=controller),
+            )
+            tray.pregeneration_dialog = preparation
+            pool = ManualThreadPool()
+            tray.configuration_runner.thread_pool = pool
+            candidate = original.updated(audio_source_policy="live-tts-only")
+            settings_dialog = Mock()
+            settings_dialog.exec.return_value = QDialog.DialogCode.Accepted
+            settings_dialog.settings.return_value = candidate
+            with (
+                patch.dict(
+                    os.environ, {"VNTTS_SETTINGS_FILE": str(root / "settings.json")}
+                ),
+                patch("vntts.app.SettingsDialog", return_value=settings_dialog),
+                patch(
+                    "vntts.configuration_apply.apply_game_pack", return_value=candidate
+                ),
+                patch.object(tray, "start_hotkeys"),
+            ):
+                tray.open_settings()
+                self.assertIn(
+                    '"audio_source_policy": "live-tts-only"',
+                    (root / "settings.json").read_text(),
+                )
+                self.assertEqual(
+                    preparation.settings.audio_source_policy, "live-tts-only"
+                )
+                self.assertFalse(preparation._can_start_reading())
+                preparation._story_audio_changed()
+                self.assertIn(
+                    "Reading uses live speech only",
+                    preparation.story_audio_status.text(),
+                )
+                pool.tasks.pop().run()
+                self.application.processEvents()
+                plan = SimpleNamespace(
+                    synthesis_backend="pocket-tts", synthesis_model=None
+                )
+                preparation._voice_plan = plan
+                preparation._awaiting_voice_confirmation = True
+                tray.settings = preparation.settings.updated(last_main_section="voices")
+                tray._refresh_preparation_settings()
+                self.assertIs(preparation.voice_plan(), plan)
+                self.assertTrue(preparation._awaiting_voice_confirmation)
+                snapshot = preparation.settings
+                preparation.generating = True
+                tray.settings = tray.settings.updated(speech_rate_percent=120)
+                tray._refresh_preparation_settings()
+                self.assertIs(preparation.settings, snapshot)
+                preparation.generating = False
+                self.assertIs(tray.open_pregeneration(), preparation)
+                self.assertEqual(preparation.settings.speech_rate_percent, 120)
+                tray.pregeneration_dialog = None
+                tray.shutdown()
+
     def test_reopen_prefers_saved_full_source_over_active_one_story_pack(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -659,9 +1072,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.assertIn("2 stories", dialog.source.currentText())
             self.assertEqual(dialog.stories.count(), 2)
-            self.assertIn("Needs speech", dialog.stories.item(0).text())
+            self.assertIn("Not prepared", dialog.stories.item(0).text())
             self.assertIn(
-                "Prepared - may still use live speech", dialog.stories.item(1).text()
+                "Partially prepared - saved audio; check readiness",
+                dialog.stories.item(1).text(),
             )
             dialog.close()
             dialog.deleteLater()
@@ -781,7 +1195,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.source.count(), 1)
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
-            self.assertIn("Preparation incomplete", dialog.stories.item(1).text())
+            self.assertIn("Partially prepared", dialog.stories.item(1).text())
             dialog.deleteLater()
 
     def test_progress_card_polls_durable_counts_during_slow_generation(self):
@@ -905,14 +1319,15 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
             self.assertIn(
-                "1 prepared, 1 incomplete, 0 not started",
+                "2 partially prepared, 0 need attention, 0 not prepared",
                 dialog.coverage_summary.text(),
             )
             self.assertIn("Saved offline audio found", dialog.resume_status.text())
             self.assertIn(
-                "Prepared - may still use live speech", dialog.stories.item(1).text()
+                "Partially prepared - saved audio; check readiness",
+                dialog.stories.item(1).text(),
             )
-            self.assertIn("Preparation incomplete", dialog.stories.item(0).text())
+            self.assertIn("Partially prepared", dialog.stories.item(0).text())
             dialog.deleteLater()
 
     def test_failed_first_pass_runs_automatic_recovery_before_accepting(self):
@@ -988,13 +1403,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.job().status, "prepared")
             self.assertTrue(
                 all(
-                    "Prepared - may still use live speech"
+                    "Partially prepared - saved audio; check readiness"
                     in dialog.stories.item(row).text()
                     for row in range(dialog.stories.count())
                 )
             )
             self.assertIn(
-                "2 prepared, 0 incomplete, 0 not started",
+                "2 partially prepared, 0 need attention, 0 not prepared",
                 dialog.coverage_summary.text(),
             )
             self.assertTrue(dialog.selection_panel.isHidden())

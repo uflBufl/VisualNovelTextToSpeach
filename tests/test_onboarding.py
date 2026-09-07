@@ -255,6 +255,119 @@ class OnboardingWizardTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_contextual_reading_setup_keeps_selected_voices_and_discovers_windows(self):
+        settings = AppSettings(
+            tts_model=None,
+            narrator_speaker=None,
+            voice_assignments={"Narrator": "character:rhiannon"},
+            tts_profile="default",
+        )
+        wizard = OnboardingWizard(
+            settings,
+            reading_setup=True,
+            auto_discover_windows=True,
+            window_loader=lambda: (SimpleNamespace(title="Reverse: 1999"),),
+        )
+        wizard.show()
+        self.application.processEvents()
+        page = wizard.configuration_page
+
+        self.assertEqual(wizard.windowTitle(), "Set up Reading")
+        self.assertEqual(wizard.stack.currentWidget(), page)
+        self.assertEqual(len(wizard.pages), 4)
+        self.assertTrue(page.game_window.isVisibleTo(wizard))
+        self.assertFalse(page.speech_backend.isVisibleTo(wizard))
+        self.assertFalse(page.tts_model.isVisibleTo(wizard))
+        self.assertFalse(page.advanced_toggle.isVisibleTo(wizard))
+        self.assertIn("Rhiannon", page.speech_summary.text())
+        self.assertTrue(page.validatePage())
+        self.assertEqual(
+            wizard.draft_settings,
+            settings.updated(
+                capture_mode="window",
+                game_window_title="Reverse: 1999",
+                auto_advance_enabled=True,
+            ),
+        )
+        font = QFont(wizard.font())
+        font.setPointSizeF(max(12, font.pointSizeF()) * 2)
+        wizard.setFont(font)
+        wizard.resize(520, 420)
+        wizard.show_page(3)
+        wizard.test_page.set_result(True, "Read the visible dialogue.")
+        self.application.processEvents()
+        self.assertGreater(
+            wizard.stack.currentWidget().verticalScrollBar().maximum(), 0
+        )
+        self.assertTrue(wizard.finish_button.isVisibleTo(wizard))
+        self.assertIn("Save and return to Reading", wizard.test_page.status.text())
+        wizard.show_page(0)
+        requested = []
+        wizard.voices_requested.connect(lambda: requested.append(True))
+        with patch("vntts.onboarding_ui.GameNarratorDialog") as picker:
+            page.choose_narrator_button.click()
+        picker.assert_not_called()
+        self.assertEqual(requested, [True])
+        self.assertFalse(wizard.isVisible())
+        self.assertFalse(settings.onboarding_completed)
+        wizard.deleteLater()
+
+    def test_contextual_reading_requests_license_and_routes_readiness_remedies(self):
+        wizard = OnboardingWizard(
+            AppSettings(speech_backend="coqui-xtts", game_window_title="Game"),
+            reading_setup=True,
+        )
+        wizard.show()
+        self.application.processEvents()
+        page = wizard.configuration_page
+        self.assertTrue(page.terms.isVisibleTo(wizard))
+        self.assertTrue(page.license_label.isVisibleTo(wizard))
+        self.assertFalse(page.validatePage())
+        page.terms.setChecked(True)
+        self.assertTrue(page.validatePage())
+        self.assertTrue(wizard.draft_settings.xtts_terms_accepted)
+
+        requested = []
+        wizard.voices_requested.connect(lambda: requested.append("voices"))
+        wizard.settings_requested.connect(lambda: requested.append("settings"))
+        diagnostics = wizard.diagnostics_page
+        for name, target, label in (
+            ("Capture source", None, "Choose game window"),
+            ("Hotkeys", "settings", "Open Settings"),
+            ("Character voices", "voices", "Open Voices"),
+        ):
+            diagnostics._checks_finished(
+                (DiagnosticResult(name, "error", "Needs attention", "settings"),),
+                None,
+            )
+            self.assertEqual(diagnostics.remediation_button.text(), label)
+            diagnostics.remediation_button.click()
+            if target:
+                self.assertEqual(requested[-1], target)
+            else:
+                self.assertIs(wizard.stack.currentWidget(), page)
+                self.assertFalse(page.advanced_content.isVisibleTo(wizard))
+        wizard.deleteLater()
+
+    def test_calibration_capture_failure_restores_context_and_allows_retry(self):
+        wizard = OnboardingWizard(AppSettings(), reading_setup=True)
+        page = wizard.calibration_page
+        page.pending_geometry = None
+        wizard.hide()
+        with patch(
+            "vntts.onboarding_ui.show_calibration_overlay",
+            side_effect=RuntimeError("Screen Recording permission denied"),
+        ):
+            page.open_overlay()
+
+        self.assertTrue(wizard.isVisible())
+        self.assertFalse(page.isComplete())
+        self.assertIn("permission denied", page.status.text())
+        self.assertIn("try again", page.status.text())
+        self.assertTrue(page.button.isEnabled())
+        wizard.close()
+        wizard.deleteLater()
+
     def test_setup_narrator_picker_updates_draft_without_file_or_save(self):
         original = AppSettings(speech_backend="moss-tts")
         wizard = OnboardingWizard(original)
@@ -262,6 +375,9 @@ class OnboardingWizardTest(unittest.TestCase):
         candidate = original.updated(
             voice_manifest="chosen-voices.json",
             voice_assignments={"Narrator": "character:rhiannon"},
+            character_voice_defaults={"Vertin": "character:rhiannon"},
+            speaker_announcement_mode="all-speakers",
+            announce_speaker_changes=False,
             speech_backend="pocket-tts",
             tts_model=None,
             tts_profile="default",
@@ -278,6 +394,14 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertEqual(
             page._base_settings().voice_assignments, candidate.voice_assignments
         )
+        self.assertEqual(
+            page._base_settings().character_voice_defaults,
+            candidate.character_voice_defaults,
+        )
+        self.assertEqual(
+            page._base_settings().speaker_announcement_mode, "all-speakers"
+        )
+        self.assertFalse(page._base_settings().announce_speaker_changes)
         self.assertEqual(page.narrator_reference.text(), "")
         self.assertEqual(page._base_settings().speech_backend, "pocket-tts")
         self.assertIsNone(page._base_settings().tts_model)
@@ -299,6 +423,30 @@ class OnboardingWizardTest(unittest.TestCase):
         page.speech_backend.setCurrentIndex(page.speech_backend.findData("moss-tts"))
         self.assertEqual(page._base_settings().tts_profile, "stable")
         wizard.deleteLater()
+
+    def test_character_choice_keeps_manual_narrator_reference_in_setup(self):
+        with TemporaryDirectory() as directory:
+            reference = Path(directory) / "narrator.wav"
+            reference.touch()
+            original = AppSettings(
+                tts_speaker_wav=str(reference),
+                voice_assignments={"Narrator": "preset:alba"},
+            )
+            candidate = original.updated(
+                character_voice_defaults={"Vertin": "preset:marius"}
+            )
+            wizard = OnboardingWizard(original)
+            with patch("vntts.onboarding_ui.GameNarratorDialog") as picker:
+                picker.return_value.exec.return_value = QDialog.DialogCode.Accepted
+                picker.return_value.result_settings = candidate
+                wizard.configuration_page.choose_narrator_button.click()
+            draft = wizard.configuration_page._base_settings()
+            self.assertEqual(draft.tts_speaker_wav, str(reference))
+            self.assertEqual(draft.voice_assignments, original.voice_assignments)
+            self.assertEqual(
+                draft.character_voice_defaults, candidate.character_voice_defaults
+            )
+            wizard.deleteLater()
 
     def test_new_setup_defaults_to_window_capture_and_pocket_tts(self):
         wizard = OnboardingWizard(AppSettings())

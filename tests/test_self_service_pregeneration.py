@@ -681,7 +681,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 QTest.qWait(5)
 
             self.assertFalse(tray.pregeneration_activation_runner.active)
-            self.assertEqual(tray.settings.audio_source_policy, "prefer-generated")
+            self.assertEqual(tray.settings.audio_source_policy, "prefer-game-audio")
             self.assertEqual(
                 tray.settings.game_pack, str(dialog.pack_result().manifest)
             )
