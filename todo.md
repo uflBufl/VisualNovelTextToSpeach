@@ -17,14 +17,6 @@ measurements in agent memory and completed-work history in Git, not here.
       generated reference with the intended engine/account access, save, restart,
       then confirm both live fallback and offline preparation retain the choice.
 
-## P0 - Verify cross-platform CI repairs
-
-- [ ] Give Windows offscreen Qt a real font directory and verify proportional
-      glyph metrics before layout checks; confirm the hosted suite passes.
-- [ ] Publish the adaptive review layouts, scrollable settings help, native-path
-      assertion and deterministic selected-WAV checks; confirm all hosted
-      Windows/Linux/macOS CI jobs pass.
-
 ## P1 - Qualify the implemented desktop UX program
 
 Follow [`docs/ui-ux-review-plan.md`](docs/ui-ux-review-plan.md) and the ranked
