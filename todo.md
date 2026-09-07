@@ -118,6 +118,21 @@ adding another wizard or library implementation.
       traceback/native fault, reproduce its failing path, then fix the demonstrated
       cause and retain a focused regression check. Local repeated real-worker
       refresh and close-during-refresh checks do not reproduce this crash.
+      New trigger: save a game narrator, return to Stories, then Refresh. The local
+      handoff with a real saved voice manifest and 100 refreshes also passed.
+      Windows Application events on 2026-09-07 confirm two native access violations
+      (0xc0000005) in uv-managed Python 3.14.2, python314.dll offset 0x18956;
+      the faulting module alone does not identify the responsible component.
+      Received faulthandler output: Python 3.14.2 / PySide6 6.11.2. The crashing
+      thread has no Python frame; JSON parsing is on a different pooled thread.
+      Retest on Windows after the shared QtPcmPlayer teardown fix: preview a game
+      reference, save the narrator, then Refresh Stories repeatedly. Confirm that
+      closing the preview stream resolves the native crash, not just the locally
+      reproduced resource leak. Do not mark the Windows crash resolved without it.
+      If the crash persists, collect a native debugger stack before blaming JSON.
+      One index is in game-content and the others in pregeneration, consistent
+      with catalog/input/pack snapshots. Inspect exact paths and references before
+      proposing any cleanup; Refresh itself does not create these snapshots.
 
 - [ ] Capture thread stacks when the macOS `qt-app` shard stalls in
       `test_settings_are_scrollable_and_grouped_into_visual_regions` (180-second

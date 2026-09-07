@@ -31,7 +31,6 @@ class QtPcmPlayer(QObject):
         self._timer = QTimer(self)
         self._timer.setInterval(20)
         self._timer.timeout.connect(self._poll)
-        self.destroyed.connect(self._close)
 
     def setSource(self, source):
         self.stop()
@@ -75,7 +74,11 @@ class QtPcmPlayer(QObject):
 
     def _ensure_player(self):
         if self._player is None:
-            self._player = self._player_factory()
+            pcm = self._player_factory()
+            # A QObject's own bound slot is disconnected during its destruction.
+            # Retain the PCM callback owner until the native stream is closed.
+            self.destroyed.connect(lambda: pcm.close())
+            self._player = pcm
         return self._player
 
     def _start(self, player, clip):
