@@ -373,10 +373,13 @@ class OfflineAudioPreparationDialog(QDialog):
         progress_layout.addWidget(self.progress_coverage)
         self.progress_panel.hide()
 
-        self.voice_confirmation = QGroupBox("Confirm story voices")
+        self.voice_confirmation = QGroupBox("Preparation summary")
         self.voice_confirmation.setVisible(False)
         self.voice_configuration = QLabel()
         self.voice_configuration.setWordWrap(True)
+        self.work_summary = QLabel()
+        self.work_summary.setWordWrap(True)
+        self.work_summary.setAccessibleName("Selected story preparation estimate")
         self.change_summary = QLabel()
         self.change_summary.setWordWrap(True)
         self.change_summary.setAccessibleName("Changes before generation")
@@ -392,16 +395,28 @@ class OfflineAudioPreparationDialog(QDialog):
         narrator_choice_row.addWidget(QLabel("Narrator"))
         narrator_choice_row.addWidget(self.narrator_choice, 1)
         narrator_choice_row.addWidget(self.play_narrator_reference)
+        self.narrator_controls = QWidget()
+        self.narrator_controls.setLayout(narrator_choice_row)
+        self.narrator_controls.setVisible(game_narrator_chooser is None)
         self.voice_routes = QListWidget()
         self.voice_routes.setAccessibleName("Planned character voice routes")
-        self.voice_routes.setMinimumHeight(120)
+        self.voice_routes.setMinimumHeight(90)
+        self.voice_route_summary = QLabel()
+        self.voice_route_summary.setWordWrap(True)
+        self.show_all_voice_routes = QCheckBox("Show all character assignments")
+        self.show_all_voice_routes.toggled.connect(
+            lambda: self._render_voice_routes(self._voice_plan)
+        )
         self.voice_confirmation_status = QLabel()
         self.voice_confirmation_status.setWordWrap(True)
         confirmation_layout = QVBoxLayout(self.voice_confirmation)
+        confirmation_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        confirmation_layout.addWidget(self.work_summary)
         confirmation_layout.addWidget(self.voice_configuration)
         confirmation_layout.addWidget(self.change_summary)
-        confirmation_layout.addLayout(narrator_choice_row)
-        confirmation_layout.addWidget(QLabel("Voices that will be generated"))
+        confirmation_layout.addWidget(self.narrator_controls)
+        confirmation_layout.addWidget(self.voice_route_summary)
+        confirmation_layout.addWidget(self.show_all_voice_routes)
         confirmation_layout.addWidget(self.voice_routes)
         confirmation_layout.addWidget(self.voice_confirmation_status)
 
@@ -594,10 +609,12 @@ class OfflineAudioPreparationDialog(QDialog):
         return tuple(choices)
 
     def _show_voice_confirmation(self, plan):
-        self.pocket_voice_cloning.setVisible(
-            self.settings.speech_backend == "pocket-tts"
+        local_voice_controls = self.game_narrator_chooser is None
+        show_terms = (
+            local_voice_controls and self.settings.speech_backend == "pocket-tts"
         )
-        self.pocket_terms.setVisible(self.settings.speech_backend == "pocket-tts")
+        self.pocket_voice_cloning.setVisible(show_terms)
+        self.pocket_terms.setVisible(show_terms)
         self.content_scroll.verticalScrollBar().setValue(0)
         try:
             choices = self._voice_choices(plan)
@@ -610,11 +627,13 @@ class OfflineAudioPreparationDialog(QDialog):
             self.selection_status.setText(f"Unable to show character voices: {error}")
             return
         self._awaiting_voice_confirmation = True
+        self.game_narrator_button.setEnabled(True)
         self.pocket_voice_cloning.setEnabled(True)
         self.selection_panel.hide()
         self.voice_panel.hide()
         self.progress_panel.hide()
         self.voice_confirmation.show()
+        self.work_summary.setText(self.summary.text())
         self.voice_configuration.setText(
             "Original game audio stays. Changing voices or model may require new recordings."
             + (
@@ -653,9 +672,30 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _render_voice_routes(self, plan):
         self.voice_routes.clear()
+        if plan is None:
+            return
         groups = plan.groups if isinstance(plan.groups, (tuple, list)) else ()
+        exceptions = [
+            group
+            for group in groups
+            if normalize_character_name(group.character) != "narrator"
+            and (
+                group.route != "voice"
+                or normalize_character_name(group.character)
+                != normalize_character_name(
+                    group.source_character or group.source_speaker or ""
+                )
+            )
+        ]
+        self.voice_route_summary.setText(
+            f"{len(exceptions)} of {len(groups)} voice roles use a substitute or need attention."
+            if exceptions
+            else "No character voice substitutions. Narrator is shown above."
+        )
+        visible = groups if self.show_all_voice_routes.isChecked() else exceptions
+        self.voice_routes.setVisible(bool(visible))
         for group in sorted(
-            groups,
+            visible,
             key=lambda value: (value.character.casefold(), value.group_id),
         ):
             lines = len(group.line_ids)
@@ -1103,6 +1143,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.selection_panel.hide()
         self.voice_panel.hide()
         self._render_generation_result(self._generation_result)
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(1)
+        self.progress_bar.setFormat("Audio saved")
         original = self._job.estimate.original_audio_lines
         prepared = getattr(result, "approved", 0)
         live = getattr(result, "live_fallbacks", 0)

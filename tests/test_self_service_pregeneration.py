@@ -294,6 +294,19 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertEqual(dialog.work_summary.text(), dialog.summary.text())
+            self.assertFalse(dialog.show_all_voice_routes.isChecked())
+            self.assertTrue(
+                all(
+                    not dialog.voice_routes.item(index).text().startswith("Narrator ->")
+                    for index in range(dialog.voice_routes.count())
+                )
+            )
+            dialog.show_all_voice_routes.setChecked(True)
+            self.assertEqual(
+                dialog.voice_routes.count(), len(dialog._voice_plan.groups)
+            )
+            dialog.show_all_voice_routes.setChecked(False)
             self.assertIn("Step 2", dialog.step.text())
             self.assertIn("Model:", dialog.narrator_status.text())
             self.assertNotIn("Model:", dialog.voice_configuration.text())
@@ -525,6 +538,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             self.assertTrue(dialog.pocket_terms.isHidden())
             self.assertEqual(dialog.continue_button.text(), "Use prepared audio")
+            self.assertEqual(dialog.progress_bar.maximum(), 1)
+            self.assertEqual(dialog.progress_bar.value(), 1)
+            self.assertEqual(dialog.progress_bar.format(), "Audio saved")
             dialog.continue_button.click()
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
             self.assertTrue(generator.rendered)

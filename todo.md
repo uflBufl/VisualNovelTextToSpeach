@@ -18,8 +18,8 @@ story preparation and reading; not specialist authoring/review tools. Existing
 control-level audit completion does not mean the overall journey is satisfactory.
 The user approved implementation. Next consolidate the Voices editor and
 simplify the preparation form inside Stories without replacing the existing
-generation/playback services. Finish contextual reading setup and automatic
-activation rather than adding another wizard or library implementation.
+generation/playback services. Finish contextual reading setup rather than
+adding another wizard or library implementation.
 
 - [ ] Refine the target journey and screen layouts while integrating services.
   - Use one main window with Stories, Voices and Reading sections and one shared
@@ -48,9 +48,6 @@ activation rather than adding another wizard or library implementation.
     capture-area confirmation and a short reading check in context; do not force
     the entire setup sequence again after successful configuration.
 - [ ] Make Stories the preparation and readiness home.
-  - Current slice: compact confirmation into coverage/work plus exceptional voice
-    routes, with all assignments still inspectable. Inspect normal/narrow layouts
-    and verify the summary against the plan before its separate commit.
   - List all imported stories with search/filter, persisted selection and explicit
     status: not prepared, preparing, partially prepared, ready, or needs attention.
     Opening a story shows original/prepared/live-TTS/omitted coverage with counts
@@ -111,6 +108,13 @@ activation rather than adding another wizard or library implementation.
   - Acceptance: the user can tell what is selected, what is running, what is
     ready and what to do next without logs; can prepare before launching the game;
     and can read with the chosen voices without repeated setup/ordinary review.
+
+## P1 - Diagnose intermittent offscreen Qt test stalls
+
+- [ ] Capture thread stacks when the macOS `qt-app` shard stalls in
+      `test_settings_are_scrollable_and_grouped_into_visual_regions` (180-second
+      timeout). It passes in isolation and the repeated shard also passes;
+      identify the leaked event/modal/worker state before changing timeouts.
 
 ## P2 - Automate the fresh-install player journey (deferred until UI redesign)
 
