@@ -142,7 +142,7 @@ class GameNarratorTest(unittest.TestCase):
                 (root / "reverse1999" / "english-bank-index.json").write_text(
                     json.dumps(
                         {
-                            "version": 4,
+                            "version": 5,
                             "game_audio_directory": str(root / "audio"),
                             "banks": [],
                         }

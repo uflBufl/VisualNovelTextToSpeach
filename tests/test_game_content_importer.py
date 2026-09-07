@@ -137,7 +137,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             (story.parent / "narrator-banks.json").write_text("{}")
             (story.parent / "english-bank-index.json").write_text(
                 json.dumps(
-                    {"version": 4, "game_audio_directory": str(audio), "banks": []}
+                    {"version": 5, "game_audio_directory": str(audio), "banks": []}
                 )
             )
 
