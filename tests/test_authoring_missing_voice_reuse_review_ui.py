@@ -104,7 +104,23 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
                 dialog.show()
                 self.application.processEvents()
                 self.assertEqual(
-                    dialog.review_scroll.horizontalScrollBar().maximum(), 0
+                    dialog.review_scroll.horizontalScrollBar().maximum(),
+                    0,
+                    (
+                        font.toString(),
+                        dialog.review_scroll.viewport().size(),
+                        sorted(
+                            (
+                                widget.minimumSizeHint().width(),
+                                widget.metaObject().className(),
+                                widget.accessibleName(),
+                            )
+                            for widget in dialog.findChildren(
+                                type(dialog.review_scroll.widget())
+                            )
+                            if widget.isVisible()
+                        )[-10:],
+                    ),
                 )
 
             self.assertGreater(dialog.review_scroll.verticalScrollBar().maximum(), 0)

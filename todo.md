@@ -3,6 +3,14 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P1 - Choose narrator voices from Settings
+
+- [ ] Reuse the game narrator picker in Settings and setup; show the selected
+      voice and keep manual audio-file selection behind an advanced control.
+- [ ] Keep narrator selection staged until save, preserve unrelated edits and
+      focus missing-voice validation on the picker; verify acceptance/cancellation
+      and the existing Settings/setup regressions.
+
 ## P1 - Run MOSS Local v1.5 on Windows
 
 - [ ] Qualify real Windows CPU/8 GB GPU rendering with
@@ -19,6 +27,8 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Verify cross-platform CI repairs
 
+- [ ] Diagnose remaining Windows review widths using widget geometry in CI
+      failures; isolate the fake C++ HTTP server from reverse-DNS startup work.
 - [ ] Publish the adaptive review layouts, scrollable settings help, native-path
       assertion and deterministic selected-WAV checks; confirm all hosted
       Windows/Linux/macOS CI jobs pass.

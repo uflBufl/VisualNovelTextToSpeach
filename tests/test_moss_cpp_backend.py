@@ -30,6 +30,7 @@ SERVER = r"""
 import base64, io, json, sys, time, wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 port = int(sys.argv[sys.argv.index('--port') + 1])
 root = Path(sys.argv[sys.argv.index('--model') + 1]).parent
 class Handler(BaseHTTPRequestHandler):
@@ -63,7 +64,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         data = audio.getvalue()
         self.wfile.write(data[:50] if body['text'] == 'Truncated.' else data)
-HTTPServer(('127.0.0.1', port), Handler).serve_forever()
+class LoopbackServer(HTTPServer):
+    def server_bind(self):
+        # This protocol peer has no need for HTTPServer's reverse-DNS lookup.
+        TCPServer.server_bind(self)
+        self.server_name = 'localhost'
+        self.server_port = self.server_address[1]
+LoopbackServer(('127.0.0.1', port), Handler).serve_forever()
 """
 
 
