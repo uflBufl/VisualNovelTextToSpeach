@@ -200,9 +200,7 @@ def ensure_moss_cpp(model_name=None, *, cancellation=None, progress=None, root=N
                 _extract_runtime(archive, paths[0].parent, cancellation)
             progress("Checking MOSS native runtime...")
             try:
-                _run(
-                    [str(paths[0]), "--help"], cancellation=cancellation, timeout=30
-                )
+                _run([str(paths[0]), "--help"], cancellation=cancellation, timeout=30)
             except TTSConfigurationError as error:
                 raise TTSConfigurationError(
                     "MOSS native runtime check failed. "
