@@ -357,7 +357,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             session = write_quality_session(Path(directory))
             dialog = SourceReferenceQualityDialog(session)
-            base_point_size = dialog.font().pointSizeF()
+            base_point_size = max(12.0, dialog.font().pointSizeF())
             for scale in (1.5, 2.0):
                 font = dialog.font()
                 font.setPointSizeF(base_point_size * scale)

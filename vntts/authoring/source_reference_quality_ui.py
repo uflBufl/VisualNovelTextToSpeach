@@ -83,7 +83,7 @@ class SourceReferenceQualityDialog(QDialog):
         self.reference_details = QLabel()
         self.reference_details.setWordWrap(True)
         self.reference_details.setAccessibleName("Original source reference details")
-        self.play_reference = QPushButton("Play original reference")
+        self.play_reference = QPushButton("Play original")
         self.play_reference.setAccessibleName("Play original source reference")
         self.play_reference.setAccessibleDescription(
             "Play the checksum-verified original until its end"
@@ -102,7 +102,7 @@ class SourceReferenceQualityDialog(QDialog):
         self.generated_details = QLabel()
         self.generated_details.setWordWrap(True)
         self.generated_details.setAccessibleName("Selected generated sample details")
-        self.play_generated = QPushButton("Play selected generated sample")
+        self.play_generated = QPushButton("Play generated")
         self.play_generated.setAccessibleName("Play selected generated sample")
         self.play_generated.setAccessibleDescription(
             "Play the selected checksum-verified generated sample until its end"

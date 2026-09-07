@@ -1306,6 +1306,14 @@ class TrayApplicationTest(unittest.TestCase):
         )
         dialog.section_navigation.setCurrentIndex(2)
         self.assertTrue(dialog.speech_backend.isVisibleTo(dialog))
+        self.assertEqual(
+            dialog.speech_backend.toolTip(), dialog.speech_backend.currentText()
+        )
+        dialog.audio_source_policy.setCurrentIndex(2)
+        self.assertEqual(
+            dialog.audio_source_policy.toolTip(),
+            dialog.audio_source_policy.currentText(),
+        )
         self.assertFalse(dialog.settings_regions[4].isVisibleTo(dialog))
         dialog.resize(620, 500)
         self.application.processEvents()
@@ -1533,6 +1541,21 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertTrue(dialog.validation_summary.isVisibleTo(dialog))
                 self.assertTrue(dialog.settings_scroll.isVisibleTo(dialog))
                 self.assertTrue(dialog.save_button.isVisibleTo(dialog))
+
+                dialog.section_navigation.setCurrentIndex(2)
+                dialog.resize(620, 500)
+                self.application.processEvents()
+                viewport = dialog.settings_scroll.viewport()
+                self.assertEqual(
+                    dialog.settings_scroll.horizontalScrollBar().maximum(), 0
+                )
+                self.assertTrue(
+                    viewport.rect().contains(
+                        dialog.speech_backend.mapTo(
+                            viewport, dialog.speech_backend.rect().topRight()
+                        )
+                    )
+                )
 
                 delete_dialog(dialog)
 

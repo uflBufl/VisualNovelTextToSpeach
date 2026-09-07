@@ -313,7 +313,11 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.reject()
 
     def test_moss_confirmation_ignores_pocket_permission_and_stops_preview(self):
-        with TemporaryDirectory() as temporary_directory:
+        with (
+            TemporaryDirectory() as temporary_directory,
+            patch("vntts.pregeneration_voices.sys.platform", "darwin"),
+            patch("vntts.pregeneration_voices.platform.machine", return_value="arm64"),
+        ):
             root = Path(temporary_directory)
             content = inspect_story_index(write_content(root / "content"))
             manifest = write_manifest(root / "voices")
@@ -338,21 +342,15 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 thread_pool=pool,
                 preview_player=player,
             )
-            with (
-                patch("vntts.pregeneration_voices.sys.platform", "darwin"),
-                patch(
-                    "vntts.pregeneration_voices.platform.machine", return_value="arm64"
-                ),
-            ):
-                dialog.continue_button.click()
-                pool.tasks.pop(0).run()
-                self.application.processEvents()
-                pool.tasks.pop(0).run()
-                self.application.processEvents()
-                self.assertTrue(dialog._awaiting_voice_confirmation)
-                self.assertFalse(dialog.voice_panel.preview_service._closed)
-                player.reset_mock()
-                dialog.continue_button.click()
+            dialog.continue_button.click()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.voice_panel.preview_service._closed)
+            player.reset_mock()
+            dialog.continue_button.click()
             self.assertTrue(dialog.generating)
             self.assertFalse(dialog.planning_voices)
             player.stop.assert_called()

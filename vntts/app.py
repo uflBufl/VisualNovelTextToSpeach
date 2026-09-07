@@ -380,9 +380,7 @@ class SettingsDialog(QDialog):
         self.keep_running_on_close.setChecked(settings.keep_running_on_close)
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
-        self.pocket_gated_model = QCheckBox(
-            "I accepted the Pocket terms; enable voice cloning"
-        )
+        self.pocket_gated_model = QCheckBox("I accepted Pocket's terms")
         self.pocket_gated_model.setChecked(settings.pocket_gated_model_accepted)
         self.pocket_gated_model.setAccessibleDescription(
             "Unchecked uses the public preset-only Pocket model. Checked permits "
@@ -671,6 +669,13 @@ class SettingsDialog(QDialog):
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         region = QGroupBox(title)
         region.setLayout(form)
+        for choice in region.findChildren(QComboBox):
+            choice.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            choice.setMinimumContentsLength(16)
+            choice.setToolTip(choice.currentText())
+            choice.currentTextChanged.connect(choice.setToolTip)
         return region
 
     def _path_selector(
