@@ -10,20 +10,18 @@ measurements in agent memory and completed-work history in Git, not here.
       latency. CPU codec remains enabled to limit VRAM use. Profile remaining
       codec/reference-encoding costs before changing native thread settings or
       placing the full sidecar on an 8 GB GPU; PyTorch settings do not tune GGUF.
-- [ ] Compare the locally available Centurion playable references with identical
-      narrator preview text, profile and seed, one render per reference. Preserve
-      original/output audio and objective pause diagnostics in isolated artifacts;
-      do not approve outputs, change saved voices or treat Mac MLX timings as Windows
-      evidence. Investigate silence/preflight failures without loosening safety rules.
-      Local installed game lacks mianvoc_hero3032 (21 playable speech rows are
-      unavailable); obtain the exact Windows reference WAVs before claiming to
-      reproduce its failures. Existing wiki references are not equivalent evidence.
+- [ ] Investigate reference-dependent MOSS generation failures using the captured
+      Centurion 18-reference comparison: 11 generation-limit completions (10 with long
+      trailing silence), 3 complete outputs with 2.96-3.60 s internal pauses,
+      and 4 complete outputs without those failures. Recheck representative good
+      and bad references in fresh workers and across seeds before changing
+      reference ranking, token limits or generation defaults. Preserve provenance
+      and raw output; do not auto-approve or weaken silence checks. These are Mac
+      MLX results, not evidence about Windows GGUF performance.
 
 ## P0 - Prefer spoken playable-character narrator references
 
-- [ ] Confirm downloaded story voices
-      remain available alongside packaged voices.
-      Measure first-play latency with actual Windows game audio after selection
+- [ ] Measure first-play latency with actual Windows game audio after selection
       prefetch; synthetic Mac decoder timing is not a Windows performance gate.
 
 ## P0 - Redesign the ordinary-player interface

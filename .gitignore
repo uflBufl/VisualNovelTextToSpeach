@@ -11,3 +11,5 @@ logs/
 /samples/generated_voices/
 /samples/moss-rhiannon-clone-probe/
 /data/reverse1999-voices/
+/.codex/investigations/
+/.codex/notes/
