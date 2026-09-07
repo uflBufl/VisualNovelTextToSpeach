@@ -333,6 +333,51 @@ class GameNarratorTest(unittest.TestCase):
             )
             previews.close.assert_called_once()
 
+    def test_moss_picker_keeps_engine_without_cpp_or_apple_silicon(self):
+        with (
+            TemporaryDirectory() as directory,
+            patch("platform.machine", return_value="AMD64"),
+            patch.dict(
+                os.environ, {"VNTTS_MOSS_CPP_EXECUTABLE": "", "VNTTS_MOSS_GGUF": ""}
+            ),
+        ):
+            manifest = write_manifest(Path(directory))
+            importer = Mock()
+            importer.narrator_characters.return_value = ("Centurion",)
+            importer.prepare_voice_roles.return_value = manifest
+            previews = Mock()
+            previews.generate.side_effect = RuntimeError("MOSS runtime unavailable")
+            pool = ManualThreadPool()
+            settings = AppSettings(
+                speech_backend="moss-tts", tts_model="local-moss", tts_profile="natural"
+            )
+            dialog = GameNarratorDialog(
+                settings,
+                importer=importer,
+                preview_service=previews,
+                thread_pool=pool,
+                player=Mock(),
+            )
+            self.application.processEvents()
+            self.run_task(pool)
+            dialog.prepare_button.click()
+            self.run_task(pool)
+            self.assertIn("MOSS", dialog.engine.text())
+            self.assertTrue(dialog.terms.isHidden())
+            self.assertTrue(dialog.consent.isHidden())
+            self.assertTrue(dialog.preview_button.isEnabled())
+            dialog.preview_button.click()
+            self.run_task(pool)
+            plan = previews.generate.call_args.args[0]
+            self.assertEqual(plan.synthesis_backend, "moss-tts")
+            self.assertEqual(plan.synthesis_model, "local-moss")
+            self.assertEqual(plan.synthesis_profile, "natural")
+            self.assertIn("MOSS runtime unavailable", dialog.status.text())
+            self.assertEqual(dialog._settings().speech_backend, "moss-tts")
+            self.assertEqual(previews.generate.call_count, 1)
+            dialog.reject()
+            self.run_task(pool)
+
     def test_cancel_discards_late_discovery_and_closes_worker(self):
         pool = ManualThreadPool()
         importer = Mock()

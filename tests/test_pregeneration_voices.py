@@ -327,25 +327,21 @@ class VoicePlanStoreTest(unittest.TestCase):
         job = jobs.create_or_resume(content, ("story",))
         return job, jobs
 
-    def test_self_service_uses_a_supported_backend_and_profile(self):
+    def test_self_service_preserves_selected_backend_and_normalizes_profile(self):
         unsupported_moss = resolve_pregeneration_settings(
             AppSettings(
                 speech_backend="moss-tts",
                 tts_model="local-moss",
                 tts_profile="stable",
             ),
-            platform_name="win32",
-            machine="AMD64",
         )
         invalid_profile = resolve_pregeneration_settings(
             AppSettings(speech_backend="coqui-xtts", tts_profile="obsolete"),
-            platform_name="linux",
-            machine="x86_64",
         )
 
-        self.assertEqual(unsupported_moss.speech_backend, "pocket-tts")
-        self.assertIsNone(unsupported_moss.tts_model)
-        self.assertEqual(unsupported_moss.tts_profile, "default")
+        self.assertEqual(unsupported_moss.speech_backend, "moss-tts")
+        self.assertEqual(unsupported_moss.tts_model, "local-moss")
+        self.assertEqual(unsupported_moss.tts_profile, "stable")
         self.assertEqual(invalid_profile.speech_backend, "coqui-xtts")
         self.assertEqual(invalid_profile.tts_profile, "stable")
 

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import platform
-import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -54,27 +52,9 @@ class PregenerationVoiceCancelled(PregenerationVoiceError):
     """The player cancelled voice planning before publication."""
 
 
-def resolve_pregeneration_settings(
-    settings,
-    *,
-    platform_name=None,
-    machine=None,
-):
-    """Keep self-service generation on a backend/profile this host can run."""
-    platform_name = sys.platform if platform_name is None else platform_name
-    machine = platform.machine() if machine is None else machine
+def resolve_pregeneration_settings(settings):
+    """Normalize profiles without replacing the user's selected speech engine."""
     backend = settings.speech_backend
-    from vntts.moss_cpp_backend import moss_cpp_requested
-
-    if backend == "moss-tts" and not (
-        (platform_name == "darwin" and str(machine).casefold() == "arm64")
-        or moss_cpp_requested(settings.tts_model)
-    ):
-        return settings.updated(
-            speech_backend="pocket-tts",
-            tts_model=None,
-            tts_profile="default",
-        )
     if backend == "pocket-tts":
         return settings.updated(tts_model=None, tts_profile="default")
     try:

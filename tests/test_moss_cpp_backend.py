@@ -210,11 +210,7 @@ class MossCppBackendTest(unittest.TestCase):
     def test_invalid_setup_and_windows_routing(self):
         settings = AppSettings(speech_backend="moss-tts", tts_model=str(self.model))
         self.assertEqual(
-            resolve_pregeneration_settings(
-                settings,
-                platform_name="win32",
-                machine="AMD64",
-            ).speech_backend,
+            resolve_pregeneration_settings(settings).speech_backend,
             "moss-tts",
         )
         with patch.dict(os.environ, {"VNTTS_MOSS_GPU_LAYERS": "oops"}):

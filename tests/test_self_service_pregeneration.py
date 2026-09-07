@@ -46,7 +46,6 @@ from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import (  # noqa: E402
     VoiceDecisionStore,
     VoicePlanStore,
-    resolve_pregeneration_settings,
 )
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.synthesis import SynthesisCompletion  # noqa: E402
@@ -314,15 +313,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.reject()
 
     def test_moss_confirmation_ignores_pocket_permission_and_stops_preview(self):
-        with (
-            TemporaryDirectory() as temporary_directory,
-            patch(
-                "vntts.pregeneration_ui.resolve_pregeneration_settings",
-                side_effect=lambda settings: resolve_pregeneration_settings(
-                    settings, platform_name="darwin", machine="arm64"
-                ),
-            ),
-        ):
+        with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_content(root / "content"))
             manifest = write_manifest(root / "voices")
