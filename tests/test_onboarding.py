@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QSizePolicy  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QSizePolicy  # noqa: E402
 
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
 from vntts.game_pack import GamePackError  # noqa: E402
@@ -254,6 +254,41 @@ class OnboardingWizardTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def test_setup_narrator_picker_updates_draft_without_file_or_save(self):
+        original = AppSettings(speech_backend="moss-tts")
+        wizard = OnboardingWizard(original)
+        page = wizard.configuration_page
+        candidate = original.updated(
+            voice_manifest="chosen-voices.json",
+            voice_assignments={"Narrator": "character:rhiannon"},
+        )
+        with (
+            patch("vntts.onboarding_ui.GameNarratorDialog") as picker,
+            patch.object(AppSettings, "save") as save,
+        ):
+            picker.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            picker.return_value.result_settings = candidate
+            page.choose_narrator_button.click()
+            save.assert_not_called()
+        self.assertEqual(
+            page._base_settings().voice_assignments, candidate.voice_assignments
+        )
+        self.assertEqual(page.narrator_reference.text(), "")
+        self.assertIn("Rhiannon", page.speech_summary.text())
+        self.assertFalse(
+            any(
+                widget is page.choose_narrator_button
+                for widget, _ in page.validation_errors()
+            )
+        )
+        self.assertEqual(original.voice_assignments, {})
+        before = page._base_settings()
+        with patch("vntts.onboarding_ui.GameNarratorDialog") as picker:
+            picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            page.choose_narrator_button.click()
+        self.assertEqual(page._base_settings(), before)
+        wizard.deleteLater()
 
     def test_new_setup_defaults_to_window_capture_and_pocket_tts(self):
         wizard = OnboardingWizard(AppSettings())

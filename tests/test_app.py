@@ -1271,7 +1271,7 @@ class TrayApplicationTest(unittest.TestCase):
         restart_note = next(
             label
             for label in dialog.findChildren(QLabel)
-            if "Fields marked 'restart required'" in label.text()
+            if "Changes marked 'restart required'" in label.text()
         )
         self.assertTrue(dialog.settings_scroll.widget().isAncestorOf(restart_note))
         self.assertEqual(
@@ -1390,7 +1390,7 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertNotEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
             self.assertIn("Screenshot directory", dialog.validation_summary.text())
             self.assertIn("Capture source", dialog.validation_summary.text())
-            self.assertIn("Narrator reference", dialog.validation_summary.text())
+            self.assertIn("Narrator voice", dialog.validation_summary.text())
             self.assertEqual(dialog.section_navigation.currentIndex(), 1)
             self.assertTrue(dialog.screenshot_directory.hasFocus())
 
@@ -1776,6 +1776,83 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.auto_advance_reason.isHidden())
         self.assertIn("selected game window", dialog.auto_advance_reason.text())
         self.assertFalse(dialog.settings().auto_advance_enabled)
+        delete_dialog(dialog)
+
+    def test_settings_narrator_picker_stages_voice_and_preserves_other_edits(self):
+        original = AppSettings(
+            speech_backend="moss-tts", voice_assignments={"Other": "character:other"}
+        )
+        dialog = SettingsDialog(original)
+        dialog.output_volume.setValue(37)
+        dialog.section_navigation.setCurrentIndex(2)
+        self.assertTrue(dialog.narrator_reference.isHidden())
+        candidate = original.updated(
+            voice_manifest="chosen-voices.json",
+            voice_assignments={
+                "Other": "character:other",
+                "Narrator": "character:rhiannon",
+            },
+        )
+        with (
+            patch("vntts.app.GameNarratorDialog") as picker,
+            patch.object(AppSettings, "save") as save,
+        ):
+            picker.return_value.exec.return_value = SettingsDialog.DialogCode.Accepted
+            picker.return_value.result_settings = candidate
+            dialog.choose_narrator_button.click()
+            passed_settings, parent = picker.call_args.args
+            self.assertEqual(passed_settings.output_volume_percent, 37)
+            self.assertIs(parent, dialog)
+            save.assert_not_called()
+        draft = dialog._raw_settings()
+        self.assertEqual(draft.voice_assignments, candidate.voice_assignments)
+        self.assertEqual(draft.voice_manifest, "chosen-voices.json")
+        self.assertEqual(draft.output_volume_percent, 37)
+        self.assertIsNone(draft.tts_speaker_wav)
+        self.assertIn("Rhiannon", dialog.narrator_voice.text())
+        self.assertNotIn("Narrator", original.voice_assignments)
+        self.assertFalse(
+            any(
+                widget is dialog.choose_narrator_button
+                for _, widget, _ in dialog.validation_errors()
+            )
+        )
+        before = dialog._raw_settings()
+        with patch("vntts.app.GameNarratorDialog") as picker:
+            picker.return_value.exec.return_value = SettingsDialog.DialogCode.Rejected
+            dialog.choose_narrator_button.click()
+        self.assertEqual(dialog._raw_settings(), before)
+        dialog.reject()
+        self.assertNotIn("Narrator", original.voice_assignments)
+        delete_dialog(dialog)
+
+    def test_settings_missing_moss_voice_targets_picker_and_file_is_optional(self):
+        dialog = SettingsDialog(
+            AppSettings(
+                speech_backend="moss-tts", voice_assignments={"Narrator": "preset:alba"}
+            )
+        )
+        self.assertTrue(
+            any(
+                widget is dialog.choose_narrator_button
+                for _, widget, _ in dialog.validation_errors()
+            )
+        )
+        dialog.advanced_narrator.setChecked(True)
+        self.assertFalse(dialog.narrator_reference.isHidden())
+        with patch("vntts.app.QFileDialog.getOpenFileName", return_value=("", "")):
+            dialog.browse_narrator_reference()
+        self.assertEqual(dialog.narrator_assignments, {"Narrator": "preset:alba"})
+        dialog.narrator_reference.setText("custom.wav")
+        dialog.narrator_reference.textEdited.emit("custom.wav")
+        self.assertEqual(dialog.narrator_assignments, {})
+        dialog.narrator_assignments = {"Narrator": "character:rhiannon"}
+        self.assertFalse(
+            any(
+                widget is dialog.narrator_reference
+                for _, widget, _ in dialog.validation_errors()
+            )
+        )
         delete_dialog(dialog)
 
     def test_settings_offer_moss_with_model_language_and_reference(self):

@@ -202,6 +202,7 @@ class SettingsDialog(QDialog):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.original_settings = settings
+        self.narrator_assignments = dict(settings.voice_assignments)
         self.setWindowTitle(f"{application_name} settings")
 
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
@@ -516,6 +517,19 @@ class SettingsDialog(QDialog):
         speech_form = QFormLayout()
         self.speech_form = speech_form
         speech_form.addRow("Speech engine (restart required)", self.speech_backend)
+        self.narrator_voice = QLabel()
+        self.narrator_voice.setWordWrap(True)
+        self.narrator_voice.setAccessibleName("Selected narrator voice")
+        self.choose_narrator_button = QPushButton("Choose game voice...")
+        self.choose_narrator_button.setAccessibleName("Choose narrator voice")
+        self.choose_narrator_button.setAccessibleDescription(
+            "Open the game voice picker to listen and choose a narrator"
+        )
+        self.choose_narrator_button.clicked.connect(self.choose_narrator)
+        speech_form.addRow("Narrator voice", self.narrator_voice)
+        speech_form.addRow(self.choose_narrator_button)
+        self.advanced_narrator = QCheckBox("Advanced: audio file")
+        speech_form.addRow(self.advanced_narrator)
         speech_form.addRow("Audio source policy", self.audio_source_policy)
         speech_form.addRow("Speech model (restart required)", self.tts_model)
         speech_form.addRow("TTS language (restart required)", self.tts_language)
@@ -525,6 +539,12 @@ class SettingsDialog(QDialog):
             self.narrator_reference,
             narrator_reference_layout,
         )
+        self.advanced_narrator.toggled.connect(
+            lambda visible: speech_form.setRowVisible(
+                narrator_reference_layout, visible
+            )
+        )
+        speech_form.setRowVisible(narrator_reference_layout, False)
         _add_composite_form_row(
             speech_form, "Game pack", self.game_pack, game_pack_layout
         )
@@ -621,8 +641,8 @@ class SettingsDialog(QDialog):
         )
 
         note_text = (
-            "Fields marked 'restart required' are saved immediately and take "
-            "effect after restarting the application."
+            "Changes marked 'restart required' take effect after restarting "
+            "the application."
         )
         if sys.platform != "darwin":
             note_text = f"Hotkey changes take effect immediately. {note_text}"
@@ -733,6 +753,7 @@ class SettingsDialog(QDialog):
             )
         if selected:
             field.setText(selected)
+        return selected
 
     def show_settings_section(self, index):
         if 0 <= index < len(self.settings_regions):
@@ -741,6 +762,7 @@ class SettingsDialog(QDialog):
             self.settings_scroll.verticalScrollBar().setValue(0)
 
     def _connect_validation_updates(self):
+        self.narrator_reference.textEdited.connect(self._use_narrator_file)
         for recorder in self.hotkey_recorders:
             recorder.keySequenceChanged.connect(self.update_validation_summary)
         for field in (
@@ -838,19 +860,19 @@ class SettingsDialog(QDialog):
                 "package. Choose an available engine.",
             )
         narrator_assignment = find_voice_assignment(
-            self.original_settings.voice_assignments,
+            self.narrator_assignments,
             "Narrator",
         )
         if (
             self.speech_backend.currentData() == "moss-tts"
             and not self.narrator_reference.text().strip()
-            and narrator_assignment is None
+            and not str(narrator_assignment or "").startswith("character:")
         ):
             add(
                 2,
-                self.narrator_reference,
-                "Narrator reference: choose a recording or assign an imported "
-                "character voice to Narrator before using MOSS-TTS.",
+                self.choose_narrator_button,
+                "Narrator voice: choose a game voice for MOSS-TTS. "
+                "You can listen before choosing.",
             )
         game_pack = self.game_pack.text().strip()
         effective_settings = None
@@ -864,6 +886,10 @@ class SettingsDialog(QDialog):
             ("Narrator reference", self.narrator_reference),
             ("Live speaker corpus", self.live_speaker_corpus),
         ):
+            if field is self.narrator_reference and str(
+                narrator_assignment or ""
+            ).startswith("character:"):
+                continue
             add(2, field, self._file_validation_error(label, field.text()))
         if not game_pack or effective_settings is not None:
             derived_paths = (
@@ -934,6 +960,9 @@ class SettingsDialog(QDialog):
         return tuple(errors)
 
     def update_validation_summary(self, *_args):
+        from vntts.speech_presentation import narrator_voice_label
+
+        self.narrator_voice.setText(narrator_voice_label(self._raw_settings()))
         errors = self.validation_errors()
         if errors:
             self.validation_summary.setText(
@@ -971,12 +1000,35 @@ class SettingsDialog(QDialog):
             directory=True,
         )
 
+    def choose_narrator(self):
+        dialog = GameNarratorDialog(self._raw_settings(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        candidate = dialog.result_settings
+        self.narrator_assignments = dict(candidate.voice_assignments)
+        self.voice_manifest.setText(candidate.voice_manifest or "")
+        self.pocket_gated_model.setChecked(candidate.pocket_gated_model_accepted)
+        self.narrator_reference.clear()
+        self.advanced_narrator.setChecked(False)
+        self.update_validation_summary()
+
+    def _use_narrator_file(self, path):
+        if path.strip():
+            self.narrator_assignments = {
+                name: source
+                for name, source in self.narrator_assignments.items()
+                if name.strip().casefold() != "narrator"
+            }
+            self.update_validation_summary()
+
     def browse_narrator_reference(self):
-        self._browse_path(
+        selected = self._browse_path(
             self.narrator_reference,
             "Narrator reference",
             file_filter="Audio files (*.flac *.m4a *.mp3 *.ogg *.wav);;All files (*)",
         )
+        if selected:
+            self._use_narrator_file(selected)
 
     def update_ocr_diagnostics_controls(self):
         enabled = self.retain_uncertain_frames.isChecked()
@@ -1025,6 +1077,7 @@ class SettingsDialog(QDialog):
             uses_xtts and "xtts" in self.tts_model.text().casefold()
         )
         self.xtts_terms.setVisible(uses_xtts)
+        self.speech_form.setRowVisible(self.xtts_terms, uses_xtts)
         self.pocket_gated_model.setEnabled(uses_pocket)
         self.pocket_gated_model.setVisible(uses_pocket)
         self.pocket_terms_label.setVisible(uses_pocket)
@@ -1049,6 +1102,7 @@ class SettingsDialog(QDialog):
         self.narrator_reference.setEnabled(True)
         self.narrator_reference_button.setEnabled(True)
         self.narrator_speaker.setEnabled(uses_xtts)
+        self.speech_form.setRowVisible(self.narrator_speaker, uses_xtts)
         self.tts_profile.setEnabled(uses_xtts or uses_moss)
         self.speech_rate.setEnabled(uses_xtts)
         self.update_terms_control()
@@ -1057,6 +1111,8 @@ class SettingsDialog(QDialog):
         errors = self.update_validation_summary()
         if errors:
             section, widget, _message = errors[0]
+            if widget is self.narrator_reference:
+                self.advanced_narrator.setChecked(True)
             self.section_navigation.setCurrentIndex(section)
             self.show_settings_section(section)
             widget.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -1072,6 +1128,7 @@ class SettingsDialog(QDialog):
         return AppSettings.from_mapping(
             {
                 **asdict(self.original_settings),
+                "voice_assignments": dict(self.narrator_assignments),
                 "read_hotkey": hotkeys["Read once"],
                 "live_hotkey": hotkeys["Live reading"],
                 "pause_hotkey": hotkeys["Pause or resume"],

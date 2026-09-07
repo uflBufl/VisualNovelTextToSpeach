@@ -33,6 +33,7 @@ from vntts.auto_advance_policy import (
     guard_auto_advance_settings,
 )
 from vntts.calibration import show_calibration_overlay
+from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import (
@@ -66,6 +67,7 @@ class ConfigurationPage(QWizardPage):
     def __init__(self, settings, *, window_loader=list_windows):
         super().__init__()
         self.original_settings = settings
+        self.narrator_assignments = dict(settings.voice_assignments)
         self.flow = None
         self.window_loader = window_loader
         self.windows_refreshed = False
@@ -271,6 +273,13 @@ class ConfigurationPage(QWizardPage):
         self.speech_summary.setWordWrap(True)
         self.speech_summary.setAccessibleName("Setup narrator and speech engine")
         recommended_form.addRow(self.speech_summary)
+        self.choose_narrator_button = QPushButton("Choose game voice...")
+        self.choose_narrator_button.setAccessibleName("Choose narrator voice")
+        self.choose_narrator_button.setAccessibleDescription(
+            "Open the game voice picker to listen and choose a narrator"
+        )
+        self.choose_narrator_button.clicked.connect(self.choose_narrator)
+        recommended_form.addRow(self.choose_narrator_button)
 
         advanced_form = QFormLayout()
         advanced_form.setFieldGrowthPolicy(
@@ -412,6 +421,26 @@ class ConfigurationPage(QWizardPage):
         if path:
             self.voice_manifest.setText(path)
 
+    def choose_narrator(self):
+        dialog = GameNarratorDialog(self._base_settings(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        candidate = dialog.result_settings
+        self.narrator_assignments = dict(candidate.voice_assignments)
+        self.voice_manifest.setText(candidate.voice_manifest or "")
+        self.pocket_gated_model.setChecked(candidate.pocket_gated_model_accepted)
+        self.narrator_reference.clear()
+        self.update_validation_summary()
+
+    def _use_narrator_file(self, path):
+        if path.strip():
+            self.narrator_assignments = {
+                name: source
+                for name, source in self.narrator_assignments.items()
+                if name.strip().casefold() != "narrator"
+            }
+            self.update_validation_summary()
+
     def browse_narrator_reference(self):
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
@@ -421,6 +450,7 @@ class ConfigurationPage(QWizardPage):
         )
         if path:
             self.narrator_reference.setText(path)
+            self._use_narrator_file(path)
 
     def manage_assets(self):
         dialog = AssetManagerDialog(self.settings(), parent=self)
@@ -486,6 +516,7 @@ class ConfigurationPage(QWizardPage):
         self.update_terms_control()
 
     def _connect_validation_updates(self):
+        self.narrator_reference.textEdited.connect(self._use_narrator_file)
         for recorder in (self.read_hotkey, self.live_hotkey):
             recorder.keySequenceChanged.connect(self.update_validation_summary)
         for field in (
@@ -542,7 +573,13 @@ class ConfigurationPage(QWizardPage):
         if backend == "coqui-xtts" and not self.terms.isChecked():
             add(self.terms, "XTTS license: accept the CPML terms.")
         narrator_reference = self.narrator_reference.text().strip()
-        if narrator_reference and not Path(narrator_reference).expanduser().is_file():
+        if (
+            narrator_reference
+            and not str(
+                find_voice_assignment(self.narrator_assignments, "Narrator") or ""
+            ).startswith("character:")
+            and not Path(narrator_reference).expanduser().is_file()
+        ):
             add(
                 self.narrator_reference,
                 "Narrator reference: the selected file does not exist.",
@@ -550,16 +587,14 @@ class ConfigurationPage(QWizardPage):
         if (
             backend == "moss-tts"
             and not narrator_reference
-            and find_voice_assignment(
-                self.original_settings.voice_assignments,
-                "Narrator",
-            )
-            is None
+            and not str(
+                find_voice_assignment(self.narrator_assignments, "Narrator") or ""
+            ).startswith("character:")
         ):
             add(
-                self.narrator_reference,
-                "Narrator reference: choose a recording or assign an imported "
-                "character voice to Narrator before using MOSS-TTS.",
+                self.choose_narrator_button,
+                "Narrator voice: choose a game voice for MOSS-TTS. "
+                "You can listen before choosing.",
             )
         game_pack = self.game_pack.text().strip()
         manifest = self.voice_manifest.text().strip()
@@ -579,6 +614,7 @@ class ConfigurationPage(QWizardPage):
         self.speech_summary.setText(
             speech_configuration_label(
                 self.original_settings.updated(
+                    voice_assignments=dict(self.narrator_assignments),
                     speech_backend=self.speech_backend.currentData(),
                     tts_model=self.tts_model.text().strip() or None,
                     narrator_speaker=self.narrator_speaker.text().strip() or None,
@@ -588,8 +624,8 @@ class ConfigurationPage(QWizardPage):
             )
         )
         self.speech_summary.setToolTip(
-            "Choose game character voices during story preparation. "
-            "Advanced options contain reference files and model access terms."
+            "Choose game voice opens the narrator picker. "
+            "Manual reference files are optional in Advanced options."
         )
         errors = self.validation_errors()
         if errors:
@@ -624,6 +660,7 @@ class ConfigurationPage(QWizardPage):
         return AppSettings.from_mapping(
             {
                 **asdict(self.original_settings),
+                "voice_assignments": dict(self.narrator_assignments),
                 "capture_mode": self.capture_mode.currentData(),
                 "auto_advance_enabled": self.auto_advance.isChecked(),
                 "game_window_title": self.game_window.currentText().strip() or None,

@@ -3,14 +3,6 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P1 - Choose narrator voices from Settings
-
-- [ ] Reuse the game narrator picker in Settings and setup; show the selected
-      voice and keep manual audio-file selection behind an advanced control.
-- [ ] Keep narrator selection staged until save, preserve unrelated edits and
-      focus missing-voice validation on the picker; verify acceptance/cancellation
-      and the existing Settings/setup regressions.
-
 ## P1 - Run MOSS Local v1.5 on Windows
 
 - [ ] Qualify real Windows CPU/8 GB GPU rendering with
