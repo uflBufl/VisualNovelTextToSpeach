@@ -198,9 +198,11 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             plan, group, _manifest = ambiguous_fixture(root)
             backend = FakeBackend("moss-tts")
             factory_calls = []
+            progress = []
 
             def factory(name, registry, cache_root, **options):
                 factory_calls.append((name, registry, cache_root, options))
+                options["startup_progress"]("Loading native model...")
                 backend.registry = registry
                 return backend
 
@@ -208,7 +210,17 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                 root / "auditions", backend_factory=factory
             )
             source_id = group.candidates[0].source_id
-            first = service.generate(plan, group, source_id)
+            first = service.generate(plan, group, source_id, progress=progress.append)
+            self.assertEqual(
+                progress,
+                [
+                    "Starting the preview model. First use also loads its weights...",
+                    "Loading native model...",
+                    "Generating preview audio with the loaded model...",
+                    "Checking generated audio for silence and other failures...",
+                ],
+            )
+            progress.clear()
             service.close()
             second_service = VoiceAuditionPreviewService(
                 root / "auditions",
@@ -216,7 +228,10 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                     "A persisted preview must not restart the model"
                 ),
             )
-            second = second_service.generate(plan, group, source_id)
+            second = second_service.generate(
+                plan, group, source_id, progress=progress.append
+            )
+            self.assertEqual(progress, ["Checking the saved preview..."])
             second_service.close()
 
             self.assertTrue(first.path.is_file())

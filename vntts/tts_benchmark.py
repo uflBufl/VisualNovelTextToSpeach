@@ -83,6 +83,7 @@ def create_backend(
     moss_streaming_first_chunk_frames=None,
     moss_streaming_interval=None,
     startup_cancellation=None,
+    startup_progress=None,
     terms_accepted=False,
     allow_gated_model_access=False,
     require_cuda=False,
@@ -99,6 +100,11 @@ def create_backend(
         **(
             {"startup_cancellation": startup_cancellation}
             if startup_cancellation is not None
+            else {}
+        ),
+        **(
+            {"startup_progress": startup_progress}
+            if startup_progress is not None
             else {}
         ),
         **(

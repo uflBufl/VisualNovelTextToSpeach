@@ -421,6 +421,7 @@ class GameNarratorDialog(QDialog):
             plan.groups[0],
             plan.groups[0].source_id,
             cancel_event=self.cancellation,
+            progress=self.decoderProgress.emit,
         ).path
 
     def _save(self):

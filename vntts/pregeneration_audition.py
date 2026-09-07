@@ -82,12 +82,14 @@ class VoiceAuditionPreviewService:
         *,
         text=None,
         cancel_event=None,
+        progress=None,
     ):
         """Generate or reuse the group's one representative candidate phrase."""
         with self._lock:
             if self._closed:
                 raise VoiceAuditionError("Voice audition service is closed")
             self._cancel.clear()
+            notify = progress or (lambda _message: None)
             cancellation = _CombinedCancellation(self._cancel, cancel_event)
             _raise_if_cancelled(cancellation)
             candidate = _validate_request(plan, group, candidate_source_id)
@@ -97,6 +99,7 @@ class VoiceAuditionPreviewService:
             identity = _preview_identity(plan, group, candidate, preview_text)
             target = self.root / f"{identity}.wav"
             if target.exists():
+                notify("Checking the saved preview...")
                 return _cached_preview(
                     target,
                     identity,
@@ -114,6 +117,9 @@ class VoiceAuditionPreviewService:
                 plan.pocket_voice_cloning,
             )
             if self._backend is None or self._backend_config != backend_config:
+                notify(
+                    "Starting the preview model. First use also loads its weights..."
+                )
                 self._backend = shutdown_speech_backend(self._backend)
                 self._backend_config = None
                 try:
@@ -123,6 +129,11 @@ class VoiceAuditionPreviewService:
                         self.root / "synthesis-cache",
                         model_name=plan.synthesis_model,
                         startup_cancellation=cancellation,
+                        **(
+                            {"startup_progress": progress}
+                            if progress is not None
+                            else {}
+                        ),
                         allow_gated_model_access=plan.pocket_voice_cloning,
                     )
                 except Exception as error:
@@ -146,6 +157,7 @@ class VoiceAuditionPreviewService:
                 cancellation=cancellation,
             )
             try:
+                notify("Generating preview audio with the loaded model...")
                 result = self._backend.render(request).collect()
             except Exception as error:
                 if cancellation.is_set():
@@ -180,6 +192,7 @@ class VoiceAuditionPreviewService:
             staging = _staging_path(target)
             try:
                 write_pcm16_wav(staging, samples, sample_rate)
+                notify("Checking generated audio for silence and other failures...")
                 _inspect_preview(staging, preview_text)
                 _load_candidate_registry(plan, candidate)
                 _raise_if_cancelled(cancellation)
