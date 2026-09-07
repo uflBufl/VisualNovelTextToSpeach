@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from scipy.signal import resample_poly
 from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.authoring.authority import (
@@ -27,7 +28,7 @@ from vntts.authoring.robustness_corpus import (
 )
 
 SPEECH_ROBUSTNESS_ASR_SCHEMA = "vntts.speech-robustness-asr-report"
-SPEECH_ROBUSTNESS_ASR_VERSION = 1
+SPEECH_ROBUSTNESS_ASR_VERSION = 2
 
 
 class SpeechRobustnessAsrError(RuntimeError):
@@ -148,6 +149,8 @@ class _WhisperTranscriber:
     def _input(payload):
         try:
             with wave.open(io.BytesIO(payload), "rb") as source:
+                if source.getnchannels() != 1 or source.getsampwidth() != 2:
+                    raise ValueError("ASR requires mono PCM16 WAV")
                 rate = source.getframerate()
                 samples = np.frombuffer(
                     source.readframes(source.getnframes()), dtype="<i2"
@@ -156,7 +159,12 @@ class _WhisperTranscriber:
             raise SpeechRobustnessAsrError(
                 f"Unable to decode robustness WAV for ASR: {error}"
             ) from error
-        return {"array": samples / 32768.0, "sampling_rate": rate}
+        samples /= 32768.0
+        # Transformers 4.57.6 passes the source rate twice to torchaudio,
+        # leaving non-16k audio unresampled. Supply Whisper's native rate.
+        if rate != 16_000:
+            samples = resample_poly(samples, 16_000, rate)
+        return {"array": samples, "sampling_rate": 16_000}
 
     @staticmethod
     def _text(result):
@@ -280,7 +288,7 @@ def _validate_document(document):
 def _progress_document(corpus_id, model_sha256, device, records):
     body = {
         "schema": "vntts.speech-robustness-asr-progress",
-        "schema_version": 1,
+        "schema_version": SPEECH_ROBUSTNESS_ASR_VERSION,
         "corpus_id": corpus_id,
         "model_sha256": model_sha256,
         "device": device,
@@ -298,6 +306,11 @@ def _load_progress(path, *, corpus_id, model_sha256, device, samples):
         raise SpeechRobustnessAsrError(
             f"Unable to load ASR progress: {error}"
         ) from error
+    if isinstance(document, dict) and document.get("schema_version") == 1:
+        raise SpeechRobustnessAsrError(
+            "ASR progress predates corrected audio resampling; "
+            "rerun with a new progress file"
+        )
     expected = {
         "schema",
         "schema_version",
@@ -311,7 +324,7 @@ def _load_progress(path, *, corpus_id, model_sha256, device, samples):
         not isinstance(document, dict)
         or set(document) != expected
         or document.get("schema") != "vntts.speech-robustness-asr-progress"
-        or document.get("schema_version") != 1
+        or document.get("schema_version") != SPEECH_ROBUSTNESS_ASR_VERSION
         or document.get("corpus_id") != corpus_id
         or document.get("model_sha256") != model_sha256
         or document.get("device") != device

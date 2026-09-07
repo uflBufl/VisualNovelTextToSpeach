@@ -19,6 +19,7 @@ from vntts.authoring.cohort_review import (
 )
 from vntts.authoring.robustness_asr import (
     SpeechRobustnessAsrError,
+    _WhisperTranscriber,
     build_speech_robustness_asr_report,
     compare_speech_transcript,
     write_speech_robustness_asr_report,
@@ -264,6 +265,19 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
         self.assertEqual(json.loads(published.getvalue())["sample_count"], 1)
         self.assertEqual(json.loads(checked.getvalue())["sample_count"], 1)
 
+    def test_whisper_input_preserves_duration_and_pitch_at_native_rate(self):
+        for rate in (16_000, 24_000, 48_000):
+            with self.subTest(rate=rate):
+                samples = 8_000 * np.sin(2 * np.pi * 440 * np.arange(rate) / rate)
+                result = _WhisperTranscriber._input(_wav_bytes(samples, rate))
+                self.assertEqual(result["sampling_rate"], 16_000)
+                self.assertEqual(len(result["array"]), 16_000)
+                spectrum = np.abs(np.fft.rfft(result["array"]))
+                self.assertEqual(int(spectrum.argmax()), 440)
+                self.assertAlmostEqual(
+                    float(np.max(result["array"])), 8_000 / 32768, places=2
+                )
+
     def test_asr_report_is_model_and_corpus_bound_and_no_replace(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -298,6 +312,23 @@ class AuthoringRobustnessCorpusTest(unittest.TestCase):
                 progress_path=progress,
             )
             self.assertEqual(resumed.document, report.document)
+            old_progress = json.loads(progress.read_text(encoding="utf-8"))
+            old_progress["schema_version"] = 1
+            old_progress["progress_id"] = _canonical_sha256(
+                {
+                    key: value
+                    for key, value in old_progress.items()
+                    if key != "progress_id"
+                }
+            )
+            progress.write_text(json.dumps(old_progress), encoding="utf-8")
+            with self.assertRaisesRegex(SpeechRobustnessAsrError, "resampling"):
+                build_speech_robustness_asr_report(
+                    corpus,
+                    model,
+                    progress_path=progress,
+                    transcriber=lambda _payload: self.fail("stale progress resumed"),
+                )
             with self.assertRaisesRegex(SpeechRobustnessAsrError, "output exists"):
                 write_speech_robustness_asr_report(report, output)
             with self.assertRaisesRegex(
