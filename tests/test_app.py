@@ -498,6 +498,91 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.pregeneration_dialog = None
         tray_application.shutdown()
 
+    def test_narrator_completion_returns_only_to_its_original_preparation(self):
+        for result in (QDialog.DialogCode.Accepted, QDialog.DialogCode.Rejected):
+            for origin in (0, 1, 2):
+                for same_preparation in (True, False):
+                    with self.subTest(
+                        result=result, origin=origin, same_preparation=same_preparation
+                    ):
+                        original = AppSettings()
+                        candidate = original.updated(tts_speaker="marius")
+                        tray = TrayApplication(
+                            self.application,
+                            original,
+                            controller_factory=Mock(
+                                return_value=Mock(is_ready=False, is_live_running=False)
+                            ),
+                        )
+                        preparation = Mock(settings=original)
+                        preparation.has_pending_work.return_value = False
+                        tray.pregeneration_dialog = preparation
+                        narrator = Mock(result_settings=candidate)
+                        tray.dashboard.sections.setCurrentIndex(origin)
+                        with (
+                            patch(
+                                "vntts.app.GameNarratorDialog", return_value=narrator
+                            ),
+                            patch.object(tray.dashboard, "embed_narrator"),
+                            patch.object(tray.dashboard, "remove_narrator"),
+                            patch("vntts.app.AppSettings.save") as save,
+                            patch.object(tray, "_reload_game_narrator") as reload,
+                        ):
+                            tray.open_voice_previews()
+                            tray.dashboard.show_reading()
+                            if not same_preparation:
+                                tray.pregeneration_dialog = None
+                            tray._narrator_finished(result)
+                        self.assertEqual(
+                            tray.dashboard.sections.currentIndex(),
+                            0 if origin == 0 and same_preparation else 2,
+                        )
+                        if result == QDialog.DialogCode.Accepted:
+                            save.assert_called_once_with()
+                            reload.assert_called_once_with(True)
+                            self.assertIs(tray.settings, candidate)
+                            if same_preparation:
+                                preparation.apply_narrator_settings.assert_called_once_with(
+                                    candidate
+                                )
+                        else:
+                            save.assert_not_called()
+                            reload.assert_not_called()
+                            self.assertIs(tray.settings, original)
+                            preparation.apply_narrator_settings.assert_not_called()
+                        tray.pregeneration_dialog = None
+                        tray.shutdown()
+
+    def test_narrator_save_retains_profile_failure_after_runtime_apply(self):
+        original = AppSettings(active_profile_id="game")
+        candidate = original.updated(tts_speaker="marius")
+        controller = Mock(is_ready=False, is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            original,
+            controller_factory=Mock(return_value=controller),
+        )
+        tray.narrator_dialog = Mock(result_settings=candidate)
+        with (
+            patch.object(tray.dashboard, "remove_narrator"),
+            patch("vntts.app.AppSettings.save"),
+            patch.object(tray.profile_store, "get", return_value=Mock()),
+            patch.object(
+                tray.profile_store,
+                "update_from_settings",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            tray._narrator_finished(QDialog.DialogCode.Accepted)
+            self.wait_until(lambda: not tray._controller_busy)
+        self.assertIs(tray.settings, candidate)
+        controller.apply_settings.assert_called_once_with(candidate, cancellation=ANY)
+        self.assertIn("Narrator saved", tray.status_action.toolTip())
+        self.assertIn(
+            "Active profile could not be updated", tray.status_action.toolTip()
+        )
+        tray.shutdown()
+
     def test_sequence_resync_action_selects_the_visible_canonical_event(self):
         controller = Mock()
         controller.live_sequence_anchor_options.return_value = (
@@ -1823,6 +1908,9 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.section_navigation.setCurrentIndex(2)
         self.assertTrue(dialog.narrator_reference.isHidden())
         candidate = original.updated(
+            speech_backend="pocket-tts",
+            tts_model=None,
+            tts_profile="default",
             voice_manifest="chosen-voices.json",
             voice_assignments={
                 "Other": "character:other",
@@ -1843,6 +1931,9 @@ class TrayApplicationTest(unittest.TestCase):
         draft = dialog._raw_settings()
         self.assertEqual(draft.voice_assignments, candidate.voice_assignments)
         self.assertEqual(draft.voice_manifest, "chosen-voices.json")
+        self.assertEqual(draft.speech_backend, "pocket-tts")
+        self.assertIsNone(draft.tts_model)
+        self.assertEqual(draft.tts_profile, "default")
         self.assertEqual(draft.output_volume_percent, 37)
         self.assertIsNone(draft.tts_speaker_wav)
         self.assertIn("Rhiannon", dialog.narrator_voice.text())
@@ -1853,6 +1944,18 @@ class TrayApplicationTest(unittest.TestCase):
                 for _, widget, _ in dialog.validation_errors()
             )
         )
+        candidate = candidate.updated(
+            speech_backend="moss-tts", tts_model="custom-moss", tts_profile="natural"
+        )
+        with patch("vntts.app.GameNarratorDialog") as picker:
+            picker.return_value.exec.return_value = SettingsDialog.DialogCode.Accepted
+            picker.return_value.result_settings = candidate
+            dialog.choose_narrator_button.click()
+        draft = dialog._raw_settings()
+        self.assertEqual(draft.speech_backend, "moss-tts")
+        self.assertEqual(draft.tts_model, "custom-moss")
+        self.assertEqual(draft.tts_profile, "natural")
+        self.assertEqual(draft.output_volume_percent, 37)
         before = dialog._raw_settings()
         with patch("vntts.app.GameNarratorDialog") as picker:
             picker.return_value.exec.return_value = SettingsDialog.DialogCode.Rejected

@@ -4,7 +4,7 @@ from functools import partial
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -31,6 +31,7 @@ from vntts.pregeneration_voices import (
     resolve_pregeneration_settings,
 )
 from vntts.qt_audio import QtPcmPlayer
+from vntts.release_backends import speech_backend_options
 from vntts.speech_presentation import engine_model_label, narrator_voice_label
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
@@ -92,21 +93,51 @@ class GameNarratorDialog(QDialog):
         self.form = form
         form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.engine_choice = QComboBox()
+        self.engine_choice.setAccessibleName("Voice preview and preparation engine")
+        for label, backend, available in speech_backend_options(
+            settings.speech_backend
+        ):
+            if backend == "coqui-xtts":
+                if settings.speech_backend != backend:
+                    continue
+                label += " (not supported for story preparation)"
+                available = False
+            self.engine_choice.addItem(label, backend)
+            self.engine_choice.model().item(self.engine_choice.count() - 1).setEnabled(
+                available
+            )
+        self.engine_choice.setCurrentIndex(
+            self.engine_choice.findData(settings.speech_backend)
+        )
+        form.addRow("Speech engine", self.engine_choice)
         self.engine = QLabel()
         self.engine.setWordWrap(True)
         form.addRow(self.engine)
+        self.engine_guidance = QLabel()
+        self.engine_guidance.setWordWrap(True)
+        form.addRow(self.engine_guidance)
+        self.model_details = QPushButton("Custom model details")
+        self.model_details.setCheckable(True)
+        self.model_details.toggled.connect(self._update)
+        form.addRow(self.model_details)
+        self.model_choice = QLineEdit(self.settings_value.tts_model or "")
+        self.model_choice.setAccessibleName(
+            "Custom voice preview and preparation model"
+        )
+        self.model_choice.setPlaceholderText("Use the default model shown above")
+        form.addRow("Custom model", self.model_choice)
         current = QLabel(f"Saved narrator: {narrator_voice_label(settings)}")
         current.setWordWrap(True)
         form.addRow(current)
         self.source = QComboBox()
         self.source.setAccessibleName("Narrator voice source")
         self.source.addItem("Game character", "game")
-        if self.settings_value.speech_backend == "pocket-tts":
-            self.source.addItem("Built-in Pocket voice", "preset")
+        self.source.addItem("Built-in Pocket voice", "preset")
         selected = find_voice_assignment(
             settings.voice_assignments, "Narrator"
         ) or pregeneration_narrator_source_id(self.settings_value)
-        if selected.startswith("preset:") and self.source.count() > 1:
+        if selected.startswith("preset:"):
             self.source.setCurrentIndex(1)
         form.addRow("Voice source", self.source)
         self.presets = QComboBox()
@@ -157,13 +188,18 @@ class GameNarratorDialog(QDialog):
         self.reference_text.setTextFormat(Qt.TextFormat.PlainText)
         self.reference_text.setAccessibleName("Original reference transcript")
         game_form.addRow(self.reference_text)
-        self.original_button = QPushButton("Play original reference")
+        self.original_button = QPushButton("Play original")
+        self.original_button.setAccessibleName("Play original game reference")
         self.original_button.clicked.connect(self._original)
         self.text = QLineEdit("The storm has passed. We can continue our journey.")
         form.addRow("Preview text", self.text)
-        self.preview_button = QPushButton("Generate and play preview")
+        self.preview_button = QPushButton("Generate preview")
+        self.preview_button.setAccessibleName("Generate and play voice preview")
+        self.preview_button.setToolTip(
+            "Generate speech for this candidate, or replay its saved preview."
+        )
         self.preview_button.clicked.connect(self._preview)
-        self.save_button = QPushButton("Save narrator")
+        self.save_button = QPushButton("Save voice settings")
         self.save_button.clicked.connect(self._save)
         self.stop_button = QPushButton("Stop audio")
         self.stop_button.clicked.connect(self._stop_audio)
@@ -185,7 +221,7 @@ class GameNarratorDialog(QDialog):
             "Applies to future preparation and live fallback. Existing recordings and character voices stay unchanged."
         )
         note.setWordWrap(True)
-        layout.addWidget(note)
+        form.addRow(note)
         actions = QHBoxLayout()
         actions.addWidget(self.cancel_button)
         actions.addWidget(self.save_button)
@@ -194,13 +230,54 @@ class GameNarratorDialog(QDialog):
             lambda _code, message: self.status.setText(message)
         )
         self.source.currentIndexChanged.connect(self._source_changed)
+        self.engine_choice.currentIndexChanged.connect(self._engine_changed)
+        self.model_choice.textChanged.connect(self._model_changed)
         self._update()
         QTimer.singleShot(0, self._source_changed)
+
+    def _engine_available(self):
+        item = self.engine_choice.model().item(self.engine_choice.currentIndex())
+        return item is not None and item.isEnabled()
+
+    def _engine_changed(self):
+        if (
+            self.runner.active
+            or self._closing
+            or self._closed
+            or not self._engine_available()
+        ):
+            blocker = QSignalBlocker(self.engine_choice)
+            self.engine_choice.setCurrentIndex(
+                self.engine_choice.findData(self.settings_value.speech_backend)
+            )
+            del blocker
+            return
+        backend = self.engine_choice.currentData()
+        self._stop_audio()
+        self.settings_value = self.settings_value.updated(
+            speech_backend=backend,
+            tts_model=None,
+            tts_profile="default" if backend == "pocket-tts" else "stable",
+        )
+        self.model_choice.clear()
+        self._source_changed()
+
+    def _model_changed(self, model):
+        if self.runner.active or self._closing or self._closed:
+            blocker = QSignalBlocker(self.model_choice)
+            self.model_choice.setText(self.settings_value.tts_model or "")
+            del blocker
+            return
+        self._stop_audio()
+        self.settings_value = self.settings_value.updated(
+            tts_model=model.strip() or None
+        )
+        self._update()
 
     def _source_changed(self):
         if self._closing or self._closed:
             return
-        self.player.stop()
+        self._stop_audio()
         preset = self.source.currentData() == "preset"
         self.form.setRowVisible(self.presets, preset)
         self.form.setRowVisible(self.game_controls, not preset)
@@ -210,6 +287,10 @@ class GameNarratorDialog(QDialog):
             else "Choose a game character and load an original reference."
         )
         self._update()
+        if not self._engine_available() or (
+            preset and self.settings_value.speech_backend != "pocket-tts"
+        ):
+            self.status.setText(self.engine_guidance.text())
         if not preset and not self.characters.count() and not self.runner.active:
             self.discover()
 
@@ -220,22 +301,47 @@ class GameNarratorDialog(QDialog):
 
     def _update(self):
         settings = self._settings()
+        pocket = settings.speech_backend == "pocket-tts"
         preset = self.source.currentData() == "preset"
         self.engine.setText(
             engine_model_label(
                 settings.speech_backend,
                 settings.tts_model,
-                pocket_cloning=not preset,
+                pocket_cloning=pocket and not preset,
             )
         )
-        allowed = (
-            preset
-            or settings.speech_backend != "pocket-tts"
-            or self.consent.isChecked()
+        available = self._engine_available()
+        allowed = available and (
+            pocket if preset else not pocket or self.consent.isChecked()
         )
         ready = preset or self.references.count() > 0
         idle = not self.runner.active and not self._closed and not self._closing
         warming = self.runner.active and self._operation == "warm"
+        self.engine_choice.setEnabled(idle)
+        self.model_choice.setEnabled(idle)
+        self.model_details.setEnabled(idle)
+        custom_model = settings.speech_backend in {"moss-tts", "coqui-xtts"}
+        self.form.setRowVisible(self.model_details, custom_model)
+        self.form.setRowVisible(
+            self.model_choice, custom_model and self.model_details.isChecked()
+        )
+        self.source.model().item(self.source.findData("preset")).setEnabled(pocket)
+        self.presets.setEnabled(idle)
+        self.consent.setEnabled(idle)
+        self.text.setEnabled(idle)
+        self.terms.setVisible(pocket)
+        self.consent.setVisible(pocket)
+        self.engine_guidance.setText(
+            "XTTS is not supported for story preparation. Choose another engine."
+            if settings.speech_backend == "coqui-xtts"
+            else "This engine is not included in this package. Choose an available engine."
+            if not available
+            else "Built-in Pocket voices require Pocket TTS. Choose a game voice for this engine."
+            if preset and not pocket
+            else "Pocket TTS is recommended: built-in voices need no game references or account."
+            if pocket
+            else "This engine uses a game reference. The preview loads its model when needed."
+        )
         self.prepare_button.setEnabled(self.characters.count() > 0 and idle)
         self.characters.setEnabled(idle)
         self.source.setEnabled(idle)
@@ -352,6 +458,13 @@ class GameNarratorDialog(QDialog):
         self._candidate_action("preview")
 
     def _candidate_action(self, operation):
+        if operation != "audio" and (
+            not self._engine_available()
+            or self.source.currentData() == "preset"
+            and self.settings_value.speech_backend != "pocket-tts"
+        ):
+            self.status.setText(self.engine_guidance.text())
+            return
         if (
             operation != "audio"
             and self.source.currentData() == "game"
@@ -425,6 +538,8 @@ class GameNarratorDialog(QDialog):
         ).path
 
     def _save(self):
+        if not self.save_button.isEnabled():
+            return
         if self.source.currentData() == "preset":
             assignments = {
                 name: value

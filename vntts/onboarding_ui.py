@@ -68,6 +68,7 @@ class ConfigurationPage(QWizardPage):
         super().__init__()
         self.original_settings = settings
         self.narrator_assignments = dict(settings.voice_assignments)
+        self.tts_profile = settings.tts_profile
         self.flow = None
         self.window_loader = window_loader
         self.windows_refreshed = False
@@ -426,6 +427,11 @@ class ConfigurationPage(QWizardPage):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.result_settings
+        self.speech_backend.setCurrentIndex(
+            self.speech_backend.findData(candidate.speech_backend)
+        )
+        self.tts_model.setText(candidate.tts_model or "")
+        self.tts_profile = candidate.tts_profile
         self.narrator_assignments = dict(candidate.voice_assignments)
         self.voice_manifest.setText(candidate.voice_manifest or "")
         self.pocket_gated_model.setChecked(candidate.pocket_gated_model_accepted)
@@ -494,6 +500,10 @@ class ConfigurationPage(QWizardPage):
         backend = self.speech_backend.currentData()
         uses_xtts = backend == "coqui-xtts"
         uses_moss = backend == "moss-tts"
+        if backend == "pocket-tts":
+            self.tts_profile = "default"
+        elif self.tts_profile == "default":
+            self.tts_profile = "stable"
         if uses_moss and self.tts_model.text().strip() in {
             "",
             default_onboarding_model,
@@ -669,6 +679,7 @@ class ConfigurationPage(QWizardPage):
                 "live_hotkey": hotkeys["Live reading"],
                 "speech_backend": self.speech_backend.currentData(),
                 "tts_model": optional_text(self.tts_model),
+                "tts_profile": self.tts_profile,
                 "ocr_language": self.ocr_language.text().strip(),
                 "tts_language": optional_text(self.tts_language),
                 "tts_speaker_wav": optional_text(self.narrator_reference),

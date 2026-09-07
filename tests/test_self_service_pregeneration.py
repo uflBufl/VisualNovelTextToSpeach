@@ -205,6 +205,78 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn("Marius", dialog.narrator_status.text())
             self.assertIn("no account", dialog.pocket_terms.text())
             self.assertTrue(dialog.model_choice.isHidden())
+            self.assertTrue(dialog.engine_controls.isHidden())
+            self.assertTrue(dialog.pocket_terms.isHidden())
+            self.assertTrue(dialog.pocket_voice_cloning.isHidden())
+            chooser.return_value = None
+            dialog.game_narrator_button.click()
+            self.assertIs(dialog.settings, selected)
+
+    def test_shared_voice_save_replans_selected_stories_with_the_saved_engine(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_content(root / "content"))
+            manifest = write_manifest(root / "voices")
+            for name in ("rhiannon", "centurion", "unrelated"):
+                sf.write(
+                    manifest.parent / "references" / f"{name}.wav",
+                    np.zeros(2400),
+                    24_000,
+                    subtype="PCM_16",
+                )
+            original = AppSettings(voice_manifest=str(manifest))
+            selected = original.updated(
+                speech_backend="moss-tts",
+                tts_model="selected/model",
+                voice_assignments={"Narrator": "character:centurion"},
+            )
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                original,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                voice_decisions=VoiceDecisionStore(root / "decisions.json"),
+                game_narrator_chooser=Mock(return_value=selected),
+                thread_pool=pool,
+            )
+            stories = dialog.selected_story_ids()
+            dialog.continue_button.click()
+            for _ in range(2):
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.stories.isEnabled())
+            old_input = dialog.generation_input()
+
+            dialog.game_narrator_button.click()
+
+            self.assertIs(dialog.settings, selected)
+            self.assertEqual(dialog.selected_story_ids(), stories)
+            self.assertTrue(dialog.stories.isEnabled())
+            self.assertTrue(dialog.continue_button.isEnabled())
+            self.assertIsNone(dialog.generation_input())
+            self.assertIsNone(dialog.voice_plan())
+            self.assertFalse(dialog._awaiting_voice_confirmation)
+            self.assertTrue(dialog.voice_confirmation.isHidden())
+            self.assertIn("Step 1", dialog.step.text())
+            self.assertIn("selected/model", dialog.narrator_status.text())
+            self.assertEqual(dialog.engine_choice.currentData(), "moss-tts")
+            self.assertEqual(dialog.model_choice.text(), "selected/model")
+
+            dialog.continue_button.click()
+            for _ in range(2):
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertEqual(dialog.voice_plan().synthesis_backend, "moss-tts")
+            self.assertEqual(dialog.voice_plan().synthesis_model, "selected/model")
+            self.assertNotEqual(dialog.generation_input().identity, old_input.identity)
+            self.assertTrue(old_input.directory.exists())
+            self.assertTrue(dialog.narrator_controls.isHidden())
+            self.assertTrue(dialog.engine_controls.isHidden())
+            self.assertTrue(dialog.pocket_terms.isHidden())
+            dialog.reject()
+            dialog.deleteLater()
 
     def test_generation_configuration_remains_visible_and_locked_during_work(self):
         with TemporaryDirectory() as directory:

@@ -30,10 +30,10 @@ Priority: redesign the experience before strengthening end-to-end UI tests.
 Scope is the main application, first launch, game import, voice selection,
 story preparation and reading; not specialist authoring/review tools. Existing
 control-level audit completion does not mean the overall journey is satisfactory.
-The user approved implementation. Next consolidate the Voices editor and
-simplify the preparation form inside Stories without replacing the existing
-generation/playback services. Finish contextual reading setup rather than
-adding another wizard or library implementation.
+The user approved implementation. Next consolidate character assignments and
+fallback policy in the shared Voices editor, then finish contextual reading
+setup. Reuse the existing generation/playback services without adding another
+wizard or library implementation.
 
 - [ ] Refine the target journey and screen layouts while integrating services.
   - Use one main window with Stories, Voices and Reading sections and one shared
@@ -70,9 +70,6 @@ adding another wizard or library implementation.
   - Use one primary action appropriate to the selected story: Prepare, Continue
     preparation or Start reading. Keep multi-story preparation as selection in
     the same library, not another dialog or a separate queue product.
-  - Before preparing, show one concise summary: selected stories, narrator,
-    engine/model, character-voice exceptions and approximate work/storage. Link
-    to the shared Voices editor instead of embedding a second settings form.
 - [ ] Consolidate all ordinary voice selection into one Voices editor.
   - Separate narrator from character roles, using one shared editor/player from
     every entry point. Clearly distinguish game voices and built-in voices;

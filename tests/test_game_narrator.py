@@ -128,6 +128,157 @@ class GameNarratorTest(unittest.TestCase):
         self.assertIsNone(dialog.result_settings)
         self.assertEqual(original.voice_assignments, {"Narrator": "preset:alba"})
 
+    def test_engine_switch_preserves_source_intent_and_cancel_discards_changes(self):
+        pool = ManualThreadPool()
+        original = AppSettings(voice_assignments={"Narrator": "preset:alba"})
+        dialog = GameNarratorDialog(
+            original,
+            importer=Mock(),
+            preview_service=Mock(),
+            thread_pool=pool,
+            player=Mock(),
+        )
+        self.application.processEvents()
+        self.assertEqual(dialog.engine_choice.findData("coqui-xtts"), -1)
+        dialog.engine_choice.setCurrentIndex(dialog.engine_choice.findData("moss-tts"))
+        self.assertEqual(dialog.source.currentData(), "preset")
+        self.assertFalse(dialog.preview_button.isEnabled())
+        self.assertFalse(dialog.save_button.isEnabled())
+        self.assertIn("Choose a game voice", dialog.engine_guidance.text())
+        self.assertTrue(dialog.model_choice.isHidden())
+        dialog.model_details.click()
+        dialog.model_choice.setText("custom-moss-model")
+        self.assertIn("custom-moss-model", dialog.engine.text())
+        dialog.engine_choice.setCurrentIndex(
+            dialog.engine_choice.findData("pocket-tts")
+        )
+        self.assertEqual(dialog.source.currentData(), "preset")
+        self.assertTrue(dialog.save_button.isEnabled())
+        self.assertIsNone(dialog._settings().tts_model)
+        self.assertEqual(dialog._settings().tts_profile, "default")
+        dialog.presets.setCurrentIndex(dialog.presets.findData("preset:marius"))
+        dialog.reject()
+        self.run_task(pool)
+        self.assertIsNone(dialog.result_settings)
+        self.assertEqual(original.voice_assignments, {"Narrator": "preset:alba"})
+        self.assertEqual(original.speech_backend, "pocket-tts")
+
+    def test_game_engine_model_and_consent_are_staged_for_preview_and_save(self):
+        with TemporaryDirectory() as directory:
+            manifest = write_manifest(Path(directory))
+            importer = self.narrator_importer(manifest)
+            pool, previews = ManualThreadPool(), Mock()
+            previews.generate.return_value.path = Path(directory) / "preview.wav"
+            original = AppSettings(
+                speech_backend="moss-tts",
+                tts_model="saved-custom-model",
+                tts_profile="natural",
+                voice_assignments={"Other": "character:other"},
+            )
+            binder = Mock(side_effect=lambda settings, *_args: settings)
+            dialog = GameNarratorDialog(
+                original,
+                importer=importer,
+                preview_service=previews,
+                thread_pool=pool,
+                player=Mock(),
+                binder=binder,
+            )
+            self.application.processEvents()
+            self.assertIn("saved-custom-model", dialog.engine.text())
+            self.assertTrue(dialog.model_choice.isHidden())
+            self.run_task(pool)
+            dialog.prepare_button.click()
+            self.run_task(pool)
+            self.run_task(pool)
+            dialog.engine_choice.setCurrentIndex(
+                dialog.engine_choice.findData("pocket-tts")
+            )
+            self.assertEqual(dialog.source.currentData(), "game")
+            self.assertFalse(dialog.consent.isHidden())
+            self.assertFalse(dialog.save_button.isEnabled())
+            self.assertTrue(dialog.original_button.isEnabled())
+            dialog.consent.setChecked(True)
+            self.assertTrue(dialog.save_button.isEnabled())
+            dialog.engine_choice.setCurrentIndex(
+                dialog.engine_choice.findData("moss-tts")
+            )
+            self.assertIsNone(dialog._settings().tts_model)
+            self.assertEqual(dialog._settings().tts_profile, "stable")
+            self.assertTrue(dialog.consent.isHidden())
+            dialog.model_details.click()
+            dialog.model_choice.setText("new-custom-model")
+            dialog.preview_button.click()
+            for control in (
+                dialog.engine_choice,
+                dialog.model_choice,
+                dialog.source,
+                dialog.presets,
+                dialog.consent,
+            ):
+                self.assertFalse(control.isEnabled())
+            # Even a queued UI change cannot alter an active preview's settings.
+            dialog.engine_choice.setCurrentIndex(
+                dialog.engine_choice.findData("pocket-tts")
+            )
+            dialog.model_choice.setText("stale-model-change")
+            self.assertEqual(dialog.engine_choice.currentData(), "moss-tts")
+            self.assertEqual(dialog.model_choice.text(), "new-custom-model")
+            self.run_task(pool)
+            plan = previews.generate.call_args.args[0]
+            self.assertEqual(plan.synthesis_backend, "moss-tts")
+            self.assertEqual(plan.synthesis_model, "new-custom-model")
+            self.assertIsNone(dialog.result_settings)
+            dialog.save_button.click()
+            self.run_task(pool)
+            self.run_task(pool)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            self.assertEqual(dialog.result_settings.tts_model, "new-custom-model")
+            self.assertEqual(
+                dialog.result_settings.voice_assignments, original.voice_assignments
+            )
+            self.assertEqual(original.tts_model, "saved-custom-model")
+            self.assertFalse(original.pocket_gated_model_accepted)
+
+    def test_unavailable_and_xtts_engines_require_explicit_supported_selection(self):
+        for backend in ("moss-tts", "coqui-xtts"):
+            with (
+                self.subTest(backend=backend),
+                patch(
+                    "vntts.game_narrator_ui.speech_backend_options",
+                    return_value=(
+                        ("Pocket TTS", "pocket-tts", True),
+                        (backend, backend, backend == "coqui-xtts"),
+                    ),
+                ),
+            ):
+                pool = ManualThreadPool()
+                importer = Mock()
+                importer.narrator_characters.return_value = ()
+                dialog = GameNarratorDialog(
+                    AppSettings(speech_backend=backend),
+                    importer=importer,
+                    preview_service=Mock(),
+                    thread_pool=pool,
+                    player=Mock(),
+                )
+                self.application.processEvents()
+                self.run_task(pool)
+                self.assertFalse(dialog._engine_available())
+                self.assertFalse(dialog.save_button.isEnabled())
+                self.assertFalse(dialog.preview_button.isEnabled())
+                self.assertIn(
+                    "not supported for story preparation"
+                    if backend == "coqui-xtts"
+                    else "not included in this package",
+                    dialog.engine_guidance.text(),
+                )
+                dialog.engine_choice.setCurrentIndex(0)
+                self.assertEqual(dialog.source.currentData(), "game")
+                self.run_task(pool)
+                dialog.reject()
+                self.run_task(pool)
+
     def test_discovery_reuses_import_and_manual_folder_reimports(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

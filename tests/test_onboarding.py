@@ -262,6 +262,10 @@ class OnboardingWizardTest(unittest.TestCase):
         candidate = original.updated(
             voice_manifest="chosen-voices.json",
             voice_assignments={"Narrator": "character:rhiannon"},
+            speech_backend="pocket-tts",
+            tts_model=None,
+            tts_profile="default",
+            pocket_gated_model_accepted=True,
         )
         with (
             patch("vntts.onboarding_ui.GameNarratorDialog") as picker,
@@ -275,6 +279,10 @@ class OnboardingWizardTest(unittest.TestCase):
             page._base_settings().voice_assignments, candidate.voice_assignments
         )
         self.assertEqual(page.narrator_reference.text(), "")
+        self.assertEqual(page._base_settings().speech_backend, "pocket-tts")
+        self.assertIsNone(page._base_settings().tts_model)
+        self.assertEqual(page._base_settings().tts_profile, "default")
+        self.assertTrue(page._base_settings().pocket_gated_model_accepted)
         self.assertIn("Rhiannon", page.speech_summary.text())
         self.assertFalse(
             any(
@@ -288,6 +296,8 @@ class OnboardingWizardTest(unittest.TestCase):
             picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
             page.choose_narrator_button.click()
         self.assertEqual(page._base_settings(), before)
+        page.speech_backend.setCurrentIndex(page.speech_backend.findData("moss-tts"))
+        self.assertEqual(page._base_settings().tts_profile, "stable")
         wizard.deleteLater()
 
     def test_new_setup_defaults_to_window_capture_and_pocket_tts(self):

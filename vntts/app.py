@@ -1004,6 +1004,11 @@ class SettingsDialog(QDialog):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.result_settings
+        self.speech_backend.setCurrentIndex(
+            self.speech_backend.findData(candidate.speech_backend)
+        )
+        self.tts_model.setText(candidate.tts_model or "")
+        self.tts_profile.setCurrentText(candidate.tts_profile)
         self.narrator_assignments = dict(candidate.voice_assignments)
         self.voice_manifest.setText(candidate.voice_manifest or "")
         self.pocket_gated_model.setChecked(candidate.pocket_gated_model_accepted)
@@ -1159,7 +1164,11 @@ class SettingsDialog(QDialog):
                     self.generated_audio_manifest
                 ),
                 "narrator_speaker": optional_text(self.narrator_speaker),
-                "tts_profile": self.tts_profile.currentText(),
+                "tts_profile": (
+                    "default"
+                    if self.speech_backend.currentData() == "pocket-tts"
+                    else self.tts_profile.currentText()
+                ),
                 "output_volume_percent": self.output_volume.value(),
                 "speech_rate_percent": self.speech_rate.value(),
                 "auto_advance_enabled": self.auto_advance.isChecked(),
@@ -1285,6 +1294,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.readiness_dialog = self.pregeneration_dialog = self.support_dialog = None
         self.narrator_dialog = None
         self._narrator_preparation = None
+        self._narrator_return_to_stories = False
         self._resume_live_after_narrator = False
         self._preparation_activation_settings = None
         self.unknown_speaker_prompt = self.unknown_speaker_choose_button = None
@@ -2381,11 +2391,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         return job
 
-    def _reload_game_narrator(self):
+    def _reload_game_narrator(self, profile_synced):
+        suffix = "" if profile_synced else " Active profile could not be updated."
         self._start_configuration_apply(
             self.settings,
             progress_status="Applying your selected narrator...",
-            success_status="Narrator saved. Prepared recordings are unchanged.",
+            success_status=f"Narrator saved. Prepared recordings are unchanged.{suffix}",
             restart=self._controller_ready,
         )
 
@@ -2652,6 +2663,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self.emergency_stop()
         self._narrator_preparation = self.pregeneration_dialog
+        self._narrator_return_to_stories = (
+            self.dashboard.sections.currentWidget() is self.dashboard.stories_stack
+        )
         settings = (
             self.pregeneration_dialog.settings
             if self.pregeneration_dialog is not None
@@ -2680,6 +2694,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.narrator_dialog = None
         preparation = self._narrator_preparation
         self._narrator_preparation = None
+        return_to_stories = self._narrator_return_to_stories
+        self._narrator_return_to_stories = False
         resume_live = self._resume_live_after_narrator
         self._resume_live_after_narrator = False
         self.dashboard.remove_narrator(dialog)
@@ -2702,16 +2718,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     return
                 self.settings = candidate
                 self.dashboard.set_configuration(candidate)
-                self._sync_active_profile(candidate)
+                profile_synced = self._sync_active_profile(candidate)
                 if preparation is self.pregeneration_dialog and preparation is not None:
                     preparation.apply_narrator_settings(candidate)
-                    self.dashboard.show_stories()
-                self._reload_game_narrator()
+                self._reload_game_narrator(profile_synced)
             else:
                 self.set_status(
                     "Narrator selection cancelled. Your saved voice is unchanged."
                 )
         finally:
+            if (
+                return_to_stories
+                and preparation is self.pregeneration_dialog
+                and preparation is not None
+            ):
+                self.dashboard.show_stories()
             if (
                 resume_live
                 and not self._shutting_down
