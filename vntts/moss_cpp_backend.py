@@ -99,7 +99,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             model_name, cancellation=startup_cancellation, progress=startup_progress
         )
         self.executable, self.gguf, self.sidecar = moss_cpp_paths(model_name)
-        self.gpu_layers = _integer_setting("VNTTS_MOSS_GPU_LAYERS", 0, -1, 1000)
+        self.gpu_layers = _integer_setting("VNTTS_MOSS_GPU_LAYERS", -1, -1, 1000)
         self.aux_cpu = _integer_setting("VNTTS_MOSS_AUX_CPU", 1, 0, 1)
         self.context_size = _integer_setting("VNTTS_MOSS_CONTEXT", 4096, 512, 131072)
         self.startup_timeout = float(startup_timeout)
@@ -179,7 +179,18 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         ]
         if self.aux_cpu:
             command.append("--aux-cpu")
-        self.startup_progress("Loading MOSS Local v1.5 in the C++ runtime...")
+        placement = (
+            "CPU only"
+            if self.gpu_layers == 0
+            else "automatic GPU offload"
+            if self.gpu_layers == -1
+            else f"up to {self.gpu_layers} GPU layers"
+        )
+        self.startup_progress(
+            f"Loading MOSS Local v1.5: {placement}; "
+            f"audio codec {'on CPU' if self.aux_cpu else 'on the selected device'}. "
+            "Actual acceleration depends on available hardware and drivers."
+        )
         with self.server_lock:
             self.server_log = TemporaryFile(mode="w+b")
             self.server = subprocess.Popen(

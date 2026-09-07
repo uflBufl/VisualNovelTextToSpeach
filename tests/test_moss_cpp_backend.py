@@ -154,6 +154,28 @@ class MossCppBackendTest(unittest.TestCase):
         result = backend.render(request).collect()
         self.assertEqual(result.diagnostics.cache_source, "fresh-generation")
 
+    def test_default_requests_gpu_offload_but_explicit_cpu_is_respected(self):
+        for layers in (None, "0"):
+            with self.subTest(layers=layers):
+                os.environ.pop("VNTTS_MOSS_GPU_LAYERS", None)
+                if layers is not None:
+                    os.environ["VNTTS_MOSS_GPU_LAYERS"] = layers
+                progress = []
+                backend = self.backend(startup_progress=progress.append)
+                command = self.commands[-1]
+                self.assertEqual(
+                    command[command.index("--n-gpu-layers") + 1], layers or "-1"
+                )
+                self.assertIn("--aux-cpu", command)
+                self.assertTrue(
+                    any(
+                        ("CPU only" if layers == "0" else "automatic GPU offload")
+                        in message
+                        for message in progress
+                    )
+                )
+                backend.shutdown()
+
     def test_server_failure_and_truncated_wav_cannot_populate_cache(self):
         backend = self.backend()
         for text in ("Fail.", "Truncated."):

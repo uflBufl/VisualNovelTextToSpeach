@@ -6,7 +6,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$Server,
     [Parameter(Mandatory=$true)][string]$Model,
-    [ValidateRange(-1, 1000)][int]$GpuLayers = 0,
+    [ValidateRange(-1, 1000)][int]$GpuLayers = -1,
     [switch]$CodecOnGpu,
     [string]$NarratorReference,
     [string]$Application
