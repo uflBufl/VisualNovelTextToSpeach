@@ -82,8 +82,6 @@ in the same commit.
   - Use driver detection to select a qualified CUDA stack only after the real
     render gates above pass. Missing/unknown NVIDIA-driver evidence must never
     promote a CUDA candidate; users must not select Python or CUDA wheels.
-  - Add safe retirement/reinstallation of obsolete or damaged app-managed
-    environments without modifying runtimes still used by another process.
   - Add dependency and smoke-test coverage for every runtime to CI; keep actual
     CUDA generation on a self-hosted Windows/Linux runner and make CPU-only CI
     validate resolution plus the typed no-CUDA path.

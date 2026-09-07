@@ -19,6 +19,8 @@ from vntts.runtime_paths import (
 )
 from vntts.services.tts_engine import TTSConfigurationError
 
+_managed_runtime_uses = {}
+
 
 class BoundedCache:
     """Small least-recently-used cache with a deliberately minimal interface."""
@@ -99,6 +101,13 @@ def activate_backend_runtime(
             )
         raise TTSConfigurationError(missing_message)
     site_packages_text = str(site_packages)
+    if site_packages_text not in _managed_runtime_uses:
+        from vntts.runtime_ownership import claim_runtime
+
+        use = claim_runtime(backend_directory, runtime_directory)
+        if use is not None:
+            # sys.path can load these modules lazily for the rest of this process.
+            _managed_runtime_uses[site_packages_text] = use
     if site_packages_text not in sys.path:
         sys.path.insert(0, site_packages_text)
     return site_packages

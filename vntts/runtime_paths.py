@@ -53,11 +53,24 @@ def find_managed_speech_runtime(backend):
         return None
     if (
         isinstance(report, dict)
-        and report.get("schema") == "vntts.speech-runtime-installation-v1"
+        and report.get("schema")
+        in {
+            "vntts.speech-runtime-installation-v1",
+            "vntts.speech-runtime-installation-v2",
+        }
         and report.get("backend") == backend
         and report.get("recipe") == location.name
     ):
-        return location / "environment"
+        if report["schema"] == "vntts.speech-runtime-installation-v1":
+            return location / "environment"
+        from vntts.runtime_ownership import owned_generation
+
+        generation = report.get("generation")
+        if not isinstance(generation, str):
+            return None
+        runtime = location / "generations" / generation / "environment"
+        if owned_generation(backend, runtime) is not None:
+            return runtime
     return None
 
 

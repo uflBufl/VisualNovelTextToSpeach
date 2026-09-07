@@ -8,12 +8,20 @@ import shutil
 import subprocess
 import sys
 from time import monotonic
+from uuid import uuid4
 
 from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
+)
+from vntts.runtime_ownership import (
+    OWNER_SCHEMA,
+    RuntimeUse,
+    cleanup_managed_runtimes,
+    owned_generation,
+    remove_inactive_generation,
 )
 from vntts.runtime_paths import (
     RUNTIME_ENVIRONMENT_VARIABLES,
@@ -66,23 +74,40 @@ def runtime_installation_available(backend):
     )
 
 
-def _run(command, *, cancellation, environment=None, input_bytes=None, timeout=1800):
+def _run(
+    command,
+    *,
+    cancellation,
+    environment=None,
+    input_bytes=None,
+    timeout=1800,
+    runtime_use=None,
+):
     """Drain child output while keeping cancellation and shutdown bounded."""
     _check_cancelled(cancellation)
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=environment,
-        **(
-            {"creationflags": subprocess.CREATE_NO_WINDOW}
-            if sys.platform == "win32"
-            else {}
-        ),
-    )
+    if runtime_use is not None:
+        runtime_use.begin_launch()
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            **(
+                {"creationflags": subprocess.CREATE_NO_WINDOW}
+                if sys.platform == "win32"
+                else {}
+            ),
+        )
+    except Exception:
+        if runtime_use is not None:
+            runtime_use.launched(None)
+        raise
     deadline = monotonic() + timeout
     try:
+        if runtime_use is not None:
+            runtime_use.launched(process)
         while True:
             _check_cancelled(cancellation)
             if monotonic() >= deadline:
@@ -127,31 +152,47 @@ def _nvidia_driver_status(cancellation):
 def ensure_speech_runtime(
     backend, *, runtime_directory=None, cancellation=None, progress=None
 ):
+    try:
+        paths = _ensure_speech_runtime(
+            backend,
+            runtime_directory=runtime_directory,
+            cancellation=cancellation,
+            progress=progress,
+        )
+    except AdvisoryLockBusyError as error:
+        raise TTSConfigurationError(str(error)) from error
+    try:
+        cleanup_managed_runtimes(backend, paths[0], progress=progress)
+    except (OSError, AdvisoryLockBusyError) as error:
+        if progress is not None:
+            progress(
+                f"Speech runtime is ready; unused-copy cleanup was deferred: {error}"
+            )
+    return paths
+
+
+def _ensure_speech_runtime(
+    backend, *, runtime_directory=None, cancellation=None, progress=None
+):
     """Return a usable runtime, installing only when no user runtime is present."""
     from vntts.speech_worker import probe_speech_runtime, resolve_speech_runtime_paths
 
     progress = progress or (lambda _message: None)
     _check_cancelled(cancellation)
     try:
-        return resolve_speech_runtime_paths(backend, runtime_directory)
-    except TTSConfigurationError:
+        paths = resolve_speech_runtime_paths(backend, runtime_directory)
+        if owned_generation(backend, paths[0]) is not None:
+            progress(f"Checking installed {backend} runtime dependencies...")
+            probe_speech_runtime(backend, paths, cancellation=cancellation)
+        return paths
+    except TTSConfigurationError, OSError, EOFError:
         if runtime_directory or not runtime_installation_available(backend):
             raise
     location = managed_runtime_location(backend)
     project = source_runtime_project(backend)
     try:
         with exclusive_advisory_lock(location / "installation.lock"):
-            # Another installer may have finished between resolution and the lock.
-            try:
-                return resolve_speech_runtime_paths(backend)
-            except TTSConfigurationError:
-                pass
             _check_cancelled(cancellation)
-            if (location / "verified.json").exists():
-                raise TTSConfigurationError(
-                    "A previously verified speech runtime is damaged. "
-                    "Refusing to modify an environment that another process may be using."
-                )
             progress("Checking hardware before preparing the speech runtime...")
             hardware = {
                 "platform": sys.platform,
@@ -160,8 +201,11 @@ def ensure_speech_runtime(
             }
             device = "CPU" if backend == "pocket-tts" else "Apple Silicon"
             label = "Pocket TTS" if backend == "pocket-tts" else "MOSS-TTS"
+            action = (
+                "Repairing" if (location / "verified.json").exists() else "Preparing"
+            )
             progress(
-                f"Preparing {label} runtime for {device}. Downloading locked dependencies; this may take several minutes..."
+                f"{action} {label} runtime for {device} in a separate copy. Downloading locked dependencies; this may take several minutes..."
                 + (
                     " NVIDIA detected; Pocket TTS currently uses the CPU runtime."
                     if hardware["nvidia_driver"] == "detected"
@@ -170,40 +214,68 @@ def ensure_speech_runtime(
             )
             environment = dict(os.environ)
             environment.pop("VIRTUAL_ENV", None)
-            environment["UV_PROJECT_ENVIRONMENT"] = str(location / "environment")
-            _run(
-                [
-                    shutil.which("uv"),
-                    "sync",
-                    "--project",
-                    str(project),
-                    "--locked",
-                    "--python",
-                    "3.14",
-                    "--no-dev",
-                    "--no-install-project",
-                ],
-                cancellation=cancellation,
-                environment=environment,
-            )
-            progress(f"Checking {label} dependencies in the isolated worker...")
-            paths = resolve_speech_runtime_paths(backend, location / "environment")
-            health = probe_speech_runtime(backend, paths, cancellation=cancellation)
-            _check_cancelled(cancellation)
-            if managed_runtime_location(backend) != location:
-                raise TTSConfigurationError(
-                    "Runtime recipe changed during installation. Retry to use the new version."
-                )
+            generation = location / "generations" / uuid4().hex
+            generation.mkdir(parents=True)
             atomic_write_json(
-                location / "verified.json",
+                generation / "owner.json",
                 {
-                    "schema": "vntts.speech-runtime-installation-v1",
+                    "schema": OWNER_SCHEMA,
                     "backend": backend,
                     "recipe": location.name,
-                    "health": health,
-                    "hardware": hardware,
+                    "generation": generation.name,
                 },
             )
+            use = RuntimeUse(generation)
+            published = False
+            environment["UV_PROJECT_ENVIRONMENT"] = str(generation / "environment")
+            try:
+                _run(
+                    [
+                        shutil.which("uv"),
+                        "sync",
+                        "--project",
+                        str(project),
+                        "--locked",
+                        "--python",
+                        "3.14",
+                        "--no-dev",
+                        "--no-install-project",
+                    ],
+                    cancellation=cancellation,
+                    environment=environment,
+                    runtime_use=use,
+                )
+                progress(f"Checking {label} dependencies in the isolated worker...")
+                paths = resolve_speech_runtime_paths(
+                    backend, generation / "environment"
+                )
+                health = probe_speech_runtime(
+                    backend, paths, cancellation=cancellation, runtime_use=use
+                )
+                _check_cancelled(cancellation)
+                if managed_runtime_location(backend) != location:
+                    raise TTSConfigurationError(
+                        "Runtime recipe changed during installation. Retry to use the new version."
+                    )
+                atomic_write_json(
+                    location / "verified.json",
+                    {
+                        "schema": "vntts.speech-runtime-installation-v2",
+                        "backend": backend,
+                        "recipe": location.name,
+                        "generation": generation.name,
+                        "health": health,
+                        "hardware": hardware,
+                    },
+                )
+                published = True
+            finally:
+                use.close()
+                if not published:
+                    try:
+                        remove_inactive_generation(backend, generation)
+                    except OSError as error:
+                        progress(f"Incomplete runtime cleanup was deferred: {error}")
             progress(f"{label} runtime dependencies are verified.")
             return paths
     except AdvisoryLockBusyError as error:

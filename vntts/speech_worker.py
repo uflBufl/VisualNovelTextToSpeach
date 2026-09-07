@@ -216,9 +216,10 @@ def resolve_speech_runtime_paths(backend, runtime_directory=None):
     return _runtime_paths(backend, runtime_directory)
 
 
-def probe_speech_runtime(backend, paths, *, cancellation=None):
+def probe_speech_runtime(backend, paths, *, cancellation=None, runtime_use=None):
     """Use the real worker import/provenance gate without loading model weights."""
     from vntts.runtime_installation import _run
+    from vntts.runtime_ownership import claim_runtime
 
     root, interpreter, site = paths
     request = BytesIO()
@@ -230,20 +231,26 @@ def probe_speech_runtime(backend, paths, *, cancellation=None):
             "runtime_site": str(site),
         },
     )
-    output = _run(
-        [
-            str(interpreter),
-            "-I",
-            "-B",
-            "-u",
-            "-c",
-            _BOOTSTRAP,
-            "" if get_bundle_root() else str(Path(__file__).resolve().parents[1]),
-        ],
-        cancellation=cancellation,
-        input_bytes=request.getvalue(),
-        timeout=120,
-    )
+    use = runtime_use or claim_runtime(backend, root)
+    try:
+        output = _run(
+            [
+                str(interpreter),
+                "-I",
+                "-B",
+                "-u",
+                "-c",
+                _BOOTSTRAP,
+                "" if get_bundle_root() else str(Path(__file__).resolve().parents[1]),
+            ],
+            cancellation=cancellation,
+            input_bytes=request.getvalue(),
+            timeout=120,
+            runtime_use=use,
+        )
+    finally:
+        if runtime_use is None and use is not None:
+            use.close()
     frame = _read_frame(BytesIO(output))
     health = frame[0] if frame else {}
     if (
@@ -632,11 +639,28 @@ class IsolatedSpeechBackend:
         self.last_generation_limited = False
         self.last_audio_source = None
         self._closed = False
+        self._runtime_use = None
         self.set_volume(volume)
         self.set_speed(1.0)
         self._start_worker()
 
     def _start_worker(self):
+        from vntts.runtime_ownership import claim_runtime
+
+        if self._runtime_use is None:
+            self._runtime_use = claim_runtime(self.name, self.runtime_root)
+        try:
+            self._launch_worker()
+        except BaseException:
+            try:
+                self._terminate_process(self.process)
+            finally:
+                if self._runtime_use is not None:
+                    self._runtime_use.close()
+                    self._runtime_use = None
+            raise
+
+    def _launch_worker(self):
         if self._closed:
             raise TTSSynthesisError(f"{self.name} isolated worker is shut down")
         command = [
@@ -661,16 +685,25 @@ class IsolatedSpeechBackend:
                 environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
                 environment.pop("HF_TOKEN", None)
                 environment.pop("HUGGING_FACE_HUB_TOKEN", None)
-        process = self.process_factory(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(self.worker_working_directory),
-            env=environment,
-            bufsize=0,
-        )
+        if self._runtime_use is not None:
+            self._runtime_use.begin_launch()
+        try:
+            process = self.process_factory(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(self.worker_working_directory),
+                env=environment,
+                bufsize=0,
+            )
+        except Exception:
+            if self._runtime_use is not None:
+                self._runtime_use.launched(None)
+            raise
         self.process = process
+        if self._runtime_use is not None:
+            self._runtime_use.launched(process)
         threading.Thread(
             target=self._read_messages,
             args=(process,),
@@ -1149,6 +1182,9 @@ class IsolatedSpeechBackend:
         self._stop_requested.set()
         process = self.process
         if process is None:
+            if self._runtime_use is not None:
+                self._runtime_use.close()
+                self._runtime_use = None
             return
         try:
             self._send(process, {"type": "shutdown"})
@@ -1158,6 +1194,9 @@ class IsolatedSpeechBackend:
         finally:
             if self.process is process:
                 self.process = None
+            if self._runtime_use is not None:
+                self._runtime_use.close()
+                self._runtime_use = None
 
     def _terminate_process(self, process):
         if process is None:

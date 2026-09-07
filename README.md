@@ -467,7 +467,10 @@ CUDA wheel selection is needed; detecting an NVIDIA driver does not enable an
 unqualified CUDA runtime.
 
 App-managed runtimes live in the local application data directory and are reused
-after an isolated dependency check. Existing `backends/*/.venv` environments and
+after an isolated dependency check. Damaged managed copies are replaced only after
+a separate installation passes verification. Obsolete owned copies are removed
+only when no app or worker is using them; unknown legacy directories are retained.
+Existing `backends/*/.venv` environments and
 explicit `VNTTS_*_RUNTIME` overrides remain untouched. A portable package missing
 its bundled runtime must be replaced with the complete archive, not repaired with uv.
 
