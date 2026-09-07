@@ -8,6 +8,7 @@ project_root = Path(SPEC).resolve().parents[2]
 tesseract_directory = Path(os.environ["VNTTS_TESSERACT_DIR"]).resolve()
 espeak_directory = Path(os.environ["VNTTS_ESPEAK_DIR"]).resolve()
 speech_runtimes_directory = Path(os.environ["VNTTS_SPEECH_RUNTIMES_DIR"]).resolve()
+decoder_directory = Path(os.environ["VNTTS_VGMSTREAM_DIR"]).resolve()
 tesseract_executable = tesseract_directory / "tesseract.exe"
 english_language_data = tesseract_directory / "tessdata" / "eng.traineddata"
 
@@ -24,11 +25,14 @@ if not espeak_data_directories:
 for required_path in (
     speech_runtimes_directory / "pocket-tts" / "python.exe",
     speech_runtimes_directory / "runtime-manifest.json",
+    decoder_directory / "vgmstream-cli.exe",
+    decoder_directory / "licenses" / "COPYING",
 ):
     if not required_path.is_file():
         raise SystemExit(f"Required speech runtime file is missing: {required_path}")
 
 datas = [(str(english_language_data), "tesseract/tessdata")]
+datas.append((str(decoder_directory / "licenses"), "vgmstream/licenses"))
 datas.append((str(speech_runtimes_directory), "speech-runtimes"))
 datas.extend(
     (str(source), str(Path("espeak-ng") / source.relative_to(espeak_directory).parent))
@@ -36,6 +40,10 @@ datas.extend(
     if source.is_file()
 )
 binaries = [(str(tesseract_executable), "tesseract")]
+binaries.extend(
+    (str(source), "vgmstream") for source in decoder_directory.iterdir()
+    if source.suffix.casefold() in {".exe", ".dll"}
+)
 binaries.extend(
     (str(library), "tesseract") for library in tesseract_directory.glob("*.dll")
 )

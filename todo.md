@@ -3,6 +3,11 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P0 - Qualify game-audio decoder provisioning
+
+- [ ] Confirm the hosted Windows/Linux automatic-download and native-decode
+      checks pass; macOS source and relocated native bundle probes passed locally.
+
 ## P1 - Run MOSS Local v1.5 on Windows
 
 - [ ] Qualify real Windows CPU/8 GB GPU rendering with

@@ -97,6 +97,11 @@ try {
         throw "Pocket speech runtime staging failed."
     }
     $env:VNTTS_SPEECH_RUNTIMES_DIR = $SpeechRuntimesPath
+    $env:VNTTS_VGMSTREAM_DIR = Join-Path $ProjectRoot "build\windows\vgmstream"
+    uv run --frozen python -m vntts.game_audio_decoder $env:VNTTS_VGMSTREAM_DIR
+    if ($LASTEXITCODE -ne 0) {
+        throw "Game-audio decoder staging failed."
+    }
     uv run --frozen pyinstaller --noconfirm --clean `
         --workpath $WorkPath `
         --distpath $DistPath `

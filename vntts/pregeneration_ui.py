@@ -3,7 +3,7 @@
 from threading import Event
 from time import monotonic
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from vntts.application_directories import get_local_data_directory
 from vntts.async_ui import LatestTaskRunner
+from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import (
     GameContentImportCancelled,
     GameContentImportError,
@@ -73,6 +74,8 @@ from vntts.voices import (
 
 
 class OfflineAudioPreparationDialog(QDialog):
+    decoderProgress = Signal(str)
+
     def __init__(
         self,
         settings,
@@ -125,6 +128,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.import_runner.finished.connect(self._import_finished)
         self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.decoderProgress.connect(self._decoder_progress)
         self.voice_runner.finished.connect(self._voice_plan_finished)
         self.voice_panel = VoiceAuditionPanel(
             self.voice_decisions,
@@ -1285,7 +1289,7 @@ class OfflineAudioPreparationDialog(QDialog):
             narrator = configured.get("vntts.game_narrator")
             if narrator is not None:
                 candidates = self.importer.prepare_voice_candidates(
-                    job, self.voice_cancel_event
+                    job, self.voice_cancel_event, progress=self.decoderProgress.emit
                 )
                 if candidates is not None:
                     combined = bind_game_narrator(
@@ -1306,6 +1310,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 manifest = self.importer.prepare_voice_candidates(
                     job,
                     self.voice_cancel_event,
+                    progress=self.decoderProgress.emit,
                 )
             except GameContentImportCancelled as error:
                 raise PregenerationVoiceCancelled(
@@ -1325,6 +1330,10 @@ class OfflineAudioPreparationDialog(QDialog):
             resolve_pregeneration_settings(self.settings),
             **options,
         )
+
+    def _decoder_progress(self, message):
+        if self.planning_voices and not self._close_after_voice_cancel:
+            self.resume_status.setText(message)
 
     def _voice_plan_finished(self, plan, error):
         self.planning_voices = False
@@ -1347,6 +1356,11 @@ class OfflineAudioPreparationDialog(QDialog):
                     self.resume_status.setText("Voice matching cancelled.")
                 return
             self.resume_status.setText(f"Unable to match character voices: {error}")
+            if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
+                self, error
+            ):
+                self.importer.allow_decoder_homebrew = True
+                self._save_selection()
             return
         self._voice_plan = plan
         audition_count = getattr(plan, "audition_count", 0)

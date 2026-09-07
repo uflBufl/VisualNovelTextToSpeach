@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from vntts_artifacts.story_index import StoryIndexError, load_story_index_docume
 from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.application_directories import get_local_data_directory
+from vntts.game_audio_decoder import ensure_game_decoder
 from vntts.pregeneration_setup import PregenerationSetupError, inspect_story_index
 from vntts.subprocess_utils import last_output_line, terminate_process
 from vntts.voices import is_narrator, synthesis_character_for_line
@@ -50,6 +52,7 @@ class Reverse1999GameImporter:
             output_root or get_local_data_directory() / "game-content" / "reverse1999"
         ).expanduser()
         self.popen_factory = popen_factory
+        self.allow_decoder_homebrew = False
 
     def availability(self):
         command = self.command()
@@ -111,14 +114,14 @@ class Reverse1999GameImporter:
             )
         return inspect_story_index(story_index, provider_id=self.provider_id)
 
-    def prepare_voice_candidates(self, job, cancel_event=None):
+    def prepare_voice_candidates(self, job, cancel_event=None, *, progress=None):
         """Prepare only candidate references needed by the selected stories."""
         if job.provider_id != self.provider_id:
             return None
         roles = _candidate_roles(job)
         if not roles:
             return None
-        return self.prepare_voice_roles(roles, cancel_event)
+        return self.prepare_voice_roles(roles, cancel_event, progress=progress)
 
     def narrator_characters(self, cancel_event=None, installation_root=None):
         """List voiced characters without decoding the whole audio catalog."""
@@ -139,13 +142,24 @@ class Reverse1999GameImporter:
                 characters.setdefault(normalize_character_name(character), character)
         return tuple(sorted(characters.values(), key=str.casefold))
 
-    def prepare_voice_roles(self, roles, cancel_event=None):
+    def prepare_voice_roles(self, roles, cancel_event=None, *, progress=None):
         """Reuse the extractor's checksum-bound, per-role reference cache."""
         if not roles:
             raise GameContentImportError("Choose a game character first")
         command = self.command()
         if command is None:
             raise GameContentImportError(self.availability().message)
+        decoder = ensure_game_decoder(
+            cancellation=cancel_event,
+            progress=progress,
+            allow_homebrew=self.allow_decoder_homebrew,
+        )
+        environment = dict(os.environ)
+        environment["PATH"] = os.pathsep.join(
+            (str(decoder.parent), environment.get("PATH", ""))
+        )
+        if progress is not None:
+            progress("Extracting game voice references. Please wait...")
         arguments = [
             *command,
             "--data-directory",
@@ -154,7 +168,7 @@ class Reverse1999GameImporter:
         ]
         for role in roles:
             arguments.extend(("--voice-candidate-role", role))
-        stdout, _stderr = self._run(arguments, cancel_event)
+        stdout, _stderr = self._run(arguments, cancel_event, environment=environment)
         try:
             result = json.loads(last_output_line(stdout) or "")
             manifest = Path(result["voice_manifest"]).expanduser().resolve()
@@ -170,13 +184,14 @@ class Reverse1999GameImporter:
             )
         return manifest
 
-    def _run(self, arguments, cancel_event):
+    def _run(self, arguments, cancel_event, *, environment=None):
         try:
             process = self.popen_factory(
                 tuple(arguments),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                env=environment,
             )
         except OSError as error:
             raise GameContentImportError(

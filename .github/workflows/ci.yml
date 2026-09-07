@@ -113,6 +113,9 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --group dev --frozen
 
+      - name: Verify automatic game-audio decoder setup
+        run: uv run --frozen python -c "from vntts.game_audio_decoder import ensure_game_decoder; ensure_game_decoder(progress=print)"
+
       - name: Run Windows unit tests
         run: uv run --frozen python scripts/run_ci_unittests.py discover -s tests
 
@@ -140,6 +143,9 @@ jobs:
 
       - name: Install locked dependencies
         run: uv sync --group dev --frozen
+
+      - name: Verify automatic game-audio decoder setup
+        run: uv run --frozen python -c "from vntts.game_audio_decoder import ensure_game_decoder; ensure_game_decoder(progress=print)"
 
       - name: Run Linux X11 source unit tests
         run: >-

@@ -4,7 +4,7 @@ from functools import partial
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
 from vntts.game_narrator import bind_game_narrator, narrator_preview_plan
 from vntts.pregeneration_audition import VoiceAuditionPreviewService
@@ -32,6 +33,8 @@ from vntts.voices import CharacterVoiceRegistry
 
 
 class GameNarratorDialog(QDialog):
+    decoderProgress = Signal(str)
+
     def __init__(
         self,
         settings,
@@ -59,6 +62,7 @@ class GameNarratorDialog(QDialog):
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._finished)
         self.cancellation = Event()
+        self.decoderProgress.connect(self._decoder_progress)
         self._manifest = None
         self._character = None
         self._operation = None
@@ -208,9 +212,15 @@ class GameNarratorDialog(QDialog):
         )
 
     def _load_references(self, character):
-        manifest = self.importer.prepare_voice_roles((character,), self.cancellation)
+        manifest = self.importer.prepare_voice_roles(
+            (character,), self.cancellation, progress=self.decoderProgress.emit
+        )
         registry = CharacterVoiceRegistry.from_file(manifest)
         return manifest, registry.choices()
+
+    def _decoder_progress(self, message):
+        if self.runner.active and self._operation == "prepare" and not self._closing:
+            self.status.setText(message)
 
     def _plan(self):
         return narrator_preview_plan(
@@ -283,6 +293,12 @@ class GameNarratorDialog(QDialog):
         self.progress.hide()
         self.cancel_button.setText("Cancel")
         if error is not None:
+            if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
+                self, error
+            ):
+                self.importer.allow_decoder_homebrew = True
+                self._prepare()
+                return
             self.status.setText(
                 f"{error}\nRetry, choose a game folder, or cancel. Nothing was assigned."
             )

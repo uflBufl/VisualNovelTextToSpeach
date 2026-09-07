@@ -211,6 +211,7 @@ class RuntimePathsTest(unittest.TestCase):
                     import_module=Mock(),
                     tesseract_probe=Mock(return_value="5.5.0"),
                     espeak_probe=espeak_probe,
+                    game_decoder_probe=Mock(return_value="bundled vgmstream"),
                     speech_runtime_probe=Mock(
                         return_value=self._speech_runtime_report()
                     ),

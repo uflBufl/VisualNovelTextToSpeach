@@ -19,6 +19,7 @@ from tests.test_pregeneration_voices import (  # noqa: E402
 )
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.configuration_apply import ConfigurationApplyMixin  # noqa: E402
+from vntts.game_audio_decoder import DecoderSetupRequired  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
 from vntts.game_narrator import bind_game_narrator, narrator_preview_plan  # noqa: E402
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
@@ -272,6 +273,40 @@ class GameNarratorTest(unittest.TestCase):
             self.assertEqual(plan.synthesis_profile, "natural")
             self.assertEqual(plan.groups[0].candidates[0].source_character, "Centurion")
 
+    def test_decoder_setup_consent_retries_in_worker_and_keeps_controls_gated(self):
+        with TemporaryDirectory() as directory:
+            manifest = write_manifest(Path(directory) / "candidates")
+            importer = Mock()
+            importer.narrator_characters.return_value = ("Centurion",)
+            importer.prepare_voice_roles.side_effect = [
+                DecoderSetupRequired("Install decoder?"),
+                manifest,
+            ]
+            pool = ManualThreadPool()
+            dialog = GameNarratorDialog(
+                AppSettings(),
+                importer=importer,
+                preview_service=Mock(),
+                thread_pool=pool,
+                player=Mock(),
+            )
+            self.application.processEvents()
+            self.run_task(pool)
+            dialog.prepare_button.click()
+            with patch(
+                "vntts.game_narrator_ui.confirm_decoder_setup", return_value=True
+            ) as consent:
+                self.run_task(pool)
+            consent.assert_called_once()
+            self.assertTrue(importer.allow_decoder_homebrew)
+            self.assertFalse(dialog.controls.isEnabled())
+            self.assertTrue(dialog.runner.active)
+            self.run_task(pool)
+            self.assertTrue(dialog.controls.isEnabled())
+            self.assertGreater(dialog.references.count(), 0)
+            dialog.reject()
+            self.run_task(pool)
+
     def test_guided_flow_gates_controls_previews_and_saves(self):
         with (
             TemporaryDirectory() as directory,
@@ -303,9 +338,13 @@ class GameNarratorTest(unittest.TestCase):
             self.run_task(pool)
             dialog.prepare_button.click()
             self.assertFalse(dialog.controls.isEnabled())
+            dialog.decoderProgress.emit("Downloading game-audio decoder: 1.0 MB...")
+            self.assertIn("Downloading", dialog.status.text())
             self.run_task(pool)
             importer.prepare_voice_roles.assert_called_once_with(
-                ("Centurion",), dialog.cancellation
+                ("Centurion",),
+                dialog.cancellation,
+                progress=dialog.decoderProgress.emit,
             )
             dialog.references.setCurrentIndex(
                 dialog.references.findData("character:centurion")

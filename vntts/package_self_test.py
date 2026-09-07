@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.cli import CLIReportResult
+from vntts.game_audio_decoder import find_game_decoder, probe_game_decoder
 from vntts.onboarding import probe_tesseract
 from vntts.release_runtime import PROBE_MODULES, runtime_probe_script
 from vntts.runtime_paths import (
@@ -257,12 +258,16 @@ def run_package_self_test(
     espeak_probe=None,
     speech_runtime_probe=None,
     speech_render_probe=None,
+    game_decoder_probe=None,
 ):
     import_module = import_module or importlib.import_module
     tesseract_probe = tesseract_probe or probe_tesseract
     espeak_probe = espeak_probe or probe_espeak
     speech_runtime_probe = speech_runtime_probe or probe_bundled_pocket_runtime
     speech_render_probe = speech_render_probe or probe_bundled_pocket_render
+    game_decoder_probe = game_decoder_probe or (
+        lambda: probe_game_decoder(find_game_decoder())
+    )
     bundled_tesseract = configure_bundled_dependencies()
     bundled_espeak = find_bundled_espeak()
     checks = []
@@ -353,6 +358,24 @@ def run_package_self_test(
             )
 
     if frozen:
+        try:
+            decoder_report = game_decoder_probe()
+        except Exception as error:
+            checks.append(
+                {
+                    "name": "Bundled game-audio decoder",
+                    "status": "error",
+                    "message": str(error),
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "Bundled game-audio decoder",
+                    "status": "ok",
+                    "message": str(decoder_report),
+                }
+            )
         try:
             runtime_report = speech_runtime_probe()
         except Exception as error:

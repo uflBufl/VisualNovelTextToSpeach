@@ -223,11 +223,18 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 popen_factory=popen,
             )
 
-            result = importer.prepare_voice_candidates(job)
+            with patch(
+                "vntts.game_content_importer.ensure_game_decoder",
+                return_value=root / "tools" / "vgmstream-cli",
+            ):
+                result = importer.prepare_voice_candidates(job)
 
         arguments = popen.call_args.args[0]
         self.assertEqual(result, manifest.resolve())
         self.assertIn("--prepare-voice-candidates-only", arguments)
+        self.assertTrue(
+            popen.call_args.kwargs["env"]["PATH"].startswith(str(root / "tools"))
+        )
         roles = [
             arguments[index + 1]
             for index, value in enumerate(arguments)

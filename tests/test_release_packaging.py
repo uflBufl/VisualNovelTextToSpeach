@@ -5,6 +5,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleasePackagingTest(unittest.TestCase):
+    def test_decoder_is_staged_with_native_libraries_and_licenses(self):
+        for platform, suffix in (("macos", "sh"), ("windows", "ps1")):
+            script = (PROJECT_ROOT / f"scripts/build-{platform}.{suffix}").read_text()
+            spec = (PROJECT_ROOT / f"packaging/{platform}/vntts.spec").read_text()
+            self.assertIn("vntts.game_audio_decoder", script)
+            self.assertIn('os.environ["VNTTS_VGMSTREAM_DIR"]', spec)
+            self.assertIn('"vgmstream/licenses"', spec)
+
     def test_platform_builds_stage_locked_pocket_runtime(self):
         for relative_path in (
             "scripts/build-macos.sh",
