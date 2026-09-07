@@ -207,6 +207,22 @@ class MossCppBackendTest(unittest.TestCase):
         changed = self.backend()
         self.assertNotEqual(changed.model_name, identity)
 
+    def test_windows_without_cpp_configuration_never_loads_mlx(self):
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("vntts.moss_cpp_backend.sys.platform", "win32"),
+            patch("vntts.speech_worker.IsolatedSpeechBackend") as mlx,
+            patch("vntts.moss_cpp_installation.ensure_moss_cpp") as setup,
+            self.assertRaisesRegex(TTSConfigurationError, r"C\+\+/GGUF"),
+        ):
+            create_moss_worker_backend(CharacterVoiceRegistry())
+        mlx.assert_not_called()
+        setup.assert_called_once()
+
+    def test_cpp_environment_replaces_saved_mlx_model_path(self):
+        _exe, model, _sidecar = moss_cpp_paths("/old/models/moss-mlx-int8")
+        self.assertEqual(model, self.model.resolve())
+
     def test_invalid_setup_and_windows_routing(self):
         settings = AppSettings(speech_backend="moss-tts", tts_model=str(self.model))
         self.assertEqual(

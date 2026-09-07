@@ -8,11 +8,12 @@ import io
 import json
 import math
 import os
+import platform
 import secrets
 import socket
 import subprocess
+import sys
 import wave
-from pathlib import Path
 from tempfile import TemporaryFile
 from threading import Event, Lock, Thread
 from time import monotonic
@@ -25,32 +26,35 @@ from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_backend import (
     MossTTSVoiceRouterBackend,
     SpeechBackendCapabilities,
-    default_moss_tts_model,
 )
 from vntts.speech_backend_runtime import _source_identity
 
 
 def moss_cpp_requested(model_name=None):
     return bool(
-        os.environ.get("VNTTS_MOSS_CPP_EXECUTABLE")
+        sys.platform != "darwin"
+        or platform.machine().casefold() != "arm64"
+        or os.environ.get("VNTTS_MOSS_CPP_EXECUTABLE")
         or os.environ.get("VNTTS_MOSS_GGUF")
         or str(model_name or "").lower().endswith(".gguf")
     )
 
 
 def moss_cpp_paths(model_name=None):
-    executable = Path(os.environ.get("VNTTS_MOSS_CPP_EXECUTABLE", "")).expanduser()
-    model = model_name
-    if not model or model == default_moss_tts_model:
-        model = os.environ.get("VNTTS_MOSS_GGUF", "")
-    model = Path(model or "").expanduser()
-    if not executable.is_file() or not model.is_file() or model.suffix != ".gguf":
+    from vntts.moss_cpp_installation import configured_paths
+
+    executable, model, sidecar = configured_paths(model_name)
+    if (
+        not executable.is_file()
+        or not model.is_file()
+        or model.suffix.lower() != ".gguf"
+    ):
         raise TTSConfigurationError(
-            "MOSS C++ needs VNTTS_MOSS_CPP_EXECUTABLE pointing to moss-tts-server "
+            "MOSS Local on Windows/Linux or Intel Mac uses C++/GGUF, not the "
+            "Apple Silicon MLX Python runtime. Set VNTTS_MOSS_CPP_EXECUTABLE to moss-tts-server "
             "and VNTTS_MOSS_GGUF (or the Model setting) pointing to the Local v1.5 "
             "GGUF. See scripts/run-moss-windows.ps1."
         )
-    sidecar = model.with_suffix(".extras.gguf")
     if not sidecar.is_file():
         raise TTSConfigurationError(f"MOSS C++ audio sidecar is missing: {sidecar}")
     return executable.resolve(), model.resolve(), sidecar.resolve()
@@ -89,6 +93,11 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         request_timeout=600.0,
         **options,
     ):
+        from vntts.moss_cpp_installation import ensure_moss_cpp
+
+        ensure_moss_cpp(
+            model_name, cancellation=startup_cancellation, progress=startup_progress
+        )
         self.executable, self.gguf, self.sidecar = moss_cpp_paths(model_name)
         self.gpu_layers = _integer_setting("VNTTS_MOSS_GPU_LAYERS", 0, -1, 1000)
         self.aux_cpu = _integer_setting("VNTTS_MOSS_AUX_CPU", 1, 0, 1)

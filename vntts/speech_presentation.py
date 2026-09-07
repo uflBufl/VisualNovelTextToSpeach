@@ -3,7 +3,12 @@
 from pathlib import Path
 
 from vntts.release_backends import SPEECH_BACKEND_LABELS
-from vntts.voices import find_voice_assignment, pocket_tts_preset_voices
+from vntts.voices import (
+    CharacterVoiceRegistry,
+    VoiceManifestError,
+    find_voice_assignment,
+    pocket_tts_preset_voices,
+)
 
 
 def engine_model_label(backend, model=None, *, pocket_cloning=False):
@@ -31,11 +36,17 @@ def narrator_voice_label(settings):
     source = find_voice_assignment(settings.voice_assignments, "Narrator")
     if source and source != "default":
         kind, _, value = source.partition(":")
-        if kind == "character" and value.startswith("game narrator "):
-            return (
-                value.removeprefix("game narrator ").rsplit(" ", 1)[0].title()
-                + " (game voice)"
-            )
+        if kind == "character" and settings.voice_manifest:
+            try:
+                voice = CharacterVoiceRegistry.from_file(
+                    settings.voice_manifest
+                ).resolve_source(source)
+            except OSError, VoiceManifestError:
+                voice = None
+            if voice is not None:
+                return voice.source_character or voice.character
+        if kind == "character" and value.replace(" ", "").startswith("gamenarrator"):
+            return "Selected game voice (saved catalog unavailable)"
         if kind == "character" and value == "narrator":
             return "Prepared pack narrator (identity available after loading)"
         if kind in {"character", "preset"}:

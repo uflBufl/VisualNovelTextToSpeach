@@ -1499,8 +1499,7 @@ class MossTTSVoiceRouterBackend:
             except ImportError as error:
                 raise TTSConfigurationError(
                     "MOSS-TTS could not be imported from "
-                    f"{runtime_site_packages}. Reinstall it with "
-                    "`uv sync --project backends/moss-tts`."
+                    f"{runtime_site_packages}: {error}"
                 ) from error
             from vntts.moss_compat import install_moss_quantized_codec_compat
 

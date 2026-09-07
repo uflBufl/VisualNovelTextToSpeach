@@ -213,7 +213,10 @@ class GameNarratorDialog(QDialog):
 
     def _load_references(self, character):
         manifest = self.importer.prepare_voice_roles(
-            (character,), self.cancellation, progress=self.decoderProgress.emit
+            (character,),
+            self.cancellation,
+            progress=self.decoderProgress.emit,
+            narrator=True,
         )
         registry = CharacterVoiceRegistry.from_file(manifest)
         return manifest, registry.choices()

@@ -666,6 +666,27 @@ class MossTTSBackendTest(unittest.TestCase):
             ):
                 activate_moss_tts_runtime(missing_runtime)
 
+    def test_runtime_import_failure_reports_actual_cause(self):
+        import_module = __import__
+
+        def importing(name, *args, **kwargs):
+            if name == "mlx.core":
+                raise ImportError("[metal::load_device] No Metal device available")
+            return import_module(name, *args, **kwargs)
+
+        with (
+            patch(
+                "vntts.speech_backend.activate_moss_tts_runtime",
+                return_value=Path("runtime"),
+            ),
+            patch("builtins.__import__", side_effect=importing),
+            self.assertRaisesRegex(
+                TTSConfigurationError, "No Metal device available"
+            ) as raised,
+        ):
+            MossTTSVoiceRouterBackend(CharacterVoiceRegistry())
+        self.assertNotIn("uv sync", str(raised.exception))
+
     def test_runtime_reports_unsupported_platform(self):
         unsupported = "win32" if sys.platform != "win32" else "linux"
         with (

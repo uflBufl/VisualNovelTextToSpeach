@@ -11,6 +11,7 @@ measurements in agent memory and completed-work history in Git, not here.
 ## P1 - Run MOSS Local v1.5 on Windows
 
 - [ ] Qualify real Windows CPU/8 GB GPU rendering with
+      normal `uv run vntts-app` first-launch setup and, for GPU tuning,
       `scripts/run-moss-windows.ps1`: record memory use, latency and blind accent
       fidelity against MLX with the same character references. Verify native
       DLL loading, cancellation/reload and shutdown on the target machine.

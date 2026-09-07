@@ -125,15 +125,21 @@ class Reverse1999GameImporter:
 
     def narrator_characters(self, cancel_event=None, installation_root=None):
         """List voiced characters without decoding the whole audio catalog."""
-        story_index = self.output_root / "reverse1999" / "story-index.jsonl"
+        story_index = self.output_root / "reverse1999" / "narrator-index.jsonl"
         bank_index = story_index.parent / "english-bank-index.json"
+        narrator_banks = story_index.parent / "narrator-banks.json"
         if (
             installation_root is not None
             or not story_index.is_file()
             or not bank_index.is_file()
+            or not narrator_banks.is_file()
         ):
             self.import_installed(cancel_event, installation_root)
-        characters = {}
+        characters = {
+            normalize_character_name(name): name
+            for name in json.loads(narrator_banks.read_text(encoding="utf-8"))
+            if not is_narrator(name)
+        }
         for record in load_story_index_document(story_index).records:
             character = synthesis_character_for_line(
                 record.speaker, record.voice_character
@@ -142,7 +148,9 @@ class Reverse1999GameImporter:
                 characters.setdefault(normalize_character_name(character), character)
         return tuple(sorted(characters.values(), key=str.casefold))
 
-    def prepare_voice_roles(self, roles, cancel_event=None, *, progress=None):
+    def prepare_voice_roles(
+        self, roles, cancel_event=None, *, progress=None, narrator=False
+    ):
         """Reuse the extractor's checksum-bound, per-role reference cache."""
         if not roles:
             raise GameContentImportError("Choose a game character first")
@@ -166,6 +174,8 @@ class Reverse1999GameImporter:
             str(self.output_root),
             "--prepare-voice-candidates-only",
         ]
+        if narrator:
+            arguments.append("--narrator")
         for role in roles:
             arguments.extend(("--voice-candidate-role", role))
         stdout, _stderr = self._run(arguments, cancel_event, environment=environment)

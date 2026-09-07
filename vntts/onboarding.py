@@ -57,6 +57,15 @@ class OnboardingDiagnostics:
         from vntts.moss_cpp_backend import moss_cpp_requested
         from vntts.runtime_installation import ensure_speech_runtime
 
+        if settings.speech_backend == "moss-tts" and moss_cpp_requested(
+            settings.tts_model
+        ):
+            from vntts.moss_cpp_installation import ensure_moss_cpp
+
+            ensure_moss_cpp(
+                settings.tts_model, cancellation=cancellation, progress=progress
+            )
+
         if settings.speech_backend in {"pocket-tts", "moss-tts"} and not (
             settings.speech_backend == "moss-tts"
             and moss_cpp_requested(settings.tts_model)

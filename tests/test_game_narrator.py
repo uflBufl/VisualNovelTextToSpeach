@@ -33,6 +33,7 @@ from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import VoicePlanStore  # noqa: E402
 from vntts.runtime_config import initialize_voice_registry  # noqa: E402
 from vntts.settings import AppSettings, load_app_settings  # noqa: E402
+from vntts.speech_presentation import narrator_voice_label  # noqa: E402
 
 
 class GameNarratorTest(unittest.TestCase):
@@ -48,18 +49,28 @@ class GameNarratorTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             importer = Reverse1999GameImporter(output_root=root)
+            # An older import already has story audio but no playable narrator index.
+            write_content(root / "reverse1999")
+            (root / "reverse1999" / "english-bank-index.json").touch()
 
             def importing_game(*args):
                 write_content(root / "reverse1999")
                 (root / "reverse1999" / "english-bank-index.json").touch()
+                (root / "reverse1999" / "narrator-banks.json").write_text(
+                    '{"Centurion": "hero3032_mainstory.bnk"}'
+                )
+                story = root / "reverse1999" / "story-index.jsonl"
+                (story.parent / "narrator-index.jsonl").write_text(
+                    story.read_text().replace("Rhiannon", "Centurion")
+                )
 
             with patch.object(
                 importer,
                 "import_installed",
                 side_effect=importing_game,
             ) as importing:
-                self.assertEqual(importer.narrator_characters(), ("Rhiannon",))
-                self.assertEqual(importer.narrator_characters(), ("Rhiannon",))
+                self.assertEqual(importer.narrator_characters(), ("Centurion",))
+                self.assertEqual(importer.narrator_characters(), ("Centurion",))
                 self.assertEqual(importing.call_count, 1)
                 importer.narrator_characters(installation_root=root / "game")
                 self.assertEqual(importing.call_count, 2)
@@ -81,6 +92,8 @@ class GameNarratorTest(unittest.TestCase):
                 root=root / "saved",
             )
             loaded = load_app_settings(candidate.save(root / "settings.json"))
+            self.assertEqual(narrator_voice_label(candidate), "Centurion")
+            self.assertEqual(narrator_voice_label(loaded), "Centurion")
             self.assertEqual(loaded.voice_manifest, candidate.voice_manifest)
             self.assertEqual(
                 loaded.generated_audio_manifest, original.generated_audio_manifest
@@ -345,6 +358,7 @@ class GameNarratorTest(unittest.TestCase):
                 ("Centurion",),
                 dialog.cancellation,
                 progress=dialog.decoderProgress.emit,
+                narrator=True,
             )
             dialog.references.setCurrentIndex(
                 dialog.references.findData("character:centurion")

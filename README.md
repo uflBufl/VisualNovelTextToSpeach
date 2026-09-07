@@ -489,7 +489,16 @@ the first MLX compilation cost to startup. Set `VNTTS_MOSS_MODEL` to use a
 compatible local path or Hugging Face model. This MLX runtime requires macOS
 on Apple Silicon; Pocket TTS remains the portable default.
 
-Windows can run the same MOSS Local v1.5 checkpoint through the optional
+On Windows x64, select **MOSS-TTS Local v1.5** and a game narrator, then launch
+normally with `uv run vntts-app`. The app automatically downloads and verifies
+the C++ runtime and both Q8 model files (about 9.1 GB), with progress,
+cancellation, and resumable downloads. Later launches reuse these files.
+The default runs generation and the audio codec on the CPU. No separate
+Python MOSS environment or manual model paths are needed. Windows must have
+the Microsoft Visual C++ x64 runtime; setup checks native loading before
+downloading the models and reports this prerequisite if it is missing.
+
+For custom runtime paths or GPU tuning, the same checkpoint can use the
 [openmoss C++ runtime](https://github.com/pwilkin/openmoss/releases/tag/v0.3.0).
 Download and extract a Windows release (CUDA for NVIDIA, Vulkan for other
 supported GPUs), keeping its DLLs together. Download **both** files from
