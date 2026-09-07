@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from functools import partial
@@ -55,7 +56,16 @@ class GameNarratorTest(unittest.TestCase):
 
             def importing_game(*args):
                 write_content(root / "reverse1999")
-                (root / "reverse1999" / "english-bank-index.json").touch()
+                (root / "audio").mkdir(exist_ok=True)
+                (root / "reverse1999" / "english-bank-index.json").write_text(
+                    json.dumps(
+                        {
+                            "version": 4,
+                            "game_audio_directory": str(root / "audio"),
+                            "banks": [],
+                        }
+                    )
+                )
                 (root / "reverse1999" / "narrator-banks.json").write_text(
                     '{"Centurion": "hero3032_mainstory.bnk"}'
                 )

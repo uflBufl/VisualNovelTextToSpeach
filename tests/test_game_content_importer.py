@@ -51,7 +51,9 @@ class Reverse1999GameImporterTest(unittest.TestCase):
     def test_narrator_upgrade_reuses_previously_imported_custom_installation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            resources = root / "custom-drive" / "game" / "PersistentRoot"
+            resources = (
+                root / "custom-drive" / "game" / "StreamingAssets" / "PersistentRoot"
+            )
             (resources / "bundles").mkdir(parents=True)
             bundle = resources / "bundles" / "story.dat"
             bundle.touch()
@@ -69,6 +71,14 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             metadata["source_bundle"] = str(bundle)
             lines[0] = json.dumps(metadata)
             story.write_text("\n".join(lines) + "\n")
+            # Existing narrator files do not mean the old single-folder scan is complete.
+            (story.parent / "narrator-index.jsonl").write_text(story.read_text())
+            (story.parent / "narrator-banks.json").write_text("{}")
+            (story.parent / "english-bank-index.json").write_text(
+                json.dumps(
+                    {"version": 4, "game_audio_directory": str(audio), "banks": []}
+                )
+            )
 
             def finish_import(arguments, _cancel):
                 self.assertEqual(
@@ -84,7 +94,9 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 (story.parent / "narrator-banks.json").write_text(
                     '{"Centurion": "hero.bnk"}'
                 )
-                (story.parent / "english-bank-index.json").write_text("{}")
+                from r1999extractor.reverse1999_index import build_bank_index
+
+                build_bank_index(audio, output=story.parent / "english-bank-index.json")
 
             importer = Reverse1999GameImporter(
                 command=("extractor",), output_root=output

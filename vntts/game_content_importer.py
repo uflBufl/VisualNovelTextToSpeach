@@ -153,6 +153,7 @@ class Reverse1999GameImporter:
             or not story_index.is_file()
             or not bank_index.is_file()
             or not narrator_banks.is_file()
+            or self._bank_index_is_stale(bank_index)
         ):
             self.import_installed(cancel_event, installation_root)
         characters = {
@@ -167,6 +168,16 @@ class Reverse1999GameImporter:
             if record.source_audio_status == "available" and not is_narrator(character):
                 characters.setdefault(normalize_character_name(character), character)
         return tuple(sorted(characters.values(), key=str.casefold))
+
+    @staticmethod
+    def _bank_index_is_stale(path):
+        from r1999extractor.reverse1999_index import bank_index_staleness_reasons
+
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except OSError, ValueError:
+            return True
+        return bool(bank_index_staleness_reasons(document))
 
     def prepare_voice_roles(
         self, roles, cancel_event=None, *, progress=None, narrator=False

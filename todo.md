@@ -3,11 +3,11 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P0 - Preserve installed-game location during narrator catalog upgrade
+## P0 - Index both Windows game-audio locations
 
-- [ ] Confirm on the reported Windows installation that opening the narrator
-      picker upgrades an existing story-only import without asking for the game
-      folder again or failing with "Unable to find installed game configs".
+- [ ] Confirm on the reported Windows installation that the narrator picker
+      rebuilds its old single-root index automatically, offers Centurion and loads
+      her packaged references while retaining downloaded story voices.
 
 ## P0 - Qualify game-audio decoder provisioning
 
