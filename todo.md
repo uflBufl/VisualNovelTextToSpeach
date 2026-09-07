@@ -3,7 +3,7 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P0 - Fix narrator preview latency and Centurion reference failures
+## P0 - Qualify Windows narrator preview latency
 
 - [ ] Measure cold and warm Windows MOSS narrator previews on RTX 2070 Super
       8 GB after enabling default GPU offload and native reference-code reuse;
@@ -12,9 +12,6 @@ measurements in agent memory and completed-work history in Git, not here.
       model/codec remains enabled to fit this card. Profile remaining
       codec/reference-encoding costs before changing native thread settings or
       placing the full sidecar on an 8 GB GPU; PyTorch settings do not tune GGUF.
-- [ ] Listening check: spot-check a few Centurion previews with the updated MLX
-      stable profile for natural delivery and artifacts. Automated content/silence
-      checks are not listening approval; existing approved WAVs remain unchanged.
 
 ## P0 - Prefer spoken playable-character narrator references
 
