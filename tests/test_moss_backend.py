@@ -354,9 +354,12 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertEqual(stream.result.diagnostics.chunk_count, 1)
 
     def test_bypass_cache_renders_each_seeded_request_fresh(self):
+        primed_backend, _model, _output = self.create_backend()
+        primed_backend.prime("Narrator")
         backend, model, _output = self.create_backend()
-        random = Mock()
-        backend._mlx = SimpleNamespace(random=random)
+        initialization = Mock()
+        model._ensure_audio_tokenizer = initialization.ensure_codec
+        backend._mlx = SimpleNamespace(random=initialization.random)
         request = SynthesisRequest(
             voice="Narrator",
             text="Retry this line.",
@@ -369,8 +372,12 @@ class MossTTSBackendTest(unittest.TestCase):
 
         self.assertEqual(first.diagnostics.cache_source, "fresh-generation")
         self.assertEqual(second.diagnostics.cache_source, "fresh-generation")
+        self.assertEqual(model.encoded_references, [])
         self.assertEqual(len(model.generate_calls), 2)
-        self.assertEqual(random.seed.call_args_list, [unittest.mock.call(11)] * 2)
+        self.assertEqual(
+            initialization.mock_calls,
+            [unittest.mock.call.ensure_codec(), unittest.mock.call.random.seed(11)] * 2,
+        )
 
     def test_refresh_cache_skips_read_then_replaces_reusable_audio(self):
         backend, model, _output = self.create_backend()
