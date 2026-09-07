@@ -5,6 +5,7 @@ from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -47,6 +48,26 @@ class GameNarratorTest(unittest.TestCase):
     def run_task(self, pool):
         pool.tasks.pop(0).run()
         self.application.processEvents()
+
+    def narrator_importer(self, manifest):
+        document = json.loads(manifest.read_text())
+        document["voices"] = [
+            entry for entry in document["voices"] if entry["character"] == "Centurion"
+        ]
+        manifest.write_text(json.dumps(document))
+        importer = Mock()
+        importer.narrator_characters.return_value = ("Centurion",)
+        importer.narrator_references.return_value = tuple(
+            SimpleNamespace(
+                line_id=f"playable-voice:3032:{index}",
+                collection_title=f"Spoken line {index}",
+                source_audio_id=index,
+                text=f"Original transcript {index}. <Not markup.>",
+            )
+            for index in range(1, 6)
+        )
+        importer.prepare_voice_roles.return_value = manifest
+        return importer
 
     def test_builtin_preview_and_save_need_no_game_or_gated_model(self):
         with TemporaryDirectory() as directory:
@@ -457,17 +478,7 @@ class GameNarratorTest(unittest.TestCase):
     def test_picker_shows_original_reference_title_and_plain_text_transcript(self):
         with TemporaryDirectory() as directory:
             manifest = write_manifest(Path(directory))
-            document = json.loads(manifest.read_text())
-            for entry in document["voices"]:
-                if entry["character"] == "Centurion":
-                    entry["vntts.narrator_reference"] = {
-                        "title": "First Encounter",
-                        "text": "Life is a gamble. <This is dialogue, not markup.>",
-                    }
-            manifest.write_text(json.dumps(document))
-            importer = Mock()
-            importer.narrator_characters.return_value = ("Centurion",)
-            importer.prepare_voice_roles.return_value = manifest
+            importer = self.narrator_importer(manifest)
             pool = ManualThreadPool()
             dialog = GameNarratorDialog(
                 AppSettings(voice_assignments={"Narrator": "character:centurion"}),
@@ -480,13 +491,30 @@ class GameNarratorTest(unittest.TestCase):
             self.run_task(pool)
             dialog.prepare_button.click()
             self.run_task(pool)
-            dialog.references.setCurrentIndex(
-                dialog.references.findData("character:centurion")
-            )
-            self.assertIn("First Encounter", dialog.references.currentText())
+            self.assertEqual(dialog.references.count(), 5)
+            dialog.references.setCurrentIndex(4)
+            importer.prepare_voice_roles.assert_not_called()
+            self.assertIn("Spoken line 5", dialog.references.currentText())
             self.assertEqual(
                 dialog.reference_text.text(),
-                "Life is a gamble. <This is dialogue, not markup.>",
+                "Original transcript 5. <Not markup.>",
+            )
+            dialog.original_button.click()
+            self.run_task(pool)
+            self.assertEqual(
+                importer.prepare_voice_roles.call_args.kwargs["narrator_line_id"],
+                "playable-voice:3032:5",
+            )
+            dialog.original_button.click()
+            self.run_task(pool)
+            importer.prepare_voice_roles.assert_called_once()
+            dialog.references.setCurrentIndex(0)
+            dialog.original_button.click()
+            self.run_task(pool)
+            self.assertEqual(importer.prepare_voice_roles.call_count, 2)
+            self.assertEqual(
+                importer.prepare_voice_roles.call_args.kwargs["narrator_line_id"],
+                "playable-voice:3032:1",
             )
             dialog.characters.clear()
             self.assertEqual(dialog.reference_text.text(), "")
@@ -496,8 +524,7 @@ class GameNarratorTest(unittest.TestCase):
     def test_decoder_setup_consent_retries_in_worker_and_keeps_controls_gated(self):
         with TemporaryDirectory() as directory:
             manifest = write_manifest(Path(directory) / "candidates")
-            importer = Mock()
-            importer.narrator_characters.return_value = ("Centurion",)
+            importer = self.narrator_importer(manifest)
             importer.prepare_voice_roles.side_effect = [
                 DecoderSetupRequired("Install decoder?"),
                 manifest,
@@ -513,6 +540,8 @@ class GameNarratorTest(unittest.TestCase):
             self.application.processEvents()
             self.run_task(pool)
             dialog.prepare_button.click()
+            self.run_task(pool)
+            dialog.original_button.click()
             with patch(
                 "vntts.game_narrator_ui.confirm_decoder_setup", return_value=True
             ) as consent:
@@ -527,6 +556,40 @@ class GameNarratorTest(unittest.TestCase):
             dialog.reject()
             self.run_task(pool)
 
+    def test_save_unplayed_reference_prepares_only_that_selection(self):
+        with TemporaryDirectory() as directory:
+            manifest = write_manifest(Path(directory))
+            importer = self.narrator_importer(manifest)
+            pool = ManualThreadPool()
+            binder = Mock(return_value=AppSettings())
+            previews = Mock()
+            dialog = GameNarratorDialog(
+                AppSettings(speech_backend="moss-tts"),
+                importer=importer,
+                preview_service=previews,
+                thread_pool=pool,
+                player=Mock(),
+                binder=binder,
+            )
+            self.application.processEvents()
+            self.run_task(pool)
+            dialog.prepare_button.click()
+            self.run_task(pool)
+            dialog.references.setCurrentIndex(4)
+            dialog.save_button.click()
+            self.run_task(pool)
+            self.run_task(pool)
+            self.assertEqual(
+                importer.prepare_voice_roles.call_args.kwargs["narrator_line_id"],
+                "playable-voice:3032:5",
+            )
+            binder.assert_called_once_with(
+                dialog._settings(), manifest, "character:centurion", "Centurion"
+            )
+            previews.generate.assert_not_called()
+            previews.reference_audio.assert_not_called()
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
     def test_guided_flow_gates_controls_previews_and_saves(self):
         with (
             TemporaryDirectory() as directory,
@@ -534,9 +597,7 @@ class GameNarratorTest(unittest.TestCase):
         ):
             root = Path(directory)
             manifest = write_manifest(root / "candidates")
-            importer = Mock()
-            importer.narrator_characters.return_value = ("Centurion",)
-            importer.prepare_voice_roles.return_value = manifest
+            importer = self.narrator_importer(manifest)
             previews = Mock()
             previews.reference_audio.return_value = (
                 manifest.parent / "references/centurion.wav"
@@ -561,19 +622,18 @@ class GameNarratorTest(unittest.TestCase):
             dialog.decoderProgress.emit("Downloading game-audio decoder: 1.0 MB...")
             self.assertIn("Downloading", dialog.status.text())
             self.run_task(pool)
+            importer.prepare_voice_roles.assert_not_called()
+            self.assertFalse(dialog.preview_button.isEnabled())
+            self.assertFalse(dialog.save_button.isEnabled())
+            dialog.original_button.click()
+            self.run_task(pool)
             importer.prepare_voice_roles.assert_called_once_with(
                 ("Centurion",),
                 dialog.cancellation,
                 progress=dialog.decoderProgress.emit,
                 narrator=True,
+                narrator_line_id="playable-voice:3032:1",
             )
-            dialog.references.setCurrentIndex(
-                dialog.references.findData("character:centurion")
-            )
-            self.assertFalse(dialog.preview_button.isEnabled())
-            self.assertFalse(dialog.save_button.isEnabled())
-            dialog.original_button.click()
-            self.run_task(pool)
             player.play.assert_called_once()
             dialog.consent.setChecked(True)
             dialog.preview_button.click()
@@ -602,9 +662,7 @@ class GameNarratorTest(unittest.TestCase):
             ),
         ):
             manifest = write_manifest(Path(directory))
-            importer = Mock()
-            importer.narrator_characters.return_value = ("Centurion",)
-            importer.prepare_voice_roles.return_value = manifest
+            importer = self.narrator_importer(manifest)
             previews = Mock()
             previews.generate.side_effect = RuntimeError("MOSS runtime unavailable")
             pool = ManualThreadPool()

@@ -179,8 +179,21 @@ class Reverse1999GameImporter:
             return True
         return bool(bank_index_staleness_reasons(document))
 
+    def narrator_references(self, character):
+        from r1999extractor.narrator_references import list_narrator_references
+
+        return list_narrator_references(
+            self.output_root / "reverse1999" / "narrator-index.jsonl", character
+        )
+
     def prepare_voice_roles(
-        self, roles, cancel_event=None, *, progress=None, narrator=False
+        self,
+        roles,
+        cancel_event=None,
+        *,
+        progress=None,
+        narrator=False,
+        narrator_line_id=None,
     ):
         """Reuse the extractor's checksum-bound, per-role reference cache."""
         if not roles:
@@ -207,6 +220,8 @@ class Reverse1999GameImporter:
         ]
         if narrator:
             arguments.append("--narrator")
+        if narrator_line_id is not None:
+            arguments.extend(("--narrator-line-id", narrator_line_id))
         for role in roles:
             arguments.extend(("--voice-candidate-role", role))
         stdout, _stderr = self._run(arguments, cancel_event, environment=environment)

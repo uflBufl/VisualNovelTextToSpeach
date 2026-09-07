@@ -48,6 +48,45 @@ class RunningProcess(FinishedProcess):
 
 
 class Reverse1999GameImporterTest(unittest.TestCase):
+    def test_narrator_listing_needs_no_decoder_and_selection_reaches_extractor(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            importer = Reverse1999GameImporter(output_root=root, command=("extractor",))
+            manifest = (
+                root / "reverse1999" / "voice-candidates" / "one" / "manifest.json"
+            )
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}")
+            with (
+                patch(
+                    "r1999extractor.narrator_references.list_narrator_references",
+                    return_value=("line",),
+                ) as listing,
+                patch(
+                    "vntts.game_content_importer.ensure_game_decoder",
+                    return_value=root / "decoder",
+                ) as decoder,
+                patch.object(
+                    importer,
+                    "_run",
+                    return_value=(json.dumps({"voice_manifest": str(manifest)}), ""),
+                ) as run,
+            ):
+                self.assertEqual(importer.narrator_references("Centurion"), ("line",))
+                listing.assert_called_once_with(
+                    root / "reverse1999" / "narrator-index.jsonl", "Centurion"
+                )
+                decoder.assert_not_called()
+                run.assert_not_called()
+                importer.prepare_voice_roles(
+                    ("Centurion",), narrator=True, narrator_line_id="playable:5"
+                )
+                arguments = run.call_args.args[0]
+                self.assertIn("--narrator", arguments)
+                self.assertEqual(
+                    arguments[arguments.index("--narrator-line-id") + 1], "playable:5"
+                )
+
     def test_narrator_upgrade_reuses_previously_imported_custom_installation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()

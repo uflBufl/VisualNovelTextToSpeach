@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from vntts_artifacts.voice_manifest import load_voice_manifest
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
@@ -36,7 +35,6 @@ from vntts.speech_presentation import engine_model_label, narrator_voice_label
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
     CharacterVoiceRegistry,
-    VoiceChoice,
     find_voice_assignment,
     normalize_character_name,
     pocket_tts_preset_voices,
@@ -74,7 +72,7 @@ class GameNarratorDialog(QDialog):
         self.runner.finished.connect(self._finished)
         self.cancellation = Event()
         self.decoderProgress.connect(self._decoder_progress)
-        self._manifest = None
+        self._prepared = {}
         self._character = None
         self._operation = None
         self._closing = False
@@ -278,16 +276,18 @@ class GameNarratorDialog(QDialog):
 
     def _character_changed(self):
         self.player.stop()
-        self._manifest = None
+        self._prepared.clear()
         self.references.clear()
         self._update()
 
     def _prepare(self):
         self._character = self.characters.currentText()
+        self._prepared.clear()
+        self.references.clear()
         self._start(
             "prepare",
-            f"Extracting references for {self._character}. Please wait...",
-            self._load_references,
+            f"Listing spoken references for {self._character}. Please wait...",
+            self.importer.narrator_references,
             self._character,
         )
 
@@ -298,78 +298,60 @@ class GameNarratorDialog(QDialog):
             or ("Transcript unavailable." if self.references.count() else "")
         )
 
-    def _load_references(self, character):
-        manifest = self.importer.prepare_voice_roles(
-            (character,),
-            self.cancellation,
-            progress=self.decoderProgress.emit,
-            narrator=True,
-        )
-        registry = CharacterVoiceRegistry.from_file(manifest)
-        document, _entries = load_voice_manifest(manifest)
-        details = {
-            f"character:{normalize_character_name(entry['character'])}": entry.get(
-                "vntts.narrator_reference", {}
-            )
-            for entry in document["voices"]
-        }
-        choices = []
-        for choice in registry.choices():
-            detail = details.get(choice.id)
-            detail = detail if isinstance(detail, dict) else {}
-            title, text = detail.get("title"), detail.get("text")
-            choices.append(
-                VoiceChoice(
-                    choice.id,
-                    title if isinstance(title, str) and title else choice.label,
-                    text if isinstance(text, str) else "",
-                )
-            )
-        return manifest, tuple(choices)
-
     def _decoder_progress(self, message):
-        if self.runner.active and self._operation == "prepare" and not self._closing:
+        if self.runner.active and not self._closing:
             self.status.setText(message)
 
-    def _plan(self):
-        return narrator_preview_plan(
+    def _original(self):
+        self._candidate_action("audio")
+
+    def _preview(self):
+        self._candidate_action("preview")
+
+    def _candidate_action(self, operation):
+        self._start(
+            operation,
+            {
+                "audio": "Preparing the selected original reference...",
+                "preview": "Preparing the selected reference and generating your preview...",
+                "save": "Saving the selected narrator. Character voices stay unchanged...",
+            }[operation],
+            self._perform_candidate_action,
+            operation,
             self._settings(),
-            self._manifest,
+            self._character,
             self.presets.currentData()
             if self.source.currentData() == "preset"
             else self.references.currentData(),
             self.text.text().strip(),
         )
 
-    def _original(self):
-        try:
-            plan = self._plan()
-        except Exception as error:
-            self.status.setText(str(error))
-            return
-        self._start(
-            "audio",
-            "Checking original reference...",
-            self.previews.reference_audio,
-            plan,
-            plan.groups[0],
-            plan.groups[0].source_id,
-        )
-
-    def _preview(self):
-        try:
-            plan = self._plan()
-        except Exception as error:
-            self.status.setText(str(error))
-            return
-        self._start(
-            "preview",
-            "Loading the selected model and generating your preview...",
-            self._generate,
-            plan,
-        )
-
-    def _generate(self, plan):
+    def _perform_candidate_action(
+        self, operation, settings, character, reference, text
+    ):
+        manifest = None
+        source_id = reference
+        if not reference.startswith("preset:"):
+            if reference not in self._prepared:
+                self._prepared[reference] = self.importer.prepare_voice_roles(
+                    (character,),
+                    self.cancellation,
+                    progress=self.decoderProgress.emit,
+                    narrator=True,
+                    narrator_line_id=reference,
+                )
+            manifest = self._prepared[reference]
+            choices = CharacterVoiceRegistry.from_file(manifest).choices()
+            if len(choices) != 1:
+                raise ValueError("Expected exactly one selected narrator reference")
+            source_id = choices[0].id
+        if self.cancellation.is_set():
+            raise RuntimeError("Narrator selection cancelled")
+        if operation == "save":
+            return self.binder(settings, manifest, source_id, character)
+        plan = narrator_preview_plan(settings, manifest, source_id, text)
+        if operation == "audio":
+            return self.previews.reference_audio(plan, plan.groups[0], source_id)
         return self.previews.generate(
             plan,
             plan.groups[0],
@@ -390,15 +372,7 @@ class GameNarratorDialog(QDialog):
             )
             self._cleanup()
             return
-        self._start(
-            "save",
-            "Saving narrator references. Existing character voices are preserved...",
-            self.binder,
-            self._settings(),
-            self._manifest,
-            self.references.currentData(),
-            self._character,
-        )
+        self._candidate_action("save")
 
     def _finished(self, result, error):
         operation = self._operation
@@ -420,7 +394,7 @@ class GameNarratorDialog(QDialog):
                 self, error
             ):
                 self.importer.allow_decoder_homebrew = True
-                self._prepare()
+                self._candidate_action(operation)
                 return
             self.status.setText(
                 f"{error}\nRetry, choose a game folder, or cancel. Nothing was assigned."
@@ -433,18 +407,20 @@ class GameNarratorDialog(QDialog):
                 else "No voiced characters found. Choose the game folder to reimport."
             )
         elif operation == "prepare":
-            self._manifest, choices = result
+            choices = result
             self.references.clear()
             for index, choice in enumerate(choices, 1):
                 self.references.addItem(
-                    f"{self._character} - {choice.label}", choice.id
+                    f"{self._character} - {choice.collection_title or f'Voice {choice.source_audio_id}'}",
+                    choice.line_id,
                 )
                 self.references.setItemData(
-                    index - 1, choice.description, Qt.ItemDataRole.ToolTipRole
+                    index - 1, choice.text, Qt.ItemDataRole.ToolTipRole
                 )
             self._reference_changed()
             self.status.setText(
-                "Listen to the original and generated preview, then save your narrator."
+                f"All {len(choices)} suitable references, recommended order. "
+                "Audio loads only for the selected line when you play or save."
                 if choices
                 else "No usable references found. Choose another character."
             )
