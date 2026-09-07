@@ -101,6 +101,11 @@ class MissingVoiceReuseReviewDialog(QDialog):
 
         self.previous = QPushButton("Previous sample")
         self.sample_selector = QComboBox()
+        self.sample_selector.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.sample_selector.setMinimumContentsLength(16)
+        self.sample_selector.currentTextChanged.connect(self.sample_selector.setToolTip)
         self.sample_selector.setAccessibleName("Exact review sample")
         self.sample_selector.setAccessibleDescription(
             "Choose one exact sample from the current review family"
@@ -357,6 +362,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self._sample_index = 0
         self.sample_selector.blockSignals(True)
         self.sample_selector.clear()
+        self.sample_selector.setToolTip("")
         if self._cohort is None:
             automatic_count = sum(
                 value.get("decision_origin") == AUTOMATIC_UNRESOLVED_ORIGIN
@@ -386,6 +392,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
                 f"{sample['length_bucket'].title()} | {sample['line_id']}"
             )
         self.sample_selector.blockSignals(False)
+        self.sample_selector.setToolTip(self.sample_selector.currentText())
         self.cohort_heading.setText(
             f"{'Failed-line group' if self.failed_control_mode else 'Family'} "
             f"{completed + 1} of {total} | "

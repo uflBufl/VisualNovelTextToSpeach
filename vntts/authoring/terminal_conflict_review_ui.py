@@ -127,7 +127,7 @@ class TerminalConflictReviewDialog(QDialog):
             )
             self.choose_buttons.append(button)
         decisions.addRow(*self.choose_buttons)
-        self.neither = QPushButton("Neither candidate is acceptable")
+        self.neither = QPushButton("Neither is acceptable")
         self.neither.setAccessibleName("Reject both terminal conflict candidates")
         self.neither.setAccessibleDescription(
             "Require repair instead of keeping either terminal candidate"

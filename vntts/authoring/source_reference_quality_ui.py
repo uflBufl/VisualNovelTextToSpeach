@@ -310,7 +310,7 @@ class SourceReferenceQualityDialog(QDialog):
         self.failures.setVisible(False)
         self.technical_toggle.setChecked(False)
         self.technical_toggle.setVisible(bool(failure_lines))
-        self.technical_toggle.setText(f"Technical diagnostics ({len(failure_lines)})")
+        self.technical_toggle.setText(f"Diagnostics ({len(failure_lines)})")
         if self.generated.count():
             self.status.setText(
                 "Listen through the original and generated evidence. Playback must "

@@ -110,6 +110,9 @@ class AuthoringMissingVoiceReuseReviewUiTest(unittest.TestCase):
             self.assertGreater(dialog.review_scroll.verticalScrollBar().maximum(), 0)
             self.assertTrue(dialog.close_button.isVisible())
             self.assertIs(dialog.sample_label.buddy(), dialog.sample_selector)
+            self.assertEqual(
+                dialog.sample_selector.toolTip(), dialog.sample_selector.currentText()
+            )
             self.assertIs(
                 dialog.decision_context.technical_toggle.nextInFocusChain(),
                 dialog.previous,

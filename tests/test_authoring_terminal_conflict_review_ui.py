@@ -128,6 +128,7 @@ class TerminalConflictReviewUiTest(unittest.TestCase):
                 font = dialog.font()
                 if scale is None:
                     font.setPixelSize(48)  # Exercise wide metrics on every host.
+                    font.setStretch(115)
                 else:
                     font.setPointSizeF(base_point_size * scale)
                 dialog.setFont(font)

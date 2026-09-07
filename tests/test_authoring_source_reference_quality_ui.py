@@ -305,7 +305,7 @@ class SourceReferenceQualityDialogTest(unittest.TestCase):
             self.assertTrue(dialog.generated.isHidden())
             self.assertIn("No published generated", dialog.generated_details.text())
             self.assertEqual(
-                dialog.technical_toggle.text(), "Technical diagnostics (1)"
+                dialog.technical_toggle.text(), "Diagnostics (1)"
             )
             self.assertTrue(dialog.failures.isHidden())
             dialog.technical_toggle.setChecked(True)

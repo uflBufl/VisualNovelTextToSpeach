@@ -179,7 +179,7 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self.cases.setColumnWidth(0, 260)
         self.cases.setColumnWidth(1, 150)
-        self.technical_details = QCheckBox("Show affected failed lines")
+        self.technical_details = QCheckBox("Affected failed lines")
         self.technical_details.setAccessibleName("Show affected failed line details")
         self.technical_details.setAccessibleDescription(
             "Reveal the exact failed lines affected by this reference decision"
@@ -187,7 +187,7 @@ class FailureReferenceAuditDialog(QDialog):
         self.technical_details.toggled.connect(self.cases.setVisible)
         self.cases.setVisible(False)
 
-        self.play = QPushButton("Play selected candidate")
+        self.play = QPushButton("Play reference")
         self.stop = QPushButton("Stop")
         self.play.setAccessibleName("Play selected source candidate")
         self.play.setAccessibleDescription(
@@ -195,8 +195,8 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self.stop.setAccessibleName("Stop source candidate playback")
         self.stop.setAccessibleDescription("Stop source or generated preview playback")
-        self.generate_preview = QPushButton("Generate voice sample")
-        self.replay_preview = QPushButton("Replay generated sample")
+        self.generate_preview = QPushButton("Generate sample")
+        self.replay_preview = QPushButton("Replay preview")
         self.cancel_preview = QPushButton("Cancel generation")
         self.generate_preview.setAccessibleName("Generate optional voice sample")
         self.replay_preview.setAccessibleName("Replay optional generated sample")
@@ -245,7 +245,7 @@ class FailureReferenceAuditDialog(QDialog):
         playback.addRow(self.candidate_label, self.candidate_choice)
         playback.addRow(self.play, self.stop)
         self.preview_toggle = QToolButton()
-        self.preview_toggle.setText("Optional generated preview")
+        self.preview_toggle.setText("Generated preview")
         self.preview_toggle.setCheckable(True)
         self.preview_toggle.setChecked(False)
         self.preview_toggle.setAccessibleName("Show optional generated preview")
@@ -409,9 +409,7 @@ class FailureReferenceAuditDialog(QDialog):
         decision_text = decision["decision"] if decision is not None else "not decided"
         completed = len(self.decisions)
         self.progress.setValue(completed)
-        self.technical_details.setText(
-            f"Show {len(group['cases'])} affected failed line(s)"
-        )
+        self.technical_details.setText(f"Affected lines: {len(group['cases'])}")
         self.summary.setText(
             f"Reference group {self.group_choice.currentIndex() + 1}/"
             f"{self.group_choice.count()} | {completed}/{self.group_choice.count()} "
