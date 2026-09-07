@@ -1817,6 +1817,9 @@ class MossTTSVoiceRouterBackend:
 
     def _generate(self, prepared, request):
         if prepared.seed is not None and self._mlx is not None:
+            # A disk prompt-cache hit leaves the codec cold; loading its layers
+            # consumes MLX random state, so do it before seeding generation.
+            self.model._ensure_audio_tokenizer()
             self._mlx.random.seed(prepared.seed)
         return self.model.generate(
             text=prepared.text,
@@ -2049,9 +2052,9 @@ class MossTTSVoiceRouterBackend:
                             playback_result["first_audio_ms"] = (
                                 self.clock() - started
                             ) * 1000
-                        playback_result["underflowed"] = bool(
-                            playback_result["underflowed"]
-                            or self._write_stream_chunk(stream, item.pcm)
+                        playback_result["underflowed"] = (
+                            bool(self._write_stream_chunk(stream, item.pcm))
+                            or playback_result["underflowed"]
                         )
                         wrote_audio = True
             except Exception as error:
