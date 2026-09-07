@@ -1018,8 +1018,9 @@ class IsolatedSpeechBackend:
                             break
                         if first_audio_ms is None:
                             first_audio_ms = (self.clock() - started) * 1000
-                        underflowed = bool(
-                            underflowed or stream.write(self._prepare_audio(chunk.pcm))
+                        underflowed = (
+                            bool(stream.write(self._prepare_audio(chunk.pcm)))
+                            or underflowed
                         )
                 if interrupted:
                     return outcome_for_prepared(

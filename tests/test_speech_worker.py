@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -460,6 +460,44 @@ class SpeechWorkerTest(unittest.TestCase):
 
         self.assertEqual(backend.generation_profile, "stable")
         self.assertEqual(backend.model_name, "moss-tts")
+
+    def test_stream_keeps_writing_after_an_underrun(self):
+        output = MagicMock()
+        stream = output.OutputStream.return_value.__enter__.return_value
+        stream.write.side_effect = (True, False)
+        with (
+            patch.object(IsolatedSpeechBackend, "_start_worker"),
+            patch(
+                "vntts.speech_worker._runtime_paths",
+                return_value=(Path("/runtime"), Path("/runtime/python"), Path("/site")),
+            ),
+        ):
+            backend = IsolatedSpeechBackend(
+                "moss-tts", CharacterVoiceRegistry(), audio_output=output
+            )
+
+        def render(request):
+            result = FakeWorkerBackend(backend.registry).render(request).collect()
+
+            def chunks():
+                for index, frame in enumerate(result.pcm):
+                    yield SynthesisChunk(frame[None, :], result.sample_rate, index, 0.0)
+                return result
+
+            return SynthesisChunkStream(chunks())
+
+        with patch.object(backend, "render", side_effect=render):
+            outcome = backend.play_prepared(
+                backend.prepare_playback("Narrator", "Keep every chunk.")
+            )
+
+        self.assertTrue(outcome.successful)
+        self.assertTrue(outcome.underflowed)
+        self.assertEqual(stream.write.call_count, 2)
+        np.testing.assert_array_equal(
+            np.concatenate([call.args[0] for call in stream.write.call_args_list]),
+            np.array([[0.25], [-0.25]], dtype=np.float32),
+        )
 
     def test_pocket_worker_ignores_an_inapplicable_saved_profile(self):
         backend = object.__new__(IsolatedSpeechBackend)

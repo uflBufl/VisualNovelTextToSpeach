@@ -10,14 +10,14 @@ measurements in agent memory and completed-work history in Git, not here.
       latency. CPU codec remains enabled to limit VRAM use. Profile remaining
       codec/reference-encoding costs before changing native thread settings or
       placing the full sidecar on an 8 GB GPU; PyTorch settings do not tune GGUF.
-- [ ] Investigate reference-dependent MOSS generation failures using the captured
-      Centurion 18-reference comparison: 11 generation-limit completions (10 with long
-      trailing silence), 3 complete outputs with 2.96-3.60 s internal pauses,
-      and 4 complete outputs without those failures. Recheck representative good
-      and bad references in fresh workers and across seeds before changing
-      reference ranking, token limits or generation defaults. Preserve provenance
-      and raw output; do not auto-approve or weaken silence checks. These are Mac
-      MLX results, not evidence about Windows GGUF performance.
+- [ ] Reduce residual pauses produced by the MOSS MLX generation path. Compare
+      existing stable controls against upstream Local v1.5 audio sampling and
+      separately test text/EOS sampling using the same references, texts and seed
+      set. Keep a held-out phrase set; check spoken-text completeness as well as
+      silence before changing a default or ranking a reference as reliable.
+      Do not substitute continuation mode, relax quality gates, increase output
+      limits or auto-approve a lower-silence but truncated result. Preserve raw
+      tokens and source/output hashes; Mac MLX results are not Windows evidence.
 
 ## P0 - Prefer spoken playable-character narrator references
 

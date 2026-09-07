@@ -2052,9 +2052,9 @@ class MossTTSVoiceRouterBackend:
                             playback_result["first_audio_ms"] = (
                                 self.clock() - started
                             ) * 1000
-                        playback_result["underflowed"] = bool(
-                            playback_result["underflowed"]
-                            or self._write_stream_chunk(stream, item.pcm)
+                        playback_result["underflowed"] = (
+                            bool(self._write_stream_chunk(stream, item.pcm))
+                            or playback_result["underflowed"]
                         )
                         wrote_audio = True
             except Exception as error:

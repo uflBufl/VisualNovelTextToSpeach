@@ -511,6 +511,26 @@ class MossTTSBackendTest(unittest.TestCase):
 
         self.assertTrue(output.generated_while_first_chunk_played)
 
+    def test_stream_keeps_writing_after_an_underrun(self):
+        backend, _model, output = self.create_backend()
+        write_chunk = backend._write_stream_chunk
+
+        def underflow_once(stream, audio):
+            write_chunk(stream, audio)
+            return len(stream.writes) == 1
+
+        with patch.object(backend, "_write_stream_chunk", side_effect=underflow_once):
+            outcome = backend.play_prepared(
+                backend.prepare_playback("Narrator", "Keep every chunk.")
+            )
+
+        self.assertTrue(outcome.successful)
+        self.assertTrue(outcome.underflowed)
+        self.assertEqual(len(output.streams[0].writes), 2)
+        np.testing.assert_array_equal(
+            np.concatenate(output.streams[0].writes), backend.last_generated_audio
+        )
+
     def test_repeated_line_reuses_complete_stereo_audio_cache(self):
         backend, model, output = self.create_backend()
 
