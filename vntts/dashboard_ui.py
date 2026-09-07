@@ -149,8 +149,8 @@ class ControlDashboard(QMainWindow):
         self.reading_policy.setWordWrap(True)
         self.reading_policy.setAccessibleName("In-game audio policy")
         self.reading_help = QLabel(
-            "Start reading follows dialogue in the game, including prepared audio. "
-            "It does not regenerate saved recordings."
+            "Start reading follows dialogue in the game. Saved recordings play "
+            "without generation; the configured engine/model creates new speech."
         )
         self.reading_help.setWordWrap(True)
         self.confidence = QLabel("-")
@@ -186,6 +186,7 @@ class ControlDashboard(QMainWindow):
         self.details_layout = QVBoxLayout(self.details_content)
         self.details_layout.setContentsMargins(0, 0, 0, 0)
         self.details_layout.addLayout(details)
+        self.details_layout.addWidget(self.reading_help)
         self.details_toggle = QPushButton("Show technical details")
         self.details_toggle.setCheckable(True)
         self.details_toggle.setAccessibleDescription(
@@ -226,10 +227,6 @@ class ControlDashboard(QMainWindow):
         self.repeat_button.clicked.connect(self.repeat_requested.emit)
         self.stop_button.clicked.connect(self.stop_requested.emit)
 
-        reading_group = QGroupBox("Reading")
-        reading = QVBoxLayout(reading_group)
-        reading.addWidget(self.reading_policy)
-        reading.addWidget(self.reading_help)
         reading_actions = QHBoxLayout()
         reading_actions.addWidget(self.live_button, 2)
         reading_actions.addWidget(self.read_button)
@@ -275,8 +272,9 @@ class ControlDashboard(QMainWindow):
         transport.addStretch()
         transport.addWidget(self.stop_button)
 
-        setup_group = QGroupBox("Setup and support")
+        setup_group = QWidget()
         setup = QVBoxLayout(setup_group)
+        setup.setContentsMargins(0, 0, 0, 0)
         setup_primary = QHBoxLayout()
         self.setup_primary_button = QPushButton("Check readiness")
         self.setup_primary_button.setAccessibleDescription(
@@ -325,8 +323,8 @@ class ControlDashboard(QMainWindow):
         card_layout.addWidget(self.speaker)
         card_layout.addWidget(self.dialogue)
         current_audio = QFormLayout()
-        current_audio.addRow("Voice routing", self.voice)
-        current_audio.addRow("Playing from", self.audio_source)
+        current_audio.addRow("Voice", self.voice)
+        current_audio.addRow("Audio", self.audio_source)
         card_layout.addLayout(current_audio)
 
         central = QWidget()
@@ -347,9 +345,8 @@ class ControlDashboard(QMainWindow):
         speech_actions.addWidget(self.narrator_voice_button)
         speech_header.addLayout(speech_actions)
         layout.addLayout(speech_header)
+        layout.addWidget(self.reading_policy)
         layout.addWidget(card)
-        layout.addWidget(self.action_reason)
-        layout.addWidget(reading_group)
         layout.addWidget(self.details_toggle)
         layout.addWidget(self.details_content)
         layout.addWidget(setup_group)
@@ -365,6 +362,7 @@ class ControlDashboard(QMainWindow):
         shell_layout = QVBoxLayout(shell)
         shell_layout.setContentsMargins(0, 0, 0, 0)
         shell_layout.addWidget(self.content_scroll, 1)
+        shell_layout.addWidget(self.action_reason)
         shell_layout.addLayout(reading_actions)
         shell_layout.addWidget(transport_group)
         self.setCentralWidget(shell)
@@ -402,10 +400,8 @@ class ControlDashboard(QMainWindow):
 
     def set_speech_identity(self, settings, narrator=None):
         summary = speech_configuration_label(settings, narrator=narrator)
-        self.speech_configuration.setText(
-            summary
-            + "\nEngine/model above are used for new speech, not to play saved recordings."
-        )
+        self.speech_configuration.setText(summary)
+        self.speech_configuration.setToolTip(self.reading_help.text())
 
     def _set_capture_configuration(self, settings):
         capture = (
@@ -566,6 +562,7 @@ class ControlDashboard(QMainWindow):
 
     def _set_action_reason(self, message):
         self.action_reason.setText(message)
+        self.action_reason.setVisible(not self._ready)
         description = message
         for button in (
             self.read_button,
@@ -888,6 +885,7 @@ class CompactController(QWidget):
             self.sequence_expected_button,
         ):
             button.setToolTip(message)
+        self.action_reason.setVisible(not self._ready)
 
     def set_live(self, running):
         self._live = bool(running)

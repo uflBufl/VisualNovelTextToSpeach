@@ -68,10 +68,9 @@ class ConfigurationPage(QWizardPage):
         self.flow = None
         self.window_loader = window_loader
         self.windows_refreshed = False
-        self.setTitle("Configure the game and speech engine")
+        self.setTitle("Game and voice")
         self.setSubTitle(
-            "Select the game and speech engine. After setup, prepare story audio "
-            "and choose game character voices, or start reading immediately."
+            "Select your game and speech engine. You can prepare story voices after setup."
         )
 
         self.capture_mode = QComboBox()
@@ -138,9 +137,13 @@ class ConfigurationPage(QWizardPage):
         )
         advance_key = settings.auto_advance_key.replace("-", " ").title()
         self.auto_advance_notice = QLabel(
-            f"When enabled, VNTTS automatically sends the {advance_key} key to "
-            "the focused game after eligible spoken dialogue. On macOS, this "
-            "requires Accessibility permission."
+            f"VNTTS automatically sends the {advance_key} key to the focused game "
+            "after speech."
+            + (
+                " Requires Accessibility permission."
+                if sys.platform == "darwin"
+                else ""
+            )
         )
         self.auto_advance_notice.setWordWrap(True)
         self.auto_advance_notice.setAccessibleName("Auto advance behavior")
@@ -218,7 +221,7 @@ class ConfigurationPage(QWizardPage):
         )
         self.license_label.setOpenExternalLinks(True)
         self.pocket_gated_model = QCheckBox(
-            "Enable authenticated Pocket voice cloning after accepting upstream terms"
+            "I accepted the Pocket terms; enable voice cloning"
         )
         self.pocket_gated_model.setChecked(settings.pocket_gated_model_accepted)
         self.pocket_gated_model.setAccessibleDescription(
@@ -258,13 +261,6 @@ class ConfigurationPage(QWizardPage):
             recommended_form, "Game window", self.game_window, self.window_layout
         )
         recommended_form.addRow("", self.window_help)
-        _add_composite_form_row(
-            recommended_form,
-            "Game pack (optional)",
-            self.game_pack,
-            self.game_pack_layout,
-        )
-        recommended_form.addRow("", self.game_pack_help)
         recommended_form.addRow("Auto advance", self.auto_advance)
         recommended_form.addRow("", self.auto_advance_notice)
         recommended_form.addRow("", self.auto_advance_reason)
@@ -279,6 +275,14 @@ class ConfigurationPage(QWizardPage):
         advanced_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
+        advanced_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        _add_composite_form_row(
+            advanced_form,
+            "Game pack (optional)",
+            self.game_pack,
+            self.game_pack_layout,
+        )
+        advanced_form.addRow("", self.game_pack_help)
         advanced_form.addRow("Read once hotkey", self.read_hotkey)
         advanced_form.addRow("Live reading hotkey", self.live_hotkey)
         if sys.platform == "darwin":
@@ -581,7 +585,9 @@ class ConfigurationPage(QWizardPage):
                     pocket_gated_model_accepted=self.pocket_gated_model.isChecked(),
                 )
             )
-            + "\nChoose a game character as narrator when preparing story audio. "
+        )
+        self.speech_summary.setToolTip(
+            "Choose game character voices during story preparation. "
             "Advanced options contain reference files and model access terms."
         )
         errors = self.validation_errors()

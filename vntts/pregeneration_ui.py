@@ -61,7 +61,7 @@ from vntts.pregeneration_voices import (
 )
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
-from vntts.speech_presentation import engine_model_label, speech_configuration_label
+from vntts.speech_presentation import speech_configuration_label
 from vntts.voices import (
     CharacterVoiceRegistry,
     VoiceChoice,
@@ -202,18 +202,13 @@ class OfflineAudioPreparationDialog(QDialog):
         self.model_choice.setEnabled(
             settings.speech_backend in {"coqui-xtts", "moss-tts"}
         )
+        self.model_choice.setVisible(self.model_choice.isEnabled())
         self.engine_choice.currentIndexChanged.connect(self._engine_changed)
         self.model_choice.textChanged.connect(self._model_changed)
         engine_row = QHBoxLayout()
         engine_row.addWidget(QLabel("Generate with"))
         engine_row.addWidget(self.engine_choice, 1)
         engine_row.addWidget(self.model_choice, 1)
-
-        intro = QLabel(
-            "Choose the stories you want available offline. VNTTS will reuse "
-            "original game voices and ask only about ambiguous character voices."
-        )
-        intro.setWordWrap(True)
 
         self.narrator_status = QLabel()
         self.narrator_status.setAccessibleName("Selected narrator voice")
@@ -227,7 +222,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._refresh_narrator_status()
 
         self.pocket_voice_cloning = QCheckBox(
-            "I accepted the Pocket TTS model terms; use original game voices"
+            "I accepted the Pocket terms; enable game voice cloning"
         )
         self.pocket_voice_cloning.setChecked(settings.pocket_gated_model_accepted)
         self.pocket_voice_cloning.setAccessibleDescription(
@@ -236,10 +231,9 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.pocket_voice_cloning.toggled.connect(self._pocket_cloning_toggled)
         self.pocket_terms = QLabel(
-            "Game voice cloning requires accepting the "
-            '<a href="https://huggingface.co/kyutai/pocket-tts">Pocket TTS model '
-            "terms</a> and signing in to Hugging Face. VNTTS cannot accept legal "
-            "terms on your behalf."
+            'Accept the <a href="https://huggingface.co/kyutai/pocket-tts">Pocket '
+            "model terms</a> and sign in to Hugging Face to clone game voices. "
+            "Built-in voices need no account."
         )
         self.pocket_terms.setWordWrap(True)
         self.pocket_terms.setOpenExternalLinks(True)
@@ -257,11 +251,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source.currentIndexChanged.connect(self._source_changed)
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self.refresh)
-        self.browse_button = QPushButton("Choose extracted content...")
+        self.browse_button = QPushButton("Extracted content...")
         self.browse_button.clicked.connect(self.browse)
-        self.import_button = QPushButton("Import installed Reverse: 1999")
+        self.import_button = QPushButton("Find installed Reverse: 1999")
         self.import_button.clicked.connect(self.import_installed_game)
-        self.game_folder_button = QPushButton("Choose game folder...")
+        self.game_folder_button = QPushButton("Game folder...")
         self.game_folder_button.clicked.connect(self.choose_game_folder)
         source_row = QHBoxLayout()
         source_row.addWidget(QLabel("Game content"))
@@ -351,11 +345,13 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_confirmation.setVisible(False)
         self.voice_configuration = QLabel()
         self.voice_configuration.setWordWrap(True)
-        self.voice_configuration.setStyleSheet("font-weight: 600;")
         self.narrator_choice = QComboBox()
         self.narrator_choice.setAccessibleName("Narrator voice for offline generation")
         self.narrator_choice.currentIndexChanged.connect(self._narrator_choice_changed)
-        self.play_narrator_reference = QPushButton("Play original game voice")
+        self.play_narrator_reference = QPushButton("Listen to reference")
+        self.play_narrator_reference.setToolTip(
+            "Play the original game recording, not a generated preview."
+        )
         self.play_narrator_reference.clicked.connect(self._play_narrator_reference)
         narrator_choice_row = QHBoxLayout()
         narrator_choice_row.addWidget(QLabel("Narrator"))
@@ -376,8 +372,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_panel = QGroupBox("Loading game content")
         self.discovery_panel.setAccessibleName("Loading game content")
         discovery_message = QLabel(
-            "Please wait while VNTTS finds local game content. Story selection "
-            "and preparation controls will be available after loading finishes."
+            "Finding local stories. Controls unlock when loading finishes."
         )
         discovery_message.setWordWrap(True)
         discovery_message.setStyleSheet("font-weight: 600;")
@@ -409,11 +404,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.selection_panel = QWidget()
         selection_layout = QVBoxLayout(self.selection_panel)
         selection_layout.setContentsMargins(0, 0, 0, 0)
-        selection_layout.addWidget(intro)
         selection_layout.addLayout(engine_row)
         selection_layout.addLayout(source_row)
         selection_layout.addLayout(import_row)
         selection_layout.addWidget(self.source_status)
+        selection_layout.addWidget(self.coverage_summary)
         selection_layout.addWidget(QLabel("Stories to prepare"))
         selection_layout.addWidget(self.stories, 1)
         selection_layout.addLayout(selection_actions)
@@ -423,7 +418,6 @@ class OfflineAudioPreparationDialog(QDialog):
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.addWidget(self.discovery_panel)
-        layout.addWidget(self.coverage_summary)
         layout.addWidget(self.pocket_voice_cloning)
         layout.addWidget(self.pocket_terms)
         layout.addWidget(self.selection_panel, 1)
@@ -480,6 +474,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.model_choice.clear()
         self.model_choice.setEnabled(backend in {"coqui-xtts", "moss-tts"})
+        self.model_choice.setVisible(backend in {"coqui-xtts", "moss-tts"})
         self.pocket_voice_cloning.setVisible(backend == "pocket-tts")
         self.pocket_terms.setVisible(backend == "pocket-tts")
         self._voice_plan = None
@@ -511,13 +506,18 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _refresh_narrator_status(self):
         settings = resolve_pregeneration_settings(self.settings)
+        narrator = None
+        if self._awaiting_voice_confirmation and self._voice_plan is not None:
+            plan = self._voice_plan
+            if isinstance(plan.synthesis_backend, str):
+                settings = settings.updated(
+                    speech_backend=plan.synthesis_backend,
+                    tts_model=plan.synthesis_model,
+                )
+            if self.narrator_choice.currentData() is not None:
+                narrator = self.narrator_choice.currentText()
         self.narrator_status.setText(
-            speech_configuration_label(settings)
-            + (
-                "\nBuilt-in voices need no account or terms acceptance. Game voices require voice cloning."
-                if settings.speech_backend == "pocket-tts"
-                else ""
-            )
+            speech_configuration_label(settings, narrator=narrator)
             + (
                 "\nThe selected engine is unavailable on this host; preparation will use Pocket TTS."
                 if settings.speech_backend != self.settings.speech_backend
@@ -572,21 +572,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_panel.hide()
         self.progress_panel.hide()
         self.voice_confirmation.show()
-        backend_id = (
-            plan.synthesis_backend
-            if isinstance(plan.synthesis_backend, str)
-            else resolve_pregeneration_settings(self.settings).speech_backend
-        )
         self.voice_configuration.setText(
-            engine_model_label(
-                backend_id,
-                plan.synthesis_model,
-                pocket_cloning=self.settings.pocket_gated_model_accepted,
-            )
-            + "\nOriginal game audio is kept. These voices apply to generated "
-            "lines in the selected stories. Matching saved work can be resumed; "
-            "changing voices or model can require new recordings. "
-            "Other prepared stories remain unchanged."
+            "Original game audio stays. Changing voices or model may require new recordings."
+        )
+        self.voice_configuration.setToolTip(
+            "These voices apply to generated lines in the selected stories. "
+            "Matching saved work can be resumed. Other prepared stories remain unchanged."
         )
         self.narrator_choice.blockSignals(True)
         self.narrator_choice.clear()
@@ -635,6 +626,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _narrator_choice_changed(self, _index=None):
         source_id = self.narrator_choice.currentData()
+        self._refresh_narrator_status()
         if self._narrator_player is not None:
             self._narrator_player.stop()
         self.play_narrator_reference.setEnabled(

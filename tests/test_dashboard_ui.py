@@ -76,7 +76,15 @@ class ControlDashboardTest(unittest.TestCase):
         )
         self.assertNotIn("Alba", dashboard.voice.text())
         self.assertIn("custom-model", dashboard.audio_source.text())
-        self.assertIn("saved recordings", dashboard.reading_help.text())
+        self.assertIn("Saved recordings", dashboard.reading_help.text())
+        dashboard.set_ready(True)
+        self.assertTrue(dashboard.action_reason.isHidden())
+        self.assertFalse(dashboard.reading_help.isVisibleTo(dashboard))
+        dashboard.details_toggle.click()
+        self.assertTrue(dashboard.reading_help.isVisibleTo(dashboard))
+        dashboard.details_toggle.click()
+        dashboard.set_ready(False, reason="Select a game window")
+        self.assertTrue(dashboard.action_reason.isVisibleTo(dashboard))
         dashboard.resize(620, 440)
         self.application.processEvents()
         for button in (
@@ -115,10 +123,8 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(
             {group.title() for group in dashboard.findChildren(QGroupBox)},
             {
-                "Reading",
                 "Playback",
                 "Sequence-first story cursor",
-                "Setup and support",
             },
         )
         dashboard.deleteLater()

@@ -381,7 +381,7 @@ class SettingsDialog(QDialog):
         self.xtts_terms = QCheckBox("I agree to the non-commercial CPML terms")
         self.xtts_terms.setChecked(settings.xtts_terms_accepted)
         self.pocket_gated_model = QCheckBox(
-            "Enable authenticated voice cloning after accepting upstream terms"
+            "I accepted the Pocket terms; enable voice cloning"
         )
         self.pocket_gated_model.setChecked(settings.pocket_gated_model_accepted)
         self.pocket_gated_model.setAccessibleDescription(
@@ -606,7 +606,7 @@ class SettingsDialog(QDialog):
         )
         self.section_navigation.setAccessibleName("Settings section")
         self.section_navigation.setAccessibleDescription(
-            "Choose a settings section and scroll directly to it"
+            "Choose the settings category to display"
         )
         section_label = QLabel("Section")
         section_label.setBuddy(self.section_navigation)
@@ -656,17 +656,19 @@ class SettingsDialog(QDialog):
         self.live_sequence_mode.currentIndexChanged.connect(
             self.update_auto_advance_controls
         )
-        self.section_navigation.currentIndexChanged.connect(self.scroll_to_section)
+        self.section_navigation.currentIndexChanged.connect(self.show_settings_section)
         self._connect_validation_updates()
         self.update_capture_controls()
         self.update_speech_backend_controls()
         self.update_ocr_diagnostics_controls()
         self.update_auto_advance_controls()
         self.update_validation_summary()
+        self.section_navigation.setCurrentIndex(1)
 
     @staticmethod
     def _settings_region(title, form):
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         region = QGroupBox(title)
         region.setLayout(form)
         return region
@@ -722,13 +724,11 @@ class SettingsDialog(QDialog):
         if selected:
             field.setText(selected)
 
-    def scroll_to_section(self, index):
+    def show_settings_section(self, index):
         if 0 <= index < len(self.settings_regions):
-            self.settings_scroll.ensureWidgetVisible(
-                self.settings_regions[index],
-                0,
-                12,
-            )
+            for position, region in enumerate(self.settings_regions):
+                region.setVisible(position == index)
+            self.settings_scroll.verticalScrollBar().setValue(0)
 
     def _connect_validation_updates(self):
         for recorder in self.hotkey_recorders:
@@ -1048,8 +1048,9 @@ class SettingsDialog(QDialog):
         if errors:
             section, widget, _message = errors[0]
             self.section_navigation.setCurrentIndex(section)
-            self.scroll_to_section(section)
+            self.show_settings_section(section)
             widget.setFocus(Qt.FocusReason.OtherFocusReason)
+            self.settings_scroll.ensureWidgetVisible(widget, 0, 12)
             return
         self.accept()
 

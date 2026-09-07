@@ -150,7 +150,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             chooser.assert_called_once_with()
             self.assertIs(dialog.settings, selected)
             self.assertIn("Marius", dialog.narrator_status.text())
-            self.assertIn("no account", dialog.narrator_status.text())
+            self.assertIn("no account", dialog.pocket_terms.text())
+            self.assertTrue(dialog.model_choice.isHidden())
 
     def test_generation_configuration_remains_visible_and_locked_during_work(self):
         with TemporaryDirectory() as directory:
@@ -238,9 +239,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
 
             self.assertTrue(dialog._awaiting_voice_confirmation)
             self.assertIn("Step 2", dialog.step.text())
-            self.assertIn("Model:", dialog.voice_configuration.text())
+            self.assertIn("Model:", dialog.narrator_status.text())
+            self.assertNotIn("Model:", dialog.voice_configuration.text())
             self.assertIn(
-                "changing voices or model can require new recordings",
+                "Changing voices or model may require new recordings",
                 dialog.voice_configuration.text(),
             )
             self.assertFalse(dialog.voice_panel.preview_service._closed)
@@ -273,6 +275,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.narrator_choice.setCurrentIndex(
                 dialog.narrator_choice.findData("character:centurion")
             )
+            self.assertIn("Narrator voice: Centurion", dialog.narrator_status.text())
             dialog.continue_button.click()
             self.assertTrue(pool.tasks)
             pool.tasks.pop(0).run()

@@ -63,16 +63,16 @@ def speech_configuration_label(settings, *, narrator=None):
 
 def reading_policy_label(settings):
     if settings.audio_source_policy == "live-tts-only":
-        policy = "Generate speech while reading; saved recordings are bypassed."
+        policy = "Live TTS only; saved recordings are bypassed."
     elif settings.generated_audio_manifest:
         policy = (
-            "Use original game voices first, then prepared recordings."
+            "Original game voices first, then prepared recordings."
             if settings.audio_source_policy == "prefer-game-audio"
-            else "Play prepared recordings; preserve original game voices where available."
+            else "Play prepared recordings and original game voices."
         )
-        policy += " TTS is used for lines without usable recordings."
+        policy += " TTS is used for missing audio."
     else:
-        policy = "No prepared audio selected. Prepare stories first, or generate speech while reading."
+        policy = "No prepared audio. Prepare stories, or read with live TTS."
     if settings.force_live_narrator:
         policy += " Narrator override: generate live instead of using its recordings."
     return policy

@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -431,10 +432,10 @@ class OnboardingWizardTest(unittest.TestCase):
         page = wizard.configuration_page
 
         self.assertTrue(page.game_window.isVisibleTo(wizard))
-        self.assertTrue(page.game_pack.isVisibleTo(wizard))
+        self.assertFalse(page.game_pack.isVisibleTo(wizard))
         self.assertTrue(page.advanced_toggle.isVisibleTo(wizard))
         self.assertFalse(page.advanced_content.isVisibleTo(wizard))
-        self.assertIn("Select the game and speech engine", page.subTitle())
+        self.assertIn("Select your game and speech engine", page.subTitle())
         self.assertTrue(page.speech_backend.isVisibleTo(wizard))
         self.assertTrue(page.speech_summary.isVisibleTo(wizard))
         self.assertIn("Narrator voice: Alba", page.speech_summary.text())
@@ -442,6 +443,7 @@ class OnboardingWizardTest(unittest.TestCase):
         page.advanced_toggle.click()
 
         self.assertTrue(page.advanced_content.isVisibleTo(wizard))
+        self.assertTrue(page.game_pack.isVisibleTo(wizard))
         self.assertTrue(page.speech_backend.isVisibleTo(wizard))
         self.assertEqual(page.advanced_toggle.text(), "Hide advanced options")
         wizard.deleteLater()
@@ -463,7 +465,8 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertIn(
             "automatically sends the Space key", page.auto_advance_notice.text()
         )
-        self.assertIn("Accessibility permission", page.auto_advance_notice.text())
+        if sys.platform == "darwin":
+            self.assertIn("Accessibility permission", page.auto_advance_notice.text())
 
         page.capture_mode.setCurrentIndex(page.capture_mode.findData("screen"))
 

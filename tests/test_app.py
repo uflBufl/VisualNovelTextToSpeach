@@ -1299,7 +1299,24 @@ class TrayApplicationTest(unittest.TestCase):
         QTest.keyClick(dialog.section_navigation, Qt.Key.Key_End)
         self.application.processEvents()
         self.assertEqual(dialog.section_navigation.currentIndex(), 4)
-        self.assertGreater(dialog.settings_scroll.verticalScrollBar().value(), 0)
+        self.assertEqual(dialog.settings_scroll.verticalScrollBar().value(), 0)
+        self.assertEqual(
+            [region.isVisibleTo(dialog) for region in dialog.settings_regions],
+            [False, False, False, False, True],
+        )
+        dialog.section_navigation.setCurrentIndex(2)
+        self.assertTrue(dialog.speech_backend.isVisibleTo(dialog))
+        self.assertFalse(dialog.settings_regions[4].isVisibleTo(dialog))
+        dialog.resize(620, 500)
+        self.application.processEvents()
+        viewport = dialog.settings_scroll.viewport()
+        self.assertTrue(
+            viewport.rect().contains(
+                dialog.speech_backend.mapTo(
+                    viewport, dialog.speech_backend.rect().topRight()
+                )
+            )
+        )
         delete_dialog(dialog)
 
     def test_settings_paths_share_browse_and_accessibility_contract(self):
@@ -1594,6 +1611,7 @@ class TrayApplicationTest(unittest.TestCase):
 
     def test_settings_offer_default_streaming_backend(self):
         dialog = SettingsDialog(AppSettings(speech_backend="pocket-tts"))
+        dialog.section_navigation.setCurrentIndex(2)
 
         self.assertEqual(dialog.speech_backend.currentData(), "pocket-tts")
         self.assertIn("recommended", dialog.speech_backend.currentText().casefold())
