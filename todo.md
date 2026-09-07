@@ -82,9 +82,13 @@ in the same commit.
   - Use driver detection to select a qualified CUDA stack only after the real
     render gates above pass. Missing/unknown NVIDIA-driver evidence must never
     promote a CUDA candidate; users must not select Python or CUDA wheels.
-  - Add dependency and smoke-test coverage for every runtime to CI; keep actual
-    CUDA generation on a self-hosted Windows/Linux runner and make CPU-only CI
-    validate resolution plus the typed no-CUDA path.
+  - Qualify the hosted runtime-smoke matrix after publication on macOS,
+    Windows and Linux. Resolve actual locked-install/import failures; a typed
+    no-CUDA refusal is not a model-render qualification. A hosted Mac reporting
+    hardware-unavailable does not qualify MOSS imports or rendering on Metal.
+  - Add actual CUDA dependency/import and model-render smoke tests on a
+    self-hosted Windows/Linux runner once one is available. Keep the hosted
+    CPU-only checks dependency-only; do not download or load model weights there.
 
 ## P1 - Complete distributable release packages
 

@@ -9,6 +9,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  speech-runtime-smoke:
+    name: Runtime ${{ matrix.backend }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {backend: pocket-tts, os: macos-15}
+          - {backend: pocket-tts, os: windows-latest}
+          - {backend: pocket-tts, os: ubuntu-latest}
+          - {backend: moss-tts, os: macos-15}
+          - {backend: chatterbox-nano, os: windows-latest}
+          - {backend: chatterbox-nano, os: ubuntu-latest}
+          - {backend: moss-tts-delay, os: windows-latest}
+          - {backend: moss-tts-delay, os: ubuntu-latest}
+          - {backend: moss-soundeffect-v2, os: ubuntu-latest}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install locked runtime dependencies
+        run: uv sync --project backends/${{ matrix.backend }} --locked --python 3.14 --no-dev
+
+      - name: Check imports and CPU-host refusal without model weights
+        timeout-minutes: 5
+        run: >-
+          uv run --project backends/${{ matrix.backend }} --no-sync
+          python -m scripts.smoke_speech_runtime ${{ matrix.backend }}
+          --output runtime-smoke.json
+          ${{ matrix.backend == 'moss-tts' && '--allow-unavailable-metal' || '' }}
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+
+      - name: Preserve runtime smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.backend }}-${{ matrix.os }}
+          path: runtime-smoke.json
+          if-no-files-found: warn
+
   quality:
     runs-on: macos-15
     timeout-minutes: 60
