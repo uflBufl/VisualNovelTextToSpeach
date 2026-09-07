@@ -77,6 +77,8 @@ class OfflineAudioPreparationDialog(QDialog):
     decoderProgress = Signal(str)
     phaseChanged = Signal(str)
     activityChanged = Signal(bool)
+    preparationRequested = Signal()
+    packReady = Signal()
 
     def __init__(
         self,
@@ -95,11 +97,13 @@ class OfflineAudioPreparationDialog(QDialog):
         publisher=None,
         importer=None,
         game_narrator_chooser=None,
+        automatic_activation=False,
         thread_pool=None,
         parent=None,
     ):
         super().__init__(parent)
         self.settings = settings
+        self.automatic_activation = automatic_activation
         self.job_store = job_store or PregenerationJobStore()
         self._background_discovery = discovery is None
         self.discovery = discovery or (
@@ -430,7 +434,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.setAccessibleDescription(
             "Save this selection and continue or resume offline audio preparation"
         )
-        self.continue_button.clicked.connect(self._save_selection)
+        self.continue_button.clicked.connect(self._continue_requested)
         self.cancel_button.clicked.connect(self._cancel_or_reject)
 
         self.selection_panel = QWidget()
@@ -613,6 +617,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_confirmation.show()
         self.voice_configuration.setText(
             "Original game audio stays. Changing voices or model may require new recordings."
+            + (
+                " When finished, the saved audio becomes active for reading automatically. "
+                "This replaces live voice overrides for these story roles; playback does not start."
+                if self.automatic_activation
+                else ""
+            )
         )
         self.voice_configuration.setToolTip(
             "These voices apply to generated lines in the selected stories. "
@@ -1134,6 +1144,21 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.setFocus()
         self.cancel_button.setText("Close")
         self.cancel_button.setEnabled(True)
+        if self.automatic_activation:
+            self.progress_phase.setText("Audio saved; connecting it to Reading")
+            self.resume_status.setText(
+                "Activating the validated recordings. Playback will not start automatically."
+            )
+            self.continue_button.setEnabled(False)
+            self.packReady.emit()
+
+    def defer_activation(self, reason):
+        self.progress_phase.setText("Audio saved; activation needs attention")
+        self.resume_status.setText(
+            reason
+            + " Review the saved voice setup, then click Use prepared audio when ready. Closing keeps the current reading setup unchanged."
+        )
+        self.continue_button.setEnabled(True)
 
     def _source_changed(self, _index):
         self.step.setText("Step 1 of 4 - Choose stories")
@@ -1235,6 +1260,10 @@ class OfflineAudioPreparationDialog(QDialog):
             f"{disk_megabytes} MB."
         )
         self.continue_button.setEnabled(True)
+
+    def _continue_requested(self):
+        self.preparationRequested.emit()
+        self._save_selection()
 
     def _save_selection(self):
         if self._pack_result is not None:

@@ -429,6 +429,7 @@ class TrayApplicationTest(unittest.TestCase):
         create_dialog.assert_called_once_with(
             tray_application.settings,
             game_narrator_chooser=tray_application._open_preparation_narrator,
+            automatic_activation=True,
             parent=tray_application.dashboard,
         )
         start_activation.assert_called_once()
@@ -440,6 +441,39 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("38 have prepared voices", status)
         self.assertIn("1 will use live voice", status)
         tray_application.shutdown()
+
+    def test_automatic_pack_activation_requires_unchanged_idle_context(self):
+        controller = Mock(is_ready=False, is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        panel = Mock()
+        tray.pregeneration_dialog = panel
+        tray._remember_preparation_context()
+        for state in ("unchanged", "changed", "reading", "busy", "voice", "quitting"):
+            with self.subTest(state=state):
+                panel.reset_mock()
+                tray.settings = (
+                    AppSettings().updated(tts_speaker="marius")
+                    if state == "changed"
+                    else AppSettings()
+                )
+                controller.is_live_running = state == "reading"
+                tray._controller_busy = state == "busy"
+                tray.narrator_dialog = Mock() if state == "voice" else None
+                tray._quit_requested = state == "quitting"
+                tray._activate_ready_preparation()
+                if state == "unchanged":
+                    panel.accept.assert_called_once()
+                else:
+                    panel.accept.assert_not_called()
+                    if state != "quitting":
+                        panel.defer_activation.assert_called_once()
+        tray.pregeneration_dialog = None
+        tray.narrator_dialog = None
+        tray.shutdown()
 
     def test_main_narrator_entry_reuses_preparation_settings(self):
         controller = Mock(is_ready=False, is_live_running=False)

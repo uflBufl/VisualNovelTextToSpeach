@@ -47,6 +47,9 @@ activation rather than adding another wizard or library implementation.
     capture-area confirmation and a short reading check in context; do not force
     the entire setup sequence again after successful configuration.
 - [ ] Make Stories the preparation and readiness home.
+  - Current slice: compact confirmation into coverage/work plus exceptional voice
+    routes, with all assignments still inspectable. Inspect normal/narrow layouts
+    and verify the summary against the plan before its separate commit.
   - List all imported stories with search/filter, persisted selection and explicit
     status: not prepared, preparing, partially prepared, ready, or needs attention.
     Opening a story shows original/prepared/live-TTS/omitted coverage with counts
@@ -57,11 +60,6 @@ activation rather than adding another wizard or library implementation.
   - Before preparing, show one concise summary: selected stories, narrator,
     engine/model, character-voice exceptions and approximate work/storage. Link
     to the shared Voices editor instead of embedding a second settings form.
-  - Make saved output usable automatically after successful preparation, with
-    that consequence stated before starting. Do not require a separate manual
-    pack-activation step in the normal path. Preserve atomic activation; if
-    settings changed or reading is active, defer/ask contextually rather than
-    replacing an unrelated active configuration.
 - [ ] Consolidate all ordinary voice selection into one Voices editor.
   - Separate narrator from character roles, using one shared editor/player from
     every entry point. Clearly distinguish game voices and built-in voices;

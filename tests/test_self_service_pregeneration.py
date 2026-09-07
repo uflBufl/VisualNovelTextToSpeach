@@ -563,7 +563,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 self.assertFalse(dialog.isWindow())
                 tray.dashboard.show_reading()
                 self.assertIs(tray.open_pregeneration(), dialog)
-                dialog.accept()
+                dialog.automatic_activation = True
+                tray._remember_preparation_context()
+                dialog._show_final_handoff(dialog.pack_result())
+                self.assertIsNone(tray.pregeneration_dialog)
             for _attempt in range(400):
                 self.application.processEvents()
                 if not tray.pregeneration_activation_runner.active:

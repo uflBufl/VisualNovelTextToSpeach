@@ -1286,6 +1286,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.narrator_dialog = None
         self._narrator_preparation = None
         self._resume_live_after_narrator = False
+        self._preparation_activation_settings = None
         self.unknown_speaker_prompt = self.unknown_speaker_choose_button = None
         self.unknown_speaker_continue_button = self.unknown_speaker_cancel_button = None
         self.pending_unknown_speaker = None
@@ -2283,16 +2284,41 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog = OfflineAudioPreparationDialog(
             self.settings,
             game_narrator_chooser=self._open_preparation_narrator,
+            automatic_activation=True,
             parent=self.dashboard,
         )
         self.pregeneration_dialog = dialog
         dialog.finished.connect(self._pregeneration_finished)
         dialog.phaseChanged.connect(self.dashboard.set_preparation_phase)
+        dialog.preparationRequested.connect(self._remember_preparation_context)
+        dialog.packReady.connect(self._activate_ready_preparation)
         dialog.activityChanged.connect(
             self._preparation_activity_changed, Qt.ConnectionType.QueuedConnection
         )
         self.dashboard.embed_preparation(dialog)
         return dialog
+
+    def _remember_preparation_context(self):
+        self._preparation_activation_settings = self.settings
+
+    def _activate_ready_preparation(self):
+        dialog = self.pregeneration_dialog
+        if dialog is None or self._shutting_down or self._quit_requested:
+            return
+        if (
+            self._controller_busy
+            or self.narrator_dialog is not None
+            or self.controller.is_live_running is True
+        ):
+            dialog.defer_activation(
+                "Finish the current reading or configuration operation first."
+            )
+        elif self._preparation_activation_settings != self.settings:
+            dialog.defer_activation(
+                "Reading settings changed after this preparation was requested."
+            )
+        else:
+            dialog.accept()
 
     def _preparation_activity_changed(self, _active):
         if self._shutting_down:
@@ -2309,6 +2335,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if dialog is None:
             return
         self.pregeneration_dialog = None
+        self._preparation_activation_settings = None
         self.dashboard.remove_preparation(dialog)
         dialog.deleteLater()
         self._apply_controller_action_state()
@@ -2400,7 +2427,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     "Unable to activate prepared offline audio; the previous pack "
                     "remains active. "
                 )
-            self.show_error(f"{message}{error}")
+            self.show_error(
+                f"{message}{error}. Your audio remains saved. Open Stories and continue preparation to retry activation."
+            )
             return
         if not isinstance(result, OfflinePackActivationResult):
             self.show_error(
