@@ -185,6 +185,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.publishing_pack = False
         self._close_after_voice_cancel = False
         self._content = ()
+        self._story_selection_drafts = {}
         self._job = None
         self._voice_plan = None
         self._prepared_voice_manifest = None
@@ -306,6 +307,28 @@ class OfflineAudioPreparationDialog(QDialog):
             "Check every story or chapter to prepare for offline speech"
         )
         self.stories.itemChanged.connect(self._selection_changed)
+
+        self.story_search = QLineEdit()
+        self.story_search.setPlaceholderText("Search stories...")
+        self.story_search.setAccessibleName("Search stories by title")
+        self.story_search.setClearButtonEnabled(True)
+        self.story_search.textChanged.connect(self._filter_stories)
+        self.story_filter = QComboBox()
+        self.story_filter.setAccessibleName("Filter stories by preparation status")
+        for label, status in (
+            ("All stories", None),
+            ("Not prepared", "not_started"),
+            ("Incomplete", "in_progress"),
+            ("Prepared", "ready"),
+        ):
+            self.story_filter.addItem(label, status)
+        self.story_filter.currentIndexChanged.connect(self._filter_stories)
+        story_filters = QHBoxLayout()
+        story_filters.addWidget(self.story_search, 1)
+        story_filters.addWidget(self.story_filter)
+        self.story_filter_status = QLabel()
+        self.story_filter_status.setWordWrap(True)
+        self.story_filter_status.setAccessibleName("Shown and selected story counts")
 
         selection_actions = QHBoxLayout()
         self.select_all_button = QPushButton("Select all")
@@ -461,6 +484,8 @@ class OfflineAudioPreparationDialog(QDialog):
         selection_layout.addWidget(self.source_status)
         selection_layout.addWidget(self.coverage_summary)
         selection_layout.addWidget(QLabel("Stories to prepare"))
+        selection_layout.addLayout(story_filters)
+        selection_layout.addWidget(self.story_filter_status)
         selection_layout.addWidget(self.stories, 1)
         selection_layout.addLayout(selection_actions)
         selection_layout.addWidget(self.summary)
@@ -1212,22 +1237,29 @@ class OfflineAudioPreparationDialog(QDialog):
         self.stories.clear()
         if content is not None:
             resumed = self.job_store.latest_for_content(content)
-            resumed_ids = set(resumed.selected_story_ids) if resumed else set()
+            selected_ids = self._story_selection_drafts.get(
+                content.story_index_sha256,
+                set(resumed.selected_story_ids)
+                if resumed
+                else {selection.selection_id for selection in content.selections},
+            )
             story_statuses = self.job_store.story_statuses(content)
             for selection in content.selections:
                 status = story_statuses.get(selection.selection_id)
                 speech_status = {
-                    "ready": "Ready offline",
+                    "ready": "Prepared - may still use live speech",
                     "in_progress": "Preparation incomplete - Continue to finish",
                 }.get(status, f"Needs speech: {selection.generation_lines} lines")
                 item = QListWidgetItem(
                     f"{selection.title} - {selection.line_count} lines; {speech_status}"
                 )
                 item.setData(Qt.ItemDataRole.UserRole, selection.selection_id)
+                item.setData(Qt.ItemDataRole.UserRole + 1, selection.title.casefold())
+                item.setData(Qt.ItemDataRole.UserRole + 2, status or "not_started")
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(
                     Qt.CheckState.Checked
-                    if not resumed_ids or selection.selection_id in resumed_ids
+                    if selection.selection_id in selected_ids
                     else Qt.CheckState.Unchecked
                 )
                 self.stories.addItem(item)
@@ -1237,7 +1269,7 @@ class OfflineAudioPreparationDialog(QDialog):
             )
             remaining = len(content.selections) - ready - in_progress
             self.coverage_summary.setText(
-                f"Offline audio: {ready} ready, {in_progress} incomplete, "
+                f"Preparation: {ready} prepared, {in_progress} incomplete, "
                 f"{remaining} not started ({len(content.selections)} stories total)."
             )
             message = (
@@ -1262,24 +1294,60 @@ class OfflineAudioPreparationDialog(QDialog):
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
         self.stories.blockSignals(True)
         for row in range(self.stories.count()):
-            self.stories.item(row).setCheckState(state)
+            item = self.stories.item(row)
+            if not item.isHidden():
+                item.setCheckState(state)
         self.stories.blockSignals(False)
         self._selection_changed()
 
+    def _filter_stories(self, _value=None):
+        query = self.story_search.text().strip().casefold()
+        status = self.story_filter.currentData()
+        shown = selected = hidden_selected = 0
+        for row in range(self.stories.count()):
+            item = self.stories.item(row)
+            visible = query in item.data(Qt.ItemDataRole.UserRole + 1) and (
+                status is None or status == item.data(Qt.ItemDataRole.UserRole + 2)
+            )
+            item.setHidden(not visible)
+            checked = item.checkState() == Qt.CheckState.Checked
+            shown += visible
+            selected += checked
+            hidden_selected += checked and not visible
+        self.story_filter_status.setText(
+            f"{shown} of {self.stories.count()} stories shown; {selected} selected"
+            + (f" ({hidden_selected} hidden by filters)." if hidden_selected else ".")
+            + (
+                " Clear filters to see other stories."
+                if not shown and self.stories.count()
+                else ""
+            )
+        )
+        filtered = bool(query) or status is not None
+        self.select_all_button.setText("Select shown" if filtered else "Select all")
+        self.select_none_button.setText("Clear shown" if filtered else "Select none")
+
     def _selection_changed(self, _item=None):
+        content = self.current_content()
+        selected = self.selected_story_ids()
+        if content is not None:
+            self._story_selection_drafts[content.story_index_sha256] = set(selected)
+        self._filter_stories()
         if not self._generation_engine_available():
             self.summary.setText(
                 "Choose an available generation engine before preparing stories."
             )
             self.continue_button.setEnabled(False)
             return
-        content = self.current_content()
-        selected = self.selected_story_ids()
         if content is None:
+            self.story_context.setText("Select the stories you want to read.")
+            self.story_context.setToolTip("")
             self.summary.setText("Choose or import game content to continue.")
             self.continue_button.setEnabled(False)
             return
         if not selected:
+            self.story_context.setText("No stories selected.")
+            self.story_context.setToolTip("")
             self.summary.setText("Select at least one story or chapter.")
             self.continue_button.setEnabled(False)
             return
@@ -1854,6 +1922,8 @@ class OfflineAudioPreparationDialog(QDialog):
             enabled and self.importer.availability().available
         )
         self.stories.setEnabled(enabled)
+        self.story_search.setEnabled(enabled)
+        self.story_filter.setEnabled(enabled)
         self.select_all_button.setEnabled(enabled)
         self.select_none_button.setEnabled(enabled)
         self.change_voices.setEnabled(enabled)

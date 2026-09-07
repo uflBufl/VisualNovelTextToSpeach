@@ -48,8 +48,9 @@ adding another wizard or library implementation.
     capture-area confirmation and a short reading check in context; do not force
     the entire setup sequence again after successful configuration.
 - [ ] Make Stories the preparation and readiness home.
-  - List all imported stories with search/filter, persisted selection and explicit
-    status: not prepared, preparing, partially prepared, ready, or needs attention.
+  - Persist library selection across restarts even before preparation begins.
+    Show precise status for all imported stories: not prepared, preparing,
+    partially prepared, ready, or needs attention.
     Opening a story shows original/prepared/live-TTS/omitted coverage with counts
     scoped to that story; never call a live-dependent result fully offline-ready.
   - Use one primary action appropriate to the selected story: Prepare, Continue
@@ -110,6 +111,11 @@ adding another wizard or library implementation.
     and can read with the chosen voices without repeated setup/ordinary review.
 
 ## P1 - Diagnose intermittent offscreen Qt test stalls
+
+- [ ] Diagnose the reported Windows Stories Refresh crash: collect the Windows
+      traceback/native fault, reproduce its failing path, then fix the demonstrated
+      cause and retain a focused regression check. Local repeated real-worker
+      refresh and close-during-refresh checks do not reproduce this crash.
 
 - [ ] Capture thread stacks when the macOS `qt-app` shard stalls in
       `test_settings_are_scrollable_and_grouped_into_visual_regions` (180-second

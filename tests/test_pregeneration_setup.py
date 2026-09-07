@@ -1,5 +1,6 @@
 import os
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -402,6 +403,58 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.close()
             dialog.deleteLater()
 
+    def test_story_filters_preserve_selection_across_refresh_and_sources(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            other = replace(content, story_index_sha256="b" * 64, game="Other game")
+            store = PregenerationJobStore(root / "jobs")
+            store.mark_prepared(store.create_or_resume(content, ("rhiannon",)))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content, other)),
+                job_store=store,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.story_search.setText("MAIN STORY")
+            self.assertFalse(dialog.stories.item(0).isHidden())
+            self.assertTrue(dialog.stories.item(1).isHidden())
+            self.assertIn("1 hidden by filters", dialog.story_filter_status.text())
+            dialog.select_all_button.click()
+            self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
+            dialog.select_none_button.click()
+            self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
+            dialog.story_search.clear()
+            dialog.story_filter.setCurrentIndex(dialog.story_filter.findData("ready"))
+            self.assertTrue(dialog.stories.item(0).isHidden())
+            self.assertFalse(dialog.stories.item(1).isHidden())
+            dialog.select_none_button.click()
+            self.assertEqual(dialog.selected_story_ids(), ())
+            dialog.refresh_button.click()
+            self.assertEqual(dialog.selected_story_ids(), ())
+            self.assertFalse(dialog.continue_button.isEnabled())
+            self.assertEqual(dialog.story_context.text(), "No stories selected.")
+            dialog.source.setCurrentIndex(1)
+            self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
+            self.assertIn("0 of 2 stories shown", dialog.story_filter_status.text())
+            self.assertIn("2 hidden by filters", dialog.story_filter_status.text())
+            dialog.source.setCurrentIndex(0)
+            self.assertEqual(dialog.selected_story_ids(), ())
+            dialog.story_filter.setCurrentIndex(
+                dialog.story_filter.findData("not_started")
+            )
+            self.assertFalse(dialog.stories.item(0).isHidden())
+            self.assertTrue(dialog.stories.item(1).isHidden())
+            dialog.select_all_button.click()
+            dialog.refresh_button.click()
+            self.assertEqual(dialog.selected_story_ids(), ("main-1",))
+            self.assertIn(
+                "1 of 2 stories shown; 1 selected", dialog.story_filter_status.text()
+            )
+            dialog.story_search.setText("missing story")
+            self.assertIn("Clear filters", dialog.story_filter_status.text())
+            self.assertEqual(dialog.selected_story_ids(), ("main-1",))
+
     def test_reopen_prefers_saved_full_source_over_active_one_story_pack(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -477,7 +530,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("2 stories", dialog.source.currentText())
             self.assertEqual(dialog.stories.count(), 2)
             self.assertIn("Needs speech", dialog.stories.item(0).text())
-            self.assertIn("Ready offline", dialog.stories.item(1).text())
+            self.assertIn(
+                "Prepared - may still use live speech", dialog.stories.item(1).text()
+            )
             dialog.close()
             dialog.deleteLater()
 
@@ -720,10 +775,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
             self.assertIn(
-                "1 ready, 1 incomplete, 0 not started", dialog.coverage_summary.text()
+                "1 prepared, 1 incomplete, 0 not started",
+                dialog.coverage_summary.text(),
             )
             self.assertIn("Saved offline audio found", dialog.resume_status.text())
-            self.assertIn("Ready offline", dialog.stories.item(1).text())
+            self.assertIn(
+                "Prepared - may still use live speech", dialog.stories.item(1).text()
+            )
             self.assertIn("Preparation incomplete", dialog.stories.item(0).text())
             dialog.deleteLater()
 
@@ -800,12 +858,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.job().status, "prepared")
             self.assertTrue(
                 all(
-                    "Ready offline" in dialog.stories.item(row).text()
+                    "Prepared - may still use live speech"
+                    in dialog.stories.item(row).text()
                     for row in range(dialog.stories.count())
                 )
             )
             self.assertIn(
-                "2 ready, 0 incomplete, 0 not started", dialog.coverage_summary.text()
+                "2 prepared, 0 incomplete, 0 not started",
+                dialog.coverage_summary.text(),
             )
             self.assertTrue(dialog.selection_panel.isHidden())
             self.assertIn("Step 4", dialog.step.text())
