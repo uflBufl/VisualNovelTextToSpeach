@@ -75,6 +75,9 @@ class GameNarratorDialog(QDialog):
         self._prepared = {}
         self._character = None
         self._operation = None
+        self._warming_reference = None
+        self._queued_action = None
+        self._playback_requested = False
         self._closing = False
         self._closed = False
 
@@ -163,7 +166,7 @@ class GameNarratorDialog(QDialog):
         self.save_button = QPushButton("Save narrator")
         self.save_button.clicked.connect(self._save)
         self.stop_button = QPushButton("Stop audio")
-        self.stop_button.clicked.connect(self.player.stop)
+        self.stop_button.clicked.connect(self._stop_audio)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.reject)
         layout = QVBoxLayout(self)
@@ -232,15 +235,20 @@ class GameNarratorDialog(QDialog):
         )
         ready = preset or self.references.count() > 0
         idle = not self.runner.active and not self._closed and not self._closing
-        self.prepare_button.setEnabled(self.characters.count() > 0)
-        self.original_button.setEnabled(ready and not preset and idle)
+        warming = self.runner.active and self._operation == "warm"
+        self.prepare_button.setEnabled(self.characters.count() > 0 and idle)
+        self.characters.setEnabled(idle)
+        self.source.setEnabled(idle)
+        self.discover_button.setEnabled(idle)
+        self.folder_button.setEnabled(idle)
+        self.original_button.setEnabled(ready and not preset and (idle or warming))
         self.original_button.setToolTip(
             "Built-in voices have no original game reference."
             if preset
             else "Play the original recording, not generated speech."
         )
-        self.preview_button.setEnabled(ready and allowed and idle)
-        self.save_button.setEnabled(ready and allowed and idle)
+        self.preview_button.setEnabled(ready and allowed and (idle or warming))
+        self.save_button.setEnabled(ready and allowed and (idle or warming))
 
     def _start(self, operation, message, function, *arguments):
         if self.runner.active:
@@ -249,7 +257,7 @@ class GameNarratorDialog(QDialog):
         self.cancellation.clear()
         self._operation = operation
         self.status.setText(message)
-        self.controls.setEnabled(False)
+        self.controls.setEnabled(operation == "warm")
         self.progress.show()
         self.cancel_button.setText("Cancel and close")
         self.runner.start(function, *arguments)
@@ -292,10 +300,45 @@ class GameNarratorDialog(QDialog):
         )
 
     def _reference_changed(self):
-        self.player.stop()
+        self._stop_audio()
         self.reference_text.setText(
             self.references.currentData(Qt.ItemDataRole.ToolTipRole)
             or ("Transcript unavailable." if self.references.count() else "")
+        )
+        self._warm_selected()
+
+    def _stop_audio(self):
+        self.player.stop()
+        self._queued_action = None
+        self._playback_requested = False
+
+    def _warm_selected(self):
+        reference = self.references.currentData()
+        if (
+            self._closing
+            or self._closed
+            or self.runner.active
+            or self.source.currentData() != "game"
+            or not reference
+        ):
+            return
+        if reference in self._prepared:
+            self.status.setText("Original reference ready. Press Play to listen.")
+            queued = self._queued_action
+            self._queued_action = None
+            if queued:
+                self._candidate_action(queued)
+            return
+        self._warming_reference = reference
+        self._start(
+            "warm",
+            "Preparing selected audio... You can browse or press Play to queue playback.",
+            self._perform_candidate_action,
+            "warm",
+            self._settings(),
+            self._character,
+            reference,
+            self.text.text().strip(),
         )
 
     def _decoder_progress(self, message):
@@ -309,6 +352,25 @@ class GameNarratorDialog(QDialog):
         self._candidate_action("preview")
 
     def _candidate_action(self, operation):
+        if (
+            operation != "audio"
+            and self.source.currentData() == "game"
+            and self.settings_value.speech_backend == "pocket-tts"
+            and not self.consent.isChecked()
+        ):
+            self.status.setText(
+                "Accept Pocket's terms before generating or saving a game voice."
+            )
+            return
+        self._playback_requested = operation in {"audio", "preview"}
+        if self.runner.active and self._operation == "warm":
+            self._queued_action = operation
+            self.status.setText(
+                "Preparing audio... Playback will start when ready."
+                if operation in {"audio", "preview"}
+                else "Preparing audio... Your narrator will be saved when ready."
+            )
+            return
         self._start(
             operation,
             {
@@ -347,6 +409,8 @@ class GameNarratorDialog(QDialog):
             source_id = choices[0].id
         if self.cancellation.is_set():
             raise RuntimeError("Narrator selection cancelled")
+        if operation == "warm":
+            return manifest
         if operation == "save":
             return self.binder(settings, manifest, source_id, character)
         plan = narrator_preview_plan(settings, manifest, source_id, text)
@@ -389,6 +453,31 @@ class GameNarratorDialog(QDialog):
         self.controls.setEnabled(True)
         self.progress.hide()
         self.cancel_button.setText("Cancel")
+        if operation == "warm":
+            if self.references.currentData() != self._warming_reference:
+                self._warm_selected()
+                self._update()
+                return
+            queued = self._queued_action
+            self._queued_action = None
+            if error is None:
+                self.status.setText("Original reference ready. Press Play to listen.")
+                if queued:
+                    self._candidate_action(queued)
+            elif isinstance(error, DecoderSetupRequired):
+                # Browsing must not open an installation prompt without a user action.
+                self.status.setText(
+                    "Audio decoder setup needed. Press Play to set it up."
+                )
+                if queued and confirm_decoder_setup(self, error):
+                    self.importer.allow_decoder_homebrew = True
+                    self._candidate_action(queued)
+            else:
+                self.status.setText(
+                    f"{error}\nPress Play to retry or choose another reference."
+                )
+            self._update()
+            return
         if error is not None:
             if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
                 self, error
@@ -408,6 +497,7 @@ class GameNarratorDialog(QDialog):
             )
         elif operation == "prepare":
             choices = result
+            self.references.blockSignals(True)
             self.references.clear()
             for index, choice in enumerate(choices, 1):
                 self.references.addItem(
@@ -417,14 +507,19 @@ class GameNarratorDialog(QDialog):
                 self.references.setItemData(
                     index - 1, choice.text, Qt.ItemDataRole.ToolTipRole
                 )
-            self._reference_changed()
+            self.references.blockSignals(False)
             self.status.setText(
                 f"All {len(choices)} suitable references, recommended order. "
-                "Audio loads only for the selected line when you play or save."
+                "The selected original audio prepares automatically."
                 if choices
                 else "No usable references found. Choose another character."
             )
+            self._reference_changed()
         elif operation in {"audio", "preview"}:
+            if not self._playback_requested:
+                self.status.setText("Audio ready. Playback stopped.")
+                self._update()
+                return
             self.status.setText(
                 "Playing original reference."
                 if operation == "audio"

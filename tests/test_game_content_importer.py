@@ -48,6 +48,20 @@ class RunningProcess(FinishedProcess):
 
 
 class Reverse1999GameImporterTest(unittest.TestCase):
+    def test_narrator_decoder_uses_cancellable_subprocess_runner(self):
+        cancellation = Event()
+        cancellation.set()
+        process = RunningProcess()
+        importer = Reverse1999GameImporter(popen_factory=Mock(return_value=process))
+        with self.assertRaises(GameContentImportCancelled):
+            importer._decode_narrator(
+                ["decoder", "-i", "source.wem"],
+                capture_output=True,
+                text=True,
+                cancel_event=cancellation,
+            )
+        self.assertTrue(process.terminated)
+
     def test_narrator_listing_needs_no_decoder_and_selection_reaches_extractor(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -59,8 +73,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             manifest.write_text("{}")
             with (
                 patch(
-                    "r1999extractor.narrator_references.list_narrator_references",
-                    return_value=("line",),
+                    "r1999extractor.narrator_references.NarratorReferenceSession",
                 ) as listing,
                 patch(
                     "vntts.game_content_importer.ensure_game_decoder",
@@ -72,20 +85,29 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     return_value=(json.dumps({"voice_manifest": str(manifest)}), ""),
                 ) as run,
             ):
+                session = listing.return_value
+                session.references = ("line",)
+                session.role = "Centurion"
+                session.prepare.return_value = manifest
                 self.assertEqual(importer.narrator_references("Centurion"), ("line",))
                 listing.assert_called_once_with(
-                    root / "reverse1999" / "narrator-index.jsonl", "Centurion"
+                    root / "reverse1999" / "narrator-index.jsonl",
+                    root / "reverse1999" / "english-bank-index.json",
+                    "Centurion",
+                    root / "reverse1999" / "voice-candidates",
                 )
                 decoder.assert_not_called()
                 run.assert_not_called()
                 importer.prepare_voice_roles(
                     ("Centurion",), narrator=True, narrator_line_id="playable:5"
                 )
-                arguments = run.call_args.args[0]
-                self.assertIn("--narrator", arguments)
                 self.assertEqual(
-                    arguments[arguments.index("--narrator-line-id") + 1], "playable:5"
+                    session.prepare.call_args.kwargs["line_id"], "playable:5"
                 )
+                self.assertEqual(
+                    session.prepare.call_args.kwargs["decoder"], root / "decoder"
+                )
+                run.assert_not_called()
 
     def test_narrator_upgrade_reuses_previously_imported_custom_installation(self):
         with TemporaryDirectory() as directory:

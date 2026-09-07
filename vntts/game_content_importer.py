@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
@@ -53,6 +54,7 @@ class Reverse1999GameImporter:
         ).expanduser()
         self.popen_factory = popen_factory
         self.allow_decoder_homebrew = False
+        self._narrator_session = None
 
     def availability(self):
         command = self.command()
@@ -180,11 +182,16 @@ class Reverse1999GameImporter:
         return bool(bank_index_staleness_reasons(document))
 
     def narrator_references(self, character):
-        from r1999extractor.narrator_references import list_narrator_references
+        from r1999extractor.narrator_references import NarratorReferenceSession
 
-        return list_narrator_references(
-            self.output_root / "reverse1999" / "narrator-index.jsonl", character
+        root = self.output_root / "reverse1999"
+        self._narrator_session = NarratorReferenceSession(
+            root / "narrator-index.jsonl",
+            root / "english-bank-index.json",
+            character,
+            root / "voice-candidates",
         )
+        return self._narrator_session.references
 
     def prepare_voice_roles(
         self,
@@ -206,6 +213,21 @@ class Reverse1999GameImporter:
             progress=progress,
             allow_homebrew=self.allow_decoder_homebrew,
         )
+        if narrator:
+            if len(roles) != 1:
+                raise GameContentImportError("Choose one narrator character at a time")
+            if (
+                self._narrator_session is None
+                or self._narrator_session.role != roles[0]
+            ):
+                self.narrator_references(roles[0])
+            if cancel_event is not None and cancel_event.is_set():
+                raise GameContentImportCancelled("Narrator preparation cancelled")
+            return self._narrator_session.prepare(
+                line_id=narrator_line_id,
+                decoder=decoder,
+                runner=partial(self._decode_narrator, cancel_event=cancel_event),
+            )
         environment = dict(os.environ)
         environment["PATH"] = os.pathsep.join(
             (str(decoder.parent), environment.get("PATH", ""))
@@ -239,6 +261,10 @@ class Reverse1999GameImporter:
                 "Reverse: 1999 voice preparation produced no usable manifest"
             )
         return manifest
+
+    def _decode_narrator(self, arguments, *, capture_output, text, cancel_event):
+        stdout, stderr = self._run(arguments, cancel_event)
+        return subprocess.CompletedProcess(arguments, 0, stdout, stderr)
 
     def _run(self, arguments, cancel_event, *, environment=None):
         try:

@@ -9,6 +9,8 @@ measurements in agent memory and completed-work history in Git, not here.
       matching the displayed transcripts, or that absent playable speech is
       explained without offering story effects. Confirm downloaded story voices
       remain available alongside packaged voices.
+      Measure first-play latency with actual Windows game audio after selection
+      prefetch; synthetic Mac decoder timing is not a Windows performance gate.
 
 ## P0 - Redesign the ordinary-player interface
 

@@ -500,22 +500,21 @@ class GameNarratorTest(unittest.TestCase):
                 "Original transcript 5. <Not markup.>",
             )
             dialog.original_button.click()
-            self.run_task(pool)
+            self.run_task(pool)  # Finish the first selection, which must not play.
+            dialog.player.play.assert_not_called()
+            self.run_task(pool)  # Prepare the latest selection.
+            self.run_task(pool)  # Play the queued selection.
             self.assertEqual(
                 importer.prepare_voice_roles.call_args.kwargs["narrator_line_id"],
                 "playable-voice:3032:5",
             )
             dialog.original_button.click()
             self.run_task(pool)
-            importer.prepare_voice_roles.assert_called_once()
+            self.assertEqual(importer.prepare_voice_roles.call_count, 2)
             dialog.references.setCurrentIndex(0)
             dialog.original_button.click()
             self.run_task(pool)
             self.assertEqual(importer.prepare_voice_roles.call_count, 2)
-            self.assertEqual(
-                importer.prepare_voice_roles.call_args.kwargs["narrator_line_id"],
-                "playable-voice:3032:1",
-            )
             dialog.characters.clear()
             self.assertEqual(dialog.reference_text.text(), "")
             dialog.reject()
@@ -556,6 +555,108 @@ class GameNarratorTest(unittest.TestCase):
             dialog.reject()
             self.run_task(pool)
 
+    def test_prefetch_never_autoplays_and_stop_switch_close_drop_queued_playback(self):
+        for action in ("no play", "stop", "switch", "close"):
+            with self.subTest(action=action), TemporaryDirectory() as directory:
+                manifest = write_manifest(Path(directory))
+                importer = self.narrator_importer(manifest)
+                pool, player = ManualThreadPool(), Mock()
+                dialog = GameNarratorDialog(
+                    AppSettings(speech_backend="moss-tts"),
+                    importer=importer,
+                    preview_service=Mock(),
+                    thread_pool=pool,
+                    player=player,
+                )
+                self.application.processEvents()
+                self.run_task(pool)
+                dialog.prepare_button.click()
+                self.run_task(pool)
+                self.assertEqual(dialog._operation, "warm")
+                self.assertTrue(dialog.references.isEnabled())
+                self.assertTrue(dialog.original_button.isEnabled())
+                self.assertFalse(dialog.prepare_button.isEnabled())
+                if action != "no play":
+                    dialog.original_button.click()
+                    self.assertIn("Playback will start", dialog.status.text())
+                if action == "stop":
+                    dialog.stop_button.click()
+                elif action == "switch":
+                    dialog.references.setCurrentIndex(1)
+                    dialog.references.setCurrentIndex(4)
+                elif action == "close":
+                    dialog.reject()
+                while pool.tasks:
+                    self.run_task(pool)
+                player.play.assert_not_called()
+                if action == "switch":
+                    self.assertEqual(
+                        [
+                            call.kwargs["narrator_line_id"]
+                            for call in importer.prepare_voice_roles.call_args_list
+                        ],
+                        ["playable-voice:3032:1", "playable-voice:3032:5"],
+                    )
+                if action != "close":
+                    dialog.reject()
+                    self.run_task(pool)
+
+    def test_background_decoder_setup_waits_for_explicit_play(self):
+        with TemporaryDirectory() as directory:
+            importer = self.narrator_importer(write_manifest(Path(directory)))
+            importer.prepare_voice_roles.side_effect = DecoderSetupRequired(
+                "Install decoder?"
+            )
+            pool = ManualThreadPool()
+            dialog = GameNarratorDialog(
+                AppSettings(speech_backend="moss-tts"),
+                importer=importer,
+                preview_service=Mock(),
+                thread_pool=pool,
+                player=Mock(),
+            )
+            self.application.processEvents()
+            self.run_task(pool)
+            dialog.prepare_button.click()
+            self.run_task(pool)
+            with patch(
+                "vntts.game_narrator_ui.confirm_decoder_setup", return_value=False
+            ) as prompt:
+                self.run_task(pool)
+                prompt.assert_not_called()
+                self.assertIn("Press Play", dialog.status.text())
+                dialog.original_button.click()
+                self.run_task(pool)
+                prompt.assert_called_once()
+            dialog.reject()
+            self.run_task(pool)
+
+    def test_play_cached_selection_while_another_prefetch_finishes(self):
+        with TemporaryDirectory() as directory:
+            importer = self.narrator_importer(write_manifest(Path(directory)))
+            pool, player = ManualThreadPool(), Mock()
+            dialog = GameNarratorDialog(
+                AppSettings(speech_backend="moss-tts"),
+                importer=importer,
+                preview_service=Mock(),
+                thread_pool=pool,
+                player=player,
+            )
+            self.application.processEvents()
+            self.run_task(pool)
+            dialog.prepare_button.click()
+            self.run_task(pool)
+            self.run_task(pool)
+            dialog.references.setCurrentIndex(4)
+            dialog.references.setCurrentIndex(0)
+            dialog.original_button.click()
+            self.run_task(pool)
+            self.run_task(pool)
+            player.play.assert_called_once()
+            self.assertIsNone(dialog._queued_action)
+            dialog.reject()
+            self.run_task(pool)
+
     def test_save_unplayed_reference_prepares_only_that_selection(self):
         with TemporaryDirectory() as directory:
             manifest = write_manifest(Path(directory))
@@ -577,6 +678,8 @@ class GameNarratorTest(unittest.TestCase):
             self.run_task(pool)
             dialog.references.setCurrentIndex(4)
             dialog.save_button.click()
+            self.run_task(pool)
+            self.run_task(pool)
             self.run_task(pool)
             self.run_task(pool)
             self.assertEqual(
@@ -634,6 +737,7 @@ class GameNarratorTest(unittest.TestCase):
                 narrator=True,
                 narrator_line_id="playable-voice:3032:1",
             )
+            self.run_task(pool)
             player.play.assert_called_once()
             dialog.consent.setChecked(True)
             dialog.preview_button.click()
@@ -685,6 +789,7 @@ class GameNarratorTest(unittest.TestCase):
             self.assertTrue(dialog.consent.isHidden())
             self.assertTrue(dialog.preview_button.isEnabled())
             dialog.preview_button.click()
+            self.run_task(pool)
             self.run_task(pool)
             plan = previews.generate.call_args.args[0]
             self.assertEqual(plan.synthesis_backend, "moss-tts")
