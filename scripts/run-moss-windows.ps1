@@ -7,6 +7,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Server,
     [Parameter(Mandatory=$true)][string]$Model,
     [ValidateRange(-1, 1000)][int]$GpuLayers = -1,
+    # Upstream --aux-cpu covers the local decoder/embeddings as well as the codec.
+    # Omit this switch on 8 GB GPUs; the full Q8 weight pair alone exceeds 8 GB.
     [switch]$CodecOnGpu,
     [string]$NarratorReference,
     [string]$Application

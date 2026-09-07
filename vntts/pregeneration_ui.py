@@ -386,6 +386,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_timing = QLabel()
         self.progress_timing.setWordWrap(True)
         self.progress_timing.setAccessibleName("Progress freshness and remaining time")
+        self.progress_runtime = QLabel()
+        self.progress_runtime.setWordWrap(True)
+        self.progress_runtime.setTextFormat(Qt.TextFormat.PlainText)
+        self.progress_runtime.setAccessibleName("Offline generation device")
         self.progress_guarantee = QLabel()
         self.progress_guarantee.setWordWrap(True)
         self.progress_cancel_consequence = QLabel()
@@ -405,6 +409,7 @@ class OfflineAudioPreparationDialog(QDialog):
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_counts)
         progress_layout.addWidget(self.progress_timing)
+        progress_layout.addWidget(self.progress_runtime)
         progress_layout.addWidget(self.resume_status)
         progress_layout.addWidget(self.progress_guarantee)
         progress_layout.addWidget(self.progress_failures)
@@ -1050,6 +1055,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_bar.setFormat("")
         self.progress_counts.clear()
         self.progress_timing.clear()
+        self.progress_runtime.clear()
         self.progress_guarantee.setText(
             "Your selected stories and completed voice choices are saved for restart."
         )
@@ -1062,6 +1068,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._progress_snapshot = None
         self._progress_changed_at = monotonic()
         self._progress_error = None
+        self.progress_runtime.setText("Generation device: waiting for the worker.")
         total = self._generation_input.ready_items
         self._show_phase(
             "Generating offline audio",
@@ -1097,8 +1104,13 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if error is not None or not isinstance(progress, OfflineGenerationProgress):
             self._progress_error = str(error or "Invalid progress response")
+            self.progress_runtime.setText("Generation device: report unavailable.")
         else:
             self._progress_error = None
+            self.progress_runtime.setText(
+                progress.runtime_status
+                or "Generation device: waiting for the worker to confirm CPU/GPU use."
+            )
             now = monotonic()
             if progress != self._progress_snapshot:
                 self._progress_changed_at = now
@@ -1148,6 +1160,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_timer.stop()
         self.progress_runner.cancel()
         self.progress_timing.clear()
+        self.progress_runtime.clear()
 
     def _render_generation_progress(self, progress):
         total = self._generation_input.ready_items

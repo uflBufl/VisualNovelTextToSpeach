@@ -337,6 +337,15 @@ class SpeechWorkerTest(unittest.TestCase):
             self.assertIn("-B", command)
             self.assertEqual(command[-1], str(Path(__file__).resolve().parents[1]))
             self.assertNotIn("site-packages", command)
+            backend._terminate_process(backend.process)
+            backend.health = {"device": "cuda", "accelerator": {"name": "Old GPU"}}
+
+            def restart(command, **options):
+                self.assertIsNone(backend.health)
+                return process_factory(command, **options)
+
+            backend.process_factory = restart
+            backend._launch_worker()
             backend.shutdown()
 
     def test_frozen_parent_imports_worker_from_bundled_runtime(self):

@@ -24,7 +24,11 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.settings import is_live_sequence_audio_mode
-from vntts.speech_presentation import reading_policy_label, speech_configuration_label
+from vntts.speech_presentation import (
+    reading_policy_label,
+    speech_configuration_label,
+    speech_runtime_label,
+)
 
 
 @dataclass(frozen=True)
@@ -341,7 +345,12 @@ class ControlDashboard(QMainWindow):
         self.reading_defaults = QLabel()
         self.reading_defaults.setWordWrap(True)
         self.reading_defaults.setAccessibleName("Live fallback voice and engine")
+        self.speech_runtime = QLabel(speech_runtime_label(None))
+        self.speech_runtime.setWordWrap(True)
+        self.speech_runtime.setTextFormat(Qt.TextFormat.PlainText)
+        self.speech_runtime.setAccessibleName("Live speech compute device")
         layout.addWidget(self.reading_defaults)
+        layout.addWidget(self.speech_runtime)
         layout.addWidget(self.reading_policy)
         layout.addWidget(card)
         layout.addWidget(self.details_toggle)
@@ -725,7 +734,13 @@ class ControlDashboard(QMainWindow):
             if source.startswith("Original game audio")
             else snapshot.voice or "Not resolved yet"
         )
-        self.audio_source.setText(snapshot.audio_source or "Not selected")
+        saved = source.startswith(("Generated audio", "Original game audio")) or (
+            "memory cache" in source or "persistent cache" in source
+        )
+        self.audio_source.setText(
+            source
+            + ("\nSaved audio: no generation for this playback." if saved else "")
+        )
         self.confidence.setText(f"{snapshot.confidence:.1f}%")
         parts = []
         if snapshot.capture_ms is not None:

@@ -27,12 +27,25 @@ from vntts.voices import CharacterVoiceRegistry
 # Independent protocol peer: only the native executable is substituted. HTTP,
 # WAV parsing, sampling, cache publication, cancellation and shutdown are real.
 SERVER = r"""
-import base64, io, json, sys, time, wave
+import base64, hashlib, io, json, sys, time, wave
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import TCPServer
+root = Path(__file__).parent
+legacy = (root / 'legacy-runtime').exists()
+if '--help' in sys.argv:
+    if (root / 'slow-help').exists():
+        (root / 'help-started').touch()
+        time.sleep(30)
+    print('Usage: --model PATH --n-gpu-layers N' + ('' if legacy else ' --voice-dir DIR'), file=sys.stderr)
+    sys.exit(0)
+if legacy and '--voice-dir' in sys.argv: sys.exit('unknown arg: --voice-dir')
 port = int(sys.argv[sys.argv.index('--port') + 1])
-root = Path(sys.argv[sys.argv.index('--model') + 1]).parent
+voice_dir = None if '--voice-dir' not in sys.argv else Path(sys.argv[sys.argv.index('--voice-dir') + 1])
+if voice_dir is not None: voice_dir.mkdir(parents=True, exist_ok=True)
+codes_cache = {}
+startup_log = root / 'startup.log'
+if startup_log.exists(): print(startup_log.read_text(), flush=True)
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
@@ -40,11 +53,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(dict(
             architecture='moss_tts_local', sampling_rate=48000, n_channels=2,
-            n_vq=12, codec_loaded=True, version='0.3.0',
+            n_vq=12, codec_loaded=True, version='0.2.0' if legacy else '0.3.0',
+            voice_registry=voice_dir is not None and not (root / 'disable-registry').exists(),
         )).encode())
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         (root / 'request.json').write_text(json.dumps(body))
+        if 'voice' in body:
+            assert 'reference_wav_b64' not in body and 'ref_text' not in body
+            voice_id = body['voice']
+            if voice_id not in codes_cache:
+                wav = (voice_dir / (voice_id + '.wav')).read_bytes()
+                assert hashlib.sha256(wav).hexdigest() == voice_id
+                assert wav.startswith(b'RIFF')
+                assert json.loads((voice_dir / (voice_id + '.json')).read_text()) == {}
+                codes_cache[voice_id] = True
+                (root / 'encoded.json').write_text(json.dumps(list(codes_cache)))
         if body['text'] == 'Wait.': time.sleep(30)
         if body['text'] == 'Fail.':
             self.send_response(500)
@@ -98,12 +122,16 @@ class MossCppBackendTest(unittest.TestCase):
         real_popen = subprocess.Popen
         self.children = []
         self.commands = []
+        self.probes = []
 
         def launch(command, **options):
-            self.commands.append(command)
             child = real_popen(
                 [sys.executable, str(self.script), *command[1:]], **options
             )
+            if "--help" in command:
+                self.probes.append(child)
+                return child
+            self.commands.append(command)
             self.children.append(child)
             return child
 
@@ -136,7 +164,8 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertFalse(body["stream"])
         self.assertEqual(body["sampling"]["seed"], 0)
         self.assertEqual(body["sampling"]["audio_temperature"], 1.2)
-        self.assertTrue(base64.b64decode(body["reference_wav_b64"]).startswith(b"RIFF"))
+        self.assertEqual(len(body["voice"]), 64)
+        self.assertNotIn("reference_wav_b64", body)
         self.assertIn("--aux-cpu", self.commands[0])
         self.assertIn("127.0.0.1", self.commands[0])
         self.assertTrue(backend.model_name.startswith("openmoss-cpp:sha256:"))
@@ -145,6 +174,131 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertEqual(len(self.children), 1)
         backend.shutdown()
         self.assertIsNotNone(self.children[0].poll())
+
+    def test_references_are_reused_by_content_and_cleaned_up_on_restart(self):
+        backend = self.backend()
+        directory = Path(backend.server_directory.name)
+        for text in ("First line.", "Another line."):
+            backend.render(SynthesisRequest("Narrator", text)).collect()
+        encoded = json.loads((self.root / "encoded.json").read_text())
+        self.assertEqual(len(encoded), 1)
+        voice = json.loads((self.root / "request.json").read_text())["voice"]
+        self.assertEqual(voice, encoded[0])
+        self.assertEqual(len(list((directory / "voices").glob("*.wav"))), 1)
+        # A content change at the same reference path must get new native codes.
+        sf.write(self.reference, np.full(4800, 0.2), 48000)
+        backend.render(SynthesisRequest("Narrator", "Changed voice.")).collect()
+        self.assertEqual(len(json.loads((self.root / "encoded.json").read_text())), 2)
+        backend._stop_server()
+        self.assertFalse(directory.exists())
+        backend.render(SynthesisRequest("Narrator", "After restart.")).collect()
+        self.assertEqual(len(json.loads((self.root / "encoded.json").read_text())), 1)
+
+    def test_inline_reference_compatibility_when_registry_not_reported(self):
+        (self.root / "disable-registry").touch()
+        backend = self.backend()
+        backend.render(SynthesisRequest("Narrator", "Inline reference.")).collect()
+        body = json.loads((self.root / "request.json").read_text())
+        self.assertTrue(base64.b64decode(body["reference_wav_b64"]).startswith(b"RIFF"))
+        self.assertNotIn("voice", body)
+
+    def test_older_native_runtime_uses_inline_reference_without_unknown_flag(self):
+        (self.root / "legacy-runtime").touch()
+        backend = self.backend()
+        for text in ("Legacy reference.", "After restarting."):
+            backend.render(SynthesisRequest("Narrator", text)).collect()
+            body = json.loads((self.root / "request.json").read_text())
+            self.assertTrue(
+                base64.b64decode(body["reference_wav_b64"]).startswith(b"RIFF")
+            )
+            self.assertNotIn("voice", body)
+            self.assertNotIn("--voice-dir", self.commands[-1])
+            backend._stop_server()
+        self.assertEqual(len(self.probes), 1)
+        self.assertEqual(self.probes[0].poll(), 0)
+
+    def test_cancellation_during_capability_probe_leaves_no_child(self):
+        (self.root / "slow-help").touch()
+        cancellation = Event()
+        errors = []
+
+        def launch():
+            try:
+                self.backend(startup_cancellation=cancellation)
+            except TTSSynthesisError as error:
+                errors.append(error)
+
+        task = Thread(target=launch)
+        task.start()
+        try:
+            for _ in range(100):
+                if (self.root / "help-started").exists():
+                    break
+                cancellation.wait(0.02)
+            self.assertTrue((self.root / "help-started").exists())
+        finally:
+            cancellation.set()
+            task.join(timeout=5)
+        self.assertFalse(task.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(self.children, [])
+        self.assertIsNotNone(self.probes[0].poll())
+
+    def test_runtime_status_uses_actual_offload_and_aux_logs_and_clears_on_stop(self):
+        cases = (
+            (
+                "-1",
+                "load_tensors: offloaded 37/37 layers to GPU\n"
+                "llama_model_load: using device Vulkan0 (NVIDIA GeForce RTX 2070 SUPER) (0000:01:00.0) - 8000 MiB free\n"
+                "Model::load: aux backend = CPU\n",
+                "GPU: NVIDIA GeForce RTX 2070 SUPER (Vulkan0), 37/37 GPU layers; audio model/codec: CPU",
+            ),
+            (
+                "12",
+                "load_tensors: offloaded 12/37 layers to GPU\n"
+                "Model::load: pinning to GPU 0 (CUDA0, 8000/8192 MiB free)\n"
+                "Model::load: aux backend = CUDA0\n",
+                "GPU + CPU: CUDA0, 12/37 GPU layers; audio model/codec: CUDA0",
+            ),
+            ("0", "Model::load: aux backend = CPU\n", "CPU (explicitly selected)"),
+            (
+                "-1",
+                "Model::load: no GPU device found; using CPU backend\n"
+                "Model::load: aux backend = CPU\n",
+                "CPU (no GPU detected)",
+            ),
+            (
+                "-1",
+                "load_tensors: offloaded 0/37 layers to GPU\n",
+                "CPU (0/37 GPU layers; GPU requested)",
+            ),
+            (
+                "-1",
+                "Model::load: pinning to GPU 0 (Vulkan0, 8000/8192 MiB free)\n",
+                "device unconfirmed (GPU offload requested); audio model/codec: device unconfirmed",
+            ),
+            ("-1", "", "device unconfirmed (GPU offload requested)"),
+        )
+        for layers, log, expected in cases:
+            with self.subTest(layers=layers, log=log):
+                os.environ["VNTTS_MOSS_GPU_LAYERS"] = layers
+                (self.root / "startup.log").write_text(log)
+                progress = []
+                backend = self.backend(startup_progress=progress.append)
+                self.assertIn(expected, backend.runtime_status)
+                self.assertIn(backend.runtime_status, progress)
+                directory = Path(backend.server_directory.name)
+                backend._stop_server()
+                self.assertIsNone(backend.runtime_status)
+                self.assertFalse(directory.exists())
+                (self.root / "startup.log").write_text("")
+                backend._start_server(lambda: False)
+                if layers != "0":
+                    self.assertIn("device unconfirmed", backend.runtime_status)
+                backend.server.terminate()
+                backend.server.wait(timeout=2)
+                self.assertIsNone(backend.runtime_status)
+                backend.shutdown()
 
     def test_limit_is_not_cached_as_complete(self):
         backend = self.backend()

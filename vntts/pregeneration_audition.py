@@ -74,6 +74,11 @@ class VoiceAuditionPreviewService:
         self._lock = threading.Lock()
         self._closed = False
 
+    @property
+    def backend(self):
+        """The currently loaded preview engine, for read-only UI status."""
+        return self._backend
+
     def generate(
         self,
         plan,

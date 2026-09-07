@@ -211,6 +211,7 @@ from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
     validate_terminal_conflict_state_binding,
 )
+from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisCompletion,
@@ -1890,6 +1891,7 @@ def run_bulk_generation(
                     source_reference_binding=source_reference_binding,
                     failure_repair=attempt_repair,
                     phase="generating",
+                    runtime_status=speech_runtime_label(backend),
                     attempt=run_attempts,
                     attempt_limit=attempt_limit,
                     total_attempts=attempts,
@@ -3384,6 +3386,7 @@ def _write_active(
     seed_applied,
     started_at,
     last_error,
+    runtime_status=None,
 ):
     state["active"] = {
         "queue_id": item.queue_id,
@@ -3397,6 +3400,8 @@ def _write_active(
         "synthesis_voice_character": synthesis_voice_character,
         "text": item.text,
         "phase": phase,
+        "runtime_status": runtime_status,
+        "runtime_worker_pid": os.getpid(),
         "attempt": attempt,
         "attempt_limit": attempt_limit,
         "total_attempts": total_attempts,

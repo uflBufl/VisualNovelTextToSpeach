@@ -44,6 +44,7 @@ class OfflineGenerationProgress:
     other_terminal: int = 0
     active_phase: str | None = None
     available: bool = True
+    runtime_status: str | None = None
 
     @property
     def completed(self):
@@ -54,6 +55,7 @@ class OfflineGenerationWorker:
     def __init__(self, *, command=None, popen_factory=subprocess.Popen):
         self._configured_command = tuple(command) if command else None
         self.popen_factory = popen_factory
+        self._process = None
 
     def command(self):
         if self._configured_command:
@@ -171,10 +173,22 @@ class OfflineGenerationWorker:
             elif status in {"live_fallback", "omitted", "not_reproducible"}:
                 other_terminal += 1
         active = state.get("active")
+        runtime_status = None
+        process = self._process
+        if (
+            isinstance(active, dict)
+            and process is not None
+            and active.get("runtime_worker_pid") == process.pid
+            and process.poll() is None
+        ):
+            reported = active.get("runtime_status")
+            if isinstance(reported, str) and reported.strip():
+                runtime_status = reported[:2000]
         return OfflineGenerationProgress(
             generated=generated,
             failed=failed,
             other_terminal=other_terminal,
+            runtime_status=runtime_status,
             active_phase=(
                 str(active.get("phase"))
                 if isinstance(active, dict) and active.get("phase")
@@ -246,16 +260,20 @@ class OfflineGenerationWorker:
                 f"Unable to start offline speech generation: {error}"
             ) from error
 
-        while True:
-            try:
-                stdout, stderr = process.communicate(timeout=0.1)
-                break
-            except subprocess.TimeoutExpired:
-                if cancel_event is not None and cancel_event.is_set():
-                    terminate_process(process)
-                    raise OfflineGenerationCancelled(
-                        "Offline speech generation was cancelled"
-                    )
+        self._process = process
+        try:
+            while True:
+                try:
+                    stdout, stderr = process.communicate(timeout=0.1)
+                    break
+                except subprocess.TimeoutExpired:
+                    if cancel_event is not None and cancel_event.is_set():
+                        terminate_process(process)
+                        raise OfflineGenerationCancelled(
+                            "Offline speech generation was cancelled"
+                        )
+        finally:
+            self._process = None
         if process.returncode:
             detail = last_output_line(stderr) or last_output_line(stdout)
             raise OfflineGenerationError(

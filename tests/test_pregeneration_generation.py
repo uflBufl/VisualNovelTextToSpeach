@@ -107,13 +107,30 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                             "two": {"status": "failed"},
                             "three": {"status": "live_fallback"},
                         },
-                        "active": {"phase": "validating"},
+                        "active": {
+                            "phase": "validating",
+                            "runtime_status": "GPU: RTX 2070 SUPER; auxiliary: CPU",
+                            "runtime_worker_pid": 12345,
+                        },
                     }
                 ),
                 encoding="utf-8",
             )
 
-            progress = OfflineGenerationWorker().inspect_progress(generation_input)
+            worker = OfflineGenerationWorker()
+            progress = worker.inspect_progress(generation_input)
+            self.assertIsNone(progress.runtime_status)
+            worker._process = Mock(pid=12345)
+            worker._process.poll.return_value = None
+            self.assertIn(
+                "RTX 2070 SUPER",
+                worker.inspect_progress(generation_input).runtime_status,
+            )
+            worker._process.pid = 999
+            self.assertIsNone(worker.inspect_progress(generation_input).runtime_status)
+            worker._process.pid = 12345
+            worker._process.poll.return_value = 0
+            self.assertIsNone(worker.inspect_progress(generation_input).runtime_status)
 
         self.assertEqual(progress.completed, 3)
         self.assertEqual(progress.generated, 1)

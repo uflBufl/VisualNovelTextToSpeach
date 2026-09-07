@@ -493,8 +493,11 @@ On Windows x64, select **MOSS-TTS Local v1.5** and a game narrator, then launch
 normally with `uv run vntts-app`. The app automatically downloads and verifies
 the C++ runtime and both Q8 model files (about 9.1 GB), with progress,
 cancellation, and resumable downloads. Later launches reuse these files.
-The default runs generation and the audio codec on the CPU. No separate
-Python MOSS environment or manual model paths are needed. Windows must have
+The default requests all backbone layers on the GPU through Vulkan, keeping the
+auxiliary model (including the audio codec) on the CPU to fit 8 GB cards. The UI
+shows confirmed backbone and auxiliary placement after loading; missing native
+evidence is reported as unknown. No separate Python MOSS environment or manual
+model paths are needed. Windows must have
 the Microsoft Visual C++ x64 runtime; setup checks native loading before
 downloading the models and preserves the underlying error if the check fails.
 
@@ -509,9 +512,9 @@ Then launch from the project root:
 
 ```powershell
 # CPU generation; no GPU memory required.
-.\scripts\run-moss-windows.ps1 -Server C:\MOSS\moss-tts-server.exe -Model C:\MOSS\moss-tts-local-1.5-q8_0.gguf
+.\scripts\run-moss-windows.ps1 -Server C:\MOSS\moss-tts-server.exe -Model C:\MOSS\moss-tts-local-1.5-q8_0.gguf -GpuLayers 0
 
-# Candidate for an 8 GB GPU: backbone on GPU, audio codec in system RAM.
+# Default for an 8 GB GPU: backbone on GPU, auxiliary model in system RAM.
 .\scripts\run-moss-windows.ps1 -Server C:\MOSS\moss-tts-server.exe -Model C:\MOSS\moss-tts-local-1.5-q8_0.gguf -GpuLayers -1
 ```
 
@@ -520,8 +523,13 @@ configures the executable and model for that launch; run it again on subsequent
 launches. Add `-NarratorReference C:\Voices\reference.wav` to run a fresh
 production-backend benchmark instead of the app, or `-Application C:\VNTTS\vntts.exe`
 to launch a portable build. Source runs require the normal project environment.
-Lower `-GpuLayers` if the game also needs VRAM. `-CodecOnGpu` moves the codec to
-the GPU too and is **not** the recommended starting point for an 8 GB card.
+Lower `-GpuLayers` if the game also needs VRAM. `-CodecOnGpu` moves the entire
+auxiliary model (audio embeddings, local decoder and codec) to the GPU too and
+is **not** the recommended starting point for an 8 GB card: the Q8 weight files
+alone total about 9.1 GB, before working memory. CPU and GPU stages alternate
+during generation, so full layer offload does not imply continuous 100% GPU or
+CPU utilization. The bundled native server has no CPU thread-count option;
+PyTorch thread settings do not configure this C++ runtime.
 
 The app owns a loopback-only server, keeps the model loaded between lines, and
 stops it on shutdown. Cancellation during generation stops the server and the

@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
@@ -77,13 +78,16 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 VoiceDecisionStore(root / "decisions.json"), thread_pool=pool
             )
             previous = panel.preview_service
+            self.assertFalse(panel.runtime_timer.isActive())
             panel.shutdown()
             panel.start(plan)
+            self.assertTrue(panel.runtime_timer.isActive())
             self.assertIsNot(panel.preview_service, previous)
             self.assertFalse(panel.preview_service._closed)
             self.assertTrue(pool.tasks)
             panel.preview_runner.cancel()
             panel.shutdown()
+            self.assertFalse(panel.runtime_timer.isActive())
 
     def test_multimedia_output_is_lazy_when_no_audition_is_started(self):
         with (
@@ -234,6 +238,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, second = with_second_group(plan, group)
             decisions = VoiceDecisionStore(root / "decisions.json")
             preview_service = Mock()
+            preview_service.backend.runtime_status = "GPU: RTX 2070 SUPER <8 GB>"
             preview_service.generate.side_effect = lambda _plan, value, source: Mock(
                 path=root / f"{value.group_id}-{source.removeprefix('character:')}.wav"
             )
@@ -246,14 +251,27 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
 
             panel.start(plan)
+            self.assertTrue(panel.runtime_timer.isActive())
+            self.assertTrue(panel.runtime.isVisibleTo(panel))
+            self.assertEqual(panel.runtime.textFormat(), Qt.TextFormat.PlainText)
+            self.assertIn("GPU: RTX 2070 SUPER", panel.runtime.text())
             pool.tasks.pop(0).run()
             self.application.processEvents()
 
             self.assertTrue(panel.a_use.isEnabled())
             self.assertEqual(len(pool.tasks), 1)
+            panel.play_a()
+            self.assertIn("background", panel.runtime.text())
+            self.assertIn("GPU: RTX 2070 SUPER", panel.runtime.text())
+            self.assertNotIn("No preview generation", panel.runtime.text())
+            preview_service.backend.runtime_status = None
+            panel.runtime_timer.timeout.emit()
+            self.assertIn("not running", panel.runtime.text())
+            self.assertNotIn("GPU", panel.runtime.text())
             pool.tasks.pop(0).run()
             self.application.processEvents()
             self.assertEqual(preview_service.generate.call_count, 4)
+            self.assertIn("No preview generation", panel.runtime.text())
 
             panel.a_use.click()
 
@@ -269,7 +287,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 decisions.choice_for(second.group_id, second.decision_context_sha256),
                 second.candidates[1].source_id,
             )
+            self.assertFalse(panel.runtime_timer.isActive())
             panel.shutdown()
+            self.assertFalse(panel.runtime_timer.isActive())
             panel.deleteLater()
 
     def test_alternate_phrase_with_failed_candidates_resets_pair_position(self):
@@ -384,10 +404,13 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.cancel()
 
             self.assertEqual(cancelled.call_count, 1)
+            self.assertFalse(panel.runtime_timer.isActive())
+            self.assertIn("Stopping", panel.runtime.text())
             preview_service.close.assert_not_called()
             pool.tasks.pop(0).run()
             self.application.processEvents()
             preview_service.close.assert_called_once_with()
+            self.assertIn("No preview generation", panel.runtime.text())
             panel.deleteLater()
 
     def test_save_failure_keeps_the_same_decision_available(self):

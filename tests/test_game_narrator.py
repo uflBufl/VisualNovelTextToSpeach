@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from tests.test_game_pack import write_synthetic_game_pack  # noqa: E402
@@ -48,6 +49,35 @@ class GameNarratorTest(unittest.TestCase):
     def run_task(self, pool):
         pool.tasks.pop(0).run()
         self.application.processEvents()
+
+    def test_preview_compute_stays_visible_and_cached_playback_clears_generation(self):
+        pool = ManualThreadPool()
+        previews = Mock()
+        previews.backend.runtime_status = "GPU: RTX 2070 SUPER <8 GB>; auxiliary: CPU"
+        previews.generate.return_value = SimpleNamespace(
+            path=Path("/tmp/preview.wav"), reused=True
+        )
+        dialog = GameNarratorDialog(
+            AppSettings(voice_assignments={"Narrator": "preset:alba"}),
+            preview_service=previews,
+            thread_pool=pool,
+            player=Mock(),
+        )
+        dialog.show()
+        self.application.processEvents()
+        dialog.preview_button.click()
+        self.assertTrue(dialog.runtime.isVisibleTo(dialog))
+        self.assertIn("GPU: RTX 2070 SUPER", dialog.runtime.text())
+        self.assertEqual(dialog.runtime.textFormat(), Qt.TextFormat.PlainText)
+        self.run_task(pool)
+        self.assertIn("no generation", dialog.runtime.text())
+        self.assertNotIn("GPU", dialog.runtime.text())
+        dialog.preview_button.click()
+        self.assertIn("GPU: RTX 2070 SUPER", dialog.runtime.text())
+        self.run_task(pool)
+        dialog.reject()
+        self.run_task(pool)
+        self.assertFalse(dialog.runtime_timer.isActive())
 
     def narrator_importer(self, manifest):
         document = json.loads(manifest.read_text())

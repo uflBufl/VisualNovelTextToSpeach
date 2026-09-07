@@ -225,6 +225,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                 observed.update(state["active"])
 
             renderer = SyntheticRenderer(inspect_state=inspect_state)
+            renderer.runtime_status = "GPU: test accelerator; auxiliary model: CPU"
             first = self.run_generation(queue, output, renderer, seed=7)
             second = self.run_generation(queue, output, renderer, seed=7)
             state = load_generation_state(first.state, queue)
@@ -234,6 +235,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             audio_hash = sha256_file(audio)
 
         self.assertEqual(observed["phase"], "generating")
+        self.assertIn("GPU: test accelerator", observed["runtime_status"])
+        self.assertEqual(observed["runtime_worker_pid"], os.getpid())
         self.assertEqual(observed["attempt"], 1)
         self.assertEqual(observed["total_attempts"], 1)
         self.assertEqual(observed["seed"], 7)

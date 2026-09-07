@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QGroupBox,
@@ -20,7 +20,7 @@ from vntts.pregeneration_audition import (
 )
 from vntts.pregeneration_voices import VoicePlan
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
-from vntts.speech_presentation import engine_model_label
+from vntts.speech_presentation import engine_model_label, speech_runtime_label
 from vntts.voices import default_voice_choice_id
 
 
@@ -96,6 +96,10 @@ class VoiceAuditionPanel(QGroupBox):
         self.engine = QLabel()
         self.engine.setWordWrap(True)
         self.engine.setAccessibleName("Voice preview engine and model")
+        self.runtime = QLabel()
+        self.runtime.setWordWrap(True)
+        self.runtime.setTextFormat(Qt.TextFormat.PlainText)
+        self.runtime.setAccessibleName("Character voice preview compute device")
         self.question = QLabel()
         self.question.setAccessibleName("Voice comparison question")
         self.question.setWordWrap(True)
@@ -143,6 +147,7 @@ class VoiceAuditionPanel(QGroupBox):
         layout.addWidget(self.character)
         layout.addWidget(self.scope)
         layout.addWidget(self.engine)
+        layout.addWidget(self.runtime)
         layout.addWidget(self.question)
         layout.addWidget(self.anchor_button)
         layout.addWidget(self.sample)
@@ -150,7 +155,27 @@ class VoiceAuditionPanel(QGroupBox):
         layout.addLayout(comparison)
         layout.addLayout(outcomes)
         layout.addWidget(self.status)
+        self.runtime_timer = QTimer(self)
+        self.runtime_timer.setInterval(500)
+        self.runtime_timer.timeout.connect(self._refresh_runtime)
+        self.preview_runner.activeChanged.connect(self._refresh_runtime)
+        self.prefetch_runner.activeChanged.connect(self._refresh_runtime)
+        self._refresh_runtime()
         self.setVisible(False)
+
+    def _refresh_runtime(self):
+        active = self.preview_runner.active or self.prefetch_runner.active
+        if active and self._shutdown_requested:
+            message = "Stopping voice preview preparation..."
+        elif active:
+            message = (
+                "Preparing voice previews. "
+                if self.preview_runner.active
+                else "Preparing the next voices in the background. "
+            ) + speech_runtime_label(getattr(self.preview_service, "backend", None))
+        else:
+            message = "No preview generation. Saved previews play without TTS."
+        self.runtime.setText(message)
 
     @property
     def active(self):
@@ -189,6 +214,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._prefetch_group_id = None
         self._prefetched = {}
         self._shutdown_requested = False
+        self.runtime_timer.start()
         self._loading_narrator = False
         self._narrator_companion = None
         self._alternate_active = False
@@ -301,6 +327,8 @@ class VoiceAuditionPanel(QGroupBox):
     def shutdown(self):
         self._stop_player()
         self._shutdown_requested = True
+        self.runtime_timer.stop()
+        self._refresh_runtime()
         if self.prefetch_runner.active:
             self.preview_service.cancel()
             return
@@ -747,6 +775,7 @@ class VoiceAuditionPanel(QGroupBox):
         if not self._save_succeeded or self.active:
             return
         self._terminal_emitted = True
+        self.runtime_timer.stop()
         self.setVisible(False)
         self.completed.emit()
 
@@ -764,6 +793,8 @@ class VoiceAuditionPanel(QGroupBox):
             return
         self._terminal_emitted = True
         self._shutdown_requested = True
+        self.runtime_timer.stop()
+        self._refresh_runtime()
         self.setVisible(False)
         if not self.prefetch_runner.active:
             self.preview_service.close()
