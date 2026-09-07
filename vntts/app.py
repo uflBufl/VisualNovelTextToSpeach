@@ -1283,6 +1283,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.onboarding_wizard = self.diagnostics_dialog = None
         self.diagnostics_refresh_generation = 0
         self.readiness_dialog = self.pregeneration_dialog = self.support_dialog = None
+        self.narrator_dialog = None
+        self._narrator_preparation = None
+        self._resume_live_after_narrator = False
         self.unknown_speaker_prompt = self.unknown_speaker_choose_button = None
         self.unknown_speaker_continue_button = self.unknown_speaker_cancel_button = None
         self.pending_unknown_speaker = None
@@ -1543,6 +1546,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def prepare_reading(self):
         if self._controller_busy or self._shutting_down:
             return
+        if self.narrator_dialog is not None:
+            self.dashboard.show_voices()
+            return
         if (
             self.pregeneration_dialog is not None
             and self.pregeneration_dialog.has_pending_work()
@@ -1641,9 +1647,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.hotkey_listener.start()
 
     def read_once(self):
+        if self.narrator_dialog is not None:
+            return
         self.controller.read_once()
 
     def toggle_live(self):
+        if self.narrator_dialog is not None:
+            return False
         if not self.controller.is_live_running:
             return self._start_live_with_preflight()
         return self._toggle_controller_live()
@@ -1720,6 +1730,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self._controller_ready
             and not self._controller_busy
             and not self._shutting_down
+            and self.narrator_dialog is None
         )
         self.sequence_expected_action.setEnabled(
             candidate_count > 0 and controls_available
@@ -1942,18 +1953,25 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.live_voice_preflight_cancel_button = None
 
     def toggle_speech_pause(self):
+        if self.narrator_dialog is not None:
+            return
         self.signals.speech_paused_changed.emit(self.controller.toggle_speech_pause())
 
     def skip_current_speech(self):
         self.controller.skip_current_speech()
 
     def repeat_last_speech(self):
+        if self.narrator_dialog is not None:
+            return
         self.controller.repeat_last_speech()
 
     def clear_speech_queue(self):
         self.controller.clear_speech_queue()
 
     def emergency_stop(self):
+        if self.narrator_dialog is not None:
+            self._resume_live_after_narrator = False
+            self.narrator_dialog.reject()
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
         self.controller.emergency_stop()
@@ -2084,6 +2102,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.open_settings()
 
     def run_onboarding(self):
+        if self.narrator_dialog is not None:
+            self.dashboard.show_voices()
+            return
         if (
             self.pregeneration_dialog is not None
             and self.pregeneration_dialog.has_pending_work()
@@ -2244,6 +2265,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def open_pregeneration(self):
         if self._shutting_down or self._quit_requested:
             return None
+        if self.narrator_dialog is not None and self.pregeneration_dialog is None:
+            self.dashboard.show_voices()
+            return None
         if self.controller.is_live_running is True:
             self._stop_live_then(
                 self.open_pregeneration, "Stopping reading before story preparation..."
@@ -2256,10 +2280,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return None
-        self._narrator_changed_in_preparation = False
         dialog = OfflineAudioPreparationDialog(
             self.settings,
-            game_narrator_chooser=self._choose_game_narrator_for_preparation,
+            game_narrator_chooser=self._open_preparation_narrator,
             parent=self.dashboard,
         )
         self.pregeneration_dialog = dialog
@@ -2293,8 +2316,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.application.quit()
             return
         if result != QDialog.DialogCode.Accepted:
-            if self._narrator_changed_in_preparation:
-                self._reload_game_narrator()
             return None
         job = dialog.job()
         voice_plan = dialog.voice_plan()
@@ -2332,44 +2353,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             generation_settings,
         )
         return job
-
-    def _choose_game_narrator_for_preparation(self, settings, parent):
-        candidate = self._pick_game_narrator(settings, parent)
-        if candidate is not None:
-            try:
-                candidate.save()
-            except OSError as error:
-                self.show_error(f"Unable to save narrator: {error}")
-                return None
-            self.settings = candidate
-            self.dashboard.set_configuration(candidate)
-            self._sync_active_profile(candidate)
-            self._narrator_changed_in_preparation = True
-            if self._controller_ready is True:
-                self._reload_game_narrator()
-                self._narrator_changed_in_preparation = False
-        return candidate
-
-    def _pick_game_narrator(self, settings, parent):
-        dialog = GameNarratorDialog(settings, parent)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            return dialog.result_settings
-        return None
-
-    def _choose_live_game_narrator(self, parent):
-        candidate = self._pick_game_narrator(self.settings, parent)
-        if candidate is None:
-            return False
-        try:
-            candidate.save()
-        except OSError as error:
-            self.show_error(f"Unable to save narrator: {error}")
-            return False
-        self.settings = candidate
-        self.dashboard.set_configuration(candidate)
-        self._sync_active_profile(candidate)
-        self._reload_game_narrator()
-        return True
 
     def _reload_game_narrator(self):
         self._start_configuration_apply(
@@ -2615,6 +2598,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def open_voice_previews(self):
         if self._controller_busy or self._shutting_down:
             return
+        if self.narrator_dialog is not None:
+            self.show_dashboard()
+            self.dashboard.show_voices()
+            return
         if self.pregeneration_dialog is not None:
             if self.pregeneration_dialog.has_pending_work():
                 self.set_status(
@@ -2632,11 +2619,69 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._open_narrator_picker(False)
 
     def _open_narrator_picker(self, resume_live):
+        if self._shutting_down or self._quit_requested:
+            return
+        self.emergency_stop()
+        self._narrator_preparation = self.pregeneration_dialog
+        settings = (
+            self.pregeneration_dialog.settings
+            if self.pregeneration_dialog is not None
+            else self.settings
+        )
+        dialog = GameNarratorDialog(settings, self.dashboard)
+        self.narrator_dialog = dialog
+        self._resume_live_after_narrator = resume_live
+        dialog.finished.connect(self._narrator_finished)
+        dialog.runner.activeChanged.connect(self.dashboard.set_voice_editor_busy)
+        self.show_dashboard()
+        self.dashboard.embed_narrator(dialog)
+        self._apply_controller_action_state()
+        self.set_status(
+            "Choose a narrator in Voices. Navigation keeps your unsaved selection."
+        )
+
+    def _open_preparation_narrator(self, _settings, _parent):
+        self.open_voice_previews()
+        return None
+
+    def _narrator_finished(self, result):
+        dialog = self.narrator_dialog
+        if dialog is None:
+            return
+        self.narrator_dialog = None
+        preparation = self._narrator_preparation
+        self._narrator_preparation = None
+        resume_live = self._resume_live_after_narrator
+        self._resume_live_after_narrator = False
+        self.dashboard.remove_narrator(dialog)
+        dialog.deleteLater()
+        self._apply_controller_action_state()
+        if self._quit_requested:
+            self.request_quit()
+            return
+        if self._shutting_down:
+            return
         try:
-            if self.pregeneration_dialog is not None:
-                self.pregeneration_dialog._choose_game_narrator()
+            if result == QDialog.DialogCode.Accepted:
+                candidate = dialog.result_settings
+                try:
+                    candidate.save()
+                except OSError as error:
+                    self.show_error(
+                        f"Unable to save narrator: {error}. Previous settings are unchanged."
+                    )
+                    return
+                self.settings = candidate
+                self.dashboard.set_configuration(candidate)
+                self._sync_active_profile(candidate)
+                if preparation is self.pregeneration_dialog and preparation is not None:
+                    preparation.apply_narrator_settings(candidate)
+                    self.dashboard.show_stories()
+                self._reload_game_narrator()
             else:
-                self._choose_live_game_narrator(self.dashboard)
+                self.set_status(
+                    "Narrator selection cancelled. Your saved voice is unchanged."
+                )
         finally:
             if (
                 resume_live
@@ -3041,6 +3086,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             unavailable_reason = (
                 "Story preparation is running. Finish or cancel it before reading."
             )
+        if self.narrator_dialog is not None:
+            enabled = False
+            unavailable_reason = (
+                "Save or cancel your narrator selection in Voices before reading."
+            )
         return RuntimeControlState(
             ready=bool(enabled),
             live=live if isinstance(live, bool) else self._reported_live,
@@ -3062,7 +3112,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _apply_runtime_control_state(self, state):
         if self.pregeneration_dialog is not None:
             self.pregeneration_dialog.setEnabled(
-                not (self._controller_busy or state.live)
+                not (
+                    self._controller_busy
+                    or state.live
+                    or self.narrator_dialog is not None
+                )
             )
         controls = (
             (self.read_action, state.can_read, "read"),
@@ -3095,10 +3149,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.pregeneration_dialog is not None
             and self.pregeneration_dialog.has_pending_work()
         )
+        choosing_voice = self.narrator_dialog is not None
         self.dashboard.prepare_reading_button.setEnabled(
-            not (self._controller_busy or self._shutting_down or preparing)
+            not (
+                self._controller_busy
+                or self._shutting_down
+                or preparing
+                or choosing_voice
+            )
         )
-        if preparing:
+        if preparing or choosing_voice:
             for button in self.dashboard.loading_blocked_buttons:
                 button.setEnabled(False)
         if enabled:
@@ -3111,7 +3171,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if isinstance(narrator, str):
                     self.dashboard.set_speech_identity(self.settings, narrator)
         configuration_enabled = not (
-            self._controller_busy or self._shutting_down or preparing
+            self._controller_busy or self._shutting_down or preparing or choosing_voice
         )
         self.voice_preview_action.setEnabled(configuration_enabled)
         for action in self._controller_configuration_actions():
@@ -3133,7 +3193,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _set_modal_launchers_enabled(self, enabled):
         available = (
-            bool(enabled) and not self._controller_busy and not self._shutting_down
+            bool(enabled)
+            and not self._controller_busy
+            and not self._shutting_down
+            and self.narrator_dialog is None
         )
         self.voice_preview_action.setEnabled(available)
         self.speaker_mapping_action.setEnabled(available)
@@ -3197,6 +3260,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._shutting_down:
             return
         self._shutting_down = True
+        if self.narrator_dialog is not None:
+            self.narrator_dialog.close()
         if self.pregeneration_dialog is not None:
             self.pregeneration_dialog.close()
         self.controller.request_shutdown()
@@ -3257,8 +3322,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def request_quit(self):
         self._quit_requested = True
+        if self.narrator_dialog is not None:
+            # Reopen after the native close event finishes, so cancellation
+            # progress stays visible while the worker winds down.
+            QTimer.singleShot(0, self.dashboard.show)
+            self.dashboard.show_voices()
+            self.set_status("Cancelling voice preview before quitting...")
+            self.narrator_dialog.close()
+            return
         if self.pregeneration_dialog is not None:
-            self.dashboard.show()
+            QTimer.singleShot(0, self.dashboard.show)
             self.dashboard.show_stories()
             self.set_status(
                 "Closing story preparation safely; completed audio stays saved."

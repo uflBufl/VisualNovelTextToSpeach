@@ -415,7 +415,9 @@ class ControlDashboard(QMainWindow):
         self.stories_stack = QStackedWidget()
         self.stories_stack.addWidget(stories_page)
         self.sections.addTab(self.stories_stack, "Stories")
-        self.sections.addTab(voices_page, "Voices")
+        self.voices_stack = QStackedWidget()
+        self.voices_stack.addWidget(voices_page)
+        self.sections.addTab(self.voices_stack, "Voices")
         self.sections.addTab(reading_page, "Reading")
         self.open_reading_button.clicked.connect(self.show_reading)
         shell = QWidget()
@@ -428,6 +430,13 @@ class ControlDashboard(QMainWindow):
         self.preparation_status.clicked.connect(self.show_stories)
         self.preparation_status.hide()
         shell_layout.addWidget(self.preparation_status)
+        self.voice_edit_status = QPushButton(
+            "Save or cancel your narrator selection in Voices"
+        )
+        self.voice_edit_status.setAccessibleName("Pending narrator selection")
+        self.voice_edit_status.clicked.connect(self.show_voices)
+        self.voice_edit_status.hide()
+        shell_layout.addWidget(self.voice_edit_status)
         shell_layout.addWidget(self.sections, 1)
         shell_layout.addWidget(setup_group)
         self.setCentralWidget(shell)
@@ -442,6 +451,30 @@ class ControlDashboard(QMainWindow):
 
     def show_stories(self):
         self.sections.setCurrentIndex(0)
+
+    def show_voices(self):
+        self.sections.setCurrentIndex(1)
+
+    def embed_narrator(self, panel):
+        panel.setWindowFlags(Qt.WindowType.Widget)
+        panel.setMinimumSize(0, 0)
+        self.voices_stack.addWidget(panel)
+        self.voices_stack.setCurrentWidget(panel)
+        self.voice_edit_status.show()
+        self.show_voices()
+        panel.show()
+
+    def remove_narrator(self, panel):
+        self.voices_stack.removeWidget(panel)
+        self.voices_stack.setCurrentIndex(0)
+        self.voice_edit_status.hide()
+
+    def set_voice_editor_busy(self, busy):
+        self.voice_edit_status.setText(
+            "Voice preview is busy. Open Voices for progress or cancellation"
+            if busy
+            else "Save or cancel your narrator selection in Voices"
+        )
 
     def embed_preparation(self, panel):
         panel.setWindowFlags(Qt.WindowType.Widget)

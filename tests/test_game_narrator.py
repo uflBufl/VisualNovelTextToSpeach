@@ -178,25 +178,122 @@ class GameNarratorTest(unittest.TestCase):
             )
 
     def test_main_and_preparation_persist_only_an_accepted_selection(self):
-        candidate = AppSettings(pocket_gated_model_accepted=True)
-        parent = Mock()
-        shell = Mock(settings=AppSettings())
-        shell._pick_game_narrator.return_value = candidate
-        with patch.object(
-            AppSettings, "save", return_value=Path("settings.json")
-        ) as save:
-            self.assertTrue(TrayApplication._choose_live_game_narrator(shell, parent))
-            shell._reload_game_narrator.assert_called_once()
-            self.assertEqual(shell.settings, candidate)
-            selected = TrayApplication._choose_game_narrator_for_preparation(
-                shell, candidate, parent
-            )
-            self.assertEqual(selected, candidate)
-            self.assertTrue(shell._narrator_changed_in_preparation)
-            self.assertEqual(save.call_count, 2)
-            shell._pick_game_narrator.return_value = None
-            self.assertFalse(TrayApplication._choose_live_game_narrator(shell, parent))
-            self.assertEqual(save.call_count, 2)
+        for decision in ("save", "cancel", "save-failure"):
+            with self.subTest(decision=decision), TemporaryDirectory() as directory:
+                root = Path(directory)
+                original = AppSettings()
+                pool = ManualThreadPool()
+                controller = Mock(is_ready=False, is_live_running=False)
+                tray = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=controller),
+                )
+                preparation = OfflineAudioPreparationDialog(
+                    original,
+                    discovery=lambda: ContentDiscovery(()),
+                    job_store=PregenerationJobStore(root / "jobs"),
+                    thread_pool=pool,
+                    game_narrator_chooser=tray._open_preparation_narrator,
+                )
+                tray.pregeneration_dialog = preparation
+                tray.dashboard.embed_preparation(preparation)
+                picker = GameNarratorDialog(
+                    original,
+                    importer=Mock(),
+                    preview_service=Mock(),
+                    thread_pool=pool,
+                    player=Mock(),
+                )
+                with (
+                    patch("vntts.app.GameNarratorDialog", return_value=picker),
+                    patch.object(
+                        AppSettings,
+                        "save",
+                        return_value=root / "settings.json",
+                        side_effect=OSError("disk full")
+                        if decision == "save-failure"
+                        else None,
+                    ) as save,
+                    patch.object(tray, "_reload_game_narrator") as reload,
+                    patch.object(tray, "_sync_active_profile"),
+                ):
+                    preparation.game_narrator_button.click()
+                    self.application.processEvents()
+                    self.assertFalse(picker.isWindow())
+                    self.assertFalse(preparation.isEnabled())
+                    picker.presets.setCurrentIndex(
+                        picker.presets.findData("preset:marius")
+                    )
+                    tray.dashboard.show_stories()
+                    tray.open_voice_previews()
+                    self.assertIs(tray.narrator_dialog, picker)
+                    self.assertEqual(picker.presets.currentData(), "preset:marius")
+                    tray.read_once()
+                    tray.toggle_live()
+                    controller.read_once.assert_not_called()
+                    controller.toggle_live.assert_not_called()
+                    if decision == "cancel":
+                        picker.cancel_button.click()
+                    else:
+                        picker.save_button.click()
+                    self.run_task(pool)
+                    self.assertIsNone(tray.narrator_dialog)
+                    self.assertTrue(preparation.isEnabled())
+                    if decision == "save":
+                        save.assert_called_once()
+                        self.assertEqual(
+                            tray.settings.voice_assignments["Narrator"], "preset:marius"
+                        )
+                        self.assertEqual(preparation.settings, tray.settings)
+                        self.assertIn("Marius", preparation.narrator_status.text())
+                        reload.assert_called_once()
+                    else:
+                        self.assertEqual(tray.settings, original)
+                        self.assertEqual(preparation.settings, original)
+                        reload.assert_not_called()
+                tray.shutdown()
+
+    def test_embedded_preview_quit_waits_for_cancellation(self):
+        pool = ManualThreadPool()
+        previews = Mock()
+        previews.generate.return_value.path = Path("unused.wav")
+        picker = GameNarratorDialog(
+            AppSettings(),
+            importer=Mock(),
+            preview_service=previews,
+            thread_pool=pool,
+            player=Mock(),
+        )
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(
+                return_value=Mock(is_ready=False, is_live_running=False)
+            ),
+        )
+        with (
+            patch("vntts.app.GameNarratorDialog", return_value=picker),
+            patch.object(self.application, "quit") as quit_app,
+        ):
+            tray.open_voice_previews()
+            self.application.processEvents()
+            picker.preview_button.click()
+            tray.dashboard.show_reading()
+            self.assertFalse(tray.dashboard.live_button.isEnabled())
+            self.assertFalse(tray.dashboard.voice_edit_status.isHidden())
+            tray.dashboard.close()
+            self.application.processEvents()
+            self.assertTrue(tray.dashboard.isVisible())
+            quit_app.assert_not_called()
+            self.assertTrue(picker.cancellation.is_set())
+            self.run_task(pool)
+            quit_app.assert_not_called()
+            self.run_task(pool)
+            quit_app.assert_called_once()
+            self.assertIsNone(picker.result_settings)
+            picker.player.play.assert_not_called()
+        tray.shutdown()
 
     def test_narrator_reload_stops_old_worker_and_honors_cancellation(self):
         shell = Mock()

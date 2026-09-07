@@ -492,6 +492,9 @@ class OfflineAudioPreparationDialog(QDialog):
         settings = self.game_narrator_chooser(self.settings, self)
         if settings is None:
             return
+        self.apply_narrator_settings(settings)
+
+    def apply_narrator_settings(self, settings):
         self.settings = settings
         self.pocket_voice_cloning.setChecked(settings.pocket_gated_model_accepted)
         self._voice_plan = None
