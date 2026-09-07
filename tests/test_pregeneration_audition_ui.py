@@ -634,17 +634,14 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertFalse(dialog.auditioning_voices)
-            self.assertTrue(dialog._awaiting_voice_confirmation)
-            self.assertFalse(dialog.preparing_inputs)
-            self.assertEqual(
-                dialog.continue_button.text(), "Generate with these voices"
-            )
+            self.assertFalse(dialog._awaiting_voice_confirmation)
+            self.assertTrue(dialog.preparing_inputs)
             self.assertEqual(voice_plan_store.create.call_count, 2)
             self.assertEqual(
                 decisions.choice_for(group.group_id, group.decision_context_sha256),
                 group.candidates[0].source_id,
             )
-            self.assertEqual(len(pool.tasks), 0)
+            self.assertEqual(len(pool.tasks), 1)
             dialog.voice_panel.shutdown()
             dialog.deleteLater()
 

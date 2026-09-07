@@ -1,4 +1,5 @@
 import hashlib
+import json
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -16,6 +17,7 @@ from vntts_artifacts.voice_manifest import write_voice_manifest
 from tests.test_authoring_bulk_generation import SyntheticRenderer
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.bulk_generation import (
+    BulkGenerationError,
     authorize_live_fallback,
     is_spoken_queue_item,
     review_generation_item,
@@ -186,6 +188,32 @@ def fixture(
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_change_summary_uses_verified_resume_and_exact_replacement_candidates(self):
+        with TemporaryDirectory() as directory:
+            job, inputs, result, _items = fixture(Path(directory))
+            publisher = OfflinePackPublisher()
+            resumed = publisher.inspect_changes(job, inputs)
+            self.assertEqual(
+                (resumed.reused, resumed.new, resumed.live_fallbacks), (1, 0, 1)
+            )
+            base = publisher.publish(job, inputs, result)
+            publisher = OfflinePackPublisher(base_pack=base.manifest)
+            unchanged = publisher.inspect_changes(job, inputs)
+            self.assertEqual(unchanged.replacement_candidates, 0)
+            fresh = publisher.inspect_changes(job, replace(inputs, identity="c" * 64))
+            self.assertEqual(
+                (fresh.reused, fresh.new, fresh.replacement_candidates), (0, 2, 1)
+            )
+            self.assertEqual(fresh.live_fallbacks, 0)
+            self.assertFalse(fresh.switches_pack)
+            state = json.loads(result.state.read_text())
+            saved = next(
+                item for item in state["items"].values() if item["status"] == "approved"
+            )
+            (result.output / saved["path"]).write_bytes(b"broken")
+            with self.assertRaises(BulkGenerationError):
+                publisher.inspect_changes(job, inputs)
+
     def test_publishes_and_reuses_portable_generated_and_live_routes(self):
         with TemporaryDirectory() as temporary_directory:
             job, generation_input, generation_result, items = fixture(

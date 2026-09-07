@@ -43,6 +43,7 @@ class OfflineGenerationProgress:
     failed: int = 0
     other_terminal: int = 0
     active_phase: str | None = None
+    available: bool = True
 
     @property
     def completed(self):
@@ -147,7 +148,7 @@ class OfflineGenerationWorker:
         output = _generation_output(generation_input)
         state_path = output / "generation-state.json"
         if not state_path.is_file():
-            return OfflineGenerationProgress()
+            return OfflineGenerationProgress(available=False)
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeError) as error:

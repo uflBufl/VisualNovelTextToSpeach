@@ -85,6 +85,13 @@ def generation_inputs(root, *, backend="pocket-tts", model=None):
 
 
 class OfflineGenerationWorkerTest(unittest.TestCase):
+    def test_missing_progress_is_not_a_report_of_zero_completed_work(self):
+        with TemporaryDirectory() as directory:
+            inputs, _plan = generation_inputs(Path(directory))
+            self.assertFalse(
+                OfflineGenerationWorker().inspect_progress(inputs).available
+            )
+
     def test_progress_reads_partial_durable_state_before_manifest_publication(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

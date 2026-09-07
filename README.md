@@ -1,9 +1,54 @@
 # Visual Novel Text to Speech
 
-Captures a visual novel dialog box, recognizes its text with Tesseract, and
-reads it aloud with Pocket TTS or another configured speech engine.
+Reads visual novel dialogue aloud using original game audio, locally prepared
+recordings, or speech generated while you play.
 
-## Requirements
+## Start playing
+
+For a portable build, unpack the complete archive and launch VNTTS. Keep its
+runtime folders beside the executable; copying only the executable is not enough.
+For a source checkout, use the developer instructions below.
+
+1. Start the game, then launch VNTTS. First-time setup asks you to select the
+   game window, check required components, calibrate the dialogue area and test
+   recognition and speech. Finish setup to open the main controls.
+2. Choose **Prepare offline audio...** to prepare stories on this computer.
+   Select detected content, use **Find installed Reverse: 1999**, or select its
+   **Game folder...**. Check the stories you want and choose the generation engine.
+3. Choose any ambiguous character voices, then confirm the narrator and voice
+   routes. The summary shows saved recordings reused, new work, existing failures
+   and possible replacements. Changes to voices or model require updated routes
+   and a fresh summary before generation starts.
+4. Choose **Generate with these voices**. Progress shows saved results and an
+   approximate remaining generation time once enough new lines finish. Final
+   checks and repairs can take additional time. Cancel preserves finished work;
+   reopen preparation and choose **Continue** to resume.
+5. Choose **Use prepared audio** to activate the result. Open that story in the
+   game and press **Start reading**. This same button follows game dialogue whether
+   speech comes from prepared recordings or live TTS; it is not a separate
+   generation command. Keep the game focused for automatic advancement.
+
+The main window shows the narrator, engine/model for new speech and the audio
+policy. The current-dialogue card identifies the recording actually playing;
+saved recordings retain their own generating model and voice. Activating prepared
+audio replaces live overrides for covered roles, not unrelated character choices.
+Any remaining live fallbacks are shown before activation.
+
+Preparation is optional: **Start reading** can use live TTS immediately after
+setup. **Narrator voice** changes the live fallback voice; it does not revoice saved
+recordings. To revoice a story, prepare it again with the desired voice choices.
+Pocket built-in voices need no account. Pocket game-voice cloning requires accepting
+the linked upstream model terms and signing in to Hugging Face; the checkbox does
+not accept those terms for you. Other engines have their own model requirements.
+
+Use **Pause**, **Skip**, **Replay** or **Emergency stop** during playback.
+**Compact controls** opens the floating strip; **Full controls** returns to the
+main window. **More setup options -> Settings** opens settings by category.
+If controls remain unavailable, use **Check readiness** for the required fix.
+
+## Developer setup
+
+### Requirements
 
 - Python 3.14 or newer
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)
@@ -59,7 +104,7 @@ on macOS. Linux support is limited to X11.
   dependency environment in addition to the macOS and Windows jobs; real
   display, hotkey and audio-device acceptance remains a hardware gate.
 
-## Run
+### Run from source
 
 ```sh
 uv sync --no-dev
@@ -71,30 +116,20 @@ reference-audit launchers, handles `-h/--help` before creating a Qt application,
 opening screen capture or touching native services. Help is therefore safe in
 headless shells and returns exit status zero.
 
-The application opens a compact control window and can optionally keep running
-in the system tray. Its settings are stored in the current user's application-data
+The application opens first-time setup or the previously selected control view,
+and can optionally keep running in the system tray. Its settings are stored in the current user's application-data
 directory. Settings, game profiles, OCR corrections, and OCR review metadata
 use versioned JSON documents with shared compatibility checks, damaged-file
 fallback, and atomic publication. Settings, profile edits, and voice assignments
 are published to the running application only after their durable write succeeds;
 write failures leave the previous in-memory state active and are reported in the
-UI. A failed settings write also restores the prior macOS login-item state. On
-first launch, start the game in windowed or borderless mode, select its
-discovered window, let the wizard verify OCR and audio, calibrate the dialogue
-area, and run one OCR-to-speech test. The default Pocket TTS path does not
-require choosing a model or voice manifest. A game pack is optional; when
-supplied, one verified file configures story-aware reading, character voices and
-pregenerated audio. Technical choices remain under **Advanced options**. After
-the successful test, choose **Finish setup**, then **Start live reading** on the
-dashboard; setup does not start playback automatically. Use **Manage models and
-voices** in the app to download or verify the speech model and import local
-character voice references.
-The Character voices tab also lets you Browse to an existing active manifest
-and checksum-validate it inline before Save; an invalid path remains selected
-for correction instead of being reported in a separate modal dialog.
+UI. A failed settings write also restores the prior macOS login-item state.
+Follow [Start playing](#start-playing) for the player workflow. Optional pack and
+reference-file fields are under **Advanced options** in first-time setup, and
+under **Speech and voices** in Settings. Setup does not start playback automatically.
 The privacy-safe `runtime.log` is an atomically replaced JSONL snapshot bounded
 to 200 events and 512 KiB, so a long live session cannot grow it indefinitely.
-After the speech engine is ready, use **Choose voices** to compare candidates
+After the speech engine is ready, use **Narrator voice** to compare candidates
 with the same sample text and assign the preferred voice to the narrator or any
 character. The character field is editable, so an OCR name that is missing from
 the imported manifest can be mapped manually as soon as it appears.
@@ -126,7 +161,7 @@ One-time reads are ignored while live mode is on.
 
 Use the control window to start live reading, read once, pause, skip, replay,
 or emergency-stop speech. Select **Compact controls** to replace it with a
-small always-on-top strip for borderless/fullscreen play; **Full** restores the
+small always-on-top strip for borderless/fullscreen play; **Full controls** restores the
 main window, and the selected view is used on the next launch. On Windows,
 `Ctrl+Shift+P` pauses or resumes,
 `Ctrl+Shift+S` skips, `Ctrl+Shift+R` repeats, and `Ctrl+Shift+X` clears the

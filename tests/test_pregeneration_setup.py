@@ -20,6 +20,10 @@ from vntts.pregeneration_generation import (  # noqa: E402
     OfflineGenerationCancelled,
     OfflineGenerationProgress,
 )
+from vntts.pregeneration_pack import (  # noqa: E402
+    OfflinePackPublisher,
+    OfflinePreparationChanges,
+)
 from vntts.pregeneration_queue import PregenerationQueueCancelled  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
@@ -490,7 +494,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             acceptance = Mock()
             acceptance.accept.return_value = acceptance_result
             pack_result = Mock()
-            publisher = Mock()
+            publisher = Mock(wraps=OfflinePackPublisher())
             publisher.publish.return_value = pack_result
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
@@ -523,14 +527,16 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertFalse(dialog.planning_voices)
-            self.assertTrue(dialog._awaiting_voice_confirmation)
-            dialog.continue_button.click()
             self.assertTrue(dialog.preparing_inputs)
             self.assertEqual(dialog.cancel_button.text(), "Cancel preparation")
             pool.tasks.pop().run()
             self.application.processEvents()
 
             self.assertFalse(dialog.preparing_inputs)
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertIn("new lines", dialog.change_summary.text())
+            generator.generate.assert_not_called()
+            dialog.continue_button.click()
             self.assertTrue(dialog.generating)
             self.assertEqual(dialog.cancel_button.text(), "Cancel generation")
             pool.tasks.pop().run()
@@ -607,21 +613,30 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     active_phase="validating",
                 ),
             )
+            pool = ManualThreadPool()
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
                 generator=generator,
+                thread_pool=pool,
             )
             dialog._generation_input = Mock(ready_items=4)
             dialog.generating = True
             dialog.show()
 
             dialog._start_generation_progress()
+            generator.inspect_progress.assert_not_called()
+            dialog._poll_generation_progress()
+            self.assertEqual(len(pool.tasks), 1)
+            pool.tasks.pop().run()
+            self.application.processEvents()
             self.assertEqual(dialog.progress_bar.value(), 1)
             self.assertIn("1 of 4", dialog.progress_counts.text())
             self.assertIn("saved on disk", dialog.progress_guarantee.text())
 
             dialog._poll_generation_progress()
+            pool.tasks.pop().run()
+            self.application.processEvents()
 
             self.assertEqual(dialog.progress_bar.value(), 3)
             self.assertEqual(dialog.progress_phase.text(), "Checking generated audio")
@@ -633,6 +648,60 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.generating = False
             dialog.progress_timer.stop()
             dialog.close()
+            dialog.deleteLater()
+
+    def test_progress_eta_errors_and_stale_results_do_not_mislead(self):
+        with (
+            TemporaryDirectory() as directory,
+            patch("vntts.pregeneration_ui.monotonic") as clock,
+        ):
+            clock.return_value = 0
+            content = inspect_story_index(
+                write_story_index(Path(directory) / "content")
+            )
+            pool = ManualThreadPool()
+            generator = Mock()
+            generator.inspect_progress.side_effect = (
+                OfflineGenerationProgress(generated=50),
+                OfflineGenerationProgress(generated=52),
+                OSError("cannot read progress"),
+                OfflineGenerationProgress(available=False),
+                OfflineGenerationProgress(generated=60),
+            )
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                generator=generator,
+                thread_pool=pool,
+            )
+            dialog._generation_input = Mock(ready_items=60)
+            dialog.generating = True
+            dialog._start_generation_progress()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertIn("Estimating", dialog.progress_timing.text())
+            clock.return_value = 60
+            dialog._poll_generation_progress()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertIn("4 min", dialog.progress_timing.text())
+            dialog._poll_generation_progress()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertIn("Progress unavailable", dialog.progress_timing.text())
+            self.assertEqual(dialog.progress_bar.value(), 52)
+            dialog._poll_generation_progress()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertIn("Waiting for progress", dialog.progress_timing.text())
+            self.assertEqual(dialog.progress_bar.value(), 52)
+            dialog._poll_generation_progress()
+            dialog._stop_generation_progress()
+            dialog.generating = False
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertEqual(dialog.progress_bar.value(), 52)
+            self.assertEqual(dialog.progress_timing.text(), "")
             dialog.deleteLater()
 
     def test_reopening_restores_the_last_story_selection(self):
@@ -684,7 +753,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 story_lines=3,
                 omissions=0,
             )
-            publisher = Mock()
+            publisher = Mock(wraps=OfflinePackPublisher())
             publisher.publish.return_value = pack_result
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
@@ -700,9 +769,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-            dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
+            dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
 
@@ -1037,6 +1106,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 raise OfflineGenerationCancelled("cancelled")
 
             generator.generate.side_effect = generate
+            publisher = Mock()
+            publisher.inspect_changes.return_value = OfflinePreparationChanges(
+                0, 2, 0, 0, 0, 0, 0, 0
+            )
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
@@ -1044,15 +1117,16 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 voice_plan_store=voice_plan_store,
                 input_store=input_store,
                 generator=generator,
+                publisher=publisher,
                 thread_pool=pool,
             )
 
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-            dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
+            dialog.continue_button.click()
             self.assertTrue(dialog.generating)
 
             dialog.cancel_button.click()

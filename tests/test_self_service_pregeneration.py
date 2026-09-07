@@ -237,6 +237,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             pool.tasks.pop(0).run()
             self.application.processEvents()
 
+            self.assertTrue(dialog.preparing_inputs)
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+
             self.assertTrue(dialog._awaiting_voice_confirmation)
             self.assertIn("Step 2", dialog.step.text())
             self.assertIn("Model:", dialog.narrator_status.text())
@@ -280,6 +284,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(pool.tasks)
             pool.tasks.pop(0).run()
             self.application.processEvents()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
 
             self.assertTrue(dialog._awaiting_voice_confirmation)
             self.assertEqual(
@@ -311,6 +317,13 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_content(root / "content"))
             manifest = write_manifest(root / "voices")
+            for name in ("rhiannon", "centurion", "unrelated"):
+                sf.write(
+                    manifest.parent / "references" / f"{name}.wav",
+                    np.zeros(2400),
+                    24_000,
+                    subtype="PCM_16",
+                )
             pool = ManualThreadPool()
             player = Mock()
             dialog = OfflineAudioPreparationDialog(
@@ -334,11 +347,13 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 dialog.continue_button.click()
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
                 self.assertTrue(dialog._awaiting_voice_confirmation)
                 self.assertFalse(dialog.voice_panel.preview_service._closed)
                 player.reset_mock()
                 dialog.continue_button.click()
-            self.assertTrue(dialog.preparing_inputs)
+            self.assertTrue(dialog.generating)
             self.assertFalse(dialog.planning_voices)
             player.stop.assert_called()
             self.assertTrue(dialog.voice_panel.preview_service._closed)
@@ -360,6 +375,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 thread_pool=pool,
             )
             dialog.continue_button.click()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
             pool.tasks.pop(0).run()
             self.application.processEvents()
             manifest.write_text("broken", encoding="utf-8")
@@ -432,7 +449,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             visible_text = [dialog.summary.text(), dialog.resume_status.text()]
 
             dialog.continue_button.click()
-            for _step in range(6):
+            for _step in range(12):
+                if dialog.pack_result() is not None:
+                    break
                 if dialog._awaiting_voice_confirmation:
                     self.assertEqual(
                         dialog.continue_button.text(), "Generate with these voices"
@@ -636,7 +655,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
 
             first.continue_button.click()
-            for _step in range(3):
+            for _step in range(8):
+                if first.progress_phase.text() == "Generation paused":
+                    break
                 if first._awaiting_voice_confirmation:
                     first.continue_button.click()
                 pool.tasks.pop(0).run()
@@ -645,7 +666,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             interrupted_input_id = first.generation_input().identity
             self.assertIn("Generation cancelled", first.resume_status.text())
             self.assertEqual(first.progress_phase.text(), "Generation paused")
-            self.assertIn("2 of 2", first.progress_counts.text())
+            self.assertIn("last available progress", first.progress_timing.text())
             self.assertIn(
                 "generate only unfinished lines",
                 first.progress_cancel_consequence.text(),

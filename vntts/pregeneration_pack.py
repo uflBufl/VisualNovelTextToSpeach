@@ -51,6 +51,7 @@ from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
     OfflineGenerationResult,
+    _generation_output,
 )
 from vntts.pregeneration_queue import (
     PregenerationInput,
@@ -79,9 +80,84 @@ class OfflinePackResult:
     omissions: int = 0
 
 
+@dataclass(frozen=True)
+class OfflinePreparationChanges:
+    reused: int
+    new: int
+    failed: int
+    live_fallbacks: int
+    omissions: int
+    original: int
+    replacement_candidates: int
+    preserved: int
+    switches_pack: bool = False
+
+
 class OfflinePackPublisher:
     def __init__(self, *, base_pack=None):
         self.base_pack = Path(base_pack).expanduser().resolve() if base_pack else None
+
+    def inspect_changes(self, job, generation_input, cancel_event=None):
+        """Read-only forecast using the same validated base and resume state as publication."""
+        _raise_if_cancelled(cancel_event)
+        story = load_story_index_document(generation_input.story_index)
+        base, _source = _load_incremental_base(self.base_pack, job, story)
+        queue = VoiceGenerationQueue.load(generation_input.queue)
+        if sha256_file(generation_input.queue) != generation_input.queue_sha256:
+            raise OfflinePackError("Generation queue changed before confirmation")
+        state_path = _generation_output(generation_input) / "generation-state.json"
+        state = (
+            load_generation_state(state_path, generation_input.queue)
+            if state_path.exists()
+            else {"items": {}}
+        )
+        results = tuple(state["items"].values())
+        saved = {
+            result["line_id"]: result["file_sha256"]
+            for result in results
+            if result.get("status") in {"generated", "approved"}
+        }
+        failed = sum(result.get("status") == "failed" for result in results)
+        live = sum(result.get("status") == "live_fallback" for result in results)
+        omitted = set(generation_input.audio_event_omission_queue_ids) | {
+            queue_id
+            for queue_id, result in state["items"].items()
+            if result.get("status") in {"omitted", "not_reproducible"}
+        }
+        selected = {record.line_id for record in story.records}
+        replacements = preserved = 0
+        if base is not None and base.generated_audio_manifest is not None:
+            document = load_generated_audio_document(base.generated_audio_manifest)
+            library = GeneratedAudioLibrary(document, cache_size=1)
+            for record in document.records:
+                _raise_if_cancelled(cancel_event)
+                if library.find(record.line_id, record.text_sha256) is None:
+                    raise OfflinePackError(
+                        "Existing recording failed verification before confirmation"
+                    )
+                if record.line_id not in selected:
+                    preserved += 1
+                elif saved.get(record.line_id) != record.audio_sha256:
+                    replacements += 1
+        queued = {item.line_id for item in queue.items}
+        original = sum(
+            record.speakable
+            and record.source_audio_status == "available"
+            and record.line_id not in queued
+            for record in story.records
+        )
+        _raise_if_cancelled(cancel_event)
+        return OfflinePreparationChanges(
+            reused=len(saved),
+            new=max(0, generation_input.ready_items - len(saved) - failed - live),
+            failed=failed,
+            live_fallbacks=live,
+            omissions=len(omitted),
+            original=original,
+            replacement_candidates=replacements,
+            preserved=preserved,
+            switches_pack=self.base_pack is not None and base is None,
+        )
 
     def publish(
         self,
