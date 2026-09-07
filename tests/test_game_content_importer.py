@@ -48,6 +48,74 @@ class RunningProcess(FinishedProcess):
 
 
 class Reverse1999GameImporterTest(unittest.TestCase):
+    def test_narrator_upgrade_reuses_previously_imported_custom_installation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            resources = root / "custom-drive" / "game" / "PersistentRoot"
+            (resources / "bundles").mkdir(parents=True)
+            bundle = resources / "bundles" / "story.dat"
+            bundle.touch()
+            configs = resources / "configs"
+            (configs / "language").mkdir(parents=True)
+            (configs / "datacfg_1.dat").touch()
+            (configs / "language" / "json_language_en.json.dat").touch()
+            audio = resources / "audios" / "Windows" / "en"
+            audio.mkdir(parents=True)
+            (audio / "hero.bnk").touch()
+            output = root / "imports"
+            story = write_content(output / "reverse1999")
+            lines = story.read_text().splitlines()
+            metadata = json.loads(lines[0])
+            metadata["source_bundle"] = str(bundle)
+            lines[0] = json.dumps(metadata)
+            story.write_text("\n".join(lines) + "\n")
+
+            def finish_import(arguments, _cancel):
+                self.assertEqual(
+                    arguments[arguments.index("--resource-root") + 1], str(resources)
+                )
+                self.assertEqual(
+                    arguments[arguments.index("--config-directory") + 1], str(configs)
+                )
+                self.assertEqual(
+                    arguments[arguments.index("--game-audio-directory") + 1], str(audio)
+                )
+                (story.parent / "narrator-index.jsonl").write_text(story.read_text())
+                (story.parent / "narrator-banks.json").write_text(
+                    '{"Centurion": "hero.bnk"}'
+                )
+                (story.parent / "english-bank-index.json").write_text("{}")
+
+            importer = Reverse1999GameImporter(
+                command=("extractor",), output_root=output
+            )
+            with patch.object(importer, "_run", side_effect=finish_import) as run:
+                self.assertIn("Centurion", importer.narrator_characters())
+                self.assertIn("Centurion", importer.narrator_characters())
+                run.assert_called_once()
+
+    def test_unusable_previous_source_does_not_block_automatic_import(self):
+        with TemporaryDirectory() as directory:
+            story = write_content(Path(directory) / "reverse1999")
+            lines = story.read_text().splitlines()
+            importer = Reverse1999GameImporter(
+                command=("extractor",), output_root=directory
+            )
+            for source in (
+                None,
+                "",
+                str(Path(directory) / "removed" / "bundles" / "x"),
+            ):
+                with self.subTest(source=source):
+                    metadata = json.loads(lines[0])
+                    metadata["source_bundle"] = source
+                    story.write_text(
+                        "\n".join([json.dumps(metadata), *lines[1:]]) + "\n"
+                    )
+                    with patch.object(importer, "_run") as run:
+                        importer.import_installed()
+                    self.assertNotIn("--resource-root", run.call_args.args[0])
+
     def test_import_runs_bounded_command_and_consumes_shared_story_contract(self):
         with TemporaryDirectory() as temporary_directory:
             output = Path(temporary_directory) / "imports"

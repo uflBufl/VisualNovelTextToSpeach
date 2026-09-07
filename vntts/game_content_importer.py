@@ -99,10 +99,13 @@ class Reverse1999GameImporter:
             "--game-version",
             "installed",
         ]
-        if installation_root is not None:
-            resource_root, config_directory, audio_directory = (
-                resolve_reverse1999_installation(installation_root)
-            )
+        roots = (
+            resolve_reverse1999_installation(installation_root)
+            if installation_root is not None
+            else self._previous_installation()
+        )
+        if roots is not None:
+            resource_root, config_directory, audio_directory = roots
             arguments.extend(("--resource-root", str(resource_root)))
             arguments.extend(("--config-directory", str(config_directory)))
             arguments.extend(("--game-audio-directory", str(audio_directory)))
@@ -113,6 +116,23 @@ class Reverse1999GameImporter:
                 "The game importer finished without producing story content."
             )
         return inspect_story_index(story_index, provider_id=self.provider_id)
+
+    def _previous_installation(self):
+        """Reuse the imported source before asking platform discovery to find it again."""
+        story_index = self.output_root / "reverse1999" / "story-index.jsonl"
+        try:
+            with story_index.open(encoding="utf-8") as stream:
+                metadata = json.loads(stream.readline())
+            source = metadata.get("source_bundle")
+            if not isinstance(source, str) or not source:
+                return None
+            bundle = Path(source)
+            if not bundle.is_file() or bundle.parent.name != "bundles":
+                return None
+            return resolve_reverse1999_installation(bundle.parent.parent)
+        except OSError, ValueError, AttributeError, GameContentImportError:
+            # Removed/moved sources must not prevent a fresh automatic import.
+            return None
 
     def prepare_voice_candidates(self, job, cancel_event=None, *, progress=None):
         """Prepare only candidate references needed by the selected stories."""

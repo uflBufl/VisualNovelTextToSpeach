@@ -3,6 +3,12 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P0 - Preserve installed-game location during narrator catalog upgrade
+
+- [ ] Confirm on the reported Windows installation that opening the narrator
+      picker upgrades an existing story-only import without asking for the game
+      folder again or failing with "Unable to find installed game configs".
+
 ## P0 - Qualify game-audio decoder provisioning
 
 - [ ] Confirm the hosted Windows/Linux automatic-download and native-decode
