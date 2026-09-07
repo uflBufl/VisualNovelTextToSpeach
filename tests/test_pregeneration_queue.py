@@ -446,6 +446,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                         "character": "Narrator",
                         "references": [],
                         "speaker": "alba",
+                        "vntts.source_character": "alba",
                     }
                 ],
             )
@@ -483,6 +484,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                         "character": "Narrator",
                         "references": [],
                         "speaker": "marius",
+                        "vntts.source_character": "marius",
                     }
                 ],
             )

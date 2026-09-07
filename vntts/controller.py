@@ -2814,7 +2814,12 @@ class AppController:
             )
             return f"Original game audio (line {prepared.line_id}{completion})"
         if isinstance(prepared, PreparedGeneratedAudio):
-            return f"Generated audio (line {prepared.line_id})"
+            return (
+                f"Generated audio (line {prepared.line_id})\n"
+                f"Recorded with: {prepared.provider or 'engine not recorded'}; "
+                f"model: {prepared.model or 'not recorded'}; "
+                f"voice role: {prepared.voice_character or 'not recorded'}"
+            )
         if isinstance(prepared, MossTTSPreparedSpeech):
             source = {
                 "fresh-generation": "fresh generation",

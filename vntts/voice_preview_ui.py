@@ -33,6 +33,7 @@ class VoicePreviewDialog(QDialog):
         preview_stop_handler=None,
         initial_character=None,
         fixed_character=None,
+        engine_description=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -102,8 +103,12 @@ class VoicePreviewDialog(QDialog):
         self.preview_identity = QLabel("No preview is active.")
         self.preview_identity.setAccessibleName("Exact voice preview identity")
         self.preview_identity.setWordWrap(True)
+        self.engine_description = QLabel(engine_description or "Current speech engine")
+        self.engine_description.setWordWrap(True)
+        self.engine_description.setAccessibleName("Voice preview engine and model")
 
         form = QFormLayout()
+        form.addRow("Generate preview with", self.engine_description)
         form.addRow("Narrator or character", self.character)
         form.addRow("Routing", self.routing_note)
         form.addRow("Candidate voice", self.voice)

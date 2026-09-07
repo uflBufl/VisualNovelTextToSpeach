@@ -96,6 +96,27 @@ def write_wav(path, samples, sample_rate=24_000):
 
 
 class GeneratedAudioTest(unittest.TestCase):
+    def test_prepared_recording_keeps_its_own_model_identity(self):
+        from vntts.controller import AppController
+        from vntts.settings import AppSettings
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.create_library(root)
+            manifest = root / "generated-audio.json"
+            document = json.loads(manifest.read_text())
+            document["entries"][0].update(
+                provider="moss-tts", model="recorded-model", voice_character="Narrator"
+            )
+            manifest.write_text(json.dumps(document))
+            library = GeneratedAudioLibrary.load_optional(manifest)
+            prepared = library.find("game:1", text_sha256("Hello."))
+            self.assertEqual(prepared.model, "recorded-model")
+            controller = AppController(AppSettings(speech_backend="pocket-tts"))
+            label = controller._describe_audio_source(prepared)
+            self.assertIn("recorded-model", label)
+            self.assertNotIn("pocket-tts", label)
+
     def create_library(self, root, *, text="Hello."):
         audio = root / "audio" / "line.wav"
         audio.parent.mkdir()

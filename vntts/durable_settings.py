@@ -70,13 +70,14 @@ class DurableSettingsMixin:
         self.settings = candidate
         self._update_auto_advance_action()
         self.controller.apply_settings(candidate)
+        self.dashboard.set_configuration(candidate)
         self.set_ready(self.controller.is_ready)
         wizard.deleteLater()
         self.show_dashboard()
         self.dashboard.live_button.setFocus()
         self.set_status(
-            f"Setup completed; settings saved to {path}. "
-            "Next: click Start live reading."
+            "Setup completed. Prepare offline audio for story voices, or click Start reading. "
+            f"Settings saved to {path}."
         )
         self.signals.hotkeys_requested.emit()
 
@@ -136,6 +137,8 @@ class DurableSettingsMixin:
             self.show_error(f"{failure_message}: {error}")
             raise
         self.settings = settings
+        self.dashboard.set_configuration(settings)
+        self._apply_controller_action_state()
         profile_synced = self._sync_active_profile(self.settings)
         suffix = "" if profile_synced else "; active profile could not be updated"
         return saved_path[0], suffix

@@ -383,6 +383,9 @@ def _write_effective_voices(staging, effective):
             {
                 "character": character,
                 "speaker": speaker,
+                "vntts.source_character": (
+                    voice.source_character or voice.character if voice else speaker
+                ),
                 "aliases": [],
                 "references": relative_references,
             }

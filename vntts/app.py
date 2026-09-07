@@ -118,6 +118,7 @@ from vntts.settings import (
     load_app_settings,
 )
 from vntts.speech_backend import default_moss_tts_model
+from vntts.speech_presentation import engine_model_label
 from vntts.support import (
     GenerationTimelineLog,
     RuntimeSupportLog,
@@ -514,6 +515,7 @@ class SettingsDialog(QDialog):
         )
 
         speech_form = QFormLayout()
+        self.speech_form = speech_form
         speech_form.addRow("Speech engine (restart required)", self.speech_backend)
         speech_form.addRow("Audio source policy", self.audio_source_policy)
         speech_form.addRow("Speech model (restart required)", self.tts_model)
@@ -1032,6 +1034,7 @@ class SettingsDialog(QDialog):
         }:
             self.tts_model.setText(default_xtts_model)
         self.tts_model.setEnabled(uses_xtts or uses_moss)
+        self.speech_form.setRowVisible(self.tts_model, uses_xtts or uses_moss)
         self.tts_language.setEnabled(uses_xtts or uses_moss)
         self.narrator_reference.setEnabled(True)
         self.narrator_reference_button.setEnabled(True)
@@ -1239,7 +1242,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.read_action = QAction("Read current dialogue")
         self.show_dashboard_action = QAction("Full controls")
         self.show_compact_action = QAction("Compact controls")
-        self.live_action = QAction("Start live reading")
+        self.live_action = QAction("Start reading")
         self.sequence_resync_action = QAction("Set story position / resync...")
         self.sequence_expected_action = QAction("Use expected next line")
         self.auto_advance_action = QAction("Auto advance dialogue")
@@ -2217,6 +2220,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             lambda _character: pregeneration_narrator_source_id(self.settings),
             preview_stop_handler=self.controller.stop_voice_preview,
             fixed_character="Narrator",
+            engine_description=engine_model_label(
+                self.settings.speech_backend,
+                self.settings.tts_model,
+                pocket_cloning=self.settings.pocket_gated_model_accepted,
+            ),
             parent=self.pregeneration_dialog,
         )
         dialog.setWindowTitle("Choose narrator for offline audio")
@@ -2290,10 +2298,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         status = self._pregeneration_activation_status
         self._pregeneration_activation_status = None
         self.set_status(
-            f"{status} Offline audio is active."
-            if status
-            else "Prepared offline audio is active."
+            (f"{status} " if status else "")
+            + "Prepared audio is active. Next: open the story in the game and "
+            "click Start reading. Saved lines play without generation; only "
+            "uncovered lines use TTS."
         )
+        self.show_dashboard()
+        self.dashboard.live_button.setFocus()
 
     def open_readiness(self):
         if self.readiness_dialog is None:
@@ -2481,6 +2492,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             current_force_live_handler=lambda: self.settings.force_live_narrator,
             preview_stop_handler=self.controller.stop_voice_preview,
             initial_character="Narrator",
+            engine_description=engine_model_label(
+                self.settings.speech_backend,
+                self.settings.tts_model,
+                pocket_cloning=self.settings.pocket_gated_model_accepted,
+            ),
         )
         try:
             dialog.exec()
@@ -2650,6 +2666,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             preview_stop_handler=self.controller.stop_voice_preview,
             initial_character=initial_character,
             fixed_character=contextual_character,
+            engine_description=engine_model_label(
+                self.settings.speech_backend,
+                self.settings.tts_model,
+                pocket_cloning=self.settings.pocket_gated_model_accepted,
+            ),
         )
         result = dialog.exec()
         assigned = bool(contextual_character and result == QDialog.DialogCode.Accepted)
@@ -2917,6 +2938,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self._apply_runtime_control_state(self._runtime_control_state(enabled=enabled))
         self.dashboard.set_loading(self._controller_busy)
+        if enabled:
+            resolve_voice = getattr(self.controller, "_resolve_voice_label", None)
+            if callable(resolve_voice):
+                try:
+                    narrator = resolve_voice("Narrator")
+                except Exception:
+                    narrator = None
+                if isinstance(narrator, str):
+                    self.dashboard.set_speech_identity(self.settings, narrator)
         configuration_enabled = not self._controller_busy and not self._shutting_down
         for action in self._controller_configuration_actions():
             action.setEnabled(configuration_enabled)
@@ -2970,9 +3000,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def set_live(self, running):
         self._reported_live = bool(running)
-        self.live_action.setText(
-            "Stop live reading" if running else "Start live reading"
-        )
+        self.live_action.setText("Stop reading" if running else "Start reading")
         self.dashboard.set_live(running)
         self.compact_controller.set_live(running)
         self._apply_runtime_control_state(self._runtime_control_state())

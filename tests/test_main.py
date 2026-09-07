@@ -5025,7 +5025,8 @@ class MainTest(unittest.TestCase):
 
         controller._play_live_chunk(SpeechChunk(4, "Rhiannon", "A line."), route)
 
-        self.assertEqual(diagnostics[-1].audio_source, "Generated audio (line game:1)")
+        self.assertIn("Generated audio (line game:1)", diagnostics[-1].audio_source)
+        self.assertIn("model: not recorded", diagnostics[-1].audio_source)
         self.assertEqual(diagnostics[-1].synthesis_ms, 5.0)
         self.assertEqual(diagnostics[-1].playback_ms, 20.0)
         self.assertEqual(diagnostics[-1].last_first_audio_ms, 10.0)

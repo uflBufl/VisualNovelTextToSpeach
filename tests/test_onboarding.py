@@ -434,7 +434,10 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(page.game_pack.isVisibleTo(wizard))
         self.assertTrue(page.advanced_toggle.isVisibleTo(wizard))
         self.assertFalse(page.advanced_content.isVisibleTo(wizard))
-        self.assertIn("Recommended setup", page.subTitle())
+        self.assertIn("Select the game and speech engine", page.subTitle())
+        self.assertTrue(page.speech_backend.isVisibleTo(wizard))
+        self.assertTrue(page.speech_summary.isVisibleTo(wizard))
+        self.assertIn("Narrator voice: Alba", page.speech_summary.text())
 
         page.advanced_toggle.click()
 
@@ -624,7 +627,8 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertEqual(wizard.finish_button.text(), "Finish setup")
         self.assertTrue(wizard.finish_button.isDefault())
         self.assertTrue(wizard.finish_button.isEnabled())
-        self.assertIn("then use Start live reading", wizard.test_page.status.text())
+        self.assertIn("Prepare offline audio", wizard.test_page.status.text())
+        self.assertIn("Start reading", wizard.test_page.status.text())
         self.assertEqual(wizard.test_page.button.text(), "Run test again")
         wizard.deleteLater()
 

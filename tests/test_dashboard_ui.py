@@ -41,7 +41,7 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.set_live(True)
         dashboard.set_diagnostic(snapshot)
 
-        self.assertEqual(dashboard.mode.text(), "Live reading")
+        self.assertEqual(dashboard.mode.text(), "Reading in game")
         self.assertEqual(dashboard.speaker.text(), "Selone")
         self.assertEqual(
             dashboard.audio_source.text(),
@@ -50,7 +50,47 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertIn("first audio 240 ms", dashboard.latency.text())
         self.assertIn("queue 1", dashboard.latency.text())
         self.assertTrue(dashboard.live_button.isDefault())
-        self.assertIn("Live reading is active", dashboard.action_reason.text())
+        self.assertIn("Reading is active", dashboard.action_reason.text())
+        dashboard.deleteLater()
+
+    def test_primary_context_stays_visible_and_does_not_mislabel_recordings(self):
+        dashboard = ControlDashboard(
+            AppSettings(
+                speech_backend="pocket-tts",
+                generated_audio_manifest="saved.json",
+                voice_assignments={"Narrator": "character:centurion"},
+            )
+        )
+        dashboard.show()
+        self.application.processEvents()
+        self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.speech_configuration.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.audio_source.isVisibleTo(dashboard))
+        self.assertIn("Centurion", dashboard.speech_configuration.text())
+        dashboard.set_diagnostic(
+            DiagnosticSnapshot(
+                None,
+                voice="Alba",
+                audio_source="Generated audio (line 1)\nRecorded with: moss-tts; model: custom-model",
+            )
+        )
+        self.assertNotIn("Alba", dashboard.voice.text())
+        self.assertIn("custom-model", dashboard.audio_source.text())
+        self.assertIn("saved recordings", dashboard.reading_help.text())
+        dashboard.resize(620, 440)
+        self.application.processEvents()
+        for button in (
+            dashboard.live_button,
+            dashboard.stop_button,
+            dashboard.pause_button,
+        ):
+            self.assertTrue(
+                dashboard.rect().contains(
+                    button.mapTo(dashboard, button.rect().bottomRight())
+                )
+            )
+            self.assertFalse(dashboard.content_scroll.isAncestorOf(button))
+        dashboard.close()
         dashboard.deleteLater()
 
     def test_disabled_controls_explain_recovery_and_keep_setup_available(self):
@@ -76,7 +116,6 @@ class ControlDashboardTest(unittest.TestCase):
             {group.title() for group in dashboard.findChildren(QGroupBox)},
             {
                 "Reading",
-                "Offline audio",
                 "Playback",
                 "Sequence-first story cursor",
                 "Setup and support",
@@ -347,7 +386,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(requests, ["live", "repeat"])
         self.assertEqual(controller.speaker.text(), "Selone")
         self.assertEqual(controller.mode.text(), "Paused")
-        self.assertEqual(controller.live_button.text(), "Stop live")
+        self.assertEqual(controller.live_button.text(), "Stop reading")
         self.assertEqual(controller.stop_button.text(), "Emergency stop")
         self.assertEqual(controller.full_button.text(), "Full controls")
         self.assertTrue(controller.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
@@ -478,12 +517,12 @@ class ControlDashboardTest(unittest.TestCase):
             "Auto advance paused because source-audio completion is unavailable"
         )
 
-        self.assertEqual(controller.mode.text(), "Live")
+        self.assertEqual(controller.mode.text(), "Reading")
         self.assertIn("source-audio completion", controller.status.text())
 
         controller.set_warning("Voice needed: Hotelier")
 
-        self.assertEqual(controller.mode.text(), "Live")
+        self.assertEqual(controller.mode.text(), "Reading")
         self.assertEqual(controller.status.text(), "Voice needed: Hotelier")
         self.assertIn("#a21818", controller.status.styleSheet())
 

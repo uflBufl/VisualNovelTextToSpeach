@@ -43,6 +43,9 @@ class PreparedGeneratedAudio:
     samples: np.ndarray
     sample_rate: int
     narrator_fallback_role: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    voice_character: str | None = None
 
 
 @dataclass(frozen=True)
@@ -289,6 +292,9 @@ class GeneratedAudioLibrary:
             narrator_fallback_role=self.narrator_fallback_roles.get(
                 (entry.line_id, entry.text_sha256)
             ),
+            provider=getattr(entry, "provider", None),
+            model=getattr(entry, "model", None),
+            voice_character=getattr(entry, "voice_character", None),
         )
         self.cache.put(cache_key, prepared)
         return prepared, "generated-audio-entry-verified"

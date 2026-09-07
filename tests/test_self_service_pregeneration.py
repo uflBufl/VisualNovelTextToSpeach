@@ -152,11 +152,76 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn("Marius", dialog.narrator_status.text())
             self.assertIn("no account", dialog.narrator_status.text())
 
+    def test_generation_configuration_remains_visible_and_locked_during_work(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_content(root / "content"))
+            settings = AppSettings(
+                voice_assignments={"Narrator": "character:centurion"}
+            )
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            dialog.engine_choice.setCurrentIndex(
+                dialog.engine_choice.findData("moss-tts")
+            )
+            dialog.model_choice.setText("selected/model")
+            self.assertEqual(dialog.settings.tts_model, "selected/model")
+            self.assertEqual(settings.speech_backend, "pocket-tts")
+            self.assertIn("Stories:", dialog.story_context.text())
+            dialog._set_import_controls(False)
+            dialog.selection_panel.hide()
+            dialog._show_waiting_phase(
+                "Generating", "Please wait", "Saved work is retained"
+            )
+            dialog.show()
+            self.application.processEvents()
+            self.assertTrue(dialog.narrator_status.isVisibleTo(dialog))
+            self.assertTrue(dialog.story_context.isVisibleTo(dialog))
+            self.assertFalse(dialog.engine_choice.isEnabled())
+            self.assertFalse(dialog.model_choice.isEnabled())
+            self.assertFalse(dialog.choose_narrator_button.isEnabled())
+            self.assertIn("Centurion", dialog.narrator_status.text())
+            dialog.reject()
+            dialog.deleteLater()
+
+    def test_unsupported_engine_stays_blocked_after_discovery(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_content(root / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(speech_backend="coqui-xtts"),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            dialog._set_discovery_loading(False)
+            self.assertFalse(dialog.continue_button.isEnabled())
+            dialog._save_selection()
+            self.assertIsNone(dialog.job())
+            self.assertIn(
+                "Choose an available generation engine", dialog.summary.text()
+            )
+            dialog.engine_choice.setCurrentIndex(
+                dialog.engine_choice.findData("pocket-tts")
+            )
+            self.assertTrue(dialog.continue_button.isEnabled())
+            dialog.reject()
+            dialog.deleteLater()
+
     def test_game_narrator_and_routes_are_confirmed_before_generation(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_content(root / "content"))
             manifest = write_manifest(root / "voices")
+            for name in ("rhiannon", "centurion", "unrelated"):
+                sf.write(
+                    manifest.parent / "references" / f"{name}.wav",
+                    np.zeros(2400),
+                    24_000,
+                    subtype="PCM_16",
+                )
             pool = ManualThreadPool()
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(
@@ -172,6 +237,12 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertIn("Step 2", dialog.step.text())
+            self.assertIn("Model:", dialog.voice_configuration.text())
+            self.assertIn(
+                "changing voices or model can require new recordings",
+                dialog.voice_configuration.text(),
+            )
             self.assertFalse(dialog.voice_panel.preview_service._closed)
             self.assertEqual(
                 dialog.continue_button.text(), "Generate with these voices"
@@ -221,6 +292,15 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 all(group.source_character == "Centurion" for group in narrator_groups)
             )
             self.assertFalse(dialog.input_runner.active)
+            from vntts.voices import CharacterVoiceRegistry
+
+            generation_input = dialog.input_store.materialize(
+                dialog.job(), dialog.voice_plan()
+            )
+            narrator = CharacterVoiceRegistry.from_file(
+                generation_input.voice_manifest
+            ).resolve("Narrator")
+            self.assertEqual(narrator.source_character, "Centurion")
             dialog.reject()
 
     def test_moss_confirmation_ignores_pocket_permission_and_stops_preview(self):
@@ -428,7 +508,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 tray.settings.game_pack, str(dialog.pack_result().manifest)
             )
             self.assertTrue(saved_settings.is_file())
-            self.assertIn("Offline audio is active", tray.dashboard.status.text())
+            self.assertIn("Prepared audio is active", tray.dashboard.status.text())
+            self.assertIn("click Start reading", tray.dashboard.status.text())
+            self.assertTrue(tray.dashboard.isVisible())
             controller.start.assert_not_called()
             tray.shutdown()
             dialog.deleteLater()

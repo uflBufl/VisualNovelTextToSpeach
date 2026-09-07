@@ -271,6 +271,8 @@ class DiagnosticsTest(unittest.TestCase):
             voice if character == "Marcus" else None
         )
         router.narrator_speaker = "Claribel Dervla"
+        router.narrator_voice = None
+        router.narrator_reference = None
 
         self.assertEqual(
             resolve_voice_label(router, "Marcus"),
@@ -283,6 +285,17 @@ class DiagnosticsTest(unittest.TestCase):
         self.assertEqual(
             resolve_voice_label(router, "???"),
             "Claribel Dervla",
+        )
+        router.registry.resolve.side_effect = lambda _character: voice
+        self.assertEqual(
+            resolve_voice_label(router, "Narrator"), "Marcus (reverse1999-marcus)"
+        )
+        projected = CharacterVoice(
+            "Narrator", "game-voice-id", source_character="Centurion"
+        )
+        router.registry.resolve.side_effect = lambda _character: projected
+        self.assertEqual(
+            resolve_voice_label(router, "Narrator"), "Centurion (game-voice-id)"
         )
 
 

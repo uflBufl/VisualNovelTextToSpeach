@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from vntts_artifacts.story_index import load_story_index_document
+
 from vntts.game_pack import GamePackError, import_game_pack
 from vntts.pregeneration_pack import OfflinePackResult
 from vntts.settings import AppSettings
@@ -65,21 +67,29 @@ class OfflinePackActivator:
         ):
             raise OfflinePackActivationError("Offline game pack identity changed")
         candidate = imported.apply_to(generation_settings or current_settings).updated(
-            audio_source_policy="prefer-generated"
+            audio_source_policy="prefer-generated", force_live_narrator=False
         )
-        narrator = CharacterVoiceRegistry.from_file(imported.voice_manifest).resolve(
-            "Narrator"
+        registry = CharacterVoiceRegistry.from_file(imported.voice_manifest)
+        covered_roles = set(registry.voices)
+        covered_roles.update(
+            normalize_character_name(record.speaker)
+            for record in load_story_index_document(imported.story_index).records
         )
+        assignments = {
+            character: source
+            for character, source in candidate.voice_assignments.items()
+            if normalize_character_name(character) not in covered_roles
+        }
+        narrator = registry.resolve("Narrator")
         if narrator is not None:
             assignments = {
                 character: source
-                for character, source in candidate.voice_assignments.items()
+                for character, source in assignments.items()
                 if normalize_character_name(character) != "narrator"
             }
             assignments["Narrator"] = "character:narrator"
-            candidate = candidate.updated(
-                voice_assignments=assignments, tts_speaker_wav=None
-            )
+            candidate = candidate.updated(tts_speaker_wav=None)
+        candidate = candidate.updated(voice_assignments=assignments)
         _raise_if_cancelled(cancellation)
         was_ready = bool(controller.is_ready)
         runtime_changed = False

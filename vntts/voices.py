@@ -70,6 +70,7 @@ class CharacterVoice:
     aliases: tuple[str, ...] = ()
     references: tuple[Path, ...] = ()
     reference_root: Path | None = None
+    source_character: str | None = None
 
     def __post_init__(self):
         references = self.references
@@ -92,7 +93,17 @@ class CharacterVoiceRegistry:
     @classmethod
     def from_file(cls, manifest_path):
         manifest_path = Path(manifest_path).expanduser().resolve()
-        _manifest, entries = load_voice_manifest(manifest_path)
+        manifest, entries = load_voice_manifest(manifest_path)
+        source_characters = []
+        for raw in manifest["voices"]:
+            source = raw.get("vntts.source_character")
+            if source is not None and (
+                not isinstance(source, str) or not source.strip()
+            ):
+                raise VoiceManifestError(
+                    "Source character display identity must be non-empty text"
+                )
+            source_characters.append(source.strip() if source else None)
         voices = [
             CharacterVoice(
                 character=entry.character,
@@ -108,8 +119,9 @@ class CharacterVoiceRegistry:
                     for reference in entry.references
                 ),
                 reference_root=manifest_path.parent.resolve(),
+                source_character=source_character,
             )
-            for entry in entries
+            for entry, source_character in zip(entries, source_characters, strict=True)
         ]
         return cls(voices)
 

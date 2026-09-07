@@ -47,6 +47,7 @@ from vntts.release_backends import (
 )
 from vntts.settings import AppSettings
 from vntts.speech_backend import default_moss_tts_model
+from vntts.speech_presentation import speech_configuration_label
 from vntts.voices import find_default_voice_manifest, find_voice_assignment
 from vntts.window_capture import WindowCaptureError, WindowCaptureTarget, list_windows
 
@@ -69,8 +70,8 @@ class ConfigurationPage(QWizardPage):
         self.windows_refreshed = False
         self.setTitle("Configure the game and speech engine")
         self.setSubTitle(
-            "Recommended setup only needs the running game window. "
-            "Technical controls are available under Advanced options."
+            "Select the game and speech engine. After setup, prepare story audio "
+            "and choose game character voices, or start reading immediately."
         )
 
         self.capture_mode = QComboBox()
@@ -248,6 +249,7 @@ class ConfigurationPage(QWizardPage):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         recommended_form = QFormLayout()
+        self.recommended_form = recommended_form
         recommended_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
@@ -266,6 +268,12 @@ class ConfigurationPage(QWizardPage):
         recommended_form.addRow("Auto advance", self.auto_advance)
         recommended_form.addRow("", self.auto_advance_notice)
         recommended_form.addRow("", self.auto_advance_reason)
+        recommended_form.addRow("Speech engine", self.speech_backend)
+        recommended_form.addRow("TTS model", self.tts_model)
+        self.speech_summary = QLabel()
+        self.speech_summary.setWordWrap(True)
+        self.speech_summary.setAccessibleName("Setup narrator and speech engine")
+        recommended_form.addRow(self.speech_summary)
 
         advanced_form = QFormLayout()
         advanced_form.setFieldGrowthPolicy(
@@ -275,8 +283,6 @@ class ConfigurationPage(QWizardPage):
         advanced_form.addRow("Live reading hotkey", self.live_hotkey)
         if sys.platform == "darwin":
             advanced_form.addRow("macOS controls", self.macos_hotkey_notice)
-        advanced_form.addRow("Speech engine", self.speech_backend)
-        advanced_form.addRow("TTS model", self.tts_model)
         advanced_form.addRow("OCR language", self.ocr_language)
         advanced_form.addRow("TTS language", self.tts_language)
         _add_composite_form_row(
@@ -464,6 +470,7 @@ class ConfigurationPage(QWizardPage):
         }:
             self.tts_model.setText(default_onboarding_model)
         self.tts_model.setEnabled(uses_xtts or uses_moss)
+        self.recommended_form.setRowVisible(self.tts_model, uses_xtts or uses_moss)
         self.tts_language.setEnabled(uses_xtts or uses_moss)
         self.narrator_speaker.setEnabled(uses_xtts)
         self.manage_assets_button.setText(
@@ -490,6 +497,7 @@ class ConfigurationPage(QWizardPage):
         self.game_pack.textChanged.connect(self.update_validation_summary)
         self.speech_backend.currentIndexChanged.connect(self.update_validation_summary)
         self.terms.toggled.connect(self.update_validation_summary)
+        self.pocket_gated_model.toggled.connect(self.update_validation_summary)
 
     def validation_errors(self):
         errors = []
@@ -563,6 +571,19 @@ class ConfigurationPage(QWizardPage):
         return tuple(errors)
 
     def update_validation_summary(self, *_args):
+        self.speech_summary.setText(
+            speech_configuration_label(
+                self.original_settings.updated(
+                    speech_backend=self.speech_backend.currentData(),
+                    tts_model=self.tts_model.text().strip() or None,
+                    narrator_speaker=self.narrator_speaker.text().strip() or None,
+                    tts_speaker_wav=self.narrator_reference.text().strip() or None,
+                    pocket_gated_model_accepted=self.pocket_gated_model.isChecked(),
+                )
+            )
+            + "\nChoose a game character as narrator when preparing story audio. "
+            "Advanced options contain reference files and model access terms."
+        )
         errors = self.validation_errors()
         if errors:
             self.validation_summary.setText(
@@ -944,7 +965,8 @@ class EndToEndTestPage(QWizardPage):
         if successful:
             self.progress.setValue(100)
         self.status.setText(
-            f"{message}\n\nSetup is ready. Finish setup, then use Start live reading."
+            f"{message}\n\nSetup is ready. Finish setup, then choose Prepare offline "
+            "audio to select stories and voices, or use Start reading immediately."
             if successful
             else message
         )
@@ -989,7 +1011,10 @@ class OnboardingWizard(QDialog):
         welcome.setTitle("Set up Visual Novel Text to Speech")
         welcome_text = QLabel(
             "This wizard selects the game, verifies OCR and audio, calibrates "
-            "the dialogue area, and runs a complete speech test."
+            "the dialogue area, and runs a complete speech test.\n\n"
+            "Next: Prepare offline audio -> choose stories and narrator -> "
+            "generate and activate audio -> Start reading in the game. "
+            "You can also read immediately with live TTS."
         )
         welcome_text.setWordWrap(True)
         welcome_layout = QVBoxLayout(welcome)

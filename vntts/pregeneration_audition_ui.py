@@ -20,6 +20,7 @@ from vntts.pregeneration_audition import (
 )
 from vntts.pregeneration_voices import VoicePlan
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
+from vntts.speech_presentation import engine_model_label
 from vntts.voices import default_voice_choice_id
 
 
@@ -92,6 +93,9 @@ class VoiceAuditionPanel(QGroupBox):
         self.scope = QLabel()
         self.scope.setAccessibleName("Voice choice scope")
         self.scope.setWordWrap(True)
+        self.engine = QLabel()
+        self.engine.setWordWrap(True)
+        self.engine.setAccessibleName("Voice preview engine and model")
         self.question = QLabel()
         self.question.setAccessibleName("Voice comparison question")
         self.question.setWordWrap(True)
@@ -138,6 +142,7 @@ class VoiceAuditionPanel(QGroupBox):
         layout.addWidget(self.portrait_image)
         layout.addWidget(self.character)
         layout.addWidget(self.scope)
+        layout.addWidget(self.engine)
         layout.addWidget(self.question)
         layout.addWidget(self.anchor_button)
         layout.addWidget(self.sample)
@@ -166,6 +171,13 @@ class VoiceAuditionPanel(QGroupBox):
         if self._shutdown_requested and self._owns_preview_service:
             self.preview_service = VoiceAuditionPreviewService()
         self._plan = plan
+        self.engine.setText(
+            engine_model_label(
+                plan.synthesis_backend,
+                plan.synthesis_model,
+                pocket_cloning=plan.pocket_voice_cloning,
+            )
+        )
         self._groups = groups
         self._group_index = 0
         self._pending_decisions = []
@@ -611,7 +623,10 @@ class VoiceAuditionPanel(QGroupBox):
         if recommended:
             label += " - Recommended"
         title.setText(label)
-        reason.setText(candidate.recommendation)
+        reason.setText(
+            f"Reference voice: {candidate.source_character} ({candidate.source_speaker})\n"
+            + candidate.recommendation
+        )
         play.setText(f"Play {'A' if slot == 0 else 'B'}")
         play.setEnabled(preview is not None)
         use.setText(f"Use {'A' if slot == 0 else 'B'}")

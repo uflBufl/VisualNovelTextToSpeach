@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from tests.test_pregeneration_pack import fixture
 from vntts.pregeneration_activation import (
@@ -20,6 +20,45 @@ def published_pack(root):
 
 
 class OfflinePackActivatorTest(unittest.TestCase):
+    def test_activation_uses_saved_audio_instead_of_previous_live_overrides(self):
+        from types import SimpleNamespace
+
+        from vntts.controller import AppController
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack = published_pack(root)
+            current = AppSettings(
+                force_live_narrator=True,
+                voice_assignments={
+                    "Narrator": "preset:marius",
+                    "Hotelier": "preset:alba",
+                    "Other story speaker": "preset:anna",
+                },
+            )
+            controller = Mock(is_ready=True)
+            controller.apply_settings.return_value = True
+            controller.start.return_value = True
+            activator = OfflinePackActivator(
+                save_settings=lambda _settings: root / "settings.json"
+            )
+            with patch(
+                "vntts.pregeneration_activation.load_story_index_document",
+                return_value=SimpleNamespace(
+                    records=(SimpleNamespace(speaker="Hotelier"),),
+                ),
+            ):
+                result = activator.activate(current, pack, controller)
+            self.assertFalse(result.settings.force_live_narrator)
+            self.assertNotIn("Hotelier", result.settings.voice_assignments)
+            self.assertEqual(
+                result.settings.voice_assignments["Other story speaker"], "preset:anna"
+            )
+            live = AppController(result.settings)
+            self.assertFalse(live._has_manual_voice_override("Narrator"))
+            self.assertFalse(live._has_manual_voice_override("Hotelier"))
+            self.assertTrue(live._has_manual_voice_override("Other story speaker"))
+
     def test_restarts_runtime_before_committing_generated_first_settings(self):
         with TemporaryDirectory() as temporary_directory:
             pack = published_pack(Path(temporary_directory))

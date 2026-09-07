@@ -738,7 +738,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn(
                 "2 ready, 0 incomplete, 0 not started", dialog.coverage_summary.text()
             )
-            self.assertFalse(dialog.selection_panel.isHidden())
+            self.assertTrue(dialog.selection_panel.isHidden())
+            self.assertIn("Step 4", dialog.step.text())
             self.assertEqual(dialog.progress_phase.text(), "Offline audio is ready")
             self.assertIn("1 original-game-audio", dialog.progress_coverage.text())
             self.assertIn("2 prepared lines", dialog.progress_coverage.text())

@@ -104,7 +104,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(
             tray_application.show_compact_action.text(), "Compact controls"
         )
-        self.assertEqual(tray_application.live_action.text(), "Start live reading")
+        self.assertEqual(tray_application.live_action.text(), "Start reading")
         self.assertEqual(tray_application.pause_action.text(), "Pause speech")
         self.assertEqual(
             tray_application.skip_action.text(),
@@ -609,7 +609,7 @@ class TrayApplicationTest(unittest.TestCase):
             "Auto advance paused: source-audio completion is unavailable"
         )
 
-        self.assertEqual(tray_application.compact_controller.mode.text(), "Live")
+        self.assertEqual(tray_application.compact_controller.mode.text(), "Reading")
         self.assertEqual(
             tray_application.compact_controller.status.text(),
             "Auto advance paused: source-audio completion is unavailable",
@@ -1949,6 +1949,7 @@ class TrayApplicationTest(unittest.TestCase):
             current_force_live_handler=ANY,
             preview_stop_handler=controller.stop_voice_preview,
             initial_character="Narrator",
+            engine_description="Engine: Pocket TTS (recommended)\nModel: Pocket TTS preset-only",
         )
         dialog.exec.assert_called_once_with()
         tray_application.shutdown()
@@ -3094,9 +3095,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.dashboard.focusWidget(),
             tray_application.dashboard.live_button,
         )
-        self.assertIn(
-            "Next: click Start live reading", tray_application.status_action.text()
-        )
+        self.assertIn("or click Start reading", tray_application.status_action.text())
         controller.toggle_live.assert_not_called()
         tray_application.shutdown()
 

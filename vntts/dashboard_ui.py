@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.settings import is_live_sequence_audio_mode
+from vntts.speech_presentation import reading_policy_label, speech_configuration_label
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,19 @@ class ControlDashboard(QMainWindow):
         self.speaker.setWordWrap(True)
         self.voice = QLabel("Not loaded")
         self.audio_source = QLabel("Not selected")
+        self.voice.setWordWrap(True)
+        self.audio_source.setWordWrap(True)
+        self.speech_configuration = QLabel()
+        self.speech_configuration.setWordWrap(True)
+        self.speech_configuration.setAccessibleName("Narrator and speech engine")
+        self.reading_policy = QLabel()
+        self.reading_policy.setWordWrap(True)
+        self.reading_policy.setAccessibleName("In-game audio policy")
+        self.reading_help = QLabel(
+            "Start reading follows dialogue in the game, including prepared audio. "
+            "It does not regenerate saved recordings."
+        )
+        self.reading_help.setWordWrap(True)
         self.confidence = QLabel("-")
         self.latency = QLabel("-")
         self.configuration = QLabel()
@@ -165,8 +179,6 @@ class ControlDashboard(QMainWindow):
 
         details = QFormLayout()
         details.addRow("Mode", self.mode)
-        details.addRow("Voice", self.voice)
-        details.addRow("Audio source", self.audio_source)
         details.addRow("OCR confidence", self.confidence)
         details.addRow("Latest latency", self.latency)
         details.addRow("Configuration", self.configuration)
@@ -182,7 +194,7 @@ class ControlDashboard(QMainWindow):
         self.details_toggle.toggled.connect(self._set_details_expanded)
 
         self.read_button = QPushButton("Read current dialogue")
-        self.live_button = QPushButton("Start live reading")
+        self.live_button = QPushButton("Start reading")
         self.sequence_resync_button = QPushButton("Set story position / resync")
         self.sequence_expected_button = QPushButton("Use expected next line")
         self.pause_button = QPushButton("Pause")
@@ -215,23 +227,17 @@ class ControlDashboard(QMainWindow):
         self.stop_button.clicked.connect(self.stop_requested.emit)
 
         reading_group = QGroupBox("Reading")
-        reading = QHBoxLayout(reading_group)
-        reading.addWidget(self.live_button, 2)
-        reading.addWidget(self.read_button)
-
-        offline_group = QGroupBox("Offline audio")
-        offline = QHBoxLayout(offline_group)
-        offline_description = QLabel(
-            "Prepare selected stories locally for faster, character-aware playback."
-        )
-        offline_description.setWordWrap(True)
-        offline.addWidget(offline_description, 1)
+        reading = QVBoxLayout(reading_group)
+        reading.addWidget(self.reading_policy)
+        reading.addWidget(self.reading_help)
+        reading_actions = QHBoxLayout()
+        reading_actions.addWidget(self.live_button, 2)
+        reading_actions.addWidget(self.read_button)
         self.prepare_audio_button = QPushButton("Prepare offline audio...")
         self.prepare_audio_button.setAccessibleDescription(
             "Choose stories and prepare their voices locally with guided defaults"
         )
         self.prepare_audio_button.clicked.connect(self.pregeneration_requested.emit)
-        offline.addWidget(self.prepare_audio_button)
         self.loading_blocked_buttons = [self.prepare_audio_button]
 
         self.sequence_state = QLabel("Unavailable")
@@ -298,7 +304,8 @@ class ControlDashboard(QMainWindow):
         ):
             button = QPushButton(label)
             button.clicked.connect(signal.emit)
-            setup_secondary.addWidget(button)
+            if label != "Narrator voice":
+                setup_secondary.addWidget(button)
             self.setup_buttons.append(button)
             if label != "Support and logs":
                 self.loading_blocked_buttons.append(button)
@@ -317,9 +324,14 @@ class ControlDashboard(QMainWindow):
         card_layout.addWidget(QLabel("Current dialogue"))
         card_layout.addWidget(self.speaker)
         card_layout.addWidget(self.dialogue)
+        current_audio = QFormLayout()
+        current_audio.addRow("Voice routing", self.voice)
+        current_audio.addRow("Playing from", self.audio_source)
+        card_layout.addLayout(current_audio)
 
         central = QWidget()
         layout = QVBoxLayout(central)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         header = QHBoxLayout()
         header.addWidget(self.status, 1)
@@ -328,11 +340,16 @@ class ControlDashboard(QMainWindow):
         header.addWidget(self.compact_button)
         layout.addLayout(header)
         layout.addWidget(self.loading_panel)
+        speech_header = QHBoxLayout()
+        speech_header.addWidget(self.speech_configuration, 1)
+        speech_actions = QVBoxLayout()
+        speech_actions.addWidget(self.prepare_audio_button)
+        speech_actions.addWidget(self.narrator_voice_button)
+        speech_header.addLayout(speech_actions)
+        layout.addLayout(speech_header)
         layout.addWidget(card)
         layout.addWidget(self.action_reason)
         layout.addWidget(reading_group)
-        layout.addWidget(offline_group)
-        layout.addWidget(transport_group)
         layout.addWidget(self.details_toggle)
         layout.addWidget(self.details_content)
         layout.addWidget(setup_group)
@@ -344,7 +361,13 @@ class ControlDashboard(QMainWindow):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.content_scroll.setWidget(central)
-        self.setCentralWidget(self.content_scroll)
+        shell = QWidget()
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.addWidget(self.content_scroll, 1)
+        shell_layout.addLayout(reading_actions)
+        shell_layout.addWidget(transport_group)
+        self.setCentralWidget(shell)
         self._set_details_expanded(False)
         self._set_setup_expanded(False)
         self.set_loading(False)
@@ -373,6 +396,18 @@ class ControlDashboard(QMainWindow):
 
     def set_configuration(self, settings):
         self.keep_running_on_close = settings.keep_running_on_close
+        self.set_speech_identity(settings)
+        self.reading_policy.setText(reading_policy_label(settings))
+        self._set_capture_configuration(settings)
+
+    def set_speech_identity(self, settings, narrator=None):
+        summary = speech_configuration_label(settings, narrator=narrator)
+        self.speech_configuration.setText(
+            summary
+            + "\nEngine/model above are used for new speech, not to play saved recordings."
+        )
+
+    def _set_capture_configuration(self, settings):
         capture = (
             settings.game_window_title or "No game window selected"
             if settings.capture_mode == "window"
@@ -542,26 +577,31 @@ class ControlDashboard(QMainWindow):
 
     def set_live(self, running):
         self._live = bool(running)
-        self.mode.setText("Live reading" if running else "Stopped")
-        self.live_button.setText(
-            "Stop live reading" if running else "Start live reading"
-        )
+        self.mode.setText("Reading in game" if running else "Stopped")
+        self.live_button.setText("Stop reading" if running else "Start reading")
         if self._ready:
             self._set_action_reason(
-                "Live reading is active; use playback controls or stop live reading."
+                "Reading is active; use playback controls or stop reading."
                 if running
-                else "Ready: start live reading, or read the current dialogue once."
+                else "Ready: start reading in the game, or read the current dialogue once."
             )
 
     def set_paused(self, paused):
         self.mode.setText(
-            "Paused" if paused else ("Live reading" if self._live else "Stopped")
+            "Paused" if paused else ("Reading in game" if self._live else "Stopped")
         )
         self.pause_button.setText("Resume" if paused else "Pause")
 
     def set_diagnostic(self, snapshot):
         self.speaker.setText(snapshot.character or "Narrator")
-        self.voice.setText(snapshot.voice or "Default narrator")
+        source = snapshot.audio_source or "Not selected"
+        self.voice.setText(
+            "Voice embedded in the saved recording"
+            if "Generated audio" in source
+            else "Original game voice (not synthesized by VNTTS)"
+            if source.startswith("Original game audio")
+            else snapshot.voice or "Not resolved yet"
+        )
         self.audio_source.setText(snapshot.audio_source or "Not selected")
         self.confidence.setText(f"{snapshot.confidence:.1f}%")
         parts = []
@@ -659,7 +699,7 @@ class CompactController(QWidget):
         )
 
         self.read_button = QPushButton("Read")
-        self.live_button = QPushButton("Start live")
+        self.live_button = QPushButton("Start reading")
         self.pause_button = QPushButton("Pause")
         self.skip_button = QPushButton("Skip")
         self.repeat_button = QPushButton("Replay")
@@ -851,18 +891,20 @@ class CompactController(QWidget):
 
     def set_live(self, running):
         self._live = bool(running)
-        self.mode.setText("Live" if running else "Stopped")
-        self.live_button.setText("Stop live" if running else "Start live")
+        self.mode.setText("Reading" if running else "Stopped")
+        self.live_button.setText("Stop reading" if running else "Start reading")
         if self._ready:
             self._set_action_reason(
-                "Live reading active; playback controls are available."
+                "Reading active; playback controls are available."
                 if running
-                else "Ready: start live reading or read once."
+                else "Ready: start reading or read once."
             )
         self._fit_content()
 
     def set_paused(self, paused):
-        self.mode.setText("Paused" if paused else ("Live" if self._live else "Stopped"))
+        self.mode.setText(
+            "Paused" if paused else ("Reading" if self._live else "Stopped")
+        )
         self.pause_button.setText("Resume" if paused else "Pause")
         self._fit_content()
 
