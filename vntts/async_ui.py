@@ -35,7 +35,9 @@ class LatestTaskRunner(QObject):
         self.thread_pool = thread_pool or QThreadPool.globalInstance()
         self._serial = 0
         self._active = False
-        self._signals = _TaskSignals(self)
+        # A queued task retains these signals until it exits, even if its UI
+        # owner is deleted after cancellation. Qt disconnects the dead receiver.
+        self._signals = _TaskSignals()
         self._signals.finished.connect(self._task_finished)
 
     @property

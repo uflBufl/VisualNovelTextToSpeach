@@ -9,6 +9,7 @@ import soundfile as sf
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QCoreApplication, QEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
@@ -23,6 +24,7 @@ from tests.test_pregeneration_voices import (  # noqa: E402
     write_manifest,
 )
 from vntts.app import TrayApplication  # noqa: E402
+from vntts.async_ui import LatestTaskRunner  # noqa: E402
 from vntts.authoring.bulk_generation import run_bulk_generation  # noqa: E402
 from vntts.authoring.missing_voice_policy import (  # noqa: E402
     NARRATOR_ROLES,
@@ -129,6 +131,19 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def test_cancelled_discovery_can_finish_after_its_ui_is_deleted(self):
+        pool = ManualThreadPool()
+        runner = LatestTaskRunner(thread_pool=pool)
+        received = []
+        runner.finished.connect(lambda result, error: received.append(result))
+        runner.start(lambda: "obsolete result")
+        runner.cancel()
+        runner.deleteLater()
+        QCoreApplication.sendPostedEvents(runner, QEvent.Type.DeferredDelete)
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
+        self.assertEqual(received, [])
 
     def test_pregeneration_shows_and_applies_narrator_choice(self):
         with TemporaryDirectory() as temporary_directory:
