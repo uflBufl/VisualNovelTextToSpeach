@@ -90,6 +90,7 @@ class OfflineAudioPreparationDialog(QDialog):
         publisher=None,
         importer=None,
         narrator_chooser=None,
+        game_narrator_chooser=None,
         thread_pool=None,
         parent=None,
     ):
@@ -117,6 +118,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.publisher = publisher or OfflinePackPublisher(base_pack=settings.game_pack)
         self.importer = importer or Reverse1999GameImporter()
         self.narrator_chooser = narrator_chooser
+        self.game_narrator_chooser = game_narrator_chooser
         self._preview_backend = settings.speech_backend
         self.discovery_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.discovery_runner.finished.connect(self._discovery_finished)
@@ -227,6 +229,11 @@ class OfflineAudioPreparationDialog(QDialog):
         narrator_row = QHBoxLayout()
         narrator_row.addWidget(self.narrator_status, 1)
         narrator_row.addWidget(self.choose_narrator_button)
+        self.game_narrator_button = QPushButton(
+            "Choose narrator from installed game..."
+        )
+        self.game_narrator_button.setVisible(game_narrator_chooser is not None)
+        self.game_narrator_button.clicked.connect(self._choose_game_narrator)
         self._refresh_narrator_status()
 
         self.pocket_voice_cloning = QCheckBox(
@@ -450,6 +457,7 @@ class OfflineAudioPreparationDialog(QDialog):
         shell.addWidget(self.step)
         shell.addWidget(self.story_context)
         shell.addLayout(narrator_row)
+        shell.addWidget(self.game_narrator_button)
         shell.addWidget(self.content_scroll, 1)
         shell.addWidget(self.buttons)
         availability = self.importer.availability()
@@ -480,6 +488,21 @@ class OfflineAudioPreparationDialog(QDialog):
             self.settings = settings
             self.pocket_voice_cloning.setChecked(settings.pocket_gated_model_accepted)
         self._refresh_narrator_status()
+
+    def _choose_game_narrator(self):
+        settings = self.game_narrator_chooser(self.settings, self)
+        if settings is None:
+            return
+        self.settings = settings
+        self.pocket_voice_cloning.setChecked(settings.pocket_gated_model_accepted)
+        self._voice_plan = None
+        self._prepared_voice_manifest = None
+        self._prepared_voice_job = None
+        self._awaiting_voice_confirmation = False
+        self.voice_confirmation.hide()
+        self.selection_panel.show()
+        self._refresh_narrator_status()
+        self._selection_changed()
 
     def _engine_changed(self):
         backend = self.engine_choice.currentData()
@@ -765,6 +788,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _set_discovery_loading(self, loading):
         self.choose_narrator_button.setEnabled(not loading)
+        self.game_narrator_button.setEnabled(not loading)
         self.pocket_voice_cloning.setEnabled(not loading)
         self.discovery_panel.setVisible(loading)
         self.coverage_summary.setVisible(not loading)
@@ -1252,6 +1276,27 @@ class OfflineAudioPreparationDialog(QDialog):
             self._prepared_voice_manifest = None
             self._prepared_voice_job = job.job_id
         manifest = self._prepared_voice_manifest
+        if manifest is None and self.settings.voice_manifest:
+            from vntts_artifacts.voice_manifest import load_voice_manifest
+
+            from vntts.game_narrator import bind_game_narrator
+
+            configured = load_voice_manifest(self.settings.voice_manifest)[0]
+            narrator = configured.get("vntts.game_narrator")
+            if narrator is not None:
+                candidates = self.importer.prepare_voice_candidates(
+                    job, self.voice_cancel_event
+                )
+                if candidates is not None:
+                    combined = bind_game_narrator(
+                        self.settings,
+                        self.settings.voice_manifest,
+                        narrator["source_id"],
+                        narrator["character"],
+                        additional_manifest=candidates,
+                    )
+                    manifest = combined.voice_manifest
+                    self._prepared_voice_manifest = manifest
         if (
             manifest is None
             and not self.settings.voice_manifest
@@ -1715,6 +1760,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.select_none_button.setEnabled(enabled)
         self.change_voices.setEnabled(enabled)
         self.choose_narrator_button.setEnabled(enabled)
+        self.game_narrator_button.setEnabled(enabled)
         self.pocket_voice_cloning.setEnabled(enabled)
         self.continue_button.setEnabled(
             enabled

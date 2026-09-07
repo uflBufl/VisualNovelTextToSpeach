@@ -146,10 +146,37 @@ def apply_game_pack(
     configured_path = path if path is not None else settings.game_pack
     if not configured_path:
         return settings
-    return import_game_pack(configured_path).apply_to(
+    imported = import_game_pack(configured_path)
+    result = imported.apply_to(
         settings,
         preserve_external_sequence=path is None,
     )
+    if (
+        path is None
+        and settings.voice_manifest
+        and settings.voice_manifest != result.voice_manifest
+        and Path(settings.voice_manifest).is_file()
+    ):
+        from vntts_artifacts.voice_manifest import load_voice_manifest
+
+        from vntts.voices import CharacterVoiceRegistry
+
+        document = load_voice_manifest(settings.voice_manifest)[0]
+        narrator = document.get("vntts.game_narrator")
+        if isinstance(narrator, dict) and narrator.get(
+            "base_manifest_sha256"
+        ) == sha256_file(imported.voice_manifest):
+            registry = CharacterVoiceRegistry.from_file(settings.voice_manifest)
+            source_id = narrator.get("source_id")
+            if (
+                not isinstance(source_id, str)
+                or registry.resolve_source(source_id) is None
+            ):
+                raise GamePackError(
+                    "Selected game narrator is missing from its saved catalog"
+                )
+            result = result.updated(voice_manifest=settings.voice_manifest)
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:

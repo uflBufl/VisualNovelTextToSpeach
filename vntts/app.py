@@ -63,6 +63,7 @@ from vntts.diagnostics import (
 from vntts.diagnostics_ui import DiagnosticsDialog
 from vntts.dialog_capture import format_runtime_error
 from vntts.durable_settings import DurableSettingsMixin
+from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder
@@ -669,6 +670,10 @@ class SettingsDialog(QDialog):
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         region = QGroupBox(title)
         region.setLayout(form)
+        for row in range(form.rowCount()):
+            label = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            if label is not None:
+                label.widget().setWordWrap(True)
         for choice in region.findChildren(QComboBox):
             choice.setSizeAdjustPolicy(
                 QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
@@ -2161,14 +2166,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return None
+        self._narrator_changed_in_preparation = False
         dialog = OfflineAudioPreparationDialog(
             self.settings,
             narrator_chooser=self._choose_pregeneration_narrator,
+            game_narrator_chooser=self._choose_game_narrator_for_preparation,
             parent=self.dashboard,
         )
         self.pregeneration_dialog = dialog
         if dialog.exec() != QDialog.DialogCode.Accepted:
             self.pregeneration_dialog = None
+            if self._narrator_changed_in_preparation:
+                self._reload_game_narrator()
             return None
         job = dialog.job()
         voice_plan = dialog.voice_plan()
@@ -2241,6 +2250,49 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog.assign_button.setText("Use this narrator for offline audio")
         dialog.exec()
         return self.settings
+
+    def _choose_game_narrator_for_preparation(self, settings, parent):
+        candidate = self._pick_game_narrator(settings, parent)
+        if candidate is not None:
+            try:
+                candidate.save()
+            except OSError as error:
+                self.show_error(f"Unable to save narrator: {error}")
+                return None
+            self.settings = candidate
+            self.dashboard.set_configuration(candidate)
+            self._sync_active_profile(candidate)
+            self._narrator_changed_in_preparation = True
+        return candidate
+
+    def _pick_game_narrator(self, settings, parent):
+        dialog = GameNarratorDialog(settings, parent)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            return dialog.result_settings
+        return None
+
+    def _choose_live_game_narrator(self, parent):
+        candidate = self._pick_game_narrator(self.settings, parent)
+        if candidate is None:
+            return False
+        try:
+            candidate.save()
+        except OSError as error:
+            self.show_error(f"Unable to save narrator: {error}")
+            return False
+        self.settings = candidate
+        self.dashboard.set_configuration(candidate)
+        self._sync_active_profile(candidate)
+        self._reload_game_narrator()
+        return True
+
+    def _reload_game_narrator(self):
+        self._start_configuration_apply(
+            self.settings,
+            progress_status="Loading your selected game narrator...",
+            success_status="Game narrator saved and ready. Prepared recordings are unchanged.",
+            restart=True,
+        )
 
     def _start_pregeneration_activation(
         self, pack_result, success_status, generation_settings=None
@@ -2498,6 +2550,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             current_force_live_handler=lambda: self.settings.force_live_narrator,
             preview_stop_handler=self.controller.stop_voice_preview,
             initial_character="Narrator",
+            game_narrator_handler=self._choose_live_game_narrator,
             engine_description=engine_model_label(
                 self.settings.speech_backend,
                 self.settings.tts_model,
@@ -2510,6 +2563,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if (
                 resume_live
                 and not self._shutting_down
+                and not self._controller_busy
                 and not self.controller.is_live_running
             ):
                 self.toggle_live()

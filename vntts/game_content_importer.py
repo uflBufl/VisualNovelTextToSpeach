@@ -118,6 +118,31 @@ class Reverse1999GameImporter:
         roles = _candidate_roles(job)
         if not roles:
             return None
+        return self.prepare_voice_roles(roles, cancel_event)
+
+    def narrator_characters(self, cancel_event=None, installation_root=None):
+        """List voiced characters without decoding the whole audio catalog."""
+        story_index = self.output_root / "reverse1999" / "story-index.jsonl"
+        bank_index = story_index.parent / "english-bank-index.json"
+        if (
+            installation_root is not None
+            or not story_index.is_file()
+            or not bank_index.is_file()
+        ):
+            self.import_installed(cancel_event, installation_root)
+        characters = {}
+        for record in load_story_index_document(story_index).records:
+            character = synthesis_character_for_line(
+                record.speaker, record.voice_character
+            )
+            if record.source_audio_status == "available" and not is_narrator(character):
+                characters.setdefault(normalize_character_name(character), character)
+        return tuple(sorted(characters.values(), key=str.casefold))
+
+    def prepare_voice_roles(self, roles, cancel_event=None):
+        """Reuse the extractor's checksum-bound, per-role reference cache."""
+        if not roles:
+            raise GameContentImportError("Choose a game character first")
         command = self.command()
         if command is None:
             raise GameContentImportError(self.availability().message)

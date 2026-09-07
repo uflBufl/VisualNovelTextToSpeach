@@ -426,6 +426,7 @@ class TrayApplicationTest(unittest.TestCase):
         create_dialog.assert_called_once_with(
             tray_application.settings,
             narrator_chooser=tray_application._choose_pregeneration_narrator,
+            game_narrator_chooser=tray_application._choose_game_narrator_for_preparation,
             parent=tray_application.dashboard,
         )
         start_activation.assert_called_once()
@@ -1527,10 +1528,17 @@ class TrayApplicationTest(unittest.TestCase):
     def test_settings_fit_scaled_fonts_with_navigation_and_validation_visible(self):
         base_font = QApplication.font()
         base_size = base_font.pointSizeF() if base_font.pointSizeF() > 0 else 12.0
+        fonts = []
         for scale in (1.0, 1.5, 2.0):
-            with self.subTest(scale=scale):
-                font = QFont(base_font)
-                font.setPointSizeF(base_size * scale)
+            font = QFont(base_font)
+            font.setPointSizeF(base_size * scale)
+            fonts.append(font)
+        # Exercise wide labels even on hosts with compact default font metrics.
+        large_font = QFont("Arial")
+        large_font.setPixelSize(36)
+        fonts.append(large_font)
+        for font in fonts:
+            with self.subTest(font=font.toString()):
                 dialog = SettingsDialog(AppSettings())
                 dialog.setFont(font)
                 dialog.resize(520, 420)
@@ -1990,6 +1998,7 @@ class TrayApplicationTest(unittest.TestCase):
             current_force_live_handler=ANY,
             preview_stop_handler=controller.stop_voice_preview,
             initial_character="Narrator",
+            game_narrator_handler=tray_application._choose_live_game_narrator,
             engine_description="Engine: Pocket TTS (recommended)\nModel: Pocket TTS preset-only",
         )
         dialog.exec.assert_called_once_with()

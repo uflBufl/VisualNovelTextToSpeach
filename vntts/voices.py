@@ -187,7 +187,10 @@ class CharacterVoiceRegistry:
         return tuple(
             VoiceChoice(
                 f"character:{normalize_character_name(voice.character)}",
-                voice.character,
+                f"{voice.source_character} (game narrator)"
+                if voice.source_character
+                and voice.character.startswith("Game narrator ")
+                else voice.character,
                 "Imported character voice",
             )
             for voice in sorted(

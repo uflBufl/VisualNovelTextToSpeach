@@ -34,6 +34,7 @@ class VoicePreviewDialog(QDialog):
         initial_character=None,
         fixed_character=None,
         engine_description=None,
+        game_narrator_handler=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -106,9 +107,18 @@ class VoicePreviewDialog(QDialog):
         self.engine_description = QLabel(engine_description or "Current speech engine")
         self.engine_description.setWordWrap(True)
         self.engine_description.setAccessibleName("Voice preview engine and model")
+        self.game_narrator_button = QPushButton(
+            "Choose narrator from installed game..."
+        )
+        self.game_narrator_button.setVisible(game_narrator_handler is not None)
+        if game_narrator_handler is not None:
+            self.game_narrator_button.clicked.connect(
+                lambda: self._choose_game_narrator(game_narrator_handler)
+            )
 
         form = QFormLayout()
         form.addRow("Generate preview with", self.engine_description)
+        form.addRow(self.game_narrator_button)
         form.addRow("Narrator or character", self.character)
         form.addRow("Routing", self.routing_note)
         form.addRow("Candidate voice", self.voice)
@@ -134,6 +144,10 @@ class VoicePreviewDialog(QDialog):
 
     def update_description(self):
         self.description.setText(self.voice.currentData(3) or "")
+
+    def _choose_game_narrator(self, handler):
+        if handler(self):
+            self.accept()
 
     def select_current_assignment(self):
         source_id = self.current_assignment_handler(self.character.currentText())
@@ -256,6 +270,7 @@ class VoicePreviewDialog(QDialog):
         self.automatic_button.setEnabled(enabled)
         self.force_live.setEnabled(enabled)
         self.preview_button.setEnabled(enabled)
+        self.game_narrator_button.setEnabled(enabled)
 
     def closeEvent(self, event):
         if self._preview_future is not None:

@@ -37,6 +37,7 @@ class ConfigurationApplyMixin:
         self._configuration_cancellation = None
         self._configuration_success_status = None
         self._configuration_refresh_hotkeys = False
+        self._configuration_restart = False
 
     def _configuration_runner_active_changed(self, active):
         action = getattr(self, "cancel_configuration_action", None)
@@ -52,31 +53,55 @@ class ConfigurationApplyMixin:
         progress_status,
         success_status,
         refresh_hotkeys=False,
+        restart=False,
     ):
         generation = self._begin_controller_lifecycle()
         self._configuration_generation = generation
         self._configuration_cancellation = Event()
         self._configuration_success_status = success_status
         self._configuration_refresh_hotkeys = bool(refresh_hotkeys)
+        self._configuration_restart = restart
         self.set_status(progress_status)
         self.configuration_runner.start(
             self._apply_configuration,
             settings,
             generation,
             self._configuration_cancellation,
+            restart,
         )
 
-    def _apply_configuration(self, settings, generation, cancellation):
+    def _apply_configuration(self, settings, generation, cancellation, restart=False):
+        if restart:
+            self.controller.shutdown()
+            if cancellation.is_set() or not self._lifecycle_is_current(generation):
+                return False, False
         applied = self.controller.apply_settings(
             settings,
             cancellation=cancellation,
         )
+        if restart and applied is not False and not cancellation.is_set():
+            self.controller.prepare_startup()
+            if cancellation.is_set() or not self._lifecycle_is_current(generation):
+                self.controller.request_shutdown()
+                return False, False
+            applied = self.controller.start()
+            if cancellation.is_set() or not self._lifecycle_is_current(generation):
+                self.controller.shutdown()
+                return False, False
         return self._lifecycle_is_current(generation), applied is not False
 
     def cancel_configuration_apply(self):
         cancellation = self._configuration_cancellation
         if cancellation is None or not self.configuration_runner.active:
             self.set_status("No runtime configuration apply is in progress")
+            return
+        if self._configuration_restart:
+            cancellation.set()
+            self.controller.request_shutdown()
+            self.cancel_configuration_action.setEnabled(False)
+            self.set_status(
+                "Cancelling narrator reload; saved selection remains for restart..."
+            )
             return
         if self.controller.cancel_settings_apply(cancellation):
             self.cancel_configuration_action.setEnabled(False)
@@ -94,6 +119,9 @@ class ConfigurationApplyMixin:
         if not self._lifecycle_is_current(generation):
             return
         self._finish_controller_lifecycle()
+        if self._configuration_restart:
+            self.set_ready(self.controller.is_ready)
+            self._configuration_restart = False
         if error is not None:
             self.show_error(
                 "Settings were saved, but runtime reconfiguration failed: "

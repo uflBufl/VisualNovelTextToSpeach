@@ -3,10 +3,20 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P0 - Choose a game narrator on a fresh install
+
+- [ ] Qualify the guided game-narrator picker on a clean macOS/Windows install:
+      auto-detect the game (and try folder fallback), listen to one original and
+      generated reference with the intended engine/account access, save, restart,
+      then confirm both live fallback and offline preparation retain the choice.
+
 ## P0 - Fix cross-platform CI regressions
 
-- [ ] Publish the compact-settings, scaled-reference-review and MOSS test-fixture
-      fixes and confirm the full Windows/Linux unit suites pass on hosted runners.
+- [ ] Publish the settings label-wrapping and isolated MOSS engine-selection
+      fixture fixes; confirm the full Windows/Linux unit suites pass on hosted
+      runners. Check macOS for recurrence of the local `qt-app` timeout in
+      `test_settings_are_scrollable_and_grouped_into_visual_regions`; capture a
+      native stack if it recurs instead of increasing the timeout or adding retries.
 
 ## P1 - Qualify the implemented desktop UX program
 
