@@ -5,7 +5,7 @@ import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 from vntts_artifacts.file_integrity import sha256_file
@@ -96,6 +96,67 @@ def write_wav(path, samples, sample_rate=24_000):
 
 
 class GeneratedAudioTest(unittest.TestCase):
+    def test_character_defaults_preserve_recordings_and_apply_only_to_live_synthesis(
+        self,
+    ):
+        from vntts.controller import AppController
+        from vntts.runtime_config import initialize_voice_router
+        from vntts.settings import AppSettings
+
+        settings = AppSettings(
+            voice_assignments={"Narrator": "preset:marius"},
+            character_voice_defaults={"Ada": "preset:anna", "Hotelier": "default"},
+        )
+        tts = Mock()
+        tts.has_speaker.return_value = True
+        with patch(
+            "vntts.runtime_config.find_default_voice_manifest", return_value=None
+        ):
+            router = initialize_voice_router(tts, settings)
+            controller = AppController(settings)
+            controller.voice_router = router
+            self.assertFalse(controller._has_manual_voice_override("Ada"))
+            self.assertFalse(controller._speaker_requires_voice_decision("Hotelier"))
+            router.speak("Ada", "Missing recording.")
+            tts.speak.assert_called_with(
+                "Missing recording.", speaker="anna", speaker_wav=None
+            )
+            router.speak("Hotelier", "Narrator fallback.")
+            tts.speak.assert_called_with(
+                "Narrator fallback.", speaker="marius", speaker_wav=None
+            )
+            overridden = settings.updated(
+                voice_assignments={**settings.voice_assignments, "ada": "preset:alba"}
+            )
+            self.assertEqual(
+                initialize_voice_router(tts, overridden)
+                .registry.resolve("Ada")
+                .speaker,
+                "alba",
+            )
+
+        with TemporaryDirectory() as directory:
+            library, _audio = self.create_library(Path(directory))
+            for policy, expected in (
+                ("prefer-game-audio", SourceAudioRoute),
+                ("prefer-generated", GeneratedAudioRoute),
+            ):
+                with self.subTest(policy=policy):
+                    live = self.create_live_backend()
+                    backend = GeneratedAudioFallbackBackend(
+                        live,
+                        library,
+                        self.create_resolver(source_audio_status="available"),
+                        audio_source_policy=policy,
+                        audio_output=FakeAudioOutput(),
+                    )
+                    backend.voice_override = controller._has_manual_voice_override
+                    backend.set_live_mode_active(True)
+                    self.assertIsInstance(
+                        backend.prepare_route("Ada", "Hello."), expected
+                    )
+                    live.prepare_playback.assert_not_called()
+
     def test_prepared_recording_keeps_its_own_model_identity(self):
         from vntts.controller import AppController
         from vntts.settings import AppSettings

@@ -5143,7 +5143,7 @@ class MainTest(unittest.TestCase):
         )
         self.assertIn("Announcing speaker: Rhiannon", statuses)
 
-    def test_speaker_announcement_skips_game_audio_and_maps_unknown_to_narrator(self):
+    def test_speaker_announcement_skips_game_audio_and_maps_unknown_to_unknown(self):
         backend = RecordingAnnouncementBackend()
         controller = AppController(
             AppSettings(announce_speaker_changes=True),
@@ -5174,8 +5174,8 @@ class MainTest(unittest.TestCase):
         self.assertIsNone(speaker)
         self.assertIsNone(same_speaker)
         self.assertIsNotNone(narrator_announcement)
-        self.assertEqual(narrator, "Narrator")
-        self.assertEqual(backend.prepare_calls[-1], ("Narrator", "Narrator."))
+        self.assertEqual(narrator, "Unknown")
+        self.assertEqual(backend.prepare_calls[-1], ("Narrator", "Unknown."))
 
     def test_fallback_role_mode_announces_only_bound_generated_narrator_roles(self):
         backend = RecordingAnnouncementBackend()
@@ -5289,14 +5289,15 @@ class MainTest(unittest.TestCase):
             ],
         )
 
-    def test_fallback_role_mode_does_not_announce_live_or_game_routes(self):
+    def test_fallback_role_mode_does_not_announce_distinct_live_or_game_routes(self):
         backend = RecordingAnnouncementBackend()
         controller = AppController(
             AppSettings(speaker_announcement_mode="narrator-fallback-roles"),
             tts_factory=Mock(),
         )
         controller.voice_router = Mock(
-            registry=CharacterVoiceRegistry(), narrator_speaker="Centurion"
+            registry=CharacterVoiceRegistry([CharacterVoice("Poacher I", "poacher")]),
+            narrator_speaker="Centurion",
         )
         controller.speech_backend = backend
         live = backend.prepare_playback("Narrator", "Line.")
@@ -5315,6 +5316,48 @@ class MainTest(unittest.TestCase):
         self.assertIsNone(live_announcement)
         self.assertIsNone(source_announcement)
         self.assertEqual(backend.prepare_calls, [("Narrator", "Line.")])
+
+    def test_fallback_role_mode_announces_live_narrator_defaults_and_unknown_roles(
+        self,
+    ):
+        from vntts.runtime_config import initialize_voice_registry
+
+        backend = RecordingAnnouncementBackend()
+        settings = AppSettings(
+            speaker_announcement_mode="narrator-fallback-roles",
+            character_voice_defaults={"Hotelier": "default", "Ada": "preset:anna"},
+        )
+        controller = AppController(settings)
+        with patch(
+            "vntts.runtime_config.find_default_voice_manifest", return_value=None
+        ):
+            controller.voice_router = Mock(registry=initialize_voice_registry(settings))
+        controller.speech_backend = backend
+        for typed in (False, True):
+            for role, expected in (
+                ("Hotelier", "Hotelier"),
+                ("Unassigned", "Unassigned"),
+                ("???", "Unknown"),
+                ("Ada", None),
+                ("Narrator", None),
+            ):
+                with self.subTest(typed=typed, role=role):
+                    controller.last_visible_speaker_key = None
+                    prepared = backend.prepare_playback(role, "Line.")
+                    route = (
+                        LiveTTSRoute(prepared, stub_route_trace("live-tts"), None, None)
+                        if typed
+                        else prepared
+                    )
+                    announcement, label = controller._prepare_speaker_announcement(
+                        SpeechChunk(1, role, "Line.", ordinal=1), route
+                    )
+                    self.assertEqual(label, expected)
+                    self.assertEqual(announcement is not None, expected is not None)
+                    if expected is not None:
+                        self.assertEqual(
+                            backend.prepare_calls[-1], ("Narrator", f"{expected}.")
+                        )
 
     def test_failed_speaker_announcement_does_not_skip_dialogue(self):
         errors = []

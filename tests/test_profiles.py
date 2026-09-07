@@ -38,6 +38,7 @@ class GameProfileStoreTest(unittest.TestCase):
                 generated_audio_manifest="audio/generated.json",
                 audio_source_policy="prefer-generated",
                 voice_assignments={"Narrator": "preset:alba"},
+                character_voice_defaults={"Hotelier": "default"},
                 force_live_narrator=False,
             )
             store = GameProfileStore(path)
@@ -57,7 +58,16 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(applied.generated_audio_manifest, "audio/generated.json")
         self.assertEqual(applied.audio_source_policy, "prefer-generated")
         self.assertEqual(applied.voice_assignments, {"Narrator": "preset:alba"})
+        self.assertEqual(applied.character_voice_defaults, {"Hotelier": "default"})
         self.assertFalse(applied.force_live_narrator)
+        updated = profile.updated_from_settings(
+            settings.updated(character_voice_defaults={"Hotelier": "preset:anna"}),
+            region=region,
+        )
+        self.assertEqual(
+            updated.apply(AppSettings()).character_voice_defaults,
+            {"Hotelier": "preset:anna"},
+        )
 
     def test_profiles_can_be_duplicated_renamed_and_removed(self):
         with TemporaryDirectory() as temporary_directory:
@@ -143,6 +153,7 @@ class GameProfileStoreTest(unittest.TestCase):
         )
 
         self.assertEqual(profile.audio_source_policy, "live-tts-only")
+        self.assertEqual(profile.character_voice_defaults, {})
 
     def test_legacy_profile_preserves_narrator_force_live_routing(self):
         with TemporaryDirectory() as temporary_directory:

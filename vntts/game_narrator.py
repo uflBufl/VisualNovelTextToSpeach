@@ -99,9 +99,20 @@ def narrator_preview_plan(settings, manifest, source_id, text):
 
 
 def bind_game_narrator(
-    settings, manifest, source_id, character, *, root=None, additional_manifest=None
+    settings,
+    manifest,
+    source_id,
+    character,
+    *,
+    root=None,
+    additional_manifest=None,
+    target_character="Narrator",
 ):
     """Publish a new manifest snapshot; never rewrite the active pack or settings."""
+    target_character = target_character.strip()
+    if not normalize_character_name(target_character):
+        raise ValueError("Choose a narrator or character role")
+    narrator = normalize_character_name(target_character) == "narrator"
     selected = CharacterVoiceRegistry.from_file(manifest).resolve_source(source_id)
     if selected is None or not selected.references:
         raise ValueError("Choose an available game voice")
@@ -135,14 +146,27 @@ def bind_game_narrator(
         read_voice_reference_bytes(selected, p) for p in selected.references
     )
     reference_id = hashlib.sha256(b"".join(payloads)).hexdigest()
-    name = f"Game narrator {character} {reference_id[:12]}"
+    name = f"Game {'narrator' if narrator else 'voice'} {character} {reference_id[:12]}"
     selected_id = f"character:{normalize_character_name(name)}"
-    original_base = document.get("vntts.game_narrator", {}).get("base_manifest_sha256")
-    document["vntts.game_narrator"] = {
-        "source_id": selected_id,
-        "character": character,
-        "base_manifest_sha256": original_base or (sha256_file(base) if base else None),
-    }
+    original_base = next(
+        (
+            binding["base_manifest_sha256"]
+            for key in ("vntts.game_narrator", "vntts.game_character_voices")
+            if isinstance(binding := document.get(key), dict)
+            and binding.get("base_manifest_sha256")
+        ),
+        sha256_file(base) if base else None,
+    )
+    if narrator:
+        document["vntts.game_narrator"] = {
+            "source_id": selected_id,
+            "character": character,
+            "base_manifest_sha256": original_base,
+        }
+    else:
+        document["vntts.game_character_voices"] = {
+            "base_manifest_sha256": original_base
+        }
     source_payloads = {
         name: tuple(
             read_voice_reference_bytes(voice, path) for path in voice.references
@@ -253,8 +277,18 @@ def bind_game_narrator(
         raise ValueError("Saved narrator reference changed")
     assignments = {
         name: value
-        for name, value in settings.voice_assignments.items()
-        if normalize_character_name(name) != "narrator"
+        for name, value in (
+            settings.voice_assignments
+            if narrator
+            else settings.character_voice_defaults
+        ).items()
+        if normalize_character_name(name) != normalize_character_name(target_character)
     }
-    assignments["Narrator"] = selected_id
-    return settings.updated(voice_manifest=str(output), voice_assignments=assignments)
+    assignments[target_character] = selected_id
+    return settings.updated(
+        voice_manifest=str(output),
+        **({"tts_speaker_wav": None} if narrator else {}),
+        **{
+            "voice_assignments" if narrator else "character_voice_defaults": assignments
+        },
+    )

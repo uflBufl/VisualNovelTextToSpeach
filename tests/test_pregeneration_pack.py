@@ -196,12 +196,106 @@ def fixture(
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_original_readiness_requires_full_valid_declared_source_duration(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "story.jsonl"
+            store = PregenerationJobStore(Path(directory) / "jobs")
+            source = {
+                "record_type": "line",
+                "line_id": "source-only",
+                "chapter": "1",
+                "sequence": 1,
+                "speaker": "Narrator",
+                "text": "A game line.",
+                "kind": "dialogue",
+                "source_audio_status": "available",
+                "speakable": True,
+            }
+            for contract, fields, original in (
+                (
+                    "duration-seconds",
+                    {
+                        "source_audio_duration_seconds": 1.0,
+                        "source_audio_completeness": "full",
+                    },
+                    1,
+                ),
+                (
+                    "duration-seconds",
+                    {
+                        "source_audio_duration_seconds": 1.0,
+                        "source_audio_completeness": "partial",
+                    },
+                    0,
+                ),
+                (
+                    "duration-seconds",
+                    {
+                        "source_audio_duration_seconds": 1.0,
+                        "source_audio_completeness": "unknown",
+                    },
+                    0,
+                ),
+                ("duration-seconds", {"source_audio_duration_seconds": 1.0}, 0),
+                ("duration-seconds", {"source_audio_completeness": "full"}, 0),
+                (
+                    "duration-seconds",
+                    {
+                        "source_audio_duration_seconds": -1,
+                        "source_audio_completeness": "full",
+                    },
+                    0,
+                ),
+                (
+                    None,
+                    {
+                        "source_audio_duration_seconds": 1.0,
+                        "source_audio_completeness": "full",
+                    },
+                    0,
+                ),
+                (
+                    "verified-media-duration-seconds",
+                    {
+                        "source_audio_duration_seconds": 1.0,
+                        "source_audio_completeness": "full",
+                    },
+                    0,
+                ),
+            ):
+                with self.subTest(contract=contract, fields=fields):
+                    metadata = {"game": "Synthetic Game", "language": "en"}
+                    if contract is not None:
+                        metadata["source_audio_completion"] = contract
+                    write_story_index_document(path, metadata, [source | fields])
+                    content = inspect_story_index(path)
+                    coverage = inspect_story_audio(
+                        content, content.selections[0].selection_id, store
+                    )
+                    self.assertEqual(
+                        (coverage.original, coverage.missing), (original, 1 - original)
+                    )
+
     def test_story_coverage_verifies_mixed_saved_routes_and_rejects_damaged_audio(self):
         with TemporaryDirectory() as directory:
             store = PregenerationJobStore(Path(directory) / "jobs")
             job, inputs, result, _items = fixture(
                 store.root / ("b" * 24), include_omission=True
             )
+            story = load_story_index_document(inputs.story_index)
+            rows = [record.document for record in story.records]
+            for row in rows[:2]:
+                row.update(
+                    source_audio_status="available",
+                    source_audio_duration_seconds=1.0,
+                    source_audio_completeness="partial",
+                )
+            write_story_index_document(
+                inputs.story_index,
+                story.metadata | {"source_audio_completion": "duration-seconds"},
+                rows,
+            )
+            job = replace(job, story_index_sha256=sha256_file(inputs.story_index))
             content = inspect_story_index(inputs.story_index)
             selection = content.selections[0]
             job = replace(job, selected_story_ids=(selection.selection_id,))
@@ -222,6 +316,39 @@ class OfflinePackPublisherTest(unittest.TestCase):
             )
             scoped = inspect_story_audio(single_line, selection.selection_id, store)
             self.assertEqual((scoped.generated, scoped.live, scoped.omitted), (1, 0, 0))
+            active = inspect_story_audio(
+                single_line,
+                selection.selection_id,
+                PregenerationJobStore(Path(directory) / "no-saved-jobs"),
+                manifest=pack.manifest,
+            )
+            self.assertEqual((active.generated, active.live, active.missing), (1, 0, 0))
+            outside = Path(directory) / "outside-story.jsonl"
+            write_story_index_document(
+                outside,
+                {"game": "Synthetic Game", "language": "en"},
+                [
+                    {
+                        "record_type": "line",
+                        "line_id": "outside-pack",
+                        "chapter": "2",
+                        "sequence": 1,
+                        "speaker": "Narrator",
+                        "text": "Original outside this pack.",
+                        "kind": "dialogue",
+                        "source_audio_status": "available",
+                        "speakable": True,
+                    }
+                ],
+            )
+            outside_content = inspect_story_index(outside)
+            uncovered = inspect_story_audio(
+                outside_content,
+                outside_content.selections[0].selection_id,
+                store,
+                manifest=pack.manifest,
+            )
+            self.assertEqual((uncovered.original, uncovered.missing), (0, 1))
             library = GeneratedAudioLibrary.load_optional(
                 pack.imported.generated_audio_manifest
             )

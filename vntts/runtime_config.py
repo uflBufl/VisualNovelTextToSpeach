@@ -16,6 +16,7 @@ from vntts.voices import (
     CharacterVoiceRouter,
     VoiceManifestError,
     find_default_voice_manifest,
+    is_narrator,
     normalize_character_name,
     pocket_tts_preset_voices,
 )
@@ -245,15 +246,22 @@ def initialize_voice_registry(settings=None, error_handler=None):
             preset_validator = pocket_tts_preset_voices.__contains__
         elif settings.speech_backend in {"chatterbox-nano", "moss-tts"}:
             preset_validator = ().__contains__
-        registry.apply_assignments(
-            settings.voice_assignments,
-            warn=(
-                (lambda message: error_handler(VoiceManifestError(message)))
-                if error_handler is not None
-                else (lambda message: print(message, file=sys.stderr))
-            ),
-            preset_validator=preset_validator,
-        )
+        defaults = {
+            character: source
+            for character, source in settings.character_voice_defaults.items()
+            if not is_narrator(character)
+        }
+        # Defaults affect synthesis only; manual assignments also override recordings.
+        for assignments in (defaults, settings.voice_assignments):
+            registry.apply_assignments(
+                assignments,
+                warn=(
+                    (lambda message: error_handler(VoiceManifestError(message)))
+                    if error_handler is not None
+                    else (lambda message: print(message, file=sys.stderr))
+                ),
+                preset_validator=preset_validator,
+            )
 
     return registry
 

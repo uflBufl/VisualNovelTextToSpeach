@@ -23,6 +23,36 @@ class ControlDashboardTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_preparation_task_stays_visible_across_sections_and_supports_keyboard_cancel(
+        self,
+    ):
+        dashboard = ControlDashboard(AppSettings())
+        cancelled = []
+        dashboard.preparation_cancel_requested.connect(lambda: cancelled.append(True))
+        phase = "Generating: 24 of 83 lines complete. Saved progress is available for continuing."
+        dashboard.set_preparation_phase(phase)
+        dashboard.set_preparation_active(True)
+        dashboard.resize(660, 520)
+        dashboard.setFont(QFont("Arial", 16))
+        dashboard.show()
+        for index in range(3):
+            dashboard.sections.setCurrentIndex(index)
+            self.application.processEvents()
+            self.assertTrue(dashboard.preparation_card.isVisibleTo(dashboard))
+            self.assertIn(phase, dashboard.preparation_summary.text())
+            self.assertTrue(dashboard.preparation_summary.wordWrap())
+            self.assertEqual(cancelled, [])
+        dashboard.preparation_cancel.setFocus()
+        QTest.keyClick(dashboard.preparation_cancel, Qt.Key.Key_Space)
+        self.assertEqual(cancelled, [True])
+        dashboard.set_preparation_active(False)
+        self.assertTrue(dashboard.preparation_card.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.preparation_cancel.isVisibleTo(dashboard))
+        dashboard.preparation_status.click()
+        self.assertEqual(dashboard.sections.currentIndex(), 0)
+        dashboard.close()
+        dashboard.deleteLater()
+
     def test_live_state_and_diagnostics_are_visible(self):
         dashboard = ControlDashboard(AppSettings())
         snapshot = DiagnosticSnapshot(

@@ -9,8 +9,10 @@ from vntts.application_directories import (
 from vntts.application_directories import get_config_directory, get_local_data_directory
 from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
+from vntts.voices import is_narrator
 
-settings_schema_version = 27
+settings_schema_version = 29
+main_sections = ("stories", "voices", "reading")
 
 audio_source_policies = {
     "live-tts-only",
@@ -40,6 +42,7 @@ restart_required_setting_names = (
     "voice_manifest",
     "narrator_speaker",
     "pocket_gated_model_accepted",
+    "character_voice_defaults",
 )
 
 
@@ -106,6 +109,7 @@ class AppSettings:
     launch_at_login: bool = False
     keep_running_on_close: bool = False
     compact_controls: bool = False
+    last_main_section: str = "stories"
     game_pack: str | None = field(
         default=None,
         metadata={"support_sensitivity": "path"},
@@ -133,6 +137,7 @@ class AppSettings:
     )
     narrator_speaker: str | None = None
     voice_assignments: dict[str, str] = field(default_factory=dict)
+    character_voice_defaults: dict[str, str] = field(default_factory=dict)
     force_live_narrator: bool = False
     active_profile_id: str | None = None
 
@@ -265,6 +270,12 @@ class AppSettings:
         else:
             warn("Invalid 'capture_mode' setting; using its default")
 
+        last_main_section = values.get("last_main_section", defaults.last_main_section)
+        if last_main_section in main_sections:
+            parsed["last_main_section"] = last_main_section
+        else:
+            warn("Invalid 'last_main_section' setting; using Stories")
+
         if parsed["auto_advance_key"] not in {"space", "enter", "right", "down"}:
             warn("Invalid 'auto_advance_key' setting; using its default")
             parsed["auto_advance_key"] = defaults.auto_advance_key
@@ -294,21 +305,26 @@ class AppSettings:
         ):
             parsed["speaker_announcement_mode"] = "all-speakers"
 
-        voice_assignments = values.get("voice_assignments", defaults.voice_assignments)
-        if isinstance(voice_assignments, dict) and all(
-            isinstance(character, str)
-            and character.strip()
-            and isinstance(source_id, str)
-            and source_id.strip()
-            for character, source_id in voice_assignments.items()
-        ):
-            parsed["voice_assignments"] = {
-                character.strip(): source_id.strip()
-                for character, source_id in voice_assignments.items()
-            }
-        else:
-            warn("Invalid 'voice_assignments' setting; using its default")
-            parsed["voice_assignments"] = {}
+        for name in ("voice_assignments", "character_voice_defaults"):
+            assignments = values.get(name, getattr(defaults, name))
+            if isinstance(assignments, dict) and all(
+                isinstance(character, str)
+                and character.strip()
+                and isinstance(source_id, str)
+                and source_id.strip()
+                for character, source_id in assignments.items()
+            ):
+                parsed[name] = {
+                    character.strip(): source_id.strip()
+                    for character, source_id in assignments.items()
+                }
+            else:
+                warn(f"Invalid {name!r} setting; using its default")
+                parsed[name] = {}
+        for character in tuple(parsed["character_voice_defaults"]):
+            if is_narrator(character):
+                warn("Narrator cannot be set in 'character_voice_defaults'")
+                del parsed["character_voice_defaults"][character]
 
         # Before schema 22 a saved Narrator assignment always bypassed source
         # and pregenerated audio. Preserve that behavior during migration while

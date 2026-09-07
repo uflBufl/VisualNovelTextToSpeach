@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vntts.settings import is_live_sequence_audio_mode
+from vntts.settings import is_live_sequence_audio_mode, main_sections
 from vntts.speech_presentation import (
     reading_policy_label,
     speech_configuration_label,
@@ -85,6 +85,7 @@ class RuntimeControlState:
 
 
 class ControlDashboard(QMainWindow):
+    main_section_changed = Signal(str)
     reading_setup_requested = Signal()
     read_requested = Signal()
     live_requested = Signal()
@@ -95,6 +96,7 @@ class ControlDashboard(QMainWindow):
     repeat_requested = Signal()
     stop_requested = Signal()
     pregeneration_requested = Signal()
+    preparation_cancel_requested = Signal()
     readiness_requested = Signal()
     calibration_requested = Signal()
     voices_requested = Signal()
@@ -403,13 +405,13 @@ class ControlDashboard(QMainWindow):
         voices_layout.addWidget(voices_title)
         voices_layout.addWidget(self.speech_configuration)
         voice_help = QLabel(
-            "Choose and preview your narrator below. Character voices and any "
-            "narrator substitutions are shown before story generation. "
+            "Choose and preview your narrator and character defaults below. "
+            "Review narrator substitutions before story generation. "
             "Changing a default voice does not change existing recordings."
         )
         voice_help.setWordWrap(True)
         voices_layout.addWidget(voice_help)
-        self.narrator_voice_button.setText("Choose and preview narrator...")
+        self.narrator_voice_button.setText("Choose and preview voices...")
         self.narrator_voice_button.setDefault(True)
         voices_layout.addWidget(self.narrator_voice_button)
         self.voice_availability = QLabel(
@@ -428,21 +430,40 @@ class ControlDashboard(QMainWindow):
         self.voices_stack.addWidget(voices_page)
         self.sections.addTab(self.voices_stack, "Voices")
         self.sections.addTab(reading_page, "Reading")
+        self.sections.currentChanged.connect(
+            lambda index: self.main_section_changed.emit(main_sections[index])
+        )
         self.open_reading_button.clicked.connect(self.show_reading)
         shell = QWidget()
         shell_layout = QVBoxLayout(shell)
         shell_layout.setContentsMargins(12, 12, 12, 12)
         shell_layout.addWidget(self.status)
         shell_layout.addWidget(self.loading_panel)
-        self.preparation_status = QPushButton()
+        self.preparation_card = QWidget()
+        preparation_layout = QHBoxLayout(self.preparation_card)
+        preparation_layout.setContentsMargins(0, 0, 0, 0)
+        self.preparation_summary = QLabel()
+        self.preparation_summary.setTextFormat(Qt.TextFormat.PlainText)
+        self.preparation_summary.setWordWrap(True)
+        preparation_layout.addWidget(self.preparation_summary, 1)
+        self.preparation_status = QPushButton("Show")
         self.preparation_status.setAccessibleName("Ongoing story preparation")
         self.preparation_status.clicked.connect(self.show_stories)
-        self.preparation_status.hide()
-        shell_layout.addWidget(self.preparation_status)
-        self.voice_edit_status = QPushButton(
-            "Save or cancel your narrator selection in Voices"
+        preparation_layout.addWidget(self.preparation_status)
+        self.preparation_cancel = QPushButton("Cancel")
+        self.preparation_cancel.setAccessibleName(
+            "Cancel story preparation and keep saved progress"
         )
-        self.voice_edit_status.setAccessibleName("Pending narrator selection")
+        self.preparation_cancel.setToolTip(
+            "Cancel remaining work; completed recordings stay saved."
+        )
+        self.preparation_cancel.clicked.connect(self.preparation_cancel_requested)
+        self.preparation_cancel.hide()
+        preparation_layout.addWidget(self.preparation_cancel)
+        self.preparation_card.hide()
+        shell_layout.addWidget(self.preparation_card)
+        self.voice_edit_status = QPushButton("Voices: unsaved selection — Show")
+        self.voice_edit_status.setAccessibleName("Pending voice selection")
         self.voice_edit_status.clicked.connect(self.show_voices)
         self.voice_edit_status.hide()
         shell_layout.addWidget(self.voice_edit_status)
@@ -457,6 +478,9 @@ class ControlDashboard(QMainWindow):
 
     def show_reading(self):
         self.sections.setCurrentIndex(2)
+
+    def show_main_section(self, name):
+        self.sections.setCurrentIndex(main_sections.index(name))
 
     def show_stories(self):
         self.sections.setCurrentIndex(0)
@@ -480,9 +504,9 @@ class ControlDashboard(QMainWindow):
 
     def set_voice_editor_busy(self, busy):
         self.voice_edit_status.setText(
-            "Voice preview is busy. Open Voices for progress or cancellation"
+            "Voice preview running — Show / cancel"
             if busy
-            else "Save or cancel your narrator selection in Voices"
+            else "Voices: unsaved selection — Show"
         )
 
     def embed_preparation(self, panel):
@@ -496,11 +520,14 @@ class ControlDashboard(QMainWindow):
     def remove_preparation(self, panel):
         self.stories_stack.removeWidget(panel)
         self.stories_stack.setCurrentIndex(0)
-        self.preparation_status.hide()
+        self.preparation_card.hide()
 
     def set_preparation_phase(self, phase):
-        self.preparation_status.setText(f"Story preparation: {phase} — Show")
-        self.preparation_status.show()
+        self.preparation_summary.setText(f"Story preparation: {phase}")
+        self.preparation_card.show()
+
+    def set_preparation_active(self, active):
+        self.preparation_cancel.setVisible(active)
 
     def _set_details_expanded(self, expanded):
         expanded = bool(expanded)

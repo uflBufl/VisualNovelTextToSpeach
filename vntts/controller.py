@@ -2647,11 +2647,21 @@ class AppController:
                     if is_unattributed_speaker(visible_speaker)
                     else dialogue_route.decision.requested_voice_character
                 )
+            elif isinstance(dialogue_route, (LiveTTSRoute, PreparedPlayback)):
+                announcement_speaker = (
+                    "Unknown"
+                    if is_unattributed_speaker(visible_speaker)
+                    else visible_speaker
+                    if not is_narrator(visible_speaker)
+                    and self.voice_router is not None
+                    and self.voice_router.registry.resolve(visible_speaker) is None
+                    else None
+                )
             else:
                 announcement_speaker = None
         else:
             announcement_speaker = (
-                "Narrator"
+                "Unknown"
                 if is_unattributed_speaker(visible_speaker)
                 else visible_speaker
             )

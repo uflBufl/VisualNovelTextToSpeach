@@ -3,7 +3,7 @@ from dataclasses import asdict
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -64,10 +64,15 @@ def _add_composite_form_row(form, label_text, field, field_layout):
 
 
 class ConfigurationPage(QWizardPage):
-    def __init__(self, settings, *, window_loader=list_windows):
+    def __init__(self, settings, *, window_loader=list_windows, reading_setup=False):
         super().__init__()
+        self.reading_setup = reading_setup
         self.original_settings = settings
         self.narrator_assignments = dict(settings.voice_assignments)
+        self.character_voice_defaults = dict(settings.character_voice_defaults)
+        self.speaker_announcement_mode = settings.speaker_announcement_mode
+        self.announce_speaker_changes = settings.announce_speaker_changes
+        self.tts_profile = settings.tts_profile
         self.flow = None
         self.window_loader = window_loader
         self.windows_refreshed = False
@@ -319,6 +324,13 @@ class ConfigurationPage(QWizardPage):
         advanced_form.addRow("Assets", self.manage_assets_button)
         if sys.platform == "darwin":
             advanced_form.addRow("Permissions", self.macos_permissions_button)
+        if reading_setup:
+            for widget in (self.terms, self.license_label):
+                advanced_form.removeWidget(widget)
+                recommended_form.addRow(widget)
+            if sys.platform == "darwin":
+                advanced_form.removeWidget(self.macos_permissions_button)
+                recommended_form.addRow(self.macos_permissions_button)
 
         self.advanced_content = QWidget()
         self.advanced_content.setLayout(advanced_form)
@@ -355,6 +367,27 @@ class ConfigurationPage(QWizardPage):
         self.update_terms_control()
         self._set_advanced_expanded(settings.speech_backend != "pocket-tts")
         self.update_validation_summary()
+        if reading_setup:
+            self.setTitle("Choose the game window")
+            self.setSubTitle(
+                "Select the running game. Reading uses your selected story and voices."
+            )
+            recommended_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+            self.auto_advance.setText("Advance after speech")
+            recommended_form.setRowVisible(self.speech_backend, False)
+            recommended_form.setRowVisible(self.tts_model, False)
+            self.choose_narrator_button.setText("Change voices...")
+            self.choose_narrator_button.setAccessibleName("Change voices in Voices")
+            self.choose_narrator_button.setAccessibleDescription(
+                "Return to the shared Voices editor before setting up Reading"
+            )
+            self._set_advanced_expanded(False)
+            self.advanced_toggle.hide()
+            self.terms.setVisible(
+                settings.speech_backend == "coqui-xtts"
+                and not settings.xtts_terms_accepted
+            )
+            self.license_label.setVisible(self.terms.isVisibleTo(self))
 
     def initializePage(self):
         if self.windows_refreshed:
@@ -422,14 +455,26 @@ class ConfigurationPage(QWizardPage):
             self.voice_manifest.setText(path)
 
     def choose_narrator(self):
+        if self.reading_setup:
+            self.flow.request_voices()
+            return
         dialog = GameNarratorDialog(self._base_settings(), self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.result_settings
+        self.speech_backend.setCurrentIndex(
+            self.speech_backend.findData(candidate.speech_backend)
+        )
+        self.tts_model.setText(candidate.tts_model or "")
+        self.tts_profile = candidate.tts_profile
         self.narrator_assignments = dict(candidate.voice_assignments)
+        self.character_voice_defaults = dict(candidate.character_voice_defaults)
+        self.speaker_announcement_mode = candidate.speaker_announcement_mode
+        self.announce_speaker_changes = candidate.announce_speaker_changes
         self.voice_manifest.setText(candidate.voice_manifest or "")
         self.pocket_gated_model.setChecked(candidate.pocket_gated_model_accepted)
-        self.narrator_reference.clear()
+        with QSignalBlocker(self.narrator_reference):
+            self.narrator_reference.setText(candidate.tts_speaker_wav or "")
         self.update_validation_summary()
 
     def _use_narrator_file(self, path):
@@ -494,6 +539,10 @@ class ConfigurationPage(QWizardPage):
         backend = self.speech_backend.currentData()
         uses_xtts = backend == "coqui-xtts"
         uses_moss = backend == "moss-tts"
+        if backend == "pocket-tts":
+            self.tts_profile = "default"
+        elif self.tts_profile == "default":
+            self.tts_profile = "stable"
         if uses_moss and self.tts_model.text().strip() in {
             "",
             default_onboarding_model,
@@ -541,6 +590,22 @@ class ConfigurationPage(QWizardPage):
         def add(widget, message):
             if message:
                 errors.append((widget, message))
+
+        if self.reading_setup:
+            if (
+                self.capture_mode.currentData() == "window"
+                and not self.game_window.currentText().strip()
+            ):
+                add(
+                    self.game_window,
+                    "Start the game, refresh the list, and select its window.",
+                )
+            if (
+                self.original_settings.speech_backend == "coqui-xtts"
+                and not self.terms.isChecked()
+            ):
+                add(self.terms, "Accept the XTTS license before the reading check.")
+            return tuple(errors)
 
         try:
             validate_hotkey_assignments(self.hotkey_assignments())
@@ -613,7 +678,9 @@ class ConfigurationPage(QWizardPage):
     def update_validation_summary(self, *_args):
         self.speech_summary.setText(
             speech_configuration_label(
-                self.original_settings.updated(
+                self.original_settings
+                if self.reading_setup
+                else self.original_settings.updated(
                     voice_assignments=dict(self.narrator_assignments),
                     speech_backend=self.speech_backend.currentData(),
                     tts_model=self.tts_model.text().strip() or None,
@@ -624,7 +691,9 @@ class ConfigurationPage(QWizardPage):
             )
         )
         self.speech_summary.setToolTip(
-            "Choose game voice opens the narrator picker. "
+            "Change the narrator, character voices and speech engine in Voices."
+            if self.reading_setup
+            else "Choose game voice opens the narrator picker. "
             "Manual reference files are optional in Advanced options."
         )
         errors = self.validation_errors()
@@ -653,6 +722,14 @@ class ConfigurationPage(QWizardPage):
         return True
 
     def _base_settings(self):
+        if self.reading_setup:
+            return self.original_settings.updated(
+                capture_mode=self.capture_mode.currentData(),
+                auto_advance_enabled=self.auto_advance.isChecked(),
+                game_window_title=self.game_window.currentText().strip() or None,
+                xtts_terms_accepted=self.terms.isChecked(),
+            )
+
         def optional_text(widget):
             return widget.text().strip() or None
 
@@ -661,6 +738,9 @@ class ConfigurationPage(QWizardPage):
             {
                 **asdict(self.original_settings),
                 "voice_assignments": dict(self.narrator_assignments),
+                "character_voice_defaults": dict(self.character_voice_defaults),
+                "speaker_announcement_mode": self.speaker_announcement_mode,
+                "announce_speaker_changes": self.announce_speaker_changes,
                 "capture_mode": self.capture_mode.currentData(),
                 "auto_advance_enabled": self.auto_advance.isChecked(),
                 "game_window_title": self.game_window.currentText().strip() or None,
@@ -669,6 +749,7 @@ class ConfigurationPage(QWizardPage):
                 "live_hotkey": hotkeys["Live reading"],
                 "speech_backend": self.speech_backend.currentData(),
                 "tts_model": optional_text(self.tts_model),
+                "tts_profile": self.tts_profile,
                 "ocr_language": self.ocr_language.text().strip(),
                 "tts_language": optional_text(self.tts_language),
                 "tts_speaker_wav": optional_text(self.narrator_reference),
@@ -681,7 +762,7 @@ class ConfigurationPage(QWizardPage):
 
     def settings(self):
         settings = self._base_settings()
-        if settings.game_pack:
+        if settings.game_pack and not self.reading_setup:
             settings = apply_game_pack(settings)
         return guard_auto_advance_settings(settings)
 
@@ -868,6 +949,12 @@ class DiagnosticsPage(QWizardPage):
             "voices": "Manage models and voices",
             "permissions": "Open macOS permissions",
         }
+        if self.flow.reading_setup:
+            labels.update(settings="Open Voices", voices="Open Voices")
+            if result.name == "Hotkeys":
+                labels["settings"] = "Open Settings"
+            elif result.name == "Capture source":
+                labels["settings"] = "Choose game window"
         self.remediation_button.setText(
             labels.get(result.remediation, "Show installation help")
         )
@@ -881,7 +968,15 @@ class DiagnosticsPage(QWizardPage):
             self.flow.configuration_page.open_macos_permissions()
             return
         if result.remediation in {"settings", "voices"}:
-            self.flow.show_page(1)
+            if self.flow.reading_setup and result.name != "Capture source":
+                if result.name == "Hotkeys":
+                    self.flow.request_settings()
+                else:
+                    self.flow.request_voices()
+                return
+            self.flow.show_page(self.flow.pages.index(self.flow.configuration_page))
+            if self.flow.reading_setup:
+                return
             self.flow.configuration_page._set_advanced_expanded(True)
             if result.remediation == "voices":
                 QTimer.singleShot(0, self.flow.configuration_page.manage_assets)
@@ -914,6 +1009,7 @@ class CalibrationPage(QWizardPage):
         self.button = QPushButton("Calibrate...")
         self.button.clicked.connect(self.calibrate)
         self.status = QLabel("Calibration has not been completed.")
+        self.status.setWordWrap(True)
         layout = QVBoxLayout(self)
         layout.addWidget(self.instructions)
         layout.addWidget(self.button)
@@ -941,7 +1037,15 @@ class CalibrationPage(QWizardPage):
         QTimer.singleShot(200, self.open_overlay)
 
     def open_overlay(self):
-        self.overlay = show_calibration_overlay(self.pending_geometry)
+        try:
+            self.overlay = show_calibration_overlay(self.pending_geometry)
+        except Exception as error:
+            self.restore_wizard()
+            self.status.setText(
+                f"The game could not be captured: {error}. Check capture permission "
+                "and keep the game visible, then try again."
+            )
+            return
         self.overlay.selected.connect(self.finish_calibration)
         self.overlay.closed.connect(self.restore_wizard)
 
@@ -1039,13 +1143,20 @@ class EndToEndTestPage(QWizardPage):
         if successful:
             self.progress.setValue(100)
         self.status.setText(
-            f"{message}\n\nSetup is ready. Finish setup, then choose Prepare offline "
+            f"{message}\n\nReading is ready. Save and return to Reading, then "
+            "choose Start reading."
+            if successful and self.flow.reading_setup
+            else f"{message}\n\nSetup is ready. Finish setup, then choose Prepare offline "
             "audio to select stories and voices, or use Start reading immediately."
             if successful
             else message
         )
         self.button.setText(
-            "Run test again" if successful else "Run OCR-to-speech test"
+            "Run test again"
+            if successful
+            else "Read the visible line"
+            if self.flow.reading_setup
+            else "Run OCR-to-speech test"
         )
         self.completeChanged.emit()
 
@@ -1056,6 +1167,8 @@ class EndToEndTestPage(QWizardPage):
 class OnboardingWizard(QDialog):
     test_requested = Signal(object)
     cancel_requested = Signal()
+    voices_requested = Signal()
+    settings_requested = Signal()
 
     def __init__(
         self,
@@ -1065,10 +1178,14 @@ class OnboardingWizard(QDialog):
         capture_target_factory=WindowCaptureTarget,
         window_loader=list_windows,
         auto_discover_windows=None,
+        reading_setup=False,
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Visual Novel Text to Speech setup")
+        self.reading_setup = reading_setup
+        self.setWindowTitle(
+            "Set up Reading" if reading_setup else "Visual Novel Text to Speech setup"
+        )
         self.setMinimumSize(520, 420)
         self.resize(820, 620)
         self.draft_settings = settings
@@ -1098,16 +1215,26 @@ class OnboardingWizard(QDialog):
         self.configuration_page = ConfigurationPage(
             settings,
             window_loader=window_loader,
+            reading_setup=reading_setup,
         )
         self.diagnostics_page = DiagnosticsPage(diagnostics or OnboardingDiagnostics())
         self.calibration_page = CalibrationPage(capture_target_factory)
         self.test_page = EndToEndTestPage()
         self.test_page.test_requested.connect(self.test_requested.emit)
         self.test_page.cancel_requested.connect(self.cancel_requested.emit)
+        if reading_setup:
+            self.diagnostics_page.setTitle("Get Reading ready")
+            self.diagnostics_page.setSubTitle(
+                "Check capture permission and prepare the selected speech engine. "
+                "Any missing component has a next action below."
+            )
+            self.calibration_page.setTitle("Confirm the dialogue area")
+            self.test_page.setTitle("Try one dialogue line")
+            self.test_page.button.setText("Read the visible line")
 
         self.stack = QStackedWidget()
         for page in (
-            welcome,
+            *((welcome,) if not reading_setup else ()),
             self.configuration_page,
             self.diagnostics_page,
             self.calibration_page,
@@ -1115,7 +1242,16 @@ class OnboardingWizard(QDialog):
         ):
             page.flow = self
             self.pages.append(page)
-            self.stack.addWidget(page)
+            if reading_setup and page is not self.configuration_page:
+                scroll = QScrollArea()
+                scroll.setWidgetResizable(True)
+                scroll.setHorizontalScrollBarPolicy(
+                    Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+                )
+                scroll.setWidget(page)
+                self.stack.addWidget(scroll)
+            else:
+                self.stack.addWidget(page)
             page.completeChanged.connect(self.update_navigation)
 
         self.step_label = QLabel()
@@ -1127,7 +1263,9 @@ class OnboardingWizard(QDialog):
         self.page_subtitle.setWordWrap(True)
         self.back_button = QPushButton("Back")
         self.next_button = QPushButton("Next")
-        self.finish_button = QPushButton("Finish setup")
+        self.finish_button = QPushButton(
+            "Save setup" if reading_setup else "Finish setup"
+        )
         self.finish_button.setDefault(True)
         self.finish_button.setAccessibleDescription(
             "Save setup and return to the dashboard without starting playback"
@@ -1159,17 +1297,15 @@ class OnboardingWizard(QDialog):
                 cleanup()
         self.current_page_index = max(0, min(index, len(self.pages) - 1))
         page = self.pages[self.current_page_index]
-        self.stack.setCurrentWidget(page)
+        self.stack.setCurrentIndex(self.current_page_index)
         self.step_label.setText(
             f"Step {self.current_page_index + 1} of {len(self.pages)}"
         )
         self.page_title.setText(page.title())
         self.page_subtitle.setText(page.subTitle())
         initializer = getattr(page, "initializePage", None)
-        if (
-            callable(initializer)
-            and self.current_page_index
-            and (page is not self.configuration_page or self.auto_discover_windows)
+        if callable(initializer) and (
+            page is not self.configuration_page or self.auto_discover_windows
         ):
             initializer()
         self.update_navigation()
@@ -1213,3 +1349,11 @@ class OnboardingWizard(QDialog):
 
     def settings(self):
         return self.completed_settings or self.draft_settings
+
+    def request_voices(self):
+        self.reject()
+        self.voices_requested.emit()
+
+    def request_settings(self):
+        self.reject()
+        self.settings_requested.emit()

@@ -58,7 +58,9 @@ class DurableSettingsMixin:
             self.show_dashboard()
             return
 
-        candidate = wizard.settings()
+        candidate = wizard.settings().updated(
+            last_main_section=self.settings.last_main_section
+        )
         try:
             path = candidate.save()
         except OSError as error:
@@ -71,13 +73,14 @@ class DurableSettingsMixin:
         self._update_auto_advance_action()
         self.controller.apply_settings(candidate)
         self.dashboard.set_configuration(candidate)
+        self._refresh_preparation_settings()
         self.set_ready(self.controller.is_ready)
         wizard.deleteLater()
         self.show_dashboard()
         self.dashboard.show_reading()
         self.dashboard.live_button.setFocus()
         self.set_status(
-            "Setup completed. Prepare offline audio for story voices, or click Start reading. "
+            "Reading setup saved. Click Start reading when ready. "
             f"Settings saved to {path}."
         )
         self.signals.hotkeys_requested.emit()
@@ -91,6 +94,17 @@ class DurableSettingsMixin:
             candidate.save()
         except OSError as error:
             self.show_error(f"Unable to save compact-controls preference: {error}")
+            return
+        self.settings = candidate
+
+    def _save_main_section(self, section):
+        if self.settings.last_main_section == section:
+            return
+        candidate = self.settings.updated(last_main_section=section)
+        try:
+            candidate.save()
+        except OSError as error:
+            self.show_error(f"Unable to save the selected main section: {error}")
             return
         self.settings = candidate
 
@@ -132,13 +146,19 @@ class DurableSettingsMixin:
 
     def _persist_voice_change(self, operation, failure_message):
         saved_path = []
+        section = self.settings.last_main_section
         try:
-            settings = operation(lambda candidate: saved_path.append(candidate.save()))
+            settings = operation(
+                lambda candidate: saved_path.append(
+                    candidate.updated(last_main_section=section).save()
+                )
+            )
         except OSError as error:
             self.show_error(f"{failure_message}: {error}")
             raise
-        self.settings = settings
-        self.dashboard.set_configuration(settings)
+        self.settings = settings.updated(last_main_section=section)
+        self.dashboard.set_configuration(self.settings)
+        self._refresh_preparation_settings()
         self._apply_controller_action_state()
         profile_synced = self._sync_active_profile(self.settings)
         suffix = "" if profile_synced else "; active profile could not be updated"
