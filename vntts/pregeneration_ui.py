@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -186,6 +187,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._close_after_voice_cancel = False
         self._content = ()
         self._story_selection_drafts = {}
+        self._unsaved_story_selections = {}
         self._job = None
         self._voice_plan = None
         self._prepared_voice_manifest = None
@@ -1237,12 +1239,24 @@ class OfflineAudioPreparationDialog(QDialog):
         self.stories.clear()
         if content is not None:
             resumed = self.job_store.latest_for_content(content)
+            selection_error = None
+            if content.story_index_sha256 not in self._story_selection_drafts:
+                try:
+                    saved = self.job_store.selection_for_content(content)
+                except (OSError, ValueError, PregenerationSetupError) as error:
+                    selection_error = error
+                    saved = ()
+                if saved is not None:
+                    self._story_selection_drafts[content.story_index_sha256] = set(
+                        saved
+                    )
             selected_ids = self._story_selection_drafts.get(
                 content.story_index_sha256,
                 set(resumed.selected_story_ids)
                 if resumed
                 else {selection.selection_id for selection in content.selections},
             )
+            self._story_selection_drafts[content.story_index_sha256] = set(selected_ids)
             story_statuses = self.job_store.story_statuses(content)
             for selection in content.selections:
                 status = story_statuses.get(selection.selection_id)
@@ -1273,12 +1287,14 @@ class OfflineAudioPreparationDialog(QDialog):
                 f"{remaining} not started ({len(content.selections)} stories total)."
             )
             message = (
-                "Saved offline audio found. Previous selection restored."
+                "Saved offline audio found. Story selection is remembered when you continue or close."
                 if ready
                 else "Previous selection restored. Continue resumes the same preparation."
                 if resumed
-                else "Your selection will be saved and can be resumed after restart."
+                else "Your story selection is remembered when you continue or close."
             )
+            if selection_error is not None:
+                message = f"Unable to restore story selection: {selection_error}. Select stories again."
             self.selection_status.setText(message)
             self.resume_status.setText(message)
         else:
@@ -1331,6 +1347,13 @@ class OfflineAudioPreparationDialog(QDialog):
         content = self.current_content()
         selected = self.selected_story_ids()
         if content is not None:
+            if set(selected) != self._story_selection_drafts.get(
+                content.story_index_sha256
+            ):
+                self._unsaved_story_selections[content.story_index_sha256] = (
+                    content,
+                    selected,
+                )
             self._story_selection_drafts[content.story_index_sha256] = set(selected)
         self._filter_stories()
         if not self._generation_engine_available():
@@ -1373,8 +1396,24 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.setEnabled(True)
 
     def _continue_requested(self):
+        if not self._save_story_selection_drafts():
+            return
         self.preparationRequested.emit()
         self._save_selection()
+
+    def _save_story_selection_drafts(self):
+        for checksum, (content, selected) in tuple(
+            self._unsaved_story_selections.items()
+        ):
+            try:
+                self.job_store.save_selection(content, selected)
+            except (OSError, ValueError, PregenerationSetupError) as error:
+                self.selection_status.setText(
+                    f"Unable to save story selection: {error}. Check write access and retry."
+                )
+                return False
+            del self._unsaved_story_selections[checksum]
+        return True
 
     def _save_selection(self):
         if self._pack_result is not None:
@@ -1994,6 +2033,9 @@ class OfflineAudioPreparationDialog(QDialog):
             self._cancel_or_reject()
             event.ignore()
             return
+        if not self._confirm_selection_close():
+            event.ignore()
+            return
         self.import_runner.cancel()
         self.discovery_runner.cancel()
         self.voice_runner.cancel()
@@ -2014,12 +2056,29 @@ class OfflineAudioPreparationDialog(QDialog):
         if self.has_pending_work():
             self._cancel_or_reject()
             return
+        if not self._confirm_selection_close():
+            return
         self._stop_generation_progress()
         self.discovery_runner.cancel()
         self.progress_timer.stop()
         if not self.voice_panel.active:
             self.voice_panel.shutdown()
         super().done(result)
+
+    def _confirm_selection_close(self):
+        if not self._save_story_selection_drafts():
+            choice = QMessageBox.question(
+                self,
+                "Story selection was not saved",
+                self.selection_status.text()
+                + "\nDiscard these checkbox changes and close? Existing recordings and preparation progress are unchanged.",
+                QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if choice != QMessageBox.StandardButton.Discard:
+                return False
+            self._unsaved_story_selections.clear()
+        return True
 
     def has_pending_work(self):
         return any(

@@ -234,6 +234,49 @@ class PregenerationJobStore:
         ).expanduser()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
+    def _selection_path(self, content):
+        checksum = _sha256_text({"checksum": content.story_index_sha256}, "checksum")
+        return self.root / "selections" / f"{checksum}.json"
+
+    def selection_for_content(self, content):
+        path = self._selection_path(content)
+        try:
+            document = read_versioned_json(
+                path, schema_version=1, document_name="story selection"
+            )
+        except FileNotFoundError:
+            return None
+        try:
+            if document["story_index_sha256"] != content.story_index_sha256:
+                raise ValueError("Story selection belongs to different content")
+            values = document["selected_story_ids"]
+            return (
+                ()
+                if values == []
+                else _normalized_selection_ids(
+                    content, _text_tuple(document, "selected_story_ids")
+                )
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise PregenerationSetupError(
+                f"Saved story selection is invalid: {error}"
+            ) from error
+
+    def save_selection(self, content, selected_story_ids):
+        selected = tuple(selected_story_ids)
+        if selected:
+            selected = _normalized_selection_ids(content, selected)
+        path = self._selection_path(content)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_versioned_json(
+            path,
+            1,
+            {
+                "story_index_sha256": content.story_index_sha256,
+                "selected_story_ids": list(selected),
+            },
+        )
+
     def create_or_resume(self, content, selected_story_ids):
         selected_ids = _normalized_selection_ids(content, selected_story_ids)
         selected = tuple(

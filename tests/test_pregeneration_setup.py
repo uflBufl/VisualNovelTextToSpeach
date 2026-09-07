@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 from vntts_artifacts import write_story_index_document  # noqa: E402
 
 from vntts.game_content_importer import (  # noqa: E402
@@ -38,6 +38,7 @@ from vntts.pregeneration_setup import (  # noqa: E402
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import PregenerationVoiceCancelled  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.versioned_json import write_versioned_json  # noqa: E402
 
 
 def write_story_index(root):
@@ -454,6 +455,103 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.story_search.setText("missing story")
             self.assertIn("Clear filters", dialog.story_filter_status.text())
             self.assertEqual(dialog.selected_story_ids(), ("main-1",))
+
+    def test_unstarted_story_selection_survives_close_without_creating_jobs(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            other = replace(content, story_index_sha256="b" * 64, game="Other game")
+
+            def reopen():
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    discovery=lambda: ContentDiscovery((content, other)),
+                    job_store=PregenerationJobStore(root / "jobs"),
+                )
+                self.addCleanup(dialog.deleteLater)
+                dialog.show()
+                return dialog
+
+            first = reopen()
+            first.select_none_button.click()
+            first.source.setCurrentIndex(1)
+            first.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
+            first.close()
+            second = reopen()
+            self.assertEqual(second.selected_story_ids(), ())
+            self.assertFalse(second.continue_button.isEnabled())
+            second.source.setCurrentIndex(1)
+            self.assertEqual(second.selected_story_ids(), ("main-1",))
+            self.assertEqual(second.job_store.jobs_for_content(content), ())
+            self.assertEqual(second.job_store.story_statuses(other), {})
+            second.close()
+
+    def test_selection_save_failure_keeps_previous_draft_and_allows_retry(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            store.save_selection(content, ("rhiannon",))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=store,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.show()
+            dialog.select_none_button.click()
+            with patch.object(
+                store, "save_selection", side_effect=PermissionError("read only")
+            ):
+                dialog._continue_requested()
+                self.assertIsNone(dialog.job())
+                self.assertIn("Unable to save", dialog.selection_status.text())
+                with patch(
+                    "vntts.pregeneration_ui.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Cancel,
+                ):
+                    dialog.close()
+                self.assertTrue(dialog.isVisible())
+                self.assertFalse(dialog.voice_panel._shutdown_requested)
+                self.assertEqual(store.selection_for_content(content), ("rhiannon",))
+            dialog.close()
+            self.assertFalse(dialog.isVisible())
+            self.assertEqual(store.selection_for_content(content), ())
+            dialog.show()
+            dialog.select_all_button.click()
+            with (
+                patch.object(
+                    store, "save_selection", side_effect=PermissionError("read only")
+                ),
+                patch(
+                    "vntts.pregeneration_ui.QMessageBox.question",
+                    return_value=QMessageBox.StandardButton.Discard,
+                ) as prompt,
+            ):
+                dialog.close()
+            prompt.assert_called_once()
+            self.assertFalse(dialog.isVisible())
+            self.assertEqual(store.selection_for_content(content), ())
+
+    def test_damaged_story_selection_is_visible_and_does_not_select_every_story(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            store.save_selection(content, ())
+            path = store._selection_path(content)
+            write_versioned_json(path, 2, {"selected_story_ids": ["rhiannon"]})
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=store,
+            )
+            self.addCleanup(dialog.deleteLater)
+            self.assertEqual(dialog.selected_story_ids(), ())
+            self.assertIn("Unable to restore", dialog.selection_status.text())
+            dialog.close()
+            with self.assertRaises(ValueError):
+                store.selection_for_content(content)
 
     def test_reopen_prefers_saved_full_source_over_active_one_story_pack(self):
         with TemporaryDirectory() as temporary_directory:

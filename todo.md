@@ -48,8 +48,7 @@ adding another wizard or library implementation.
     capture-area confirmation and a short reading check in context; do not force
     the entire setup sequence again after successful configuration.
 - [ ] Make Stories the preparation and readiness home.
-  - Persist library selection across restarts even before preparation begins.
-    Show precise status for all imported stories: not prepared, preparing,
+  - Show precise status for all imported stories: not prepared, preparing,
     partially prepared, ready, or needs attention.
     Opening a story shows original/prepared/live-TTS/omitted coverage with counts
     scoped to that story; never call a live-dependent result fully offline-ready.
