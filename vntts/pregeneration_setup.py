@@ -390,9 +390,13 @@ class PregenerationJobStore:
         return statuses
 
     def _has_published_pack(self, job):
+        return bool(self.published_packs(job))
+
+    def published_packs(self, job):
         root = self.path_for(job.job_id).parent / "game-packs"
         if not root.is_dir():
-            return False
+            return ()
+        manifests = []
         for manifest in root.glob("pack-*/game-pack.json"):
             identity = manifest.parent.name.removeprefix("pack-")
             if len(identity) == 24 and manifest.is_file():
@@ -400,8 +404,8 @@ class PregenerationJobStore:
                     int(identity, 16)
                 except ValueError:
                     continue
-                return True
-        return False
+                manifests.append(manifest)
+        return tuple(manifests)
 
     def mark_prepared(self, job):
         if not isinstance(job, PregenerationJob):

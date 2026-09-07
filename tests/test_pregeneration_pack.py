@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.game_pack import GamePackError
 from vntts_artifacts.story_index import (
     load_story_index_document,
     write_story_index_document,
@@ -25,13 +26,20 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.pregeneration_generation import OfflineGenerationResult
-from vntts.pregeneration_pack import OfflinePackError, OfflinePackPublisher
+from vntts.pregeneration_pack import (
+    OfflinePackError,
+    OfflinePackPublisher,
+    inspect_story_audio,
+)
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import (
     PregenerationJob,
+    PregenerationJobStore,
     PreparationEstimate,
+    inspect_story_index,
 )
 from vntts.synthesis import SynthesisCompletion
+from vntts.versioned_json import write_versioned_json
 
 
 def item(name, sequence):
@@ -188,6 +196,39 @@ def fixture(
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_story_coverage_verifies_mixed_saved_routes_and_rejects_damaged_audio(self):
+        with TemporaryDirectory() as directory:
+            store = PregenerationJobStore(Path(directory) / "jobs")
+            job, inputs, result, _items = fixture(
+                store.root / ("b" * 24), include_omission=True
+            )
+            content = inspect_story_index(inputs.story_index)
+            selection = content.selections[0]
+            job = replace(job, selected_story_ids=(selection.selection_id,))
+            write_versioned_json(store.path_for(job.job_id), 1, job.to_document())
+            absent = inspect_story_audio(content, selection.selection_id, store)
+            self.assertIsNone(absent.manifest)
+            self.assertEqual(absent.missing, 3)
+            pack = OfflinePackPublisher().publish(job, inputs, result)
+            coverage = inspect_story_audio(content, selection.selection_id, store)
+            self.assertEqual(coverage.manifest.resolve(), pack.manifest)
+            self.assertEqual(
+                (coverage.generated, coverage.live, coverage.omitted, coverage.missing),
+                (1, 1, 1, 0),
+            )
+            single_line = replace(
+                content,
+                selections=(replace(selection, line_ids=(selection.line_ids[0],)),),
+            )
+            scoped = inspect_story_audio(single_line, selection.selection_id, store)
+            self.assertEqual((scoped.generated, scoped.live, scoped.omitted), (1, 0, 0))
+            library = GeneratedAudioLibrary.load_optional(
+                pack.imported.generated_audio_manifest
+            )
+            library.index.entries[0].audio.write_bytes(b"damaged")
+            with self.assertRaises((OfflinePackError, GamePackError)):
+                inspect_story_audio(content, selection.selection_id, store)
+
     def test_change_summary_uses_verified_resume_and_exact_replacement_candidates(self):
         with TemporaryDirectory() as directory:
             job, inputs, result, _items = fixture(Path(directory))

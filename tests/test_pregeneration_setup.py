@@ -553,6 +553,38 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.selection_for_content(content)
 
+    def test_story_audio_check_runs_in_background_and_discards_old_selection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.stories.setCurrentRow(0)
+            dialog.check_story_audio.click()
+            self.assertEqual(len(pool.tasks), 1)
+            self.assertIn("background", dialog.story_audio_status.text())
+            dialog.stories.setCurrentRow(1)
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertNotIn("Original game audio", dialog.story_audio_status.text())
+            dialog.stories.setCurrentRow(0)
+            dialog.check_story_audio.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertIn("Main Story 1", dialog.story_audio_status.text())
+            self.assertIn(
+                "Original game audio (indexed): 1", dialog.story_audio_status.text()
+            )
+            self.assertIn("not prepared: 1", dialog.story_audio_status.text())
+            self.assertIn("No saved preparation pack", dialog.story_audio_status.text())
+            self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
+
     def test_reopen_prefers_saved_full_source_over_active_one_story_pack(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

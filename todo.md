@@ -52,8 +52,9 @@ adding another wizard or library implementation.
 - [ ] Make Stories the preparation and readiness home.
   - Show precise status for all imported stories: not prepared, preparing,
     partially prepared, ready, or needs attention.
-    Opening a story shows original/prepared/live-TTS/omitted coverage with counts
-    scoped to that story; never call a live-dependent result fully offline-ready.
+    Integrate checked story coverage into list statuses and include unpublished
+    progress and the active Reading pack. Keep WAV verification on demand;
+    never call a live-dependent result fully offline-ready.
   - Use one primary action appropriate to the selected story: Prepare, Continue
     preparation or Start reading. Keep multi-story preparation as selection in
     the same library, not another dialog or a separate queue product.

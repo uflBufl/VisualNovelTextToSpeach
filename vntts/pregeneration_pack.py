@@ -93,6 +93,90 @@ class OfflinePreparationChanges:
     switches_pack: bool = False
 
 
+@dataclass(frozen=True)
+class StoryAudioCoverage:
+    title: str
+    manifest: Path | None
+    original: int = 0
+    generated: int = 0
+    live: int = 0
+    omitted: int = 0
+    non_spoken: int = 0
+    missing: int = 0
+
+
+def inspect_story_audio(content, selection_id, job_store):
+    """Verify one story against one saved pack; never combine incompatible packs."""
+    selection = next(
+        value for value in content.selections if value.selection_id == selection_id
+    )
+    if sha256_file(content.story_index) != content.story_index_sha256:
+        raise OfflinePackError(
+            "Story content changed. Refresh the story list and retry."
+        )
+    source = load_story_index_document(content.story_index)
+    manifests = [
+        manifest
+        for job in job_store.jobs_for_content(content)
+        if selection_id in job.selected_story_ids
+        for manifest in job_store.published_packs(job)
+    ]
+    manifest = max(
+        manifests, key=lambda path: (path.stat().st_mtime_ns, str(path)), default=None
+    )
+    library = None
+    pack_records = {}
+    if manifest is not None:
+        imported = import_game_pack(manifest)
+        pack_records = {
+            record.line_id: record
+            for record in load_story_index_document(imported.story_index).records
+        }
+        if imported.generated_audio_manifest is not None:
+            library = GeneratedAudioLibrary(
+                load_generated_audio_document(imported.generated_audio_manifest),
+                cache_size=1,
+            )
+    counts = dict(original=0, generated=0, live=0, omitted=0, non_spoken=0, missing=0)
+    line_ids = set(selection.line_ids)
+    for record in source.records:
+        if record.line_id not in line_ids:
+            continue
+        saved = pack_records.get(record.line_id)
+        if saved is not None and saved.text_sha256 != record.text_sha256:
+            raise OfflinePackError(
+                "Saved story text differs from the selected content. Prepare this story again."
+            )
+        # Published source semantics can distinguish speech from a game sound cue.
+        effective = saved or record
+        if library and library.find_audio_event_omission(
+            record.line_id, record.text_sha256
+        ):
+            route = "omitted"
+        elif not effective.speakable:
+            route = "non_spoken"
+        elif (
+            library
+            and library.index.find(
+                record.line_id, record.text_sha256, verify_file=False
+            )
+            is not None
+        ):
+            if library.find(record.line_id, record.text_sha256) is None:
+                raise OfflinePackError(
+                    f"Saved audio is missing or damaged for {record.line_id}. Prepare this story again."
+                )
+            route = "generated"
+        elif library and library.find_live_fallback(record.line_id, record.text_sha256):
+            route = "live"
+        elif effective.source_audio_status == "available":
+            route = "original"
+        else:
+            route = "missing"
+        counts[route] += 1
+    return StoryAudioCoverage(selection.title, manifest, **counts)
+
+
 class OfflinePackPublisher:
     def __init__(self, *, base_pack=None):
         self.base_pack = Path(base_pack).expanduser().resolve() if base_pack else None
