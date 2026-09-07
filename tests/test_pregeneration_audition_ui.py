@@ -272,6 +272,93 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.shutdown()
             panel.deleteLater()
 
+    def test_alternate_phrase_with_failed_candidates_resets_pair_position(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            candidates = tuple(
+                replace(group.candidates[0], source_id=f"character:candidate-{index}")
+                for index in range(4)
+            )
+            group = replace(group, candidates=candidates)
+            plan = replace(plan, groups=(group,))
+            previews = Mock()
+
+            def generate(_plan, _group, source_id, **options):
+                if "text" in options and source_id in {
+                    candidate.source_id for candidate in candidates[2:]
+                }:
+                    raise RuntimeError("alternate preview failed")
+                return Mock(path=root / "preview.wav")
+
+            previews.generate.side_effect = generate
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                Mock(), preview_service=previews, thread_pool=pool, player=Mock()
+            )
+            panel.start(plan)
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            panel.neither_button.click()
+            self.assertEqual(panel._displayed[0][2], candidates[2].source_id)
+            panel.another_sample_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertEqual(
+                tuple(value[2] for value in panel._displayed),
+                tuple(candidate.source_id for candidate in candidates[:2]),
+            )
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertTrue(panel.b_use.isEnabled())
+            panel.shutdown()
+            panel.deleteLater()
+
+    def test_use_narrator_without_preview_saves_instead_of_retrying_generation(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            candidates = tuple(
+                replace(group.candidates[0], source_id=f"character:candidate-{index}")
+                for index in range(3)
+            )
+            narrator = replace(group.candidates[0], source_id="preset:alba")
+            group = replace(group, candidates=candidates, narrator_candidate=narrator)
+            plan = replace(plan, groups=(group,))
+            previews = Mock()
+
+            def generate(_plan, _group, source_id, **_options):
+                if source_id == narrator.source_id:
+                    raise RuntimeError("narrator preview failed")
+                return Mock(path=root / "preview.wav")
+
+            previews.generate.side_effect = generate
+            decisions = Mock()
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                decisions, preview_service=previews, thread_pool=pool, player=Mock()
+            )
+            panel.start(plan)
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            panel.neither_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertEqual(
+                panel.neither_button.text(), "Use narrator without preview"
+            )
+            calls_before = previews.generate.call_count
+            panel.neither_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertEqual(previews.generate.call_count, calls_before)
+            decisions.remember_many.assert_called_once_with(
+                ((group, default_voice_choice_id),)
+            )
+            panel.shutdown()
+            panel.deleteLater()
+
     def test_cancelling_does_not_wait_for_speculative_preview(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

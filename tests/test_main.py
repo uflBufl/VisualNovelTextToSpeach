@@ -4394,6 +4394,27 @@ class MainTest(unittest.TestCase):
         controller.live_reader.block_auto_advance_for_generation.assert_not_called()
         controller.live_reader.seal_generation.assert_called_once_with(7)
 
+    def test_explicit_sequence_repeat_does_not_reopen_completed_cursor(self):
+        controller = AppController(
+            AppSettings(live_sequence_mode="audio-auto"), tts_factory=Mock()
+        )
+        controller.live_reader = Mock()
+        controller.live_reader.wait_until_playable.return_value = True
+        controller._begin_sequence_playback = Mock(return_value=None)
+        controller._live_sequence_audio_active = Mock(return_value=True)
+        controller.speech_backend = StubTypedPlaybackBackend()
+        prepared = GeneratedAudioRoute(
+            PreparedGeneratedAudio("reverse1999:1:2", "hash", Mock(), 48_000),
+            stub_route_trace("generated-audio", "reverse1999:1:2"),
+        )
+        chunk = SpeechChunk(
+            7, "Rhiannon", "Repeat me.", line_id="reverse1999:1:2", explicit_replay=True
+        )
+        self.assertTrue(controller._play_live_chunk(chunk, prepared))
+        controller._begin_sequence_playback.assert_not_called()
+        controller.live_reader.seal_generation.assert_not_called()
+        controller.live_reader.block_auto_advance_for_generation.assert_not_called()
+
     def test_generated_audio_completion_seals_late_ocr_suffixes(self):
         controller = AppController(AppSettings(), tts_factory=Mock())
         controller.live_reader = Mock()

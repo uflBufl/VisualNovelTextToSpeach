@@ -14,6 +14,7 @@ class SpeechChunk:
     text: str
     ordinal: int | None = field(default=None, compare=False)
     line_id: str | None = field(default=None, compare=False)
+    explicit_replay: bool = False
 
     @property
     def chunk_id(self):
@@ -945,6 +946,7 @@ class LiveDialogReader:
                     chunk.character,
                     chunk.text,
                     line_id=chunk.line_id,
+                    explicit_replay=True,
                 )
             ]
         )
@@ -1026,7 +1028,9 @@ class LiveDialogReader:
             return (
                 (chunk.generation == self.active_generation or finish_active_playback)
                 and (
-                    self.sealed_generation != chunk.generation or finish_active_playback
+                    self.sealed_generation != chunk.generation
+                    or finish_active_playback
+                    or chunk.explicit_replay
                 )
                 and self.suppressed_generation != chunk.generation
                 and id(chunk) not in self.cancelled_chunk_ids
@@ -1612,7 +1616,10 @@ class LiveDialogReader:
             with self.pause_condition:
                 if self.emergency_stopped:
                     continue
-                if self.sealed_generation == chunk.generation:
+                if (
+                    self.sealed_generation == chunk.generation
+                    and not chunk.explicit_replay
+                ):
                     self._report_pipeline_event(
                         "late-chunk-suppressed",
                         chunk.generation,

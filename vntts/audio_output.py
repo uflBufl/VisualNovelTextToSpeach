@@ -86,10 +86,10 @@ class SynchronousPcmPlaybackMixin:
                     self._prepare_audio(prepared.payload),
                     self.sample_rate,
                 )
+                # Live guards may wait for Resume; never hold the lock needed by Stop.
+                guard_allows_playback = playback_guard is None or playback_guard()
                 with self.playback_state_lock:
-                    interrupted = stop_requested.is_set() or (
-                        playback_guard is not None and not playback_guard()
-                    )
+                    interrupted = stop_requested.is_set() or not guard_allows_playback
                     if not interrupted:
                         audio_output.play(
                             audio,

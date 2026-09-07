@@ -510,6 +510,40 @@ class TTSEngineTest(unittest.TestCase):
         self.assertEqual(outcomes[0].status, PlaybackStatus.INTERRUPTED)
         audio_output.stop.assert_called_once_with()
 
+    def test_stop_returns_while_live_guard_waits_for_resume(self):
+        engine, _, audio_output = self.create_engine()
+        guard_entered, resume, stop_returned = Event(), Event(), Event()
+        outcomes = []
+
+        def guard():
+            if engine.playback_active:
+                guard_entered.set()
+                resume.wait(timeout=3)
+            return True
+
+        playback = Thread(
+            target=lambda: outcomes.append(
+                engine.play_prepared(
+                    PreparedPlayback([0.0, 0.5, 0.0], None, None, None, "test"),
+                    playback_guard=guard,
+                )
+            )
+        )
+        stopping = Thread(target=lambda: (engine.stop(), stop_returned.set()))
+        playback.start()
+        try:
+            self.assertTrue(guard_entered.wait(timeout=1))
+            stopping.start()
+            self.assertTrue(stop_returned.wait(timeout=1))
+        finally:
+            resume.set()
+            playback.join(timeout=2)
+            if stopping.ident is not None:
+                stopping.join(timeout=2)
+        self.assertEqual(outcomes[0].status, PlaybackStatus.INTERRUPTED)
+        audio_output.play.assert_not_called()
+        audio_output.stop.assert_called_once_with()
+
     def test_typed_playback_keeps_synthesis_and_first_device_write_separate(self):
         clock = iter((1.0, 1.005, 1.4)).__next__
         engine, _, _audio_output = self.create_engine(clock=clock)

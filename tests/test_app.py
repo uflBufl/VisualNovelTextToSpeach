@@ -50,6 +50,44 @@ class TrayApplicationTest(unittest.TestCase):
             QTest.qWait(5)
         self.fail("Timed out waiting for an asynchronous UI operation")
 
+    def test_missing_saved_pack_opens_settings_without_starting_playback(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "settings.json"
+            saved = AppSettings(
+                game_pack=str(root / "missing-game-pack.json"),
+                onboarding_completed=True,
+                compact_controls=True,
+            )
+            saved.save(path)
+            controller = Mock(is_ready=False)
+            with (
+                patch("vntts.settings.get_settings_path", return_value=path),
+                patch("vntts.app.get_local_data_directory", return_value=root),
+                patch(
+                    "vntts.app.QSystemTrayIcon.isSystemTrayAvailable",
+                    return_value=False,
+                ),
+            ):
+                tray_application = TrayApplication(
+                    self.application,
+                    controller_factory=Mock(return_value=controller),
+                    profile_store=GameProfileStore(root / "profiles.json"),
+                )
+                tray_application.start()
+                self.assertTrue(tray_application.dashboard.isVisible())
+                self.assertTrue(tray_application.settings_action.isEnabled())
+                self.assertFalse(tray_application.read_action.isEnabled())
+                self.assertFalse(tray_application.live_action.isEnabled())
+                self.assertEqual(tray_application.settings.game_pack, saved.game_pack)
+                self.assertIn("Open Settings", tray_application.status_action.text())
+                controller.prepare_startup.assert_not_called()
+                controller.start.assert_not_called()
+                self.assertIsNone(tray_application.hotkey_listener)
+                tray_application.shutdown()
+                delete_dialog(tray_application.dashboard)
+                delete_dialog(tray_application.compact_controller)
+
     def test_tray_shell_exposes_runtime_controls(self):
         controller = Mock()
         controller_factory = Mock(return_value=controller)
@@ -3130,6 +3168,45 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(results[0][0])
         self.assertIn("invalid Pioneer reference", results[0][1])
         tray_application.shutdown()
+
+    def test_onboarding_worker_errors_report_failure_and_allow_retry(self):
+        class ImmediateThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        controller = Mock()
+        controller.start.return_value = True
+        controller.test_current_dialog.return_value = ("Narrator", "Ready.")
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        results = []
+        tray.signals.onboarding_test_finished.connect(
+            lambda success, message: results.append((success, message))
+        )
+        try:
+            with patch("vntts.app.Thread", ImmediateThread):
+                for operation in (
+                    controller.apply_settings,
+                    controller.prepare_startup,
+                    controller.start,
+                ):
+                    with self.subTest(operation=operation):
+                        operation.side_effect = RuntimeError("setup failure")
+                        tray.run_onboarding_test(AppSettings())
+                        self.assertFalse(tray._onboarding_test_active)
+                        self.assertFalse(results[-1][0])
+                        self.assertIn("setup failure", results[-1][1])
+                        operation.side_effect = None
+                        tray.run_onboarding_test(AppSettings())
+                        self.assertTrue(results[-1][0])
+        finally:
+            tray.shutdown()
 
     def test_pocket_onboarding_cancellation_stops_startup_and_reports_cancelled(self):
         class ImmediateThread:

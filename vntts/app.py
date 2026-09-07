@@ -1146,7 +1146,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         super().__init__()
         self.application = application
         uses_saved_settings = settings is None
-        self.settings = settings or load_app_settings()
+        self._startup_game_pack_errors = []
+        self.settings = settings or load_app_settings(
+            on_game_pack_error=self._startup_game_pack_errors.append
+        )
         self.signals = AppSignals()
         self.last_controller_error = None
         self.support_log = RuntimeSupportLog(
@@ -1445,6 +1448,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             self.settings = self.settings.updated(keep_running_on_close=False)
             self.dashboard.set_configuration(self.settings)
+        if self._startup_game_pack_errors:
+            self.show_dashboard()
+            self.set_ready(False)
+            self.show_error(
+                "Unable to open the saved game pack. Open Settings to select a "
+                "valid game pack, then restart VNTTS. Your saved paths were kept. "
+                f"{self._startup_game_pack_errors[0]}"
+            )
+            return
         if self.settings.onboarding_completed and self.settings.compact_controls:
             self.show_compact_controls()
         elif self.settings.onboarding_completed:
@@ -2078,10 +2090,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     True,
                     f"Success. Recognized {character}: {preview}",
                 )
+            except Exception as error:
+                self.signals.onboarding_test_finished.emit(
+                    False, format_runtime_error(error)
+                )
             finally:
-                if cancel_event.is_set():
-                    self.controller.shutdown()
-                self._onboarding_test_active = False
+                try:
+                    if cancel_event.is_set():
+                        self.controller.shutdown()
+                except Exception as error:
+                    self.report_controller_error(error)
+                finally:
+                    self._onboarding_test_active = False
 
         Thread(target=run_test, daemon=True).start()
 

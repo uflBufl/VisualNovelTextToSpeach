@@ -17,6 +17,31 @@ from vntts.settings import (
 
 
 class SettingsTest(unittest.TestCase):
+    def test_invalid_saved_pack_is_strict_unless_recovery_is_requested(self):
+        from vntts.game_pack import GamePackError
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack = root / "game-pack.json"
+            path = root / "settings.json"
+            saved = AppSettings(game_pack=str(pack), onboarding_completed=True)
+            saved.save(path)
+            for damaged in (False, True):
+                with self.subTest(corrupt=damaged):
+                    if damaged:
+                        pack.write_text("not JSON", encoding="utf-8")
+                    before = path.read_bytes()
+                    with self.assertRaises(GamePackError):
+                        load_app_settings(path, environment={})
+                    errors = []
+                    loaded = load_app_settings(
+                        path, environment={}, on_game_pack_error=errors.append
+                    )
+                    self.assertEqual(loaded.game_pack, saved.game_pack)
+                    self.assertTrue(loaded.onboarding_completed)
+                    self.assertEqual(len(errors), 1)
+                    self.assertEqual(path.read_bytes(), before)
+
     def test_loaded_runtime_identity_is_preserved_until_restart(self):
         current = AppSettings(
             speech_backend="pocket-tts",

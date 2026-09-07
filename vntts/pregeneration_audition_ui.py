@@ -69,6 +69,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._prefetched = {}
         self._shutdown_requested = False
         self._loading_narrator = False
+        self._use_narrator_without_preview = False
         self._narrator_companion = None
         self._alternate_active = False
 
@@ -240,6 +241,9 @@ class VoiceAuditionPanel(QGroupBox):
     def neither(self):
         if self.preview_runner.active or self.decision_runner.active:
             return
+        if self._use_narrator_without_preview:
+            self._record_choice(default_voice_choice_id)
+            return
         next_offset = self._candidate_offset + 2
         if next_offset < len(self._viable_candidates):
             self._candidate_offset = next_offset
@@ -315,6 +319,7 @@ class VoiceAuditionPanel(QGroupBox):
 
     def _show_group(self):
         self._candidate_offset = 0
+        self._use_narrator_without_preview = False
         self._previews = {}
         self._anchor_path = None
         self._viable_candidates = ()
@@ -429,6 +434,7 @@ class VoiceAuditionPanel(QGroupBox):
             for candidate in group.candidates
             if candidate.source_id in self._previews
         )
+        self._candidate_offset = 0
         if len(self._viable_candidates) == 0:
             message = (
                 "None of the candidate previews worked. VNTTS selected the safest "
@@ -563,6 +569,7 @@ class VoiceAuditionPanel(QGroupBox):
             )
             self._render_slot(0, self._displayed[0], recommended=True)
             self.b_box.setVisible(False)
+            self._use_narrator_without_preview = True
             self.neither_button.setText("Use narrator without preview")
             self.neither_button.setEnabled(True)
             self.auto_button.setEnabled(True)

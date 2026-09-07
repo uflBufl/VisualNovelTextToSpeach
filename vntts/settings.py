@@ -416,7 +416,9 @@ def preserve_loaded_runtime_settings(current, requested):
     return requested.updated(**{name: getattr(current, name) for name in changes})
 
 
-def load_app_settings(path=None, *, environment=None, warn=None):
+def load_app_settings(
+    path=None, *, environment=None, warn=None, on_game_pack_error=None
+):
     environment = os.environ if environment is None else environment
     warn = (lambda message: print(message, file=sys.stderr)) if warn is None else warn
     path = get_settings_path(environment=environment) if path is None else Path(path)
@@ -434,7 +436,12 @@ def load_app_settings(path=None, *, environment=None, warn=None):
 
     settings = settings.with_environment_overrides(environment, warn=warn)
     if settings.game_pack:
-        from vntts.game_pack import apply_game_pack
+        from vntts.game_pack import GamePackError, apply_game_pack
 
-        settings = apply_game_pack(settings)
+        try:
+            settings = apply_game_pack(settings)
+        except (GamePackError, OSError) as error:
+            if on_game_pack_error is None:
+                raise
+            on_game_pack_error(error)
     return settings

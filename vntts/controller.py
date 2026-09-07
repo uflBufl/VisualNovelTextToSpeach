@@ -2425,9 +2425,12 @@ class AppController:
             )
 
     def _play_live_chunk(self, chunk, audio):
-        sequence_lease = self._begin_sequence_playback(chunk)
+        sequence_lease = (
+            None if chunk.explicit_replay else self._begin_sequence_playback(chunk)
+        )
         if (
-            self._live_sequence_audio_active()
+            not chunk.explicit_replay
+            and self._live_sequence_audio_active()
             and chunk.line_id is not None
             and sequence_lease is None
         ):
@@ -2473,12 +2476,15 @@ class AppController:
         )
         self.last_audio_source_description = source
         self.status_handler(f"Audio source for {chunk.character}: {source}")
-        if (
-            isinstance(audio, SourceAudioRoute)
-            and audio.prepared.completion_seconds is None
-        ) or (
-            isinstance(audio, PreparedSourceAudioPassThrough)
-            and audio.completion_seconds is None
+        if not chunk.explicit_replay and (
+            (
+                isinstance(audio, SourceAudioRoute)
+                and audio.prepared.completion_seconds is None
+            )
+            or (
+                isinstance(audio, PreparedSourceAudioPassThrough)
+                and audio.completion_seconds is None
+            )
         ):
             source_audio = (
                 audio.prepared if isinstance(audio, SourceAudioRoute) else audio
@@ -2529,21 +2535,25 @@ class AppController:
             if outcome is None:
                 raise TypeError("Speech backend does not implement typed playback")
             result = outcome.successful
-            if not result:
+            if not result and not chunk.explicit_replay:
                 self.live_reader.block_auto_advance_for_generation(
                     chunk.generation,
                     "Playback was interrupted; retry or wait for a new dialogue",
                 )
-            if result and (
-                self._live_sequence_audio_active()
-                or isinstance(
-                    audio,
-                    (
-                        GeneratedAudioRoute,
-                        SourceAudioRoute,
-                        PreparedGeneratedAudio,
-                        PreparedSourceAudioPassThrough,
-                    ),
+            if (
+                result
+                and not chunk.explicit_replay
+                and (
+                    self._live_sequence_audio_active()
+                    or isinstance(
+                        audio,
+                        (
+                            GeneratedAudioRoute,
+                            SourceAudioRoute,
+                            PreparedGeneratedAudio,
+                            PreparedSourceAudioPassThrough,
+                        ),
+                    )
                 )
             ):
                 self.live_reader.seal_generation(chunk.generation)

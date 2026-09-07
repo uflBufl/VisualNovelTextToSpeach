@@ -2149,7 +2149,86 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         self.assertTrue(reader.repeat_last())
 
-        speak_chunk.assert_called_once_with(SpeechChunk(3, "Alice", "Repeat me."))
+        speak_chunk.assert_called_once_with(
+            SpeechChunk(3, "Alice", "Repeat me.", explicit_replay=True)
+        )
+
+    def test_explicit_repeat_preserves_seal_and_completed_auto_advance(self):
+        speak_chunk = Mock()
+        advance = Mock()
+        reader = self.create_reader(speak_chunk=speak_chunk, auto_advance=advance)
+        reader.active_generation = 4
+        reader.last_spoken_chunk = SpeechChunk(4, "Alice", "Repeat me.", line_id="a")
+        reader.seal_generation(4)
+        reader.last_auto_advance_dispatched_generation = 4
+        with patch("vntts.live.Timer"):
+            reader.dialog_ready_generation = 4
+            self.assertTrue(reader.repeat_last())
+            reader._run_auto_advance(4)
+        speak_chunk.assert_called_once_with(
+            SpeechChunk(4, "Alice", "Repeat me.", line_id="a", explicit_replay=True)
+        )
+        self.assertEqual(reader.sealed_generation, 4)
+        self.assertFalse(reader.wait_until_playable(SpeechChunk(4, "Alice", "suffix")))
+        reader._schedule([SpeechChunk(4, "Alice", "suffix")])
+        self.assertEqual(speak_chunk.call_count, 1)
+        advance.assert_not_called()
+
+    def test_sequence_replay_completion_preserves_pending_advance_and_cursor(self):
+        from vntts.controller import AppController
+        from vntts.playback import PlaybackOutcome, PlaybackStatus, PreparedPlayback
+        from vntts.settings import AppSettings
+
+        played = []
+
+        class Backend:
+            def play_prepared(self, prepared, *, playback_guard):
+                if not playback_guard():
+                    return PlaybackOutcome(PlaybackStatus.INTERRUPTED, None)
+                played.append(prepared)
+                return PlaybackOutcome(PlaybackStatus.COMPLETED, 1.0)
+
+        controller = AppController(
+            AppSettings(live_sequence_mode="audio-auto"), tts_factory=Mock()
+        )
+        controller.speech_backend = Backend()
+        controller._begin_sequence_playback = Mock(return_value=None)
+        controller._live_sequence_audio_active = Mock(return_value=True)
+        queued = QueuedExecutor()
+        advance = Mock()
+        prepared = PreparedPlayback([0.0], None, None, None, "test")
+        reader = self.create_reader(
+            speech_executor=queued,
+            playback_executor=ImmediateExecutor(),
+            prepare_chunk=lambda chunk: prepared,
+            play_prepared=controller._play_live_chunk,
+            auto_advance=advance,
+        )
+        controller.live_reader = reader
+        reader.active_generation = 4
+        reader.last_spoken_chunk = SpeechChunk(4, "Alice", "Repeat me.", line_id="a")
+        reader.seal_generation(4)
+        reader.dialog_ready_generation = 4
+        reader.last_auto_advance_dispatched_generation = 4
+        reader.pending_auto_advance_generation = 4
+        reader.auto_advance_timer = Mock()
+
+        self.assertTrue(reader.repeat_last())
+        reader._run_auto_advance(4)
+        queued.run_next()
+        reader._run_auto_advance(4)
+
+        self.assertEqual(played, [prepared])
+        controller._begin_sequence_playback.assert_not_called()
+        self.assertEqual(reader.pending_auto_advance_generation, 4)
+        self.assertEqual(reader.sealed_generation, 4)
+        self.assertFalse(reader.cancelled_chunk_ids)
+        advance.assert_not_called()
+        replay = SpeechChunk(4, "Alice", "Repeat me.", explicit_replay=True)
+        reader.clear_queue()
+        self.assertFalse(reader.wait_until_playable(replay))
+        reader._set_generation(5)
+        self.assertFalse(reader.wait_until_playable(replay))
 
     def test_clear_cancels_pending_speech_and_suppresses_current_dialog(self):
         speech_executor = Mock()

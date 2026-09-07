@@ -3,7 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, Timer
 from unittest.mock import Mock, patch
 
 from tests.test_pregeneration_setup import write_story_index
@@ -114,6 +114,38 @@ class Reverse1999GameImporterTest(unittest.TestCase):
 
         self.assertFalse(availability.available)
         importer.popen_factory.assert_not_called()
+
+    def test_large_importer_output_is_drained_before_waiting_for_exit(self):
+        cancelled = Event()
+        timeout = Timer(5, cancelled.set)
+        timeout.start()
+        try:
+            stdout, stderr = Reverse1999GameImporter()._run(
+                (
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stdout.write('x' * 1048576); "
+                    "sys.stderr.write('y' * 1048576)",
+                ),
+                cancelled,
+            )
+        finally:
+            timeout.cancel()
+        self.assertEqual(stdout, "x" * 1048576)
+        self.assertEqual(stderr, "y" * 1048576)
+
+    def test_cancellation_interrupts_importer_while_communicating(self):
+        cancelled = Event()
+        timeout = Timer(0.2, cancelled.set)
+        timeout.start()
+        try:
+            with self.assertRaises(GameContentImportCancelled):
+                Reverse1999GameImporter()._run(
+                    (sys.executable, "-c", "import time; time.sleep(30)"),
+                    cancelled,
+                )
+        finally:
+            timeout.cancel()
 
     def test_frozen_app_uses_its_hidden_provider_worker_entrypoint(self):
         importer = Reverse1999GameImporter()
