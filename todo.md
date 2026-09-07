@@ -3,11 +3,12 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P0 - Index both Windows game-audio locations
+## P0 - Prefer spoken playable-character narrator references
 
-- [ ] Confirm on the reported Windows installation that the narrator picker
-      rebuilds its old single-root index automatically, offers Centurion and loads
-      her packaged references while retaining downloaded story voices.
+- [ ] Verify on Windows that Centurion's references are spoken playable dialogue
+      matching the displayed transcripts, or that absent playable speech is
+      explained without offering story effects. Confirm downloaded story voices
+      remain available alongside packaged voices.
 
 ## P0 - Redesign the ordinary-player interface
 

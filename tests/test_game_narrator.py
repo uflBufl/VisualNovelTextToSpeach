@@ -454,6 +454,45 @@ class GameNarratorTest(unittest.TestCase):
             self.assertEqual(plan.synthesis_profile, "natural")
             self.assertEqual(plan.groups[0].candidates[0].source_character, "Centurion")
 
+    def test_picker_shows_original_reference_title_and_plain_text_transcript(self):
+        with TemporaryDirectory() as directory:
+            manifest = write_manifest(Path(directory))
+            document = json.loads(manifest.read_text())
+            for entry in document["voices"]:
+                if entry["character"] == "Centurion":
+                    entry["vntts.narrator_reference"] = {
+                        "title": "First Encounter",
+                        "text": "Life is a gamble. <This is dialogue, not markup.>",
+                    }
+            manifest.write_text(json.dumps(document))
+            importer = Mock()
+            importer.narrator_characters.return_value = ("Centurion",)
+            importer.prepare_voice_roles.return_value = manifest
+            pool = ManualThreadPool()
+            dialog = GameNarratorDialog(
+                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
+                importer=importer,
+                preview_service=Mock(),
+                thread_pool=pool,
+                player=Mock(),
+            )
+            self.application.processEvents()
+            self.run_task(pool)
+            dialog.prepare_button.click()
+            self.run_task(pool)
+            dialog.references.setCurrentIndex(
+                dialog.references.findData("character:centurion")
+            )
+            self.assertIn("First Encounter", dialog.references.currentText())
+            self.assertEqual(
+                dialog.reference_text.text(),
+                "Life is a gamble. <This is dialogue, not markup.>",
+            )
+            dialog.characters.clear()
+            self.assertEqual(dialog.reference_text.text(), "")
+            dialog.reject()
+            self.run_task(pool)
+
     def test_decoder_setup_consent_retries_in_worker_and_keeps_controls_gated(self):
         with TemporaryDirectory() as directory:
             manifest = write_manifest(Path(directory) / "candidates")

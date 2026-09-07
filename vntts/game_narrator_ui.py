@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from vntts_artifacts.voice_manifest import load_voice_manifest
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
@@ -35,6 +36,7 @@ from vntts.speech_presentation import engine_model_label, narrator_voice_label
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
     CharacterVoiceRegistry,
+    VoiceChoice,
     find_voice_assignment,
     normalize_character_name,
     pocket_tts_preset_voices,
@@ -147,8 +149,13 @@ class GameNarratorDialog(QDialog):
         game_form.addRow(self.prepare_button)
         self.references = QComboBox()
         self.references.setAccessibleName("Original game reference")
-        self.references.currentIndexChanged.connect(lambda: self.player.stop())
+        self.references.currentIndexChanged.connect(self._reference_changed)
         game_form.addRow("Reference", self.references)
+        self.reference_text = QLabel()
+        self.reference_text.setWordWrap(True)
+        self.reference_text.setTextFormat(Qt.TextFormat.PlainText)
+        self.reference_text.setAccessibleName("Original reference transcript")
+        game_form.addRow(self.reference_text)
         self.original_button = QPushButton("Play original reference")
         self.original_button.clicked.connect(self._original)
         self.text = QLineEdit("The storm has passed. We can continue our journey.")
@@ -284,6 +291,13 @@ class GameNarratorDialog(QDialog):
             self._character,
         )
 
+    def _reference_changed(self):
+        self.player.stop()
+        self.reference_text.setText(
+            self.references.currentData(Qt.ItemDataRole.ToolTipRole)
+            or ("Transcript unavailable." if self.references.count() else "")
+        )
+
     def _load_references(self, character):
         manifest = self.importer.prepare_voice_roles(
             (character,),
@@ -292,7 +306,26 @@ class GameNarratorDialog(QDialog):
             narrator=True,
         )
         registry = CharacterVoiceRegistry.from_file(manifest)
-        return manifest, registry.choices()
+        document, _entries = load_voice_manifest(manifest)
+        details = {
+            f"character:{normalize_character_name(entry['character'])}": entry.get(
+                "vntts.narrator_reference", {}
+            )
+            for entry in document["voices"]
+        }
+        choices = []
+        for choice in registry.choices():
+            detail = details.get(choice.id)
+            detail = detail if isinstance(detail, dict) else {}
+            title, text = detail.get("title"), detail.get("text")
+            choices.append(
+                VoiceChoice(
+                    choice.id,
+                    title if isinstance(title, str) and title else choice.label,
+                    text if isinstance(text, str) else "",
+                )
+            )
+        return manifest, tuple(choices)
 
     def _decoder_progress(self, message):
         if self.runner.active and self._operation == "prepare" and not self._closing:
@@ -404,8 +437,12 @@ class GameNarratorDialog(QDialog):
             self.references.clear()
             for index, choice in enumerate(choices, 1):
                 self.references.addItem(
-                    f"{self._character} - reference {index}", choice.id
+                    f"{self._character} - {choice.label}", choice.id
                 )
+                self.references.setItemData(
+                    index - 1, choice.description, Qt.ItemDataRole.ToolTipRole
+                )
+            self._reference_changed()
             self.status.setText(
                 "Listen to the original and generated preview, then save your narrator."
                 if choices
