@@ -72,11 +72,18 @@ in the same commit.
       clean worker shutdown. If `descript-audiotools` or model code fails under
       NumPy 2, record the exact failure and retain Python 3.12 for this isolated
       runtime without blocking the other upgrades.
-- [ ] Make runtime installation automatic after the upgrades are proven.
-  - First-run setup should detect platform and NVIDIA-driver availability,
-    provision the appropriate locked CPU/CUDA runtime, verify it through the
-    worker, remember the result and offer a clear retry. Users must not select a
-    Python or CUDA wheel manually.
+- [ ] Extend automatic runtime preparation after the CUDA upgrades are proven.
+  - Qualify the app-managed first-install journey on clean macOS and Windows:
+    absent source environment, interrupted download, retry, restart, then one
+    real render. Keep model/license consent separate from dependency setup.
+  - Gate downloadable runtime installation in portable releases on published,
+    integrity-verified runtime artifacts; do not invent download URLs or ask
+    portable users to install uv.
+  - Use driver detection to select a qualified CUDA stack only after the real
+    render gates above pass. Missing/unknown NVIDIA-driver evidence must never
+    promote a CUDA candidate; users must not select Python or CUDA wheels.
+  - Add safe retirement/reinstallation of obsolete or damaged app-managed
+    environments without modifying runtimes still used by another process.
   - Add dependency and smoke-test coverage for every runtime to CI; keep actual
     CUDA generation on a self-hosted Windows/Linux runner and make CPU-only CI
     validate resolution plus the typed no-CUDA path.

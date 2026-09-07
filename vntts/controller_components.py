@@ -211,6 +211,8 @@ class RuntimeLifecycleComponent:
                 )
             if getattr(backend_factory, "supports_startup_cancellation", False) is True:
                 backend_options["startup_cancellation"] = controller.shutdown_requested
+            if getattr(backend_factory, "supports_startup_progress", False) is True:
+                backend_options["startup_progress"] = controller.status_handler
             if controller.settings.speech_backend == "moss-tts":
                 backend_options.update(
                     model_name=controller.settings.tts_model,

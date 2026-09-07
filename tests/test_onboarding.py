@@ -600,6 +600,49 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertTrue(wizard.configuration_page.advanced_toggle.isChecked())
         wizard.deleteLater()
 
+    def test_runtime_preparation_has_progress_retry_and_cancellable_stale_results(self):
+        class ManualThreadPool:
+            def __init__(self):
+                self.tasks = []
+
+            def start(self, task):
+                self.tasks.append(task)
+
+        diagnostics = OnboardingDiagnostics()
+        diagnostics.prepare_and_run = Mock(
+            side_effect=[
+                RuntimeError("Download interrupted"),
+                (DiagnosticResult("Runtime", "ok", "Ready"),),
+            ]
+        )
+        wizard = OnboardingWizard(AppSettings(), diagnostics=diagnostics)
+        page = wizard.diagnostics_page
+        pool = ManualThreadPool()
+        page.runner.thread_pool = pool
+        wizard.show_page(2)
+        first = page.cancellation
+        page.runtime_progress.emit(first, "Downloading locked speech dependencies...")
+        self.assertIn("Downloading", page.status.text())
+        self.assertFalse(wizard.next_button.isEnabled())
+        self.assertFalse(page.retry_button.isEnabled())
+        self.assertTrue(page.cancel_button.isEnabled())
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
+        self.assertIn("Download interrupted", page.status.text())
+        self.assertTrue(page.retry_button.isEnabled())
+        page.retry_button.click()
+        self.assertTrue(first.is_set())
+        page.runtime_progress.emit(first, "Stale download status")
+        self.assertNotIn("Stale", page.status.text())
+        second = page.cancellation
+        wizard.reject()
+        self.assertTrue(second.is_set())
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
+        self.assertFalse(page.complete)
+        self.assertIn("cancelled", page.status.text().lower())
+        wizard.deleteLater()
+
     def test_diagnostics_explains_external_dependency_installation(self):
         wizard = OnboardingWizard(AppSettings())
         page = wizard.diagnostics_page

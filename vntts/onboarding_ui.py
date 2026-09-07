@@ -1,6 +1,7 @@
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from threading import Event
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -655,12 +656,16 @@ class ConfigurationPage(QWizardPage):
 
 
 class DiagnosticsPage(QWizardPage):
+    runtime_progress = Signal(object, str)
+
     def __init__(self, diagnostics):
         super().__init__()
         self.diagnostics = diagnostics
         self.flow = None
         self.complete = False
         self.diagnostic_results = ()
+        self.cancellation = Event()
+        self.runtime_progress.connect(self._runtime_progress)
         self.runner = LatestTaskRunner(self)
         self.runner.finished.connect(self._checks_finished)
         self.setTitle("Check required components")
@@ -705,19 +710,43 @@ class DiagnosticsPage(QWizardPage):
         self.start_checks()
 
     def start_checks(self):
+        self.cancellation.set()
+        self.cancellation = Event()
         self.runner.cancel()
         self.results.clear()
         self.diagnostic_results = ()
         self.complete = False
-        self.status.setText("Checking OCR, audio, permissions, and speech assets...")
+        self.status.setText(
+            "Preparing speech runtime and checking required components. Please wait..."
+        )
         self.progress.show()
         self.retry_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self._update_remediation()
         self.completeChanged.emit()
-        self.runner.start(self.diagnostics.run, self.flow.draft_settings)
+        if isinstance(self.diagnostics, OnboardingDiagnostics):
+            cancellation = self.cancellation
+            self.runner.start(
+                self.diagnostics.prepare_and_run,
+                self.flow.draft_settings,
+                cancellation=cancellation,
+                progress=lambda message: self.runtime_progress.emit(
+                    cancellation, message
+                ),
+            )
+        else:
+            self.runner.start(self.diagnostics.run, self.flow.draft_settings)
+
+    def _runtime_progress(self, cancellation, message):
+        if (
+            cancellation is self.cancellation
+            and self.runner.active
+            and not cancellation.is_set()
+        ):
+            self.status.setText(message)
 
     def cancel_checks(self):
+        self.cancellation.set()
         if not self.runner.cancel():
             return
         self.complete = False
@@ -741,7 +770,9 @@ class DiagnosticsPage(QWizardPage):
             self.diagnostic_results = ()
             self.results.clear()
             self.results.addItem(f"[ERROR] Diagnostics failed: {error}")
-            self.status.setText("Checks failed. Fix the error or run them again.")
+            self.status.setText(
+                f"Setup could not finish: {error}\nUse Run checks again to retry."
+            )
             self._update_remediation()
             self.completeChanged.emit()
             return
@@ -1140,7 +1171,7 @@ class OnboardingWizard(QDialog):
         if self.test_page.running:
             self.test_page.request_cancel()
             return
-        self.diagnostics_page.runner.cancel()
+        self.diagnostics_page.cancel_checks()
         super().reject()
 
     def settings(self):

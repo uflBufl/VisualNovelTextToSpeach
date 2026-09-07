@@ -459,24 +459,25 @@ uv sync --project backends/chatterbox-nano
 
 The first Nano start downloads several gigabytes of model assets.
 
-Pocket TTS is the default speech engine. Install its isolated runtime once and
-restart the app:
+Pocket TTS is the default speech engine. Portable builds include its runtime.
+From a source checkout with `uv` available, setup and speech startup automatically
+prepare a missing runtime using the locked CPU dependencies. Setup shows progress,
+allows cancellation and offers **Run checks again** after a failure. No Python or
+CUDA wheel selection is needed; detecting an NVIDIA driver does not enable an
+unqualified CUDA runtime.
 
-```sh
-uv sync --project backends/pocket-tts
-```
+App-managed runtimes live in the local application data directory and are reused
+after an isolated dependency check. Existing `backends/*/.venv` environments and
+explicit `VNTTS_*_RUNTIME` overrides remain untouched. A portable package missing
+its bundled runtime must be replaced with the complete archive, not repaired with uv.
 
 Character voice cloning also requires accepting the model terms at
 <https://huggingface.co/kyutai/pocket-tts> and authenticating once with
 `uvx hf auth login`.
 
 MOSS-TTS v1.5 is the high-quality streaming option for Apple Silicon Macs.
-Install its isolated MLX runtime once, choose MOSS-TTS in Settings, select a
-narrator reference recording, and restart the app:
-
-```sh
-uv sync --project backends/moss-tts
-```
+Choose MOSS-TTS in Settings and select a narrator reference recording. Source
+startup prepares its missing locked MLX runtime automatically on Apple Silicon.
 
 The default int8 model and audio tokenizer download about 6.8 GB on first use.
 VNTTS keeps the model loaded, caches each character reference, and streams

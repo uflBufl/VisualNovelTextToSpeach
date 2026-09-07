@@ -541,12 +541,15 @@ class SpeechWorkerTest(unittest.TestCase):
     def test_cancelled_startup_terminates_the_exact_worker(self):
         registry = CharacterVoiceRegistry()
         cancellation = Event()
-        cancellation.set()
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             interpreter = root / "bin/python"
             runtime_site = root / "lib/python3.14/site-packages"
             process = FakeProcess(None)
+
+            def start_process(*_args, **_options):
+                cancellation.set()
+                return process
 
             with (
                 patch(
@@ -558,7 +561,7 @@ class SpeechWorkerTest(unittest.TestCase):
                 IsolatedSpeechBackend(
                     "pocket-tts",
                     registry,
-                    process_factory=lambda *_args, **_options: process,
+                    process_factory=start_process,
                     startup_cancellation=cancellation,
                 )
 

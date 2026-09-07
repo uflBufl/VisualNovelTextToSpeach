@@ -1,10 +1,71 @@
+import hashlib
+import json
 import os
+import platform
 import sys
 from pathlib import Path
 
 _BUNDLED_SPEECH_RUNTIMES = frozenset(
     {"pocket-tts", "chatterbox-nano", "moss-tts", "moss-tts-delay"}
 )
+
+RUNTIME_ENVIRONMENT_VARIABLES = {
+    "pocket-tts": "VNTTS_POCKET_TTS_RUNTIME",
+    "chatterbox-nano": "VNTTS_CHATTERBOX_RUNTIME",
+    "moss-tts": "VNTTS_MOSS_RUNTIME",
+    "moss-tts-delay": "VNTTS_MOSS_DELAY_RUNTIME",
+}
+
+
+def source_runtime_project(backend):
+    if backend not in RUNTIME_ENVIRONMENT_VARIABLES or get_bundle_root() is not None:
+        return None
+    project = Path(__file__).resolve().parents[1] / "backends" / backend
+    return (
+        project
+        if all((project / name).is_file() for name in ("pyproject.toml", "uv.lock"))
+        else None
+    )
+
+
+def managed_runtime_location(backend):
+    """Bind app-owned environments to the shipped dependency recipe and host."""
+    from vntts.application_directories import get_local_data_directory
+
+    project = source_runtime_project(backend)
+    if project is None:
+        return None
+    digest = hashlib.sha256()
+    for name in ("pyproject.toml", "uv.lock"):
+        digest.update(name.encode() + b"\0")
+        digest.update((project / name).read_bytes())
+    digest.update(f"3.14:{sys.platform}:{platform.machine()}".encode())
+    return get_local_data_directory() / "speech-runtimes" / backend / digest.hexdigest()
+
+
+def find_managed_speech_runtime(backend):
+    location = managed_runtime_location(backend)
+    if location is None:
+        return None
+    try:
+        report = json.loads((location / "verified.json").read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        return None
+    if (
+        isinstance(report, dict)
+        and report.get("schema") == "vntts.speech-runtime-installation-v1"
+        and report.get("backend") == backend
+        and report.get("recipe") == location.name
+    ):
+        return location / "environment"
+    return None
+
+
+def default_source_speech_runtime(backend):
+    source = Path(__file__).resolve().parents[1] / "backends" / backend / ".venv"
+    if source.exists():
+        return source
+    return find_managed_speech_runtime(backend) or source
 
 
 def get_bundle_root():

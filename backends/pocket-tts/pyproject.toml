@@ -6,6 +6,8 @@ dependencies = [
     "platformdirs>=4.3,<5",
     "pocket-tts==3.0.2",
     "scipy>=1.11,<2",
+    # uv only applies the CPU source below to a direct dependency.
+    "torch>=2.11",
     "vntts-artifacts[audio]",
 ]
 

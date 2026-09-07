@@ -1191,6 +1191,7 @@ class MainTest(unittest.TestCase):
             return backend
 
         pocket_factory.supports_startup_cancellation = True
+        pocket_factory.supports_startup_progress = True
         registry = Mock()
         with (
             patch("vntts.controller.initialize_voice_registry", return_value=registry),
@@ -1208,6 +1209,7 @@ class MainTest(unittest.TestCase):
 
         self.assertIs(received["registry"], registry)
         self.assertIs(received["startup_cancellation"], controller.shutdown_requested)
+        self.assertIs(received["startup_progress"], controller.status_handler)
         self.assertFalse(received["allow_gated_model_access"])
         controller.shutdown()
 

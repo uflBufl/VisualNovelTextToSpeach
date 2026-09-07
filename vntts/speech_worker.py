@@ -15,6 +15,7 @@ import uuid
 from collections import deque
 from contextlib import redirect_stdout
 from dataclasses import asdict
+from io import BytesIO
 from itertools import chain
 from pathlib import Path
 from time import monotonic
@@ -29,7 +30,12 @@ from vntts.playback import (
     outcome_for_prepared,
     synthesized_mono_pcm,
 )
-from vntts.runtime_paths import find_bundled_speech_runtime, get_bundle_root
+from vntts.runtime_paths import (
+    RUNTIME_ENVIRONMENT_VARIABLES,
+    default_source_speech_runtime,
+    find_bundled_speech_runtime,
+    get_bundle_root,
+)
 from vntts.speech_backend import (
     ChatterboxNanoVoiceRouterBackend,
     MossTTSVoiceRouterBackend,
@@ -156,25 +162,17 @@ def _read_frame(stream):
 def _runtime_paths(backend, runtime_directory=None):
     if backend not in _BACKEND_CLASSES:
         raise TTSConfigurationError(f"Unsupported isolated backend: {backend!r}")
-    configured = {
-        "pocket-tts": "VNTTS_POCKET_TTS_RUNTIME",
-        "chatterbox-nano": "VNTTS_CHATTERBOX_RUNTIME",
-        "moss-tts": "VNTTS_MOSS_RUNTIME",
-        "moss-tts-delay": "VNTTS_MOSS_DELAY_RUNTIME",
-    }[backend]
-    folder = {
-        "pocket-tts": "pocket-tts",
-        "chatterbox-nano": "chatterbox-nano",
-        "moss-tts": "moss-tts",
-        "moss-tts-delay": "moss-tts-delay",
-    }[backend]
+    configured = RUNTIME_ENVIRONMENT_VARIABLES[backend]
+    folder = backend
     configured_root = runtime_directory or os.environ.get(configured, "")
     bundle_root = get_bundle_root() if not configured_root else None
     bundled_root = find_bundled_speech_runtime(backend) if not configured_root else None
     default_root = (
-        bundle_root / "speech-runtimes" / folder
+        None
+        if configured_root or bundled_root
+        else bundle_root / "speech-runtimes" / folder
         if bundle_root is not None
-        else Path(__file__).resolve().parents[1] / "backends" / folder / ".venv"
+        else default_source_speech_runtime(backend)
     )
     root = Path(configured_root or bundled_root or default_root).expanduser().resolve()
     if sys.platform == "win32":
@@ -216,6 +214,49 @@ def _runtime_paths(backend, runtime_directory=None):
 def resolve_speech_runtime_paths(backend, runtime_directory=None):
     """Resolve one isolated backend runtime without starting its worker."""
     return _runtime_paths(backend, runtime_directory)
+
+
+def probe_speech_runtime(backend, paths, *, cancellation=None):
+    """Use the real worker import/provenance gate without loading model weights."""
+    from vntts.runtime_installation import _run
+
+    root, interpreter, site = paths
+    request = BytesIO()
+    _write_frame(
+        request,
+        {
+            "type": "runtime_probe",
+            "backend": backend,
+            "runtime_site": str(site),
+        },
+    )
+    output = _run(
+        [
+            str(interpreter),
+            "-I",
+            "-B",
+            "-u",
+            "-c",
+            _BOOTSTRAP,
+            "" if get_bundle_root() else str(Path(__file__).resolve().parents[1]),
+        ],
+        cancellation=cancellation,
+        input_bytes=request.getvalue(),
+        timeout=120,
+    )
+    frame = _read_frame(BytesIO(output))
+    health = frame[0] if frame else {}
+    if (
+        health.get("type") != "runtime_health"
+        or health.get("backend") != backend
+        or Path(health.get("interpreter", "")).resolve() != interpreter.resolve()
+        or Path(health.get("prefix", "")).resolve() != root.resolve()
+        or Path(health.get("runtime_site", "")).resolve() != site.resolve()
+    ):
+        raise TTSConfigurationError(
+            "Speech runtime verification failed; installation was not accepted."
+        )
+    return health
 
 
 def _serialize_registry(registry):
@@ -367,11 +408,25 @@ def worker_main(
         if initialized is None:
             return 2
         document, _payload = initialized
-        if document.get("type") != "initialize":
+        if document.get("type") not in {"initialize", "runtime_probe"}:
             raise TTSConfigurationError("Speech worker expected initialization")
         backend_name = document["backend"]
         runtime_site = Path(document["runtime_site"]).resolve()
-        modules = _module_health(runtime_site, required_modules[backend_name])
+        with redirect_stdout(sys.stderr):
+            modules = _module_health(runtime_site, required_modules[backend_name])
+        if document["type"] == "runtime_probe":
+            _write_frame(
+                protocol_out,
+                {
+                    "type": "runtime_health",
+                    "backend": backend_name,
+                    "interpreter": str(Path(sys.executable).resolve()),
+                    "prefix": str(Path(sys.prefix).resolve()),
+                    "runtime_site": str(runtime_site),
+                    "modules": modules,
+                },
+            )
+            return 0
         registry = _registry_from_document(document["registry"])
         options = dict(document.get("options", {}))
         for key, value in tuple(options.items()):
@@ -474,6 +529,7 @@ def worker_main(
                     },
                 )
     except Exception as error:
+        print(f"Speech worker failed: {error}", file=sys.stderr)
         try:
             _write_frame(
                 protocol_out,
@@ -505,6 +561,7 @@ class IsolatedSpeechBackend:
         startup_timeout=1800.0,
         request_timeout=120.0,
         startup_cancellation=None,
+        startup_progress=None,
         playback_latency=None,
         generation_profile=None,
         allow_gated_model_access=False,
@@ -547,8 +604,13 @@ class IsolatedSpeechBackend:
         )
         self.allow_gated_model_access = bool(allow_gated_model_access)
         self.worker_options = worker_options
-        self.runtime_root, self.interpreter, self.runtime_site = _runtime_paths(
-            backend, runtime_directory
+        from vntts.runtime_installation import ensure_speech_runtime
+
+        self.runtime_root, self.interpreter, self.runtime_site = ensure_speech_runtime(
+            backend,
+            runtime_directory=runtime_directory,
+            cancellation=startup_cancellation,
+            progress=startup_progress,
         )
         self.project_root = Path(__file__).resolve().parents[1]
         self.bundle_root = get_bundle_root()
@@ -1145,3 +1207,4 @@ for _factory in (
     create_moss_delay_worker_backend,
 ):
     _factory.supports_startup_cancellation = True
+    _factory.supports_startup_progress = True

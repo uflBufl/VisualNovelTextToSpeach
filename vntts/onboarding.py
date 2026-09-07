@@ -6,11 +6,7 @@ from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.macos import get_macos_permission_status
 from vntts.release_backends import packaged_speech_backend_available
-from vntts.speech_backend import (
-    activate_chatterbox_runtime,
-    activate_moss_tts_runtime,
-    activate_pocket_tts_runtime,
-)
+from vntts.speech_worker import resolve_speech_runtime_paths
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 
@@ -55,6 +51,19 @@ class OnboardingDiagnostics:
         if permission_result is not None:
             results.insert(2, permission_result)
         return tuple(results)
+
+    def prepare_and_run(self, settings, *, cancellation, progress):
+        """Only the setup journey provisions dependencies; ordinary probes stay read-only."""
+        from vntts.runtime_installation import ensure_speech_runtime
+
+        if settings.speech_backend in {"pocket-tts", "moss-tts"}:
+            ensure_speech_runtime(
+                settings.speech_backend,
+                cancellation=cancellation,
+                progress=progress,
+            )
+        progress("Checking OCR, audio, permissions, and speech assets...")
+        return self.run(settings)
 
     def _check_platform_permissions(self, settings):
         status = self.permission_status_provider()
@@ -139,17 +148,16 @@ class OnboardingDiagnostics:
                 "settings",
             )
         isolated_runtime = {
-            "pocket-tts": ("Pocket TTS runtime", activate_pocket_tts_runtime),
-            "chatterbox-nano": (
-                "Chatterbox Nano runtime",
-                activate_chatterbox_runtime,
-            ),
-            "moss-tts": ("MOSS-TTS runtime", activate_moss_tts_runtime),
+            "pocket-tts": "Pocket TTS runtime",
+            "chatterbox-nano": "Chatterbox Nano runtime",
+            "moss-tts": "MOSS-TTS runtime",
         }.get(settings.speech_backend)
         if isolated_runtime is not None:
-            name, probe = isolated_runtime
+            name = isolated_runtime
             try:
-                runtime = probe()
+                runtime, _interpreter, _site = resolve_speech_runtime_paths(
+                    settings.speech_backend
+                )
             except Exception as error:
                 return DiagnosticResult(name, "error", str(error), "settings")
             return DiagnosticResult(name, "ok", f"Installed at {runtime}")

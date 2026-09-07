@@ -12,7 +12,11 @@ from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
 
-from vntts.runtime_paths import find_bundled_speech_runtime, get_bundle_root
+from vntts.runtime_paths import (
+    default_source_speech_runtime,
+    find_bundled_speech_runtime,
+    get_bundle_root,
+)
 from vntts.services.tts_engine import TTSConfigurationError
 
 
@@ -69,7 +73,9 @@ def activate_backend_runtime(
         else None
     )
     source_runtime = (
-        Path(__file__).resolve().parents[1] / "backends" / backend_directory / ".venv"
+        None
+        if configured or bundled
+        else default_source_speech_runtime(backend_directory)
         if bundle_root is None
         else bundle_root / "speech-runtimes" / backend_directory
     )
