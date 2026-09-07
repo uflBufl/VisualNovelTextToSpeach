@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from tests.test_game_pack import write_synthetic_game_pack  # noqa: E402
+from tests.test_pregeneration_audition import FakeBackend  # noqa: E402
 from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
 from tests.test_pregeneration_voices import (  # noqa: E402
     write_content,
@@ -25,6 +26,7 @@ from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
 from vntts.game_narrator import bind_game_narrator, narrator_preview_plan  # noqa: E402
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
 from vntts.game_pack import apply_game_pack  # noqa: E402
+from vntts.pregeneration_audition import VoiceAuditionPreviewService  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
@@ -45,6 +47,65 @@ class GameNarratorTest(unittest.TestCase):
     def run_task(self, pool):
         pool.tasks.pop(0).run()
         self.application.processEvents()
+
+    def test_builtin_preview_and_save_need_no_game_or_gated_model(self):
+        with TemporaryDirectory() as directory:
+            pool = ManualThreadPool()
+            importer = Mock()
+            backend = FakeBackend("pocket-tts")
+            factory = Mock(return_value=backend)
+            previews = VoiceAuditionPreviewService(directory, backend_factory=factory)
+            settings = AppSettings(
+                pocket_gated_model_accepted=True,
+                voice_assignments={
+                    "Narrator": "preset:alba",
+                    "Rhiannon": "character:rhiannon",
+                },
+            )
+            dialog = GameNarratorDialog(
+                settings,
+                importer=importer,
+                preview_service=previews,
+                thread_pool=pool,
+                player=Mock(),
+            )
+            self.application.processEvents()
+            self.assertEqual(pool.tasks, [])
+            self.assertTrue(dialog.game_controls.isHidden())
+            self.assertFalse(dialog.original_button.isEnabled())
+            dialog.presets.setCurrentIndex(dialog.presets.findData("preset:marius"))
+            dialog.preview_button.click()
+            self.assertFalse(dialog.save_button.isEnabled())
+            self.run_task(pool)
+            self.assertEqual(backend.requests[0].voice, "marius")
+            self.assertFalse(factory.call_args.kwargs["allow_gated_model_access"])
+            self.assertIsNone(dialog.result_settings)
+            dialog.save_button.click()
+            self.run_task(pool)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            self.assertEqual(
+                dialog.result_settings.voice_assignments,
+                {"Narrator": "preset:marius", "Rhiannon": "character:rhiannon"},
+            )
+            importer.narrator_characters.assert_not_called()
+            self.assertEqual(backend.shutdown_count, 1)
+
+    def test_cancel_builtin_candidate_preserves_saved_narrator(self):
+        pool = ManualThreadPool()
+        original = AppSettings(voice_assignments={"Narrator": "preset:alba"})
+        dialog = GameNarratorDialog(
+            original,
+            importer=Mock(),
+            preview_service=Mock(),
+            thread_pool=pool,
+            player=Mock(),
+        )
+        self.application.processEvents()
+        dialog.presets.setCurrentIndex(dialog.presets.findData("preset:marius"))
+        dialog.reject()
+        self.run_task(pool)
+        self.assertIsNone(dialog.result_settings)
+        self.assertEqual(original.voice_assignments, {"Narrator": "preset:alba"})
 
     def test_discovery_reuses_import_and_manual_folder_reimports(self):
         with TemporaryDirectory() as directory:
@@ -307,7 +368,7 @@ class GameNarratorTest(unittest.TestCase):
             ]
             pool = ManualThreadPool()
             dialog = GameNarratorDialog(
-                AppSettings(),
+                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
                 importer=importer,
                 preview_service=Mock(),
                 thread_pool=pool,
@@ -348,7 +409,7 @@ class GameNarratorTest(unittest.TestCase):
             pool = ManualThreadPool()
             player = Mock()
             dialog = GameNarratorDialog(
-                AppSettings(),
+                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
                 importer=importer,
                 preview_service=previews,
                 thread_pool=pool,
@@ -447,7 +508,7 @@ class GameNarratorTest(unittest.TestCase):
         importer.narrator_characters.return_value = ("Centurion",)
         previews = Mock()
         dialog = GameNarratorDialog(
-            AppSettings(),
+            AppSettings(voice_assignments={"Narrator": "character:centurion"}),
             importer=importer,
             preview_service=previews,
             thread_pool=pool,
@@ -468,7 +529,7 @@ class GameNarratorTest(unittest.TestCase):
         importer = Mock()
         importer.narrator_characters.side_effect = ValueError("Game not found")
         dialog = GameNarratorDialog(
-            AppSettings(),
+            AppSettings(voice_assignments={"Narrator": "character:centurion"}),
             importer=importer,
             preview_service=Mock(),
             thread_pool=pool,

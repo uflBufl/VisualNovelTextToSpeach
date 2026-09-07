@@ -20,14 +20,25 @@ from vntts.voices import (
     CharacterVoiceRegistry,
     find_default_voice_manifest,
     normalize_character_name,
+    pocket_tts_preset_voices,
     read_voice_reference_bytes,
 )
 
 
 def narrator_preview_plan(settings, manifest, source_id, text):
-    registry = CharacterVoiceRegistry.from_file(manifest)
+    preset = isinstance(source_id, str) and source_id.startswith("preset:")
+    if preset and (
+        settings.speech_backend != "pocket-tts"
+        or source_id.removeprefix("preset:") not in pocket_tts_preset_voices
+    ):
+        raise ValueError("Choose a supported Pocket built-in voice")
+    registry = (
+        CharacterVoiceRegistry()
+        if preset
+        else CharacterVoiceRegistry.from_file(manifest)
+    )
     voice = registry.resolve_source(source_id)
-    if voice is None or not voice.references:
+    if voice is None or (not preset and not voice.references):
         raise ValueError("The selected game reference is unavailable")
     candidate = VoiceCandidate(
         source_id=source_id,
@@ -35,7 +46,11 @@ def narrator_preview_plan(settings, manifest, source_id, text):
         source_speaker=voice.speaker,
         reference_sha256s=tuple(sha256_file(path) for path in voice.references),
     )
-    identity = sha256_file(manifest)
+    identity = (
+        hashlib.sha256(source_id.encode()).hexdigest()
+        if preset
+        else sha256_file(manifest)
+    )
     controls = hashlib.sha256(
         repr(
             (
@@ -71,13 +86,13 @@ def narrator_preview_plan(settings, manifest, source_id, text):
         job_id="game-narrator",
         created_at="",
         story_index_sha256=identity,
-        voice_manifest=str(manifest),
-        voice_manifest_sha256=identity,
+        voice_manifest=None if preset else str(manifest),
+        voice_manifest_sha256=None if preset else identity,
         synthesis_backend=settings.speech_backend,
         synthesis_model=settings.tts_model,
         synthesis_language=settings.tts_language,
         synthesis_profile=settings.tts_profile,
-        pocket_voice_cloning=settings.pocket_gated_model_accepted,
+        pocket_voice_cloning=settings.pocket_gated_model_accepted and not preset,
         synthesis_controls_sha256=controls,
         groups=(group,),
     )

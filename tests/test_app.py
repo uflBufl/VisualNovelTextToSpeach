@@ -27,7 +27,6 @@ from vntts.ocr import DialogRegion  # noqa: E402
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
-from vntts.voices import VoiceChoice  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
 
@@ -429,7 +428,6 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIs(result, dialog)
         create_dialog.assert_called_once_with(
             tray_application.settings,
-            narrator_chooser=None,
             game_narrator_chooser=tray_application._choose_game_narrator_for_preparation,
             parent=tray_application.dashboard,
         )
@@ -443,27 +441,20 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("1 will use live voice", status)
         tray_application.shutdown()
 
-    def test_public_pocket_narrator_chooser_excludes_reference_voices(self):
-        controller = Mock()
-        controller.available_voice_choices.return_value = (
-            VoiceChoice("default", "Default"),
-            VoiceChoice("preset:alba", "Alba"),
-            VoiceChoice("character:centurion", "Centurion"),
-        )
+    def test_main_narrator_entry_reuses_preparation_settings(self):
+        controller = Mock(is_ready=False, is_live_running=False)
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
             controller_factory=Mock(return_value=controller),
         )
         dialog = Mock()
-
-        with patch("vntts.app.VoicePreviewDialog", return_value=dialog) as factory:
-            tray_application._choose_pregeneration_narrator()
-
-        self.assertEqual(
-            factory.call_args.args[1], (VoiceChoice("preset:alba", "Alba"),)
-        )
-        dialog.exec.assert_called_once_with()
+        dialog.has_pending_work.return_value = False
+        tray_application.pregeneration_dialog = dialog
+        tray_application.open_voice_previews()
+        dialog._choose_game_narrator.assert_called_once_with()
+        controller.start.assert_not_called()
+        tray_application.pregeneration_dialog = None
         tray_application.shutdown()
 
     def test_sequence_resync_action_selects_the_visible_canonical_event(self):
@@ -2058,7 +2049,7 @@ class TrayApplicationTest(unittest.TestCase):
         dialog.exec.assert_called_once_with()
         tray_application.shutdown()
 
-    def test_voice_preview_dialog_uses_controller_voices_and_handler(self):
+    def test_narrator_picker_does_not_require_reading_engine(self):
         controller = Mock()
         controller.is_live_running = False
         controller.available_voice_characters.return_value = ["Narrator", "Marcus"]
@@ -2071,23 +2062,15 @@ class TrayApplicationTest(unittest.TestCase):
         )
         dialog = Mock()
 
-        with patch("vntts.app.VoicePreviewDialog", return_value=dialog) as factory:
+        dialog.exec.return_value = QDialog.DialogCode.Rejected
+        with patch("vntts.app.GameNarratorDialog", return_value=dialog) as factory:
             tray_application.open_voice_previews()
 
         factory.assert_called_once_with(
-            ["Narrator", "Marcus"],
-            choices,
-            controller.preview_voice_choice,
-            tray_application.assign_voice,
-            controller.voice_assignment_for,
-            tray_application.clear_voice_assignment,
-            force_live_handler=tray_application.set_force_live_narrator,
-            current_force_live_handler=ANY,
-            preview_stop_handler=controller.stop_voice_preview,
-            initial_character="Narrator",
-            game_narrator_handler=tray_application._choose_live_game_narrator,
-            engine_description="Engine: Pocket TTS (recommended)\nModel: Pocket TTS preset-only",
+            tray_application.settings, tray_application.dashboard
         )
+        controller.start.assert_not_called()
+        controller.available_voice_choices.assert_not_called()
         dialog.exec.assert_called_once_with()
         tray_application.shutdown()
 
@@ -2109,9 +2092,14 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=controller),
         )
         dialog = Mock()
-        dialog.exec.side_effect = lambda: self.assertFalse(controller.is_live_running)
 
-        with patch("vntts.app.VoicePreviewDialog", return_value=dialog):
+        def cancel_picker():
+            self.assertFalse(controller.is_live_running)
+            return QDialog.DialogCode.Rejected
+
+        dialog.exec.side_effect = cancel_picker
+
+        with patch("vntts.app.GameNarratorDialog", return_value=dialog):
             tray_application.open_voice_previews()
             self.wait_until(lambda: controller.is_live_running)
 

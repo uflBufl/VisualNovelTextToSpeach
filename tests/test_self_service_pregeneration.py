@@ -192,14 +192,14 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=PregenerationJobStore(root / "jobs"),
-                narrator_chooser=chooser,
+                game_narrator_chooser=chooser,
             )
 
-            self.assertTrue(dialog.choose_narrator_button.isVisibleTo(dialog))
+            self.assertTrue(dialog.game_narrator_button.isVisibleTo(dialog))
             self.assertIn("Alba", dialog.narrator_status.text())
-            dialog.choose_narrator_button.click()
+            dialog.game_narrator_button.click()
 
-            chooser.assert_called_once_with()
+            chooser.assert_called_once_with(AppSettings(), dialog)
             self.assertIs(dialog.settings, selected)
             self.assertIn("Marius", dialog.narrator_status.text())
             self.assertIn("no account", dialog.pocket_terms.text())
@@ -235,7 +235,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(dialog.story_context.isVisibleTo(dialog))
             self.assertFalse(dialog.engine_choice.isEnabled())
             self.assertFalse(dialog.model_choice.isEnabled())
-            self.assertFalse(dialog.choose_narrator_button.isEnabled())
+            self.assertFalse(dialog.game_narrator_button.isEnabled())
             self.assertIn("Centurion", dialog.narrator_status.text())
             dialog.reject()
             dialog.deleteLater()

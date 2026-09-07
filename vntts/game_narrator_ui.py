@@ -4,13 +4,14 @@ from functools import partial
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QTimer, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QProgressBar,
@@ -25,11 +26,19 @@ from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
 from vntts.game_narrator import bind_game_narrator, narrator_preview_plan
 from vntts.pregeneration_audition import VoiceAuditionPreviewService
-from vntts.pregeneration_voices import resolve_pregeneration_settings
+from vntts.pregeneration_voices import (
+    pregeneration_narrator_source_id,
+    resolve_pregeneration_settings,
+)
 from vntts.qt_audio import QtPcmPlayer
-from vntts.speech_presentation import engine_model_label
+from vntts.speech_presentation import engine_model_label, narrator_voice_label
 from vntts.tts_benchmark import create_backend
-from vntts.voices import CharacterVoiceRegistry
+from vntts.voices import (
+    CharacterVoiceRegistry,
+    find_voice_assignment,
+    normalize_character_name,
+    pocket_tts_preset_voices,
+)
 
 
 class GameNarratorDialog(QDialog):
@@ -47,7 +56,7 @@ class GameNarratorDialog(QDialog):
         binder=bind_game_narrator,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Choose narrator from installed game")
+        self.setWindowTitle("Choose narrator")
         self.resize(640, 560)
         self.settings_value = resolve_pregeneration_settings(settings)
         self.result_settings = None
@@ -69,9 +78,7 @@ class GameNarratorDialog(QDialog):
         self._closing = False
         self._closed = False
 
-        self.status = QLabel(
-            "Find game voices to start. Nothing is assigned until you save."
-        )
+        self.status = QLabel("Choose a candidate. Nothing changes until you save.")
         self.status.setWordWrap(True)
         self.status.setAccessibleName("Game narrator progress")
         self.progress = QProgressBar()
@@ -79,10 +86,38 @@ class GameNarratorDialog(QDialog):
         self.progress.hide()
         self.controls = QWidget()
         form = QFormLayout(self.controls)
+        self.form = form
+        form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.engine = QLabel()
         self.engine.setWordWrap(True)
         form.addRow(self.engine)
+        current = QLabel(f"Saved narrator: {narrator_voice_label(settings)}")
+        current.setWordWrap(True)
+        form.addRow(current)
+        self.source = QComboBox()
+        self.source.setAccessibleName("Narrator voice source")
+        self.source.addItem("Game character", "game")
+        if self.settings_value.speech_backend == "pocket-tts":
+            self.source.addItem("Built-in Pocket voice", "preset")
+        selected = find_voice_assignment(
+            settings.voice_assignments, "Narrator"
+        ) or pregeneration_narrator_source_id(self.settings_value)
+        if selected.startswith("preset:") and self.source.count() > 1:
+            self.source.setCurrentIndex(1)
+        form.addRow("Voice source", self.source)
+        self.presets = QComboBox()
+        self.presets.setAccessibleName("Built-in narrator candidate")
+        for name in pocket_tts_preset_voices:
+            self.presets.addItem(name.replace("_", " ").title(), f"preset:{name}")
+        self.presets.setCurrentIndex(max(0, self.presets.findData(selected)))
+        self.presets.currentIndexChanged.connect(lambda: self.player.stop())
+        form.addRow(self.presets)
+        self.game_controls = QWidget()
+        game_form = QFormLayout(self.game_controls)
+        game_form.setContentsMargins(0, 0, 0, 0)
+        game_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.addRow(self.game_controls)
         self.terms = QLabel(
             "Game voice cloning with Pocket requires accepting the "
             '<a href="https://huggingface.co/kyutai/pocket-tts">model terms</a> '
@@ -96,35 +131,32 @@ class GameNarratorDialog(QDialog):
         pocket = self.settings_value.speech_backend == "pocket-tts"
         self.terms.setVisible(pocket)
         self.consent.setVisible(pocket)
-        form.addRow(self.terms)
-        form.addRow(self.consent)
+        game_form.addRow(self.terms)
+        game_form.addRow(self.consent)
         self.discover_button = QPushButton("Find game voices")
         self.discover_button.clicked.connect(lambda: self.discover())
         self.folder_button = QPushButton("Choose game folder...")
         self.folder_button.clicked.connect(self._choose_folder)
-        form.addRow(self.discover_button, self.folder_button)
+        game_form.addRow(self.discover_button, self.folder_button)
         self.characters = QComboBox()
         self.characters.setAccessibleName("Game character")
         self.characters.currentIndexChanged.connect(self._character_changed)
         self.prepare_button = QPushButton("Load this character's references")
         self.prepare_button.clicked.connect(self._prepare)
-        form.addRow("Character", self.characters)
-        form.addRow(self.prepare_button)
+        game_form.addRow("Character", self.characters)
+        game_form.addRow(self.prepare_button)
         self.references = QComboBox()
         self.references.setAccessibleName("Original game reference")
         self.references.currentIndexChanged.connect(lambda: self.player.stop())
-        form.addRow("Reference", self.references)
+        game_form.addRow("Reference", self.references)
         self.original_button = QPushButton("Play original reference")
         self.original_button.clicked.connect(self._original)
-        form.addRow(self.original_button)
         self.text = QLineEdit("The storm has passed. We can continue our journey.")
         form.addRow("Preview text", self.text)
         self.preview_button = QPushButton("Generate and play preview")
         self.preview_button.clicked.connect(self._preview)
-        form.addRow(self.preview_button)
-        self.save_button = QPushButton("Use this game voice as narrator")
+        self.save_button = QPushButton("Save narrator")
         self.save_button.clicked.connect(self._save)
-        form.addRow(self.save_button)
         self.stop_button = QPushButton("Stop audio")
         self.stop_button.clicked.connect(self.player.stop)
         self.cancel_button = QPushButton("Cancel")
@@ -136,13 +168,42 @@ class GameNarratorDialog(QDialog):
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(self.controls)
         layout.addWidget(self.scroll, 1)
-        layout.addWidget(self.stop_button)
-        layout.addWidget(self.cancel_button)
+        transport = QHBoxLayout()
+        transport.addWidget(self.original_button)
+        transport.addWidget(self.preview_button)
+        transport.addWidget(self.stop_button)
+        layout.addLayout(transport)
+        note = QLabel(
+            "Applies to future preparation and live fallback. Existing recordings and character voices stay unchanged."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        actions = QHBoxLayout()
+        actions.addWidget(self.cancel_button)
+        actions.addWidget(self.save_button)
+        layout.addLayout(actions)
         self.player.errorOccurred.connect(
             lambda _code, message: self.status.setText(message)
         )
+        self.source.currentIndexChanged.connect(self._source_changed)
         self._update()
-        QTimer.singleShot(0, self.discover)
+        QTimer.singleShot(0, self._source_changed)
+
+    def _source_changed(self):
+        if self._closing or self._closed:
+            return
+        self.player.stop()
+        preset = self.source.currentData() == "preset"
+        self.form.setRowVisible(self.presets, preset)
+        self.form.setRowVisible(self.game_controls, not preset)
+        self.status.setText(
+            "Built-in voices need no game references or Hugging Face account. Generate a preview, then save."
+            if preset
+            else "Choose a game character and load an original reference."
+        )
+        self._update()
+        if not preset and not self.characters.count() and not self.runner.active:
+            self.discover()
 
     def _settings(self):
         return self.settings_value.updated(
@@ -151,19 +212,30 @@ class GameNarratorDialog(QDialog):
 
     def _update(self):
         settings = self._settings()
+        preset = self.source.currentData() == "preset"
         self.engine.setText(
             engine_model_label(
                 settings.speech_backend,
                 settings.tts_model,
-                pocket_cloning=settings.pocket_gated_model_accepted,
+                pocket_cloning=not preset,
             )
         )
-        allowed = settings.speech_backend != "pocket-tts" or self.consent.isChecked()
-        ready = self.references.count() > 0
+        allowed = (
+            preset
+            or settings.speech_backend != "pocket-tts"
+            or self.consent.isChecked()
+        )
+        ready = preset or self.references.count() > 0
+        idle = not self.runner.active and not self._closed and not self._closing
         self.prepare_button.setEnabled(self.characters.count() > 0)
-        self.original_button.setEnabled(ready)
-        self.preview_button.setEnabled(ready and allowed)
-        self.save_button.setEnabled(ready and allowed)
+        self.original_button.setEnabled(ready and not preset and idle)
+        self.original_button.setToolTip(
+            "Built-in voices have no original game reference."
+            if preset
+            else "Play the original recording, not generated speech."
+        )
+        self.preview_button.setEnabled(ready and allowed and idle)
+        self.save_button.setEnabled(ready and allowed and idle)
 
     def _start(self, operation, message, function, *arguments):
         if self.runner.active:
@@ -176,6 +248,7 @@ class GameNarratorDialog(QDialog):
         self.progress.show()
         self.cancel_button.setText("Cancel and close")
         self.runner.start(function, *arguments)
+        self._update()
 
     def discover(self, installation_root=None):
         if self.runner.active or self._closing:
@@ -229,7 +302,9 @@ class GameNarratorDialog(QDialog):
         return narrator_preview_plan(
             self._settings(),
             self._manifest,
-            self.references.currentData(),
+            self.presets.currentData()
+            if self.source.currentData() == "preset"
+            else self.references.currentData(),
             self.text.text().strip(),
         )
 
@@ -270,6 +345,18 @@ class GameNarratorDialog(QDialog):
         ).path
 
     def _save(self):
+        if self.source.currentData() == "preset":
+            assignments = {
+                name: value
+                for name, value in self._settings().voice_assignments.items()
+                if normalize_character_name(name) != "narrator"
+            }
+            assignments["Narrator"] = self.presets.currentData()
+            self.result_settings = self._settings().updated(
+                voice_assignments=assignments
+            )
+            self._cleanup()
+            return
         self._start(
             "save",
             "Saving narrator references. Existing character voices are preserved...",

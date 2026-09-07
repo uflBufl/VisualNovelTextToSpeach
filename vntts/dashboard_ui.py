@@ -403,7 +403,9 @@ class ControlDashboard(QMainWindow):
         self.narrator_voice_button.setText("Choose and preview narrator...")
         self.narrator_voice_button.setDefault(True)
         voices_layout.addWidget(self.narrator_voice_button)
-        self.voice_availability = QLabel()
+        self.voice_availability = QLabel(
+            "The preview loads its model when needed. Reading setup is not required."
+        )
         self.voice_availability.setWordWrap(True)
         voices_layout.addWidget(self.voice_availability)
         voices_layout.addStretch()
@@ -607,8 +609,6 @@ class ControlDashboard(QMainWindow):
         self.prepare_reading_button.setEnabled(not loading)
         for button in self.loading_blocked_buttons:
             button.setEnabled(not loading)
-        if not loading:
-            self.narrator_voice_button.setEnabled(self._ready)
 
     def set_ready(self, ready, *, reason=None):
         self.set_runtime_controls(
@@ -621,9 +621,6 @@ class ControlDashboard(QMainWindow):
     def set_runtime_controls(self, state):
         self._ready = state.ready
         self.prepare_reading_button.setVisible(not state.ready)
-        self.narrator_voice_button.setEnabled(state.ready)
-        self.voice_availability.setText("" if state.ready else state.reason_for("read"))
-        self.voice_availability.setVisible(not state.ready)
         self.read_button.setEnabled(state.can_read)
         self.live_button.setEnabled(state.can_toggle_live)
         self.pause_button.setEnabled(state.can_pause)

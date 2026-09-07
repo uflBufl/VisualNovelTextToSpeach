@@ -113,7 +113,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(
             dashboard.live_button.toolTip(), dashboard.action_reason.text()
         )
-        self.assertFalse(dashboard.narrator_voice_button.isEnabled())
+        self.assertTrue(dashboard.narrator_voice_button.isEnabled())
         self.assertTrue(
             all(
                 button.isEnabled()
@@ -156,7 +156,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.loading_panel.isHidden())
         self.assertTrue(dashboard.prepare_audio_button.isEnabled())
         self.assertTrue(dashboard.setup_primary_button.isEnabled())
-        self.assertFalse(dashboard.narrator_voice_button.isEnabled())
+        self.assertTrue(dashboard.narrator_voice_button.isEnabled())
         dashboard.close()
         dashboard.deleteLater()
 

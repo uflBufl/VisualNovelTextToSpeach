@@ -94,7 +94,6 @@ class OfflineAudioPreparationDialog(QDialog):
         acceptance=None,
         publisher=None,
         importer=None,
-        narrator_chooser=None,
         game_narrator_chooser=None,
         thread_pool=None,
         parent=None,
@@ -122,9 +121,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.acceptance = acceptance or OfflineAcceptanceWorker(self.generator)
         self.publisher = publisher or OfflinePackPublisher(base_pack=settings.game_pack)
         self.importer = importer or Reverse1999GameImporter()
-        self.narrator_chooser = narrator_chooser
         self.game_narrator_chooser = game_narrator_chooser
-        self._preview_backend = settings.speech_backend
         self.discovery_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.discovery_runner.finished.connect(self._discovery_finished)
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -240,15 +237,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_status = QLabel()
         self.narrator_status.setAccessibleName("Selected narrator voice")
         self.narrator_status.setWordWrap(True)
-        self.choose_narrator_button = QPushButton("Listen to built-in voices...")
-        self.choose_narrator_button.clicked.connect(self._choose_narrator)
-        self.choose_narrator_button.setVisible(narrator_chooser is not None)
         narrator_row = QHBoxLayout()
         narrator_row.addWidget(self.narrator_status, 1)
-        narrator_row.addWidget(self.choose_narrator_button)
-        self.game_narrator_button = QPushButton(
-            "Choose narrator from installed game..."
-        )
+        self.game_narrator_button = QPushButton("Choose and preview narrator...")
         self.game_narrator_button.setVisible(game_narrator_chooser is not None)
         self.game_narrator_button.clicked.connect(self._choose_game_narrator)
         self._refresh_narrator_status()
@@ -497,17 +488,6 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self._apply_discovery(self._discover_content())
 
-    def _choose_narrator(self):
-        try:
-            settings = self.narrator_chooser()
-        except Exception as error:
-            self.narrator_status.setText(f"Unable to choose narrator: {error}")
-            return
-        if settings is not None:
-            self.settings = settings
-            self.pocket_voice_cloning.setChecked(settings.pocket_gated_model_accepted)
-        self._refresh_narrator_status()
-
     def _choose_game_narrator(self):
         settings = self.game_narrator_chooser(self.settings, self)
         if settings is None:
@@ -581,12 +561,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 if settings.speech_backend != self.settings.speech_backend
                 else ""
             )
-        )
-        self.choose_narrator_button.setVisible(
-            self.narrator_chooser is not None
-            and self._preview_backend == settings.speech_backend
-            and settings.speech_backend == "pocket-tts"
-            and not settings.pocket_gated_model_accepted
         )
 
     def _voice_choices(self, plan):
@@ -812,7 +786,6 @@ class OfflineAudioPreparationDialog(QDialog):
     def _set_discovery_loading(self, loading):
         if loading:
             self.phaseChanged.emit("Finding installed stories")
-        self.choose_narrator_button.setEnabled(not loading)
         self.game_narrator_button.setEnabled(not loading)
         self.pocket_voice_cloning.setEnabled(not loading)
         self.discovery_panel.setVisible(loading)
@@ -1809,7 +1782,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.select_all_button.setEnabled(enabled)
         self.select_none_button.setEnabled(enabled)
         self.change_voices.setEnabled(enabled)
-        self.choose_narrator_button.setEnabled(enabled)
         self.game_narrator_button.setEnabled(enabled)
         self.pocket_voice_cloning.setEnabled(enabled)
         self.continue_button.setEnabled(

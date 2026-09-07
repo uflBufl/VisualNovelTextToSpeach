@@ -89,7 +89,6 @@ from vntts.pregeneration_activation import (
 )
 from vntts.pregeneration_pack import OfflinePackResult
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog
-from vntts.pregeneration_voices import pregeneration_narrator_source_id
 from vntts.profiles import GameProfileStore
 from vntts.profiles_ui import GameProfilesDialog
 from vntts.readiness_ui import ReadinessDialog
@@ -520,10 +519,10 @@ class SettingsDialog(QDialog):
         self.narrator_voice = QLabel()
         self.narrator_voice.setWordWrap(True)
         self.narrator_voice.setAccessibleName("Selected narrator voice")
-        self.choose_narrator_button = QPushButton("Choose game voice...")
+        self.choose_narrator_button = QPushButton("Choose narrator...")
         self.choose_narrator_button.setAccessibleName("Choose narrator voice")
         self.choose_narrator_button.setAccessibleDescription(
-            "Open the game voice picker to listen and choose a narrator"
+            "Listen to game or built-in voices and save a narrator"
         )
         self.choose_narrator_button.clicked.connect(self.choose_narrator)
         speech_form.addRow("Narrator voice", self.narrator_voice)
@@ -2260,9 +2259,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._narrator_changed_in_preparation = False
         dialog = OfflineAudioPreparationDialog(
             self.settings,
-            narrator_chooser=(
-                self._choose_pregeneration_narrator if self._controller_ready else None
-            ),
             game_narrator_chooser=self._choose_game_narrator_for_preparation,
             parent=self.dashboard,
         )
@@ -2337,41 +2333,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         return job
 
-    def _choose_pregeneration_narrator(self):
-        choices = self.controller.available_voice_choices()
-        if (
-            self.settings.speech_backend == "pocket-tts"
-            and not self.settings.pocket_gated_model_accepted
-        ):
-            choices = tuple(
-                choice for choice in choices if choice.id.startswith("preset:")
-            )
-        if not choices:
-            raise RuntimeError("No narrator voices are available")
-        dialog = VoicePreviewDialog(
-            ["Narrator"],
-            choices,
-            self.controller.preview_voice_choice,
-            self.assign_voice,
-            lambda _character: pregeneration_narrator_source_id(self.settings),
-            preview_stop_handler=self.controller.stop_voice_preview,
-            fixed_character="Narrator",
-            engine_description=engine_model_label(
-                self.settings.speech_backend,
-                self.settings.tts_model,
-                pocket_cloning=self.settings.pocket_gated_model_accepted,
-            ),
-            parent=self.pregeneration_dialog,
-        )
-        dialog.setWindowTitle("Choose narrator for offline audio")
-        dialog.routing_note.setText(
-            "This voice will narrate pregenerated dialogue that has no usable "
-            "character voice."
-        )
-        dialog.assign_button.setText("Use this narrator for offline audio")
-        dialog.exec()
-        return self.settings
-
     def _choose_game_narrator_for_preparation(self, settings, parent):
         candidate = self._pick_game_narrator(settings, parent)
         if candidate is not None:
@@ -2384,6 +2345,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.dashboard.set_configuration(candidate)
             self._sync_active_profile(candidate)
             self._narrator_changed_in_preparation = True
+            if self._controller_ready is True:
+                self._reload_game_narrator()
+                self._narrator_changed_in_preparation = False
         return candidate
 
     def _pick_game_narrator(self, settings, parent):
@@ -2410,8 +2374,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _reload_game_narrator(self):
         self._start_configuration_apply(
             self.settings,
-            progress_status="Applying your selected game narrator...",
-            success_status="Game narrator saved. Prepared recordings are unchanged.",
+            progress_status="Applying your selected narrator...",
+            success_status="Narrator saved. Prepared recordings are unchanged.",
             restart=self._controller_ready,
         )
 
@@ -2649,38 +2613,30 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.set_status("OCR review closed")
 
     def open_voice_previews(self):
+        if self._controller_busy or self._shutting_down:
+            return
+        if self.pregeneration_dialog is not None:
+            if self.pregeneration_dialog.has_pending_work():
+                self.set_status(
+                    "Finish or cancel story preparation before changing voices."
+                )
+                self.dashboard.show_stories()
+                return
         resume_live = bool(self.controller.is_live_running)
         if resume_live:
             self._stop_live_then(
-                lambda: self._open_voice_previews_dialog(True),
+                lambda: self._open_narrator_picker(True),
                 "Stopping live capture before voice preview...",
             )
             return
-        self._open_voice_previews_dialog(False)
+        self._open_narrator_picker(False)
 
-    def _open_voice_previews_dialog(self, resume_live):
-        if self._shutting_down:
-            return
-        dialog = VoicePreviewDialog(
-            self.controller.available_voice_characters(),
-            self.controller.available_voice_choices(),
-            self.controller.preview_voice_choice,
-            self.assign_voice,
-            self.controller.voice_assignment_for,
-            self.clear_voice_assignment,
-            force_live_handler=self.set_force_live_narrator,
-            current_force_live_handler=lambda: self.settings.force_live_narrator,
-            preview_stop_handler=self.controller.stop_voice_preview,
-            initial_character="Narrator",
-            game_narrator_handler=self._choose_live_game_narrator,
-            engine_description=engine_model_label(
-                self.settings.speech_backend,
-                self.settings.tts_model,
-                pocket_cloning=self.settings.pocket_gated_model_accepted,
-            ),
-        )
+    def _open_narrator_picker(self, resume_live):
         try:
-            dialog.exec()
+            if self.pregeneration_dialog is not None:
+                self.pregeneration_dialog._choose_game_narrator()
+            else:
+                self._choose_live_game_narrator(self.dashboard)
         finally:
             if (
                 resume_live
@@ -3121,7 +3077,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             action.setEnabled(enabled)
             action.setToolTip("" if enabled else state.reason_for(control))
         self.sequence_resync_action.setEnabled(state.ready)
-        self.voice_preview_action.setEnabled(state.ready)
+        self.voice_preview_action.setEnabled(
+            not (self._controller_busy or self._shutting_down)
+        )
         self.dashboard.set_runtime_controls(state)
         self.compact_controller.set_runtime_controls(state)
 
@@ -3155,6 +3113,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         configuration_enabled = not (
             self._controller_busy or self._shutting_down or preparing
         )
+        self.voice_preview_action.setEnabled(configuration_enabled)
         for action in self._controller_configuration_actions():
             action.setEnabled(configuration_enabled)
         current_sequence_status = getattr(
@@ -3176,7 +3135,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         available = (
             bool(enabled) and not self._controller_busy and not self._shutting_down
         )
-        self.voice_preview_action.setEnabled(available and self._controller_ready)
+        self.voice_preview_action.setEnabled(available)
         self.speaker_mapping_action.setEnabled(available)
         self.history_action.setEnabled(available)
 
