@@ -6,7 +6,7 @@ SPEECH_BACKEND_LABELS = {
     "pocket-tts": "Pocket TTS (recommended)",
     "coqui-xtts": "XTTS",
     "chatterbox-nano": "Chatterbox Nano",
-    "moss-tts": "MOSS-TTS v1.5 (Apple Silicon)",
+    "moss-tts": "MOSS-TTS Local v1.5",
 }
 _SOURCE_BACKENDS = tuple(SPEECH_BACKEND_LABELS)
 
@@ -17,6 +17,10 @@ def packaged_speech_backend_available(backend, bundle_root=None):
         return backend in _SOURCE_BACKENDS
     if backend == "coqui-xtts":
         return True
+    if backend == "moss-tts":
+        from vntts.moss_cpp_backend import moss_cpp_requested
+
+        return moss_cpp_requested()
     if backend == "pocket-tts":
         return find_bundled_speech_runtime(backend, bundle_root) is not None
     return False

@@ -1757,26 +1757,13 @@ class MossTTSVoiceRouterBackend:
                 cache_source = "fresh-generation"
 
                 def generated_chunks():
-                    nonlocal generation
+                    nonlocal generation, completion
                     with self.model_lock:
-                        if prepared.seed is not None and self._mlx is not None:
-                            self._mlx.random.seed(prepared.seed)
-                        generation = self.model.generate(
-                            text=prepared.text,
-                            prompt_audio_codes=prepared.prompt_audio_codes,
-                            language=self.language,
-                            mode="generation",
-                            max_tokens=prepared.max_tokens,
-                            stream=True,
-                            do_sample=True,
-                            streaming_first_chunk_frames=(
-                                self.streaming_first_chunk_frames
-                            ),
-                            streaming_interval=self.streaming_interval,
-                            **dict(prepared.generation_options),
-                        )
+                        generation = self._generate(prepared, request)
                         self.active_generation = generation
                         for generated in generation:
+                            if getattr(generated, "generation_limited", False) is True:
+                                completion = SynthesisCompletion.LIMITED
                             yield self._to_numpy_audio(generated.audio)
 
                 source_chunks = generated_chunks()
@@ -1828,6 +1815,22 @@ class MossTTSVoiceRouterBackend:
                 return False
             self._resolve_prompt_codes(character)
         return True
+
+    def _generate(self, prepared, request):
+        if prepared.seed is not None and self._mlx is not None:
+            self._mlx.random.seed(prepared.seed)
+        return self.model.generate(
+            text=prepared.text,
+            prompt_audio_codes=prepared.prompt_audio_codes,
+            language=self.language,
+            mode="generation",
+            max_tokens=prepared.max_tokens,
+            stream=True,
+            do_sample=True,
+            streaming_first_chunk_frames=self.streaming_first_chunk_frames,
+            streaming_interval=self.streaming_interval,
+            **dict(prepared.generation_options),
+        )
 
     def speak(self, character, text, *, playback_guard=None):
         outcome = self.play_prepared(

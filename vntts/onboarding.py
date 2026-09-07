@@ -54,9 +54,13 @@ class OnboardingDiagnostics:
 
     def prepare_and_run(self, settings, *, cancellation, progress):
         """Only the setup journey provisions dependencies; ordinary probes stay read-only."""
+        from vntts.moss_cpp_backend import moss_cpp_requested
         from vntts.runtime_installation import ensure_speech_runtime
 
-        if settings.speech_backend in {"pocket-tts", "moss-tts"}:
+        if settings.speech_backend in {"pocket-tts", "moss-tts"} and not (
+            settings.speech_backend == "moss-tts"
+            and moss_cpp_requested(settings.tts_model)
+        ):
             ensure_speech_runtime(
                 settings.speech_backend,
                 cancellation=cancellation,
@@ -139,6 +143,22 @@ class OnboardingDiagnostics:
         return DiagnosticResult("Audio output", "ok", str(device))
 
     def _check_model(self, settings):
+        from vntts.moss_cpp_backend import moss_cpp_paths, moss_cpp_requested
+
+        if settings.speech_backend == "moss-tts" and moss_cpp_requested(
+            settings.tts_model
+        ):
+            try:
+                executable, model, _sidecar = moss_cpp_paths(settings.tts_model)
+            except Exception as error:
+                return DiagnosticResult(
+                    "MOSS C++ runtime", "error", str(error), "settings"
+                )
+            return DiagnosticResult(
+                "MOSS C++ runtime",
+                "warning",
+                f"Found {executable.name} and {model.name}; render test still required",
+            )
         if not packaged_speech_backend_available(settings.speech_backend):
             return DiagnosticResult(
                 "Speech runtime",

@@ -64,8 +64,11 @@ def resolve_pregeneration_settings(
     platform_name = sys.platform if platform_name is None else platform_name
     machine = platform.machine() if machine is None else machine
     backend = settings.speech_backend
+    from vntts.moss_cpp_backend import moss_cpp_requested
+
     if backend == "moss-tts" and not (
-        platform_name == "darwin" and str(machine).casefold() == "arm64"
+        (platform_name == "darwin" and str(machine).casefold() == "arm64")
+        or moss_cpp_requested(settings.tts_model)
     ):
         return settings.updated(
             speech_backend="pocket-tts",

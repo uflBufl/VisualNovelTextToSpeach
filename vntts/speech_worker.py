@@ -1232,6 +1232,10 @@ def create_chatterbox_worker_backend(registry, **options):
 
 
 def create_moss_worker_backend(registry, **options):
+    from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_requested
+
+    if moss_cpp_requested(options.get("model_name")):
+        return MossCppVoiceRouterBackend(registry, **options)
     return IsolatedSpeechBackend("moss-tts", registry, **options)
 
 

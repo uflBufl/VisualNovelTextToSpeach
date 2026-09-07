@@ -486,8 +486,41 @@ The default int8 model and audio tokenizer download about 6.8 GB on first use.
 VNTTS keeps the model loaded, caches each character reference, and streams
 48 kHz stereo audio with a short initial buffer. Enable voice warm-up to move
 the first MLX compilation cost to startup. Set `VNTTS_MOSS_MODEL` to use a
-compatible local path or Hugging Face model. MOSS-TTS requires macOS on Apple
-Silicon; Pocket TTS remains the portable default.
+compatible local path or Hugging Face model. This MLX runtime requires macOS
+on Apple Silicon; Pocket TTS remains the portable default.
+
+Windows can run the same MOSS Local v1.5 checkpoint through the optional
+[openmoss C++ runtime](https://github.com/pwilkin/openmoss/releases/tag/v0.3.0).
+Download and extract a Windows release (CUDA for NVIDIA, Vulkan for other
+supported GPUs), keeping its DLLs together. Download **both** files from
+[the Local v1.5 Q8 model](https://huggingface.co/ilintar/moss-tts-local-gguf/tree/main):
+`moss-tts-local-1.5-q8_0.gguf` and
+`moss-tts-local-1.5-q8_0.extras.gguf` (about 9.1 GB combined), into one folder.
+Then launch from the project root:
+
+```powershell
+# CPU generation; no GPU memory required.
+.\scripts\run-moss-windows.ps1 -Server C:\MOSS\moss-tts-server.exe -Model C:\MOSS\moss-tts-local-1.5-q8_0.gguf
+
+# Candidate for an 8 GB GPU: backbone on GPU, audio codec in system RAM.
+.\scripts\run-moss-windows.ps1 -Server C:\MOSS\moss-tts-server.exe -Model C:\MOSS\moss-tts-local-1.5-q8_0.gguf -GpuLayers -1
+```
+
+Select **MOSS-TTS Local v1.5** and a narrator reference in Settings. The script
+configures the executable and model for that launch; run it again on subsequent
+launches. Add `-NarratorReference C:\Voices\reference.wav` to run a fresh
+production-backend benchmark instead of the app, or `-Application C:\VNTTS\vntts.exe`
+to launch a portable build. Source runs require the normal project environment.
+Lower `-GpuLayers` if the game also needs VRAM. `-CodecOnGpu` moves the codec to
+the GPU too and is **not** the recommended starting point for an 8 GB card.
+
+The app owns a loopback-only server, keeps the model loaded between lines, and
+stops it on shutdown. Cancellation during generation stops the server and the
+next uncached line reloads it. C++ output uses separate, content-bound caches.
+This path buffers each complete line before playback: upstream v0.3.0 streaming
+can silently swallow generation failures. Windows model loading, real RAM/VRAM,
+speed and accent fidelity still require qualification on target hardware; the
+automated tests validate the protocol and lifecycle without loading weights.
 
 The runtime pins the official `mlx-audio` release. VNTTS carries a guarded
 compatibility loader for its int8 MOSS audio tokenizer until the equivalent

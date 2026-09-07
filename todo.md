@@ -3,6 +3,13 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P1 - Run MOSS Local v1.5 on Windows
+
+- [ ] Qualify real Windows CPU/8 GB GPU rendering with
+      `scripts/run-moss-windows.ps1`: record memory use, latency and blind accent
+      fidelity against MLX with the same character references. Verify native
+      DLL loading, cancellation/reload and shutdown on the target machine.
+
 ## P0 - Choose a game narrator on a fresh install
 
 - [ ] Qualify the guided game-narrator picker on a clean macOS/Windows install:
