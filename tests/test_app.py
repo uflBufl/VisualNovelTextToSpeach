@@ -395,6 +395,7 @@ class TrayApplicationTest(unittest.TestCase):
         generation_result.failed = 1
         dialog = Mock()
         dialog.exec.return_value = QDialog.DialogCode.Accepted
+        dialog.has_pending_work.return_value = False
         dialog.job.return_value = job
         dialog.voice_plan.return_value = voice_plan
         dialog.generation_input.return_value = generation_input
@@ -419,13 +420,16 @@ class TrayApplicationTest(unittest.TestCase):
                 tray_application,
                 "_start_pregeneration_activation",
             ) as start_activation,
+            patch.object(tray_application.dashboard, "embed_preparation"),
+            patch.object(tray_application.dashboard, "remove_preparation"),
         ):
             result = tray_application.open_pregeneration()
+            tray_application._pregeneration_finished(QDialog.DialogCode.Accepted)
 
-        self.assertIs(result, job)
+        self.assertIs(result, dialog)
         create_dialog.assert_called_once_with(
             tray_application.settings,
-            narrator_chooser=tray_application._choose_pregeneration_narrator,
+            narrator_chooser=None,
             game_narrator_chooser=tray_application._choose_game_narrator_for_preparation,
             parent=tray_application.dashboard,
         )
@@ -2738,7 +2742,7 @@ class TrayApplicationTest(unittest.TestCase):
             patch.object(tray_application, "show_compact_controls"),
             patch.object(tray_application.tray, "show"),
         ):
-            tray_application.start()
+            tray_application.prepare_reading()
             self.assertTrue(started.wait(1))
             tray_application.shutdown()
             self.wait_until(lambda: controller.shutdown.call_count == 1)
@@ -3131,7 +3135,7 @@ class TrayApplicationTest(unittest.TestCase):
         opened.assert_not_called()
         self.assertFalse(tray_application.history_action.isEnabled())
 
-    def test_incomplete_setup_opens_wizard_instead_of_loading_model(self):
+    def test_incomplete_setup_opens_stories_without_loading_model(self):
         controller = Mock()
         tray_application = TrayApplication(
             self.application,
@@ -3146,13 +3150,15 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.start()
 
         controller.start.assert_not_called()
-        self.assertFalse(tray_application.dashboard.isVisible())
+        self.assertTrue(tray_application.dashboard.isVisible())
         self.assertFalse(tray_application.compact_controller.isVisible())
         self.assertEqual(single_shot.call_args.args[0], 0)
-        self.assertEqual(single_shot.call_args.args[1], tray_application.run_onboarding)
+        self.assertEqual(
+            single_shot.call_args.args[1], tray_application.open_pregeneration
+        )
         tray_application.shutdown()
 
-    def test_first_launch_shows_only_setup_until_the_wizard_finishes(self):
+    def test_first_launch_defers_setup_until_reading_is_requested(self):
         tray_application = TrayApplication(
             self.application,
             AppSettings(onboarding_completed=False),
@@ -3161,16 +3167,16 @@ class TrayApplicationTest(unittest.TestCase):
 
         with (
             patch.object(tray_application.tray, "show"),
-            patch("vntts.app.QTimer.singleShot") as single_shot,
+            patch("vntts.app.QTimer.singleShot"),
         ):
             tray_application.start()
-            scheduled_onboarding = single_shot.call_args.args[1]
-            scheduled_onboarding()
+            self.assertIsNone(tray_application.onboarding_wizard)
+            tray_application.prepare_reading()
 
         wizard = tray_application.onboarding_wizard
         self.assertIsNotNone(wizard)
         self.assertTrue(wizard.isVisible())
-        self.assertFalse(tray_application.dashboard.isVisible())
+        self.assertTrue(tray_application.dashboard.isVisible())
         self.assertFalse(tray_application.compact_controller.isVisible())
 
         wizard.reject()

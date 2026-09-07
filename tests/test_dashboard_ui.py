@@ -61,10 +61,11 @@ class ControlDashboardTest(unittest.TestCase):
                 voice_assignments={"Narrator": "character:centurion"},
             )
         )
+        dashboard.show_reading()
         dashboard.show()
         self.application.processEvents()
         self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
-        self.assertTrue(dashboard.speech_configuration.isVisibleTo(dashboard))
+        self.assertTrue(dashboard.reading_defaults.isVisibleTo(dashboard))
         self.assertTrue(dashboard.audio_source.isVisibleTo(dashboard))
         self.assertIn("Centurion", dashboard.speech_configuration.text())
         dashboard.set_diagnostic(
@@ -169,6 +170,12 @@ class ControlDashboardTest(unittest.TestCase):
         self.application.processEvents()
 
         self.assertTrue(dashboard.prepare_audio_button.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.sections.tabText(0), "Stories")
+        self.assertFalse(dashboard.live_button.isVisibleTo(dashboard))
+        dashboard.sections.setCurrentIndex(1)
+        self.assertTrue(dashboard.narrator_voice_button.isVisibleTo(dashboard))
+        self.assertFalse(dashboard.prepare_audio_button.isVisibleTo(dashboard))
+        dashboard.sections.setCurrentIndex(0)
         self.assertIn(
             "guided defaults",
             dashboard.prepare_audio_button.accessibleDescription(),
@@ -182,6 +189,7 @@ class ControlDashboardTest(unittest.TestCase):
 
     def test_primary_reading_surface_hides_technical_details_by_default(self):
         dashboard = ControlDashboard(AppSettings())
+        dashboard.show_reading()
         dashboard.show()
         self.application.processEvents()
 
@@ -229,6 +237,7 @@ class ControlDashboardTest(unittest.TestCase):
                 story_index="story-index.jsonl",
             )
         )
+        dashboard.show_reading()
         dashboard.show()
         self.application.processEvents()
 
@@ -242,6 +251,7 @@ class ControlDashboardTest(unittest.TestCase):
 
     def test_primary_live_action_is_keyboard_operable(self):
         dashboard = ControlDashboard(AppSettings())
+        dashboard.show_reading()
         requests = []
         dashboard.live_requested.connect(lambda: requests.append("live"))
         dashboard.set_ready(True)
@@ -564,6 +574,7 @@ class ControlDashboardTest(unittest.TestCase):
                 font = QFont(base_font)
                 font.setPointSizeF(base_size * scale)
                 dashboard = ControlDashboard(AppSettings())
+                dashboard.show_reading()
                 dashboard.setFont(font)
                 dashboard.resize(620, 340)
                 dashboard.show()

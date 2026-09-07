@@ -74,6 +74,7 @@ class DurableSettingsMixin:
         self.set_ready(self.controller.is_ready)
         wizard.deleteLater()
         self.show_dashboard()
+        self.dashboard.show_reading()
         self.dashboard.live_button.setFocus()
         self.set_status(
             "Setup completed. Prepare offline audio for story voices, or click Start reading. "

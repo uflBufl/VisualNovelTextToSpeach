@@ -145,6 +145,43 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         self.application.processEvents()
         self.assertEqual(received, [])
 
+    def test_embedded_preparation_keeps_work_on_navigation_and_waits_before_quit(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=pool,
+                voice_decisions=VoiceDecisionStore(root / "voices.json"),
+            )
+            controller = Mock(is_ready=False, is_live_running=False)
+            tray = TrayApplication(
+                self.application,
+                AppSettings(),
+                controller_factory=Mock(return_value=controller),
+            )
+            with patch("vntts.app.OfflineAudioPreparationDialog", return_value=dialog):
+                tray.open_pregeneration()
+                dialog.continue_button.click()
+                self.assertTrue(dialog.has_pending_work())
+                tray.dashboard.show_reading()
+                self.assertIs(tray.open_pregeneration(), dialog)
+                tray.prepare_reading()
+                self.assertIsNone(tray.onboarding_wizard)
+                controller.start.assert_not_called()
+                with patch.object(self.application, "quit") as quit_application:
+                    tray.request_quit()
+                    quit_application.assert_not_called()
+                    self.assertTrue(dialog.voice_cancel_event.is_set())
+                    pool.tasks.pop(0).run()
+                    self.application.processEvents()
+                    quit_application.assert_called_once()
+                self.assertIsNone(tray.pregeneration_dialog)
+            tray.shutdown()
+
     def test_pregeneration_shows_and_applies_narrator_choice(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -482,7 +519,11 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     )
                 )
 
-            self.assertEqual(dialog.progress_phase.text(), "Offline audio is ready")
+            self.assertEqual(
+                dialog.progress_phase.text(),
+                "Ready with live speech for remaining lines",
+            )
+            self.assertTrue(dialog.pocket_terms.isHidden())
             self.assertEqual(dialog.continue_button.text(), "Use prepared audio")
             dialog.continue_button.click()
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
@@ -514,21 +555,15 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     save_settings=lambda settings: settings.save(saved_settings)
                 ),
             )
-            completed = Mock()
-            completed.exec.return_value = QDialog.DialogCode.Accepted
-            completed.job.return_value = dialog.job()
-            completed.voice_plan.return_value = dialog.voice_plan()
-            completed.generation_input.return_value = dialog.generation_input()
-            completed.generation_result.return_value = dialog.generation_result()
-            completed.recovery_result.return_value = dialog.recovery_result()
-            completed.acceptance_result.return_value = dialog.acceptance_result()
-            completed.pack_result.return_value = dialog.pack_result()
-
             with patch(
                 "vntts.app.OfflineAudioPreparationDialog",
-                return_value=completed,
+                return_value=dialog,
             ):
-                self.assertIs(tray.open_pregeneration(), dialog.job())
+                self.assertIs(tray.open_pregeneration(), dialog)
+                self.assertFalse(dialog.isWindow())
+                tray.dashboard.show_reading()
+                self.assertIs(tray.open_pregeneration(), dialog)
+                dialog.accept()
             for _attempt in range(400):
                 self.application.processEvents()
                 if not tray.pregeneration_activation_runner.active:
@@ -546,7 +581,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(tray.dashboard.isVisible())
             controller.start.assert_not_called()
             tray.shutdown()
-            dialog.deleteLater()
 
     def test_ambiguous_voice_choice_resumes_then_completes_without_line_review(self):
         with TemporaryDirectory() as temporary_directory:
@@ -632,7 +666,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
 
-            self.assertEqual(second.progress_phase.text(), "Offline audio is ready")
+            self.assertEqual(
+                second.progress_phase.text(),
+                "Ready with live speech for remaining lines",
+            )
             second.continue_button.click()
             self.assertEqual(second.result(), QDialog.DialogCode.Accepted)
             self.assertEqual(second.voice_plan().audition_count, 0)

@@ -1274,6 +1274,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._controller_ready = False
         self._controller_busy = False
         self._shutting_down = False
+        self._quit_requested = False
         self._reported_live = False
         self._reported_speech_paused = False
         self._onboarding_test_active = False
@@ -1432,7 +1433,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.support_action.triggered.connect(self.open_support_center)
         self.macos_permissions_action.triggered.connect(self.open_macos_permissions)
         self.settings_folder_action.triggered.connect(self.open_settings_folder)
-        self.quit_action.triggered.connect(self.application.quit)
+        self.quit_action.triggered.connect(self.request_quit)
         self.tray.messageClicked.connect(self._activate_notification_recovery)
         self._update_auto_advance_action()
         self.signals.status_changed.connect(self.set_status)
@@ -1468,6 +1469,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.set_sequence_status(sequence_status)
         self.dashboard.read_requested.connect(self.read_once)
         self.dashboard.live_requested.connect(self.toggle_live)
+        self.dashboard.reading_setup_requested.connect(self.prepare_reading)
         self.dashboard.sequence_resync_requested.connect(self.choose_sequence_position)
         self.dashboard.sequence_expected_requested.connect(
             self.choose_expected_sequence_event
@@ -1483,7 +1485,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.diagnostics_requested.connect(self.open_support_center)
         self.dashboard.settings_requested.connect(self.open_settings)
         self.dashboard.compact_requested.connect(self.show_compact_controls)
-        self.dashboard.quit_requested.connect(self.application.quit)
+        self.dashboard.quit_requested.connect(self.request_quit)
         self.dashboard.hidden_to_background.connect(self.notify_background_mode)
         self.compact_controller.read_requested.connect(self.read_once)
         self.compact_controller.live_requested.connect(self.toggle_live)
@@ -1528,27 +1530,41 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 f"{self._startup_game_pack_errors[0]}"
             )
             return
-        if self.settings.onboarding_completed and self.settings.compact_controls:
-            self.show_compact_controls()
-        elif self.settings.onboarding_completed:
-            self.show_dashboard()
+        self.show_dashboard()
         if self.settings.launch_at_login:
             try:
                 configure_macos_launch_at_login(True)
             except OSError as error:
                 self.show_error(f"Unable to configure launch at login: {error}")
-        if self.settings.onboarding_completed:
-            generation = self._begin_controller_lifecycle()
+        self.set_status(
+            "Choose stories to prepare, or open Reading to set up playback."
+        )
+        QTimer.singleShot(0, self.open_pregeneration)
+
+    def prepare_reading(self):
+        if self._controller_busy or self._shutting_down:
+            return
+        if (
+            self.pregeneration_dialog is not None
+            and self.pregeneration_dialog.has_pending_work()
+        ):
             self.set_status(
-                "Loading the speech model and voices; controls will unlock "
-                "automatically when ready"
+                "Finish or cancel story preparation before loading reading."
             )
-            self.controller.prepare_startup()
-            self._initial_start_generation = generation
-            self.initial_start_runner.start(self._initialize_controller, generation)
-        else:
-            self.set_status("Setup required")
-            QTimer.singleShot(0, self.run_onboarding)
+            self.dashboard.show_stories()
+            return
+        self.dashboard.show_reading()
+        if not self.settings.onboarding_completed:
+            self.run_onboarding()
+            return
+        generation = self._begin_controller_lifecycle()
+        self.set_status(
+            "Loading the speech model and voices; controls will unlock "
+            "automatically when ready"
+        )
+        self.controller.prepare_startup()
+        self._initial_start_generation = generation
+        self.initial_start_runner.start(self._initialize_controller, generation)
 
     def _initialize_controller(self, generation):
         try:
@@ -2069,6 +2085,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.open_settings()
 
     def run_onboarding(self):
+        if (
+            self.pregeneration_dialog is not None
+            and self.pregeneration_dialog.has_pending_work()
+        ):
+            self.set_status("Finish or cancel story preparation before reading setup.")
+            self.dashboard.show_stories()
+            return
         if self.onboarding_wizard is not None:
             self.onboarding_wizard.show()
             self.onboarding_wizard.raise_()
@@ -2220,19 +2243,60 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def open_pregeneration(self):
+        if self._shutting_down or self._quit_requested:
+            return None
+        if self.controller.is_live_running is True:
+            self._stop_live_then(
+                self.open_pregeneration, "Stopping reading before story preparation..."
+            )
+            return None
+        if self.pregeneration_dialog is not None:
+            self.show_dashboard()
+            self.dashboard.show_stories()
+            return self.pregeneration_dialog
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return None
         self._narrator_changed_in_preparation = False
         dialog = OfflineAudioPreparationDialog(
             self.settings,
-            narrator_chooser=self._choose_pregeneration_narrator,
+            narrator_chooser=(
+                self._choose_pregeneration_narrator if self._controller_ready else None
+            ),
             game_narrator_chooser=self._choose_game_narrator_for_preparation,
             parent=self.dashboard,
         )
         self.pregeneration_dialog = dialog
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            self.pregeneration_dialog = None
+        dialog.finished.connect(self._pregeneration_finished)
+        dialog.phaseChanged.connect(self.dashboard.set_preparation_phase)
+        dialog.activityChanged.connect(
+            self._preparation_activity_changed, Qt.ConnectionType.QueuedConnection
+        )
+        self.dashboard.embed_preparation(dialog)
+        return dialog
+
+    def _preparation_activity_changed(self, _active):
+        if self._shutting_down:
+            return
+        self._apply_controller_action_state()
+        if (
+            self.pregeneration_dialog is None
+            or not self.pregeneration_dialog.has_pending_work()
+        ):
+            self.dashboard.preparation_status.hide()
+
+    def _pregeneration_finished(self, result):
+        dialog = self.pregeneration_dialog
+        if dialog is None:
+            return
+        self.pregeneration_dialog = None
+        self.dashboard.remove_preparation(dialog)
+        dialog.deleteLater()
+        self._apply_controller_action_state()
+        if self._quit_requested:
+            self.application.quit()
+            return
+        if result != QDialog.DialogCode.Accepted:
             if self._narrator_changed_in_preparation:
                 self._reload_game_narrator()
             return None
@@ -2346,9 +2410,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _reload_game_narrator(self):
         self._start_configuration_apply(
             self.settings,
-            progress_status="Loading your selected game narrator...",
-            success_status="Game narrator saved and ready. Prepared recordings are unchanged.",
-            restart=True,
+            progress_status="Applying your selected game narrator...",
+            success_status="Game narrator saved. Prepared recordings are unchanged.",
+            restart=self._controller_ready,
         )
 
     def _start_pregeneration_activation(
@@ -2419,6 +2483,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             "uncovered lines use TTS."
         )
         self.show_dashboard()
+        self.dashboard.show_reading()
         self.dashboard.live_button.setFocus()
 
     def open_readiness(self):
@@ -3011,6 +3076,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if isinstance(loaded, dict):
                 snapshot = loaded
         live = getattr(self.controller, "is_live_running", False)
+        preparing = bool(
+            self.pregeneration_dialog is not None
+            and self.pregeneration_dialog.has_pending_work()
+        )
+        if preparing:
+            enabled = False
+            unavailable_reason = (
+                "Story preparation is running. Finish or cancel it before reading."
+            )
         return RuntimeControlState(
             ready=bool(enabled),
             live=live if isinstance(live, bool) else self._reported_live,
@@ -3030,6 +3104,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _apply_runtime_control_state(self, state):
+        if self.pregeneration_dialog is not None:
+            self.pregeneration_dialog.setEnabled(
+                not (self._controller_busy or state.live)
+            )
         controls = (
             (self.read_action, state.can_read, "read"),
             (self.live_action, state.can_toggle_live, "live"),
@@ -3055,6 +3133,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self._apply_runtime_control_state(self._runtime_control_state(enabled=enabled))
         self.dashboard.set_loading(self._controller_busy)
+        preparing = (
+            self.pregeneration_dialog is not None
+            and self.pregeneration_dialog.has_pending_work()
+        )
+        self.dashboard.prepare_reading_button.setEnabled(
+            not (self._controller_busy or self._shutting_down or preparing)
+        )
+        if preparing:
+            for button in self.dashboard.loading_blocked_buttons:
+                button.setEnabled(False)
         if enabled:
             resolve_voice = getattr(self.controller, "_resolve_voice_label", None)
             if callable(resolve_voice):
@@ -3064,7 +3152,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     narrator = None
                 if isinstance(narrator, str):
                     self.dashboard.set_speech_identity(self.settings, narrator)
-        configuration_enabled = not self._controller_busy and not self._shutting_down
+        configuration_enabled = not (
+            self._controller_busy or self._shutting_down or preparing
+        )
         for action in self._controller_configuration_actions():
             action.setEnabled(configuration_enabled)
         current_sequence_status = getattr(
@@ -3148,6 +3238,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._shutting_down:
             return
         self._shutting_down = True
+        if self.pregeneration_dialog is not None:
+            self.pregeneration_dialog.close()
         self.controller.request_shutdown()
         self._lifecycle_generation += 1
         self._controller_busy = True
@@ -3203,6 +3295,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and not activation_shutdown_owned
         ):
             self.controller.shutdown()
+
+    def request_quit(self):
+        self._quit_requested = True
+        if self.pregeneration_dialog is not None:
+            self.dashboard.show()
+            self.dashboard.show_stories()
+            self.set_status(
+                "Closing story preparation safely; completed audio stays saved."
+            )
+            self.pregeneration_dialog.close()
+            return
+        self.application.quit()
 
 
 def main(argv=None):

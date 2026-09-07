@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -79,6 +81,7 @@ class RuntimeControlState:
 
 
 class ControlDashboard(QMainWindow):
+    reading_setup_requested = Signal()
     read_requested = Signal()
     live_requested = Signal()
     sequence_resync_requested = Signal()
@@ -107,7 +110,7 @@ class ControlDashboard(QMainWindow):
         self.setWindowTitle("Visual Novel Text to Speech")
         self.setMinimumWidth(620)
         self.setMinimumHeight(340)
-        self.resize(760, 520)
+        self.resize(860, 660)
 
         self.status = QLabel("Starting...")
         self.status.setWordWrap(True)
@@ -230,6 +233,8 @@ class ControlDashboard(QMainWindow):
         reading_actions = QHBoxLayout()
         reading_actions.addWidget(self.live_button, 2)
         reading_actions.addWidget(self.read_button)
+        self.prepare_reading_button = QPushButton("Set up reading")
+        self.prepare_reading_button.clicked.connect(self.reading_setup_requested.emit)
         self.prepare_audio_button = QPushButton("Prepare offline audio...")
         self.prepare_audio_button.setAccessibleDescription(
             "Choose stories and prepare their voices locally with guided defaults"
@@ -327,29 +332,21 @@ class ControlDashboard(QMainWindow):
         current_audio.addRow("Audio", self.audio_source)
         card_layout.addLayout(current_audio)
 
-        central = QWidget()
-        layout = QVBoxLayout(central)
+        reading_content = QWidget()
+        layout = QVBoxLayout(reading_content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-        header = QHBoxLayout()
-        header.addWidget(self.status, 1)
         self.compact_button = QPushButton("Compact controls")
         self.compact_button.clicked.connect(self.compact_requested.emit)
-        header.addWidget(self.compact_button)
-        layout.addLayout(header)
-        layout.addWidget(self.loading_panel)
-        speech_header = QHBoxLayout()
-        speech_header.addWidget(self.speech_configuration, 1)
-        speech_actions = QVBoxLayout()
-        speech_actions.addWidget(self.prepare_audio_button)
-        speech_actions.addWidget(self.narrator_voice_button)
-        speech_header.addLayout(speech_actions)
-        layout.addLayout(speech_header)
+        self.reading_defaults = QLabel()
+        self.reading_defaults.setWordWrap(True)
+        self.reading_defaults.setAccessibleName("Live fallback voice and engine")
+        layout.addWidget(self.reading_defaults)
         layout.addWidget(self.reading_policy)
         layout.addWidget(card)
         layout.addWidget(self.details_toggle)
         layout.addWidget(self.details_content)
-        layout.addWidget(setup_group)
+        layout.addWidget(self.compact_button, 0, Qt.AlignmentFlag.AlignRight)
 
         self.content_scroll = QScrollArea()
         self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -357,20 +354,109 @@ class ControlDashboard(QMainWindow):
         self.content_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.content_scroll.setWidget(central)
+        self.content_scroll.setWidget(reading_content)
+        reading_page = QWidget()
+        reading_layout = QVBoxLayout(reading_page)
+        reading_layout.addWidget(self.content_scroll, 1)
+        reading_layout.addWidget(self.action_reason)
+        reading_layout.addWidget(self.prepare_reading_button)
+        reading_layout.addLayout(reading_actions)
+        reading_layout.addWidget(transport_group)
+
+        stories_page = QWidget()
+        stories_layout = QVBoxLayout(stories_page)
+        stories_title = QLabel("Prepare stories for reading")
+        stories_title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        stories_layout.addWidget(stories_title)
+        self.stories_guidance = QLabel(
+            "Choose installed game content and the stories you want to hear. "
+            "The preparation window shows each story's saved audio and remaining work."
+        )
+        self.stories_guidance.setWordWrap(True)
+        stories_layout.addWidget(self.stories_guidance)
+        self.prepare_audio_button.setText("Choose stories and prepare audio...")
+        self.prepare_audio_button.setDefault(True)
+        stories_layout.addWidget(self.prepare_audio_button)
+        self.stories_next = QLabel(
+            "After preparation, use the saved audio, then open Reading. "
+            "You can also read without preparation using live speech."
+        )
+        self.stories_next.setWordWrap(True)
+        stories_layout.addWidget(self.stories_next)
+        stories_layout.addStretch()
+        self.open_reading_button = QPushButton("Open reading controls")
+        stories_layout.addWidget(self.open_reading_button)
+
+        voices_page = QWidget()
+        voices_layout = QVBoxLayout(voices_page)
+        voices_title = QLabel("Narrator and character voices")
+        voices_title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        voices_layout.addWidget(voices_title)
+        voices_layout.addWidget(self.speech_configuration)
+        voice_help = QLabel(
+            "Choose and preview your narrator below. Character voices and any "
+            "narrator substitutions are shown before story generation. "
+            "Changing a default voice does not change existing recordings."
+        )
+        voice_help.setWordWrap(True)
+        voices_layout.addWidget(voice_help)
+        self.narrator_voice_button.setText("Choose and preview narrator...")
+        self.narrator_voice_button.setDefault(True)
+        voices_layout.addWidget(self.narrator_voice_button)
+        self.voice_availability = QLabel()
+        self.voice_availability.setWordWrap(True)
+        voices_layout.addWidget(self.voice_availability)
+        voices_layout.addStretch()
+
+        self.sections = QTabWidget()
+        self.sections.setAccessibleName("Main application sections")
+        self.stories_stack = QStackedWidget()
+        self.stories_stack.addWidget(stories_page)
+        self.sections.addTab(self.stories_stack, "Stories")
+        self.sections.addTab(voices_page, "Voices")
+        self.sections.addTab(reading_page, "Reading")
+        self.open_reading_button.clicked.connect(self.show_reading)
         shell = QWidget()
         shell_layout = QVBoxLayout(shell)
-        shell_layout.setContentsMargins(0, 0, 0, 0)
-        shell_layout.addWidget(self.content_scroll, 1)
-        shell_layout.addWidget(self.action_reason)
-        shell_layout.addLayout(reading_actions)
-        shell_layout.addWidget(transport_group)
+        shell_layout.setContentsMargins(12, 12, 12, 12)
+        shell_layout.addWidget(self.status)
+        shell_layout.addWidget(self.loading_panel)
+        self.preparation_status = QPushButton()
+        self.preparation_status.setAccessibleName("Ongoing story preparation")
+        self.preparation_status.clicked.connect(self.show_stories)
+        self.preparation_status.hide()
+        shell_layout.addWidget(self.preparation_status)
+        shell_layout.addWidget(self.sections, 1)
+        shell_layout.addWidget(setup_group)
         self.setCentralWidget(shell)
         self._set_details_expanded(False)
         self._set_setup_expanded(False)
         self.set_loading(False)
         self.set_ready(False)
         self.set_configuration(settings)
+
+    def show_reading(self):
+        self.sections.setCurrentIndex(2)
+
+    def show_stories(self):
+        self.sections.setCurrentIndex(0)
+
+    def embed_preparation(self, panel):
+        panel.setWindowFlags(Qt.WindowType.Widget)
+        panel.setMinimumSize(0, 0)
+        self.stories_stack.addWidget(panel)
+        self.stories_stack.setCurrentWidget(panel)
+        self.show_stories()
+        panel.show()
+
+    def remove_preparation(self, panel):
+        self.stories_stack.removeWidget(panel)
+        self.stories_stack.setCurrentIndex(0)
+        self.preparation_status.hide()
+
+    def set_preparation_phase(self, phase):
+        self.preparation_status.setText(f"Story preparation: {phase} — Show")
+        self.preparation_status.show()
 
     def _set_details_expanded(self, expanded):
         expanded = bool(expanded)
@@ -393,6 +479,9 @@ class ControlDashboard(QMainWindow):
         self.setup_secondary_content.setVisible(expanded)
 
     def set_configuration(self, settings):
+        self.prepare_reading_button.setText(
+            "Load reading engine" if settings.onboarding_completed else "Set up reading"
+        )
         self.keep_running_on_close = settings.keep_running_on_close
         self.set_speech_identity(settings)
         self.reading_policy.setText(reading_policy_label(settings))
@@ -401,6 +490,7 @@ class ControlDashboard(QMainWindow):
     def set_speech_identity(self, settings, narrator=None):
         summary = speech_configuration_label(settings, narrator=narrator)
         self.speech_configuration.setText(summary)
+        self.reading_defaults.setText(f"Live speech defaults\n{summary}")
         self.speech_configuration.setToolTip(self.reading_help.text())
 
     def _set_capture_configuration(self, settings):
@@ -514,6 +604,7 @@ class ControlDashboard(QMainWindow):
     def set_loading(self, loading):
         loading = bool(loading)
         self.loading_panel.setVisible(loading)
+        self.prepare_reading_button.setEnabled(not loading)
         for button in self.loading_blocked_buttons:
             button.setEnabled(not loading)
         if not loading:
@@ -529,7 +620,10 @@ class ControlDashboard(QMainWindow):
 
     def set_runtime_controls(self, state):
         self._ready = state.ready
+        self.prepare_reading_button.setVisible(not state.ready)
         self.narrator_voice_button.setEnabled(state.ready)
+        self.voice_availability.setText("" if state.ready else state.reason_for("read"))
+        self.voice_availability.setVisible(not state.ready)
         self.read_button.setEnabled(state.can_read)
         self.live_button.setEnabled(state.can_toggle_live)
         self.pause_button.setEnabled(state.can_pause)
@@ -574,6 +668,8 @@ class ControlDashboard(QMainWindow):
 
     def set_live(self, running):
         self._live = bool(running)
+        if running:
+            self.show_reading()
         self.mode.setText("Reading in game" if running else "Stopped")
         self.live_button.setText("Stop reading" if running else "Start reading")
         if self._ready:

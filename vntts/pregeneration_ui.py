@@ -75,6 +75,8 @@ from vntts.voices import (
 
 class OfflineAudioPreparationDialog(QDialog):
     decoderProgress = Signal(str)
+    phaseChanged = Signal(str)
+    activityChanged = Signal(bool)
 
     def __init__(
         self,
@@ -154,6 +156,17 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_timer.timeout.connect(self._poll_generation_progress)
         self.progress_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.progress_runner.finished.connect(self._progress_finished)
+        for runner in (
+            self.discovery_runner,
+            self.import_runner,
+            self.voice_runner,
+            self.input_runner,
+            self.generation_runner,
+            self.recovery_runner,
+            self.acceptance_runner,
+            self.publication_runner,
+        ):
+            runner.activeChanged.connect(self.activityChanged.emit)
         self._progress_baseline = None
         self._progress_snapshot = None
         self._progress_changed_at = monotonic()
@@ -353,6 +366,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_coverage.setAccessibleName("Final offline audio coverage")
         self.progress_coverage.setWordWrap(True)
         progress_layout = QVBoxLayout(self.progress_panel)
+        progress_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         progress_layout.addWidget(self.progress_phase)
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_counts)
@@ -444,6 +458,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
         content = QWidget()
         layout = QVBoxLayout(content)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addWidget(self.discovery_panel)
         layout.addWidget(self.pocket_voice_cloning)
         layout.addWidget(self.pocket_terms)
@@ -598,6 +613,10 @@ class OfflineAudioPreparationDialog(QDialog):
         return tuple(choices)
 
     def _show_voice_confirmation(self, plan):
+        self.pocket_voice_cloning.setVisible(
+            self.settings.speech_backend == "pocket-tts"
+        )
+        self.pocket_terms.setVisible(self.settings.speech_backend == "pocket-tts")
         self.content_scroll.verticalScrollBar().setValue(0)
         try:
             choices = self._voice_choices(plan)
@@ -791,6 +810,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self._set_discovery_loading(False)
 
     def _set_discovery_loading(self, loading):
+        if loading:
+            self.phaseChanged.emit("Finding installed stories")
         self.choose_narrator_button.setEnabled(not loading)
         self.game_narrator_button.setEnabled(not loading)
         self.pocket_voice_cloning.setEnabled(not loading)
@@ -884,6 +905,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.source_status.setText(availability.message)
             return
         self.importing = True
+        self.phaseChanged.emit("Importing installed game")
         self.import_cancel_event.clear()
         self._set_import_controls(False)
         self.cancel_button.setText("Cancel import")
@@ -930,6 +952,9 @@ class OfflineAudioPreparationDialog(QDialog):
         return self._pack_result
 
     def _show_phase(self, phase, detail, cancel_consequence):
+        self.phaseChanged.emit(phase)
+        self.pocket_voice_cloning.hide()
+        self.pocket_terms.hide()
         self.content_scroll.verticalScrollBar().setValue(0)
         self.progress_panel.show()
         self.progress_phase.setText(phase)
@@ -1102,7 +1127,9 @@ class OfflineAudioPreparationDialog(QDialog):
         story_lines = story_lines if isinstance(story_lines, int) else 0
         omissions = omissions if isinstance(omissions, int) else 0
         self._show_phase(
-            "Offline audio is ready",
+            "Ready with live speech for remaining lines"
+            if live
+            else "Offline audio is ready",
             "Your story audio is saved, but not active yet. Click Use prepared audio, "
             "This also replaces live voice overrides for these story roles. "
             "Then open this story in the game and click Start reading. "
@@ -1727,6 +1754,10 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _import_finished(self, content, error):
         self.importing = False
+        if self._close_after_voice_cancel:
+            self.source_status.setText("Game import cancelled.")
+            self.reject()
+            return
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
         self._set_import_controls(True)
@@ -1756,6 +1787,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source_status.setText("Installed game content imported successfully.")
 
     def _set_import_controls(self, enabled):
+        if enabled and not self.selection_panel.isHidden():
+            self.pocket_voice_cloning.setVisible(
+                self.settings.speech_backend == "pocket-tts"
+            )
+            self.pocket_terms.setVisible(self.settings.speech_backend == "pocket-tts")
         self.engine_choice.setEnabled(enabled)
         self.model_choice.setEnabled(
             enabled and self.settings.speech_backend in {"coqui-xtts", "moss-tts"}
@@ -1819,6 +1855,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.reject()
             return
         self.import_cancel_event.set()
+        self._close_after_voice_cancel = True
         self.cancel_button.setEnabled(False)
         self.source_status.setText("Cancelling game import...")
 
@@ -1855,14 +1892,31 @@ class OfflineAudioPreparationDialog(QDialog):
         super().closeEvent(event)
 
     def done(self, result):
-        self._stop_generation_progress()
         if self._narrator_player is not None:
             self._narrator_player.stop()
+        if self.has_pending_work():
+            self._cancel_or_reject()
+            return
+        self._stop_generation_progress()
         self.discovery_runner.cancel()
         self.progress_timer.stop()
         if not self.voice_panel.active:
             self.voice_panel.shutdown()
         super().done(result)
+
+    def has_pending_work(self):
+        return any(
+            (
+                self.importing,
+                self.planning_voices,
+                self.auditioning_voices,
+                self.preparing_inputs,
+                self.generating,
+                self.recovering,
+                self.accepting_audio,
+                self.publishing_pack,
+            )
+        )
 
 
 def _content_label(content):
