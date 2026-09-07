@@ -239,7 +239,7 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertEqual(call["language"], "English")
         self.assertEqual(call["mode"], "generation")
         self.assertTrue(call["do_sample"])
-        self.assertEqual(call["audio_temperature"], 0.8)
+        self.assertEqual(call["audio_temperature"], 1.7)
         self.assertEqual(call["audio_top_p"], 0.8)
         self.assertEqual(call["audio_top_k"], 25)
         self.assertEqual(call["audio_repetition_penalty"], 1.0)
@@ -441,6 +441,7 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertLess(prepared.max_tokens, 4096)
         self.assertEqual(prepared.persistent_cache_key, "bounded-key")
         cache_settings = backend.persistent_cache_keys.key.call_args.kwargs
+        self.assertEqual(cache_settings["audio_temperature"], 1.7)
         self.assertEqual(cache_settings["max_tokens"], prepared.max_tokens)
         self.assertEqual(
             cache_settings["max_audio_seconds"],

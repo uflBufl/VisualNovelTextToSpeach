@@ -1,5 +1,6 @@
 import unittest
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -237,16 +238,18 @@ class MossDelayBackendTest(unittest.TestCase):
             )
 
             result = backend.render(request).collect()
+            backend.render(replace(request, generation_profile="stable")).collect()
 
         self.assertIs(result.completion, SynthesisCompletion.COMPLETE)
         self.assertEqual(result.sample_rate, 24_000)
         self.assertEqual(result.pcm.shape, (3, 1))
         self.assertEqual(result.diagnostics.backend, "moss-tts-delay")
         self.assertEqual(result.diagnostics.seed, 17)
-        self.assertEqual(torch.seeds, [17])
+        self.assertEqual(torch.seeds, [17, 17])
         self.assertEqual(processor.messages[0]["reference"], [str(reference.resolve())])
         self.assertEqual(processor.messages[0]["language"], "English")
         self.assertEqual(model.calls[0]["audio_temperature"], 1.7)
+        self.assertEqual(model.calls[1]["audio_temperature"], 0.8)
         self.assertLess(result.limits.max_tokens, 256)
 
     def test_marks_exact_token_cap_limited_and_does_not_claim_local_tokens(self):

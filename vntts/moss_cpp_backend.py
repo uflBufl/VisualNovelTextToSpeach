@@ -26,6 +26,7 @@ from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_backend import (
     MossTTSVoiceRouterBackend,
     SpeechBackendCapabilities,
+    moss_tts_generation_profiles,
 )
 from vntts.speech_backend_runtime import _source_identity
 
@@ -73,6 +74,9 @@ def _integer_setting(name, default, minimum, maximum):
 
 
 class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
+    # MLX sampling measurements do not establish native GGUF quality.
+    _generation_profiles = moss_tts_generation_profiles
+
     # ponytail: buffer each line; enable upstream streaming only when it reports
     # generation failures and completion reliably instead of swallowing errors.
     capabilities = SpeechBackendCapabilities(

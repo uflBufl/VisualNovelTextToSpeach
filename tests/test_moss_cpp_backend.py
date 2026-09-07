@@ -143,6 +143,9 @@ class MossCppBackendTest(unittest.TestCase):
         cached = backend.render(request).collect()
         self.assertEqual(cached.diagnostics.cache_source, "memory-cache")
         self.assertEqual(len(self.children), 1)
+        backend.render(SynthesisRequest("Narrator", "Hello there.")).collect()
+        body = json.loads((self.root / "request.json").read_text())
+        self.assertEqual(body["sampling"]["audio_temperature"], 0.8)
         backend.shutdown()
         self.assertIsNotNone(self.children[0].poll())
 

@@ -166,12 +166,12 @@ def normalize_moss_language(language):
     return moss_language_names.get(value.casefold().replace("_", "-"), value)
 
 
-def get_moss_tts_generation_profile(name):
+def get_moss_tts_generation_profile(name, *, profiles=moss_tts_generation_profiles):
     profile_name = str(name or "stable").strip().casefold()
     try:
-        return profile_name, dict(moss_tts_generation_profiles[profile_name])
+        return profile_name, dict(profiles[profile_name])
     except KeyError as error:
-        available = ", ".join(sorted(moss_tts_generation_profiles))
+        available = ", ".join(sorted(profiles))
         raise TTSConfigurationError(
             f"Unknown MOSS-TTS voice profile {name!r}; available profiles: {available}"
         ) from error
@@ -1451,6 +1451,14 @@ class PocketTTSVoiceRouterBackend:
 class MossTTSVoiceRouterBackend:
     """High-fidelity Apple Silicon voice cloning with streaming playback."""
 
+    # Local v1.5 MLX's upstream sampling avoids low-temperature silence loops.
+    _generation_profiles = {
+        **moss_tts_generation_profiles,
+        "stable": {
+            **moss_tts_generation_profiles["stable"],
+            "audio_temperature": 1.7,
+        },
+    }
     name = "moss-tts"
     capabilities = SpeechBackendCapabilities(
         voice_cloning=True,
@@ -1525,7 +1533,9 @@ class MossTTSVoiceRouterBackend:
         (
             self.generation_profile,
             self.generation_options,
-        ) = get_moss_tts_generation_profile(generation_profile)
+        ) = get_moss_tts_generation_profile(
+            generation_profile, profiles=self._generation_profiles
+        )
         self.audio_output = audio_output
         self.clock = clock
         self.playback_latency = playback_latency
@@ -1621,7 +1631,7 @@ class MossTTSVoiceRouterBackend:
         if not spoken_text:
             raise TTSSynthesisError("MOSS-TTS received empty text")
         profile, generation_options = get_moss_tts_generation_profile(
-            request.generation_profile
+            request.generation_profile, profiles=self._generation_profiles
         )
         try:
             cache_policy = SynthesisCachePolicy(request.cache_policy)
@@ -2142,7 +2152,9 @@ class MossTTSVoiceRouterBackend:
         self.speed = validate_speed(speed)
 
     def set_generation_profile(self, profile):
-        profile_name, options = get_moss_tts_generation_profile(profile)
+        profile_name, options = get_moss_tts_generation_profile(
+            profile, profiles=self._generation_profiles
+        )
         if (
             profile_name == self.generation_profile
             and options == self.generation_options
