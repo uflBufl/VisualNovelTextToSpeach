@@ -3532,13 +3532,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def request_quit(self):
         self._quit_requested = True
+        # Embedded dialogs can be hidden by navigation or dashboard.close().
+        # close() may not emit finished then; reject() runs their cancellation
+        # lifecycle regardless of visibility and still waits for active work.
         if self.narrator_dialog is not None:
             # Reopen after the native close event finishes, so cancellation
             # progress stays visible while the worker winds down.
             QTimer.singleShot(0, self.dashboard.show)
             self.dashboard.show_voices()
             self.set_status("Cancelling voice preview before quitting...")
-            self.narrator_dialog.close()
+            self.narrator_dialog.reject()
             return
         if self.pregeneration_dialog is not None:
             QTimer.singleShot(0, self.dashboard.show)
@@ -3546,7 +3549,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_status(
                 "Closing story preparation safely; completed audio stays saved."
             )
-            self.pregeneration_dialog.close()
+            self.pregeneration_dialog.reject()
             return
         self.application.quit()
 

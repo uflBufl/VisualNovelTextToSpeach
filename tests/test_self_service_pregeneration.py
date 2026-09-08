@@ -31,6 +31,7 @@ from vntts.authoring.missing_voice_policy import (  # noqa: E402
     NARRATOR_ROLES,
     MissingVoicePolicy,
 )
+from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
 from vntts.pregeneration_acceptance import OfflineAcceptanceWorker  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivator  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionCancelled  # noqa: E402
@@ -134,6 +135,102 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_quit_button_finishes_idle_embedded_preparation(self):
+        for action in ("button", "window", "tray"):
+            with self.subTest(action=action), TemporaryDirectory() as directory:
+                root = Path(directory)
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    discovery=lambda: ContentDiscovery(()),
+                    job_store=PregenerationJobStore(root / "jobs"),
+                    voice_decisions=VoiceDecisionStore(root / "voices.json"),
+                    thread_pool=ManualThreadPool(),
+                )
+                tray = TrayApplication(
+                    self.application,
+                    AppSettings(),
+                    controller_factory=Mock(
+                        return_value=Mock(is_ready=False, is_live_running=False)
+                    ),
+                )
+                try:
+                    with (
+                        patch(
+                            "vntts.app.OfflineAudioPreparationDialog",
+                            return_value=dialog,
+                        ),
+                        patch.object(self.application, "quit") as quit_application,
+                    ):
+                        tray.open_pregeneration()
+                        tray.dashboard.show_reading()
+                        self.application.processEvents()
+                        if action == "button":
+                            tray.dashboard.quit_button.click()
+                        elif action == "window":
+                            tray.dashboard.close()
+                        else:
+                            tray.quit_action.trigger()
+                        self.application.processEvents()
+                        quit_application.assert_called_once()
+                        self.assertIsNone(tray.pregeneration_dialog)
+                finally:
+                    tray.shutdown()
+                    tray.dashboard.deleteLater()
+                    tray.compact_controller.deleteLater()
+
+    def test_quit_waits_for_voice_cleanup_then_finishes_idle_stories(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pool = ManualThreadPool()
+            previews = Mock()
+            narrator = GameNarratorDialog(
+                AppSettings(), preview_service=previews, player=Mock(), thread_pool=pool
+            )
+            preparation = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(root / "jobs"),
+                voice_decisions=VoiceDecisionStore(root / "voices.json"),
+                thread_pool=ManualThreadPool(),
+            )
+            tray = TrayApplication(
+                self.application,
+                AppSettings(),
+                controller_factory=Mock(
+                    return_value=Mock(is_ready=False, is_live_running=False)
+                ),
+            )
+            try:
+                with (
+                    patch(
+                        "vntts.app.OfflineAudioPreparationDialog",
+                        return_value=preparation,
+                    ),
+                    patch("vntts.app.GameNarratorDialog", return_value=narrator),
+                    patch.object(self.application, "quit") as quit_application,
+                ):
+                    tray.open_pregeneration()
+                    tray.open_voice_previews()
+                    narrator._start("preview", "Generating...", lambda: None)
+                    tray.dashboard.show_reading()
+                    tray.dashboard.quit_button.click()
+                    quit_application.assert_not_called()
+                    self.assertTrue(narrator.cancellation.is_set())
+                    pool.tasks.pop(0).run()
+                    self.application.processEvents()
+                    quit_application.assert_not_called()
+                    previews.close.assert_not_called()
+                    pool.tasks.pop(0).run()
+                    self.application.processEvents()
+                    previews.close.assert_called_once()
+                    quit_application.assert_called_once()
+                    self.assertIsNone(tray.narrator_dialog)
+                    self.assertIsNone(tray.pregeneration_dialog)
+            finally:
+                tray.shutdown()
+                tray.dashboard.deleteLater()
+                tray.compact_controller.deleteLater()
+
     def test_cancelled_discovery_can_finish_after_its_ui_is_deleted(self):
         pool = ManualThreadPool()
         runner = LatestTaskRunner(thread_pool=pool)
@@ -175,7 +272,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 self.assertIsNone(tray.onboarding_wizard)
                 controller.start.assert_not_called()
                 with patch.object(self.application, "quit") as quit_application:
-                    tray.request_quit()
+                    tray.dashboard.quit_button.click()
                     quit_application.assert_not_called()
                     self.assertTrue(dialog.voice_cancel_event.is_set())
                     pool.tasks.pop(0).run()
