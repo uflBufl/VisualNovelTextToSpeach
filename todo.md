@@ -5,11 +5,6 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Fix interactive failed-preview retries: use a new recorded seed for a new
-      attempt after generation-limit or post-render quality failure, preserve
-      successful replay/cache reuse across service restarts and keep explicit
-      deterministic backend requests unchanged. No hidden retry loops or relaxed
-      quality gates. Test limit/quality failures, cancellation and cached success.
 - [ ] Qualify corrected interactive retry and resource collection on Windows:
       one failed preview, a new-seed retry, and replay of a successful cached
       sample. If another problem occurs, use one support export before exiting

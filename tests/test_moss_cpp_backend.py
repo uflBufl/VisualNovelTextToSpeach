@@ -421,6 +421,54 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertEqual(event["resources"], {"status": "probe-failed"})
         self.assertNotIn("private", str(self.native_log.report()))
 
+    def test_preview_retry_export_correlates_native_attempts_and_quality(self):
+        from tests.test_pregeneration_audition import ambiguous_fixture
+        from vntts.pregeneration_audition import (
+            VoiceAuditionIncomplete,
+            VoiceAuditionPreviewService,
+        )
+
+        (self.root / "audition").touch()
+        plan, group, _manifest = ambiguous_fixture(self.root)
+
+        def factory(_name, registry, _cache, **_options):
+            backend = self.backend()
+            backend.registry = registry
+            return backend
+
+        service = VoiceAuditionPreviewService(
+            self.root / "previews", backend_factory=factory
+        )
+        self.addCleanup(service.close)
+        source = group.candidates[0].source_id
+        with self.assertRaises(VoiceAuditionIncomplete):
+            service.generate(plan, group, source)
+        accepted = service.generate(plan, group, source)
+        replay = service.generate(plan, group, source)
+        self.assertEqual(accepted.seed, 2)
+        self.assertTrue(replay.reused)
+        path = SupportBundleBuilder(
+            AppSettings(), RuntimeSupportLog(), dependency_probe=lambda: {}
+        ).build(self.root / "retry-support.zip")
+        with zipfile.ZipFile(path) as archive:
+            report = json.loads(archive.read("native-speech.json"))
+        native = [entry["native"] for entry in report["events"]]
+        fresh = [row for row in native if row["operation"] == "fresh-generation"]
+        final = [row for row in native if row["operation"] == "preview-outcome"]
+        self.assertEqual([row["seed"] for row in fresh], [1, 2])
+        self.assertEqual(
+            [row["outcome"] for row in final], ["limited", "success", "success"]
+        )
+        self.assertEqual(len({row["logical_key"] for row in final}), 1)
+        self.assertEqual(
+            [row["attempt_id"] for row in fresh],
+            [row["attempt_id"] for row in final[:2]],
+        )
+        self.assertEqual(report["active_requests"], [])
+        self.assertTrue(any(row["operation"] == "preview-quality" for row in native))
+        self.assertNotIn(group.sample_text, json.dumps(report))
+        self.assertNotIn(str(self.root), json.dumps(report))
+
     def test_native_timings_survive_shutdown_and_export_without_private_inputs(self):
         backend = self.backend()
         first = SynthesisRequest("Narrator", "Private phrase not for export.", seed=7)

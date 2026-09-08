@@ -5,12 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import secrets
 import tempfile
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from time import monotonic
 
 import numpy as np
+from vntts_artifacts.atomic_io import atomic_output_path
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import VoiceManifestError
@@ -18,11 +22,18 @@ from vntts_artifacts.voice_manifest import VoiceManifestError
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import inspect_generated_wav
-from vntts.authoring.speech_quality import inspect_generated_speech
+from vntts.authoring.speech_quality import (
+    MAX_INTERNAL_SILENCE_SECONDS,
+    MAX_LEADING_SILENCE_SECONDS,
+    MAX_SILENCE_RATIO,
+    MAX_TRAILING_SILENCE_SECONDS,
+    SpeechSilenceValidationError,
+    inspect_generated_speech,
+)
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference
 from vntts.speech_backend_runtime import shutdown_speech_backend
-from vntts.synthesis import SynthesisCompletion, SynthesisRequest
+from vntts.synthesis import SynthesisCachePolicy, SynthesisCompletion, SynthesisRequest
 from vntts.tts_benchmark import create_backend
 from vntts.voices import CharacterVoiceRegistry
 
@@ -73,6 +84,8 @@ class VoiceAuditionPreviewService:
         self._cancel = threading.Event()
         self._lock = threading.Lock()
         self._closed = False
+        self._failed_preview_attempts = {}
+        self._preview_salt = secrets.token_bytes(32)
 
     @property
     def backend(self):
@@ -99,123 +112,278 @@ class VoiceAuditionPreviewService:
             _raise_if_cancelled(cancellation)
             candidate = _validate_request(plan, group, candidate_source_id)
             preview_text = _preview_text(group, text)
-            registry = _load_candidate_registry(plan, candidate)
-            _preflight_candidate_references(registry, candidate)
             identity = _preview_identity(plan, group, candidate, preview_text)
             target = self.root / f"{identity}.wav"
-            if target.exists():
-                notify("Checking the saved preview...")
-                return _cached_preview(
-                    target,
-                    identity,
-                    plan,
-                    group,
-                    candidate,
-                    preview_text,
-                )
+            native_context = self._native_preview_context(plan, identity)
+            if native_context is not None:
+                from vntts.support import native_speech_context
 
-            self.root.mkdir(parents=True, exist_ok=True)
-            backend_config = (
-                plan.synthesis_backend,
-                plan.synthesis_model,
-                plan.synthesis_profile,
-                plan.pocket_voice_cloning,
+                context_token = native_speech_context.set(native_context)
+            else:
+                context_token = None
+            started = monotonic()
+            seed = None
+            outcome, reason, stage, cache_source = (
+                "backend_failed",
+                "backend-failed",
+                "reference-preflight",
+                None,
             )
-            if self._backend is None or self._backend_config != backend_config:
-                notify(
-                    "Starting the preview model. First use also loads its weights..."
-                )
-                self._backend = shutdown_speech_backend(self._backend)
-                self._backend_config = None
+            try:
                 try:
-                    self._backend = self.backend_factory(
-                        plan.synthesis_backend,
-                        registry,
-                        self.root / "synthesis-cache",
-                        model_name=plan.synthesis_model,
-                        startup_cancellation=cancellation,
-                        **(
-                            {"startup_progress": progress}
-                            if progress is not None
-                            else {}
-                        ),
-                        allow_gated_model_access=plan.pocket_voice_cloning,
+                    _raise_if_cancelled(cancellation)
+                    registry = _load_candidate_registry(plan, candidate)
+                    _preflight_candidate_references(registry, candidate)
+                    _raise_if_cancelled(cancellation)
+                except VoiceAuditionCancelled:
+                    raise
+                except VoiceAuditionError:
+                    outcome, reason = (
+                        "reference_preflight_failed",
+                        "reference-preflight-failed",
                     )
+                    raise
+                if target.exists():
+                    notify("Checking the saved preview...")
+                    stage = "cache"
+                    try:
+                        seed = _cached_preview_seed(target, identity, plan)
+                        preview = _cached_preview(
+                            target,
+                            identity,
+                            plan,
+                            group,
+                            candidate,
+                            preview_text,
+                            seed=seed,
+                        )
+                    except VoiceAuditionError:
+                        outcome, reason = (
+                            "cache_validation_failed",
+                            "cache-validation-failed",
+                        )
+                        raise
+                    outcome, reason, stage, cache_source = (
+                        "success",
+                        "accepted",
+                        "cache",
+                        "preview-file",
+                    )
+                    return preview
+
+                self.root.mkdir(parents=True, exist_ok=True)
+                backend_config = (
+                    plan.synthesis_backend,
+                    plan.synthesis_model,
+                    plan.synthesis_profile,
+                    plan.pocket_voice_cloning,
+                )
+                if self._backend is None or self._backend_config != backend_config:
+                    stage = "startup"
+                    notify(
+                        "Starting the preview model. First use also loads its weights..."
+                    )
+                    self._backend = shutdown_speech_backend(self._backend)
+                    self._backend_config = None
+                    try:
+                        self._backend = self.backend_factory(
+                            plan.synthesis_backend,
+                            registry,
+                            self.root / "synthesis-cache",
+                            model_name=plan.synthesis_model,
+                            startup_cancellation=cancellation,
+                            **(
+                                {"startup_progress": progress}
+                                if progress is not None
+                                else {}
+                            ),
+                            allow_gated_model_access=plan.pocket_voice_cloning,
+                        )
+                    except Exception as error:
+                        if cancellation.is_set():
+                            raise VoiceAuditionCancelled(
+                                "Voice audition generation was cancelled"
+                            ) from error
+                        raise VoiceAuditionError(
+                            f"Unable to start the voice preview model: {error}"
+                        ) from error
+                    self._backend_config = backend_config
+                else:
+                    self._backend.registry = registry
+
+                attempt = self._failed_preview_attempts.get(identity, 0)
+                seed = _preview_seed(plan, attempt)
+                request = SynthesisRequest(
+                    voice=candidate.source_character,
+                    text=preview_text,
+                    seed=seed,
+                    generation_profile=plan.synthesis_profile,
+                    cancellation=cancellation,
+                    cache_policy=(
+                        SynthesisCachePolicy.REFRESH
+                        if attempt and plan.synthesis_backend == "moss-tts"
+                        else SynthesisCachePolicy.USE
+                    ),
+                )
+                stage = "render"
+                try:
+                    notify(
+                        f"Trying a new sample (attempt {attempt + 1}) with the loaded model..."
+                        if attempt
+                        else "Generating preview audio with the loaded model..."
+                    )
+                    result = self._backend.render(request).collect()
                 except Exception as error:
                     if cancellation.is_set():
                         raise VoiceAuditionCancelled(
                             "Voice audition generation was cancelled"
                         ) from error
                     raise VoiceAuditionError(
-                        f"Unable to start the voice preview model: {error}"
+                        f"Unable to generate the voice preview: {error}"
                     ) from error
-                self._backend_config = backend_config
-            else:
-                self._backend.registry = registry
-
-            seed = None if plan.synthesis_backend == "pocket-tts" else 0
-            request = SynthesisRequest(
-                voice=candidate.source_character,
-                text=preview_text,
-                seed=seed,
-                generation_profile=plan.synthesis_profile,
-                cancellation=cancellation,
-            )
-            try:
-                notify("Generating preview audio with the loaded model...")
-                result = self._backend.render(request).collect()
-            except Exception as error:
-                if cancellation.is_set():
+                if (
+                    cancellation.is_set()
+                    or result.completion is SynthesisCompletion.CANCELLED
+                ):
                     raise VoiceAuditionCancelled(
                         "Voice audition generation was cancelled"
-                    ) from error
-                raise VoiceAuditionError(
-                    f"Unable to generate the voice preview: {error}"
-                ) from error
-            if (
-                cancellation.is_set()
-                or result.completion is SynthesisCompletion.CANCELLED
-            ):
-                raise VoiceAuditionCancelled("Voice audition generation was cancelled")
-            if result.completion is not SynthesisCompletion.COMPLETE:
-                raise VoiceAuditionIncomplete(
-                    "The voice preview did not complete within its generation limits"
-                )
-            if (
-                result.diagnostics.backend != plan.synthesis_backend
-                or result.diagnostics.generation_profile != plan.synthesis_profile
-                or result.diagnostics.seed != seed
-            ):
-                raise VoiceAuditionError(
-                    "Voice preview diagnostics differ from the planned controls"
-                )
-            samples = _mono_pcm(result.pcm)
-            sample_rate = int(result.sample_rate)
-            if not len(samples) or sample_rate < 1:
-                raise VoiceAuditionError("Voice preview generation produced no audio")
+                    )
+                if result.completion is not SynthesisCompletion.COMPLETE:
+                    self._record_failed_preview_attempt(plan, identity)
+                    outcome, reason = "limited", "generation-limit"
+                    raise VoiceAuditionIncomplete(
+                        "The voice preview did not complete within its generation limits"
+                    )
+                if (
+                    result.diagnostics.backend != plan.synthesis_backend
+                    or result.diagnostics.generation_profile != plan.synthesis_profile
+                    or result.diagnostics.seed != seed
+                ):
+                    raise VoiceAuditionError(
+                        "Voice preview diagnostics differ from the planned controls"
+                    )
+                samples = _mono_pcm(result.pcm)
+                sample_rate = int(result.sample_rate)
+                if not len(samples) or sample_rate < 1:
+                    raise VoiceAuditionError(
+                        "Voice preview generation produced no audio"
+                    )
 
-            staging = _staging_path(target)
-            try:
-                write_pcm16_wav(staging, samples, sample_rate)
-                notify("Checking generated audio for silence and other failures...")
-                _inspect_preview(staging, preview_text)
-                _load_candidate_registry(plan, candidate)
-                _raise_if_cancelled(cancellation)
-                os.replace(staging, target)
+                staging = _staging_path(target)
+                try:
+                    write_pcm16_wav(staging, samples, sample_rate)
+                    stage = "quality"
+                    notify("Checking generated audio for silence and other failures...")
+                    try:
+                        _inspect_preview(staging, preview_text)
+                    except VoiceAuditionError as error:
+                        if cancellation.is_set():
+                            raise VoiceAuditionCancelled(
+                                "Voice audition generation was cancelled"
+                            ) from error
+                        self._record_failed_preview_attempt(plan, identity)
+                        outcome, reason = "quality_failed", "quality-rejected"
+                        raise
+                    _load_candidate_registry(plan, candidate)
+                    _raise_if_cancelled(cancellation)
+                    stage = "publish"
+                    audio_sha256 = sha256_file(staging)
+                    try:
+                        _write_preview_manifest(target, identity, seed, audio_sha256)
+                        os.replace(staging, target)
+                    except Exception:
+                        target.unlink(missing_ok=True)
+                        _preview_manifest_path(target).unlink(missing_ok=True)
+                        raise
+                finally:
+                    staging.unlink(missing_ok=True)
+                preview = _cached_preview(
+                    target,
+                    identity,
+                    plan,
+                    group,
+                    candidate,
+                    preview_text,
+                    reused=False,
+                    seed=seed,
+                )
+                outcome, reason, cache_source = (
+                    "success",
+                    "accepted",
+                    result.diagnostics.cache_source,
+                )
+                return preview
+            except VoiceAuditionCancelled:
+                outcome, reason = "cancelled", "cancelled"
+                raise
             finally:
-                staging.unlink(missing_ok=True)
-            return _cached_preview(
-                target,
-                identity,
-                plan,
-                group,
-                candidate,
-                preview_text,
-                reused=False,
-            )
+                try:
+                    self._record_native_preview_outcome(
+                        plan,
+                        native_context,
+                        seed=seed,
+                        outcome=outcome,
+                        reason=reason,
+                        stage=stage,
+                        cache_source=cache_source,
+                        elapsed_ms=round((monotonic() - started) * 1000),
+                    )
+                finally:
+                    if context_token is not None:
+                        native_speech_context.reset(context_token)
 
     def cancel(self):
         self._cancel.set()
+
+    def _record_failed_preview_attempt(self, plan, identity):
+        if plan.synthesis_backend == "moss-tts":
+            # ponytail: keep 256 current dialog candidates; widen only if that UI grows.
+            if (
+                identity not in self._failed_preview_attempts
+                and len(self._failed_preview_attempts) >= 256
+            ):
+                self._failed_preview_attempts.pop(
+                    next(iter(self._failed_preview_attempts))
+                )
+            self._failed_preview_attempts[identity] = (
+                self._failed_preview_attempts.get(identity, 0) + 1
+            )
+
+    def _native_preview_context(self, plan, identity):
+        if not _native_moss_preview(plan):
+            return None
+        logical_key = hashlib.sha256(
+            self._preview_salt + identity.encode("ascii")
+        ).hexdigest()[:24]
+        return {"logical_key": logical_key, "attempt_id": secrets.token_hex(12)}
+
+    @staticmethod
+    def _record_native_preview_outcome(
+        plan,
+        context,
+        *,
+        seed,
+        outcome,
+        reason,
+        stage,
+        cache_source,
+        elapsed_ms,
+    ):
+        if context is None:
+            return
+        from vntts.support import record_native_speech
+
+        record_native_speech(
+            operation="preview-outcome",
+            backend=plan.synthesis_backend,
+            profile=plan.synthesis_profile,
+            requested_seed=seed,
+            outcome=outcome,
+            reason=reason,
+            stage=stage,
+            cache_source=cache_source,
+            elapsed_ms=elapsed_ms,
+        )
 
     def reference_audio(self, plan, group, candidate_source_id):
         """Return one checksum-verified, playable original reference when present."""
@@ -368,6 +536,82 @@ def _preview_identity(plan, group, candidate, text):
     return hashlib.sha256(payload).hexdigest()
 
 
+def _native_moss_preview(plan):
+    if plan.synthesis_backend != "moss-tts":
+        return False
+    from vntts.moss_cpp_backend import moss_cpp_requested
+
+    return moss_cpp_requested(plan.synthesis_model)
+
+
+def _preview_seed(plan, failed_attempts):
+    if plan.synthesis_backend == "pocket-tts":
+        return None
+    if plan.synthesis_backend != "moss-tts" or failed_attempts == 0:
+        return 0
+    # Native maps request seed zero to one, so retrying with one repeats it.
+    return failed_attempts + (1 if _native_moss_preview(plan) else 0)
+
+
+def _preview_manifest_path(target):
+    return target.with_suffix(".json")
+
+
+def _write_preview_manifest(target, identity, seed, audio_sha256):
+    manifest = _preview_manifest_path(target)
+    with atomic_output_path(manifest) as staging:
+        staging.write_text(
+            json.dumps(
+                {
+                    "audio_sha256": audio_sha256,
+                    "identity": identity,
+                    "seed": seed,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+
+
+def _cached_preview_seed(target, identity, plan):
+    manifest = _preview_manifest_path(target)
+    if not manifest.exists():
+        # Existing successful previews predate the sidecar and were all seed zero.
+        return None if plan.synthesis_backend == "pocket-tts" else 0
+    if manifest.is_symlink():
+        raise VoiceAuditionError(
+            "Cached voice preview manifest must not be a symbolic link"
+        )
+    try:
+        if manifest.stat().st_size > 1024:
+            raise ValueError("preview manifest is too large")
+        payload = manifest.read_bytes()
+        if len(payload) > 1024:
+            raise ValueError("preview manifest is too large")
+        document = json.loads(payload)
+        if not isinstance(document, dict):
+            raise ValueError("preview manifest must be an object")
+        seed = document["seed"]
+        audio_sha256 = sha256_file(target)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise VoiceAuditionError(
+            f"Cached voice preview manifest is invalid: {error}"
+        ) from error
+    if (
+        document.get("identity") != identity
+        or not isinstance(document.get("audio_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", document["audio_sha256"])
+        or document["audio_sha256"] != audio_sha256
+        or (seed is not None and (type(seed) is not int or not 0 <= seed < 2**64))
+        or (seed is None) != (plan.synthesis_backend == "pocket-tts")
+    ):
+        raise VoiceAuditionError(
+            "Cached voice preview manifest does not match its input"
+        )
+    return seed
+
+
 def _preflight_candidate_references(registry, candidate):
     voice = registry.resolve_source(candidate.source_id)
     if voice is None:
@@ -391,17 +635,55 @@ def _preflight_candidate_references(registry, candidate):
 
 
 def _inspect_preview(path, text):
+    audio_quality = None
     try:
-        quality = inspect_generated_wav(path)
-        inspect_generated_speech(path, text=text)
-    except BulkGenerationError as error:
+        audio_quality = inspect_generated_wav(path)
+        speech_quality = inspect_generated_speech(path, text=text)
+    except SpeechSilenceValidationError as error:
+        _record_preview_quality(
+            "rejected", "speech-silence", audio_quality, error.quality
+        )
         raise VoiceAuditionError(
             f"Generated voice preview failed objective preflight: {error}"
         ) from error
-    return quality
+    except BulkGenerationError as error:
+        _record_preview_quality(
+            "rejected",
+            "wav-validation" if audio_quality is None else "invalid-wav",
+            audio_quality,
+        )
+        raise VoiceAuditionError(
+            f"Generated voice preview failed objective preflight: {error}"
+        ) from error
+    _record_preview_quality("accepted", "accepted", audio_quality, speech_quality)
+    return audio_quality
 
 
-def _cached_preview(target, identity, plan, group, candidate, text, *, reused=True):
+def _record_preview_quality(outcome, reason, audio_quality, speech_quality=None):
+    from vntts.support import native_speech_context, record_native_speech
+
+    if native_speech_context.get() is None:
+        return
+    quality = asdict(audio_quality) if audio_quality is not None else {}
+    if speech_quality is not None:
+        quality.update(asdict(speech_quality))
+    record_native_speech(
+        operation="preview-quality",
+        outcome=outcome,
+        reason=reason,
+        quality=quality,
+        thresholds={
+            "leading_silence_seconds": MAX_LEADING_SILENCE_SECONDS,
+            "trailing_silence_seconds": MAX_TRAILING_SILENCE_SECONDS,
+            "internal_silence_seconds": MAX_INTERNAL_SILENCE_SECONDS,
+            "silence_ratio": MAX_SILENCE_RATIO,
+        },
+    )
+
+
+def _cached_preview(
+    target, identity, plan, group, candidate, text, *, reused=True, seed=Ellipsis
+):
     if target.is_symlink():
         raise VoiceAuditionError("Cached voice preview must not be a symbolic link")
     try:
@@ -423,6 +705,8 @@ def _cached_preview(target, identity, plan, group, candidate, text, *, reused=Tr
                 gen_s=None,
                 decode_s=None,
             )
+    if seed is Ellipsis:
+        seed = _cached_preview_seed(target, identity, plan)
     return VoiceAuditionPreview(
         identity=identity,
         group_id=group.group_id,
@@ -431,7 +715,7 @@ def _cached_preview(target, identity, plan, group, candidate, text, *, reused=Tr
         backend=plan.synthesis_backend,
         model=plan.synthesis_model,
         generation_profile=plan.synthesis_profile,
-        seed=None if plan.synthesis_backend == "pocket-tts" else 0,
+        seed=seed,
         path=target,
         audio_sha256=audio_sha256,
         sample_rate=info.sample_rate,
