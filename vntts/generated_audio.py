@@ -46,6 +46,7 @@ class PreparedGeneratedAudio:
     provider: str | None = None
     model: str | None = None
     voice_character: str | None = None
+    recorded_voice: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -197,6 +198,43 @@ RouteDecision = (
 )
 
 
+def recorded_voice_identity(entry):
+    """Read historical identity only when it is bound to this recording and route."""
+    document = getattr(entry, "document", entry)
+    if not isinstance(document, dict):
+        return None
+    identity = document.get("vntts.recorded_voice")
+    if (
+        not isinstance(identity, dict)
+        or type(identity.get("schema_version")) is not int
+        or identity["schema_version"] != 1
+    ):
+        return None
+    for field in ("audio_sha256", "synthesis_provenance_sha256"):
+        if not is_lowercase_sha256(identity.get(field)) or identity[
+            field
+        ] != document.get(field):
+            return None
+    for field in ("provider", "model", "voice_character"):
+        if (
+            not isinstance(identity.get(field), str)
+            or not identity[field].strip()
+            or identity[field] != document.get(field)
+        ):
+            return None
+    if any(
+        not isinstance(identity.get(field), str) or not identity[field].strip()
+        for field in ("source_character", "speaker")
+    ):
+        return None
+    references = identity.get("reference_sha256s")
+    if not isinstance(references, list) or any(
+        not is_lowercase_sha256(value) for value in references
+    ):
+        return None
+    return {**identity, "reference_sha256s": list(references)}
+
+
 def _validate_generated_audio_paths(index):
     manifest_path = getattr(index, "manifest_path", None) or getattr(index, "path")
     root = manifest_path.parent.resolve()
@@ -295,6 +333,7 @@ class GeneratedAudioLibrary:
             provider=getattr(entry, "provider", None),
             model=getattr(entry, "model", None),
             voice_character=getattr(entry, "voice_character", None),
+            recorded_voice=recorded_voice_identity(entry),
         )
         self.cache.put(cache_key, prepared)
         return prepared, "generated-audio-entry-verified"

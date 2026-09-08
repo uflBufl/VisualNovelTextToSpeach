@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,8 +21,13 @@ from vntts_artifacts.generated_audio import (
     GeneratedAudioManifestError,
     write_generated_audio_manifest,
 )
+from vntts_artifacts.voice_manifest import (
+    normalize_character_name,
+    validate_voice_manifest,
+)
 
 from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.voices import pocket_tts_preset_voices
 
 
 @dataclass(frozen=True)
@@ -30,6 +37,78 @@ class AudioQuality:
     channels: int
     sample_count: int
     peak: float
+
+
+def snapshot_recorded_voices(controls, *, narrator_character=None):
+    """Keep display identities from the same immutable inputs used for synthesis."""
+    manifest = next(
+        (control for control in controls if control["role"] == "voice_manifest"), None
+    )
+    if manifest is None or manifest["kind"] != "file":
+        return {}
+    try:
+        payload = manifest["path"].read_bytes()
+        if hashlib.sha256(payload).hexdigest() != manifest["sha256"]:
+            raise BulkGenerationError("Recorded voice manifest changed during capture")
+        document = json.loads(payload)
+        voices = validate_voice_manifest(document)
+        references = {
+            control["path"]: control["sha256"]
+            for control in controls
+            if control["kind"] == "file"
+            and control["role"].startswith(("voice_reference:", "narrator_selection:"))
+        }
+        result = {}
+        reference_paths = {}
+        for raw, voice in zip(document["voices"], voices, strict=True):
+            # All current cloning backends use the first reference, not the pool.
+            paths = tuple(
+                (manifest["path"].parent / value).resolve()
+                for value in voice.references
+            )
+            reference = paths[0] if paths else None
+            digest = references.get(reference)
+            if reference is not None and digest is None:
+                continue
+            if reference is None and voice.speaker not in pocket_tts_preset_voices:
+                continue
+            source = raw.get("vntts.source_character", voice.character)
+            if not isinstance(source, str) or not source.strip():
+                continue
+            identity = {
+                "source_character": source.strip(),
+                "speaker": voice.speaker,
+                "reference_sha256s": [digest] if digest else [],
+            }
+            for name in (voice.character, *voice.aliases):
+                result[normalize_character_name(name)] = identity
+                reference_paths[normalize_character_name(name)] = paths
+        narrator_controls = [
+            control
+            for control in controls
+            if control["role"].startswith("narrator_selection:")
+        ]
+        if len(narrator_controls) == 1:
+            narrator_character = narrator_controls[0]["role"].removeprefix(
+                "narrator_selection:"
+            )
+        selected = result.get(normalize_character_name(narrator_character or ""))
+        if selected is not None and len(narrator_controls) == 1:
+            control = narrator_controls[0]
+            if control["path"] not in reference_paths.get(
+                normalize_character_name(narrator_character), ()
+            ):
+                selected = None
+            else:
+                selected = {**selected, "reference_sha256s": [control["sha256"]]}
+        # Without an explicit narrator selection, the backend may use another default.
+        result.pop("narrator", None)
+        if selected is not None:
+            result["narrator"] = selected
+        return result
+    except OSError, ValueError:
+        # Legacy/custom producers may bind a different control format.
+        return {}
 
 
 def inspect_generated_wav(path, *, allow_short_audio_event=False):
@@ -136,6 +215,7 @@ def approved_manifest_entries(state, output_directory, *, validate_files=True):
             "terminal_conflict_resolution",
             "seed_applied",
             "audio_event_composition",
+            "vntts.recorded_voice",
         ):
             if field in result:
                 entry[field] = result[field]

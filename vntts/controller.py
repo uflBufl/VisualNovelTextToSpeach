@@ -134,6 +134,7 @@ class LiveSequenceStatus:
     actual_audio_route: str = "-"
     ocr_activity: str = "-"
     expected_candidate_count: int = 0
+    story_title: str | None = None
 
 
 def create_dialog_read_scheduler(
@@ -1042,6 +1043,13 @@ class AppController:
             actual_audio_route=actual_audio_route,
             ocr_activity=ocr_activity,
             expected_candidate_count=expected_candidate_count,
+            story_title=(
+                self.chapter_voice_preloader.story_title_for(
+                    event.chapter, event.line_id
+                )
+                if event is not None
+                else None
+            ),
         )
 
     def _expected_sequence_audio_route(self, event, line):
@@ -2824,11 +2832,22 @@ class AppController:
             )
             return f"Original game audio (line {prepared.line_id}{completion})"
         if isinstance(prepared, PreparedGeneratedAudio):
+            identity = prepared.recorded_voice
+            source = (
+                f"source voice: {identity['source_character']}"
+                + (
+                    f" ({identity['speaker']})"
+                    if identity["speaker"] != identity["source_character"]
+                    else ""
+                )
+                if identity is not None
+                else "source voice: unknown (not recorded)"
+            )
             return (
                 f"Generated audio (line {prepared.line_id})\n"
                 f"Recorded with: {prepared.provider or 'engine not recorded'}; "
                 f"model: {prepared.model or 'not recorded'}; "
-                f"voice role: {prepared.voice_character or 'not recorded'}"
+                f"voice role: {prepared.voice_character or 'not recorded'}; {source}"
             )
         if isinstance(prepared, MossTTSPreparedSpeech):
             source = {

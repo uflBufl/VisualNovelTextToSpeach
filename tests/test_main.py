@@ -3,6 +3,7 @@ import json
 import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
@@ -3029,6 +3030,12 @@ class MainTest(unittest.TestCase):
                 ]
             }
         )
+        preloader = ChapterVoicePreloader(
+            [
+                replace(row, story_title="The canonical story")
+                for row in preloader.dialogue
+            ]
+        )
         events = {
             "event-1": LiveSequenceEvent(
                 "event-1",
@@ -3094,6 +3101,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(sequence_statuses[-1].state, "locked")
         self.assertEqual(sequence_statuses[-1].event_id, "event-1")
         self.assertEqual(sequence_statuses[-1].speaker, "Rhiannon")
+        self.assertEqual(sequence_statuses[-1].story_title, "The canonical story")
         self.assertEqual(preloader.current_match.chapter, "1")
         self.assertEqual(dialogs[-1], ("Rhiannon", text))
         stopped_reader.clear_queue.assert_not_called()
@@ -3112,6 +3120,9 @@ class MainTest(unittest.TestCase):
         )
         self.assertTrue(controller.select_expected_live_sequence_event("event-2"))
         self.assertEqual(controller.story_cursor.current_event_id, "event-2")
+        self.assertEqual(
+            controller.get_live_sequence_status().story_title, "The canonical story"
+        )
         self.assertEqual(dialogs[-1], ("Narrator", "Silent dialogue"))
         self.assertFalse(controller.select_expected_live_sequence_event("event-1"))
 

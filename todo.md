@@ -18,28 +18,6 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Measure first-play latency with actual Windows game audio after selection
       prefetch; synthetic Mac decoder timing is not a Windows performance gate.
 
-## P0 - Complete player-interface context
-
-Continue the approved Stories, Voices and Reading design using the existing
-Qt UI and generation/playback services. Keep the remaining work scoped to the
-ordinary player journey; native/platform qualification is tracked below.
-
-- [ ] Show the active story title and current position on the main Reading page.
-  - Reuse canonical story/cursor state and the existing sequence-position label;
-    keep resync and OCR controls in details. Do not infer a story from whichever
-    library row is highlighted while another story is playing.
-- [ ] Display the recorded source voice identity when its provenance is available.
-  - Carry the historical, checksum-bound source character from recording
-    artifacts to Reading alongside the recorded engine/model and voice role.
-    Do not substitute the current Voices default for the voice in an old WAV;
-    keep missing historical identity explicit for older packs.
-- [ ] Show which prepared stories are affected by a changed voice default.
-  - Compare the changed role with saved story/recording provenance. Show the
-    affected stories and lines, then reuse the existing selected-story
-    preparation action; preserve unrelated recordings and accepted voice choices.
-  - Selected story titles alone are not an impact calculation. Keep regeneration
-    explicit and preserve the old playable recordings until replacement succeeds.
-
 ## P1 - Diagnose intermittent offscreen Qt test stalls
 
 - [ ] Capture thread stacks when the macOS `qt-app` shard stalls in

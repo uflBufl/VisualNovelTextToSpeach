@@ -24,6 +24,7 @@ from tests.test_pregeneration_voices import (  # noqa: E402
     write_manifest,
     write_player_candidate_manifest,
 )
+from tests.test_voice_default_impact import voice_impact_fixture  # noqa: E402
 from vntts.app import TrayApplication  # noqa: E402
 from vntts.configuration_apply import ConfigurationApplyMixin  # noqa: E402
 from vntts.game_audio_decoder import DecoderSetupRequired  # noqa: E402
@@ -45,6 +46,79 @@ from vntts.speech_presentation import narrator_voice_label  # noqa: E402
 
 
 class GameNarratorTest(unittest.TestCase):
+    def test_voice_impact_loads_stories_only_on_request_and_selects_without_generating(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            content, jobs, decisions, settings, pack = voice_impact_fixture(
+                Path(directory)
+            )
+            before = {
+                path: path.read_bytes() for path in pack.iterdir() if path.is_file()
+            }
+            pool = ManualThreadPool()
+            preparation = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                voice_decisions=decisions,
+                thread_pool=pool,
+            )
+            controller = Mock(is_live_running=False)
+            tray = TrayApplication(
+                self.application,
+                settings,
+                controller_factory=Mock(return_value=controller),
+            )
+            dialog = GameNarratorDialog(
+                settings, thread_pool=pool, player=Mock(), preview_service=Mock()
+            )
+            try:
+                with (
+                    patch("vntts.app.GameNarratorDialog", return_value=dialog),
+                    patch(
+                        "vntts.app.OfflineAudioPreparationDialog",
+                        return_value=preparation,
+                    ) as create_preparation,
+                    patch.object(tray, "_reload_game_narrator"),
+                ):
+                    tray.open_voice_previews()
+                    self.application.processEvents()
+                    create_preparation.assert_not_called()
+                    dialog.role.setCurrentText("Rhiannon")
+                    dialog.source.setCurrentIndex(dialog.source.findData("preset"))
+                    dialog.presets.setCurrentIndex(
+                        dialog.presets.findData("preset:marius")
+                    )
+                    dialog.check_impact.click()
+                    create_preparation.assert_called_once()
+                    self.run_task(pool)
+                    self.assertEqual(tray.dashboard.sections.currentIndex(), 1)
+                    self.assertIn(
+                        "1 prepared lines in 1 stories", dialog.impact_status.text()
+                    )
+                    self.assertIn("Chapter 1: 1 changed", dialog.impact_status.text())
+                    self.assertIsNone(dialog.result_settings)
+                    dialog.consent.setChecked(not dialog.consent.isChecked())
+                    self.assertIsNone(dialog._impact_results)
+                    dialog.check_impact.click()
+                    self.run_task(pool)
+                    dialog.select_affected.click()
+                    self.run_task(pool)
+                    self.assertEqual(preparation.selected_story_ids(), ("chapter:1",))
+                    self.assertIsNone(preparation._generation_input)
+                    self.assertEqual(tray.dashboard.sections.currentIndex(), 0)
+                    self.assertEqual(
+                        before,
+                        {
+                            path: path.read_bytes()
+                            for path in pack.iterdir()
+                            if path.is_file()
+                        },
+                    )
+            finally:
+                tray.shutdown()
+
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])

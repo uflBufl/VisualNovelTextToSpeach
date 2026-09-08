@@ -33,6 +33,7 @@ class ChapterDialogue:
     source_audio_id: str | None = None
     source_audio_duration_seconds: float | None = None
     source_audio_completeness: str = "full"
+    story_title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,10 @@ class ChapterVoicePreloader:
             indexed_lines and not hasattr(indexed_lines[0], "source_audio_status")
         )
         completion_contract = str(metadata.get("source_audio_completion") or "").strip()
+        story_titles = {
+            collection["collection_id"].strip(): collection["title"].strip()
+            for collection in metadata.get("collections") or ()
+        }
         completion_declared = completion_contract in {
             "duration-seconds",
             "verified-media-duration-seconds",
@@ -178,6 +183,7 @@ class ChapterVoicePreloader:
                     )
                 ),
                 source_audio(line)[3],
+                story_titles.get(getattr(line, "collection_id", None)),
             )
             for line in indexed_lines
         )
@@ -190,6 +196,15 @@ class ChapterVoicePreloader:
 
     def line_for_id(self, line_id):
         return self.by_line_id.get(str(line_id))
+
+    def story_title_for(self, chapter, line_id=None):
+        line = self.line_for_id(line_id)
+        if line is not None:
+            return line.story_title
+        # Silent events have no line ID. Only an unambiguous chapter identifies
+        # their story; a chapter may contain several distinct collections.
+        titles = {row.story_title for row in self.by_chapter.get(chapter, ())}
+        return next(iter(titles)) if len(titles) == 1 else None
 
     def select_line_id(self, line_id):
         """Select one checksum-bound canonical line without text re-resolution."""

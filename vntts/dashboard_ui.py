@@ -249,7 +249,14 @@ class ControlDashboard(QMainWindow):
         self.loading_blocked_buttons = [self.prepare_audio_button]
 
         self.sequence_state = QLabel("Unavailable")
-        self.sequence_position = QLabel("-")
+        self.story_title = QLabel("No story position yet")
+        self.story_title.setWordWrap(True)
+        self.story_title.setTextFormat(Qt.TextFormat.PlainText)
+        self.story_title.setAccessibleName("Current story")
+        self.sequence_position = QLabel("Not located")
+        self.sequence_position.setWordWrap(True)
+        self.sequence_position.setTextFormat(Qt.TextFormat.PlainText)
+        self.sequence_position.setAccessibleName("Current story position")
         self.sequence_identity = QLabel("-")
         self.sequence_canonical = QLabel("-")
         self.sequence_canonical.setWordWrap(True)
@@ -261,7 +268,6 @@ class ControlDashboard(QMainWindow):
         self.sequence_guidance.setWordWrap(True)
         sequence_form = QFormLayout()
         sequence_form.addRow("Cursor state", self.sequence_state)
-        sequence_form.addRow("Story position", self.sequence_position)
         sequence_form.addRow("Event / line", self.sequence_identity)
         sequence_form.addRow("Canonical dialogue", self.sequence_canonical)
         sequence_form.addRow("Expected audio", self.sequence_expected_audio)
@@ -330,6 +336,10 @@ class ControlDashboard(QMainWindow):
         card = QFrame()
         card.setFrameShape(QFrame.Shape.StyledPanel)
         card_layout = QVBoxLayout(card)
+        story_context = QFormLayout()
+        story_context.addRow("Story", self.story_title)
+        story_context.addRow("Position", self.sequence_position)
+        card_layout.addLayout(story_context)
         card_layout.addWidget(QLabel("Current dialogue"))
         card_layout.addWidget(self.speaker)
         card_layout.addWidget(self.dialogue)
@@ -509,12 +519,13 @@ class ControlDashboard(QMainWindow):
             else "Voices: unsaved selection — Show"
         )
 
-    def embed_preparation(self, panel):
+    def embed_preparation(self, panel, *, show=True):
         panel.setWindowFlags(Qt.WindowType.Widget)
         panel.setMinimumSize(0, 0)
         self.stories_stack.addWidget(panel)
         self.stories_stack.setCurrentWidget(panel)
-        self.show_stories()
+        if show:
+            self.show_stories()
         panel.show()
 
     def remove_preparation(self, panel):
@@ -611,14 +622,26 @@ class ControlDashboard(QMainWindow):
         sequence_audio = is_live_sequence_audio_mode(getattr(status, "mode", "off"))
         self.sequence_group.setVisible(sequence_audio)
         if not sequence_audio:
+            self.story_title.setText("No story position yet")
+            self.sequence_position.setText("Not located")
             return
         state = getattr(status, "state", "unavailable")
         reason = getattr(status, "reason", None)
         self.sequence_state.setText(state if not reason else f"{state} ({reason})")
         chapter = getattr(status, "chapter", None)
         sequence = getattr(status, "sequence", None)
+        self.story_title.setText(
+            getattr(status, "story_title", None)
+            or (
+                "Story title not recorded"
+                if chapter is not None
+                else "No story position yet"
+            )
+        )
         self.sequence_position.setText(
-            "-" if chapter is None else f"Chapter {chapter}, sequence {sequence}"
+            "Not located"
+            if chapter is None
+            else f"Chapter {chapter}, sequence {sequence if sequence is not None else '-'}"
         )
         event_id = getattr(status, "event_id", None)
         line_id = getattr(status, "line_id", None)

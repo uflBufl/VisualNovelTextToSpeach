@@ -62,6 +62,7 @@ from vntts.authoring.generation_manifest import AudioQuality as AudioQuality
 from vntts.authoring.generation_manifest import (
     approved_manifest_entries,
     inspect_generated_wav,
+    snapshot_recorded_voices,
     validate_success_file,
     write_generated_manifest_from_state,
 )
@@ -1601,6 +1602,9 @@ def run_bulk_generation(
             "Regenerating existing outcomes requires explicit queue IDs or characters"
         )
     controls = _snapshot_control_files(control_files or {})
+    recorded_voices = snapshot_recorded_voices(
+        controls, narrator_character=narrator_character
+    )
     _assert_missing_voice_overrides_match_manifest(
         controls, character_overrides, narrator_character, provider
     )
@@ -1981,6 +1985,19 @@ def run_bulk_generation(
                         "speech_quality": asdict(speech_quality),
                         "updated_at": _now(),
                     }
+                    recorded_voice = recorded_voices.get(
+                        normalize_character_name(voice)
+                    )
+                    if recorded_voice is not None:
+                        state["items"][queue_id]["vntts.recorded_voice"] = {
+                            "schema_version": 1,
+                            **recorded_voice,
+                            "audio_sha256": file_sha256,
+                            "synthesis_provenance_sha256": provenance_sha256,
+                            "provider": provider,
+                            "model": model,
+                            "voice_character": voice,
+                        }
                     if synthesis_fallback is not None:
                         state["items"][queue_id]["synthesis_fallback"] = (
                             synthesis_fallback

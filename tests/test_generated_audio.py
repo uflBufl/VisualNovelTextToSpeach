@@ -27,6 +27,7 @@ from vntts.generated_audio import (
     PreparedGeneratedAudio,
     PreparedSourceAudioPassThrough,
     SourceAudioRoute,
+    recorded_voice_identity,
 )
 from vntts.playback import PreparedPlayback, outcome_for_prepared
 from vntts.speech_backend import SpeechBackendCapabilities
@@ -177,6 +178,67 @@ class GeneratedAudioTest(unittest.TestCase):
             label = controller._describe_audio_source(prepared)
             self.assertIn("recorded-model", label)
             self.assertNotIn("pocket-tts", label)
+            self.assertIn("source voice: unknown (not recorded)", label)
+
+    def test_recorded_identity_is_bound_to_audio_and_route_without_current_defaults(
+        self,
+    ):
+        from vntts.controller import AppController
+        from vntts.settings import AppSettings
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.create_library(root)
+            manifest = root / "generated-audio.json"
+            document = json.loads(manifest.read_text())
+            entry = document["entries"][0]
+            entry.update(
+                provider="moss-tts",
+                model="recorded-model",
+                voice_character="Narrator",
+                synthesis_provenance_sha256="a" * 64,
+            )
+            identity = {
+                "schema_version": 1,
+                "source_character": "Recorded Ada",
+                "speaker": "recorded-ada",
+                "reference_sha256s": ["b" * 64],
+                **{
+                    key: entry[key]
+                    for key in (
+                        "audio_sha256",
+                        "synthesis_provenance_sha256",
+                        "provider",
+                        "model",
+                        "voice_character",
+                    )
+                },
+            }
+            entry["vntts.recorded_voice"] = identity
+            manifest.write_text(json.dumps(document))
+            prepared = GeneratedAudioLibrary.load_optional(manifest).find(
+                "game:1", text_sha256("Hello.")
+            )
+            controller = AppController(
+                AppSettings(character_voice_defaults={"Narrator": "preset:alba"})
+            )
+            label = controller._describe_audio_source(prepared)
+            self.assertIn("Recorded Ada", label)
+            self.assertIn("recorded-ada", label)
+            self.assertNotIn("b" * 12, label)
+            self.assertNotIn("alba", label)
+            for field in (
+                "audio_sha256",
+                "synthesis_provenance_sha256",
+                "provider",
+                "model",
+                "voice_character",
+            ):
+                with self.subTest(field=field):
+                    changed = {**entry, field: "c" * 64}
+                    self.assertIsNone(recorded_voice_identity(changed))
+            entry["vntts.recorded_voice"] = {**identity, "reference_sha256s": ["bad"]}
+            self.assertIsNone(recorded_voice_identity(entry))
 
     def create_library(self, root, *, text="Hello."):
         audio = root / "audio" / "line.wav"

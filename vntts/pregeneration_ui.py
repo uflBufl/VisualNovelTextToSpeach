@@ -1828,6 +1828,28 @@ class OfflineAudioPreparationDialog(QDialog):
         self.prepare_again.setToolTip("Prepare again: " + ", ".join(titles))
         self.continue_button.setEnabled(True)
 
+    def select_voice_affected_stories(self, results):
+        """Offer the normal scoped preparation flow; saving a default never generates."""
+        if self.has_pending_work():
+            return
+        selected = {value.selection_id for value in results if value.changed_line_ids}
+        with QSignalBlocker(self.stories):
+            for row in range(self.stories.count()):
+                item = self.stories.item(row)
+                item.setCheckState(
+                    Qt.CheckState.Checked
+                    if item.data(Qt.ItemDataRole.UserRole) in selected
+                    else Qt.CheckState.Unchecked
+                )
+        self._selection_changed()
+        self.prepare_again.setVisible(bool(selected))
+        self.summary.setText(
+            f"Selected {len(selected)} affected stories with "
+            f"{sum(len(value.changed_line_ids) for value in results)} changed voice lines. "
+            "Choose Prepare selected stories again to review and apply these defaults. "
+            "Original recordings and existing audio stay playable until preparation succeeds."
+        )
+
     def _prepare_again_requested(self):
         if self.has_pending_work() or not self._save_story_selection_drafts():
             return

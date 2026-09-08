@@ -357,6 +357,7 @@ class ControlDashboardTest(unittest.TestCase):
                 "audio-manual",
                 "desynchronized",
                 chapter="314601",
+                story_title="Rhiannon's story",
                 sequence=41,
                 event_id="event-41",
                 line_id="reverse1999:314601:41",
@@ -375,6 +376,11 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertIn("desynchronized", dashboard.sequence_state.text())
         self.assertIn("314601", dashboard.sequence_position.text())
+        self.assertEqual(dashboard.story_title.text(), "Rhiannon's story")
+        self.assertFalse(dashboard.details_content.isAncestorOf(dashboard.story_title))
+        self.assertFalse(
+            dashboard.details_content.isAncestorOf(dashboard.sequence_position)
+        )
         self.assertIn("event-41", dashboard.sequence_identity.text())
         self.assertIn("Rhiannon: Canonical text.", dashboard.sequence_canonical.text())
         self.assertEqual(
@@ -387,6 +393,20 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.sequence_expected_button.isEnabled())
         self.assertIn("2 expected", dashboard.sequence_expected_button.text())
         self.assertIn("font-weight", dashboard.sequence_resync_button.styleSheet())
+        dashboard.show_main_section("stories")
+        dashboard.show_main_section("reading")
+        self.assertEqual(dashboard.story_title.text(), "Rhiannon's story")
+        dashboard.set_sequence_status(
+            LiveSequenceStatus("audio-manual", "unsynchronized")
+        )
+        self.assertEqual(dashboard.story_title.text(), "No story position yet")
+        self.assertEqual(dashboard.sequence_position.text(), "Not located")
+        dashboard.set_sequence_status(
+            LiveSequenceStatus("audio-manual", "locked", chapter="2", sequence=1)
+        )
+        self.assertEqual(dashboard.story_title.text(), "Story title not recorded")
+        dashboard.set_sequence_status(LiveSequenceStatus("off", "off"))
+        self.assertEqual(dashboard.sequence_position.text(), "Not located")
         dashboard.deleteLater()
 
     def test_close_quits_by_default_instead_of_hiding_silently(self):

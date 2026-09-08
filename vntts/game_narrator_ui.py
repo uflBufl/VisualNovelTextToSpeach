@@ -2,6 +2,7 @@
 
 from functools import partial
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl, Signal
@@ -40,6 +41,7 @@ from vntts.speech_presentation import (
     speech_runtime_label,
 )
 from vntts.tts_benchmark import create_backend
+from vntts.voice_default_impact import inspect_voice_default_impact
 from vntts.voices import (
     CharacterVoiceRegistry,
     find_default_voice_manifest,
@@ -51,6 +53,7 @@ from vntts.voices import (
 
 
 class GameNarratorDialog(QDialog):
+    impactContextRequested = Signal()
     decoderProgress = Signal(str)
 
     def __init__(
@@ -97,6 +100,10 @@ class GameNarratorDialog(QDialog):
         self._voice_context = None
         self._story_titles = ()
         self._saving_role = "Narrator"
+        self._impact_context = None
+        self._loading_impact_context = False
+        self._impact_results = None
+        self.select_affected_after_save = False
 
         self.status = QLabel("Choose a candidate. Nothing changes until you save.")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
@@ -261,6 +268,27 @@ class GameNarratorDialog(QDialog):
         )
         note.setWordWrap(True)
         form.addRow(note)
+        self.check_impact = QPushButton("Check affected stories")
+        self.check_impact.clicked.connect(self._check_impact)
+        self.impact_status = QLabel(
+            "Open Stories to load prepared content for a voice comparison."
+        )
+        self.impact_status.setWordWrap(True)
+        self.impact_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.impact_status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self.impact_status.setAccessibleName("Prepared stories affected by this voice")
+        self.select_affected = QPushButton("Save and select affected stories")
+        self.select_affected.clicked.connect(self._save_and_select_affected)
+        self.select_affected.hide()
+        form.addRow(self.check_impact)
+        form.addRow(self.impact_status)
+        form.addRow(self.select_affected)
+        self.presets.currentIndexChanged.connect(self._clear_impact)
+        self.catalog_choice.currentIndexChanged.connect(self._clear_impact)
+        self.consent.toggled.connect(self._clear_impact)
         self.announcements = QComboBox()
         self.announcements.setAccessibleName("Announce speaker names")
         self.announcements.addItem("Do not announce names", "off")
@@ -295,12 +323,19 @@ class GameNarratorDialog(QDialog):
         QTimer.singleShot(0, self._source_changed)
 
     def set_voice_context(
-        self, plan=None, character=None, *, roles=(), story_titles=()
+        self,
+        plan=None,
+        character=None,
+        *,
+        roles=(),
+        story_titles=(),
+        impact_context=None,
     ):
         """Use imported metadata without starting the reading engine."""
         if self.runner.active:
             return
         self._voice_context = plan
+        self._impact_context = impact_context
         self._story_titles = story_titles
         if plan is not None and plan.voice_manifest:
             self._catalog_manifest = plan.voice_manifest
@@ -347,6 +382,12 @@ class GameNarratorDialog(QDialog):
             )
             self.role.setCurrentText(selected)
         self._role_changed()
+
+    def set_story_impact_context(self, content, jobs, decisions):
+        self._loading_impact_context = False
+        self._impact_context = (content, jobs, decisions)
+        self._clear_impact()
+        self._update()
 
     def _role_changed(self):
         self._stop_audio()
@@ -495,6 +536,7 @@ class GameNarratorDialog(QDialog):
             del blocker
             return
         self._stop_audio()
+        self._clear_impact()
         self.settings_value = self.settings_value.updated(
             tts_model=model.strip() or None
         )
@@ -504,6 +546,7 @@ class GameNarratorDialog(QDialog):
         if self._closing or self._closed:
             return
         self._stop_audio()
+        self._clear_impact()
         preset = self.source.currentData() == "preset"
         catalog = self.source.currentData() == "catalog"
         policy = self.source.currentData() in {"automatic", "narrator"}
@@ -620,6 +663,126 @@ class GameNarratorDialog(QDialog):
             and bool(normalize_character_name(self.role.currentText()))
             and (idle or warming)
         )
+        self.check_impact.setEnabled(
+            not self._loading_impact_context
+            and idle
+            and ready
+            and allowed
+            and (
+                self.source.currentData() != "game"
+                or self.references.currentData() in self._prepared
+            )
+        )
+        self.select_affected.setEnabled(idle and self.save_button.isEnabled())
+
+    def _clear_impact(self, *_args):
+        self._impact_results = None
+        self.select_affected_after_save = False
+        self.select_affected.hide()
+        self.impact_status.setText(
+            "Check this selection against recorded voices in prepared stories."
+            if self._impact_context is not None
+            else "Check affected stories to load and compare prepared content."
+        )
+        self.impact_status.setToolTip("")
+
+    def _check_impact(self):
+        if not self.check_impact.isEnabled():
+            return
+        if self._impact_context is None:
+            self._loading_impact_context = True
+            self.impact_status.setText("Loading prepared stories for comparison...")
+            self._update()
+            self.impactContextRequested.emit()
+            return
+        self._saving_role = self.role.currentText().strip()
+        mode = self.source.currentData()
+        manifest = (
+            self._catalog_manifest
+            if mode == "catalog"
+            else self._prepared.get(self.references.currentData())
+        )
+        source_id = self.catalog_choice.currentData() if mode == "catalog" else None
+        character = (
+            self.catalog_choice.currentText() if mode == "catalog" else self._character
+        )
+        settings = self._settings()
+        proposed = (
+            self._policy_settings(settings)
+            if mode in {"preset", "automatic", "narrator"}
+            else None
+        )
+        self._start(
+            "impact",
+            "Comparing prepared recordings with this voice selection...",
+            self._perform_impact,
+            settings,
+            proposed,
+            manifest,
+            source_id,
+            character,
+        )
+
+    def _perform_impact(self, settings, proposed, manifest, source_id, character):
+        content, jobs, decisions = self._impact_context
+        with TemporaryDirectory(prefix="vntts-voice-choice-") as temporary:
+            if proposed is None:
+                if source_id is None:
+                    choices = CharacterVoiceRegistry.from_file(manifest).choices()
+                    if len(choices) != 1:
+                        raise ValueError(
+                            "Expected exactly one selected voice reference"
+                        )
+                    source_id = choices[0].id
+                proposed = self._bind_selected_voice(
+                    settings, manifest, source_id, character, root=temporary
+                )
+            return inspect_voice_default_impact(
+                content,
+                jobs,
+                decisions,
+                settings,
+                proposed,
+                self._saving_role,
+                cancellation=self.cancellation,
+            )
+
+    def _show_impact(self, results):
+        self._impact_results = results
+        affected = [value for value in results if value.changed_line_ids]
+        lines = sum(len(value.changed_line_ids) for value in affected)
+        details = [
+            f"{value.title}: {len(value.changed_line_ids)} changed, {value.matching} same voice, "
+            f"{value.original} originals kept, {value.unknown} recorded voice unknown, {value.needs_choice} need a voice choice."
+            for value in results
+        ]
+        self.impact_status.setText(
+            f"{lines} prepared lines in {len(affected)} stories would change voice. "
+            + (
+                "Affected: " + ", ".join(value.title for value in affected[:3]) + ". "
+                if affected
+                else ""
+            )
+            + f"{sum(value.unknown for value in results)} recordings have unknown voice identity; "
+            + f"{sum(value.needs_choice for value in results)} lines need a voice choice. "
+            + "Save keeps existing audio playable. Preparing again replaces it only after success."
+            if results
+            else "No prepared stories found in this content. This default will apply to future preparation."
+        )
+        if details:
+            self.impact_status.setText(
+                self.impact_status.text() + "\n\n" + "\n".join(details)
+            )
+        self.impact_status.setToolTip("")
+        self.select_affected.setVisible(bool(affected))
+
+    def _save_and_select_affected(self):
+        if self._impact_results is None or not any(
+            value.changed_line_ids for value in self._impact_results
+        ):
+            return
+        self.select_affected_after_save = True
+        self._save()
 
     def _refresh_runtime(self):
         if self._operation == "preview":
@@ -669,6 +832,7 @@ class GameNarratorDialog(QDialog):
         self.player.stop()
         self._prepared.clear()
         self.references.clear()
+        self._clear_impact()
         self._update()
 
     def _prepare(self):
@@ -684,6 +848,7 @@ class GameNarratorDialog(QDialog):
 
     def _reference_changed(self):
         self._stop_audio()
+        self._clear_impact()
         self.reference_text.setText(
             self.references.currentData(Qt.ItemDataRole.ToolTipRole)
             or ("Transcript unavailable." if self.references.count() else "")
@@ -826,13 +991,17 @@ class GameNarratorDialog(QDialog):
             progress=self.decoderProgress.emit,
         )
 
-    def _bind_selected_voice(self, settings, manifest, source_id, character):
+    def _bind_selected_voice(
+        self, settings, manifest, source_id, character, *, root=None
+    ):
         role = self._saving_role
         context = (
             {"additional_manifest": self._voice_context.voice_manifest}
             if self._voice_context is not None and self._voice_context.voice_manifest
             else {}
         )
+        if root is not None:
+            context["root"] = root
         if normalize_character_name(role) == "narrator":
             return self.binder(settings, manifest, source_id, character, **context)
         # A normal default must not leave an old forced-live override shadowing it.
@@ -870,48 +1039,49 @@ class GameNarratorDialog(QDialog):
             progress=self.decoderProgress.emit,
         )
 
+    def _policy_settings(self, settings):
+        role = self.role.currentText().strip()
+        narrator = normalize_character_name(role) == "narrator"
+        assignments = {
+            name: value
+            for name, value in (
+                settings.voice_assignments
+                if narrator
+                else settings.character_voice_defaults
+            ).items()
+            if normalize_character_name(name) != normalize_character_name(role)
+        }
+        if self.source.currentData() != "automatic":
+            assignments[role] = (
+                "default"
+                if self.source.currentData() == "narrator"
+                else self.presets.currentData()
+            )
+        result = settings.updated(
+            **{
+                "voice_assignments"
+                if narrator
+                else "character_voice_defaults": assignments
+            }
+        )
+        if narrator:
+            result = result.updated(tts_speaker_wav=None)
+        else:
+            result = result.updated(
+                voice_assignments={
+                    name: value
+                    for name, value in result.voice_assignments.items()
+                    if normalize_character_name(name) != normalize_character_name(role)
+                }
+            )
+        return result
+
     def _save(self):
         if not self.save_button.isEnabled():
             return
         self._saving_role = self.role.currentText().strip()
         if self.source.currentData() in {"preset", "automatic", "narrator"}:
-            role = self.role.currentText().strip()
-            narrator = normalize_character_name(role) == "narrator"
-            assignments = {
-                name: value
-                for name, value in (
-                    self._settings().voice_assignments
-                    if narrator
-                    else self._settings().character_voice_defaults
-                ).items()
-                if normalize_character_name(name) != normalize_character_name(role)
-            }
-            if self.source.currentData() != "automatic":
-                assignments[role] = (
-                    "default"
-                    if self.source.currentData() == "narrator"
-                    else self.presets.currentData()
-                )
-            self.result_settings = self._settings().updated(
-                **{
-                    "voice_assignments"
-                    if narrator
-                    else "character_voice_defaults": assignments
-                }
-            )
-            if narrator:
-                self.result_settings = self.result_settings.updated(
-                    tts_speaker_wav=None
-                )
-            else:
-                self.result_settings = self.result_settings.updated(
-                    voice_assignments={
-                        name: value
-                        for name, value in self.result_settings.voice_assignments.items()
-                        if normalize_character_name(name)
-                        != normalize_character_name(role)
-                    }
-                )
+            self.result_settings = self._policy_settings(self._settings())
             self._cleanup()
             return
         self._candidate_action("save")
@@ -965,6 +1135,11 @@ class GameNarratorDialog(QDialog):
                 return
             self.status.setText(
                 f"{error}\nRetry, choose a game folder, or cancel. Nothing was assigned."
+            )
+        elif operation == "impact":
+            self._show_impact(result)
+            self.status.setText(
+                "Voice comparison complete. Nothing has been saved or generated."
             )
         elif operation == "discover":
             self.characters.addItems(result)

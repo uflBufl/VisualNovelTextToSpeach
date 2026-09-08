@@ -312,6 +312,9 @@ class VoicePlanStore:
             job.story_index_sha256,
         )
         controls = _synthesis_controls(settings)
+        saved_groups = (
+            self._saved_independent_groups(controls) if not ignore_decisions else ()
+        )
         controls_sha256 = _digest(controls)
         records = {
             record.line_id: record
@@ -365,6 +368,7 @@ class VoicePlanStore:
                 candidate_variants,
                 controls,
                 ignore_decisions,
+                saved_groups,
             )
             for group_id, values in grouped.items()
         )
@@ -391,6 +395,40 @@ class VoicePlanStore:
     def path_for(self, job):
         return self.job_store.path_for(job.job_id).parent / "voice-plan.json"
 
+    def _saved_independent_groups(self, controls):
+        if self.decisions is None:
+            return ()
+        groups = []
+        for path in self.job_store.root.glob("*/voice-plan.json"):
+            try:
+                plan = read_versioned_json(
+                    path,
+                    schema_version=voice_plan_schema_version,
+                    document_name="offline voice plan",
+                )
+            except OSError, ValueError:
+                continue
+            if any(
+                plan.get(field) != controls[key]
+                for field, key in (
+                    ("synthesis_backend", "backend"),
+                    ("synthesis_model", "model"),
+                    ("synthesis_language", "language"),
+                    ("synthesis_profile", "profile"),
+                )
+            ) or plan.get("pocket_voice_cloning") != bool(
+                controls["pocket_voice_cloning"]
+            ):
+                continue
+            if not isinstance(plan.get("groups"), list):
+                continue
+            groups.extend(
+                group
+                for group in plan.get("groups", ())
+                if isinstance(group, dict) and group.get("route") == "voice"
+            )
+        return groups
+
     def _resolve_group(
         self,
         group_id,
@@ -400,6 +438,7 @@ class VoicePlanStore:
         candidate_variants,
         controls,
         ignore_decisions,
+        saved_groups,
     ):
         records = tuple(value[0] for value in values)
         character = values[0][1]
@@ -445,6 +484,37 @@ class VoicePlanStore:
             if self.decisions is not None and not ignore_decisions
             else None
         )
+        if prior_source is None and eligible_candidates:
+            candidate_identities = [
+                _candidate_decision_identity(value) for value in eligible_candidates
+            ]
+            for previous in reversed(saved_groups):
+                previous_candidates = previous.get("candidates", ())
+                if (
+                    previous.get("group_id") != group_id
+                    or not previous_candidates
+                    or not all(isinstance(value, dict) for value in previous_candidates)
+                ):
+                    continue
+                if [
+                    {key: value.get(key) for key in candidate_identities[0]}
+                    for value in previous_candidates
+                ] != candidate_identities:
+                    continue
+                context = previous.get("decision_context_sha256")
+                if not _is_sha256(context):
+                    continue
+                source = self.decisions.choice_for(group_id, context)
+                if (
+                    source is not None
+                    and source != default_voice_choice_id
+                    and source in {value.source_id for value in eligible_candidates}
+                ):
+                    # An explicit independent voice choice does not depend on the
+                    # narrator. Reuse its original evidence key across narrator edits.
+                    prior_source = source
+                    decision_context_sha256 = context
+                    break
         if prior_source is not None:
             if prior_source == default_voice_choice_id:
                 selected = (

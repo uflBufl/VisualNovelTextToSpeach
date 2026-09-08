@@ -106,6 +106,12 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
             self.assertEqual(ChapterVoicePreloader.load_optional(path).dialogue, ())
             path.write_text(story_index_document(), encoding="utf-8")
             self.assertEqual(len(ChapterVoicePreloader.load_optional(path).dialogue), 4)
+            records = [json.loads(row) for row in story_index_document().splitlines()]
+            records[0]["collections"] = None
+            path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+            preloader = ChapterVoicePreloader.load_optional(path)
+            self.assertEqual(len(preloader.dialogue), 4)
+            self.assertIsNone(preloader.story_title_for("24006", "test:0"))
 
     def test_exact_resolution_returns_stable_line_identity_and_text_hash(self):
         with TemporaryDirectory() as temporary_directory:
@@ -126,6 +132,37 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(line.source_audio_status, "available")
         self.assertEqual(line.source_audio_id, "voice-7")
         self.assertEqual(line.source_audio_duration_seconds, 2.75)
+
+    def test_story_title_follows_exact_collection_and_does_not_guess_silent_events(
+        self,
+    ):
+        records = [json.loads(row) for row in story_index_document().splitlines()]
+        records[0]["collections"] = [
+            {
+                "collection_id": " first ",
+                "title": "First story",
+                "kind": "story",
+                "order": 1,
+            },
+            {
+                "collection_id": "second",
+                "title": "Second story",
+                "kind": "story",
+                "order": 2,
+            },
+        ]
+        for row in records[1:]:
+            row["collection_id"] = "first" if row["line_id"] == "test:0" else "second"
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "story.jsonl"
+            path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+            preloader = ChapterVoicePreloader.load_optional(path)
+
+        self.assertEqual(preloader.story_title_for("24006", "test:0"), "First story")
+        self.assertEqual(preloader.story_title_for("24006", "test:1"), "Second story")
+        self.assertIsNone(preloader.story_title_for("24006"))
+        self.assertEqual(preloader.story_title_for("99001"), "Second story")
+        self.assertIsNone(preloader.story_title_for("missing"))
 
     def test_normalized_exact_resolution_tolerates_punctuation_only_ocr_drift(self):
         with TemporaryDirectory() as temporary_directory:

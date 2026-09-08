@@ -127,6 +127,7 @@ def prepare_authoring_fixture(
     named_narrator_fallback=None,
     queue_voice_override=False,
     source_audio_semantics=False,
+    source_character=None,
 ):
     root.mkdir(parents=True, exist_ok=True)
     items = [queue_item(name) for name in names]
@@ -246,6 +247,11 @@ def prepare_authoring_fixture(
             {
                 "character": "Hero",
                 "speaker": "synthetic-hero",
+                **(
+                    {"vntts.source_character": source_character}
+                    if source_character
+                    else {}
+                ),
                 "references": ["references/hero.wav"],
             }
         ],
@@ -388,6 +394,92 @@ def write_fixture_live_sequence(fixture, path, *, story_path=None):
 
 
 class AuthoringGamePackTest(unittest.TestCase):
+    def test_self_service_preset_inputs_record_actual_narrator_and_character_voices(
+        self,
+    ):
+        from tests.test_voice_default_impact import voice_impact_fixture
+        from vntts.pregeneration_queue import PregenerationInputStore
+        from vntts.pregeneration_voices import VoicePlanStore
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content, jobs, decisions, settings, _pack = voice_impact_fixture(root)
+            settings = settings.updated(voice_assignments={"Narrator": "preset:marius"})
+            job = jobs.create_or_resume(content, ("chapter:1", "chapter:2"))
+            plan = VoicePlanStore(jobs, decisions=decisions).create(job, settings)
+            prepared = PregenerationInputStore(jobs).materialize(job, plan)
+            renderer = SyntheticRenderer()
+            renderer.name = renderer.model_name = "pocket-tts"
+            result = run_bulk_generation(
+                prepared.queue,
+                root / "generated",
+                renderer,
+                provider="pocket-tts",
+                model="pocket-tts",
+                narrator_character="Narrator",
+                retries=0,
+                synthesis_character_overrides={"Hotelier": "Narrator"},
+                missing_voice_policy=MissingVoicePolicy(
+                    NARRATOR_ROLES, prepared.narrator_fallback_roles
+                ),
+                control_files={
+                    "voice_manifest": (
+                        prepared.voice_manifest,
+                        sha256_file(prepared.voice_manifest),
+                    )
+                },
+            )
+            state = json.loads(result.state.read_text())
+            identities = {
+                value["line_id"]: value["vntts.recorded_voice"]
+                for value in state["items"].values()
+            }
+            self.assertEqual(identities["changed"]["speaker"], "alba")
+            self.assertEqual(identities["fallback"]["speaker"], "marius")
+            self.assertEqual(identities["unknown-speaker"]["speaker"], "marius")
+            self.assertEqual(identities["fallback"]["reference_sha256s"], [])
+
+    def test_recorded_source_identity_survives_approval_publication_and_source_removal(
+        self,
+    ):
+        for narrator in (False, True):
+            with self.subTest(narrator=narrator), TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = prepare_authoring_fixture(
+                    root / "source",
+                    names=("one",),
+                    source_character="Recorded Ada",
+                    legacy_narrator=narrator,
+                    narrator_selection_character="Hero" if narrator else None,
+                )
+                item = fixture["items"][0]
+                state = json.loads(fixture["state"].read_text())
+                identity = state["items"][item["queue_id"]]["vntts.recorded_voice"]
+                self.assertEqual(identity["source_character"], "Recorded Ada")
+                self.assertEqual(identity["speaker"], "synthetic-hero")
+                self.assertEqual(
+                    identity["reference_sha256s"], [sha256_file(fixture["reference"])]
+                )
+                self.assertEqual(
+                    identity["voice_character"], "Narrator" if narrator else "Hero"
+                )
+                review_generation_item(fixture["state"], item["queue_id"], "approved")
+                direct = GeneratedAudioLibrary.load_optional(fixture["manifest"])
+                self.assertEqual(
+                    direct.find(item["line_id"], item["text_sha256"]).recorded_voice,
+                    identity,
+                )
+                result = publish(fixture, root / "final-pack")
+                shutil.rmtree(root / "source")
+                imported = import_game_pack(result.manifest)
+                recorded = GeneratedAudioLibrary.load_optional(
+                    imported.generated_audio_manifest
+                )
+                self.assertEqual(
+                    recorded.find(item["line_id"], item["text_sha256"]).recorded_voice,
+                    identity,
+                )
+
     def test_publishes_and_imports_exact_source_audio_semantic_evidence(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

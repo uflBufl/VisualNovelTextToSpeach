@@ -2322,10 +2322,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             recovery="full-controls",
         )
 
-    def open_pregeneration(self):
+    def open_pregeneration(self, *, show=True):
         if self._shutting_down or self._quit_requested:
             return None
-        if self.narrator_dialog is not None and self.pregeneration_dialog is None:
+        if (
+            show
+            and self.narrator_dialog is not None
+            and self.pregeneration_dialog is None
+        ):
             self.dashboard.show_voices()
             return None
         if self.controller.is_live_running is True:
@@ -2356,7 +2360,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog.activityChanged.connect(
             self._preparation_activity_changed, Qt.ConnectionType.QueuedConnection
         )
-        self.dashboard.embed_preparation(dialog)
+        self.dashboard.embed_preparation(dialog, show=show)
         return dialog
 
     def _read_prepared_story(self):
@@ -2738,10 +2742,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._shutting_down or self._quit_requested:
             return
         self.emergency_stop()
-        self._narrator_preparation = self.pregeneration_dialog
         self._narrator_return_to_stories = (
             self.dashboard.sections.currentWidget() is self.dashboard.stories_stack
         )
+        self._narrator_preparation = self.pregeneration_dialog
         settings = (
             self.pregeneration_dialog.settings
             if self.pregeneration_dialog is not None
@@ -2764,10 +2768,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                         {speaker for item in selected for speaker in item.speakers}
                     ),
                     story_titles=tuple(item.title for item in selected),
+                    impact_context=(
+                        content,
+                        self.pregeneration_dialog.job_store,
+                        self.pregeneration_dialog.voice_decisions,
+                    ),
                 )
             elif isinstance(plan, VoicePlan):
                 dialog.set_voice_context(plan)
         self.narrator_dialog = dialog
+        dialog.impactContextRequested.connect(self._load_voice_impact_context)
         self._resume_live_after_narrator = resume_live
         dialog.finished.connect(self._narrator_finished)
         dialog.runner.activeChanged.connect(self.dashboard.set_voice_editor_busy)
@@ -2781,6 +2791,46 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _open_preparation_narrator(self, _settings, _parent):
         self.open_voice_previews()
         return None
+
+    def _load_voice_impact_context(self):
+        dialog = self.narrator_dialog
+        if dialog is None:
+            return
+        preparation = self.pregeneration_dialog or self.open_pregeneration(show=False)
+        if preparation is None:
+            dialog._loading_impact_context = False
+            dialog.impact_status.setText(
+                "Unable to load Stories. Finish the current operation and retry."
+            )
+            dialog._update()
+            return
+        self._narrator_preparation = preparation
+
+        def finish(*_args):
+            if self.narrator_dialog is not dialog:
+                return
+            content = preparation.current_content()
+            if isinstance(content, GameContent):
+                dialog.set_story_impact_context(
+                    content, preparation.job_store, preparation.voice_decisions
+                )
+                dialog._check_impact()
+            else:
+                dialog._loading_impact_context = False
+                dialog.impact_status.setText(
+                    "No story content found. Save or cancel your voice selection, then import content in Stories."
+                )
+                dialog._update()
+
+        if (
+            preparation.discovery_runner.active
+            or not preparation.discovery_panel.isHidden()
+        ):
+            preparation.discovery_runner.finished.connect(
+                finish, Qt.ConnectionType.SingleShotConnection
+            )
+        else:
+            finish()
 
     def _narrator_finished(self, result):
         dialog = self.narrator_dialog
@@ -2818,6 +2868,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 profile_synced = self._sync_active_profile(candidate)
                 if preparation is self.pregeneration_dialog and preparation is not None:
                     preparation.apply_narrator_settings(candidate)
+                    if dialog.select_affected_after_save is True:
+                        preparation.select_voice_affected_stories(
+                            dialog._impact_results
+                        )
+                        return_to_stories = True
                 self._reload_game_narrator(profile_synced)
             else:
                 self.set_status(

@@ -745,6 +745,20 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(resolved.source_id, group.candidates[1].source_id)
             self.assertEqual(second.audition_count, 0)
 
+            changed_narrator = store.create(
+                job,
+                settings.updated(voice_assignments={"Narrator": "preset:marius"}),
+                manifest_path=manifest,
+            )
+            preserved = next(
+                value
+                for value in changed_narrator.groups
+                if value.character == "Rhiannon"
+            )
+            self.assertEqual(preserved.source_id, group.candidates[1].source_id)
+            self.assertEqual(preserved.resolution, "saved-player-decision")
+            self.assertEqual(changed_narrator.audition_count, 0)
+
             reconsidered = store.create(
                 job,
                 settings,
