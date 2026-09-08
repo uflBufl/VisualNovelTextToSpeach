@@ -5,12 +5,19 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Qualify corrected interactive retry and resource collection on Windows:
-      one failed preview, a new-seed retry, and replay of a successful cached
-      sample. If another problem occurs, use one support export before exiting
-      with attempt outcomes, quality metrics, timings and CPU/RAM/GPU samples;
-      do not ask for repeated archives missing the same instrumentation.
-      Acoustic quality and actual Windows probe availability remain live gates.
+- [ ] Run the bounded native pause comparison on the existing Windows runtime:
+      same reference/seed, short versus joined versus two-sentence text, current
+      stable temperature 0.8 versus upstream Local default 1.7. Compare raw
+      left/right/mono silence with the production WAV; retain limits, outcomes,
+      controls and WAVs in one diagnostic archive, without modifying approvals.
+      Local MLX results are not native GGUF qualification. Do not globally raise
+      frame limits or silence thresholds to hide failures.
+  - If native results support 1.7, update native stable sampling and verify cache
+    separation and actual request controls; retain the other backends' contracts.
+- [ ] Verify successful preview replay on Windows once native quality is restored;
+      reuse the saved WAV without a new generation. Request another support export
+      only for an unresolved problem, not to repeat already measured retry/device
+      behavior. Acoustic quality remains a separate check from technical gates.
 - [ ] Optimize the measured native bottleneck: later completed requests spend
       about 61% in generation and 38% in CPU codec decoding.
   - For CPU thread tuning, change and qualify the native runtime first: pinned

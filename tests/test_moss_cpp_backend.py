@@ -207,6 +207,31 @@ class MossCppBackendTest(unittest.TestCase):
         backend.shutdown()
         self.assertIsNotNone(self.children[0].poll())
 
+    def test_pause_probe_uses_real_adapter_and_preserves_native_responses(self):
+        from scripts import moss_native_pause_probe as probe
+
+        output = self.root / "pause-probe"
+        options = probe._parser().parse_args(
+            ["--reference", str(self.reference), "--output", str(output)]
+        )
+        with patch("vntts.moss_cpp_installation._download") as download:
+            self.assertEqual(probe.run(options, settings_loader=AppSettings), 0)
+            download.assert_not_called()
+        report = json.loads((output / "report.json").read_text())
+        self.assertEqual(len(report["attempts"]), 6)
+        self.assertTrue(
+            all(row["completion"] == "complete" for row in report["attempts"])
+        )
+        self.assertEqual(sum("--port" in command for command in self.commands), 1)
+        self.assertTrue(all(child.poll() is not None for child in self.children))
+        body = json.loads((self.root / "request.json").read_text())
+        self.assertEqual(body["sampling"]["audio_temperature"], 1.7)
+        self.assertEqual(body["sampling"]["seed"], 1)
+        with zipfile.ZipFile(output.with_suffix(".zip")) as archive:
+            raw = [name for name in archive.namelist() if name.endswith("-raw.wav")]
+            self.assertEqual(len(raw), 6)
+            self.assertTrue(all(archive.read(name).startswith(b"RIFF") for name in raw))
+
     def test_references_are_reused_by_content_and_cleaned_up_on_restart(self):
         backend = self.backend()
         directory = Path(backend.server_directory.name)
