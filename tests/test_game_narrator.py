@@ -75,6 +75,10 @@ class GameNarratorTest(unittest.TestCase):
             )
             try:
                 with (
+                    patch(
+                        "vntts.settings.get_settings_path",
+                        return_value=Path(directory) / "settings.json",
+                    ),
                     patch("vntts.app.GameNarratorDialog", return_value=dialog),
                     patch(
                         "vntts.app.OfflineAudioPreparationDialog",
@@ -106,6 +110,12 @@ class GameNarratorTest(unittest.TestCase):
                     dialog.select_affected.click()
                     self.run_task(pool)
                     self.assertEqual(preparation.selected_story_ids(), ("chapter:1",))
+                    self.assertEqual(
+                        load_app_settings(
+                            Path(directory) / "settings.json"
+                        ).character_voice_defaults["Rhiannon"],
+                        "preset:marius",
+                    )
                     self.assertIsNone(preparation._generation_input)
                     self.assertEqual(tray.dashboard.sections.currentIndex(), 0)
                     self.assertEqual(

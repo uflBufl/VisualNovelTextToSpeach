@@ -599,7 +599,6 @@ class TrayApplicationTest(unittest.TestCase):
                         preparation.has_pending_work.return_value = False
                         tray.pregeneration_dialog = preparation
                         narrator = Mock(result_settings=candidate)
-                        tray.dashboard.sections.setCurrentIndex(origin)
                         saved_settings = []
                         with (
                             patch(
@@ -618,6 +617,7 @@ class TrayApplicationTest(unittest.TestCase):
                             ),
                             patch.object(tray, "_reload_game_narrator") as reload,
                         ):
+                            tray.dashboard.sections.setCurrentIndex(origin)
                             tray.open_voice_previews()
                             tray.dashboard.show_reading()
                             if not same_preparation:

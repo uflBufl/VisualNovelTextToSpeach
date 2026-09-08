@@ -39,14 +39,6 @@ measurements in agent memory and completed-work history in Git, not here.
       timeout). It passes in isolation and the repeated shard also passes;
       identify the leaked event/modal/worker state before changing timeouts.
 
-## P1 - Fix affected-story selection
-
-- [ ] Fix `test_voice_impact_loads_stories_only_on_request_and_selects_without_generating`:
-      selecting Chapter 1 as affected currently leaves Chapter 2 selected too.
-      Reproduces in isolation on clean `1edbdf0`, without MOSS diagnostic changes.
-      Preserve unrelated recordings; gate on exactly the affected story selection
-      and no generation until the user explicitly starts it.
-
 ## P2 - Automate the fresh-install player journey (deferred until UI redesign)
 
 Scope: the GUI entry point is `uv run vntts-app` (`vntts.app.main`), not
