@@ -351,6 +351,14 @@ def _preview_identity(plan, group, candidate, text):
         "controls": plan.synthesis_controls_sha256,
         "seed": None if plan.synthesis_backend == "pocket-tts" else 0,
     }
+    if plan.synthesis_backend == "moss-tts":
+        from vntts.moss_cpp_backend import (
+            NATIVE_GENERATION_CONTRACT,
+            moss_cpp_requested,
+        )
+
+        if moss_cpp_requested(plan.synthesis_model):
+            document["native_generation_contract"] = NATIVE_GENERATION_CONTRACT
     payload = json.dumps(
         document,
         ensure_ascii=False,

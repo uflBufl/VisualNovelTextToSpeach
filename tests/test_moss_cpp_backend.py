@@ -76,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
                 codes_cache[voice_id] = True
                 (root / 'encoded.json').write_text(json.dumps(list(codes_cache)))
                 print(f"[server] voice '{voice_id}' encoded: 10 frames in 0.40s (now cached)", flush=True)
-            print('[generate] reference [S1]: 10 frames (cached codes)', flush=True)
+            # Local v0.3.0 emits no cache-hit marker (the Delay pipeline does).
         if body['text'] == 'Wait.': time.sleep(30)
         if body['text'] == 'Fail.':
             self.send_response(500)
@@ -176,7 +176,7 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertEqual(result.sample_rate, 48000)
         body = json.loads((self.root / "request.json").read_text())
         self.assertFalse(body["stream"])
-        self.assertEqual(body["sampling"]["seed"], 0)
+        self.assertEqual(body["sampling"]["seed"], 1)
         self.assertEqual(body["sampling"]["audio_temperature"], 1.2)
         self.assertEqual(len(body["voice"]), 64)
         self.assertNotIn("reference_wav_b64", body)
@@ -319,18 +319,91 @@ class MossCppBackendTest(unittest.TestCase):
 
     def test_limit_is_not_cached_as_complete(self):
         backend = self.backend()
-        request = SynthesisRequest("Narrator", "Limit.")
+        request = SynthesisRequest("Narrator", "Limit.", seed=0)
         result = backend.render(request).collect()
         self.assertEqual(result.completion, SynthesisCompletion.LIMITED)
+        first = self.native_log.snapshot()[-1]["message"]
         result = backend.render(request).collect()
         self.assertEqual(result.diagnostics.cache_source, "fresh-generation")
-        self.assertIn("outcome=limited", self.native_log.snapshot()[-1]["message"])
+        second = self.native_log.snapshot()[-1]["message"]
+        for field in ("request_key", "reference_key"):
+            self.assertEqual(
+                first.split(field + "=")[1].split(";")[0],
+                second.split(field + "=")[1].split(";")[0],
+            )
+        for expected in (
+            "outcome=limited",
+            "seed=1",
+            "frame_limit=38",
+            "audio_frames=38",
+            "max_audio_s=3.0",
+            "reference_mode=registered",
+        ):
+            self.assertIn(expected, second)
+
+    def test_native_request_keys_distinguish_inputs_and_are_instance_scoped(self):
+        backend = self.backend()
+
+        def fields():
+            return dict(
+                part.split("=", 1)
+                for part in self.native_log.snapshot()[-1]["message"]
+                .removeprefix("MOSS native: ")
+                .split("; ")
+            )
+
+        with patch("vntts.moss_cpp_backend.secrets.randbits", return_value=123):
+            backend.render(SynthesisRequest("Narrator", "First phrase.")).collect()
+        first = fields()
+        self.assertEqual(first["seed"], "123")
+        backend.render(
+            SynthesisRequest("Narrator", "Second phrase.", seed=123)
+        ).collect()
+        second = fields()
+        self.assertNotEqual(first["request_key"], second["request_key"])
+        self.assertEqual(first["reference_key"], second["reference_key"])
+        self.assertRegex(first["request_key"], r"^[0-9a-f]{24}$")
+        backend.render(
+            SynthesisRequest("Narrator", "Second phrase.", seed=124)
+        ).collect()
+        changed_seed = fields()
+        self.assertNotEqual(second["request_key"], changed_seed["request_key"])
+        self.assertEqual(second["reference_key"], changed_seed["reference_key"])
+        sf.write(self.reference, np.full(4800, 0.2), 48000)
+        backend.render(
+            SynthesisRequest("Narrator", "New reference.", seed=124)
+        ).collect()
+        self.assertNotEqual(changed_seed["reference_key"], fields()["reference_key"])
+        self.assertNotEqual(
+            backend._diagnostic_key("same"), self.backend()._diagnostic_key("same")
+        )
+
+    def test_random_seed_never_uses_native_random_sentinel(self):
+        backend = self.backend()
+        with patch("vntts.moss_cpp_backend.secrets.randbits", return_value=0):
+            backend.render(SynthesisRequest("Narrator", "Random seed.")).collect()
+        body = json.loads((self.root / "request.json").read_text())
+        self.assertEqual(body["sampling"]["seed"], 1)
+
+    def test_native_seed_contract_invalidates_persistent_synthesis_cache(self):
+        request = SynthesisRequest("Narrator", "Fixed preview.", seed=0)
+        with patch("vntts.moss_cpp_backend.NATIVE_GENERATION_CONTRACT", "old"):
+            previous = self.backend()
+            previous.render(request).collect()
+            previous.shutdown()
+        current = self.backend()
+        result = current.render(request).collect()
+        self.assertEqual(result.diagnostics.cache_source, "fresh-generation")
+        current.audio_cache.clear()
+        repeated = current.render(request).collect()
+        self.assertEqual(repeated.diagnostics.cache_source, "persistent-cache")
 
     def test_native_timings_survive_shutdown_and_export_without_private_inputs(self):
         backend = self.backend()
         first = SynthesisRequest("Narrator", "Private phrase not for export.", seed=7)
         backend.render(first).collect()
         message = self.native_log.snapshot()[-1]["message"]
+        request_key = message.split("request_key=")[1].split(";")[0]
         for expected in (
             "outcome=complete",
             "reference=encoded",
@@ -344,7 +417,7 @@ class MossCppBackendTest(unittest.TestCase):
             SynthesisRequest("Narrator", "Another private phrase.")
         ).collect()
         self.assertIn(
-            "reference=cached-codes", self.native_log.snapshot()[-1]["message"]
+            "reference=unavailable", self.native_log.snapshot()[-1]["message"]
         )
         backend.render(first).collect()
         self.assertIn("operation=cached-wav", self.native_log.snapshot()[-1]["message"])
@@ -364,8 +437,11 @@ class MossCppBackendTest(unittest.TestCase):
         ).build(self.root / "support.zip")
         with zipfile.ZipFile(output) as archive:
             report = archive.read("native-speech.json").decode()
-        self.assertIn("reference=cached-codes", report)
+        self.assertIn("reference=unavailable", report)
         self.assertIn("operation=server-start", report)
+        self.assertIn("request_key=" + request_key, report)
+        self.assertIn("seed=7", report)
+        self.assertNotIn(backend._diagnostic_salt.hex(), report)
         self.assertNotIn(first.text, report)
         self.assertNotIn(str(self.reference), report)
         self.assertNotIn(str(directory), report)
@@ -386,6 +462,7 @@ class MossCppBackendTest(unittest.TestCase):
         message = self.native_log.snapshot()[-1]["message"]
         self.assertIn("outcome=failed", message)
         self.assertIn("gen_s=unavailable", message)
+        self.assertIn("audio_frames=unavailable", message)
         self.assertIsNone(backend.server_directory)
 
     def test_native_timing_parser_bounds_log_and_rejects_invalid_measurements(self):

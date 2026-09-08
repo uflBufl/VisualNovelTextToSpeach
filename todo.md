@@ -5,23 +5,26 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Collect Windows native timings on RTX 2070 Super 8 GB (user run).
-  - Generate two previously unused texts with the same Centurion reference in
-    one resident server; do not measure Replay or a cached WAV as warm generation.
-    Use Support and logs -> Export support report and send `native-speech.json`
-    from the ZIP. Preview closure is safe; export before exiting the app.
-  - Compare reference encoding/cache reuse, prefill, generation and codec decode;
-    record startup separately and observe native `moss-tts-server.exe` RAM/VRAM.
-    Confirm auxiliary placement alongside the already user-reported 37/37 GPU
-    backbone layers. This report is not evidence of a CPU-only backbone.
-- [ ] Optimize the measured native bottleneck after receiving Windows timings.
+- [ ] Qualify native fixed-seed previews on Windows after the zero-seed mapping
+      fix. Capture a fresh support report with exact-input request/reference
+      keys, cold/warm generation and cached replay. Check complete audio and
+      pause quality; the five older cap hits have no request identities and
+      cannot establish repeat behavior or acoustic failures. Keep limits and
+      quality gates unchanged; native frame counts alone cannot distinguish
+      forced termination from natural EOS exactly at the frame boundary.
+- [ ] Optimize the measured native bottleneck: later completed requests spend
+      about 61% in generation and 38% in CPU codec decoding.
   - For CPU thread tuning, change and qualify the native runtime first: pinned
     openmoss v0.3.0 exposes no thread CLI option. Python/PyTorch thread or CUDA
     settings do not tune this C++/Vulkan runtime. Preserve server-lifetime
     reference-code reuse and intentional cancellation/error teardown.
-  - If Windows timings identify `gen` as dominant, add bounded native measurement
+  - Audit upstream controls and add bounded native measurement
     separating backbone execution from the auxiliary depth decoder; the current
     aggregate `gen` timing cannot establish which one is the bottleneck.
+  - Evaluate codec-only acceleration separately from auxiliary-decoder placement;
+    require a supported native build and memory/quality measurements before
+    enabling it by default. Finish remaining reference-cache and RAM/VRAM checks
+    with exact-input identifiers in the next Windows report, not repeated guesses.
   - Keep the CPU auxiliary default until measured RAM/VRAM and output quality
     justify a different placement. Do not place the entire Q8 sidecar on an 8 GB
     GPU blindly. Any optimization needs comparable fresh cold/warm Windows runs,

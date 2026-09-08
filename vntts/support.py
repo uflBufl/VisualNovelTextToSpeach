@@ -410,6 +410,11 @@ class SupportBundleBuilder:
                 "timing_note": (
                     "Seconds; gen includes backbone and auxiliary depth decoder. "
                     "Unavailable is not zero. Cached WAV playback is not generation."
+                    " Request/reference keys correlate inputs only within one backend "
+                    "instance; they are salted and contain no text or paths. "
+                    "Seed is the effective native seed (requested zero maps to one). "
+                    "Registered references do not by themselves prove a cache hit. "
+                    "Limited means the frame cap was reached, not an acoustic verdict."
                 ),
             },
             "generation-timelines.json": {

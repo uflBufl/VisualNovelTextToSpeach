@@ -192,7 +192,8 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             )
             service.close()
 
-    def test_generates_one_exact_preview_then_reuses_persistent_wav(self):
+    @patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True)
+    def test_generates_one_exact_preview_then_reuses_persistent_wav(self, _native):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, group, _manifest = ambiguous_fixture(root)
@@ -260,6 +261,28 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             self.assertEqual(len(backend.requests), 1)
             self.assertEqual(backend.requests[0].voice, "Rhiannon")
             self.assertEqual(backend.shutdown_count, 1)
+
+    def test_native_preview_does_not_reuse_the_old_seed_zero_cache(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions", backend_factory=lambda *_args, **_kw: backend
+            )
+            self.addCleanup(service.close)
+            source_id = group.candidates[0].source_id
+            # MLX retains the pre-fix identity, previously shared with native.
+            with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False):
+                old = service.generate(plan, group, source_id)
+            with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True):
+                native = service.generate(plan, group, source_id)
+                repeated = service.generate(plan, group, source_id)
+            self.assertNotEqual(old.identity, native.identity)
+            self.assertTrue(old.path.is_file())
+            self.assertFalse(native.reused)
+            self.assertTrue(repeated.reused)
+            self.assertEqual(len(backend.requests), 2)
 
     def test_rejects_reference_changed_after_voice_plan(self):
         with TemporaryDirectory() as temporary_directory:

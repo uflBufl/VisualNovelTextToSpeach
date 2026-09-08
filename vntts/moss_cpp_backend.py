@@ -34,6 +34,8 @@ from vntts.speech_backend import (
 from vntts.speech_backend_runtime import _source_identity
 from vntts.support import record_native_speech
 
+NATIVE_GENERATION_CONTRACT = "nonzero-seed-v1"
+
 
 def _native_stage_timings(path, offset, headers, maximum_seconds):
     """Read only this request's bounded log tail; never export native log text."""
@@ -177,6 +179,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self.server_directory = None
         self.port = None
         self.server_info = None
+        self._diagnostic_salt = secrets.token_bytes(32)
         self._runtime_status = None
         self.startup_cancellation = startup_cancellation
         self.startup_progress = startup_progress or (lambda _message: None)
@@ -189,6 +192,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 _source_identity(p) for p in (self.executable, self.gguf, self.sidecar)
             )
             + f":layers={self.gpu_layers}:aux_cpu={self.aux_cpu}:ctx={self.context_size}"
+            + f":{NATIVE_GENERATION_CONTRACT}"
         )
         try:
             from vntts.runtime_installation import _run
@@ -224,6 +228,10 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if callable(value)
             else False
         )
+
+    def _diagnostic_key(self, value):
+        payload = json.dumps(value, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(self._diagnostic_salt + payload).hexdigest()[:24]
 
     @property
     def runtime_status(self):
@@ -423,6 +431,8 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         server_pid = None
         request_s = None
         audio_s = None
+        request_key = reference_key = reference_mode = None
+        actual_seed = frame_limit = frames = None
         outcome = "failed"
         try:
             if cancelled():
@@ -463,6 +473,8 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     "MOSS C++ seed must be an unsigned 64-bit integer"
                 )
             frame_limit = math.ceil(prepared.max_audio_seconds * 12.5)
+            # openmoss interprets zero as random; VNTTS zero means a fixed seed.
+            actual_seed = (secrets.randbits(64) if seed is None else seed) or 1
             body = {
                 "text": prepared.text,
                 "language": self.language,
@@ -471,10 +483,13 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 "max_new_tokens": frame_limit + 1,
                 "sampling": {
                     **dict(prepared.generation_options),
-                    "seed": secrets.randbits(64) if seed is None else seed,
+                    "seed": actual_seed,
                     "max_audio_frames": frame_limit,
                 },
             }
+            voice_id = hashlib.sha256(wav.getvalue()).hexdigest()
+            reference_key = self._diagnostic_key(voice_id)
+            request_key = self._diagnostic_key({**body, "reference": reference_key})
             if (
                 self.voice_registry_supported
                 and server_info.get("voice_registry") is True
@@ -483,7 +498,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 # encoded again on every line, even when the voice is unchanged.
                 # ponytail: codes/WAVs live until server shutdown; add eviction
                 # only if long-running sessions with many unique voices need it.
-                voice_id = hashlib.sha256(wav.getvalue()).hexdigest()
+                reference_mode = "registered"
                 reference_path = server_directory / "voices" / f"{voice_id}.wav"
                 if not reference_path.is_file():
                     reference_path.with_suffix(".json").write_text(
@@ -492,6 +507,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     reference_path.write_bytes(wav.getvalue())
                 body["voice"] = voice_id
             else:
+                reference_mode = "inline"
                 body["reference_wav_b64"] = base64.b64encode(wav.getvalue()).decode(
                     "ascii"
                 )
@@ -558,12 +574,19 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if cancelled():
                 outcome = "cancelled"
             stages = _native_stage_timings(path, offset, headers, self.request_timeout)
-            # Capture before teardown removes the owned temporary log. Only
-            # allowlisted numeric measurements, never text/reference paths.
+            # Capture before teardown removes the owned temporary log: numeric
+            # measurements and salted keys, never text/reference paths.
             record_native_speech(
                 operation="fresh-generation",
                 cache="fresh-generation",
                 server_pid=server_pid,
+                request_key=request_key,
+                reference_key=reference_key,
+                reference_mode=reference_mode,
+                seed=actual_seed,
+                frame_limit=frame_limit,
+                audio_frames=frames,
+                max_audio_s=prepared.max_audio_seconds,
                 outcome=outcome,
                 audio_s=audio_s,
                 request_s=(
