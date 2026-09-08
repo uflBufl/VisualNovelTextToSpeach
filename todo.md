@@ -5,13 +5,27 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Measure cold and warm Windows MOSS narrator previews on RTX 2070 Super
-      8 GB after enabling default GPU offload and native reference-code reuse;
-      confirm the UI's GPU layer count/auxiliary placement and record generation
-      versus startup latency, reference encoding and VRAM use. The CPU auxiliary
-      model/codec remains enabled to fit this card. Profile remaining
-      codec/reference-encoding costs before changing native thread settings or
-      placing the full sidecar on an 8 GB GPU; PyTorch settings do not tune GGUF.
+- [ ] Collect Windows native timings on RTX 2070 Super 8 GB (user run).
+  - Generate two previously unused texts with the same Centurion reference in
+    one resident server; do not measure Replay or a cached WAV as warm generation.
+    Use Support and logs -> Export support report and send `native-speech.json`
+    from the ZIP. Preview closure is safe; export before exiting the app.
+  - Compare reference encoding/cache reuse, prefill, generation and codec decode;
+    record startup separately and observe native `moss-tts-server.exe` RAM/VRAM.
+    Confirm auxiliary placement alongside the already user-reported 37/37 GPU
+    backbone layers. This report is not evidence of a CPU-only backbone.
+- [ ] Optimize the measured native bottleneck after receiving Windows timings.
+  - For CPU thread tuning, change and qualify the native runtime first: pinned
+    openmoss v0.3.0 exposes no thread CLI option. Python/PyTorch thread or CUDA
+    settings do not tune this C++/Vulkan runtime. Preserve server-lifetime
+    reference-code reuse and intentional cancellation/error teardown.
+  - If Windows timings identify `gen` as dominant, add bounded native measurement
+    separating backbone execution from the auxiliary depth decoder; the current
+    aggregate `gen` timing cannot establish which one is the bottleneck.
+  - Keep the CPU auxiliary default until measured RAM/VRAM and output quality
+    justify a different placement. Do not place the entire Q8 sidecar on an 8 GB
+    GPU blindly. Any optimization needs comparable fresh cold/warm Windows runs,
+    memory measurements and audio-quality verification before claiming a speedup.
 
 ## P0 - Prefer spoken playable-character narrator references
 
@@ -24,6 +38,14 @@ measurements in agent memory and completed-work history in Git, not here.
       `test_settings_are_scrollable_and_grouped_into_visual_regions` (180-second
       timeout). It passes in isolation and the repeated shard also passes;
       identify the leaked event/modal/worker state before changing timeouts.
+
+## P1 - Fix affected-story selection
+
+- [ ] Fix `test_voice_impact_loads_stories_only_on_request_and_selects_without_generating`:
+      selecting Chapter 1 as affected currently leaves Chapter 2 selected too.
+      Reproduces in isolation on clean `1edbdf0`, without MOSS diagnostic changes.
+      Preserve unrelated recordings; gate on exactly the affected story selection
+      and no generation until the user explicitly starts it.
 
 ## P2 - Automate the fresh-install player journey (deferred until UI redesign)
 

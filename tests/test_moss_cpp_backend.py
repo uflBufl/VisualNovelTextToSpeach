@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import unittest
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
@@ -14,12 +15,17 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 
-from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
+from vntts.moss_cpp_backend import (
+    MossCppVoiceRouterBackend,
+    _native_stage_timings,
+    moss_cpp_paths,
+)
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.pregeneration_voices import resolve_pregeneration_settings
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.settings import AppSettings
 from vntts.speech_worker import create_moss_worker_backend
+from vntts.support import RuntimeSupportLog, SupportBundleBuilder
 from vntts.synthesis import SynthesisCompletion, SynthesisRequest
 from vntts.tts_benchmark import main as benchmark_main
 from vntts.voices import CharacterVoiceRegistry
@@ -69,6 +75,8 @@ class Handler(BaseHTTPRequestHandler):
                 assert json.loads((voice_dir / (voice_id + '.json')).read_text()) == {}
                 codes_cache[voice_id] = True
                 (root / 'encoded.json').write_text(json.dumps(list(codes_cache)))
+                print(f"[server] voice '{voice_id}' encoded: 10 frames in 0.40s (now cached)", flush=True)
+            print('[generate] reference [S1]: 10 frames (cached codes)', flush=True)
         if body['text'] == 'Wait.': time.sleep(30)
         if body['text'] == 'Fail.':
             self.send_response(500)
@@ -85,6 +93,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'audio/wav')
         self.send_header('X-MOSS-Audio-Frames', str(
             body['sampling']['max_audio_frames'] if body['text'] == 'Limit.' else 2))
+        if not (root / 'missing-timings').exists():
+            self.send_header('X-MOSS-Generate-Seconds', '1.25')
+            self.send_header('X-MOSS-Decode-Seconds', '0.125')
+            print('[generate] prefill done in 0.05s', flush=True)
         self.end_headers()
         data = audio.getvalue()
         self.wfile.write(data[:50] if body['text'] == 'Truncated.' else data)
@@ -119,6 +131,8 @@ class MossCppBackendTest(unittest.TestCase):
         }
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, env).start()
+        self.native_log = RuntimeSupportLog(maximum_entries=20)
+        patch("vntts.support.native_speech_log", self.native_log).start()
         real_popen = subprocess.Popen
         self.children = []
         self.commands = []
@@ -310,6 +324,118 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertEqual(result.completion, SynthesisCompletion.LIMITED)
         result = backend.render(request).collect()
         self.assertEqual(result.diagnostics.cache_source, "fresh-generation")
+        self.assertIn("outcome=limited", self.native_log.snapshot()[-1]["message"])
+
+    def test_native_timings_survive_shutdown_and_export_without_private_inputs(self):
+        backend = self.backend()
+        first = SynthesisRequest("Narrator", "Private phrase not for export.", seed=7)
+        backend.render(first).collect()
+        message = self.native_log.snapshot()[-1]["message"]
+        for expected in (
+            "outcome=complete",
+            "reference=encoded",
+            "reference_encoding_s=0.4",
+            "prefill_s=0.05",
+            "gen_s=1.25",
+            "decode_s=0.125",
+        ):
+            self.assertIn(expected, message)
+        backend.render(
+            SynthesisRequest("Narrator", "Another private phrase.")
+        ).collect()
+        self.assertIn(
+            "reference=cached-codes", self.native_log.snapshot()[-1]["message"]
+        )
+        backend.render(first).collect()
+        self.assertIn("operation=cached-wav", self.native_log.snapshot()[-1]["message"])
+        self.assertIn("gen_s=unavailable", self.native_log.snapshot()[-1]["message"])
+        backend.audio_cache.clear()
+        backend.render(first).collect()
+        self.assertIn(
+            "cache=persistent-cache", self.native_log.snapshot()[-1]["message"]
+        )
+        directory = Path(backend.server_directory.name)
+        backend.shutdown()
+        self.assertFalse(directory.exists())
+        output = SupportBundleBuilder(
+            AppSettings(),
+            RuntimeSupportLog(),
+            dependency_probe=lambda: {},
+        ).build(self.root / "support.zip")
+        with zipfile.ZipFile(output) as archive:
+            report = archive.read("native-speech.json").decode()
+        self.assertIn("reference=cached-codes", report)
+        self.assertIn("operation=server-start", report)
+        self.assertNotIn(first.text, report)
+        self.assertNotIn(str(self.reference), report)
+        self.assertNotIn(str(directory), report)
+        for index in range(25):
+            self.native_log.add("test", str(index))
+        self.assertEqual(len(self.native_log.snapshot()), 20)
+
+    def test_missing_failed_and_cancelled_timings_do_not_reuse_previous_request(self):
+        backend = self.backend()
+        backend.render(SynthesisRequest("Narrator", "First.")).collect()
+        (self.root / "missing-timings").touch()
+        backend.render(SynthesisRequest("Narrator", "Without timings.")).collect()
+        message = self.native_log.snapshot()[-1]["message"]
+        self.assertIn("gen_s=unavailable", message)
+        self.assertIn("prefill_s=unavailable", message)
+        with self.assertRaises(TTSSynthesisError):
+            backend.render(SynthesisRequest("Narrator", "Fail.")).collect()
+        message = self.native_log.snapshot()[-1]["message"]
+        self.assertIn("outcome=failed", message)
+        self.assertIn("gen_s=unavailable", message)
+        self.assertIsNone(backend.server_directory)
+
+    def test_native_timing_parser_bounds_log_and_rejects_invalid_measurements(self):
+        log = self.root / "native.log"
+        log.write_text(
+            "private text/path must never be exported\n"
+            "[generate] encoded reference: 2 frames (0.16s) in 0.30s\n"
+            "[generate] generated 2 steps in 1.50s\n"
+            "[generate] codec decode produced 9600 samples (0.10s audio) in 0.20s\n"
+        )
+        report = _native_stage_timings(log, 0, {}, 600)
+        self.assertEqual(report["reference_encoding_s"], 0.3)
+        self.assertEqual(report["gen_s"], 1.5)
+        self.assertEqual(report["decode_s"], 0.2)
+        self.assertNotIn("private", str(report))
+        self.assertIsNone(
+            _native_stage_timings(log, log.stat().st_size, {}, 600)["gen_s"]
+        )
+        for invalid in ("nan", "inf", "-1", "bad", "1e308"):
+            self.assertIsNone(
+                _native_stage_timings(
+                    log, 0, {"x-moss-generate-seconds": invalid}, 600
+                )["gen_s"]
+            )
+        log.write_text(
+            "x" * (65 * 1024) + "\nreference [S1]: 2 frames (cached codes)\n"
+        )
+        self.assertEqual(
+            _native_stage_timings(log, 0, {}, 600)["reference"], "unavailable"
+        )
+
+    def test_native_request_time_excludes_consumer_playback_delay(self):
+        backend = self.backend()
+        with patch("vntts.moss_cpp_backend.monotonic", return_value=10.0) as clock:
+            stream = backend.render(SynthesisRequest("Narrator", "Timing test."))
+            next(stream)
+            clock.return_value = 100.0
+            stream.collect()
+        self.assertIn("request_s=0.0", self.native_log.snapshot()[-1]["message"])
+
+    def test_stopped_server_before_request_is_reported_without_dereferencing_it(self):
+        backend = self.backend()
+        with patch.object(
+            backend,
+            "_start_server",
+            side_effect=lambda _cancelled: backend._stop_server(),
+        ):
+            with self.assertRaisesRegex(TTSSynthesisError, "stopped before generation"):
+                backend.render(SynthesisRequest("Narrator", "Stopped.")).collect()
+        self.assertIn("outcome=failed", self.native_log.snapshot()[-1]["message"])
 
     def test_default_requests_gpu_offload_but_explicit_cpu_is_respected(self):
         for layers in (None, "0"):
@@ -365,6 +491,12 @@ class MossCppBackendTest(unittest.TestCase):
             task.join(5)
             self.assertFalse(task.is_alive())
             self.assertEqual(result[0].completion, SynthesisCompletion.CANCELLED)
+            self.assertIn(
+                "outcome=cancelled", self.native_log.snapshot()[-1]["message"]
+            )
+            self.assertIn(
+                "gen_s=unavailable", self.native_log.snapshot()[-1]["message"]
+            )
             self.assertIsNotNone(self.children[0].poll())
             self.assertEqual(
                 backend.render(SynthesisRequest("Narrator", "Again."))

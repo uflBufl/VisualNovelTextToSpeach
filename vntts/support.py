@@ -353,6 +353,22 @@ class RuntimeSupportLog:
             return list(self.entries)
 
 
+# ponytail: last 20 native operations per process; export before exiting the app.
+# Independent of backend ownership, so closing a preview does not erase timings.
+native_speech_log = RuntimeSupportLog(maximum_entries=20)
+
+
+def record_native_speech(**details):
+    native_speech_log.add(
+        "moss-native",
+        "MOSS native: "
+        + "; ".join(
+            f"{key}={value if value is not None else 'unavailable'}"
+            for key, value in details.items()
+        ),
+    )
+
+
 class SupportBundleBuilder:
     def __init__(
         self,
@@ -386,6 +402,15 @@ class SupportBundleBuilder:
             "sanitized-settings.json": sanitize_settings(self.settings),
             "runtime-events.json": {
                 "events": [sanitize_event(entry) for entry in self.event_log.snapshot()]
+            },
+            "native-speech.json": {
+                "events": [
+                    sanitize_event(entry) for entry in native_speech_log.snapshot()
+                ],
+                "timing_note": (
+                    "Seconds; gen includes backbone and auxiliary depth decoder. "
+                    "Unavailable is not zero. Cached WAV playback is not generation."
+                ),
             },
             "generation-timelines.json": {
                 "version": 1,

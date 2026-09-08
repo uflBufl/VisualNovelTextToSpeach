@@ -401,6 +401,20 @@ def _cached_preview(target, identity, plan, group, candidate, text, *, reused=Tr
         audio_sha256 = sha256_file(target)
     except (OSError, ValueError, VoiceAuditionError) as error:
         raise VoiceAuditionError(f"Cached voice preview is invalid: {error}") from error
+    if reused and plan.synthesis_backend == "moss-tts":
+        from vntts.moss_cpp_backend import moss_cpp_requested
+        from vntts.support import record_native_speech
+
+        if moss_cpp_requested(plan.synthesis_model):
+            record_native_speech(
+                operation="cached-preview",
+                outcome="complete",
+                cache="preview-file",
+                reference="not-used",
+                audio_s=info.duration_seconds,
+                gen_s=None,
+                decode_s=None,
+            )
     return VoiceAuditionPreview(
         identity=identity,
         group_id=group.group_id,

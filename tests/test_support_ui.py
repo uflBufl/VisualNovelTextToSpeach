@@ -1,5 +1,7 @@
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -8,6 +10,7 @@ from PySide6.QtGui import QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from vntts.support import RuntimeSupportLog  # noqa: E402
 from vntts.support_ui import SupportCenterDialog  # noqa: E402
 
 
@@ -21,13 +24,29 @@ class FakeEventLog:
 
 def event(index):
     return {
-        "recorded_at": f"2026-08-22T12:00:{index:02d}+03:00",
+        "recorded_at": (
+            datetime(2026, 8, 22, 12, tzinfo=timezone.utc) + timedelta(seconds=index)
+        ).isoformat(),
         "level": "status",
         "message": f"event {index}",
     }
 
 
 class SupportCenterDialogTest(unittest.TestCase):
+    def setUp(self):
+        self.native_log = RuntimeSupportLog()
+        native_patch = patch("vntts.support.native_speech_log", self.native_log)
+        native_patch.start()
+        self.addCleanup(native_patch.stop)
+
+    def test_native_timings_are_visible_in_existing_runtime_log(self):
+        self.native_log.add("moss-native", "MOSS native: gen_s=1.25")
+        dialog = SupportCenterDialog(FakeEventLog())
+        dialog.refresh()
+        self.assertIn("MOSS native: gen_s=1.25", dialog.events.toPlainText())
+        dialog.close()
+        dialog.deleteLater()
+
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])

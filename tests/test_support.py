@@ -485,6 +485,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 "manifest.json",
                 "sanitized-settings.json",
                 "runtime-events.json",
+                "native-speech.json",
                 "generation-timelines.json",
                 "ocr-metrics.json",
                 "diagnostics.json",

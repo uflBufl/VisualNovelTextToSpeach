@@ -32,6 +32,58 @@ from vntts.speech_backend import (
     moss_tts_generation_profiles,
 )
 from vntts.speech_backend_runtime import _source_identity
+from vntts.support import record_native_speech
+
+
+def _native_stage_timings(path, offset, headers, maximum_seconds):
+    """Read only this request's bounded log tail; never export native log text."""
+    output = ""
+    complete_log = False
+    if path is not None:
+        try:
+            with open(path, "rb") as log:
+                log.seek(0, os.SEEK_END)
+                complete_log = log.tell() - offset <= 64 * 1024
+                log.seek(max(offset, log.tell() - 64 * 1024))
+                output = log.read(64 * 1024).decode("utf-8", errors="replace")
+        except OSError:
+            pass
+
+    def seconds(pattern, header=None):
+        match = re.search(pattern, output)
+        raw = headers.get(header) if header else None
+        if raw is None and match:
+            raw = match[1]
+        try:
+            value = float(raw)
+        except TypeError, ValueError:
+            return None
+        return (
+            round(value, 6)
+            if math.isfinite(value) and 0 <= value <= maximum_seconds
+            else None
+        )
+
+    reference_s = seconds(
+        r"(?:voice '[^'\r\n]+' encoded: \d+ frames|encoded reference: \d+ frames \([^\r\n]*?\)) in ([\d.]+)s"
+    )
+    return {
+        "reference": (
+            "encoded"
+            if reference_s is not None
+            else "cached-codes"
+            if complete_log and "(cached codes)" in output
+            else "unavailable"
+        ),
+        "reference_encoding_s": reference_s,
+        "prefill_s": seconds(r"prefill done in ([\d.]+)s"),
+        "gen_s": seconds(
+            r"generated \d+ steps in ([\d.]+)s", "x-moss-generate-seconds"
+        ),
+        "decode_s": seconds(
+            r"codec decode produced [^\r\n]* in ([\d.]+)s", "x-moss-decode-seconds"
+        ),
+    }
 
 
 def moss_cpp_requested(model_name=None):
@@ -258,6 +310,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self.server_log = open(
                 Path(self.server_directory.name) / "server.log", "w+b"
             )
+            started = monotonic()
             self.server = subprocess.Popen(
                 command,
                 stdin=subprocess.DEVNULL,
@@ -298,6 +351,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 )
             self.server_info = info
             self._runtime_status = self._confirmed_runtime_status()
+            record_native_speech(
+                operation="server-start",
+                server_pid=self.server.pid,
+                server_load_s=round(monotonic() - started, 3),
+                compute=self._runtime_status,
+            )
             self.startup_progress(self._runtime_status)
             return
         raise TTSConfigurationError("MOSS C++ model startup timed out")
@@ -334,14 +393,49 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self._resolve_prompt_codes(character)
         return False
 
+    def _render_chunks(self, prepared, request):
+        if prepared.cached_audio is None:
+            return (yield from super()._render_chunks(prepared, request))
+        outcome = "failed"
+        try:
+            result = yield from super()._render_chunks(prepared, request)
+            outcome = result.completion.value
+            return result
+        except GeneratorExit:
+            outcome = "cancelled"
+            raise
+        finally:
+            record_native_speech(
+                operation="cached-wav",
+                outcome=outcome,
+                cache=prepared.cache_source,
+                reference="not-used",
+                gen_s=None,
+                decode_s=None,
+            )
+
     def _generate(self, prepared, request):
         def cancelled():
             return self.playback_stop.is_set() or request.cancellation_requested()
 
-        if cancelled():
-            return
+        started = monotonic()
+        path, offset, headers, worker = None, 0, {}, None
+        server_pid = None
+        request_s = None
+        audio_s = None
+        outcome = "failed"
         try:
+            if cancelled():
+                return
             self._start_server(cancelled)
+            with self.server_lock:
+                if self.server is None or self.server_log is None:
+                    raise TTSSynthesisError("MOSS C++ stopped before generation")
+                server_pid = self.server.pid
+                path = self.server_log.name
+                server_info = self.server_info
+                server_directory = Path(self.server_directory.name)
+            offset = Path(path).stat().st_size
             with sf.SoundFile(prepared.prompt_audio_codes) as reference:
                 if (
                     reference.channels not in {1, 2}
@@ -383,16 +477,14 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             }
             if (
                 self.voice_registry_supported
-                and self.server_info.get("voice_registry") is True
+                and server_info.get("voice_registry") is True
             ):
                 # openmoss caches registered reference codes. Inline WAVs are
                 # encoded again on every line, even when the voice is unchanged.
                 # ponytail: codes/WAVs live until server shutdown; add eviction
                 # only if long-running sessions with many unique voices need it.
                 voice_id = hashlib.sha256(wav.getvalue()).hexdigest()
-                reference_path = (
-                    Path(self.server_directory.name) / "voices" / f"{voice_id}.wav"
-                )
+                reference_path = server_directory / "voices" / f"{voice_id}.wav"
                 if not reference_path.is_file():
                     reference_path.with_suffix(".json").write_text(
                         "{}", encoding="utf-8"
@@ -420,8 +512,6 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 if cancelled():
                     # ponytail: upstream has no cancellation endpoint; kill only
                     # our owned server and reload on the next uncached request.
-                    self._stop_server()
-                    worker.join(timeout=2)
                     return
             if cancelled():
                 return
@@ -456,12 +546,35 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 )
             if not pcm.size or not np.isfinite(pcm).all():
                 raise TTSSynthesisError("MOSS C++ returned empty or invalid audio")
+            outcome = "limited" if frames >= frame_limit else "complete"
+            audio_s = round(len(pcm) / self.sample_rate, 6)
+            request_s = round(monotonic() - started, 3)
             yield SimpleNamespace(audio=pcm, generation_limited=frames >= frame_limit)
         except Exception:
-            self._stop_server()
             if cancelled():
                 return
             raise
+        finally:
+            if cancelled():
+                outcome = "cancelled"
+            stages = _native_stage_timings(path, offset, headers, self.request_timeout)
+            # Capture before teardown removes the owned temporary log. Only
+            # allowlisted numeric measurements, never text/reference paths.
+            record_native_speech(
+                operation="fresh-generation",
+                cache="fresh-generation",
+                server_pid=server_pid,
+                outcome=outcome,
+                audio_s=audio_s,
+                request_s=(
+                    round(monotonic() - started, 3) if request_s is None else request_s
+                ),
+                **stages,
+            )
+            if outcome in {"failed", "cancelled"}:
+                self._stop_server()
+                if worker is not None:
+                    worker.join(timeout=2)
 
     def _stop_server(self):
         with self.server_lock:

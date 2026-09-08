@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vntts import support
+
 
 class SupportCenterDialog(QDialog):
     diagnostics_requested = Signal()
@@ -51,6 +53,10 @@ class SupportCenterDialog(QDialog):
             "selected voice, and latency. Export a support report after a crash, "
             "audio artifact, missed speaker, or incorrect capture. The report excludes "
             "screenshots, recognized dialogue, voice recordings, models, and secret values."
+            " MOSS native timings are included in Runtime log and the support report. "
+            "The last 20 native operations survive closing the preview, but not exiting "
+            "the application. Generate different texts with the same reference to "
+            "compare fresh and reused reference encoding; Replay may only play a cached WAV."
         )
         help_page = QWidget()
         help_layout = QVBoxLayout(help_page)
@@ -136,7 +142,10 @@ class SupportCenterDialog(QDialog):
         super().hideEvent(event)
 
     def refresh(self):
-        entries = self.event_log.snapshot()
+        entries = sorted(
+            self.event_log.snapshot() + support.native_speech_log.snapshot(),
+            key=lambda entry: str(entry.get("recorded_at", "")),
+        )
         rendered = []
         for entry in entries:
             timestamp = str(entry.get("recorded_at", ""))

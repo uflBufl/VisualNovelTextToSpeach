@@ -5,7 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import soundfile as sf
@@ -231,9 +231,22 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                     "A persisted preview must not restart the model"
                 ),
             )
-            second = second_service.generate(
-                plan, group, source_id, progress=progress.append
-            )
+            with (
+                patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True),
+                patch("vntts.support.record_native_speech") as native_event,
+            ):
+                second = second_service.generate(
+                    plan, group, source_id, progress=progress.append
+                )
+                native_event.assert_called_once_with(
+                    operation="cached-preview",
+                    outcome="complete",
+                    cache="preview-file",
+                    reference="not-used",
+                    audio_s=second.duration_seconds,
+                    gen_s=None,
+                    decode_s=None,
+                )
             self.assertEqual(progress, ["Checking the saved preview..."])
             second_service.close()
 
