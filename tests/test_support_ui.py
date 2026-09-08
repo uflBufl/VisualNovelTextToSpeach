@@ -10,7 +10,7 @@ from PySide6.QtGui import QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from vntts.support import RuntimeSupportLog  # noqa: E402
+from vntts.support import NativeSpeechLog  # noqa: E402
 from vntts.support_ui import SupportCenterDialog  # noqa: E402
 
 
@@ -34,7 +34,7 @@ def event(index):
 
 class SupportCenterDialogTest(unittest.TestCase):
     def setUp(self):
-        self.native_log = RuntimeSupportLog()
+        self.native_log = NativeSpeechLog()
         native_patch = patch("vntts.support.native_speech_log", self.native_log)
         native_patch.start()
         self.addCleanup(native_patch.stop)

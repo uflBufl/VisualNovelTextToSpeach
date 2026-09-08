@@ -5,26 +5,31 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Qualify native fixed-seed previews on Windows after the zero-seed mapping
-      fix. Capture a fresh support report with exact-input request/reference
-      keys, cold/warm generation and cached replay. Check complete audio and
-      pause quality; the five older cap hits have no request identities and
-      cannot establish repeat behavior or acoustic failures. Keep limits and
-      quality gates unchanged; native frame counts alone cannot distinguish
-      forced termination from natural EOS exactly at the frame boundary.
+- [ ] Fix interactive failed-preview retries: use a new recorded seed for a new
+      attempt after generation-limit or post-render quality failure, preserve
+      successful replay/cache reuse across service restarts and keep explicit
+      deterministic backend requests unchanged. No hidden retry loops or relaxed
+      quality gates. Test limit/quality failures, cancellation and cached success.
+- [ ] Qualify corrected interactive retry and resource collection on Windows:
+      one failed preview, a new-seed retry, and replay of a successful cached
+      sample. If another problem occurs, use one support export before exiting
+      with attempt outcomes, quality metrics, timings and CPU/RAM/GPU samples;
+      do not ask for repeated archives missing the same instrumentation.
+      Acoustic quality and actual Windows probe availability remain live gates.
 - [ ] Optimize the measured native bottleneck: later completed requests spend
       about 61% in generation and 38% in CPU codec decoding.
   - For CPU thread tuning, change and qualify the native runtime first: pinned
     openmoss v0.3.0 exposes no thread CLI option. Python/PyTorch thread or CUDA
     settings do not tune this C++/Vulkan runtime. Preserve server-lifetime
     reference-code reuse and intentional cancellation/error teardown.
-  - Audit upstream controls and add bounded native measurement
-    separating backbone execution from the auxiliary depth decoder; the current
+  - Add bounded native measurement separating backbone execution from the
+    auxiliary depth decoder; the current
     aggregate `gen` timing cannot establish which one is the bottleneck.
   - Evaluate codec-only acceleration separately from auxiliary-decoder placement;
     require a supported native build and memory/quality measurements before
-    enabling it by default. Finish remaining reference-cache and RAM/VRAM checks
-    with exact-input identifiers in the next Windows report, not repeated guesses.
+    enabling it by default. Native reference-cache hit and EOS stop-reason
+    reporting require upstream instrumentation; missing logs and frame counts
+    alone cannot distinguish cache reuse or natural EOS exactly at the limit.
   - Keep the CPU auxiliary default until measured RAM/VRAM and output quality
     justify a different placement. Do not place the entire Q8 sidecar on an 8 GB
     GPU blindly. Any optimization needs comparable fresh cold/warm Windows runs,

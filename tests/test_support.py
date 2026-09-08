@@ -5,6 +5,7 @@ from dataclasses import fields
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -12,13 +13,56 @@ from vntts.diagnostics import DiagnosticSnapshot
 from vntts.settings import AppSettings
 from vntts.support import (
     GenerationTimelineLog,
+    NativeSpeechLog,
     RuntimeSupportLog,
     SupportBundleBuilder,
+    collect_build_identity,
     collect_ocr_metrics,
+    native_speech_context,
+    record_native_speech,
     redact_text,
     sanitize_settings,
     sequence_timeline_stages,
 )
+
+
+class NativeSpeechLogTest(unittest.TestCase):
+    def test_rollover_preserves_session_counts_and_runtime(self):
+        log = NativeSpeechLog(maximum_entries=2)
+        with patch("vntts.support.native_speech_log", log):
+            record_native_speech(operation="server-start", native_version="0.3.0")
+            with native_speech_context.set({"attempt_id": "a", "logical_key": "key"}):
+                record_native_speech(
+                    operation="fresh-generation",
+                    outcome="complete",
+                    request_s=12,
+                    text="PRIVATE",
+                    reference_path="/secret/location.wav",
+                )
+                record_native_speech(
+                    operation="preview-outcome",
+                    outcome="quality_failed",
+                    stage="quality",
+                    reason="silence",
+                )
+            record_native_speech(operation="cached-wav", outcome="complete")
+        report = log.report()
+        self.assertEqual(report["total_events"], 4)
+        self.assertEqual(report["dropped_events"], 2)
+        self.assertEqual(report["latest_runtime"]["native_version"], "0.3.0")
+        self.assertEqual(report["outcomes"]["fresh-generation/complete"], 1)
+        self.assertEqual(report["outcomes"]["preview-outcome/quality_failed"], 1)
+        self.assertEqual(report["request_seconds"]["fresh-generation/complete"], 12)
+        self.assertEqual(report["events"][0]["native"]["attempt_id"], "a")
+        self.assertNotIn("attempt_id", report["events"][1]["native"])
+        self.assertNotIn("PRIVATE", str(report))
+        self.assertNotIn("/secret", str(report))
+
+    def test_missing_git_does_not_prevent_build_report(self):
+        with patch("vntts.support.subprocess.run", side_effect=FileNotFoundError):
+            report = collect_build_identity()
+        self.assertIsNone(report["git_commit"])
+        self.assertIn("psutil", report["versions"])
 
 
 class GenerationTimelineLogTest(unittest.TestCase):
@@ -486,6 +530,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 "sanitized-settings.json",
                 "runtime-events.json",
                 "native-speech.json",
+                "build.json",
                 "generation-timelines.json",
                 "ocr-metrics.json",
                 "diagnostics.json",

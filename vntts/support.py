@@ -1,10 +1,16 @@
+import hashlib
+import importlib.metadata
 import importlib.util
 import json
+import marshal
+import math
 import platform
 import re
+import subprocess
 import sys
 import zipfile
 from collections import Counter, OrderedDict, deque
+from contextvars import ContextVar
 from dataclasses import asdict, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -353,20 +359,109 @@ class RuntimeSupportLog:
             return list(self.entries)
 
 
-# ponytail: last 20 native operations per process; export before exiting the app.
-# Independent of backend ownership, so closing a preview does not erase timings.
-native_speech_log = RuntimeSupportLog(maximum_entries=20)
+native_speech_context = ContextVar("native_speech_context", default=None)
+_native_fields = frozenset(
+    "operation outcome cache server_pid server_load_s compute request_key "
+    "reference_key reference_mode seed requested_seed frame_limit audio_frames "
+    "max_audio_s audio_s request_s reference reference_encoding_s prefill_s "
+    "gen_s decode_s logical_key attempt_id reason stage elapsed_ms backend profile "
+    "cache_source text_characters text_words reference_s reference_sample_rate "
+    "reference_channels sampling resources native_version model_key model_bytes "
+    "codec_bytes gpu_layers aux_cpu context_size http_status quality thresholds "
+    "native_error_hint exit_code".split()
+)
+
+
+class NativeSpeechLog(RuntimeSupportLog):
+    """Bounded detail with non-rolling counts; independent of preview ownership."""
+
+    def __init__(self, maximum_entries=200):
+        super().__init__(maximum_entries=maximum_entries)
+        self.started_at = self.clock().isoformat()
+        self.total_events = 0
+        self.outcomes = Counter()
+        self.request_seconds = Counter()
+        self.latest_runtime = None
+        self.active_requests = OrderedDict()
+
+    def record(self, details):
+        with self.lock:
+            self.add(
+                "moss-native",
+                "MOSS native: "
+                + "; ".join(
+                    f"{key}={value if value is not None else 'unavailable'}"
+                    for key, value in details.items()
+                    if key not in {"resources", "sampling"}
+                ),
+            )
+            self.entries[-1]["native"] = details
+            self.total_events += 1
+            operation = details.get("operation", "unknown")
+            outcome = details.get("outcome", "unknown")
+            key = f"{operation}/{outcome}"
+            # ponytail: fixed-size aggregate labels; details retain new labels.
+            if key not in self.outcomes and len(self.outcomes) >= 64:
+                key = "other"
+            self.outcomes[key] += 1
+            seconds = details.get("request_s")
+            if isinstance(seconds, (int, float)) and math.isfinite(seconds):
+                self.request_seconds[key] += max(0, seconds)
+            if operation == "server-start":
+                self.latest_runtime = details
+            attempt_id = details.get("attempt_id")
+            if attempt_id and operation == "request-start":
+                self.active_requests[attempt_id] = {
+                    **details,
+                    "recorded_at": self.entries[-1]["recorded_at"],
+                }
+                if len(self.active_requests) > 64:
+                    self.active_requests.popitem(last=False)
+            elif attempt_id and operation == "fresh-generation":
+                self.active_requests.pop(attempt_id, None)
+
+    def report(self):
+        with self.lock:
+            events = self.snapshot()
+            return {
+                "schema_version": 2,
+                "scope": "current application process; export before exit",
+                "started_at": self.started_at,
+                "total_events": self.total_events,
+                "retained_events": len(events),
+                "dropped_events": max(0, self.total_events - len(events)),
+                "outcomes": dict(self.outcomes),
+                "request_seconds": {
+                    key: round(value, 3) for key, value in self.request_seconds.items()
+                },
+                "latest_runtime": self.latest_runtime,
+                "active_requests": list(self.active_requests.values()),
+                "events": [sanitize_event(entry) for entry in events],
+                "limitations": [
+                    "Provider complete is not preview quality acceptance; use preview-outcome.",
+                    "Audio/text are excluded: acoustic quality cannot be judged from this archive.",
+                    "Native gen combines backbone and depth decoder; split timing is unavailable.",
+                    "Natural EOS exactly at the frame limit cannot be distinguished from forced stop.",
+                    "Missing reference timing is not a confirmed cache hit.",
+                    "Resource peaks are sampled during requests, not guaranteed absolute peaks.",
+                    "Resource sampling covers native C++ requests, not MLX/Pocket/Torch workers.",
+                    "NVIDIA utilization/VRAM are whole-device values, including other apps.",
+                ],
+            }
+
+
+native_speech_log = NativeSpeechLog()
 
 
 def record_native_speech(**details):
-    native_speech_log.add(
-        "moss-native",
-        "MOSS native: "
-        + "; ".join(
-            f"{key}={value if value is not None else 'unavailable'}"
-            for key, value in details.items()
-        ),
-    )
+    details = {**(native_speech_context.get() or {}), **details}
+    try:
+        native_speech_log.record(
+            {key: value for key, value in details.items() if key in _native_fields}
+        )
+    except Exception:
+        # Diagnostics must never turn a successful render into a failure.
+        pass
 
 
 class SupportBundleBuilder:
@@ -404,11 +499,12 @@ class SupportBundleBuilder:
                 "events": [sanitize_event(entry) for entry in self.event_log.snapshot()]
             },
             "native-speech.json": {
-                "events": [
-                    sanitize_event(entry) for entry in native_speech_log.snapshot()
-                ],
+                **native_speech_log.report(),
                 "timing_note": (
                     "Seconds; gen includes backbone and auxiliary depth decoder. "
+                    "request_s covers the native request path through PCM, including "
+                    "any server restart; it excludes preview validation and playback. "
+                    "Preview elapsed_ms includes reference checks, startup and validation. "
                     "Unavailable is not zero. Cached WAV playback is not generation."
                     " Request/reference keys correlate inputs only within one backend "
                     "instance; they are salted and contain no text or paths. "
@@ -417,6 +513,7 @@ class SupportBundleBuilder:
                     "Limited means the frame cap was reached, not an acoustic verdict."
                 ),
             },
+            "build.json": collect_build_identity(),
             "generation-timelines.json": {
                 "version": 1,
                 "timelines": (
@@ -483,6 +580,12 @@ def sanitize_event(entry):
         for key in audio_route_fields
         if key in entry
     )
+    if isinstance(entry.get("native"), dict):
+        sanitized["native"] = {
+            key: value
+            for key, value in entry["native"].items()
+            if key in _native_fields
+        }
     return sanitized
 
 
@@ -558,6 +661,78 @@ def collect_ocr_metrics(directory):
         ),
         "preprocessing_profiles": dict(sorted(profiles.items())),
     }
+
+
+def collect_build_identity():
+    """No model imports, filenames, branch names or remotes in the report."""
+    status = {"git_commit": None, "tracked_changes": None, "versions": {}}
+    status["code_fingerprints"] = {}
+    # Loaded functions, not files on disk: pulling while the app runs must not
+    # make an old process appear to run the new source. Also works when frozen.
+    for module, attribute in (
+        ("vntts.support", "record_native_speech"),
+        ("vntts.moss_cpp_backend", "MossCppVoiceRouterBackend._generate"),
+        ("vntts.pregeneration_audition", "VoiceAuditionPreviewService.generate"),
+        ("vntts.native_resources", "NativeResourceSampler._run"),
+    ):
+        try:
+            function = sys.modules.get(module)
+            for name in attribute.split("."):
+                function = getattr(function, name)
+            status["code_fingerprints"][f"{module}.{attribute}"] = hashlib.sha256(
+                marshal.dumps(function.__code__)
+            ).hexdigest()
+        except AttributeError:
+            status["code_fingerprints"][f"{module}.{attribute}"] = None
+    for package in (
+        "visual-novel-text-to-speech",
+        "PySide6",
+        "numpy",
+        "soundfile",
+        "psutil",
+        "torch",
+        "vntts-artifacts",
+        "reverse1999-extractor",
+    ):
+        try:
+            status["versions"][package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            status["versions"][package] = None
+    root = Path(__file__).resolve().parent.parent
+    if not getattr(sys, "frozen", False) and (root / ".git").exists():
+        try:
+            commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                capture_output=True,
+                timeout=1,
+                text=True,
+                check=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ).stdout.strip()
+            if re.fullmatch(r"[0-9a-f]{40,64}", commit):
+                status["git_commit"] = commit
+            diff = subprocess.run(
+                [
+                    "git",
+                    "diff",
+                    "--quiet",
+                    "HEAD",
+                    "--",
+                    "vntts",
+                    "pyproject.toml",
+                    "uv.lock",
+                ],
+                cwd=root,
+                capture_output=True,
+                timeout=1,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if diff.returncode in {0, 1}:
+                status["tracked_changes"] = diff.returncode == 1
+        except OSError, subprocess.SubprocessError:
+            pass
+    return status
 
 
 def collect_dependency_status():

@@ -25,6 +25,7 @@ from types import SimpleNamespace
 import numpy as np
 import soundfile as sf
 
+from vntts.native_resources import NativeResourceSampler
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_backend import (
     MossTTSVoiceRouterBackend,
@@ -32,9 +33,16 @@ from vntts.speech_backend import (
     moss_tts_generation_profiles,
 )
 from vntts.speech_backend_runtime import _source_identity
-from vntts.support import record_native_speech
+from vntts.support import native_speech_context, record_native_speech
 
 NATIVE_GENERATION_CONTRACT = "nonzero-seed-v1"
+
+
+def _diagnostic_file_size(path):
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
 
 
 def _native_stage_timings(path, offset, headers, maximum_seconds):
@@ -70,6 +78,18 @@ def _native_stage_timings(path, offset, headers, maximum_seconds):
         r"(?:voice '[^'\r\n]+' encoded: \d+ frames|encoded reference: \d+ frames \([^\r\n]*?\)) in ([\d.]+)s"
     )
     return {
+        "native_error_hint": next(
+            (
+                hint
+                for hint, pattern in (
+                    ("allocation-error", r"out.of.memory|bad_alloc|failed to allocate"),
+                    ("device-lost", r"VK_ERROR_DEVICE_LOST|ErrorDeviceLost"),
+                    ("model-load-error", r"invalid GGUF|failed to load model"),
+                )
+                if re.search(pattern, output, re.IGNORECASE)
+            ),
+            None,
+        ),
         "reference": (
             "encoded"
             if reference_s is not None
@@ -194,6 +214,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             + f":layers={self.gpu_layers}:aux_cpu={self.aux_cpu}:ctx={self.context_size}"
             + f":{NATIVE_GENERATION_CONTRACT}"
         )
+        self._native_model_key = hashlib.sha256(identity.encode()).hexdigest()[:24]
         try:
             from vntts.runtime_installation import _run
 
@@ -333,6 +354,20 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if cancelled():
                 raise TTSSynthesisError("MOSS C++ startup cancelled")
             if self.server is None or self.server.poll() is not None:
+                record_native_speech(
+                    operation="server-failed",
+                    outcome="failed",
+                    model_key=self._native_model_key,
+                    exit_code=self.server.returncode
+                    if self.server is not None
+                    else None,
+                    **_native_stage_timings(
+                        self.server_log.name if self.server_log is not None else None,
+                        0,
+                        {},
+                        self.startup_timeout,
+                    ),
+                )
                 raise TTSConfigurationError(
                     "MOSS C++ server exited while loading. Check its DLLs and model "
                     "files; reduce VNTTS_MOSS_GPU_LAYERS if GPU memory is exhausted."
@@ -364,6 +399,18 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 server_pid=self.server.pid,
                 server_load_s=round(monotonic() - started, 3),
                 compute=self._runtime_status,
+                native_version=(
+                    info["version"]
+                    if isinstance(info.get("version"), str)
+                    and re.fullmatch(r"[\w.+-]{1,64}", info["version"])
+                    else None
+                ),
+                model_key=self._native_model_key,
+                model_bytes=_diagnostic_file_size(self.gguf),
+                codec_bytes=_diagnostic_file_size(self.sidecar),
+                gpu_layers=self.gpu_layers,
+                aux_cpu=self.aux_cpu,
+                context_size=self.context_size,
             )
             self.startup_progress(self._runtime_status)
             return
@@ -433,7 +480,14 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         audio_s = None
         request_key = reference_key = reference_mode = None
         actual_seed = frame_limit = frames = None
+        resource_sampler = None
+        reference_s = reference_sample_rate = reference_channels = None
+        http_status = None
+        stage, reason = "startup", None
         outcome = "failed"
+        attempt_id = (native_speech_context.get() or {}).get(
+            "attempt_id"
+        ) or secrets.token_hex(12)
         try:
             if cancelled():
                 return
@@ -445,8 +499,17 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 path = self.server_log.name
                 server_info = self.server_info
                 server_directory = Path(self.server_directory.name)
+            try:
+                resource_sampler = NativeResourceSampler(server_pid)
+                resource_sampler.start()
+            except Exception:
+                resource_sampler = None
             offset = Path(path).stat().st_size
+            stage = "reference"
             with sf.SoundFile(prepared.prompt_audio_codes) as reference:
+                reference_s = round(reference.frames / reference.samplerate, 6)
+                reference_sample_rate = reference.samplerate
+                reference_channels = reference.channels
                 if (
                     reference.channels not in {1, 2}
                     or not 8000 <= reference.samplerate <= 192000
@@ -523,6 +586,17 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     done.set()
 
             worker = Thread(target=fetch, daemon=True)
+            stage = "request"
+            record_native_speech(
+                operation="request-start",
+                attempt_id=attempt_id,
+                server_pid=server_pid,
+                request_key=request_key,
+                reference_key=reference_key,
+                seed=actual_seed,
+                frame_limit=frame_limit,
+                model_key=self._native_model_key,
+            )
             worker.start()
             while not done.wait(0.1):
                 if cancelled():
@@ -534,11 +608,15 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if isinstance(result[0], Exception):
                 raise result[0]
             status, headers, data = result[0]
+            http_status = status
             if status != 200:
+                reason = "http-error"
                 raise TTSSynthesisError(f"MOSS C++ generation failed (HTTP {status})")
+            stage = "decode-response"
             headers = {key.lower(): value for key, value in headers.items()}
             frames = int(headers.get("x-moss-audio-frames", "0"))
             if frames <= 0:
+                reason = "missing-frame-count"
                 raise TTSSynthesisError(
                     "MOSS C++ response is missing its audio-frame count"
                 )
@@ -563,10 +641,13 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if not pcm.size or not np.isfinite(pcm).all():
                 raise TTSSynthesisError("MOSS C++ returned empty or invalid audio")
             outcome = "limited" if frames >= frame_limit else "complete"
+            reason = "frame-limit" if frames >= frame_limit else None
+            stage = "provider-finished"
             audio_s = round(len(pcm) / self.sample_rate, 6)
             request_s = round(monotonic() - started, 3)
             yield SimpleNamespace(audio=pcm, generation_limited=frames >= frame_limit)
         except Exception:
+            reason = reason or f"{stage}-failed"
             if cancelled():
                 return
             raise
@@ -574,10 +655,17 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if cancelled():
                 outcome = "cancelled"
             stages = _native_stage_timings(path, offset, headers, self.request_timeout)
+            resources = {"status": "not-started"}
+            if resource_sampler is not None:
+                try:
+                    resources = resource_sampler.finish()
+                except Exception:
+                    resources = {"status": "probe-failed"}
             # Capture before teardown removes the owned temporary log: numeric
             # measurements and salted keys, never text/reference paths.
             record_native_speech(
                 operation="fresh-generation",
+                attempt_id=attempt_id,
                 cache="fresh-generation",
                 server_pid=server_pid,
                 request_key=request_key,
@@ -587,6 +675,18 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 frame_limit=frame_limit,
                 audio_frames=frames,
                 max_audio_s=prepared.max_audio_seconds,
+                text_characters=len(prepared.text),
+                text_words=len(prepared.text.split()),
+                reference_s=reference_s,
+                reference_sample_rate=reference_sample_rate,
+                reference_channels=reference_channels,
+                profile=prepared.generation_profile,
+                sampling=dict(prepared.generation_options),
+                model_key=self._native_model_key,
+                resources=resources,
+                stage=stage,
+                reason=reason,
+                http_status=http_status,
                 outcome=outcome,
                 audio_s=audio_s,
                 request_s=(

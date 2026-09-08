@@ -17,6 +17,7 @@ import soundfile as sf
 
 from vntts.moss_cpp_backend import (
     MossCppVoiceRouterBackend,
+    _diagnostic_file_size,
     _native_stage_timings,
     moss_cpp_paths,
 )
@@ -25,7 +26,7 @@ from vntts.pregeneration_voices import resolve_pregeneration_settings
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.settings import AppSettings
 from vntts.speech_worker import create_moss_worker_backend
-from vntts.support import RuntimeSupportLog, SupportBundleBuilder
+from vntts.support import NativeSpeechLog, RuntimeSupportLog, SupportBundleBuilder
 from vntts.synthesis import SynthesisCompletion, SynthesisRequest
 from vntts.tts_benchmark import main as benchmark_main
 from vntts.voices import CharacterVoiceRegistry
@@ -88,11 +89,13 @@ class Handler(BaseHTTPRequestHandler):
             wav.setnchannels(2)
             wav.setsampwidth(2)
             wav.setframerate(48000)
-            wav.writeframes(b'\x00\x10\x00\xf0' * 4800)
+            sample = b'\x00\x10\x00\x10' if (root / 'audition').exists() else b'\x00\x10\x00\xf0'
+            wav.writeframes(sample * 4800)
         self.send_response(200)
         self.send_header('Content-Type', 'audio/wav')
         self.send_header('X-MOSS-Audio-Frames', str(
-            body['sampling']['max_audio_frames'] if body['text'] == 'Limit.' else 2))
+            body['sampling']['max_audio_frames'] if body['text'] == 'Limit.' or (
+                (root / 'audition').exists() and body['sampling']['seed'] == 1) else 2))
         if not (root / 'missing-timings').exists():
             self.send_header('X-MOSS-Generate-Seconds', '1.25')
             self.send_header('X-MOSS-Decode-Seconds', '0.125')
@@ -111,6 +114,10 @@ LoopbackServer(('127.0.0.1', port), Handler).serve_forever()
 
 
 class MossCppBackendTest(unittest.TestCase):
+    def test_disappearing_weight_file_is_unknown_for_diagnostics(self):
+        with TemporaryDirectory() as directory:
+            self.assertIsNone(_diagnostic_file_size(Path(directory) / "gone.gguf"))
+
     def setUp(self):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -131,8 +138,16 @@ class MossCppBackendTest(unittest.TestCase):
         }
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, env).start()
-        self.native_log = RuntimeSupportLog(maximum_entries=20)
+        self.native_log = NativeSpeechLog(maximum_entries=20)
         patch("vntts.support.native_speech_log", self.native_log).start()
+        self.resource_probe = patch(
+            "vntts.moss_cpp_backend.NativeResourceSampler"
+        ).start()
+        self.resource_probe.return_value.finish.return_value = {
+            "status": "sampled",
+            "sample_count": 2,
+            "native_rss_peak_bytes": 1024,
+        }
         real_popen = subprocess.Popen
         self.children = []
         self.commands = []
@@ -398,6 +413,14 @@ class MossCppBackendTest(unittest.TestCase):
         repeated = current.render(request).collect()
         self.assertEqual(repeated.diagnostics.cache_source, "persistent-cache")
 
+    def test_resource_probe_failure_cannot_fail_synthesis(self):
+        self.resource_probe.return_value.finish.side_effect = RuntimeError("private")
+        result = self.backend().render(SynthesisRequest("Narrator", "Hello.")).collect()
+        self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+        event = self.native_log.report()["events"][-1]["native"]
+        self.assertEqual(event["resources"], {"status": "probe-failed"})
+        self.assertNotIn("private", str(self.native_log.report()))
+
     def test_native_timings_survive_shutdown_and_export_without_private_inputs(self):
         backend = self.backend()
         first = SynthesisRequest("Narrator", "Private phrase not for export.", seed=7)
@@ -441,6 +464,8 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertIn("operation=server-start", report)
         self.assertIn("request_key=" + request_key, report)
         self.assertIn("seed=7", report)
+        self.assertIn('"native_rss_peak_bytes": 1024', report)
+        self.assertIn('"reference_sample_rate": 48000', report)
         self.assertNotIn(backend._diagnostic_salt.hex(), report)
         self.assertNotIn(first.text, report)
         self.assertNotIn(str(self.reference), report)
