@@ -41,18 +41,6 @@ measurements in agent memory and completed-work history in Git, not here.
       the next failing transcript for leaked event/modal/worker state and fix
       only the demonstrated cause, then repeat the shard and runner tests.
 
-## P1 - Fix platform-specific failures in hosted CI
-
-- [ ] Correct frozen MOSS availability to match supported native provisioning
-      and explicitly configured native runtimes; do not advertise automatic
-      Linux installation when only Windows x64 can be provisioned. Preserve
-      source-build behavior and verify Windows/macOS/Linux cases.
-- [ ] Make three narrator/preparation model-label assertions follow the actual
-      native GGUF model on Windows/Linux while still checking staged settings.
-      Run affected suites, formatting/lint, then inspect hosted CI after push.
-  - Isolate all settings saves during the existing zero-ambiguity activation
-    test, including dashboard navigation, within its temporary fixture directory.
-
 ## P2 - Automate the fresh-install player journey (deferred until UI redesign)
 
 Scope: the GUI entry point is `uv run vntts-app` (`vntts.app.main`), not
