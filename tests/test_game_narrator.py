@@ -42,7 +42,10 @@ from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import VoicePlanStore  # noqa: E402
 from vntts.runtime_config import initialize_voice_registry  # noqa: E402
 from vntts.settings import AppSettings, load_app_settings  # noqa: E402
-from vntts.speech_presentation import narrator_voice_label  # noqa: E402
+from vntts.speech_presentation import (  # noqa: E402
+    engine_model_label,
+    narrator_voice_label,
+)
 
 
 class GameNarratorTest(unittest.TestCase):
@@ -602,7 +605,9 @@ class GameNarratorTest(unittest.TestCase):
         self.assertTrue(dialog.model_choice.isHidden())
         dialog.model_details.click()
         dialog.model_choice.setText("custom-moss-model")
-        self.assertIn("custom-moss-model", dialog.engine.text())
+        self.assertEqual(
+            dialog.engine.text(), engine_model_label("moss-tts", "custom-moss-model")
+        )
         dialog.engine_choice.setCurrentIndex(
             dialog.engine_choice.findData("pocket-tts")
         )
@@ -639,7 +644,10 @@ class GameNarratorTest(unittest.TestCase):
                 binder=binder,
             )
             self.application.processEvents()
-            self.assertIn("saved-custom-model", dialog.engine.text())
+            self.assertEqual(
+                dialog.engine.text(),
+                engine_model_label("moss-tts", "saved-custom-model"),
+            )
             self.assertTrue(dialog.model_choice.isHidden())
             self.run_task(pool)
             dialog.prepare_button.click()

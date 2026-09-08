@@ -51,6 +51,7 @@ from vntts.pregeneration_voices import (  # noqa: E402
     VoicePlanStore,
 )
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.speech_presentation import engine_model_label  # noqa: E402
 from vntts.synthesis import SynthesisCompletion  # noqa: E402
 
 
@@ -259,7 +260,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertFalse(dialog._awaiting_voice_confirmation)
             self.assertTrue(dialog.voice_confirmation.isHidden())
             self.assertIn("Step 1", dialog.step.text())
-            self.assertIn("selected/model", dialog.narrator_status.text())
+            self.assertIn(
+                engine_model_label("moss-tts", "selected/model"),
+                dialog.narrator_status.text(),
+            )
             self.assertEqual(dialog.engine_choice.currentData(), "moss-tts")
             self.assertEqual(dialog.model_choice.text(), "selected/model")
 
@@ -576,7 +580,13 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.reject()
 
     def test_zero_ambiguity_story_reaches_an_active_portable_pack(self):
-        with TemporaryDirectory() as temporary_directory:
+        with (
+            TemporaryDirectory() as temporary_directory,
+            patch(
+                "vntts.settings.get_settings_path",
+                return_value=Path(temporary_directory) / "settings.json",
+            ),
+        ):
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             jobs = PregenerationJobStore(root / "jobs")

@@ -1,5 +1,9 @@
 """Speech backend availability for source and frozen application builds."""
 
+import os
+import platform
+import sys
+
 from vntts.runtime_paths import find_bundled_speech_runtime, get_bundle_root
 
 SPEECH_BACKEND_LABELS = {
@@ -11,6 +15,12 @@ SPEECH_BACKEND_LABELS = {
 _SOURCE_BACKENDS = tuple(SPEECH_BACKEND_LABELS)
 
 
+def _frozen_moss_backend_available():
+    if sys.platform == "win32" and platform.machine().casefold() in {"amd64", "x86_64"}:
+        return True  # Windows x64 provisions the native runtime during setup.
+    return bool(os.environ.get("VNTTS_MOSS_CPP_EXECUTABLE"))
+
+
 def packaged_speech_backend_available(backend, bundle_root=None):
     bundle_root = get_bundle_root() if bundle_root is None else bundle_root
     if bundle_root is None:
@@ -18,9 +28,7 @@ def packaged_speech_backend_available(backend, bundle_root=None):
     if backend == "coqui-xtts":
         return True
     if backend == "moss-tts":
-        from vntts.moss_cpp_backend import moss_cpp_requested
-
-        return moss_cpp_requested()
+        return _frozen_moss_backend_available()
     if backend == "pocket-tts":
         return find_bundled_speech_runtime(backend, bundle_root) is not None
     return False
