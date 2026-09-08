@@ -1,3 +1,4 @@
+import faulthandler
 import json
 import os
 import platform
@@ -98,25 +99,23 @@ def _run_sharded_full_discovery(system):
     with tempfile.TemporaryDirectory(prefix="vntts-unittest-shards-") as directory:
         root = Path(directory)
         shards = (
-            ("qt-app", app_ids, "tests.test_app"),
-            ("qt-assets", asset_ids, "tests.test_asset_ui"),
-            ("remainder", remainder_ids, None),
+            ("qt-app", app_ids),
+            ("qt-assets", asset_ids),
+            ("remainder", remainder_ids),
         )
-        for name, ids, module in shards:
+        for name, ids in shards:
             inventory = root / f"{name}.json"
             inventory.write_text(json.dumps(ids), encoding="utf-8")
             print(f"Running {system} unittest shard {name}: {len(ids)} tests")
-            command = (
-                [sys.executable, "-u", "-m", "unittest", "-v", module]
-                if module
-                else [
-                    sys.executable,
-                    "-m",
-                    "scripts.run_ci_unittests",
-                    "--exact-test-ids-file",
-                    str(inventory),
-                ]
-            )
+            command = [
+                sys.executable,
+                "-u",
+                "-m",
+                "scripts.run_ci_unittests",
+                "--shard",
+                name,
+                str(inventory),
+            ]
             with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as transcript:
                 try:
                     completed = subprocess.run(
@@ -164,6 +163,18 @@ def _run_sharded_full_discovery(system):
 
 def main(arguments=None):
     arguments = sys.argv[1:] if arguments is None else arguments
+    if arguments[:1] == ["--shard"]:
+        if len(arguments) != 3:
+            return 2
+        timeout = SHARD_TIMEOUTS.get(platform.system(), {}).get(arguments[1])
+        if timeout is None:
+            return 2
+        faulthandler.enable()
+        faulthandler.dump_traceback_later(timeout * 0.8)
+        try:
+            return _run_exact_test_file(arguments[2])
+        finally:
+            faulthandler.cancel_dump_traceback_later()
     if arguments[:1] == ["--exact-test-ids-file"]:
         if len(arguments) != 2:
             return 2

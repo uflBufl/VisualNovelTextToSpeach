@@ -9,6 +9,7 @@ from scripts.run_ci_unittests import (
     _flatten_suite,
     _run_exact_test_file,
     _run_sharded_full_discovery,
+    main,
     partition_ui_test_ids,
     workflow_failure_details,
     workflow_failure_sections,
@@ -106,9 +107,31 @@ class CiUnitTestRunnerTest(unittest.TestCase):
         ):
             self.assertEqual(_run_sharded_full_discovery("Darwin"), 124)
         self.assertEqual(
-            run.call_args.args[0][-3:],
-            ["unittest", "-v", "tests.test_app"],
+            run.call_args.args[0][-3:-1],
+            ["--shard", "qt-app"],
         )
+
+    def test_shard_captures_stacks_before_deadline_and_cancels_timer(self):
+        for result in (0, RuntimeError("test loading failed")):
+            with (
+                self.subTest(result=result),
+                patch(
+                    "scripts.run_ci_unittests.platform.system", return_value="Darwin"
+                ),
+                patch("scripts.run_ci_unittests.faulthandler") as faults,
+                patch("scripts.run_ci_unittests._run_exact_test_file") as run,
+            ):
+                if isinstance(result, Exception):
+                    run.side_effect = result
+                    with self.assertRaisesRegex(RuntimeError, "test loading failed"):
+                        main(["--shard", "qt-app", "inventory.json"])
+                else:
+                    run.return_value = result
+                    self.assertEqual(main(["--shard", "qt-app", "inventory.json"]), 0)
+                run.assert_called_once_with("inventory.json")
+                faults.enable.assert_called_once_with()
+                faults.dump_traceback_later.assert_called_once_with(144)
+                faults.cancel_dump_traceback_later.assert_called_once_with()
 
 
 if __name__ == "__main__":
