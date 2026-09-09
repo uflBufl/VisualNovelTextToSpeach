@@ -33,7 +33,6 @@ from vntts.async_ui import LatestTaskRunner
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import (
     GameContentImportCancelled,
-    GameContentImportError,
     Reverse1999GameImporter,
 )
 from vntts.pregeneration_acceptance import OfflineAcceptanceWorker
@@ -1965,8 +1964,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 raise PregenerationVoiceCancelled(
                     "Voice candidate preparation was cancelled"
                 ) from error
-            except GameContentImportError:
-                manifest = None
             self._prepared_voice_manifest = manifest
         options = {
             "cancellation": self.voice_cancel_event,

@@ -7,6 +7,8 @@ from tempfile import TemporaryDirectory
 from threading import Event, Timer
 from unittest.mock import Mock, patch
 
+from vntts_artifacts import write_story_index_document
+
 from tests.test_pregeneration_setup import write_story_index
 from tests.test_pregeneration_voices import write_content
 from vntts.game_content_importer import (
@@ -604,6 +606,55 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             if value == "--voice-candidate-role"
         ]
         self.assertEqual(roles, ["Rhiannon"])
+
+    def test_prepares_selected_role_from_playable_or_other_story_catalog(self):
+        for source_line in ("playable-voice:1:2:0", "other-story:rhiannon:1"):
+            with (
+                self.subTest(source_line=source_line),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                story = write_content(root / "content")
+                metadata, *records = [
+                    json.loads(line) for line in story.read_text().splitlines()
+                ]
+                original = next(
+                    row for row in records if row.get("line_id") == "line:original"
+                )
+                write_story_index_document(
+                    story, metadata, [row for row in records if row is not original]
+                )
+                content = inspect_story_index(story, provider_id="reverse1999")
+                job = PregenerationJobStore(root / "jobs").create_or_resume(
+                    content, ("story",)
+                )
+                importer = Reverse1999GameImporter(output_root=root / "imports")
+                with patch.object(
+                    importer, "prepare_voice_roles", return_value=root / "manifest.json"
+                ) as prepare:
+                    self.assertIsNone(importer.prepare_voice_candidates(job))
+                    prepare.assert_not_called()
+                    catalog = (
+                        importer.output_root / "reverse1999" / "narrator-index.jsonl"
+                    )
+                    catalog.parent.mkdir(parents=True)
+                    original["line_id"] = source_line
+                    original["chapter"] = "outside-selected-story"
+                    if source_line.startswith("playable-voice:"):
+                        original["source_bank"] = "hero1_battle.bnk"
+                        write_story_index_document(catalog, metadata, records)
+                        self.assertIsNone(importer.prepare_voice_candidates(job))
+                        prepare.assert_not_called()
+                        original["source_bank"] = "hero1_mainvoc.bnk"
+                    write_story_index_document(catalog, metadata, records)
+                    self.assertEqual(
+                        importer.prepare_voice_candidates(job), root / "manifest.json"
+                    )
+                    prepare.assert_called_once_with(("Rhiannon",), None, progress=None)
+
+                    catalog.write_text("broken catalog", encoding="utf-8")
+                    with self.assertRaises(GameContentImportError):
+                        importer.prepare_voice_candidates(job)
 
 
 if __name__ == "__main__":

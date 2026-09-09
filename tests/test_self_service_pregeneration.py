@@ -31,6 +31,7 @@ from vntts.authoring.missing_voice_policy import (  # noqa: E402
     NARRATOR_ROLES,
     MissingVoicePolicy,
 )
+from vntts.game_content_importer import GameContentImportError  # noqa: E402
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
 from vntts.pregeneration_acceptance import OfflineAcceptanceWorker  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivator  # noqa: E402
@@ -640,6 +641,37 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn("Unable to show", dialog.selection_status.text())
             self.assertFalse(pool.tasks)
             dialog.reject()
+
+    def test_failed_candidate_import_does_not_silently_assign_narrator(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_content(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            importer = Mock()
+            importer.prepare_voice_candidates.side_effect = GameContentImportError(
+                "Voice catalog is broken"
+            )
+            importer.availability.return_value = Mock(
+                available=True, message="Available"
+            )
+            plans = Mock()
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                importer=importer,
+                voice_plan_store=plans,
+            )
+            self.addCleanup(dialog.reject)
+            job = jobs.create_or_resume(content, ("story",))
+            with patch(
+                "vntts.pregeneration_ui.find_default_voice_manifest", return_value=None
+            ):
+                with self.assertRaisesRegex(
+                    GameContentImportError, "Voice catalog is broken"
+                ):
+                    dialog._create_voice_plan(job)
+            plans.create.assert_not_called()
 
     def test_prepared_candidates_are_reused_only_for_the_same_selection(self):
         with TemporaryDirectory() as temporary_directory:

@@ -266,7 +266,9 @@ class Reverse1999GameImporter:
         """Prepare only candidate references needed by the selected stories."""
         if job.provider_id != self.provider_id:
             return None
-        roles = _candidate_roles(job)
+        roles = _candidate_roles(
+            job, self.output_root / "reverse1999" / "narrator-index.jsonl"
+        )
         if not roles:
             return None
         return self.prepare_voice_roles(roles, cancel_event, progress=progress)
@@ -492,7 +494,9 @@ class Reverse1999GameImporter:
         return stdout, stderr
 
 
-def _candidate_roles(job):
+def _candidate_roles(job, reference_index=None):
+    from r1999extractor.story_voice_candidates import is_playable_main_voice_reference
+
     story_index = Path(job.story_index).expanduser().resolve()
     try:
         if sha256_file(story_index) != job.story_index_sha256:
@@ -500,6 +504,11 @@ def _candidate_roles(job):
                 "Selected dialogue changed before character voices were prepared"
             )
         document = load_story_index_document(story_index)
+        references = (
+            load_story_index_document(reference_index)
+            if reference_index is not None and Path(reference_index).exists()
+            else document
+        )
     except GameContentImportError:
         raise
     except (OSError, StoryIndexError, ValueError) as error:
@@ -507,7 +516,19 @@ def _candidate_roles(job):
             f"Unable to inspect selected character voices: {error}"
         ) from error
     selected = set(job.selected_line_ids)
-    available = set()
+    available = {
+        normalize_character_name(
+            synthesis_character_for_line(record.speaker, record.voice_character)
+        )
+        for record in references.records
+        if record.source_audio_status == "available"
+        and (
+            not record.line_id.startswith("playable-voice:")
+            or is_playable_main_voice_reference(
+                record.line_id, record.producer_fields.get("source_bank")
+            )
+        )
+    }
     requested = {}
     for record in document.records:
         character = synthesis_character_for_line(
@@ -515,10 +536,9 @@ def _candidate_roles(job):
             record.voice_character,
         )
         normalized = normalize_character_name(character)
-        if record.source_audio_status == "available":
-            available.add(normalized)
-        elif (
+        if (
             record.line_id in selected
+            and record.source_audio_status != "available"
             and record.speakable
             and not is_narrator(character)
         ):
