@@ -484,6 +484,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         path, offset, headers, worker = None, 0, {}, None
         server_pid = None
         request_s = None
+        reference_prepare_s = http_round_trip_s = response_pcm_decode_s = None
         audio_s = None
         request_key = reference_key = reference_mode = None
         actual_seed = frame_limit = frames = None
@@ -513,6 +514,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 resource_sampler = None
             offset = Path(path).stat().st_size
             stage = "reference"
+            reference_started = monotonic()
             with sf.SoundFile(prepared.prompt_audio_codes) as reference:
                 reference_s = round(reference.frames / reference.samplerate, 6)
                 reference_sample_rate = reference.samplerate
@@ -581,6 +583,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 body["reference_wav_b64"] = base64.b64encode(wav.getvalue()).decode(
                     "ascii"
                 )
+            reference_prepare_s = round(monotonic() - reference_started, 6)
             done = Event()
             result = []
 
@@ -604,6 +607,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 frame_limit=frame_limit,
                 model_key=self._native_model_key,
             )
+            http_started = monotonic()
             worker.start()
             while not done.wait(0.1):
                 if cancelled():
@@ -615,11 +619,13 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if isinstance(result[0], Exception):
                 raise result[0]
             status, headers, data = result[0]
+            http_round_trip_s = round(monotonic() - http_started, 6)
             http_status = status
             if status != 200:
                 reason = "http-error"
                 raise TTSSynthesisError(f"MOSS C++ generation failed (HTTP {status})")
             stage = "decode-response"
+            response_started = monotonic()
             headers = {key.lower(): value for key, value in headers.items()}
             frames = int(headers.get("x-moss-audio-frames", "0"))
             if frames <= 0:
@@ -647,6 +653,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 )
             if not pcm.size or not np.isfinite(pcm).all():
                 raise TTSSynthesisError("MOSS C++ returned empty or invalid audio")
+            response_pcm_decode_s = round(monotonic() - response_started, 6)
             outcome = "limited" if frames >= frame_limit else "complete"
             reason = "frame-limit" if frames >= frame_limit else None
             stage = "provider-finished"
@@ -696,6 +703,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 http_status=http_status,
                 outcome=outcome,
                 audio_s=audio_s,
+                reference_prepare_s=reference_prepare_s,
+                http_round_trip_s=http_round_trip_s,
+                response_pcm_decode_s=response_pcm_decode_s,
                 request_s=(
                     round(monotonic() - started, 3) if request_s is None else request_s
                 ),

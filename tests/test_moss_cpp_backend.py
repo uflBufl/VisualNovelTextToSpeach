@@ -537,6 +537,15 @@ class MossCppBackendTest(unittest.TestCase):
             "decode_s=0.125",
         ):
             self.assertIn(expected, message)
+        event = self.native_log.report()["events"][-1]["native"]
+        for field in (
+            "reference_prepare_s",
+            "http_round_trip_s",
+            "response_pcm_decode_s",
+        ):
+            self.assertIsInstance(event[field], float)
+            self.assertGreaterEqual(event[field], 0)
+            self.assertLessEqual(event[field], event["request_s"] + 0.001)
         backend.render(
             SynthesisRequest("Narrator", "Another private phrase.")
         ).collect()
@@ -546,6 +555,9 @@ class MossCppBackendTest(unittest.TestCase):
         backend.render(first).collect()
         self.assertIn("operation=cached-wav", self.native_log.snapshot()[-1]["message"])
         self.assertIn("gen_s=unavailable", self.native_log.snapshot()[-1]["message"])
+        self.assertNotIn(
+            "http_round_trip_s", self.native_log.report()["events"][-1]["native"]
+        )
         backend.audio_cache.clear()
         backend.render(first).collect()
         self.assertIn(
@@ -568,6 +580,12 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertIn('"native_rss_peak_bytes": 1024', report)
         self.assertIn('"reference_sample_rate": 48000', report)
         self.assertNotIn(backend._diagnostic_salt.hex(), report)
+        for field in (
+            "reference_prepare_s",
+            "http_round_trip_s",
+            "response_pcm_decode_s",
+        ):
+            self.assertIn(f'"{field}":', report)
         self.assertNotIn(first.text, report)
         self.assertNotIn(str(self.reference), report)
         self.assertNotIn(str(directory), report)
@@ -589,6 +607,10 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertIn("outcome=failed", message)
         self.assertIn("gen_s=unavailable", message)
         self.assertIn("audio_frames=unavailable", message)
+        event = self.native_log.report()["events"][-1]["native"]
+        self.assertIsInstance(event["reference_prepare_s"], float)
+        self.assertIsInstance(event["http_round_trip_s"], float)
+        self.assertIsNone(event["response_pcm_decode_s"])
         self.assertIsNone(backend.server_directory)
 
     def test_native_timing_parser_bounds_log_and_rejects_invalid_measurements(self):
@@ -628,6 +650,13 @@ class MossCppBackendTest(unittest.TestCase):
             clock.return_value = 100.0
             stream.collect()
         self.assertIn("request_s=0.0", self.native_log.snapshot()[-1]["message"])
+        event = self.native_log.report()["events"][-1]["native"]
+        for field in (
+            "reference_prepare_s",
+            "http_round_trip_s",
+            "response_pcm_decode_s",
+        ):
+            self.assertEqual(event[field], 0.0)
 
     def test_stopped_server_before_request_is_reported_without_dereferencing_it(self):
         backend = self.backend()
@@ -639,6 +668,13 @@ class MossCppBackendTest(unittest.TestCase):
             with self.assertRaisesRegex(TTSSynthesisError, "stopped before generation"):
                 backend.render(SynthesisRequest("Narrator", "Stopped.")).collect()
         self.assertIn("outcome=failed", self.native_log.snapshot()[-1]["message"])
+        event = self.native_log.report()["events"][-1]["native"]
+        for field in (
+            "reference_prepare_s",
+            "http_round_trip_s",
+            "response_pcm_decode_s",
+        ):
+            self.assertIsNone(event[field])
 
     def test_default_requests_gpu_offload_but_explicit_cpu_is_respected(self):
         for layers in (None, "0"):
@@ -700,6 +736,10 @@ class MossCppBackendTest(unittest.TestCase):
             self.assertIn(
                 "gen_s=unavailable", self.native_log.snapshot()[-1]["message"]
             )
+            event = self.native_log.report()["events"][-1]["native"]
+            self.assertIsInstance(event["reference_prepare_s"], float)
+            self.assertIsNone(event["http_round_trip_s"])
+            self.assertIsNone(event["response_pcm_decode_s"])
             self.assertIsNotNone(self.children[0].poll())
             self.assertEqual(
                 backend.render(SynthesisRequest("Narrator", "Again."))

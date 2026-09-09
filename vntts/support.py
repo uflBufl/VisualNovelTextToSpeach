@@ -498,7 +498,8 @@ _native_fields = frozenset(
     "cache_source text_characters text_words reference_s reference_sample_rate "
     "reference_channels sampling resources native_version model_key model_bytes "
     "codec_bytes gpu_layers aux_cpu context_size http_status quality thresholds "
-    "native_error_hint exit_code".split()
+    "native_error_hint exit_code reference_prepare_s http_round_trip_s "
+    "response_pcm_decode_s".split()
 )
 
 
@@ -573,6 +574,7 @@ class NativeSpeechLog(RuntimeSupportLog):
                     "Native gen combines backbone and depth decoder; split timing is unavailable.",
                     "Natural EOS exactly at the frame limit cannot be distinguished from forced stop.",
                     "Missing reference timing is not a confirmed cache hit.",
+                    "HTTP round trip includes native execution; client PCM conversion is separate from native codec decode.",
                     "Resource peaks are sampled during requests, not guaranteed absolute peaks.",
                     "Resource sampling covers native C++ requests, not MLX/Pocket/Torch workers.",
                     "NVIDIA utilization/VRAM are whole-device values, including other apps.",

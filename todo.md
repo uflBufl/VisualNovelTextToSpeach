@@ -5,19 +5,16 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Separate native request diagnostics into client reference preparation,
-      HTTP round trip, and response PCM conversion. Preserve aggregate request
-      timing, report incomplete phases as unavailable, and include measurements
-      in the existing support export without private inputs. Gate: fake-provider
-      success/failure/cancellation and export tests; review and separate commit.
-      Use real Windows timings before adding a reference-conversion cache;
-      server and registered reference-code reuse already exist.
-- [ ] Verify successful preview replay on Windows once native quality is restored;
+- [ ] Verify successful preview replay on Windows with the qualified native profile;
       reuse the saved WAV without a new generation. Request another support export
       only for an unresolved problem, not to repeat already measured retry/device
       behavior. Acoustic quality remains a separate check from technical gates.
 - [ ] Optimize the measured native bottleneck: later completed requests spend
       about 61% in generation and 38% in CPU codec decoding.
+  - Use support-export `reference_prepare_s`, `http_round_trip_s` and
+    `response_pcm_decode_s` to distinguish client work from native execution.
+    Add a reference-conversion cache only if Windows measurements justify it;
+    server and registered reference-code reuse already exist.
   - For CPU thread tuning, change and qualify the native runtime first: pinned
     openmoss v0.3.0 exposes no thread CLI option. Python/PyTorch thread or CUDA
     settings do not tune this C++/Vulkan runtime. Preserve server-lifetime
