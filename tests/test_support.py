@@ -352,6 +352,10 @@ class RuntimeSupportLogTest(unittest.TestCase):
             redact_text(r"C:\Users\Ada\private\settings.json"),
             r"<home>\private\settings.json",
         )
+        missing = FileNotFoundError(2, "No such file", r"C:\Users\Ada\game\index.json")
+        redacted = redact_text(str(missing))
+        self.assertNotIn("Ada", redacted)
+        self.assertIn(r"<home>\\game\\index.json", redacted)
 
     def test_log_can_persist_redacted_json_lines(self):
         with TemporaryDirectory() as temporary_directory:

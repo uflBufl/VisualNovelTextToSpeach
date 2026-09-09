@@ -823,7 +823,7 @@ def redact_text(value):
     home = str(Path.home())
     if home:
         value = value.replace(home, "<home>")
-    value = re.sub(r"(?i)[a-z]:[\\/]Users[\\/][^\\/]+", "<home>", value)
+    value = re.sub(r"(?i)[a-z]:[\\/]+Users[\\/]+[^\\/]+", "<home>", value)
     value = re.sub(r"/(?:Users|home)/[^/]+", "<home>", value)
     return value
 
