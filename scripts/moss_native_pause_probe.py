@@ -21,9 +21,13 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.authoring.speech_quality import analyze_generated_speech_samples
 from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
 from vntts.pregeneration_audition import _mono_pcm
+from vntts.reference_quality import analyze_reference
 from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import load_app_settings
-from vntts.speech_backend import get_moss_tts_generation_profile
+from vntts.speech_backend import (
+    get_moss_tts_generation_profile,
+    moss_tts_generation_profiles,
+)
 from vntts.support import collect_build_identity, native_speech_log
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -38,6 +42,11 @@ TEXTS = (
     ("sentences", "The storm has passed. We can continue our journey."),
 )
 PROFILES = ("stable", "expressive")
+# Freeze the diagnostic controls independently of production profile changes.
+PROBE_SAMPLING = {
+    profile: {**moss_tts_generation_profiles[profile], "audio_temperature": temperature}
+    for profile, temperature in zip(PROFILES, (0.8, 1.7), strict=True)
+}
 ZIP_MAX_BYTES = 128 * 1024 * 1024
 
 
@@ -189,7 +198,9 @@ def _write_archive(output, archive):
 def _render_attempt(backend, output, index, profile, label, text, responses):
     name = _attempt_name(index, profile, label)
     expected_tokens, expected_seconds = moss_generation_limits(text)
-    profile_name, sampling = get_moss_tts_generation_profile(profile)
+    profile_name, sampling = get_moss_tts_generation_profile(
+        profile, profiles=PROBE_SAMPLING
+    )
     record = {
         "id": name,
         "seed": 1,
@@ -316,6 +327,21 @@ def run(
     backend = None
     exit_code = 0
     try:
+        preflight = analyze_reference(reference)
+        report["reference_preflight"] = preflight
+        if preflight["sha256"] != report["reference_sha256"]:
+            raise ValueError("reference changed during preflight")
+        if preflight["objective_preflight"] != "pass":
+            raise ValueError(
+                "Reference preflight failed "
+                f"({preflight['duration_seconds']:.3f}s): "
+                + ", ".join(preflight["rejection_reasons"])
+                + ". Select a usable spoken reference or pass --reference PATH."
+            )
+        print(
+            f"Reference preflight passed: {preflight['duration_seconds']:.3f}s",
+            flush=True,
+        )
         model_name = options.model if options.model is not None else settings.tts_model
         with _configured_native_paths(options.executable, options.model):
             executable, model, sidecar = path_check(model_name)
@@ -338,6 +364,7 @@ def run(
                 persistent_audio_cache_directory=output / ".cache-disabled",
                 persistent_audio_cache_max_entries=0,
             )
+            backend._generation_profiles = PROBE_SAMPLING
             responses, restore = _capture_native_response(backend)
             report["http_capture_method"] = "_http"
             try:
@@ -365,6 +392,7 @@ def run(
         exit_code = 130
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
+        print(report["error"], flush=True)
         exit_code = 1
     finally:
         if backend is not None:

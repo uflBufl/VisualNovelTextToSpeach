@@ -66,6 +66,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         (root / 'request.json').write_text(json.dumps(body))
+        with (root / 'requests.jsonl').open('a') as requests:
+            requests.write(json.dumps(body) + '\n')
         if 'voice' in body:
             assert 'reference_wav_b64' not in body and 'ref_text' not in body
             voice_id = body['voice']
@@ -209,7 +211,9 @@ class MossCppBackendTest(unittest.TestCase):
 
     def test_pause_probe_uses_real_adapter_and_preserves_native_responses(self):
         from scripts import moss_native_pause_probe as probe
+        from tests.test_pregeneration_audition import clean_wav_bytes
 
+        self.reference.write_bytes(clean_wav_bytes())
         output = self.root / "pause-probe"
         options = probe._parser().parse_args(
             ["--reference", str(self.reference), "--output", str(output)]
@@ -227,6 +231,23 @@ class MossCppBackendTest(unittest.TestCase):
         body = json.loads((self.root / "request.json").read_text())
         self.assertEqual(body["sampling"]["audio_temperature"], 1.7)
         self.assertEqual(body["sampling"]["seed"], 1)
+        requests = [
+            json.loads(line)
+            for line in (self.root / "requests.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual(
+            [body["sampling"]["audio_temperature"] for body in requests],
+            [0.8] * 3 + [1.7] * 3,
+        )
+        for body, attempt in zip(requests, report["attempts"], strict=True):
+            for key, value in attempt["sampling"].items():
+                self.assertEqual(body["sampling"][key], value)
+        self.assertEqual(
+            MossCppVoiceRouterBackend._generation_profiles["stable"][
+                "audio_temperature"
+            ],
+            0.8,
+        )
         with zipfile.ZipFile(output.with_suffix(".zip")) as archive:
             raw = [name for name in archive.namelist() if name.endswith("-raw.wav")]
             self.assertEqual(len(raw), 6)

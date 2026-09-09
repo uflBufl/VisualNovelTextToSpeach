@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from scripts import moss_native_pause_probe as probe
+from tests.test_pregeneration_audition import clean_wav_bytes
 from vntts.synthesis import (
     SynthesisCompletion,
     SynthesisDiagnostics,
@@ -96,7 +97,7 @@ class _LimitedThenInterruptedBackend(_FakeBackend):
 
 def _options(root):
     reference = root / "reference.wav"
-    reference.write_bytes(b"reference")
+    reference.write_bytes(clean_wav_bytes())
     return SimpleNamespace(
         reference=reference, output=root / "probe", model=None, executable=None
     )
@@ -189,7 +190,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             reference = root / "saved.wav"
-            reference.write_bytes(b"saved")
+            reference.write_bytes(clean_wav_bytes())
             options = SimpleNamespace(
                 reference=None,
                 output=root / "probe",
@@ -306,6 +307,35 @@ class MossNativePauseProbeTest(unittest.TestCase):
             self.assertIn("assets missing", report["error"])
             self.assertFalse(_FakeBackend.instances)
             self.assertTrue(options.output.with_suffix(".zip").is_file())
+
+    def test_unusable_reference_is_reported_without_loading_native_runtime(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            options = _options(root)
+            options.reference.write_bytes(
+                clean_wav_bytes(seconds=0.06075, sample_rate=24000)
+            )
+            _FakeBackend.instances.clear()
+
+            def no_native_probe(_model):
+                self.fail("invalid reference must fail before native runtime checks")
+
+            self.assertEqual(
+                probe.run(
+                    options,
+                    backend_factory=_FakeBackend,
+                    path_check=no_native_probe,
+                    settings_loader=lambda: SimpleNamespace(tts_model=None),
+                ),
+                1,
+            )
+            self.assertFalse(_FakeBackend.instances)
+            with zipfile.ZipFile(options.output.with_suffix(".zip")) as archive:
+                report = json.loads(archive.read("report.json"))
+            self.assertEqual(report["attempts"], [])
+            self.assertEqual(report["reference_preflight"]["duration_seconds"], 0.061)
+            self.assertIn("duration-under-1-second", report["error"])
+            self.assertIn("--reference PATH", report["error"])
 
 
 if __name__ == "__main__":

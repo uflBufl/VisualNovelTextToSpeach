@@ -5,15 +5,15 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Run the bounded native pause comparison on the existing Windows runtime:
-      same reference/seed, short versus joined versus two-sentence text, current
-      stable temperature 0.8 versus upstream Local default 1.7. Compare raw
-      left/right/mono silence with the production WAV; retain limits, outcomes,
-      controls and WAVs in one diagnostic archive, without modifying approvals.
-      Local MLX results are not native GGUF qualification. Do not globally raise
-      frame limits or silence thresholds to hide failures.
-  - If native results support 1.7, update native stable sampling and verify cache
-    separation and actual request controls; retain the other backends' contracts.
+- [ ] Trace the saved Centurion reference ending `16080508a317...wav`: the Windows
+      probe used only 60.75 ms of 24 kHz mono audio. Obtain that exact WAV and its
+      voice manifest to distinguish a damaged import from an unintended binding.
+      The native adapter reads this file directly; no prompt trimming was applied.
+- [ ] Repeat the native 0.8 versus 1.7 comparison with a preflight-passing spoken
+      reference. The six-render Windows archive used a 61 ms reference, so it
+      does not qualify new defaults. Preserve seed/text/limits and raw channels;
+      if qualified, update stable sampling and invalidate old native preview and
+      synthesis caches. Do not raise limits or silence thresholds to hide failures.
 - [ ] Verify successful preview replay on Windows once native quality is restored;
       reuse the saved WAV without a new generation. Request another support export
       only for an unresolved problem, not to repeat already measured retry/device
