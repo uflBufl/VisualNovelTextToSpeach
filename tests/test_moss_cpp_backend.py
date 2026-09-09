@@ -184,6 +184,12 @@ class MossCppBackendTest(unittest.TestCase):
         self.addCleanup(backend.shutdown)
         return backend
 
+    @staticmethod
+    def _windows_sharing_violation():
+        error = PermissionError(13, "server.log")
+        error.winerror = 32
+        return error
+
     def test_reference_seed_profile_cache_and_owned_shutdown(self):
         backend = self.backend()
         self.assertIsInstance(backend, MossCppVoiceRouterBackend)
@@ -212,6 +218,81 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertEqual(body["sampling"]["audio_temperature"], 1.7)
         backend.shutdown()
         self.assertIsNotNone(self.children[0].poll())
+
+    def test_shutdown_retries_transient_windows_server_log_lock(self):
+        backend = self.backend()
+        directory = backend.server_directory
+        server = backend.server
+        log = backend.server_log
+        path = Path(directory.name)
+        cleanup = directory.cleanup
+        attempts = 0
+
+        def lock_then_cleanup():
+            nonlocal attempts
+            self.assertIsNotNone(server.poll())
+            self.assertTrue(log.closed)
+            attempts += 1
+            if attempts == 1:
+                raise self._windows_sharing_violation()
+            cleanup()
+
+        with (
+            patch.object(
+                directory,
+                "cleanup",
+                side_effect=lock_then_cleanup,
+            ) as mocked_cleanup,
+            patch("vntts.moss_cpp_backend.sleep") as mocked_sleep,
+        ):
+            backend.shutdown()
+        self.assertEqual(mocked_cleanup.call_count, 2)
+        mocked_sleep.assert_called_once_with(0.05)
+        self.assertFalse(path.exists())
+
+    def test_shutdown_reraises_persistent_windows_server_log_lock(self):
+        backend = self.backend()
+        directory = backend.server_directory
+        server = backend.server
+        log = backend.server_log
+
+        def locked_cleanup():
+            self.assertIsNotNone(server.poll())
+            self.assertTrue(log.closed)
+            raise self._windows_sharing_violation()
+
+        with (
+            patch.object(directory, "cleanup", side_effect=locked_cleanup) as cleanup,
+            patch("vntts.moss_cpp_backend.sleep") as mocked_sleep,
+            self.assertRaises(PermissionError),
+        ):
+            backend.shutdown()
+        self.assertEqual(cleanup.call_count, 3)
+        mocked_sleep.assert_any_call(0.05)
+        mocked_sleep.assert_any_call(0.1)
+        directory.cleanup()
+
+    def test_shutdown_reraises_nonsharing_directory_permission_error(self):
+        backend = self.backend()
+        directory = backend.server_directory
+        server = backend.server
+        log = backend.server_log
+        error = PermissionError(13, "server.log")
+
+        def denied_cleanup():
+            self.assertIsNotNone(server.poll())
+            self.assertTrue(log.closed)
+            raise error
+
+        with (
+            patch.object(directory, "cleanup", side_effect=denied_cleanup) as cleanup,
+            patch("vntts.moss_cpp_backend.sleep") as mocked_sleep,
+            self.assertRaises(PermissionError),
+        ):
+            backend.shutdown()
+        cleanup.assert_called_once_with()
+        mocked_sleep.assert_not_called()
+        directory.cleanup()
 
     def test_pause_probe_uses_real_adapter_and_preserves_native_responses(self):
         from scripts import moss_native_pause_probe as probe

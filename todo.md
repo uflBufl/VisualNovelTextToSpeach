@@ -8,8 +8,6 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Repair CI before distributing the native pool experiment:
   - Diagnose and fix Windows packaged no-model verification for both variants;
     preserve exit-code checking and the bounded timeout.
-  - Trace the Windows `server.log` cleanup lock through process/log ownership;
-    fix the cause and add a focused shutdown regression check.
   - Commit fixes separately, push and verify both native artifacts and Windows
     unit tests; keep real speech performance qualification separate.
 

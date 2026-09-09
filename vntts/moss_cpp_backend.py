@@ -19,7 +19,7 @@ import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Lock, Thread
-from time import monotonic
+from time import monotonic, sleep
 from types import SimpleNamespace
 
 import numpy as np
@@ -740,7 +740,16 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 if log is not None:
                     log.close()
                 if directory is not None:
-                    directory.cleanup()
+                    # Retry only the Windows sharing violation; do not hide
+                    # other cleanup failures.
+                    for attempt in range(3):
+                        try:
+                            directory.cleanup()
+                            break
+                        except PermissionError as error:
+                            if getattr(error, "winerror", None) != 32 or attempt == 2:
+                                raise
+                            sleep(0.05 * (attempt + 1))
 
     def shutdown(self):
         self.stop()
