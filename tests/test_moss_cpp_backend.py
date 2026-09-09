@@ -102,6 +102,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('X-MOSS-Generate-Seconds', '1.25')
             self.send_header('X-MOSS-Decode-Seconds', '0.125')
             print('[generate] prefill done in 0.05s', flush=True)
+        if (root / 'phase-timings').exists():
+            self.send_header('X-MOSS-Backbone-Seconds', '0.5')
+            self.send_header('X-MOSS-Frame-Decoder-Seconds', '0.6')
+            self.send_header('X-MOSS-Input-Embedding-Seconds', '0.02')
         self.end_headers()
         data = audio.getvalue()
         self.wfile.write(data[:50] if body['text'] == 'Truncated.' else data)
@@ -523,6 +527,7 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertNotIn(str(self.root), json.dumps(report))
 
     def test_native_timings_survive_shutdown_and_export_without_private_inputs(self):
+        (self.root / "phase-timings").touch()
         backend = self.backend()
         first = SynthesisRequest("Narrator", "Private phrase not for export.", seed=7)
         backend.render(first).collect()
@@ -535,6 +540,9 @@ class MossCppBackendTest(unittest.TestCase):
             "prefill_s=0.05",
             "gen_s=1.25",
             "decode_s=0.125",
+            "gen_backbone_s=0.5",
+            "gen_frame_decoder_s=0.6",
+            "gen_input_embedding_s=0.02",
         ):
             self.assertIn(expected, message)
         event = self.native_log.report()["events"][-1]["native"]
@@ -546,9 +554,13 @@ class MossCppBackendTest(unittest.TestCase):
             self.assertIsInstance(event[field], float)
             self.assertGreaterEqual(event[field], 0)
             self.assertLessEqual(event[field], event["request_s"] + 0.001)
+        (self.root / "phase-timings").unlink()
         backend.render(
             SynthesisRequest("Narrator", "Another private phrase.")
         ).collect()
+        event = self.native_log.report()["events"][-1]["native"]
+        for field in ("gen_backbone_s", "gen_frame_decoder_s", "gen_input_embedding_s"):
+            self.assertIsNone(event[field])
         self.assertIn(
             "reference=unavailable", self.native_log.snapshot()[-1]["message"]
         )
@@ -580,6 +592,9 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertIn('"native_rss_peak_bytes": 1024', report)
         self.assertIn('"reference_sample_rate": 48000', report)
         self.assertNotIn(backend._diagnostic_salt.hex(), report)
+        self.assertIn('"gen_backbone_s": 0.5', report)
+        self.assertIn('"gen_frame_decoder_s": 0.6', report)
+        self.assertIn('"gen_input_embedding_s": 0.02', report)
         for field in (
             "reference_prepare_s",
             "http_round_trip_s",
@@ -641,6 +656,22 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertEqual(
             _native_stage_timings(log, 0, {}, 600)["reference"], "unavailable"
         )
+
+    def test_optional_native_phases_reject_invalid_values_and_preserve_zero(self):
+        for field, header in (
+            ("gen_backbone_s", "x-moss-backbone-seconds"),
+            ("gen_frame_decoder_s", "x-moss-frame-decoder-seconds"),
+            ("gen_input_embedding_s", "x-moss-input-embedding-seconds"),
+        ):
+            with self.subTest(field=field):
+                self.assertIsNone(_native_stage_timings(None, 0, {}, 600)[field])
+                self.assertEqual(
+                    _native_stage_timings(None, 0, {header: "0"}, 600)[field], 0.0
+                )
+                for invalid in ("nan", "inf", "-1", "bad", "601", "1e308"):
+                    self.assertIsNone(
+                        _native_stage_timings(None, 0, {header: invalid}, 600)[field]
+                    )
 
     def test_native_request_time_excludes_consumer_playback_delay(self):
         backend = self.backend()

@@ -499,7 +499,8 @@ _native_fields = frozenset(
     "reference_channels sampling resources native_version model_key model_bytes "
     "codec_bytes gpu_layers aux_cpu context_size http_status quality thresholds "
     "native_error_hint exit_code reference_prepare_s http_round_trip_s "
-    "response_pcm_decode_s".split()
+    "response_pcm_decode_s gen_backbone_s gen_frame_decoder_s "
+    "gen_input_embedding_s".split()
 )
 
 
@@ -571,7 +572,8 @@ class NativeSpeechLog(RuntimeSupportLog):
                 "limitations": [
                     "Provider complete is not preview quality acceptance; use preview-outcome.",
                     "Audio/text are excluded: acoustic quality cannot be judged from this archive.",
-                    "Native gen combines backbone and depth decoder; split timing is unavailable.",
+                    "Native generation phases require the opt-in timing build; missing values are unavailable, not zero.",
+                    "Generation phases exclude prefill/codec; frame decoder includes depth-transformer, sampling and cache work, not pure kernel time.",
                     "Natural EOS exactly at the frame limit cannot be distinguished from forced stop.",
                     "Missing reference timing is not a confirmed cache hit.",
                     "HTTP round trip includes native execution; client PCM conversion is separate from native codec decode.",

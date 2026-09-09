@@ -19,9 +19,12 @@ measurements in agent memory and completed-work history in Git, not here.
     openmoss v0.3.0 exposes no thread CLI option. Python/PyTorch thread or CUDA
     settings do not tune this C++/Vulkan runtime. Preserve server-lifetime
     reference-code reuse and intentional cancellation/error teardown.
-  - Add bounded native measurement separating backbone execution from the
-    auxiliary depth decoder; the current
-    aggregate `gen` timing cannot establish which one is the bottleneck.
+  - Qualify the opt-in native timing build on Windows with the existing spoken
+    reference, fixed text/seed, unchanged sampling/caps and CPU auxiliary default.
+    Use `gen_backbone_s`, `gen_frame_decoder_s`, `gen_input_embedding_s` and
+    `decode_s` to choose the actual optimization; prefill is still a mixed phase.
+    A successful CI build is not GPU/audio qualification. Keep the managed
+    runtime unchanged until measured output and performance pass.
   - Evaluate codec-only acceleration separately from auxiliary-decoder placement;
     require a supported native build and memory/quality measurements before
     enabling it by default. Native reference-cache hit and EOS stop-reason

@@ -59,8 +59,8 @@ def _native_stage_timings(path, offset, headers, maximum_seconds):
         except OSError:
             pass
 
-    def seconds(pattern, header=None):
-        match = re.search(pattern, output)
+    def seconds(pattern=None, header=None):
+        match = re.search(pattern, output) if pattern else None
         raw = headers.get(header) if header else None
         if raw is None and match:
             raw = match[1]
@@ -105,6 +105,10 @@ def _native_stage_timings(path, offset, headers, maximum_seconds):
         "decode_s": seconds(
             r"codec decode produced [^\r\n]* in ([\d.]+)s", "x-moss-decode-seconds"
         ),
+        # Optional fields from the opt-in timing build, not stock openmoss.
+        "gen_backbone_s": seconds(header="x-moss-backbone-seconds"),
+        "gen_frame_decoder_s": seconds(header="x-moss-frame-decoder-seconds"),
+        "gen_input_embedding_s": seconds(header="x-moss-input-embedding-seconds"),
     }
 
 
