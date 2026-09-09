@@ -12,6 +12,7 @@ from vntts_artifacts.story_index import (
 )
 
 from tests.test_generated_audio import FakeAudioOutput
+from tests.test_pregeneration_audition import clean_wav_bytes
 from tests.test_pregeneration_pack import fixture
 from tests.test_pregeneration_voices import write_manifest
 from vntts.chapter_voice_preload import ChapterVoicePreloader
@@ -43,7 +44,10 @@ class OfflinePackActivatorTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             pack = published_pack(root / "pack")
-            sources = write_manifest(root / "sources")
+            rhiannon = clean_wav_bytes()
+            centurion = clean_wav_bytes(amplitude=0.2)
+            sources = write_manifest(root / "sources", rhiannon=rhiannon)
+            (sources.parent / "references" / "centurion.wav").write_bytes(centurion)
             original = AppSettings(
                 pocket_gated_model_accepted=True,
                 voice_manifest=str(sources),
@@ -72,10 +76,10 @@ class OfflinePackActivatorTest(unittest.TestCase):
             )
             registry = initialize_voice_registry(loaded)
             self.assertEqual(
-                registry.resolve("Hotelier").reference.read_bytes(), b"centurion"
+                registry.resolve("Hotelier").reference.read_bytes(), centurion
             )
             self.assertEqual(
-                registry.resolve("Unrelated story").reference.read_bytes(), b"rhiannon"
+                registry.resolve("Unrelated story").reference.read_bytes(), rhiannon
             )
             self.assertIsNone(registry.resolve("Narrator fallback role"))
             self.assertEqual(registry.resolve("Built-in role").speaker, "anna")

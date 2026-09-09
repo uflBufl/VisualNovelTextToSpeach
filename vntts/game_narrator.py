@@ -16,6 +16,7 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
 )
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
+from vntts.reference_quality import analyze_reference_bytes
 from vntts.voices import (
     CharacterVoiceRegistry,
     find_default_voice_manifest,
@@ -116,6 +117,21 @@ def bind_game_narrator(
     selected = CharacterVoiceRegistry.from_file(manifest).resolve_source(source_id)
     if selected is None or not selected.references:
         raise ValueError("Choose an available game voice")
+    payloads = tuple(
+        read_voice_reference_bytes(selected, p) for p in selected.references
+    )
+    for index, (path, payload) in enumerate(
+        zip(selected.references, payloads, strict=True), 1
+    ):
+        try:
+            report = analyze_reference_bytes(payload, path=path)
+            if report["objective_preflight"] != "pass":
+                raise ValueError(", ".join(report["rejection_reasons"]))
+        except ValueError as error:
+            raise ValueError(
+                f"Cannot save {character}: reference {index} is unusable ({error}). "
+                "Choose another spoken reference."
+            ) from error
     base = settings.voice_manifest or find_default_voice_manifest()
     document = load_voice_manifest(base)[0] if base else {"version": 2, "voices": []}
     registry = (
@@ -142,9 +158,6 @@ def bind_game_narrator(
                 "vntts.player.voice_candidates"
             ]
             evidence_base = additional_manifest
-    payloads = tuple(
-        read_voice_reference_bytes(selected, p) for p in selected.references
-    )
     reference_id = hashlib.sha256(b"".join(payloads)).hexdigest()
     name = f"Game {'narrator' if narrator else 'voice'} {character} {reference_id[:12]}"
     selected_id = f"character:{normalize_character_name(name)}"

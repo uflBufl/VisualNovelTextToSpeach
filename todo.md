@@ -5,14 +5,8 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Trace the saved Centurion reference ending `16080508a317...wav`: the Windows
-      probe used only 60.75 ms of 24 kHz mono audio. Obtain that exact WAV and its
-      voice manifest to distinguish a damaged import from an unintended binding.
-      The native adapter reads this file directly; no prompt trimming was applied.
-  - Reuse objective reference preflight before saving a selected narrator:
-    `bind_game_narrator` currently copies bytes unchanged without quality checks.
-    Verify extractor candidate decoding too; transcript suitability alone does
-    not establish that the decoded WAV contains a usable spoken reference.
+- [ ] Verify extractor candidate decoding too; transcript suitability alone does
+      not establish that the decoded WAV contains a usable spoken reference.
 - [ ] Repeat the native 0.8 versus 1.7 comparison with a preflight-passing spoken
       reference. The six-render Windows archive used a 61 ms reference, so it
       does not qualify new defaults. Preserve seed/text/limits and raw channels;

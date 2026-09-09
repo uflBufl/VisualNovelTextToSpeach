@@ -1,7 +1,7 @@
 import json
 import os
 import unittest
-from dataclasses import replace
+from dataclasses import asdict, replace
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -139,6 +139,13 @@ class GameNarratorTest(unittest.TestCase):
     def run_task(self, pool):
         pool.tasks.pop(0).run()
         self.application.processEvents()
+
+    def narrator_manifest(self, root):
+        manifest = write_manifest(root, rhiannon=clean_wav_bytes())
+        (root / "references" / "centurion.wav").write_bytes(
+            clean_wav_bytes(amplitude=0.2)
+        )
+        return manifest
 
     def test_preview_compute_stays_visible_and_cached_playback_clears_generation(self):
         pool = ManualThreadPool()
@@ -400,7 +407,7 @@ class GameNarratorTest(unittest.TestCase):
     ):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            manifest = write_manifest(root / "voices")
+            manifest = self.narrator_manifest(root / "voices")
             original = bind_game_narrator(
                 AppSettings(
                     voice_manifest=str(manifest), pocket_gated_model_accepted=True
@@ -422,7 +429,7 @@ class GameNarratorTest(unittest.TestCase):
                 voice.character: tuple(path.read_bytes() for path in voice.references)
                 for voice in initialize_voice_registry(original).unique_voices()
             }
-            imported = write_manifest(root / "story-voices")
+            imported = self.narrator_manifest(root / "story-voices")
             imported_document = json.loads(imported.read_text())
             imported_document["voices"][-1]["character"] = "New story role"
             imported.write_text(json.dumps(imported_document))
@@ -459,11 +466,12 @@ class GameNarratorTest(unittest.TestCase):
             registry = initialize_voice_registry(saved)
             self.assertEqual(registry.resolve("Narrator").source_character, "Centurion")
             self.assertEqual(
-                registry.resolve("Narrator").reference.read_bytes(), b"centurion"
+                registry.resolve("Narrator").reference.read_bytes(),
+                clean_wav_bytes(amplitude=0.2),
             )
             self.assertEqual(registry.resolve("Hotelier").source_character, "Rhiannon")
             self.assertEqual(
-                registry.resolve("Hotelier").reference.read_bytes(), b"rhiannon"
+                registry.resolve("Hotelier").reference.read_bytes(), clean_wav_bytes()
             )
             self.assertEqual(
                 registry.resolve("New story role").reference.read_bytes(), b"unrelated"
@@ -527,7 +535,7 @@ class GameNarratorTest(unittest.TestCase):
     def test_story_context_shows_verified_portrait_and_human_voice_identity(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            manifest = write_manifest(root / "voices")
+            manifest = self.narrator_manifest(root / "voices")
             settings = bind_game_narrator(
                 AppSettings(
                     voice_manifest=str(manifest), pocket_gated_model_accepted=True
@@ -788,7 +796,7 @@ class GameNarratorTest(unittest.TestCase):
             pack_root.mkdir()
             pack, *_ = write_synthetic_game_pack(pack_root)
             original = apply_game_pack(AppSettings(), pack)
-            manifest = write_manifest(root / "candidates")
+            manifest = self.narrator_manifest(root / "candidates")
             candidate = bind_game_narrator(
                 original,
                 manifest,
@@ -826,7 +834,7 @@ class GameNarratorTest(unittest.TestCase):
                 ),
                 pack,
             )
-            source = write_manifest(root / "candidates")
+            source = self.narrator_manifest(root / "candidates")
             candidate = bind_game_narrator(
                 original,
                 source,
@@ -863,7 +871,8 @@ class GameNarratorTest(unittest.TestCase):
                     )
                     registry = initialize_voice_registry(loaded)
                     self.assertEqual(
-                        registry.resolve("Ada").reference.read_bytes(), b"centurion"
+                        registry.resolve("Ada").reference.read_bytes(),
+                        clean_wav_bytes(amplitude=0.2),
                     )
                     self.assertEqual(
                         registry.resolve("Ada").source_character, "Centurion"
@@ -871,7 +880,7 @@ class GameNarratorTest(unittest.TestCase):
                     if choose_narrator:
                         self.assertEqual(
                             registry.resolve("Narrator").reference.read_bytes(),
-                            b"rhiannon",
+                            clean_wav_bytes(),
                         )
                         self.assertIsNone(loaded.tts_speaker_wav)
                     self.assertEqual(
@@ -1056,15 +1065,54 @@ class GameNarratorTest(unittest.TestCase):
         )
         shell.controller.start.assert_not_called()
 
+    def test_binding_rejects_unusable_selected_reference_before_mutation(self):
+        for name, payload in (
+            ("short", clean_wav_bytes(seconds=0.06075, sample_rate=24_000)),
+            ("silent", clean_wav_bytes(amplitude=0)),
+            ("malformed", b"not a WAV"),
+        ):
+            with self.subTest(reference=name), TemporaryDirectory() as directory:
+                root = Path(directory)
+                manifest = self.narrator_manifest(root / "source")
+                (manifest.parent / "references" / "centurion.wav").write_bytes(
+                    payload
+                )
+                settings = AppSettings(
+                    voice_manifest=str(manifest),
+                    pocket_gated_model_accepted=True,
+                    voice_assignments={"Aderyn": "character:rhiannon"},
+                )
+                before_settings, before_manifest = asdict(settings), manifest.read_bytes()
+                output_root = root / "saved"
+
+                with self.assertRaisesRegex(
+                    ValueError, r"Cannot save Centurion: reference 1 is unusable"
+                ):
+                    bind_game_narrator(
+                        settings,
+                        manifest,
+                        "character:centurion",
+                        "Centurion",
+                        root=output_root,
+                    )
+
+                self.assertEqual(asdict(settings), before_settings)
+                self.assertEqual(manifest.read_bytes(), before_manifest)
+                self.assertFalse(output_root.exists())
+
     def test_binding_preserves_existing_routes_and_original_manifest(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            manifest = write_manifest(root / "existing")
+            manifest = self.narrator_manifest(root / "existing")
             before = manifest.read_bytes()
             settings = AppSettings(
                 voice_manifest=str(manifest),
                 pocket_gated_model_accepted=True,
                 voice_assignments={"Aderyn": "character:rhiannon"},
+            )
+            self.assertEqual(
+                (manifest.parent / "references" / "unrelated.wav").read_bytes(),
+                b"unrelated",
             )
             candidate = bind_game_narrator(
                 settings,
@@ -1086,7 +1134,7 @@ class GameNarratorTest(unittest.TestCase):
                 initialize_voice_registry(loaded)
                 .resolve("Narrator")
                 .reference.read_bytes(),
-                b"centurion",
+                clean_wav_bytes(amplitude=0.2),
             )
             again = bind_game_narrator(
                 settings,
@@ -1103,7 +1151,7 @@ class GameNarratorTest(unittest.TestCase):
             patch("vntts.game_narrator.find_default_voice_manifest", return_value=None),
         ):
             root = Path(directory)
-            manifest = write_manifest(root / "candidates")
+            manifest = self.narrator_manifest(root / "candidates")
             settings = AppSettings(pocket_gated_model_accepted=True)
             narrator = bind_game_narrator(
                 settings,
@@ -1141,7 +1189,7 @@ class GameNarratorTest(unittest.TestCase):
         ):
             root = Path(directory)
             content = inspect_story_index(write_content(root / "content"))
-            manifest = write_manifest(root / "narrators")
+            manifest = self.narrator_manifest(root / "narrators")
             selected = bind_game_narrator(
                 AppSettings(pocket_gated_model_accepted=True),
                 manifest,
@@ -1413,7 +1461,7 @@ class GameNarratorTest(unittest.TestCase):
             patch("vntts.game_narrator.find_default_voice_manifest", return_value=None),
         ):
             root = Path(directory)
-            manifest = write_manifest(root / "candidates")
+            manifest = self.narrator_manifest(root / "candidates")
             importer = self.narrator_importer(manifest)
             previews = Mock()
             previews.reference_audio.return_value = (
