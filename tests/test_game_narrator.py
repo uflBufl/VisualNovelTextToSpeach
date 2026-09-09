@@ -640,7 +640,9 @@ class GameNarratorTest(unittest.TestCase):
             self.run_task(pool)
             self.run_task(pool)
             saved = dialog.result_settings
-            loaded = load_app_settings(saved.save(root / "settings.json"), environment={})
+            loaded = load_app_settings(
+                saved.save(root / "settings.json"), environment={}
+            )
 
             self.assertEqual(loaded.voice_assignments, original.voice_assignments)
             self.assertEqual(
@@ -658,7 +660,9 @@ class GameNarratorTest(unittest.TestCase):
             )
 
             content_path = write_content(root / "content")
-            records = [json.loads(line) for line in content_path.read_text().splitlines()]
+            records = [
+                json.loads(line) for line in content_path.read_text().splitlines()
+            ]
             next(
                 record
                 for record in records
@@ -672,8 +676,12 @@ class GameNarratorTest(unittest.TestCase):
             job = jobs.create_or_resume(content, ("story",))
             plan = VoicePlanStore(jobs).create(job, loaded)
             aderyn = next(group for group in plan.groups if group.character == "Aderyn")
-            self.assertEqual(aderyn.source_id, loaded.character_voice_defaults["Aderyn"])
-            self.assertEqual(aderyn.reference_sha256s, (sha256_file(expected_reference),))
+            self.assertEqual(
+                aderyn.source_id, loaded.character_voice_defaults["Aderyn"]
+            )
+            self.assertEqual(
+                aderyn.reference_sha256s, (sha256_file(expected_reference),)
+            )
 
     def test_saved_game_voice_is_not_replaced_by_pocket_preset_without_access(self):
         with TemporaryDirectory() as directory:
