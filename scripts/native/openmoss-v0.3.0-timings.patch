@@ -1,0 +1,109 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 98aba5c..e412138 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.18)
+ project(openmoss VERSION 0.3.0 LANGUAGES CXX C)
+ 
+ # Surfaced by --version and GET /info so a bug report names a build, not "latest".
+-add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}")
++# VNTTS modification: distinguish this opt-in timing build from stock v0.3.0.
++add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1")
+ 
+ set(CMAKE_CXX_STANDARD 17)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+diff --git a/include/openmoss/pipeline.h b/include/openmoss/pipeline.h
+index 96674e8..6ee5395 100644
+--- a/include/openmoss/pipeline.h
++++ b/include/openmoss/pipeline.h
+@@ -118,6 +118,12 @@ struct GenerateResult {
+     double             prefill_seconds = 0.0;
+     double             generate_seconds = 0.0;
+     double             decode_seconds   = 0.0;
++    // VNTTS modification: synchronized autoregressive phase wall times only.
++    // Excludes prefill and codec. Frame decoder includes sampling/cache work,
++    // not just Local depth-transformer kernels; totals need not sum to gen.
++    double             backbone_seconds = 0.0;
++    double             frame_decoder_seconds = 0.0;
++    double             input_embedding_seconds = 0.0;
+ };
+ 
+ // Optional callback invoked once the codec produces a chunk of waveform; lets
+diff --git a/src/pipeline.cpp b/src/pipeline.cpp
+index 4b6acea..a30ac04 100644
+--- a/src/pipeline.cpp
++++ b/src/pipeline.cpp
+@@ -773,6 +773,9 @@ GenerateResult generate(Model & model,
+         llama_decode_embeddings(model.backbone_ctx(),
+                                 prefill_embeds.data(),
+                                 prompt_len, hidden, /*pos_start=*/0, /*output_last=*/true);
++        // VNTTS modification: libllama may return before device execution ends.
++        // Keep prefill work out of the first autoregressive phase measurement.
++        llama_synchronize(model.backbone_ctx());
+     }
+     result.prefill_seconds = seconds_t(clock_t_::now() - t0).count();
+     std::fprintf(stderr, "[generate] prefill done in %.2fs\n", result.prefill_seconds);
+@@ -801,19 +804,28 @@ GenerateResult generate(Model & model,
+ 
+         // The decoder owns head invocation — the two families disagree on
+         // whether the audio heads can run before any code is sampled.
++        const auto t_frame = clock_t_::now();
+         last_step = decoder->step(text_logits, hidden_vec, req.sampling);
++        // VNTTS modification: decoder/embedding functions return host data;
++        // their graph computation and readback have already synchronized.
++        result.frame_decoder_seconds += seconds_t(clock_t_::now() - t_frame).count();
+         if (last_step.stop) {
+             std::fprintf(stderr, "[generate] stop at step %d\n", step);
+             break;
+         }
+ 
+         // Embed the (1, 1+n_vq) row and feed it as the next position.
++        const auto t_embed = clock_t_::now();
+         auto next_emb = model.compute_input_embeddings(last_step.ids.data(), 1);
++        result.input_embedding_seconds += seconds_t(clock_t_::now() - t_embed).count();
++        const auto t_backbone = clock_t_::now();
+         llama_decode_embeddings(model.backbone_ctx(),
+                                 next_emb.data(),
+                                 /*n_tokens=*/1, hidden,
+                                 /*pos_start=*/pos,
+                                 /*output_last=*/true);
++        llama_synchronize(model.backbone_ctx());
++        result.backbone_seconds += seconds_t(clock_t_::now() - t_backbone).count();
+         ++pos;
+ 
+         // Poll on generation steps rather than audio frames: the delay family
+diff --git a/src/server/moss_tts_server.cpp b/src/server/moss_tts_server.cpp
+index ec39b4e..56f2281 100644
+--- a/src/server/moss_tts_server.cpp
++++ b/src/server/moss_tts_server.cpp
+@@ -615,6 +615,8 @@ int main(int argc, char ** argv) {
+         else if (k == "--voice-dir")      voice_dir     = next();
+         else if (k == "--webui-dir")      webui_dir_arg = next();
+         else if (k == "--no-webui")       no_webui     = true;
++        // VNTTS modification: verify the diagnostic build without loading weights.
++        else if (k == "--version") { std::printf("openmoss %s\n", OPENMOSS_VERSION); return 0; }
+         else if (k == "--help" || k == "-h") usage(0);
+         else { std::fprintf(stderr, "unknown arg: %s\n", k.c_str()); usage(2); }
+     }
+@@ -1412,6 +1414,10 @@ int main(int argc, char ** argv) {
+         rs.set_header("X-MOSS-Audio-Frames", std::to_string(result.n_audio_frames));
+         rs.set_header("X-MOSS-Generate-Seconds",
+                        std::to_string(result.generate_seconds));
++        // VNTTS modification: optional, synchronized autoregressive phase times.
++        rs.set_header("X-MOSS-Backbone-Seconds", std::to_string(result.backbone_seconds));
++        rs.set_header("X-MOSS-Frame-Decoder-Seconds", std::to_string(result.frame_decoder_seconds));
++        rs.set_header("X-MOSS-Input-Embedding-Seconds", std::to_string(result.input_embedding_seconds));
+         rs.set_header("X-MOSS-Decode-Seconds",
+                        std::to_string(result.decode_seconds));
+         rs.set_header("X-MOSS-Channels", std::to_string(result.n_channels));
+@@ -1579,6 +1585,10 @@ int main(int argc, char ** argv) {
+         rs.set_header("X-MOSS-Audio-Frames", std::to_string(result.n_audio_frames));
+         rs.set_header("X-MOSS-Generate-Seconds",
+                        std::to_string(result.generate_seconds));
++        // VNTTS modification: same contract for the OpenAI-compatible endpoint.
++        rs.set_header("X-MOSS-Backbone-Seconds", std::to_string(result.backbone_seconds));
++        rs.set_header("X-MOSS-Frame-Decoder-Seconds", std::to_string(result.frame_decoder_seconds));
++        rs.set_header("X-MOSS-Input-Embedding-Seconds", std::to_string(result.input_embedding_seconds));
+         rs.set_header("X-MOSS-Decode-Seconds",
+                        std::to_string(result.decode_seconds));
+         rs.set_header("X-MOSS-Channels", std::to_string(result.n_channels));

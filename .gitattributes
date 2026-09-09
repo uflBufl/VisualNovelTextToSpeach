@@ -5,3 +5,5 @@
 *.jsonl text eol=lf
 # Checksum-bound replay fixtures must not be rewritten by checkout settings.
 samples/*.fixture -text -eol
+# Unified patches need space-prefixed empty context lines.
+scripts/native/*.patch text eol=lf whitespace=-blank-at-eol

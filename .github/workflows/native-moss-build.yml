@@ -1,0 +1,93 @@
+name: Native MOSS timing build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - scripts/native/**
+      - .github/workflows/native-moss-build.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows-vulkan:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: pwilkin/openmoss
+          ref: bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1
+          submodules: recursive
+          path: native-source
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: KhronosGroup/SPIRV-Headers
+          ref: 09913f088a1197aba4aefd300a876b2ebbaa3391
+          path: spirv-headers
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      # Match upstream's Windows Vulkan SDK and portable CPU-thread-pool build.
+      - uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.4.309.0
+          install_runtime: true
+          cache: true
+      - name: Apply pinned timing patch and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C native-source rev-parse HEAD)" = bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1
+          test "$(git -C native-source/third_party/llama.cpp rev-parse HEAD)" = 050ee92d04c2e1f639025786dea701c70e7d4204
+          git -C native-source apply --check ../scripts/native/openmoss-v0.3.0-timings.patch
+          git -C native-source apply ../scripts/native/openmoss-v0.3.0-timings.patch
+          cmake -S spirv-headers -B spirv-build -DCMAKE_INSTALL_PREFIX="$PWD/spirv-install"
+          cmake --build spirv-build --target install --config Release
+          cmake -S native-source -B native-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_OPENMP=OFF \
+            -DCMAKE_PREFIX_PATH="$PWD/spirv-install"
+          cmake --build native-build --target moss-tts-server --parallel 2
+      - name: Package and verify without model weights
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path native-dist | Out-Null
+          Copy-Item native-build/moss-tts-server.exe native-dist/
+          Copy-Item native-build/bin/*.dll native-dist/
+          Copy-Item native-source/LICENSE native-dist/LICENSE-openmoss.txt
+          Copy-Item native-source/third_party/llama.cpp/LICENSE native-dist/LICENSE-llama.cpp.txt
+          Copy-Item native-source/third_party/llama.cpp/licenses native-dist/llama-licenses -Recurse
+          Copy-Item native-source/third_party/llama.cpp/vendor/cpp-httplib/LICENSE native-dist/LICENSE-cpp-httplib.txt
+          Copy-Item scripts/native/openmoss-v0.3.0-timings.patch native-dist/
+          Copy-Item scripts/native/README.md native-dist/
+          @{
+            upstream = 'bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1'
+            llama = '050ee92d04c2e1f639025786dea701c70e7d4204'
+            vntts = '${{ github.sha }}'
+            patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-timings.patch -Algorithm SHA256).Hash
+            qualification = 'Build and no-model startup only; Windows GPU/audio qualification still required.'
+          } | ConvertTo-Json | Set-Content native-dist/VNTTS-BUILD.json -Encoding utf8
+          $Version = (& ./native-dist/moss-tts-server.exe --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $Version -ne 'openmoss 0.3.0-vntts-timing1') {
+            throw "Unexpected native build: $Version"
+          }
+          & ./native-dist/moss-tts-server.exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'Native help/startup failed.' }
+          Compress-Archive -Path native-dist/* -DestinationPath moss-native-timing-windows-x64.zip
+          (Get-FileHash moss-native-timing-windows-x64.zip -Algorithm SHA256).Hash |
+            Set-Content moss-native-timing-windows-x64.zip.sha256 -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: moss-native-timing-windows-x64
+          path: |
+            moss-native-timing-windows-x64.zip
+            moss-native-timing-windows-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
