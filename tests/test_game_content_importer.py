@@ -1,4 +1,5 @@
 import json
+import shutil
 import sys
 import unittest
 from pathlib import Path
@@ -48,6 +49,16 @@ class RunningProcess(FinishedProcess):
 
 
 class Reverse1999GameImporterTest(unittest.TestCase):
+    def setUp(self):
+        config = TemporaryDirectory()
+        self.addCleanup(config.cleanup)
+        override = patch(
+            "vntts.game_content_importer.get_config_directory",
+            return_value=Path(config.name),
+        )
+        override.start()
+        self.addCleanup(override.stop)
+
     def test_failed_import_records_saved_source_fallback_and_process_details(self):
         with TemporaryDirectory() as directory:
             output = Path(directory)
@@ -238,6 +249,98 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 (story.parent / "english-bank-index.json").unlink()
                 self.assertIn("Centurion", importer.narrator_characters())
                 self.assertEqual(run.call_count, 2)
+
+            # A fresh importer can recover after the entire disposable tree is removed.
+            saved_story = story.read_text()
+            shutil.rmtree(output)
+            restarted = Reverse1999GameImporter(
+                command=("extractor",), output_root=output
+            )
+
+            def reimport(arguments, cancel):
+                story.parent.mkdir(parents=True)
+                story.write_text(saved_story)
+                finish_import(arguments, cancel)
+
+            with patch.object(restarted, "_run", side_effect=reimport):
+                self.assertIn("Centurion", restarted.narrator_characters())
+
+    def test_explicit_and_automatic_imports_remember_validated_roots(self):
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit), TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                resources = root / "game"
+                (resources / "bundles").mkdir(parents=True)
+                bundle = resources / "bundles" / "story.dat"
+                bundle.touch()
+                configs = resources / "configs"
+                (configs / "language").mkdir(parents=True)
+                (configs / "datacfg_1.dat").touch()
+                (configs / "language/json_language_en.json.dat").touch()
+                audio = resources / "en"
+                audio.mkdir()
+                (audio / "hero.bnk").touch()
+                output = root / "imports"
+                saved = root / "config" / "installation.json"
+                importer = Reverse1999GameImporter(
+                    command=("extractor",), output_root=output, installation_file=saved
+                )
+
+                def finish(arguments, cancel):
+                    story = write_content(output / "reverse1999")
+                    lines = story.read_text().splitlines()
+                    metadata = json.loads(lines[0])
+                    metadata["source_bundle"] = str(bundle)
+                    story.write_text(
+                        "\n".join([json.dumps(metadata), *lines[1:]]) + "\n"
+                    )
+
+                with patch.object(importer, "_run", side_effect=finish):
+                    importer.import_installed(
+                        installation_root=resources if explicit else None
+                    )
+                self.assertTrue(saved.is_file())
+                shutil.rmtree(output)
+                restarted = Reverse1999GameImporter(
+                    output_root=output, installation_file=saved
+                )
+                self.assertEqual(
+                    restarted._previous_installation(), (resources, configs, audio)
+                )
+                # Removed game sources and malformed settings must allow fresh discovery.
+                bundle.unlink()
+                (configs / "datacfg_1.dat").unlink()
+                self.assertIsNone(restarted._previous_installation())
+                for malformed in ("null", "[]", "{}", "not json"):
+                    saved.write_text(malformed)
+                    self.assertIsNone(restarted._previous_installation())
+
+    def test_failed_or_cancelled_selection_preserves_last_successful_installation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            saved = root / "installation.json"
+            saved.write_text('{"previous": "selection"}')
+            importer = Reverse1999GameImporter(
+                command=("extractor",),
+                output_root=root / "imports",
+                installation_file=saved,
+            )
+            for error in (
+                OSError("startup"),
+                GameContentImportError("failed"),
+                GameContentImportCancelled("cancelled"),
+            ):
+                with (
+                    self.subTest(error=error),
+                    patch(
+                        "vntts.game_content_importer.resolve_reverse1999_installation",
+                        return_value=(root, root, root),
+                    ),
+                    patch.object(importer, "_run", side_effect=error),
+                ):
+                    with self.assertRaises(type(error)):
+                        importer.import_installed(installation_root=root)
+                    self.assertEqual(saved.read_text(), '{"previous": "selection"}')
 
     def test_selected_windows_child_keeps_its_bundle_when_persistent_root_also_has_one(
         self,

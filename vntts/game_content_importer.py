@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
+from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 from vntts_artifacts.voice_manifest import normalize_character_name
 
-from vntts.application_directories import get_local_data_directory
+from vntts.application_directories import get_config_directory, get_local_data_directory
 from vntts.game_audio_decoder import ensure_game_decoder
 from vntts.pregeneration_setup import PregenerationSetupError, inspect_story_index
 from vntts.subprocess_utils import last_output_line, terminate_process
@@ -49,11 +50,16 @@ class Reverse1999GameImporter:
         *,
         command=None,
         output_root=None,
+        installation_file=None,
         popen_factory=subprocess.Popen,
     ):
         self._configured_command = tuple(command) if command else None
         self.output_root = Path(
             output_root or get_local_data_directory() / "game-content" / "reverse1999"
+        ).expanduser()
+        self.installation_file = Path(
+            installation_file
+            or get_config_directory() / "reverse1999-installation.json"
         ).expanduser()
         self.popen_factory = popen_factory
         self.allow_decoder_homebrew = False
@@ -161,11 +167,72 @@ class Reverse1999GameImporter:
                 "The game importer finished without producing story content."
             )
         result = inspect_story_index(story_index, provider_id=self.provider_id)
+        if roots is None:
+            roots = self._previous_installation()
+        if roots is not None:
+            self._remember_installation(roots)
         self._record("import-result", outcome="complete", index=story_index)
         return result
 
+    def _remember_installation(self, roots):
+        resources, configs, audio = roots
+        try:
+            atomic_write_json(
+                self.installation_file,
+                {
+                    "resource_root": str(resources),
+                    "config_directory": str(configs),
+                    "audio_directory": str(audio),
+                },
+            )
+            self._record(
+                "installation-save", path=self.installation_file, outcome="complete"
+            )
+        except OSError as error:
+            # Import remains useful even if settings cannot be persisted.
+            self._record(
+                "installation-save",
+                path=self.installation_file,
+                outcome="failed",
+                reason=str(error),
+            )
+
     def _previous_installation(self):
-        """Reuse the imported source before asking platform discovery to find it again."""
+        """Prefer durable selection; an existing index can recover older imports."""
+        try:
+            saved = json.loads(self.installation_file.read_text(encoding="utf-8"))
+            values = [
+                saved[key]
+                for key in ("resource_root", "config_directory", "audio_directory")
+            ]
+            if not all(isinstance(value, str) and value for value in values):
+                raise ValueError("Invalid saved installation paths")
+            roots = tuple(Path(value) for value in values)
+            resources, configs, audio = roots
+            if not (
+                all(path.is_absolute() for path in roots)
+                and (resources / "bundles").is_dir()
+                and (configs / "datacfg_1.dat").is_file()
+                and (configs / "language/json_language_en.json.dat").is_file()
+                and any(audio.glob("*.bnk"))
+            ):
+                raise ValueError("Saved installation files are no longer available")
+            self._record(
+                "installation-load",
+                path=self.installation_file,
+                outcome="complete",
+                resource_root=resources,
+                config_directory=configs,
+                audio_directory=audio,
+            )
+            return roots
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self._record(
+                "installation-load",
+                path=self.installation_file,
+                outcome="rejected",
+                reason=str(error),
+            )
         story_index = self.output_root / "reverse1999" / "story-index.jsonl"
         self._record("saved-source", index=story_index, exists=story_index.is_file())
         try:

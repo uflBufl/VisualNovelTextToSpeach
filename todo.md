@@ -5,9 +5,10 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Inspect game-import.json from the affected Windows run to fix the actual
-      missing-config failure; do not claim the added diagnostics themselves fix
-      discovery.
+- [ ] Publish and pin extractor discovery through native Windows installation
+      records (custom Steam/registered game paths), without drive scans. Verify
+      registry mocks and isolation from host installations on Windows, then run
+      the application import/narrator regression suite against the published pin.
 - [ ] Verify the reported Windows Play Original no-output case with the explicit
       source/check details and device-driven playback status. The real PCM code
       passes fake-device first-play/replay tests, but the exact Windows failure
