@@ -15,6 +15,16 @@ jobs:
   windows-vulkan:
     runs-on: windows-2022
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: timing
+            pool: 'OFF'
+            version: 0.3.0-vntts-timing1
+          - variant: timing-aux-pool
+            pool: 'ON'
+            version: 0.3.0-vntts-timing1-pool1
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,14 +62,18 @@ jobs:
           cmake --build spirv-build --target install --config Release
           cmake -S native-source -B native-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_OPENMP=OFF \
+            -DOPENMOSS_PERSISTENT_AUX_CPU_POOL=${{ matrix.pool }} \
             -DCMAKE_PREFIX_PATH="$PWD/spirv-install"
-          cmake --build native-build --target moss-tts-server --parallel 2
+          cmake --build native-build --target moss-tts-server moss-aux-pool-check --parallel 2
+          export PATH="$PWD/native-build/bin:$PATH"
+          ctest --test-dir native-build -R '^moss-aux-pool-check$' --output-on-failure
       - name: Package and verify without model weights
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path native-dist | Out-Null
           Copy-Item native-build/moss-tts-server.exe native-dist/
+          Copy-Item native-build/moss-aux-pool-check.exe native-dist/
           Copy-Item native-build/bin/*.dll native-dist/
           Copy-Item native-source/LICENSE native-dist/LICENSE-openmoss.txt
           Copy-Item native-source/third_party/llama.cpp/LICENSE native-dist/LICENSE-llama.cpp.txt
@@ -71,23 +85,33 @@ jobs:
             upstream = 'bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1'
             llama = '050ee92d04c2e1f639025786dea701c70e7d4204'
             vntts = '${{ github.sha }}'
+            variant = '${{ matrix.variant }}'
+            persistent_aux_cpu_pool = '${{ matrix.pool }}'
+            auxiliary_threads = 4
+            persistent_pool_idle_poll = 0
             patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-timings.patch -Algorithm SHA256).Hash
             qualification = 'Build and no-model startup only; Windows GPU/audio qualification still required.'
           } | ConvertTo-Json | Set-Content native-dist/VNTTS-BUILD.json -Encoding utf8
           $Version = (& ./native-dist/moss-tts-server.exe --version | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0 -or $Version -ne 'openmoss 0.3.0-vntts-timing1') {
+          if ($LASTEXITCODE -ne 0 -or $Version -ne 'openmoss ${{ matrix.version }}') {
             throw "Unexpected native build: $Version"
           }
           & ./native-dist/moss-tts-server.exe --help
           if ($LASTEXITCODE -ne 0) { throw 'Native help/startup failed.' }
-          Compress-Archive -Path native-dist/* -DestinationPath moss-native-timing-windows-x64.zip
-          (Get-FileHash moss-native-timing-windows-x64.zip -Algorithm SHA256).Hash |
-            Set-Content moss-native-timing-windows-x64.zip.sha256 -Encoding ascii
+          $Check = Start-Process -FilePath ./native-dist/moss-aux-pool-check.exe -PassThru -NoNewWindow -RedirectStandardOutput native-dist/aux-pool-check.json
+          if (-not $Check.WaitForExit(30000)) {
+            Stop-Process -Id $Check.Id -Force
+            throw 'Packaged auxiliary pool check timed out.'
+          }
+          if ($Check.ExitCode -ne 0) { throw 'Packaged auxiliary pool check failed.' }
+          Compress-Archive -Path native-dist/* -DestinationPath moss-native-${{ matrix.variant }}-windows-x64.zip
+          (Get-FileHash moss-native-${{ matrix.variant }}-windows-x64.zip -Algorithm SHA256).Hash |
+            Set-Content moss-native-${{ matrix.variant }}-windows-x64.zip.sha256 -Encoding ascii
       - uses: actions/upload-artifact@v4
         with:
-          name: moss-native-timing-windows-x64
+          name: moss-native-${{ matrix.variant }}-windows-x64
           path: |
-            moss-native-timing-windows-x64.zip
-            moss-native-timing-windows-x64.zip.sha256
+            moss-native-${{ matrix.variant }}-windows-x64.zip
+            moss-native-${{ matrix.variant }}-windows-x64.zip.sha256
           if-no-files-found: error
           retention-days: 30

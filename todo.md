@@ -19,13 +19,17 @@ measurements in agent memory and completed-work history in Git, not here.
     openmoss v0.3.0 exposes no thread CLI option. Python/PyTorch thread or CUDA
     settings do not tune this C++/Vulkan runtime. Preserve server-lifetime
     reference-code reuse and intentional cancellation/error teardown.
-  - Benchmark an Aux-owned persistent CPU thread pool at the unchanged four
+  - Benchmark the opt-in `timing-aux-pool` build against `timing`, retaining four
     threads before increasing thread counts. The pinned non-OpenMP backend
     creates/joins/frees workers for each auxiliary graph. Isolate auxiliary
     reuse from backbone changes; detach/free the pool after requests quiesce.
     Gate: same output-code identity, safe shutdown/cancellation, cold/warm phase
     timings and CPU/RSS on Windows, including CPU-only and CPU-auxiliary modes.
     Do not infer a speedup from source inspection alone.
+  - Fix native backbone lifetime separately from the pool experiment: pinned
+    `Model::~Model()` is defaulted while backbone context/model are raw pointers.
+    Audit failure paths before adding context/model cleanup; verify repeated
+    load/unload and request shutdown without leaks or double frees.
   - Qualify the opt-in native timing build on Windows with the existing spoken
     reference, fixed text/seed, unchanged sampling/caps and CPU auxiliary default.
     Use `gen_backbone_s`, `gen_frame_decoder_s`, `gen_input_embedding_s` and

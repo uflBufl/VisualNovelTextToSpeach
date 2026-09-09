@@ -1,17 +1,33 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 98aba5c..e412138 100644
+index 98aba5c..c07881a 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -2,7 +2,8 @@ cmake_minimum_required(VERSION 3.18)
+@@ -2,7 +2,13 @@ cmake_minimum_required(VERSION 3.18)
  project(openmoss VERSION 0.3.0 LANGUAGES CXX C)
  
  # Surfaced by --version and GET /info so a bug report names a build, not "latest".
 -add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}")
-+# VNTTS modification: distinguish this opt-in timing build from stock v0.3.0.
-+add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1")
++# VNTTS modification: experimental auxiliary pool, never a default change.
++option(OPENMOSS_PERSISTENT_AUX_CPU_POOL "Reuse four auxiliary CPU workers" OFF)
++if(OPENMOSS_PERSISTENT_AUX_CPU_POOL)
++    add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1-pool1")
++else()
++    add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1")
++endif()
  
  set(CMAKE_CXX_STANDARD 17)
  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+@@ -54,6 +60,10 @@ add_library(openmoss_core STATIC
+ )
+ target_include_directories(openmoss_core PUBLIC include)
+ target_link_libraries(openmoss_core PUBLIC llama ggml ggml-base)
++if(OPENMOSS_PERSISTENT_AUX_CPU_POOL)
++    target_compile_definitions(openmoss_core PUBLIC OPENMOSS_PERSISTENT_AUX_CPU_POOL=1)
++    target_link_libraries(openmoss_core PUBLIC ggml-cpu)
++endif()
+ 
+ # Platform-specific compile options
+ if(MSVC)
 diff --git a/include/openmoss/pipeline.h b/include/openmoss/pipeline.h
 index 96674e8..6ee5395 100644
 --- a/include/openmoss/pipeline.h
@@ -29,6 +45,95 @@ index 96674e8..6ee5395 100644
  };
  
  // Optional callback invoked once the codec produces a chunk of waveform; lets
+diff --git a/src/aux_internal.h b/src/aux_internal.h
+index f509f04..fae1bf9 100644
+--- a/src/aux_internal.h
++++ b/src/aux_internal.h
+@@ -14,10 +14,16 @@
+ #include "ggml.h"
+ #include "ggml-alloc.h"
+ #include "ggml-backend.h"
++#include "ggml-cpu.h"
+ 
+ namespace openmoss {
+ 
+ struct Model::Aux {
++    // VNTTS modification: sole ownership of the optional auxiliary CPU pool.
++    Aux() = default;
++    Aux(const Aux &) = delete;
++    Aux & operator=(const Aux &) = delete;
++
+     ggml_backend_t        backend = nullptr;
+     ggml_context        * ctx     = nullptr;
+     ggml_backend_buffer_t buffer  = nullptr;
+@@ -38,10 +44,48 @@ struct Model::Aux {
+ 
+     ggml_gallocr_t galloc = nullptr;
+ 
++    // This experiment is deliberately separate from libllama's backbone pool.
++    // It is only installed on this direct aux CPU backend, before requests can
++    // use it. ggml_backend_free() does not own an attached threadpool.
++    ggml_threadpool_t cpu_pool = nullptr;
++
++    // Returns true only when the opt-in build attached the fixed four-thread
++    // pool. A false return leaves the backend on GGML's disposable-pool path.
++    bool init_cpu_pool() {
++#if defined(OPENMOSS_PERSISTENT_AUX_CPU_POOL) && OPENMOSS_PERSISTENT_AUX_CPU_POOL
++        if (!backend || !ggml_backend_is_cpu(backend)) return false;
++        if (cpu_pool) return true;
++
++        constexpr int n_threads = GGML_DEFAULT_N_THREADS;
++        struct ggml_threadpool_params params = ggml_threadpool_params_default(n_threads);
++        params.poll = 0; // persistent idle workers sleep instead of busy-polling
++        ggml_threadpool_t pool = ggml_threadpool_new(&params);
++        if (!pool) return false;
++
++        ggml_backend_cpu_set_n_threads(backend, n_threads);
++        ggml_backend_cpu_set_threadpool(backend, pool);
++        cpu_pool = pool;
++        return true;
++#else
++        return false;
++#endif
++    }
++
+     ~Aux() {
+         if (galloc)  ggml_gallocr_free(galloc);
+         if (buffer)  ggml_backend_buffer_free(buffer);
+         if (ctx)     ggml_free(ctx);
++#if defined(OPENMOSS_PERSISTENT_AUX_CPU_POOL) && OPENMOSS_PERSISTENT_AUX_CPU_POOL
++        if (cpu_pool) {
++            // The backend merely borrows this pool. Detach it before freeing
++            // the owned workers; destruction happens after requests quiesce.
++            if (backend && ggml_backend_is_cpu(backend)) {
++                ggml_backend_cpu_set_threadpool(backend, nullptr);
++            }
++            ggml_threadpool_free(cpu_pool);
++            cpu_pool = nullptr;
++        }
++#endif
+         if (backend) ggml_backend_free(backend);
+     }
+ };
+diff --git a/src/model.cpp b/src/model.cpp
+index 6368f98..f705280 100644
+--- a/src/model.cpp
++++ b/src/model.cpp
+@@ -571,6 +571,14 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
+     gguf_free(bb_spec.gctx);
+     ggml_free(bb_spec.meta_ctx);
+ 
++    // VNTTS modification: opt-in CPU-only experiment, after raw GGUF contexts
++    // released, so the GGML pool constructor cannot extend their cleanup path.
++    if (self->m_aux->init_cpu_pool()) {
++        std::fprintf(stderr,
++                     "Model::load: persistent aux CPU pool = %d threads (idle poll=0)\n",
++                     GGML_DEFAULT_N_THREADS);
++    }
++
+     // Cache convenient dim shortcuts on Aux.
+     // Hidden size must come from the model, not the ModelDims default (4096, sized
+     // for the Qwen3-8B backbone). token_embd is [hidden, vocab], so its ne[0] is the
 diff --git a/src/pipeline.cpp b/src/pipeline.cpp
 index 4b6acea..a30ac04 100644
 --- a/src/pipeline.cpp
@@ -107,3 +212,130 @@ index ec39b4e..56f2281 100644
          rs.set_header("X-MOSS-Decode-Seconds",
                         std::to_string(result.decode_seconds));
          rs.set_header("X-MOSS-Channels", std::to_string(result.n_channels));
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index badce8c..8a47d0a 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -1,6 +1,13 @@
+ # Smoke tests — meant to validate plumbing, not correctness of generation.
+ # Build with: cmake --build build --target moss-tts-info
+ 
++# VNTTS modification: no weights, audio device or GPU needed.
++add_executable(moss-aux-pool-check moss_aux_pool_check.cpp)
++target_include_directories(moss-aux-pool-check PRIVATE ${CMAKE_SOURCE_DIR}/src)
++target_link_libraries(moss-aux-pool-check PRIVATE openmoss_core ggml-cpu)
++add_test(NAME moss-aux-pool-check COMMAND moss-aux-pool-check)
++set_tests_properties(moss-aux-pool-check PROPERTIES TIMEOUT 30)
++
+ add_executable(moss-tts-info ${CMAKE_CURRENT_SOURCE_DIR}/moss_tts_info.cpp)
+ target_link_libraries(moss-tts-info PRIVATE openmoss_core)
+ 
+diff --git a/tests/moss_aux_pool_check.cpp b/tests/moss_aux_pool_check.cpp
+new file mode 100644
+index 0000000..8ad7174
+--- /dev/null
++++ b/tests/moss_aux_pool_check.cpp
+@@ -0,0 +1,103 @@
++// SPDX-License-Identifier: Apache-2.0
++// VNTTS modification: exercise the real Aux owner without loading model weights.
++#include "aux_internal.h"
++#include "ggml-cpu.h"
++
++#include <chrono>
++#include <cstdio>
++#include <cstring>
++#include <stdexcept>
++#include <vector>
++
++static void require(bool value, const char * message) {
++    if (!value) throw std::runtime_error(message);
++}
++
++struct Graph {
++    openmoss::Model::Aux aux;
++    ggml_cgraph * graph = nullptr;
++    ggml_tensor * output = nullptr;
++
++    explicit Graph(bool initialize_pool) {
++        aux.backend = ggml_backend_cpu_init();
++        require(aux.backend != nullptr, "CPU backend unavailable");
++        ggml_backend_cpu_set_n_threads(aux.backend, 4);
++        if (initialize_pool) aux.init_cpu_pool();
++        ggml_init_params params{};
++        params.mem_size = 16 * ggml_tensor_overhead() + ggml_graph_overhead();
++        params.no_alloc = true;
++        aux.ctx = ggml_init(params);
++        require(aux.ctx != nullptr, "context allocation failed");
++        graph = ggml_new_graph(aux.ctx);
++        auto * a = ggml_new_tensor_2d(aux.ctx, GGML_TYPE_F32, 64, 64);
++        auto * b = ggml_new_tensor_2d(aux.ctx, GGML_TYPE_F32, 64, 32);
++        ggml_set_input(a);
++        ggml_set_input(b);
++        output = ggml_soft_max(aux.ctx, ggml_mul_mat(aux.ctx, a, b));
++        ggml_set_output(output);
++        ggml_build_forward_expand(graph, output);
++        aux.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(aux.backend));
++        require(aux.galloc && ggml_gallocr_alloc_graph(aux.galloc, graph), "graph allocation failed");
++        for (auto * input : {a, b}) {
++            std::vector<float> data(size_t(ggml_nelements(input)));
++            for (size_t i = 0; i < data.size(); ++i) data[i] = float(int(i % 13) - 6) * 0.125f;
++            ggml_backend_tensor_set(input, data.data(), 0, data.size() * sizeof(float));
++        }
++    }
++
++    std::vector<float> run() {
++        require(ggml_backend_graph_compute(aux.backend, graph) == GGML_STATUS_SUCCESS, "graph failed");
++        std::vector<float> data(size_t(ggml_nelements(output)));
++        ggml_backend_tensor_get(output, data.data(), 0, data.size() * sizeof(float));
++        return data;
++    }
++};
++
++int main() {
++    try {
++        double baseline_s = 0, candidate_s = 0;
++        constexpr int cycles = 4, runs = 50;
++        for (int cycle = 0; cycle < cycles; ++cycle) {
++            Graph baseline(false), candidate(true);
++            const auto expected = baseline.run();
++            // Initialization is idempotent; repeated use must retain one owner.
++            const auto pool = candidate.aux.cpu_pool;
++            candidate.aux.init_cpu_pool();
++            require(pool == candidate.aux.cpu_pool, "pool replaced during reinitialization");
++#ifdef OPENMOSS_PERSISTENT_AUX_CPU_POOL
++            static_assert(GGML_DEFAULT_N_THREADS == 4, "experiment requires four workers");
++            require(pool != nullptr, "expected persistent workers");
++#else
++            require(pool == nullptr, "default build unexpectedly attached a pool");
++#endif
++            for (int i = 0; i < runs; ++i) {
++                // Alternate order; these are synthetic timings, not a speech gate.
++                for (bool use_candidate : {bool(i % 2), !bool(i % 2)}) {
++                    const auto start = std::chrono::steady_clock::now();
++                    const auto actual = (use_candidate ? candidate : baseline).run();
++                    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
++                    (use_candidate ? candidate_s : baseline_s) += elapsed;
++                    require(actual.size() == expected.size() &&
++                            std::memcmp(actual.data(), expected.data(), actual.size() * sizeof(float)) == 0,
++                            "CPU graph output changed");
++                }
++            }
++            ggml_backend_cpu_set_abort_callback(candidate.aux.backend, [](void *) { return true; }, nullptr);
++            require(ggml_backend_graph_compute(candidate.aux.backend, candidate.graph) == GGML_STATUS_ABORTED,
++                    "abort callback did not stop graph");
++            ggml_backend_cpu_set_abort_callback(candidate.aux.backend, nullptr, nullptr);
++            require(candidate.run() == expected, "graph failed to recover after abort");
++            // Aux destructors join/free pools after completed or aborted graphs.
++        }
++        std::printf("{\"schema\":\"vntts.native-aux-pool-check\",\"version\":\"%s\","
++                    "\"threads\":4,\"cycles\":%d,\"runs_per_cycle\":%d,"
++                    "\"output_identical\":true,\"abort_recovery\":true,"
++                    "\"baseline_s\":%.6f,\"candidate_s\":%.6f,"
++                    "\"scope\":\"synthetic CPU graphs, not speech performance\"}\n",
++                    OPENMOSS_VERSION, cycles, runs, baseline_s, candidate_s);
++        return 0;
++    } catch (const std::exception & error) {
++        std::fprintf(stderr, "aux pool check failed: %s\n", error.what());
++        return 1;
++    }
++}

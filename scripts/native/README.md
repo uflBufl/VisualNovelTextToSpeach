@@ -2,7 +2,7 @@
 
 This diagnostic patch is based on Apache-2.0 openmoss v0.3.0,
 revision `bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1`, with llama.cpp
-`050ee92d04c2e1f639025786dea701c70e7d4204`. It changes timing only, not
+`050ee92d04c2e1f639025786dea701c70e7d4204`. The default build changes timing only, not
 sampling, device placement, thread counts or audio limits. Modified sections
 are marked in the patch. The built server identifies itself as
 `0.3.0-vntts-timing1` in `/info` and `--version`.
@@ -17,6 +17,27 @@ keeping its DLLs beside the EXE. Use the existing `scripts/run-moss-windows.ps1`
 with `-Server` pointing to that EXE and `-Model` pointing to the existing GGUF.
 Leave `-CodecOnGpu` unset on the 8 GB test GPU. Exit that shell afterwards to
 discard its runtime overrides. Do not overwrite the managed runtime folder.
+
+## Experimental auxiliary CPU pool
+
+The workflow also produces a separate `timing-aux-pool` archive, identifying
+itself as `0.3.0-vntts-timing1-pool1`. Its only additional change is enabling
+`-DOPENMOSS_PERSISTENT_AUX_CPU_POOL=ON` (default `OFF`). The auxiliary CPU
+backend retains its four workers across graphs instead of creating and joining
+them for every graph. Idle workers sleep (`poll=0`); the disposable baseline
+uses GGML's default polling policy. The Aux owner detaches and frees the pool
+at quiescent teardown. Backbone and GPU backends are unchanged.
+
+Both archives include `moss-aux-pool-check.exe` and its JSON result. This
+no-model check compares repeated synthetic CPU graph output bit-for-bit,
+exercises abort recovery and destroys/recreates the real Aux owner. It runs
+in CI for both variants. Its timings are **not a speech performance result**.
+
+Keep baseline and experiment in separate directories. Adoption still requires
+matching speech output codes with identical inputs/seed, safe request
+cancellation and shutdown, and improved cold/warm phase timings without worse
+idle CPU or RSS on Windows (CPU-only and CPU-auxiliary modes). Neither artifact
+is installed automatically, and no user voice approvals are inferred.
 
 ## Measurements
 
