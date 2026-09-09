@@ -80,6 +80,14 @@ jobs:
           Copy-Item native-build/moss-tts-server.exe native-dist/
           Copy-Item native-build/moss-aux-pool-check.exe native-dist/
           Copy-Item native-build/bin/*.dll native-dist/
+          # SDK cache restores files, not the runner's system-wide Vulkan loader.
+          # Ship the x64 runtime dependency beside the EXE, including its notices.
+          $Runtime = Join-Path $env:VULKAN_SDK runtime
+          Copy-Item "$Runtime/x64/vulkan-1.dll" native-dist/
+          $Notices = @(Get-ChildItem $Runtime -File | Where-Object { $_.Name -match 'license|notice|copyright' })
+          if ($Notices.Count -eq 0) { throw "Vulkan runtime notices missing from $Runtime" }
+          New-Item -ItemType Directory -Path native-dist/vulkan-notices | Out-Null
+          $Notices | Copy-Item -Destination native-dist/vulkan-notices/
           Copy-Item native-source/LICENSE native-dist/LICENSE-openmoss.txt
           Copy-Item native-source/third_party/llama.cpp/LICENSE native-dist/LICENSE-llama.cpp.txt
           Copy-Item native-source/third_party/llama.cpp/licenses native-dist/llama-licenses -Recurse
@@ -94,6 +102,7 @@ jobs:
             persistent_aux_cpu_pool = '${{ matrix.pool }}'
             auxiliary_threads = 4
             persistent_pool_idle_poll = 0
+            vulkan_runtime_sha256 = (Get-FileHash native-dist/vulkan-1.dll -Algorithm SHA256).Hash
             patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-timings.patch -Algorithm SHA256).Hash
             qualification = 'Build and no-model startup only; Windows GPU/audio qualification still required.'
           } | ConvertTo-Json | Set-Content native-dist/VNTTS-BUILD.json -Encoding utf8

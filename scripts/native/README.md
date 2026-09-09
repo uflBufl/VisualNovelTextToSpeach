@@ -69,6 +69,10 @@ sidecar to GPU requires a separate measured change; neither is done here.
 
 ## Third-party notices
 
+The Windows archive includes the x64 Vulkan loader from the pinned SDK runtime
+and its original notices in `vulkan-notices`. It does not install drivers or
+modify the system runtime; GPU use still needs a compatible installed driver.
+
 The artifact includes openmoss's Apache-2.0 license, llama.cpp's license and
 dependency notices. Its server also incorporates cpp-httplib 0.18.7
 (Copyright (c) 2025 Yuji Hirose. All rights reserved.) and nlohmann/json 3.12.0
