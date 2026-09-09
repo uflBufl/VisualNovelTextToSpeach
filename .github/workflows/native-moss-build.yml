@@ -98,8 +98,11 @@ jobs:
             qualification = 'Build and no-model startup only; Windows GPU/audio qualification still required.'
           } | ConvertTo-Json | Set-Content native-dist/VNTTS-BUILD.json -Encoding utf8
           $Version = (& ./native-dist/moss-tts-server.exe --version | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0 -or $Version -ne 'openmoss ${{ matrix.version }}') {
-            throw "Unexpected native build: $Version"
+          $VersionExit = $LASTEXITCODE
+          if ($VersionExit -ne 0 -or $Version -ne 'openmoss ${{ matrix.version }}') {
+            $Dependencies = (& dumpbin /DEPENDENTS ./native-dist/moss-tts-server.exe | Out-String).Trim()
+            $Files = (Get-ChildItem native-dist -File).Name -join ', '
+            throw "Unexpected native build: '$Version'; exit=$VersionExit; files=$Files; imports=$Dependencies"
           }
           & ./native-dist/moss-tts-server.exe --help
           if ($LASTEXITCODE -ne 0) { throw 'Native help/startup failed.' }
