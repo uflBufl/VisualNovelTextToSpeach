@@ -1161,9 +1161,7 @@ class GameNarratorTest(unittest.TestCase):
             first = self.narrator_manifest(root / "first")
             selected = self.narrator_manifest(root / "selected")
             selected_reference = selected.parent / "references" / "centurion.wav"
-            selected_reference.write_bytes(
-                clean_wav_bytes(amplitude=0.3, seconds=4)
-            )
+            selected_reference.write_bytes(clean_wav_bytes(amplitude=0.3, seconds=4))
             self.narrator_importer(selected)
             importer = self.narrator_importer(first)
             importer.prepare_voice_roles.side_effect = lambda *_args, **kwargs: (
