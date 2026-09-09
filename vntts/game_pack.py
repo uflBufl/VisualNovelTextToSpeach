@@ -164,12 +164,10 @@ def apply_game_pack(
         document = load_voice_manifest(settings.voice_manifest)[0]
         narrator = document.get("vntts.game_narrator")
         characters = document.get("vntts.game_character_voices")
-        base_sha256 = sha256_file(imported.voice_manifest)
-        if any(
-            isinstance(binding, dict)
-            and binding.get("base_manifest_sha256") == base_sha256
-            for binding in (narrator, characters)
-        ):
+        # Reloading a pack must not undo an explicit player voice selection when
+        # its original base catalog has changed. Explicit pack selection (path)
+        # still replaces the catalog above; selected sources are validated below.
+        if any(isinstance(binding, dict) for binding in (narrator, characters)):
             registry = CharacterVoiceRegistry.from_file(settings.voice_manifest)
             selected = [
                 source

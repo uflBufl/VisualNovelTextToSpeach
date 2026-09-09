@@ -16,6 +16,7 @@ from PySide6.QtGui import QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
+from scripts.moss_native_pause_probe import _saved_narrator_reference  # noqa: E402
 from tests.test_game_pack import write_synthetic_game_pack  # noqa: E402
 from tests.test_pregeneration_audition import FakeBackend, clean_wav_bytes  # noqa: E402
 from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
@@ -804,6 +805,10 @@ class GameNarratorTest(unittest.TestCase):
                 "Centurion",
                 root=root / "saved",
             )
+            saved_manifest = Path(candidate.voice_manifest)
+            document = json.loads(saved_manifest.read_text())
+            document["vntts.game_narrator"]["base_manifest_sha256"] = "0" * 64
+            saved_manifest.write_text(json.dumps(document))
             loaded = load_app_settings(candidate.save(root / "settings.json"))
             self.assertEqual(narrator_voice_label(candidate), "Centurion")
             self.assertEqual(narrator_voice_label(loaded), "Centurion")
@@ -902,9 +907,10 @@ class GameNarratorTest(unittest.TestCase):
                 apply_game_pack(candidate)
             document["vntts.game_character_voices"]["base_manifest_sha256"] = "0" * 64
             custom.write_text(json.dumps(document))
-            self.assertEqual(
-                apply_game_pack(candidate).voice_manifest, original.voice_manifest
-            )
+            with self.assertRaisesRegex(
+                GamePackError, "missing from its saved catalog"
+            ):
+                apply_game_pack(candidate)
 
     def test_main_and_preparation_persist_only_an_accepted_selection(self):
         for decision in ("save", "cancel", "save-failure"):
@@ -1145,6 +1151,64 @@ class GameNarratorTest(unittest.TestCase):
                 root=root / "saved",
             )
             self.assertEqual(again.voice_manifest, candidate.voice_manifest)
+
+    def test_ui_save_persists_selected_reference_over_retained_short_base_voice(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = self.narrator_manifest(root / "base")
+            old_reference = base.parent / "references" / "centurion.wav"
+            old_reference.write_bytes(clean_wav_bytes(seconds=0.06075))
+            first = self.narrator_manifest(root / "first")
+            selected = self.narrator_manifest(root / "selected")
+            selected_reference = selected.parent / "references" / "centurion.wav"
+            selected_reference.write_bytes(
+                clean_wav_bytes(amplitude=0.3, seconds=4)
+            )
+            self.narrator_importer(selected)
+            importer = self.narrator_importer(first)
+            importer.prepare_voice_roles.side_effect = lambda *_args, **kwargs: (
+                selected
+                if kwargs["narrator_line_id"] == "playable-voice:3032:5"
+                else first
+            )
+            pool, player = ManualThreadPool(), Mock()
+            dialog = GameNarratorDialog(
+                AppSettings(speech_backend="moss-tts", voice_manifest=str(base)),
+                importer=importer,
+                preview_service=VoiceAuditionPreviewService(root / "previews"),
+                thread_pool=pool,
+                player=player,
+                binder=partial(bind_game_narrator, root=root / "saved"),
+            )
+            self.application.processEvents()
+            dialog.source.setCurrentIndex(dialog.source.findData("game"))
+            if not pool.tasks:
+                dialog.discover_button.click()
+            self.run_task(pool)
+            dialog.prepare_button.click()
+            self.run_task(pool)
+            dialog.references.setCurrentIndex(4)
+            dialog.original_button.click()
+            while pool.tasks:
+                self.run_task(pool)
+            self.assertEqual(
+                Path(player.setSource.call_args.args[0].toLocalFile()).read_bytes(),
+                selected_reference.read_bytes(),
+            )
+            dialog.save_button.click()
+            self.run_task(pool)
+            self.run_task(pool)
+            loaded = load_app_settings(
+                dialog.result_settings.save(root / "settings.json"), environment={}
+            )
+            reference, registry = _saved_narrator_reference(
+                loaded, initialize_voice_registry
+            )
+            self.assertEqual(reference.read_bytes(), selected_reference.read_bytes())
+            self.assertEqual(
+                registry.resolve("Centurion").reference.read_bytes(),
+                old_reference.read_bytes(),
+            )
 
     def test_fresh_narrator_keeps_story_character_candidates(self):
         with (

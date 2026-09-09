@@ -11,6 +11,7 @@ import numpy as np
 
 from scripts import moss_native_pause_probe as probe
 from tests.test_pregeneration_audition import clean_wav_bytes
+from vntts.settings import AppSettings
 from vntts.synthesis import (
     SynthesisCompletion,
     SynthesisDiagnostics,
@@ -18,6 +19,7 @@ from vntts.synthesis import (
     SynthesisResult,
     SynthesisTiming,
 )
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry, VoiceManifestError
 
 
 def _stereo_wav():
@@ -104,6 +106,19 @@ def _options(root):
 
 
 class MossNativePauseProbeTest(unittest.TestCase):
+    def test_missing_explicit_narrator_never_falls_back_to_base_voice(self):
+        with TemporaryDirectory() as temporary:
+            reference = Path(temporary) / "old.wav"
+            reference.write_bytes(clean_wav_bytes(seconds=0.06075, sample_rate=24000))
+            registry = CharacterVoiceRegistry(
+                (CharacterVoice("Narrator", "old", reference),)
+            )
+            settings = AppSettings(voice_assignments={"Narrator": "character:missing"})
+            with self.assertRaisesRegex(
+                VoiceManifestError, "selected voice is no longer available"
+            ):
+                probe._saved_narrator_reference(settings, lambda _settings: registry)
+
     def test_probe_writes_cacheless_stereo_comparison_and_stops_backend(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

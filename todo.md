@@ -8,7 +8,9 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Verify extractor candidate decoding too; transcript suitability alone does
       not establish that the decoded WAV contains a usable spoken reference.
 - [ ] Repeat the native 0.8 versus 1.7 comparison with a preflight-passing spoken
-      reference. The six-render Windows archive used a 61 ms reference, so it
+      reference. After restarting the updated Windows app and saving the choice,
+      first verify the probe's printed reference path/duration match that choice.
+      The six-render Windows archive used a 61 ms reference, so it
       does not qualify new defaults. Preserve seed/text/limits and raw channels;
       if qualified, update stable sampling and invalidate old native preview and
       synthesis caches. Do not raise limits or silence thresholds to hide failures.

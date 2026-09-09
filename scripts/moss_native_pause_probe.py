@@ -23,7 +23,7 @@ from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
 from vntts.pregeneration_audition import _mono_pcm
 from vntts.reference_quality import analyze_reference
 from vntts.runtime_config import initialize_voice_registry
-from vntts.settings import load_app_settings
+from vntts.settings import get_settings_path, load_app_settings
 from vntts.speech_backend import (
     get_moss_tts_generation_profile,
     moss_tts_generation_profiles,
@@ -34,7 +34,7 @@ from vntts.synthesis import (
     SynthesisRequest,
     moss_generation_limits,
 )
-from vntts.voices import CharacterVoiceRegistry
+from vntts.voices import CharacterVoiceRegistry, find_voice_assignment
 
 TEXTS = (
     ("short", "The storm has passed."),
@@ -160,7 +160,16 @@ def _attempt_name(index, profile, label):
 
 def _saved_narrator_reference(settings, registry_initializer):
     registry = registry_initializer(settings)
-    voice = registry.resolve("Narrator") if registry is not None else None
+    assignment = find_voice_assignment(
+        getattr(settings, "voice_assignments", {}), "Narrator"
+    )
+    voice = None
+    if registry is not None:
+        voice = (
+            registry.resolve_source(assignment)
+            if assignment
+            else registry.resolve("Narrator")
+        )
     references = () if voice is None else tuple(voice.references)
     if len(references) != 1 or not references[0].is_file():
         raise ValueError(
@@ -324,9 +333,20 @@ def run(
         },
         "attempts": [],
     }
+    if options.reference is None:
+        report["saved_selection"] = {
+            "settings_file": str(get_settings_path()),
+            "voice_manifest": getattr(settings, "voice_manifest", None),
+            "narrator_assignment": find_voice_assignment(
+                getattr(settings, "voice_assignments", {}), "Narrator"
+            ),
+        }
     backend = None
     exit_code = 0
     try:
+        print(
+            f"Reference: {reference}\nSHA-256: {report['reference_sha256']}", flush=True
+        )
         preflight = analyze_reference(reference)
         report["reference_preflight"] = preflight
         if preflight["sha256"] != report["reference_sha256"]:
