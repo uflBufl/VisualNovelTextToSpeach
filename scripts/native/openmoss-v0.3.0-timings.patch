@@ -115,11 +115,59 @@ index f509f04..fae1bf9 100644
          if (backend) ggml_backend_free(backend);
      }
  };
+diff --git a/src/codec.cpp b/src/codec.cpp
+index 1856019..29f8281 100644
+--- a/src/codec.cpp
++++ b/src/codec.cpp
+@@ -42,6 +42,7 @@
+ #include "ggml.h"
+ #include "ggml-alloc.h"
+ #include "ggml-backend.h"
++#include "llama.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -1548,7 +1549,26 @@ std::vector<int32_t> CodecGraphs::encode(const float * waveform,
+ // ───────────────────────────────────────────────────────────────────────────
+ 
+ Model::Model()  = default;
+-Model::~Model() = default;
++Model::~Model() {
++    // VNTTS modification: callers quiesce requests before destroying Model.
++    // Release graph owners
++    // while their Aux backend is still valid, then release libllama in its
++    // required context-before-model order.
++    m_dac.reset();
++    m_dit.reset();
++    m_codec.reset();
++    m_tokenizer.reset();
++    if (m_backbone_ctx) {
++        llama_synchronize(m_backbone_ctx);
++        llama_free(m_backbone_ctx);
++        m_backbone_ctx = nullptr;
++    }
++    if (m_backbone_model) {
++        llama_model_free(m_backbone_model);
++        m_backbone_model = nullptr;
++    }
++    m_aux.reset();
++}
+ 
+ CodecGraphs * Model::codec() {
+     if (!m_codec) m_codec = std::make_unique<CodecGraphs>(*this);
 diff --git a/src/model.cpp b/src/model.cpp
-index 6368f98..f705280 100644
+index 6368f98..338c293 100644
 --- a/src/model.cpp
 +++ b/src/model.cpp
-@@ -571,6 +571,14 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
+@@ -459,7 +459,6 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
+     cp.flash_attn_type = opts.flash_attn ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
+     self->m_backbone_ctx = llama_init_from_model(self->m_backbone_model, cp);
+     if (!self->m_backbone_ctx) {
+-        llama_model_free(self->m_backbone_model);
+         throw std::runtime_error("Model::load: failed to init backbone context");
+     }
+ 
+@@ -571,6 +570,14 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
      gguf_free(bb_spec.gctx);
      ggml_free(bb_spec.meta_ctx);
  

@@ -2,8 +2,9 @@
 
 This diagnostic patch is based on Apache-2.0 openmoss v0.3.0,
 revision `bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1`, with llama.cpp
-`050ee92d04c2e1f639025786dea701c70e7d4204`. The default build changes timing only, not
-sampling, device placement, thread counts or audio limits. Modified sections
+`050ee92d04c2e1f639025786dea701c70e7d4204`. Both diagnostic variants add timing and
+backbone ownership cleanup, without changing sampling, device placement, thread
+counts or audio limits. Modified sections
 are marked in the patch. The built server identifies itself as
 `0.3.0-vntts-timing1` in `/info` and `--version`.
 
@@ -38,6 +39,14 @@ matching speech output codes with identical inputs/seed, safe request
 cancellation and shutdown, and improved cold/warm phase timings without worse
 idle CPU or RSS on Windows (CPU-only and CPU-auxiliary modes). Neither artifact
 is installed automatically, and no user voice approvals are inferred.
+
+Both variants free the raw libllama context and model during `Model` destruction,
+after dependent graph owners and before Aux teardown. Context-creation failure
+uses the same owner cleanup instead of a separate manual free. This correction
+is shared by both variants so it does not confound the pool comparison. Compile
+and synthetic pool checks do not establish leak-free real-model load/unload;
+that remains a separate qualification. The packaged `VNTTS-BUILD.json` records
+the exact patch hash, since rebuilds may retain the same diagnostic version.
 
 ## One-command Windows comparison
 
