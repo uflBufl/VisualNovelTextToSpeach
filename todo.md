@@ -5,25 +5,13 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Verify Windows Play Original after the binary-reference reader fix: confirm
-      full Centurion playback and measured duration (decoder headers in the latest
-      report show 12.634 and 12.552 seconds). Re-save from the original if an older
-      saved copy is truncated; do not delete extracted source audio. Byte-preserving
-      synthetic regressions do not replace this affected-machine playback check.
-- [ ] Verify the updated extractor on the affected Windows Centurion references:
-      confirm the saved game installation is recovered after cache reset,
-      reopen game references after automatic reindexing, confirm multi-second
-      original playback, then save the selected voice again. Existing saved voice
-      packs are immutable and must not be silently rebound. If 61-77 ms persists,
-      compare that reference's bank/media ID, source kind/hash and decoded versus
-      normalized duration with the full external WEM. Do not lower duration gates.
-- [ ] Repeat the native 0.8 versus 1.7 comparison with a preflight-passing spoken
-      reference. After restarting the updated Windows app and saving the choice,
-      first verify the probe's printed reference path/duration match that choice.
-      The six-render Windows archive used a 61 ms reference, so it
-      does not qualify new defaults. Preserve seed/text/limits and raw channels;
-      if qualified, update stable sampling and invalidate old native preview and
-      synthesis caches. Do not raise limits or silence thresholds to hide failures.
+- [ ] Separate native request diagnostics into client reference preparation,
+      HTTP round trip, and response PCM conversion. Preserve aggregate request
+      timing, report incomplete phases as unavailable, and include measurements
+      in the existing support export without private inputs. Gate: fake-provider
+      success/failure/cancellation and export tests; review and separate commit.
+      Use real Windows timings before adding a reference-conversion cache;
+      server and registered reference-code reuse already exist.
 - [ ] Verify successful preview replay on Windows once native quality is restored;
       reuse the saved WAV without a new generation. Request another support export
       only for an unresolved problem, not to repeat already measured retry/device

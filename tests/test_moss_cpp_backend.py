@@ -205,7 +205,7 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertEqual(len(self.children), 1)
         backend.render(SynthesisRequest("Narrator", "Hello there.")).collect()
         body = json.loads((self.root / "request.json").read_text())
-        self.assertEqual(body["sampling"]["audio_temperature"], 0.8)
+        self.assertEqual(body["sampling"]["audio_temperature"], 1.7)
         backend.shutdown()
         self.assertIsNotNone(self.children[0].poll())
 
@@ -246,7 +246,12 @@ class MossCppBackendTest(unittest.TestCase):
             MossCppVoiceRouterBackend._generation_profiles["stable"][
                 "audio_temperature"
             ],
-            0.8,
+            1.7,
+        )
+        from vntts.speech_backend import get_moss_tts_generation_profile
+
+        self.assertEqual(
+            get_moss_tts_generation_profile("stable")[1]["audio_temperature"], 0.8
         )
         with zipfile.ZipFile(output.with_suffix(".zip")) as archive:
             raw = [name for name in archive.namelist() if name.endswith("-raw.wav")]
@@ -446,9 +451,11 @@ class MossCppBackendTest(unittest.TestCase):
         body = json.loads((self.root / "request.json").read_text())
         self.assertEqual(body["sampling"]["seed"], 1)
 
-    def test_native_seed_contract_invalidates_persistent_synthesis_cache(self):
+    def test_native_sampling_contract_invalidates_persistent_synthesis_cache(self):
         request = SynthesisRequest("Narrator", "Fixed preview.", seed=0)
-        with patch("vntts.moss_cpp_backend.NATIVE_GENERATION_CONTRACT", "old"):
+        with patch(
+            "vntts.moss_cpp_backend.NATIVE_GENERATION_CONTRACT", "nonzero-seed-v1"
+        ):
             previous = self.backend()
             previous.render(request).collect()
             previous.shutdown()

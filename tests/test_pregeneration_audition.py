@@ -280,7 +280,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             self.assertEqual(backend.requests[0].voice, "Rhiannon")
             self.assertEqual(backend.shutdown_count, 1)
 
-    def test_native_preview_does_not_reuse_the_old_seed_zero_cache(self):
+    def test_native_preview_does_not_reuse_old_sampling_caches(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, group, _manifest = ambiguous_fixture(root)
@@ -294,13 +294,20 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False):
                 old = service.generate(plan, group, source_id)
             with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True):
+                with patch(
+                    "vntts.moss_cpp_backend.NATIVE_GENERATION_CONTRACT",
+                    "nonzero-seed-v1",
+                ):
+                    old_native = service.generate(plan, group, source_id)
                 native = service.generate(plan, group, source_id)
                 repeated = service.generate(plan, group, source_id)
             self.assertNotEqual(old.identity, native.identity)
+            self.assertNotEqual(old_native.identity, native.identity)
+            self.assertTrue(old_native.path.is_file())
             self.assertTrue(old.path.is_file())
             self.assertFalse(native.reused)
             self.assertTrue(repeated.reused)
-            self.assertEqual(len(backend.requests), 2)
+            self.assertEqual(len(backend.requests), 3)
 
     @patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True)
     def test_native_limit_retry_uses_a_fresh_seed_and_persists_it(self, _native):

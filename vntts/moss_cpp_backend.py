@@ -35,7 +35,7 @@ from vntts.speech_backend import (
 from vntts.speech_backend_runtime import _source_identity
 from vntts.support import native_speech_context, record_native_speech
 
-NATIVE_GENERATION_CONTRACT = "nonzero-seed-v1"
+NATIVE_GENERATION_CONTRACT = "nonzero-seed-stable-1.7-v2"
 
 
 def _diagnostic_file_size(path):
@@ -151,8 +151,15 @@ def _integer_setting(name, default, minimum, maximum):
 
 
 class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
-    # MLX sampling measurements do not establish native GGUF quality.
-    _generation_profiles = moss_tts_generation_profiles
+    # Qualified with the Windows native Centurion probe and listening approval.
+    # Keep Delay defaults independent; its shared stable profile remains 0.8.
+    _generation_profiles = {
+        **moss_tts_generation_profiles,
+        "stable": {
+            **moss_tts_generation_profiles["stable"],
+            "audio_temperature": 1.7,
+        },
+    }
 
     # ponytail: buffer each line; enable upstream streaming only when it reports
     # generation failures and completion reliably instead of swallowing errors.
