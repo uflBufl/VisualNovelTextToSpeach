@@ -1074,15 +1074,16 @@ class GameNarratorTest(unittest.TestCase):
             with self.subTest(reference=name), TemporaryDirectory() as directory:
                 root = Path(directory)
                 manifest = self.narrator_manifest(root / "source")
-                (manifest.parent / "references" / "centurion.wav").write_bytes(
-                    payload
-                )
+                (manifest.parent / "references" / "centurion.wav").write_bytes(payload)
                 settings = AppSettings(
                     voice_manifest=str(manifest),
                     pocket_gated_model_accepted=True,
                     voice_assignments={"Aderyn": "character:rhiannon"},
                 )
-                before_settings, before_manifest = asdict(settings), manifest.read_bytes()
+                before_settings, before_manifest = (
+                    asdict(settings),
+                    manifest.read_bytes(),
+                )
                 output_root = root / "saved"
 
                 with self.assertRaisesRegex(
