@@ -856,12 +856,14 @@ class GameNarratorTest(unittest.TestCase):
             (root / "reverse1999" / "english-bank-index.json").touch()
 
             def importing_game(*args):
+                from r1999extractor.reverse1999_index import index_version
+
                 write_content(root / "reverse1999")
                 (root / "audio").mkdir(exist_ok=True)
                 (root / "reverse1999" / "english-bank-index.json").write_text(
                     json.dumps(
                         {
-                            "version": 5,
+                            "version": index_version,
                             "game_audio_directory": str(root / "audio"),
                             "banks": [],
                         }

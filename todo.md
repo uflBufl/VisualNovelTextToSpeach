@@ -10,8 +10,12 @@ measurements in agent memory and completed-work history in Git, not here.
       passes fake-device first-play/replay tests, but the exact Windows failure
       has not been reproduced. Use the failing stage/message to investigate;
       do not treat observability or passing synthetic tests as proof of a fix.
-- [ ] Verify extractor candidate decoding too; transcript suitability alone does
-      not establish that the decoded WAV contains a usable spoken reference.
+- [ ] Verify the updated extractor on the affected Windows Centurion references:
+      reopen game references after automatic reindexing, confirm multi-second
+      original playback, then save the selected voice again. Existing saved voice
+      packs are immutable and must not be silently rebound. If 61-77 ms persists,
+      compare that reference's bank/media ID, source kind/hash and decoded versus
+      normalized duration with the full external WEM. Do not lower duration gates.
 - [ ] Repeat the native 0.8 versus 1.7 comparison with a preflight-passing spoken
       reference. After restarting the updated Windows app and saving the choice,
       first verify the probe's printed reference path/duration match that choice.
