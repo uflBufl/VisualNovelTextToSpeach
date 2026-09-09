@@ -87,6 +87,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertFalse(panel.runtime_timer.isActive())
             panel.shutdown()
             panel.start(plan)
+            panel.a_play.click()
             self.assertTrue(panel.runtime_timer.isActive())
             self.assertIsNot(panel.preview_service, previous)
             self.assertFalse(panel.preview_service._closed)
@@ -116,8 +117,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, group = with_second_candidate(plan, group)
             decisions = VoiceDecisionStore(root / "decisions.json")
             preview_service = Mock()
-            preview_service.generate.side_effect = lambda _plan, _group, source: Mock(
-                path=root / f"{source.removeprefix('character:')}.wav"
+            preview_service.generate.side_effect = (
+                lambda _plan, _group, source, **_options: Mock(
+                    path=root / f"{source.removeprefix('character:')}.wav"
+                )
             )
             player = Mock()
             pool = ManualThreadPool()
@@ -131,17 +134,23 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.completed.connect(completed)
 
             panel.start(plan)
+            panel.a_play.click()
             self.assertFalse(panel.a_use.isEnabled())
             pool.tasks.pop().run()
             self.application.processEvents()
 
             self.assertTrue(panel.a_use.isEnabled())
-            self.assertTrue(panel.b_use.isEnabled())
-            self.assertIn("Recommended", panel.a_title.text())
+            self.assertIn(group.candidates[0].source_character, panel.a_title.text())
+            self.assertEqual(preview_service.generate.call_count, 1)
+            self.assertEqual(len(panel._displayed), 1)
             panel.a_play.click()
-            panel.b_play.click()
-            self.assertEqual(player.play.call_count, 2)
-            panel.b_use.click()
+            panel.neither_button.click()
+            panel.a_play.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            panel.a_play.click()
+            self.assertEqual(player.play.call_count, 4)
+            panel.a_use.click()
             self.assertIn("Saving", panel.status.text())
             pool.tasks.pop().run()
             self.application.processEvents()
@@ -156,6 +165,62 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.shutdown()
             preview_service.close.assert_called_once_with()
             panel.deleteLater()
+
+    def test_single_sample_waits_for_acceptance(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            self.assertEqual(len(group.candidates), 1)
+            decisions = Mock()
+            previews = Mock()
+            previews.generate.return_value = Mock(path=root / "preview.wav")
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                decisions, preview_service=previews, thread_pool=pool, player=Mock()
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan)
+            panel.a_play.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(len(panel._displayed), 1)
+            decisions.remember_many.assert_not_called()
+            self.assertEqual(pool.tasks, [])
+            panel.a_use.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            decisions.remember_many.assert_called_once_with(
+                ((group, group.candidates[0].source_id),)
+            )
+
+    def test_original_reference_can_be_accepted_without_generating_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            decisions = Mock()
+            service = Mock(spec=VoiceAuditionPreviewService)
+            service.reference_audio.side_effect = (
+                VoiceAuditionPreviewService().reference_audio
+            )
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                decisions, preview_service=service, thread_pool=pool, player=Mock()
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan)
+            self.assertFalse(panel.a_use.isEnabled())
+            panel.a_original.click()
+            self.assertTrue(panel.a_use.isEnabled())
+            panel.a_use.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            service.generate.assert_not_called()
+            decisions.remember_many.assert_called_once_with(
+                ((group, group.candidates[0].source_id),)
+            )
 
     def test_original_buttons_play_exact_references_without_synthesis_and_recheck_files(
         self,
@@ -185,23 +250,25 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.deleteLater)
             self.addCleanup(panel.shutdown)
             panel.start(plan)
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-            self.assertIsNone(group.anchor_source_id)
-            self.assertFalse(panel.anchor_button.isVisible())
-            for button, reference in (
-                (panel.a_original, reference_a),
-                (panel.b_original, reference_b),
-            ):
-                self.assertTrue(button.isEnabled())
-                button.click()
+            for index, reference in enumerate((reference_a, reference_b)):
+                if index:
+                    panel.neither_button.click()
+                    panel.a_play.click()
+                    pool.tasks.pop().run()
+                    self.application.processEvents()
+                calls_before = service.generate.call_count
+                self.assertTrue(panel.a_original.isEnabled())
+                panel.a_original.click()
                 self.assertEqual(
                     Path(player.setSource.call_args.args[0].toLocalFile()),
                     reference.resolve(),
                 )
+                self.assertEqual(service.generate.call_count, calls_before)
             self.assertEqual(service.generate.call_count, 2)
             self.assertTrue(panel.a_use.isEnabled())
-            self.assertTrue(panel.b_use.isEnabled())
             panel.a_play.click()
             self.assertEqual(
                 Path(player.setSource.call_args.args[0].toLocalFile()),
@@ -210,7 +277,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
 
             # Narrator selection stores "default", but its original uses its actual source.
             panel.neither_button.click()
-            pool.tasks.pop().run()
+            panel.a_play.click()
             self.application.processEvents()
             panel.a_original.click()
             self.assertEqual(
@@ -225,50 +292,37 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_original.click()
             player.play.assert_not_called()
             self.assertIn("changed", panel.status.text())
-            self.assertEqual(service.generate.call_count, 3)
+            self.assertEqual(service.generate.call_count, 2)
             panel.cancel()
             player.reset_mock()
-            panel._play_original_slot(0)
+            panel._play_original()
             player.play.assert_not_called()
 
-    def test_neither_without_narrator_uses_safe_choice_without_authoring_controls(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
+    def test_rejecting_all_candidates_does_not_save_a_rejected_voice(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
             plan, group, _manifest = ambiguous_fixture(root)
             plan, group = with_second_candidate(plan, group)
-            decisions = VoiceDecisionStore(root / "decisions.json")
-            preview_service = Mock()
-            preview_service.generate.return_value = Mock(path=root / "preview.wav")
+            decisions = Mock()
+            service = Mock()
+            service.generate.return_value = Mock(path=root / "preview.wav")
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
-                decisions,
-                preview_service=preview_service,
-                thread_pool=pool,
-                player=Mock(),
+                decisions, preview_service=service, thread_pool=pool, player=Mock()
             )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
             panel.start(plan)
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-
-            panel.neither_button.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-
-            self.assertEqual(
-                decisions.choice_for(group.group_id, group.decision_context_sha256),
-                group.candidates[0].source_id,
-            )
-            visible_text = " ".join(
-                (
-                    panel.character.text(),
-                    panel.sample.text(),
-                    panel.a_reason.text(),
-                    panel.status.text(),
-                )
-            ).casefold()
-            for authoring_word in ("manifest", "checksum", "backend", "model", "seed"):
-                self.assertNotIn(authoring_word, visible_text)
-            panel.deleteLater()
+            for _ in group.candidates:
+                panel.neither_button.click()
+                while pool.tasks:
+                    pool.tasks.pop(0).run()
+                    self.application.processEvents()
+            decisions.remember_many.assert_not_called()
+            self.assertTrue(panel.isVisible())
 
     def test_second_phrase_is_generated_only_when_requested(self):
         with TemporaryDirectory() as temporary_directory:
@@ -286,150 +340,81 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
 
             panel.start(plan)
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertTrue(panel.another_sample_button.isEnabled())
             self.assertTrue(
                 all(
-                    "text" not in call.kwargs
+                    call.kwargs.get("text", group.sample_text) == group.sample_text
                     for call in preview_service.generate.call_args_list
                 )
             )
 
             panel.another_sample_button.click()
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
 
             self.assertIn(group.alternate_sample_text, panel.sample.text())
             self.assertTrue(panel.a_use.isEnabled())
-            alternate_calls = preview_service.generate.call_args_list[-2:]
+            alternate_calls = preview_service.generate.call_args_list[-1:]
             self.assertEqual(
                 [call.kwargs["text"] for call in alternate_calls],
-                [group.alternate_sample_text, group.alternate_sample_text],
+                [group.alternate_sample_text],
             )
             panel.shutdown()
             panel.deleteLater()
 
-    def test_next_comparison_is_prefetched_and_used_without_a_second_render(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
+    def test_only_requested_samples_generate_and_cached_candidate_can_be_accepted(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
             plan, group, _manifest = ambiguous_fixture(root)
             plan, group = with_second_candidate(plan, group)
             plan, second = with_second_group(plan, group)
-            decisions = VoiceDecisionStore(root / "decisions.json")
-            preview_service = Mock()
-            preview_service.backend.runtime_status = "GPU: RTX 2070 SUPER <8 GB>"
-            preview_service.generate.side_effect = lambda _plan, value, source: Mock(
-                path=root / f"{value.group_id}-{source.removeprefix('character:')}.wav"
-            )
+            decisions = Mock()
+            previews = Mock()
+            previews.generate.return_value = Mock(path=root / "preview.wav")
+            previews.backend.runtime_status = "GPU: RTX 2070 SUPER <8 GB>"
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
-                decisions,
-                preview_service=preview_service,
-                thread_pool=pool,
-                player=Mock(),
+                decisions, preview_service=previews, thread_pool=pool, player=Mock()
             )
-
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
             panel.start(plan)
-            self.assertTrue(panel.runtime_timer.isActive())
-            self.assertTrue(panel.runtime.isVisibleTo(panel))
+            previews.generate.assert_not_called()
+            self.assertEqual(pool.tasks, [])
+            panel.a_original.click()
+            previews.generate.assert_not_called()
+            panel.a_play.click()
             self.assertEqual(panel.runtime.textFormat(), Qt.TextFormat.PlainText)
             self.assertIn("GPU: RTX 2070 SUPER", panel.runtime.text())
-            pool.tasks.pop(0).run()
+            pool.tasks.pop().run()
             self.application.processEvents()
-
-            self.assertTrue(panel.a_use.isEnabled())
-            self.assertEqual(len(pool.tasks), 1)
-            panel.play_a()
-            self.assertIn("background", panel.runtime.text())
-            self.assertIn("GPU: RTX 2070 SUPER", panel.runtime.text())
-            self.assertNotIn("No preview generation", panel.runtime.text())
-            preview_service.backend.runtime_status = None
-            panel.runtime_timer.timeout.emit()
-            self.assertIn("not running", panel.runtime.text())
-            self.assertNotIn("GPU", panel.runtime.text())
-            pool.tasks.pop(0).run()
-            self.application.processEvents()
-            self.assertEqual(preview_service.generate.call_count, 4)
-            self.assertIn("No preview generation", panel.runtime.text())
-
-            panel.a_use.click()
-
-            self.assertEqual(panel.current_group(), second)
-            self.assertTrue(panel.a_use.isEnabled())
             self.assertEqual(pool.tasks, [])
-            self.assertEqual(preview_service.generate.call_count, 4)
+            panel.neither_button.click()
+            self.assertFalse(panel.a_use.isEnabled())
+            panel.neither_button.click()
+            panel.a_play.click()
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(previews.generate.call_count, 1)
+            panel.a_use.click()
+            self.assertEqual(panel.current_group(), second)
+            self.assertEqual(pool.tasks, [])
+            self.assertFalse(panel.a_use.isEnabled())
+            decisions.remember_many.assert_not_called()
 
-            panel.b_use.click()
-            pool.tasks.pop(0).run()
-            self.application.processEvents()
-            self.assertEqual(
-                decisions.choice_for(second.group_id, second.decision_context_sha256),
-                second.candidates[1].source_id,
-            )
-            self.assertFalse(panel.runtime_timer.isActive())
-            panel.shutdown()
-            self.assertFalse(panel.runtime_timer.isActive())
-            panel.deleteLater()
-
-    def test_alternate_phrase_with_failed_candidates_resets_pair_position(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
+    def test_failed_alternate_phrase_keeps_selected_voice_unaccepted(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
             plan, group, _manifest = ambiguous_fixture(root)
-            candidates = tuple(
-                replace(group.candidates[0], source_id=f"character:candidate-{index}")
-                for index in range(4)
-            )
-            group = replace(group, candidates=candidates)
-            plan = replace(plan, groups=(group,))
+            plan, group = with_second_candidate(plan, group)
             previews = Mock()
 
             def generate(_plan, _group, source_id, **options):
-                if "text" in options and source_id in {
-                    candidate.source_id for candidate in candidates[2:]
-                }:
+                if options.get("text") == group.alternate_sample_text:
                     raise RuntimeError("alternate preview failed")
-                return Mock(path=root / "preview.wav")
-
-            previews.generate.side_effect = generate
-            pool = ManualThreadPool()
-            panel = VoiceAuditionPanel(
-                Mock(), preview_service=previews, thread_pool=pool, player=Mock()
-            )
-            panel.start(plan)
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            panel.neither_button.click()
-            self.assertEqual(panel._displayed[0][2], candidates[2].source_id)
-            panel.another_sample_button.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-
-            self.assertEqual(
-                tuple(value[2] for value in panel._displayed),
-                tuple(candidate.source_id for candidate in candidates[:2]),
-            )
-            self.assertTrue(panel.a_use.isEnabled())
-            self.assertTrue(panel.b_use.isEnabled())
-            panel.shutdown()
-            panel.deleteLater()
-
-    def test_use_narrator_without_preview_saves_instead_of_retrying_generation(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            plan, group, _manifest = ambiguous_fixture(root)
-            candidates = tuple(
-                replace(group.candidates[0], source_id=f"character:candidate-{index}")
-                for index in range(3)
-            )
-            narrator = replace(group.candidates[0], source_id="preset:alba")
-            group = replace(group, candidates=candidates, narrator_candidate=narrator)
-            plan = replace(plan, groups=(group,))
-            previews = Mock()
-
-            def generate(_plan, _group, source_id, **_options):
-                if source_id == narrator.source_id:
-                    raise RuntimeError("narrator preview failed")
                 return Mock(path=root / "preview.wav")
 
             previews.generate.side_effect = generate
@@ -438,60 +423,65 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel = VoiceAuditionPanel(
                 decisions, preview_service=previews, thread_pool=pool, player=Mock()
             )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
             panel.start(plan)
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
             panel.neither_button.click()
+            panel.a_play.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            panel.another_sample_button.click()
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertEqual(
-                panel.neither_button.text(), "Use narrator without preview"
+                previews.generate.call_args.args[2], group.candidates[1].source_id
             )
-            calls_before = previews.generate.call_count
+            self.assertFalse(panel.a_use.isEnabled())
+            self.assertIn("failed", panel.status.text())
+            decisions.remember_many.assert_not_called()
+
+    def test_failed_narrator_can_be_retried_and_explicitly_accepted(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            narrator = replace(
+                group.candidates[0], source_id="preset:alba", reference_sha256s=()
+            )
+            group = replace(group, narrator_candidate=narrator)
+            plan = replace(plan, groups=(group,))
+            previews = Mock()
+            previews.generate.side_effect = [
+                RuntimeError("narrator preview failed"),
+                Mock(path=root / "preview.wav"),
+            ]
+            decisions = Mock()
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                decisions, preview_service=previews, thread_pool=pool, player=Mock()
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan)
             panel.neither_button.click()
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-
-            self.assertEqual(previews.generate.call_count, calls_before)
+            self.assertFalse(panel.a_use.isEnabled())
+            decisions.remember_many.assert_not_called()
+            panel.a_play.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertTrue(panel.a_use.isEnabled())
+            panel.a_use.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
             decisions.remember_many.assert_called_once_with(
                 ((group, default_voice_choice_id),)
             )
-            panel.shutdown()
-            panel.deleteLater()
-
-    def test_cancelling_does_not_wait_for_speculative_preview(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            plan, group, _manifest = ambiguous_fixture(root)
-            plan, group = with_second_candidate(plan, group)
-            plan, _second = with_second_group(plan, group)
-            preview_service = Mock()
-            preview_service.generate.return_value = Mock(path=root / "preview.wav")
-            pool = ManualThreadPool()
-            cancelled = Mock()
-            panel = VoiceAuditionPanel(
-                VoiceDecisionStore(root / "decisions.json"),
-                preview_service=preview_service,
-                thread_pool=pool,
-                player=Mock(),
-            )
-            panel.cancelled.connect(cancelled)
-            panel.start(plan)
-            pool.tasks.pop(0).run()
-            self.application.processEvents()
-            self.assertEqual(len(pool.tasks), 1)
-
-            panel.cancel()
-
-            self.assertEqual(cancelled.call_count, 1)
-            self.assertFalse(panel.runtime_timer.isActive())
-            self.assertIn("Stopping", panel.runtime.text())
-            preview_service.close.assert_not_called()
-            pool.tasks.pop(0).run()
-            self.application.processEvents()
-            preview_service.close.assert_called_once_with()
-            self.assertIn("No preview generation", panel.runtime.text())
-            panel.deleteLater()
 
     def test_save_failure_keeps_the_same_decision_available(self):
         with TemporaryDirectory() as temporary_directory:
@@ -510,6 +500,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 player=Mock(),
             )
             panel.start(plan)
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
 
@@ -523,43 +514,44 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.shutdown()
             panel.deleteLater()
 
-    def test_failed_candidate_is_not_shown_as_a_decision(self):
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
+    def test_failed_preview_requires_an_explicit_choice_and_next_sample_can_be_accepted(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
             plan, group, _manifest = ambiguous_fixture(root)
             plan, group = with_second_candidate(plan, group)
-            decisions = VoiceDecisionStore(root / "decisions.json")
-            preview_service = Mock()
-
-            def generate(_plan, _group, source_id):
-                if source_id == group.candidates[1].source_id:
-                    raise RuntimeError("preview failed")
-                return Mock(path=root / "preview.wav")
-
-            preview_service.generate.side_effect = generate
+            decisions = Mock()
+            service = Mock()
+            service.generate.side_effect = [
+                RuntimeError("preview failed"),
+                Mock(path=root / "preview.wav"),
+            ]
             pool = ManualThreadPool()
-            completed = Mock()
             panel = VoiceAuditionPanel(
-                decisions,
-                preview_service=preview_service,
-                thread_pool=pool,
-                player=Mock(),
+                decisions, preview_service=service, thread_pool=pool, player=Mock()
             )
-            panel.completed.connect(completed)
-
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
             panel.start(plan)
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-            self.assertFalse(panel.a_box.isVisible())
+            self.assertFalse(panel.a_use.isEnabled())
+            self.assertIn("failed", panel.status.text())
+            decisions.remember_many.assert_not_called()
+            panel.neither_button.click()
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-
-            self.assertEqual(completed.call_count, 1)
-            self.assertEqual(
-                decisions.choice_for(group.group_id, group.decision_context_sha256),
-                group.candidates[0].source_id,
+            self.assertTrue(panel.a_use.isEnabled())
+            decisions.remember_many.assert_not_called()
+            panel.a_use.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            decisions.remember_many.assert_called_once_with(
+                ((group, group.candidates[1].source_id),)
             )
-            panel.deleteLater()
 
     def test_neither_previews_and_selects_configured_narrator(self):
         with TemporaryDirectory() as temporary_directory:
@@ -596,11 +588,14 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
 
             panel.start(plan)
+            panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-            panel.neither_button.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            for _ in group.candidates:
+                panel.neither_button.click()
+                panel.a_play.click()
+                pool.tasks.pop().run()
+                self.application.processEvents()
 
             self.assertEqual(panel.a_title.text(), "Narrator fallback")
             self.assertTrue(panel.a_use.isEnabled())
@@ -634,6 +629,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.completed.connect(completed)
 
             panel.start(plan)
+            panel.a_play.click()
             panel.choose_all_button.click()
             preview_service.cancel.assert_called_once_with()
             pool.tasks.pop().run()
@@ -666,6 +662,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             panel.cancelled.connect(cancelled)
             panel.start(plan)
+            panel.a_play.click()
 
             panel.cancel()
             self.assertEqual(cancelled.call_count, 0)
@@ -727,6 +724,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertTrue(dialog.auditioning_voices)
             self.assertFalse(dialog.preparing_inputs)
 
+            dialog.voice_panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
             dialog.voice_panel.a_use.click()

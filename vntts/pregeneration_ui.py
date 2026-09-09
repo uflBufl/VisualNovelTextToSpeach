@@ -2084,8 +2084,8 @@ class OfflineAudioPreparationDialog(QDialog):
             self.cancel_button.setText("Cancel voice selection")
             self.cancel_button.setEnabled(True)
             self._show_phase(
-                "Choose character voices",
-                f"Listen to {audition_count} ambiguous character voice"
+                "Review character voices",
+                f"Check {audition_count} character voice sample"
                 f"{'s' if audition_count != 1 else ''}.",
                 "Cancel stops voice selection and closes this window. Reopen it "
                 "to reuse the saved story selection and any completed choices.",

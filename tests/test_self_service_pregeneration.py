@@ -941,14 +941,15 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.application.processEvents()
             self.assertTrue(first.auditioning_voices)
             interrupted_job_id = first.job().job_id
+            first.voice_panel.a_play.click()
             first.cancel_button.click()
             pool.tasks.pop(0).run()
             self.application.processEvents()
             self.assertEqual(first.result(), QDialog.DialogCode.Rejected)
 
             preview = Mock()
-            preview.generate.side_effect = lambda _plan, _group, source_id: Mock(
-                path=root / f"{source_id.removeprefix('character:')}.wav"
+            preview.generate.side_effect = lambda _plan, _group, source_id, **_options: (
+                Mock(path=root / f"{source_id.removeprefix('character:')}.wav")
             )
             generator = InProcessPocketGenerator()
             second = OfflineAudioPreparationDialog(
@@ -971,6 +972,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.application.processEvents()
             self.assertEqual(second.job().job_id, interrupted_job_id)
             self.assertTrue(second.auditioning_voices)
+            second.voice_panel.a_play.click()
             pool.tasks.pop(0).run()
             self.application.processEvents()
             self.assertTrue(second.voice_panel.a_use.isEnabled())
