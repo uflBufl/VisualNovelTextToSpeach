@@ -603,6 +603,78 @@ class GameNarratorTest(unittest.TestCase):
             self.assertEqual(original.voice_assignments["Hotelier"], "preset:anna")
             importer.narrator_characters.assert_not_called()
 
+    def test_imported_rhiannon_voice_can_be_saved_for_aderyn_and_used_by_planning(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self.narrator_manifest(root / "voices")
+            original = bind_game_narrator(
+                AppSettings(
+                    voice_manifest=str(manifest), pocket_gated_model_accepted=True
+                ),
+                manifest,
+                "character:centurion",
+                "Centurion",
+                root=root / "saved",
+            ).updated(character_voice_defaults={"Rhiannon": "character:rhiannon"})
+            imported = self.narrator_manifest(root / "story-voices")
+            expected_reference = imported.parent / "references" / "rhiannon.wav"
+            pool = ManualThreadPool()
+            dialog = GameNarratorDialog(
+                original,
+                importer=Mock(),
+                preview_service=Mock(),
+                thread_pool=pool,
+                player=Mock(),
+                binder=partial(bind_game_narrator, root=root / "saved"),
+            )
+            self.application.processEvents()
+            dialog.set_voice_context(
+                SimpleNamespace(voice_manifest=str(imported), groups=()),
+                character="Aderyn",
+            )
+            dialog.source.setCurrentIndex(dialog.source.findData("catalog"))
+            dialog.catalog_choice.setCurrentIndex(
+                dialog.catalog_choice.findData("character:rhiannon")
+            )
+            dialog.save_button.click()
+            self.run_task(pool)
+            self.run_task(pool)
+            saved = dialog.result_settings
+            loaded = load_app_settings(saved.save(root / "settings.json"), environment={})
+
+            self.assertEqual(loaded.voice_assignments, original.voice_assignments)
+            self.assertEqual(
+                loaded.character_voice_defaults["Rhiannon"], "character:rhiannon"
+            )
+            self.assertIn("Aderyn", loaded.character_voice_defaults)
+            registry = initialize_voice_registry(loaded)
+            self.assertEqual(
+                registry.resolve("Narrator").reference.read_bytes(),
+                clean_wav_bytes(amplitude=0.2),
+            )
+            self.assertEqual(
+                registry.resolve("Aderyn").reference.read_bytes(),
+                expected_reference.read_bytes(),
+            )
+
+            content_path = write_content(root / "content")
+            records = [json.loads(line) for line in content_path.read_text().splitlines()]
+            next(
+                record
+                for record in records
+                if record.get("line_id") == "line:rhiannon:1"
+            )["voice_character"] = "Aderyn"
+            content_path.write_text(
+                "\n".join(json.dumps(record) for record in records) + "\n"
+            )
+            content = inspect_story_index(content_path)
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("story",))
+            plan = VoicePlanStore(jobs).create(job, loaded)
+            aderyn = next(group for group in plan.groups if group.character == "Aderyn")
+            self.assertEqual(aderyn.source_id, loaded.character_voice_defaults["Aderyn"])
+            self.assertEqual(aderyn.reference_sha256s, (sha256_file(expected_reference),))
+
     def test_saved_game_voice_is_not_replaced_by_pocket_preset_without_access(self):
         with TemporaryDirectory() as directory:
             manifest = write_manifest(Path(directory))
@@ -1019,6 +1091,55 @@ class GameNarratorTest(unittest.TestCase):
                 GamePackError, "missing from its saved catalog"
             ):
                 apply_game_pack(candidate)
+
+    def test_preparation_character_picker_preselects_target_role(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = AppSettings()
+            content = inspect_story_index(write_content(root / "content"))
+            preparation = Mock(
+                settings=settings,
+                job_store=Mock(),
+                voice_decisions=Mock(),
+            )
+            preparation.has_pending_work.return_value = False
+            preparation.voice_plan.return_value = None
+            preparation.current_content.return_value = content
+            preparation.selected_story_ids.return_value = tuple(
+                item.selection_id for item in content.selections
+            )
+            pool = ManualThreadPool()
+            picker = GameNarratorDialog(
+                settings,
+                importer=Mock(),
+                preview_service=Mock(),
+                thread_pool=pool,
+                player=Mock(),
+            )
+            tray = TrayApplication(
+                self.application,
+                settings,
+                controller_factory=Mock(
+                    return_value=Mock(is_ready=False, is_live_running=False)
+                ),
+            )
+            tray.pregeneration_dialog = preparation
+            try:
+                with patch("vntts.app.GameNarratorDialog", return_value=picker):
+                    tray._open_preparation_narrator(
+                        settings, tray.dashboard, character="Aderyn"
+                    )
+                    self.application.processEvents()
+                    self.assertIs(tray.narrator_dialog, picker)
+                    self.assertEqual(picker.role.currentText(), "Aderyn")
+
+                    picker.role.setCurrentText("Narrator")
+                    tray.open_voice_previews(character="Aderyn")
+                    self.assertEqual(picker.role.currentText(), "Aderyn")
+                    picker.importer.narrator_characters.assert_not_called()
+                    picker.previews.generate.assert_not_called()
+            finally:
+                tray.shutdown()
 
     def test_main_and_preparation_persist_only_an_accepted_selection(self):
         for decision in ("save", "cancel", "save-failure"):

@@ -1,5 +1,6 @@
 import os
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
@@ -9,7 +10,7 @@ import soundfile as sf
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
@@ -310,6 +311,77 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             chooser.return_value = None
             dialog.game_narrator_button.click()
             self.assertIs(dialog.settings, selected)
+
+    def test_character_route_opens_editor_and_saved_choice_invalidates_plan(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_content(root / "content"))
+            manifest = write_manifest(root / "voices")
+            for name in ("rhiannon", "centurion", "unrelated"):
+                sf.write(
+                    manifest.parent / "references" / f"{name}.wav",
+                    np.zeros(2400),
+                    24_000,
+                    subtype="PCM_16",
+                )
+            settings = AppSettings(voice_manifest=str(manifest))
+            chooser = Mock(return_value=None)
+            player = Mock()
+            pool = ManualThreadPool()
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                game_narrator_chooser=chooser,
+                preview_player=player,
+                thread_pool=pool,
+            )
+            self.assertFalse(dialog.choose_character_voice.isEnabled())
+            dialog.continue_button.click()
+            for _ in range(2):
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+            plan = dialog.voice_plan()
+            # This UI check uses a distinct target; persistence is covered by
+            # the imported-character save/reload/planning regression.
+            plan = replace(
+                plan,
+                groups=tuple(
+                    replace(group, character="Aderyn")
+                    if group.character == "Rhiannon"
+                    else group
+                    for group in plan.groups
+                ),
+            )
+            dialog._voice_plan = plan
+            dialog.show_all_voice_routes.setChecked(True)
+            dialog._render_voice_routes(plan)
+            for row in range(dialog.voice_routes.count()):
+                if (
+                    dialog.voice_routes.item(row).data(Qt.ItemDataRole.UserRole)
+                    == "Aderyn"
+                ):
+                    dialog.voice_routes.setCurrentRow(row)
+                    break
+            dialog._render_voice_routes(plan)
+            dialog.choose_character_voice.click()
+            chooser.assert_called_once_with(settings, dialog, character="Aderyn")
+            player.stop.assert_called()
+            self.assertIs(dialog.voice_plan(), plan)
+            self.assertIs(dialog.settings, settings)
+
+            saved = settings.updated(
+                character_voice_defaults={"Aderyn": "character:rhiannon"}
+            )
+            chooser.return_value = saved
+            dialog.choose_character_voice.click()
+            self.assertIs(dialog.settings, saved)
+            self.assertIsNone(dialog.voice_plan())
+            self.assertTrue(dialog.voice_confirmation.isHidden())
+            self.assertTrue(dialog.continue_button.isEnabled())
+            self.assertEqual(pool.tasks, [])
+            dialog.reject()
+            dialog.deleteLater()
 
     def test_shared_voice_save_replans_selected_stories_with_the_saved_engine(self):
         with TemporaryDirectory() as directory:

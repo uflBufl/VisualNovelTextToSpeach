@@ -2720,10 +2720,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog.exec()
         self.set_status("OCR review closed")
 
-    def open_voice_previews(self):
+    def open_voice_previews(self, *, character=None):
         if self._controller_busy or self._shutting_down:
             return
         if self.narrator_dialog is not None:
+            if character is not None:
+                self.narrator_dialog.role.setCurrentText(character)
             self.show_dashboard()
             self.dashboard.show_voices()
             return
@@ -2738,13 +2740,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         resume_live = bool(self.controller.is_live_running)
         if resume_live:
             self._stop_live_then(
-                lambda: self._open_narrator_picker(True),
+                lambda: self._open_narrator_picker(True, character=character),
                 "Stopping live capture before voice preview...",
             )
             return
-        self._open_narrator_picker(False)
+        self._open_narrator_picker(False, character=character)
 
-    def _open_narrator_picker(self, resume_live):
+    def _open_narrator_picker(self, resume_live, *, character=None):
         if self._shutting_down or self._quit_requested:
             return
         self.emergency_stop()
@@ -2782,6 +2784,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
             elif isinstance(plan, VoicePlan):
                 dialog.set_voice_context(plan)
+        if character is not None:
+            dialog.role.setCurrentText(character)
         self.narrator_dialog = dialog
         dialog.impactContextRequested.connect(self._load_voice_impact_context)
         self._resume_live_after_narrator = resume_live
@@ -2794,8 +2798,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             "Choose narrator or character defaults in Voices. Navigation keeps your unsaved selection."
         )
 
-    def _open_preparation_narrator(self, _settings, _parent):
-        self.open_voice_previews()
+    def _open_preparation_narrator(self, _settings, _parent, *, character=None):
+        self.open_voice_previews(character=character)
         return None
 
     def _load_voice_impact_context(self):

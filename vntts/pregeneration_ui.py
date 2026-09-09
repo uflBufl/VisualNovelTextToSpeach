@@ -473,6 +473,18 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_routes.setIconSize(QSize(64, 64))
         self.voice_routes.setAccessibleName("Planned character voice routes")
         self.voice_routes.setMinimumHeight(90)
+        self.choose_character_voice = QPushButton("Choose another character's voice...")
+        self.choose_character_voice.setAccessibleName("Change selected character voice")
+        self.choose_character_voice.setEnabled(False)
+        self.choose_character_voice.clicked.connect(self._choose_character_voice)
+        self.voice_routes.currentItemChanged.connect(
+            lambda item, _previous: self.choose_character_voice.setEnabled(
+                item is not None
+            )
+        )
+        self.voice_routes.itemDoubleClicked.connect(
+            lambda _item: self._choose_character_voice()
+        )
         self.voice_route_summary = QLabel()
         self.voice_route_summary.setWordWrap(True)
         self.show_all_voice_routes = QCheckBox("Show all character assignments")
@@ -490,6 +502,7 @@ class OfflineAudioPreparationDialog(QDialog):
         confirmation_layout.addWidget(self.voice_route_summary)
         confirmation_layout.addWidget(self.show_all_voice_routes)
         confirmation_layout.addWidget(self.voice_routes)
+        confirmation_layout.addWidget(self.choose_character_voice)
         confirmation_layout.addWidget(self.voice_confirmation_status)
 
         self.discovery_panel = QGroupBox("Loading game content")
@@ -597,6 +610,32 @@ class OfflineAudioPreparationDialog(QDialog):
         if settings is None:
             return
         self.apply_narrator_settings(settings)
+
+    def _choose_character_voice(self):
+        item = self.voice_routes.currentItem()
+        if item is None or self.has_pending_work():
+            return
+        character = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(character, str) or not character:
+            return
+        if self._narrator_player is not None:
+            self._narrator_player.stop()
+        if self.game_narrator_chooser is not None:
+            settings = self.game_narrator_chooser(
+                self.settings, self, character=character
+            )
+        else:
+            from vntts.game_narrator_ui import GameNarratorDialog
+
+            dialog = GameNarratorDialog(self.settings, self, importer=self.importer)
+            dialog.set_voice_context(self._voice_plan, character=character)
+            settings = (
+                dialog.result_settings
+                if dialog.exec() == QDialog.DialogCode.Accepted
+                else None
+            )
+        if settings is not None:
+            self.apply_narrator_settings(settings)
 
     def apply_narrator_settings(self, settings):
         if self.has_pending_work():
@@ -795,6 +834,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self._narrator_choice_changed()
 
     def _render_voice_routes(self, plan):
+        previous = self.voice_routes.currentItem()
+        selected_character = (
+            previous.data(Qt.ItemDataRole.UserRole) if previous else None
+        )
         self.voice_routes.clear()
         if plan is None:
             return
@@ -836,6 +879,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 f"{group.character} -> {route} - {lines} "
                 f"line{'s' if lines != 1 else ''}"
             )
+            item.setData(Qt.ItemDataRole.UserRole, group.character)
             if group.portrait_image and group.portrait_image_sha256:
                 try:
                     if sha256_file(group.portrait_image) == group.portrait_image_sha256:
@@ -845,6 +889,10 @@ class OfflineAudioPreparationDialog(QDialog):
                 except OSError:
                     pass
             self.voice_routes.addItem(item)
+            if group.character == selected_character:
+                self.voice_routes.setCurrentItem(item)
+        if self.voice_routes.currentItem() is None and self.voice_routes.count():
+            self.voice_routes.setCurrentRow(0)
 
     def _narrator_choice_changed(self, _index=None):
         source_id = self.narrator_choice.currentData()
