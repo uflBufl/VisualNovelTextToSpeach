@@ -16,6 +16,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.async_ui import LatestTaskRunner
 from vntts.pregeneration_audition import (
     VoiceAuditionCancelled,
+    VoiceAuditionError,
     VoiceAuditionPreviewService,
 )
 from vntts.pregeneration_voices import VoicePlan
@@ -114,12 +115,22 @@ class VoiceAuditionPanel(QGroupBox):
         self.another_sample_button.clicked.connect(self.try_another_phrase)
         self.another_sample_button.setVisible(False)
 
-        self.a_box, self.a_title, self.a_reason, self.a_play, self.a_use = (
-            self._candidate_box("Voice A", 0)
-        )
-        self.b_box, self.b_title, self.b_reason, self.b_play, self.b_use = (
-            self._candidate_box("Voice B", 1)
-        )
+        (
+            self.a_box,
+            self.a_title,
+            self.a_reason,
+            self.a_play,
+            self.a_use,
+            self.a_original,
+        ) = self._candidate_box("Voice A", 0)
+        (
+            self.b_box,
+            self.b_title,
+            self.b_reason,
+            self.b_play,
+            self.b_use,
+            self.b_original,
+        ) = self._candidate_box("Voice B", 1)
         comparison = QHBoxLayout()
         comparison.addWidget(self.a_box, 1)
         comparison.addWidget(self.b_box, 1)
@@ -299,7 +310,7 @@ class VoiceAuditionPanel(QGroupBox):
         ):
             return
         self._alternate_active = True
-        self.sample.setText(f'Both voices say: "{group.alternate_sample_text}"')
+        self.sample.setText(f'Generated previews say: "{group.alternate_sample_text}"')
         self.another_sample_button.setEnabled(False)
         self._hide_candidate_boxes()
         self._set_decision_actions(False)
@@ -345,17 +356,21 @@ class VoiceAuditionPanel(QGroupBox):
         reason.setAccessibleName(f"{title} recommendation")
         reason.setWordWrap(True)
         play = QPushButton(f"Play {title}")
+        original = QPushButton("Play original")
+        original.setAccessibleName(f"Play original reference for {title}")
+        original.clicked.connect(lambda: self._play_original_slot(slot))
         use = QPushButton(f"Use {title}")
         play.clicked.connect(self.play_a if slot == 0 else self.play_b)
         use.clicked.connect(self.use_a if slot == 0 else self.use_b)
         actions = QHBoxLayout()
         actions.addWidget(play)
+        actions.addWidget(original)
         actions.addWidget(use)
         layout = QVBoxLayout(box)
         layout.addWidget(heading)
         layout.addWidget(reason)
         layout.addLayout(actions)
-        return box, heading, reason, play, use
+        return box, heading, reason, play, use, original
 
     def _show_group(self):
         self._candidate_offset = 0
@@ -383,11 +398,11 @@ class VoiceAuditionPanel(QGroupBox):
             "in this selection and remembered for this character variant."
         )
         self.question.setText(
-            "No verified original voice anchor is available here. Compare the "
-            "same generated line and choose the voice you prefer, or let VNTTS decide."
+            "Compare the generated previews and, where available, their original "
+            "references. Choose the voice you prefer, or let VNTTS decide."
         )
         self.anchor_button.setVisible(False)
-        self.sample.setText(f'Both voices say: "{group.sample_text}"')
+        self.sample.setText(f'Generated previews say: "{group.sample_text}"')
         self.another_sample_button.setVisible(group.alternate_sample_text is not None)
         self.another_sample_button.setEnabled(False)
         self._hide_candidate_boxes()
@@ -494,6 +509,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._show_candidate_pair()
 
     def _show_candidate_pair(self):
+        self._stop_player()
         group = self.current_group()
         pair = self._viable_candidates[
             self._candidate_offset : self._candidate_offset + 2
@@ -646,7 +662,7 @@ class VoiceAuditionPanel(QGroupBox):
 
     def _render_slot(self, slot, value, *, recommended):
         candidate, preview, _choice = value
-        box, title, reason, play, use = self._slot_widgets(slot)
+        box, title, reason, play, use, original = self._slot_widgets(slot)
         label = f"Voice {'A' if slot == 0 else 'B'}"
         if recommended:
             label += " - Recommended"
@@ -655,18 +671,39 @@ class VoiceAuditionPanel(QGroupBox):
             f"Reference voice: {candidate.source_character} ({candidate.source_speaker})\n"
             + candidate.recommendation
         )
-        play.setText(f"Play {'A' if slot == 0 else 'B'}")
+        play.setText(f"Play generated {'A' if slot == 0 else 'B'}")
         play.setEnabled(preview is not None)
+        original.setEnabled(bool(candidate.reference_sha256s))
+        original.setToolTip(
+            "Listen to the original reference used for this voice."
+            if candidate.reference_sha256s
+            else "This voice has no recorded reference."
+        )
         use.setText(f"Use {'A' if slot == 0 else 'B'}")
         use.setEnabled(preview is not None)
         box.setVisible(True)
 
     def _slot_widgets(self, slot):
         if slot == 0:
-            return self.a_box, self.a_title, self.a_reason, self.a_play, self.a_use
-        return self.b_box, self.b_title, self.b_reason, self.b_play, self.b_use
+            return (
+                self.a_box,
+                self.a_title,
+                self.a_reason,
+                self.a_play,
+                self.a_use,
+                self.a_original,
+            )
+        return (
+            self.b_box,
+            self.b_title,
+            self.b_reason,
+            self.b_play,
+            self.b_use,
+            self.b_original,
+        )
 
     def _hide_candidate_boxes(self):
+        self._stop_player()
         self.a_box.setVisible(False)
         self.b_box.setVisible(False)
 
@@ -705,6 +742,33 @@ class VoiceAuditionPanel(QGroupBox):
         player.play()
         self.status.setText(
             f"Playing voice {'A' if slot == 0 else 'B'}. You can replay or choose now."
+        )
+
+    def _play_original_slot(self, slot):
+        if (
+            slot >= len(self._displayed)
+            or self._cancel_requested
+            or self._shutdown_requested
+            or self.active
+        ):
+            return
+        candidate, _preview, _choice = self._displayed[slot]
+        self._stop_player()
+        try:
+            reference = self.preview_service.reference_audio(
+                self._plan, self.current_group(), candidate.source_id
+            )
+        except (OSError, ValueError, VoiceAuditionError) as error:
+            self.status.setText(f"Unable to play original reference: {error}")
+            return
+        if reference is None:
+            self.status.setText("This voice has no recorded reference.")
+            return
+        player = self._ensure_player()
+        player.setSource(QUrl.fromLocalFile(str(reference)))
+        player.play()
+        self.status.setText(
+            f"Playing the original reference for voice {'A' if slot == 0 else 'B'}."
         )
 
     def _use_slot(self, slot):
@@ -785,6 +849,14 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_use.setEnabled(enabled and self.a_box.isVisible())
         self.b_play.setEnabled(enabled and self.b_box.isVisible())
         self.b_use.setEnabled(enabled and self.b_box.isVisible())
+        for slot in (0, 1):
+            box, _title, _reason, _play, _use, original = self._slot_widgets(slot)
+            original.setEnabled(
+                enabled
+                and box.isVisible()
+                and slot < len(self._displayed)
+                and bool(self._displayed[slot][0].reference_sha256s)
+            )
         self.neither_button.setEnabled(enabled)
         self.auto_button.setEnabled(enabled)
 

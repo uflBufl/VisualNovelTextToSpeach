@@ -11,12 +11,18 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
-from tests.test_pregeneration_audition import ambiguous_fixture  # noqa: E402
+from tests.test_pregeneration_audition import (  # noqa: E402
+    ambiguous_fixture,
+    clean_wav_bytes,
+)
 from tests.test_pregeneration_setup import (  # noqa: E402
     ManualThreadPool,
     write_story_index,
 )
-from vntts.pregeneration_audition import VoiceAuditionCancelled  # noqa: E402
+from vntts.pregeneration_audition import (  # noqa: E402
+    VoiceAuditionCancelled,
+    VoiceAuditionPreviewService,
+)
 from vntts.pregeneration_audition_ui import VoiceAuditionPanel  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
@@ -150,6 +156,80 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.shutdown()
             preview_service.close.assert_called_once_with()
             panel.deleteLater()
+
+    def test_original_buttons_play_exact_references_without_synthesis_and_recheck_files(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, manifest = ambiguous_fixture(root)
+            reference_a = manifest.parent / "references" / "rhiannon.wav"
+            reference_b = manifest.parent / "references" / "centurion.wav"
+            reference_b.write_bytes(clean_wav_bytes(amplitude=0.2))
+            plan, group = with_second_candidate(plan, group)
+            group = replace(group, narrator_candidate=group.candidates[1])
+            plan = replace(plan, groups=(group,))
+            service = Mock(spec=VoiceAuditionPreviewService)
+            service.reference_audio.side_effect = (
+                VoiceAuditionPreviewService().reference_audio
+            )
+            service.generate.return_value = Mock(path=root / "generated.wav")
+            player = Mock()
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                VoiceDecisionStore(root / "decisions.json"),
+                preview_service=service,
+                thread_pool=pool,
+                player=player,
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(plan)
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertIsNone(group.anchor_source_id)
+            self.assertFalse(panel.anchor_button.isVisible())
+            for button, reference in (
+                (panel.a_original, reference_a),
+                (panel.b_original, reference_b),
+            ):
+                self.assertTrue(button.isEnabled())
+                button.click()
+                self.assertEqual(
+                    Path(player.setSource.call_args.args[0].toLocalFile()),
+                    reference.resolve(),
+                )
+            self.assertEqual(service.generate.call_count, 2)
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertTrue(panel.b_use.isEnabled())
+            panel.a_play.click()
+            self.assertEqual(
+                Path(player.setSource.call_args.args[0].toLocalFile()),
+                root / "generated.wav",
+            )
+
+            # Narrator selection stores "default", but its original uses its actual source.
+            panel.neither_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            panel.a_original.click()
+            self.assertEqual(
+                Path(player.setSource.call_args.args[0].toLocalFile()),
+                reference_b.resolve(),
+            )
+            self.assertEqual(
+                service.reference_audio.call_args.args[2], "character:centurion"
+            )
+            reference_b.write_bytes(b"changed")
+            player.reset_mock()
+            panel.a_original.click()
+            player.play.assert_not_called()
+            self.assertIn("changed", panel.status.text())
+            self.assertEqual(service.generate.call_count, 3)
+            panel.cancel()
+            player.reset_mock()
+            panel._play_original_slot(0)
+            player.play.assert_not_called()
 
     def test_neither_without_narrator_uses_safe_choice_without_authoring_controls(self):
         with TemporaryDirectory() as temporary_directory:
@@ -524,6 +604,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
 
             self.assertEqual(panel.a_title.text(), "Narrator fallback")
             self.assertTrue(panel.a_use.isEnabled())
+            self.assertFalse(panel.a_original.isEnabled())
             panel.a_use.click()
             pool.tasks.pop().run()
             self.application.processEvents()
