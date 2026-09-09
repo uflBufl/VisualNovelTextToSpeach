@@ -222,7 +222,78 @@ def write_synthetic_game_pack(
     return pack_path, line_id, text, text_hash, generated_wav
 
 
+def write_saved_voice_catalog(root, *, stale_source_id):
+    reference = root / "saved-catalog" / "references" / "narrator.wav"
+    write_pcm16_wav(reference, np.zeros(240, dtype=np.float32), 24_000)
+    manifest = root / "saved-catalog" / "voice-manifest.json"
+    write_voice_manifest(
+        manifest,
+        {
+            "version": 2,
+            "voices": [
+                {
+                    "character": "Game narrator active",
+                    "speaker": "narrator-v1",
+                    "references": ["references/narrator.wav"],
+                }
+            ],
+            "vntts.game_narrator": {
+                "source_id": stale_source_id,
+                "character": "Old narrator",
+                "base_manifest_sha256": "0" * 64,
+            },
+        },
+    )
+    return manifest
+
+
 class GamePackImportTest(unittest.TestCase):
+    def test_implicit_reload_uses_active_narrator_not_stale_catalog_metadata(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack_path, *_unused = write_synthetic_game_pack(root)
+            saved = write_saved_voice_catalog(
+                root, stale_source_id="character:missing-narrator"
+            )
+            settings = AppSettings(
+                game_pack=str(pack_path),
+                voice_manifest=str(saved),
+                voice_assignments={"NARRATOR": "character:game_narrator_active"},
+            )
+
+            implicit = apply_game_pack(settings)
+            explicit = apply_game_pack(settings, pack_path)
+
+        self.assertEqual(implicit.voice_manifest, str(saved))
+        self.assertEqual(
+            explicit.voice_manifest, str((root / "voice-manifest.json").resolve())
+        )
+
+    def test_implicit_reload_drops_stale_catalog_without_active_character_source(self):
+        for narrator_source in ("preset:alba", "default"):
+            with (
+                self.subTest(narrator_source=narrator_source),
+                TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                pack_path, *_unused = write_synthetic_game_pack(root)
+                saved = write_saved_voice_catalog(
+                    root, stale_source_id="character:missing-narrator"
+                )
+
+                result = apply_game_pack(
+                    AppSettings(
+                        game_pack=str(pack_path),
+                        voice_manifest=str(saved),
+                        voice_assignments={"Narrator": narrator_source},
+                    )
+                )
+
+                self.assertEqual(
+                    result.voice_manifest,
+                    str((root / "voice-manifest.json").resolve()),
+                )
+
     def test_import_preflights_checksum_bound_semantic_evidence_extension(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
