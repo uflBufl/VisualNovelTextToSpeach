@@ -26,10 +26,16 @@ measurements in agent memory and completed-work history in Git, not here.
     Gate: same output-code identity, safe shutdown/cancellation, cold/warm phase
     timings and CPU/RSS on Windows, including CPU-only and CPU-auxiliary modes.
     Do not infer a speedup from source inspection alone.
+    Use `python -m scripts.moss_native_compare` with artifacts from the same
+    workflow run; it captures ABBA process-cold/warm measurements and WAV hashes.
+    Output-code identity is still unavailable through the native WAV API.
   - Fix native backbone lifetime separately from the pool experiment: pinned
     `Model::~Model()` is defaulted while backbone context/model are raw pointers.
     Audit failure paths before adding context/model cleanup; verify repeated
     load/unload and request shutdown without leaks or double frees.
+    - Implement and test native ownership separately from benchmark tooling;
+      keep the same cleanup change in both diagnostic build variants and retain
+      real-model load/unload as an explicit qualification gate if unavailable.
   - Qualify the opt-in native timing build on Windows with the existing spoken
     reference, fixed text/seed, unchanged sampling/caps and CPU auxiliary default.
     Use `gen_backbone_s`, `gen_frame_decoder_s`, `gen_input_embedding_s` and

@@ -380,6 +380,9 @@ class MossCppBackendTest(unittest.TestCase):
             [0.8] * 3 + [1.7] * 3,
         )
         for body, attempt in zip(requests, report["attempts"], strict=True):
+            self.assertEqual(attempt["native"]["operation"], "fresh-generation")
+            self.assertEqual(attempt["native"]["seed"], 1)
+            self.assertIn("resources", attempt["native"])
             for key, value in attempt["sampling"].items():
                 self.assertEqual(body["sampling"][key], value)
         self.assertEqual(

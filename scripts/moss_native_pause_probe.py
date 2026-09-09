@@ -12,12 +12,14 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from time import monotonic
+from uuid import uuid4
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import read_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts import support
 from vntts.authoring.speech_quality import analyze_generated_speech_samples
 from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
 from vntts.pregeneration_audition import _mono_pcm
@@ -28,7 +30,7 @@ from vntts.speech_backend import (
     get_moss_tts_generation_profile,
     moss_tts_generation_profiles,
 )
-from vntts.support import collect_build_identity, native_speech_log
+from vntts.support import collect_build_identity, native_speech_context
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisRequest,
@@ -116,16 +118,21 @@ def _raw_measurements(data):
 
 
 @contextmanager
-def _configured_native_paths(executable, model):
+def _configured_native_paths(executable, model, *, extra=None):
     changes = {
-        "VNTTS_MOSS_CPP_EXECUTABLE": executable,
-        "VNTTS_MOSS_GGUF": model,
+        "VNTTS_MOSS_CPP_EXECUTABLE": str(executable.expanduser().resolve())
+        if executable is not None
+        else None,
+        "VNTTS_MOSS_GGUF": str(model.expanduser().resolve())
+        if model is not None
+        else None,
+        **(extra or {}),
     }
     previous = {name: os.environ.get(name) for name in changes}
     try:
         for name, path in changes.items():
             if path is not None:
-                os.environ[name] = str(path.expanduser().resolve())
+                os.environ[name] = str(path)
         yield
     finally:
         for name, value in previous.items():
@@ -179,14 +186,16 @@ def _saved_narrator_reference(settings, registry_initializer):
     return references[0].resolve(), registry
 
 
-def _write_archive(output, archive):
+def _write_archive(output, archive, *, recursive=False):
     paths = [
         path
-        for path in output.iterdir()
-        if path.name == "report.json"
-        or path.name.endswith(".json")
-        or path.name.endswith("-raw.wav")
-        or path.name.endswith("-output-mono.wav")
+        for path in (output.rglob("*") if recursive else output.iterdir())
+        if path.is_file()
+        and (
+            path.name.endswith(".json")
+            or path.name.endswith("-raw.wav")
+            or path.name.endswith("-output-mono.wav")
+        )
     ]
     if sum(path.stat().st_size for path in paths) > ZIP_MAX_BYTES:
         raise ValueError("probe artifacts exceed the 128 MiB archive limit")
@@ -197,18 +206,28 @@ def _write_archive(output, archive):
     try:
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_STORED) as bundle:
             for path in sorted(paths):
-                bundle.write(path, path.name)
+                bundle.write(path, path.relative_to(output).as_posix())
         Path(temporary).replace(archive)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
 
 
-def _render_attempt(backend, output, index, profile, label, text, responses):
+def _render_attempt(
+    backend,
+    output,
+    index,
+    profile,
+    label,
+    text,
+    responses,
+    *,
+    sampling_profiles=PROBE_SAMPLING,
+):
     name = _attempt_name(index, profile, label)
     expected_tokens, expected_seconds = moss_generation_limits(text)
     profile_name, sampling = get_moss_tts_generation_profile(
-        profile, profiles=PROBE_SAMPLING
+        profile, profiles=sampling_profiles
     )
     record = {
         "id": name,
@@ -224,20 +243,23 @@ def _render_attempt(backend, output, index, profile, label, text, responses):
         "files": {},
     }
     before = len(responses)
+    trace_id = uuid4().hex
     started = monotonic()
     try:
-        result = backend.render(
-            SynthesisRequest(
-                "Narrator",
-                text,
-                seed=1,
-                generation_profile=profile_name,
-                cache_policy=SynthesisCachePolicy.BYPASS,
-            )
-        ).collect()
+        with native_speech_context.set({"attempt_id": trace_id}):
+            result = backend.render(
+                SynthesisRequest(
+                    "Narrator",
+                    text,
+                    seed=1,
+                    generation_profile=profile_name,
+                    cache_policy=SynthesisCachePolicy.BYPASS,
+                )
+            ).collect()
         record["completion"] = result.completion.value
         record["elapsed_seconds"] = round(monotonic() - started, 3)
         record["result"] = {
+            "cache_source": result.diagnostics.cache_source,
             "sample_rate": int(result.sample_rate),
             "pcm_frames": int(len(result.pcm)),
             "diagnostic_frames": int(result.diagnostics.sample_count),
@@ -271,6 +293,15 @@ def _render_attempt(backend, output, index, profile, label, text, responses):
         record["elapsed_seconds"] = round(monotonic() - started, 3)
         record["error"] = f"{type(error).__name__}: {error}"
     finally:
+        record["native"] = next(
+            (
+                event["native"]
+                for event in reversed(support.native_speech_log.report()["events"])
+                if event.get("native", {}).get("attempt_id") == trace_id
+                and event["native"].get("operation") == "fresh-generation"
+            ),
+            None,
+        )
         for status, headers, data in responses[before:]:
             raw_path = output / f"{name}-raw.wav"
             raw_path.write_bytes(data)
@@ -301,6 +332,7 @@ def run(
     path_check=moss_cpp_paths,
     settings_loader=load_app_settings,
     registry_initializer=initialize_voice_registry,
+    sampling_profiles=PROBE_SAMPLING,
 ):
     settings = (
         settings_loader()
@@ -329,7 +361,7 @@ def run(
         "seed": 1,
         "matrix": {
             "texts": [dict(label=label, text=text) for label, text in TEXTS],
-            "profiles": list(PROFILES),
+            "profiles": list(sampling_profiles),
         },
         "attempts": [],
     }
@@ -373,6 +405,7 @@ def run(
                 "model": str(model),
                 "sidecar": str(sidecar),
             }
+            startup_started = monotonic()
             backend = backend_factory(
                 registry,
                 model_name=model,
@@ -384,16 +417,34 @@ def run(
                 persistent_audio_cache_directory=output / ".cache-disabled",
                 persistent_audio_cache_max_entries=0,
             )
-            backend._generation_profiles = PROBE_SAMPLING
+            report["startup_seconds"] = round(monotonic() - startup_started, 3)
+            report["runtime"] = getattr(backend, "server_info", None)
+            report["compute"] = getattr(backend, "runtime_status", None)
+            backend._generation_profiles = sampling_profiles
             responses, restore = _capture_native_response(backend)
             report["http_capture_method"] = "_http"
             try:
                 for index, (profile, (label, text)) in enumerate(
-                    ((profile, item) for profile in PROFILES for item in TEXTS), 1
+                    (
+                        (profile, item)
+                        for profile in sampling_profiles
+                        for item in TEXTS
+                    ),
+                    1,
                 ):
-                    print(f"[{index}/6] {profile} {label}", flush=True)
+                    print(
+                        f"[{index}/{len(sampling_profiles) * len(TEXTS)}] {profile} {label}",
+                        flush=True,
+                    )
                     attempt = _render_attempt(
-                        backend, output, index, profile, label, text, responses
+                        backend,
+                        output,
+                        index,
+                        profile,
+                        label,
+                        text,
+                        responses,
+                        sampling_profiles=sampling_profiles,
                     )
                     report["attempts"].append(attempt)
                     _write_json(output / f"{attempt['id']}.json", attempt)
@@ -416,10 +467,18 @@ def run(
         exit_code = 1
     finally:
         if backend is not None:
-            backend.shutdown()
+            try:
+                backend.shutdown()
+            except (Exception, KeyboardInterrupt) as error:
+                report["shutdown_error"] = f"{type(error).__name__}: {error}"
+                exit_code = (
+                    130
+                    if isinstance(error, KeyboardInterrupt) or exit_code == 130
+                    else 1
+                )
         report["archive"] = archive.name
         _write_json(output / "report.json", report)
-        _write_json(output / "native-speech.json", native_speech_log.report())
+        _write_json(output / "native-speech.json", support.native_speech_log.report())
         _write_json(output / "build.json", collect_build_identity())
         _write_archive(output, archive)
     return exit_code

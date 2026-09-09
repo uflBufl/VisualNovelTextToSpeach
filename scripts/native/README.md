@@ -39,6 +39,36 @@ cancellation and shutdown, and improved cold/warm phase timings without worse
 idle CPU or RSS on Windows (CPU-only and CPU-auxiliary modes). Neither artifact
 is installed automatically, and no user voice approvals are inferred.
 
+## One-command Windows comparison
+
+Extract both artifacts from the **same workflow run** into separate directories,
+keeping all DLLs beside each EXE. Close VNTTS first so another model does not
+compete for RAM/VRAM. From the project folder, replace the two example paths:
+
+```powershell
+uv run --no-sync python -m scripts.moss_native_compare --baseline "C:\native\timing\moss-tts-server.exe" --candidate "C:\native\timing-aux-pool\moss-tts-server.exe" --output "$env:USERPROFILE\Downloads\moss-pool-comparison"
+```
+
+This uses the saved narrator reference and existing GGUF, without downloads or
+settings changes. Override them with `--reference "C:\voice.wav"` and
+`--model "C:\models\model.gguf"` if needed. The output folder must not already
+exist. Keep the GPU default (`--gpu-layers -1`) for GPU backbone/CPU auxiliary;
+a separate CPU-only run uses `--gpu-layers 0` and a different output folder.
+
+The order is baseline, candidate, candidate, baseline. Each fresh server renders
+the same three phrases with seed 1, production native stable sampling and no
+synthesis cache: **12 generations total**. Startup and the first request are
+reported separately from warm requests. Process-cold does not mean cleared OS
+or disk caches. It can take several minutes; Ctrl+C preserves partial results.
+
+Send the resulting `moss-pool-comparison.zip` from Downloads. It includes timings,
+available CPU/RSS measurements, input/binary/DLL hashes, reports and generated
+WAVs; it excludes weights and the original reference recording. Nothing is
+uploaded automatically. Failed/limited cases are not treated as speed gains.
+Exact WAV equality is reported, but the native API does not expose codec codes;
+neither these measurements nor exit code 0 prove acoustic quality, cancellation
+safety, idle CPU behavior or leak-free real-model load/unload.
+
 ## Measurements
 
 VNTTS reads optional response headers from non-streaming `/tts` and
