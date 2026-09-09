@@ -5,11 +5,9 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Publish extractor diagnostics (local commit efd8298), update the pinned
-      dependency and publish VNTTS logging after renewed push approval: the
-      environment blocked GitHub publication. Then inspect game-import.json from
-      the affected Windows run to fix the actual missing-config failure; do not
-      claim the added diagnostics themselves fix discovery.
+- [ ] Inspect game-import.json from the affected Windows run to fix the actual
+      missing-config failure; do not claim the added diagnostics themselves fix
+      discovery.
 - [ ] Verify the reported Windows Play Original no-output case with the explicit
       source/check details and device-driven playback status. The real PCM code
       passes fake-device first-play/replay tests, but the exact Windows failure
