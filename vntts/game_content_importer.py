@@ -341,13 +341,24 @@ def _candidate_roles(job):
 
 
 def resolve_reverse1999_installation(path):
-    """Resolve three required roots under one explicitly selected game folder."""
+    """Resolve one installation, including its split Windows resource folders."""
     root = Path(path).expanduser().resolve()
     if not root.is_dir():
         raise GameContentImportError(f"The selected game folder does not exist: {root}")
+    search_roots = [root]
+    if root.parent.name.casefold() == "streamingassets":
+        sibling_name = {"persistentroot": "Windows", "windows": "PersistentRoot"}.get(
+            root.name.casefold()
+        )
+        if sibling_name:
+            sibling = (root.parent / sibling_name).resolve()
+            if sibling.is_dir() and sibling.parent == root.parent:
+                search_roots.append(sibling)
     resource_candidates = [root]
     resource_candidates.extend(
-        candidate.parent for candidate in sorted(root.glob("**/bundles"))
+        candidate.parent
+        for search_root in search_roots
+        for candidate in sorted(search_root.glob("**/bundles"))
     )
     resource_root = next(
         (
@@ -357,7 +368,10 @@ def resolve_reverse1999_installation(path):
         ),
         None,
     )
-    config_candidates = [root / "configs", *sorted(root.glob("**/configs"))]
+    config_candidates = [
+        root / "configs",
+        *(path for base in search_roots for path in sorted(base.glob("**/configs"))),
+    ]
     config_directory = next(
         (
             candidate
@@ -367,7 +381,10 @@ def resolve_reverse1999_installation(path):
         ),
         None,
     )
-    audio_candidates = [root, *sorted(root.glob("**/en"))]
+    audio_candidates = [
+        root,
+        *(path for base in search_roots for path in sorted(base.glob("**/en"))),
+    ]
     audio_directory = next(
         (
             candidate

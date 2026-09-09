@@ -112,17 +112,19 @@ class Reverse1999GameImporterTest(unittest.TestCase):
     def test_narrator_upgrade_reuses_previously_imported_custom_installation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            resources = (
-                root / "custom-drive" / "game" / "StreamingAssets" / "PersistentRoot"
-            )
+            streaming_assets = root / "custom-drive" / "game" / "StreamingAssets"
+            resources = streaming_assets / "PersistentRoot"
             (resources / "bundles").mkdir(parents=True)
             bundle = resources / "bundles" / "story.dat"
             bundle.touch()
-            configs = resources / "configs"
+            windows = streaming_assets / "Windows"
+            (windows / "bundles").mkdir(parents=True)
+            (windows / "bundles" / "other-story.dat").touch()
+            configs = windows / "configs"
             (configs / "language").mkdir(parents=True)
             (configs / "datacfg_1.dat").touch()
             (configs / "language" / "json_language_en.json.dat").touch()
-            audio = resources / "audios" / "Windows" / "en"
+            audio = windows / "audios" / "Windows" / "en"
             audio.mkdir(parents=True)
             (audio / "hero.bnk").touch()
             output = root / "imports"
@@ -166,6 +168,56 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 self.assertIn("Centurion", importer.narrator_characters())
                 self.assertIn("Centurion", importer.narrator_characters())
                 run.assert_called_once()
+                (story.parent / "english-bank-index.json").unlink()
+                self.assertIn("Centurion", importer.narrator_characters())
+                self.assertEqual(run.call_count, 2)
+
+    def test_selected_windows_child_keeps_its_bundle_when_persistent_root_also_has_one(
+        self,
+    ):
+        with TemporaryDirectory() as temporary_directory:
+            streaming_assets = Path(temporary_directory) / "StreamingAssets"
+            persistent_root = streaming_assets / "PersistentRoot"
+            (persistent_root / "bundles").mkdir(parents=True)
+            (persistent_root / "bundles" / "persistent.dat").touch()
+            windows = streaming_assets / "Windows"
+            (windows / "bundles").mkdir(parents=True)
+            (windows / "bundles" / "windows.dat").touch()
+            configs = persistent_root / "configs"
+            (configs / "language").mkdir(parents=True)
+            (configs / "datacfg_1.dat").touch()
+            (configs / "language" / "json_language_en.json.dat").touch()
+            audio = persistent_root / "audios" / "Windows" / "en"
+            audio.mkdir(parents=True)
+            (audio / "activity.bnk").touch()
+
+            resolved = resolve_reverse1999_installation(windows)
+
+        self.assertEqual(
+            resolved,
+            (windows.resolve(), configs.resolve(), audio.resolve()),
+        )
+
+    def test_selected_persistent_root_ignores_unrelated_streaming_assets_sibling(self):
+        with TemporaryDirectory() as temporary_directory:
+            streaming_assets = Path(temporary_directory) / "StreamingAssets"
+            persistent_root = streaming_assets / "PersistentRoot"
+            (persistent_root / "bundles").mkdir(parents=True)
+            (persistent_root / "bundles" / "story.dat").touch()
+            unrelated = streaming_assets / "Unrelated"
+            configs = unrelated / "configs"
+            (configs / "language").mkdir(parents=True)
+            (configs / "datacfg_1.dat").touch()
+            (configs / "language" / "json_language_en.json.dat").touch()
+            audio = unrelated / "audios" / "Windows" / "en"
+            audio.mkdir(parents=True)
+            (audio / "activity.bnk").touch()
+
+            with self.assertRaisesRegex(
+                GameContentImportError,
+                "game configuration, English voice banks",
+            ):
+                resolve_reverse1999_installation(persistent_root)
 
     def test_unusable_previous_source_does_not_block_automatic_import(self):
         with TemporaryDirectory() as directory:

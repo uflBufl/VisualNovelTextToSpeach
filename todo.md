@@ -11,6 +11,7 @@ measurements in agent memory and completed-work history in Git, not here.
       has not been reproduced. Use the failing stage/message to investigate;
       do not treat observability or passing synthetic tests as proof of a fix.
 - [ ] Verify the updated extractor on the affected Windows Centurion references:
+      confirm the saved game installation is recovered after cache reset,
       reopen game references after automatic reindexing, confirm multi-second
       original playback, then save the selected voice again. Existing saved voice
       packs are immutable and must not be silently rebound. If 61-77 ms persists,
