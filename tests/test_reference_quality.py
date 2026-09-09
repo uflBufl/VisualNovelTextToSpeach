@@ -5,7 +5,12 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from vntts.reference_quality import analyze_reference, analyze_reference_set, main
+from vntts.reference_quality import (
+    analyze_reference,
+    analyze_reference_bytes,
+    analyze_reference_set,
+    main,
+)
 
 
 def write_wav(path, samples, sample_rate=1000):
@@ -18,6 +23,17 @@ def write_wav(path, samples, sample_rate=1000):
 
 
 class ReferenceQualityTest(unittest.TestCase):
+    def test_truncated_pcm_is_not_misreported_as_a_short_reference(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "voice.wav"
+            write_wav(path, self.tone(2000))
+            for missing in (1, 3800, 4000):
+                with (
+                    self.subTest(missing=missing),
+                    self.assertRaisesRegex(ValueError, "truncated PCM"),
+                ):
+                    analyze_reference_bytes(path.read_bytes()[:-missing], path=path)
+
     @staticmethod
     def tone(length, amplitude=0.2):
         values = np.full(length, amplitude)

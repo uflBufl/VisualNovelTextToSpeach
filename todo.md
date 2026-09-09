@@ -5,11 +5,11 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Verify the reported Windows Play Original no-output case with the explicit
-      source/check details and device-driven playback status. The real PCM code
-      passes fake-device first-play/replay tests, but the exact Windows failure
-      has not been reproduced. Use the failing stage/message to investigate;
-      do not treat observability or passing synthetic tests as proof of a fix.
+- [ ] Verify Windows Play Original after the binary-reference reader fix: confirm
+      full Centurion playback and measured duration (decoder headers in the latest
+      report show 12.634 and 12.552 seconds). Re-save from the original if an older
+      saved copy is truncated; do not delete extracted source audio. Byte-preserving
+      synthetic regressions do not replace this affected-machine playback check.
 - [ ] Verify the updated extractor on the affected Windows Centurion references:
       confirm the saved game installation is recovered after cache reset,
       reopen game references after automatic reindexing, confirm multi-second

@@ -47,6 +47,8 @@ def analyze_reference_bytes(payload, *, path, silence_db=-40.0, window_ms=20.0):
             f"Reference must be non-empty PCM16 mono WAV: {path} "
             f"({channels} channels, {sample_width * 8}-bit, {sample_rate} Hz)"
         )
+    if len(raw) != frame_count * channels * sample_width:
+        raise ValueError(f"Reference WAV contains truncated PCM data: {path}")
     samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
     absolute = np.abs(samples)
     duration_seconds = len(samples) / sample_rate

@@ -1,8 +1,10 @@
 import json
+import os
 import unittest
+import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from tests.symlink_support import symlink_or_skip
 from vntts.voices import (
@@ -13,11 +15,50 @@ from vntts.voices import (
     find_default_voice_manifest,
     is_narrator,
     normalize_character_name,
+    read_voice_reference_bytes,
     synthesis_character,
 )
 
 
 class CharacterVoiceRegistryTest(unittest.TestCase):
+    def test_reference_snapshot_preserves_windows_control_bytes(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            reference = root / "voice.wav"
+            with wave.open(str(reference), "wb") as wav:
+                wav.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+                wav.writeframes(b"\x1a\x20\x0d\x0a" * 24000)
+            expected = reference.read_bytes()
+            voice = CharacterVoice(
+                "Centurion", "centurion", references=(reference,), reference_root=root
+            )
+            native_open = os.open
+            native_binary = getattr(os, "O_BINARY", 0)
+            binary_flag = native_binary or (1 << 29)
+
+            def open_binary(path, flags):
+                self.assertTrue(
+                    flags & binary_flag, "WAV must use binary mode on Windows"
+                )
+                return native_open(
+                    path, flags if native_binary else flags & ~binary_flag
+                )
+
+            with (
+                patch.object(os, "O_BINARY", binary_flag, create=True),
+                patch("vntts.voices.os.open", side_effect=open_binary),
+            ):
+                actual = read_voice_reference_bytes(voice, reference)
+            self.assertEqual(actual, expected)
+            from vntts.reference_quality import analyze_reference_bytes
+
+            self.assertEqual(
+                analyze_reference_bytes(actual, path=reference)["duration_seconds"], 2.0
+            )
+            with patch("vntts.voices.os.read", side_effect=[expected[:100], b""]):
+                with self.assertRaisesRegex(VoiceManifestError, "incomplete bytes"):
+                    read_voice_reference_bytes(voice, reference)
+
     def test_exact_unknown_label_uses_narrator_identity_only(self):
         narrator = CharacterVoice("Narrator", "narrator-speaker")
         registry = CharacterVoiceRegistry([narrator])
@@ -357,7 +398,7 @@ class CharacterVoiceRouterTest(unittest.TestCase):
             manifest_root = root / "manifest"
             manifest_root.mkdir()
             reference = manifest_root / "voice.wav"
-            reference.write_bytes(b"owned voice")
+            reference.write_bytes(b"owned\x1a\r\nvoice")
             manifest_path = manifest_root / "manifest.json"
             manifest_path.write_text(
                 json.dumps(
@@ -399,7 +440,7 @@ class CharacterVoiceRouterTest(unittest.TestCase):
             router.speak("Lucy", "Hello.")
 
             self.assertEqual(captured["speaker"], "lucy")
-            self.assertEqual(captured["payload"], b"owned voice")
+            self.assertEqual(captured["payload"], b"owned\x1a\r\nvoice")
             self.assertNotEqual(captured["path"], reference)
             self.assertFalse(captured["path"].exists())
 

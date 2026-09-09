@@ -450,7 +450,8 @@ def _read_owned_voice_reference(root, reference):
         raise VoiceManifestError(
             "Voice reference must stay within the manifest directory"
         ) from error
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # Windows text descriptors treat Ctrl-Z as EOF and translate CRLF in PCM.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
         descriptor = os.open(reference, flags)
     except FileNotFoundError as error:
@@ -505,7 +506,10 @@ def _read_owned_voice_reference(root, reference):
             finished.st_mtime_ns,
         ):
             raise VoiceManifestError("Voice reference changed while it was read")
-        return b"".join(chunks)
+        payload = b"".join(chunks)
+        if len(payload) != opened.st_size:
+            raise VoiceManifestError("Voice reference read returned incomplete bytes")
+        return payload
     finally:
         os.close(descriptor)
 
