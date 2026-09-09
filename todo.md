@@ -5,12 +5,6 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Repair CI before distributing the native pool experiment:
-  - Diagnose and fix Windows packaged no-model verification for both variants;
-    preserve exit-code checking and the bounded timeout.
-  - Commit fixes separately, push and verify both native artifacts and Windows
-    unit tests; keep real speech performance qualification separate.
-
 - [ ] Verify successful preview replay on Windows with the qualified native profile;
       reuse the saved WAV without a new generation. Request another support export
       only for an unresolved problem, not to repeat already measured retry/device
