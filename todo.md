@@ -5,6 +5,11 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
+- [ ] Verify the reported Windows Play Original no-output case with the explicit
+      source/check details and device-driven playback status. The real PCM code
+      passes fake-device first-play/replay tests, but the exact Windows failure
+      has not been reproduced. Use the failing stage/message to investigate;
+      do not treat observability or passing synthetic tests as proof of a fix.
 - [ ] Verify extractor candidate decoding too; transcript suitability alone does
       not establish that the decoded WAV contains a usable spoken reference.
 - [ ] Repeat the native 0.8 versus 1.7 comparison with a preflight-passing spoken

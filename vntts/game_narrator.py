@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -24,6 +25,36 @@ from vntts.voices import (
     pocket_tts_preset_voices,
     read_voice_reference_bytes,
 )
+
+
+@dataclass(frozen=True)
+class OriginalReference:
+    source_id: str
+    character: str
+    path: Path
+    payload: bytes
+    sha256: str
+    duration_seconds: float
+    rejection_reasons: tuple[str, ...]
+
+
+def load_original_reference(manifest, source_id):
+    """Inspect and play the same bytes; cloning suitability does not gate listening."""
+    voice = CharacterVoiceRegistry.from_file(manifest).resolve_source(source_id)
+    if voice is None or not voice.references:
+        raise ValueError("The selected game reference is unavailable")
+    path = voice.references[0]
+    payload = read_voice_reference_bytes(voice, path)
+    report = analyze_reference_bytes(payload, path=path)
+    return OriginalReference(
+        source_id=source_id,
+        character=voice.source_character or voice.character,
+        path=path,
+        payload=payload,
+        sha256=report["sha256"],
+        duration_seconds=report["duration_seconds"],
+        rejection_reasons=tuple(report["rejection_reasons"]),
+    )
 
 
 def narrator_preview_plan(settings, manifest, source_id, text):

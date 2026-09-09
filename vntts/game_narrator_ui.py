@@ -7,6 +7,7 @@ from threading import Event
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QPixmap
+from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,7 +28,11 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.async_ui import LatestTaskRunner
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
-from vntts.game_narrator import bind_game_narrator, narrator_preview_plan
+from vntts.game_narrator import (
+    bind_game_narrator,
+    load_original_reference,
+    narrator_preview_plan,
+)
 from vntts.pregeneration_audition import VoiceAuditionPreviewService
 from vntts.pregeneration_voices import (
     pregeneration_narrator_source_id,
@@ -257,6 +262,14 @@ class GameNarratorDialog(QDialog):
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(self.controls)
         layout.addWidget(self.scroll, 1)
+        self.reference_details = QLabel()
+        self.reference_details.setWordWrap(True)
+        self.reference_details.setTextFormat(Qt.TextFormat.PlainText)
+        self.reference_details.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.reference_details.setAccessibleName("Original audio source and checks")
+        layout.addWidget(self.reference_details)
         transport = QHBoxLayout()
         transport.addWidget(self.original_button)
         transport.addWidget(self.preview_button)
@@ -305,8 +318,10 @@ class GameNarratorDialog(QDialog):
         actions.addWidget(self.save_button)
         layout.addLayout(actions)
         self.player.errorOccurred.connect(
-            lambda _code, message: self.status.setText(message)
+            lambda _code, message: self.status.setText(f"Playback failed: {message}")
         )
+        self.player.playbackStateChanged.connect(self._playback_state_changed)
+        self.player.mediaStatusChanged.connect(self._playback_media_changed)
         self.source.currentIndexChanged.connect(self._source_changed)
         self.runtime_timer = QTimer(self)
         self.runtime_timer.setInterval(500)
@@ -857,6 +872,10 @@ class GameNarratorDialog(QDialog):
 
     def _stop_audio(self):
         self.player.stop()
+        self.reference_details.clear()
+        self.reference_details.setToolTip("")
+        if self._playback_requested:
+            self.status.setText("Playback stopped.")
         self._queued_action = None
         self._playback_requested = False
 
@@ -980,9 +999,9 @@ class GameNarratorDialog(QDialog):
             return manifest
         if operation == "save":
             return self._bind_selected_voice(settings, manifest, source_id, character)
-        plan = narrator_preview_plan(settings, manifest, source_id, text)
         if operation == "audio":
-            return self.previews.reference_audio(plan, plan.groups[0], source_id)
+            return load_original_reference(manifest, source_id)
+        plan = narrator_preview_plan(settings, manifest, source_id, text)
         return self.previews.generate(
             plan,
             plan.groups[0],
@@ -1028,9 +1047,9 @@ class GameNarratorDialog(QDialog):
                 source_id,
                 voice.source_character or voice.character,
             )
-        plan = narrator_preview_plan(settings, self._catalog_manifest, source_id, text)
         if operation == "audio":
-            return self.previews.reference_audio(plan, plan.groups[0], source_id)
+            return load_original_reference(self._catalog_manifest, source_id)
+        plan = narrator_preview_plan(settings, self._catalog_manifest, source_id, text)
         return self.previews.generate(
             plan,
             plan.groups[0],
@@ -1176,20 +1195,45 @@ class GameNarratorDialog(QDialog):
                 self.status.setText("Audio ready. Playback stopped.")
                 self._update()
                 return
-            self.status.setText(
-                "Playing original reference."
-                if operation == "audio"
-                else "Playing saved preview (no generation)."
-                if self._preview_reused
-                else "Playing generated preview."
-            )
-            self.player.setSource(QUrl.fromLocalFile(str(result)))
-            self.player.play()
+            self.status.setText("Starting playback...")
+            if operation == "audio":
+                check = (
+                    "Not suitable for cloning: " + ", ".join(result.rejection_reasons)
+                    if result.rejection_reasons
+                    else "Technical reference checks passed; voice quality is yours to judge."
+                )
+                self.reference_details.setText(
+                    f"Original: {result.character} | {result.duration_seconds:.3f} s\n{check}"
+                )
+                self.reference_details.setToolTip(
+                    f"{result.source_id}\n{result.path}\nSHA-256: {result.sha256}"
+                )
+                self.player.play_bytes(result.payload, source=str(result.path))
+            else:
+                self.player.setSource(QUrl.fromLocalFile(str(result)))
+                self.player.play()
         elif operation == "save":
             self.result_settings = result
             self._cleanup()
             return
         self._update()
+
+    def _playback_state_changed(self, state):
+        if (
+            state == QMediaPlayer.PlaybackState.PlayingState
+            and self._playback_requested
+        ):
+            self.status.setText(
+                "Playing original reference."
+                if self._operation == "audio"
+                else "Playing saved preview (no generation)."
+                if self._preview_reused
+                else "Playing generated preview."
+            )
+
+    def _playback_media_changed(self, status):
+        if status == QMediaPlayer.MediaStatus.EndOfMedia and self._playback_requested:
+            self.status.setText("Playback finished. Press Play to listen again.")
 
     def _cleanup(self):
         self._start("close", "Closing voice preview...", self.previews.close)
