@@ -208,6 +208,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self.server = None
         self.server_log = None
         self.server_directory = None
+        self._deferred_server_directories = []
         self.port = None
         self.server_info = None
         self._diagnostic_salt = secrets.token_bytes(32)
@@ -276,10 +277,14 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
     def _confirmed_runtime_status(self):
         # Read through a separate handle: seeking the child's shared log handle
         # would move its write position and could overwrite earlier messages.
-        with open(self.server_log.name, "rb") as log:
-            log.seek(0, os.SEEK_END)
-            log.seek(max(0, log.tell() - 64 * 1024))
-            output = log.read(64 * 1024).decode("utf-8", errors="replace")
+        with self.server_lock:
+            if self.server_log is None:
+                output = ""
+            else:
+                with open(self.server_log.name, "rb") as log:
+                    log.seek(0, os.SEEK_END)
+                    log.seek(max(0, log.tell() - 64 * 1024))
+                    output = log.read(64 * 1024).decode("utf-8", errors="replace")
         offload = re.search(r"offloaded (\d+)/(\d+) layers to GPU", output)
         device = re.search(r"using device (\S+) \(([^\r\n]+?)\)", output)
         if device:
@@ -365,6 +370,13 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if cancelled():
                 raise TTSSynthesisError("MOSS C++ startup cancelled")
             if self.server is None or self.server.poll() is not None:
+                with self.server_lock:
+                    stages = _native_stage_timings(
+                        self.server_log.name if self.server_log is not None else None,
+                        0,
+                        {},
+                        self.startup_timeout,
+                    )
                 record_native_speech(
                     operation="server-failed",
                     outcome="failed",
@@ -372,12 +384,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     exit_code=self.server.returncode
                     if self.server is not None
                     else None,
-                    **_native_stage_timings(
-                        self.server_log.name if self.server_log is not None else None,
-                        0,
-                        {},
-                        self.startup_timeout,
-                    ),
+                    **stages,
                 )
                 raise TTSConfigurationError(
                     "MOSS C++ server exited while loading. Check its DLLs and model "
@@ -672,7 +679,10 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         finally:
             if cancelled():
                 outcome = "cancelled"
-            stages = _native_stage_timings(path, offset, headers, self.request_timeout)
+            with self.server_lock:
+                stages = _native_stage_timings(
+                    path, offset, headers, self.request_timeout
+                )
             resources = {"status": "not-started"}
             if resource_sampler is not None:
                 try:
@@ -740,15 +750,25 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 if log is not None:
                     log.close()
                 if directory is not None:
-                    # Retry only the Windows sharing violation; do not hide
-                    # other cleanup failures.
+                    self._deferred_server_directories.append(directory)
+                for directory in tuple(self._deferred_server_directories):
+                    # A Windows log reader can outlive our stopped server. Keep
+                    # cleanup pending instead of failing otherwise valid audio.
                     for attempt in range(3):
                         try:
                             directory.cleanup()
+                            self._deferred_server_directories.remove(directory)
                             break
                         except PermissionError as error:
-                            if getattr(error, "winerror", None) != 32 or attempt == 2:
+                            if getattr(error, "winerror", None) != 32:
                                 raise
+                            if attempt == 2:
+                                record_native_speech(
+                                    operation="server-cleanup",
+                                    outcome="deferred",
+                                    reason="windows-sharing-violation",
+                                )
+                                break
                             sleep(0.05 * (attempt + 1))
 
     def shutdown(self):

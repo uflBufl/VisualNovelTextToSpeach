@@ -250,7 +250,7 @@ class MossCppBackendTest(unittest.TestCase):
         mocked_sleep.assert_called_once_with(0.05)
         self.assertFalse(path.exists())
 
-    def test_shutdown_reraises_persistent_windows_server_log_lock(self):
+    def test_shutdown_defers_persistent_windows_server_log_lock_then_retries(self):
         backend = self.backend()
         directory = backend.server_directory
         server = backend.server
@@ -264,13 +264,68 @@ class MossCppBackendTest(unittest.TestCase):
         with (
             patch.object(directory, "cleanup", side_effect=locked_cleanup) as cleanup,
             patch("vntts.moss_cpp_backend.sleep") as mocked_sleep,
-            self.assertRaises(PermissionError),
         ):
             backend.shutdown()
         self.assertEqual(cleanup.call_count, 3)
         mocked_sleep.assert_any_call(0.05)
         mocked_sleep.assert_any_call(0.1)
-        directory.cleanup()
+        self.assertEqual(backend._deferred_server_directories, [directory])
+        backend.shutdown()
+        self.assertEqual(backend._deferred_server_directories, [])
+        self.assertFalse(Path(directory.name).exists())
+
+    def test_locked_log_does_not_mask_original_synthesis_error(self):
+        backend = self.backend()
+        directory = backend.server_directory
+        with (
+            patch.object(
+                directory, "cleanup", side_effect=self._windows_sharing_violation()
+            ),
+            patch("vntts.moss_cpp_backend.sleep"),
+            self.assertRaisesRegex(TTSSynthesisError, "HTTP 500"),
+        ):
+            backend.render(SynthesisRequest("Narrator", "Fail.")).collect()
+        self.assertEqual(backend._deferred_server_directories, [directory])
+        backend.shutdown()
+        self.assertFalse(Path(directory.name).exists())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows file sharing semantics")
+    def test_shutdown_with_real_windows_log_reader_does_not_fail_audio(self):
+        import ctypes
+        from ctypes import wintypes
+
+        backend = self.backend()
+        directory = Path(backend.server_directory.name)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        # Reader permits writing, but holds deletion until its handle closes.
+        handle = kernel32.CreateFileW(
+            str(directory / "server.log"), 0x80000000, 0x3, None, 3, 0x80, None
+        )
+        self.assertNotEqual(handle, wintypes.HANDLE(-1).value)
+        try:
+            result = backend.render(
+                SynthesisRequest("Narrator", "Hello there.")
+            ).collect()
+            backend.shutdown()
+            self.assertEqual(result.completion, SynthesisCompletion.COMPLETE)
+            self.assertTrue(directory.exists())
+            self.assertIsNotNone(self.children[0].poll())
+        finally:
+            kernel32.CloseHandle(handle)
+            backend.shutdown()
+        self.assertFalse(directory.exists())
 
     def test_shutdown_reraises_nonsharing_directory_permission_error(self):
         backend = self.backend()
