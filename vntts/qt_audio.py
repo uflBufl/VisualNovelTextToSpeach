@@ -1,11 +1,14 @@
 """Qt signals around the persistent sounddevice authoring player."""
 
 from pathlib import Path
+from time import monotonic
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtMultimedia import QMediaPlayer as _QtMediaPlayer
 
 from vntts.authoring.pcm_playback import PcmPlaybackError, PersistentPcmPlayer
+
+PLAYBACK_START_TIMEOUT_SECONDS = 5.0
 
 
 class QtPcmPlayer(QObject):
@@ -19,7 +22,9 @@ class QtPcmPlayer(QObject):
     mediaStatusChanged = Signal(object)
     playbackStateChanged = Signal(object)
 
-    def __init__(self, parent=None, *, player_factory=PersistentPcmPlayer):
+    def __init__(
+        self, parent=None, *, player_factory=PersistentPcmPlayer, clock=monotonic
+    ):
         super().__init__(parent)
         self._player_factory = player_factory
         self._player = None
@@ -27,7 +32,9 @@ class QtPcmPlayer(QObject):
         self._clip = None
         self._token = None
         self._started = False
+        self._started_at = None
         self._error = ""
+        self._clock = clock
         self._timer = QTimer(self)
         self._timer.setInterval(20)
         self._timer.timeout.connect(self._poll)
@@ -63,6 +70,7 @@ class QtPcmPlayer(QObject):
         active = self._token is not None
         self._token = None
         self._started = False
+        self._started_at = None
         self._timer.stop()
         if self._player is not None:
             self._player.stop()
@@ -84,12 +92,16 @@ class QtPcmPlayer(QObject):
     def _start(self, player, clip):
         self._error = ""
         self._started = False
+        self._started_at = self._clock()
         self._token = player.play(clip)
         self._timer.start()
 
     def _poll(self):
         snapshot = self._player.snapshot()
-        if self._token is None or snapshot.token != self._token:
+        if self._token is None:
+            return
+        if snapshot.token != self._token:
+            self._fail("Audio playback was interrupted unexpectedly; replay the sample")
             return
         if snapshot.error:
             self._fail(snapshot.error)
@@ -97,6 +109,14 @@ class QtPcmPlayer(QObject):
         if snapshot.started and not self._started:
             self._started = True
             self.playbackStateChanged.emit(self.PlaybackState.PlayingState)
+            if self._token != snapshot.token:
+                return
+        if (
+            not self._started
+            and self._clock() - self._started_at >= PLAYBACK_START_TIMEOUT_SECONDS
+        ):
+            self._fail("Audio output did not start within 5 seconds; replay the sample")
+            return
         if not snapshot.finished:
             return
         if snapshot.underflowed:
