@@ -71,6 +71,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          trap {
+            $Message = "$($_.Exception.Message) $($_.InvocationInfo.PositionMessage)".Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Native package verification failed::$Message"
+            throw
+          }
           New-Item -ItemType Directory -Path native-dist | Out-Null
           Copy-Item native-build/moss-tts-server.exe native-dist/
           Copy-Item native-build/moss-aux-pool-check.exe native-dist/
