@@ -48,6 +48,73 @@ class RunningProcess(FinishedProcess):
 
 
 class Reverse1999GameImporterTest(unittest.TestCase):
+    def test_failed_import_records_saved_source_fallback_and_process_details(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory)
+            process = FinishedProcess(
+                2,
+                stdout="Importing installed game\n",
+                stderr="config-candidate: datacfg_1.dat missing\n"
+                "Unable to find installed game configs\n",
+            )
+            importer = Reverse1999GameImporter(
+                output_root=output,
+                command=("extractor",),
+                popen_factory=Mock(return_value=process),
+            )
+            with patch("vntts.support.record_game_import") as record:
+                with self.assertRaisesRegex(
+                    GameContentImportError, "Unable to find installed game configs"
+                ):
+                    importer.import_installed()
+            events = [(call.args[0], call.kwargs) for call in record.call_args_list]
+            self.assertTrue(
+                any(
+                    stage == "saved-source" and details.get("exists") is False
+                    for stage, details in events
+                )
+            )
+            self.assertTrue(
+                any(
+                    stage == "saved-source"
+                    and details.get("exception_type") == "FileNotFoundError"
+                    for stage, details in events
+                )
+            )
+            self.assertTrue(
+                any(
+                    stage == "import-roots"
+                    and "auto-discovery" in details.get("reason", "")
+                    for stage, details in events
+                )
+            )
+            terminal = next(
+                details for stage, details in events if stage == "process-exit"
+            )
+            self.assertEqual(terminal["exit_code"], 2)
+            self.assertGreaterEqual(terminal["elapsed_ms"], 0)
+            stderr = next(
+                details for stage, details in events if stage == "process-stderr"
+            )
+            self.assertIn("datacfg_1.dat missing", stderr["stderr_tail"])
+
+    def test_folder_diagnostics_identify_missing_required_config(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "configs").mkdir()
+            (root / "configs" / "datacfg_1.dat").touch()
+            with patch("vntts.support.record_game_import") as record:
+                with self.assertRaises(GameContentImportError):
+                    resolve_reverse1999_installation(root)
+            candidate = next(
+                call.kwargs
+                for call in record.call_args_list
+                if call.args[0] == "config-candidate"
+            )
+            self.assertEqual(
+                candidate["missing"], ["language/json_language_en.json.dat"]
+            )
+
     def test_narrator_decoder_uses_cancellable_subprocess_runner(self):
         cancellation = Event()
         cancellation.set()

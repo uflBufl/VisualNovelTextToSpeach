@@ -298,12 +298,14 @@ class RuntimeSupportLog:
         maximum_bytes=512 * 1024,
         clock=None,
         path=None,
+        detail_fields=audio_route_fields,
     ):
         self.entries = deque(maxlen=maximum_entries)
         self.maximum_bytes = max(256, int(maximum_bytes))
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock = RLock()
         self.path = Path(path).expanduser() if path is not None else None
+        self.detail_fields = tuple(detail_fields)
 
     def add(self, level, message, **details):
         with self.lock:
@@ -313,7 +315,7 @@ class RuntimeSupportLog:
                 "message": self._bounded_message(message),
             }
             entry.update(
-                (key, details[key]) for key in audio_route_fields if key in details
+                (key, details[key]) for key in self.detail_fields if key in details
             )
             self.entries.append(entry)
             if self.path is not None:
@@ -357,6 +359,131 @@ class RuntimeSupportLog:
     def snapshot(self):
         with self.lock:
             return list(self.entries)
+
+
+game_import_fields = (
+    "stage",
+    "outcome",
+    "operation_id",
+    "index",
+    "reason",
+    "source_bundle",
+    "path",
+    "exists",
+    "roots",
+    "config_directory",
+    "audio_directory",
+    "resource_root",
+    "executable",
+    "command_kind",
+    "package_version",
+    "package_revision",
+    "elapsed_ms",
+    "exit_code",
+    "stdout_tail",
+    "stderr_tail",
+    "traceback_tail",
+    "cancelled",
+    "characters",
+    "references",
+    "missing",
+    "cache_state",
+    "exception_type",
+)
+_game_import_path_fields = frozenset(
+    "source_bundle path roots config_directory audio_directory resource_root executable".split()
+)
+_game_import_numeric_fields = frozenset(
+    "elapsed_ms exit_code characters references".split()
+)
+
+
+class GameImportLog(RuntimeSupportLog):
+    """Small, restart-safe import trace; content and configuration stay out."""
+
+    def __init__(self, maximum_entries=200, **kwargs):
+        super().__init__(
+            maximum_entries=maximum_entries,
+            detail_fields=game_import_fields,
+            **kwargs,
+        )
+        try:
+            self._load_previous()
+        except Exception:
+            # A support log must not make application startup fail.
+            pass
+
+    def record(self, stage, **details):
+        safe_details = {
+            key: _sanitize_game_import_value(key, value)
+            for key, value in details.items()
+            if key in game_import_fields and key != "stage"
+        }
+        safe_details = {
+            key: value for key, value in safe_details.items() if value is not None
+        }
+        safe_details["stage"] = _sanitize_game_import_value("stage", stage)
+        super().add(
+            "game-import",
+            f"Game import: {safe_details['stage']}",
+            **safe_details,
+        )
+
+    def _load_previous(self):
+        if self.path is None:
+            return
+        try:
+            with self.path.open("rb") as source:
+                source.seek(0, 2)
+                offset = max(0, source.tell() - self.maximum_bytes)
+                source.seek(offset)
+                payload = source.read(self.maximum_bytes)
+        except OSError:
+            return
+        if offset:
+            payload = payload.split(b"\n", 1)[-1]
+        for line in payload.splitlines():
+            try:
+                entry = json.loads(line)
+            except TypeError, ValueError, json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict) or entry.get("level") != "game-import":
+                continue
+            stage = entry.get("stage")
+            if not isinstance(stage, str) or not stage:
+                continue
+            restored = {
+                "recorded_at": str(entry.get("recorded_at", "")),
+                "level": "game-import",
+                "message": self._bounded_message(
+                    _redact_game_import_text(entry.get("message", ""))
+                ),
+            }
+            restored.update(
+                (key, _sanitize_game_import_value(key, entry[key]))
+                for key in game_import_fields
+                if key in entry
+                and _sanitize_game_import_value(key, entry[key]) is not None
+            )
+            self.entries.append(restored)
+
+
+game_import_log = GameImportLog()
+
+
+def configure_game_import_log(path=None):
+    """Set the application-owned persistence target without affecting imports."""
+    global game_import_log
+    game_import_log = GameImportLog(path=path)
+    return game_import_log
+
+
+def record_game_import(stage, **details):
+    """Record only privacy-safe technical import evidence; never affect import work."""
+    try:
+        game_import_log.record(stage, **details)
+    except Exception:
+        pass
 
 
 native_speech_context = ContextVar("native_speech_context", default=None)
@@ -473,12 +600,14 @@ class SupportBundleBuilder:
         diagnostic=None,
         dependency_probe=None,
         generation_timelines=None,
+        game_import_log=None,
     ):
         self.settings = settings
         self.event_log = event_log
         self.diagnostic = diagnostic
         self.dependency_probe = dependency_probe or collect_dependency_status
         self.generation_timelines = generation_timelines
+        self.game_import_log = game_import_log
 
     def build(self, path):
         path = Path(path).expanduser()
@@ -497,6 +626,12 @@ class SupportBundleBuilder:
             "sanitized-settings.json": sanitize_settings(self.settings),
             "runtime-events.json": {
                 "events": [sanitize_event(entry) for entry in self.event_log.snapshot()]
+            },
+            "game-import.json": {
+                "events": [
+                    sanitize_event(entry)
+                    for entry in (self.game_import_log or game_import_log).snapshot()
+                ]
             },
             "native-speech.json": {
                 **native_speech_log.report(),
@@ -580,6 +715,12 @@ def sanitize_event(entry):
         for key in audio_route_fields
         if key in entry
     )
+    if entry.get("level") == "game-import":
+        sanitized.update(
+            (key, _sanitize_game_import_value(key, entry[key]))
+            for key in game_import_fields
+            if key in entry and _sanitize_game_import_value(key, entry[key]) is not None
+        )
     if isinstance(entry.get("native"), dict):
         sanitized["native"] = {
             key: value
@@ -595,12 +736,94 @@ def _sanitize_event_value(value):
     return redact_text(value)
 
 
+def _sanitize_game_import_value(key, value):
+    if key in _game_import_path_fields:
+        if key == "roots" and isinstance(value, (list, tuple)):
+            return [_redact_game_import_text(item) for item in value[:16]]
+        return (
+            _redact_game_import_text(value)
+            if value is not None and value != ""
+            else None
+        )
+    if key in _game_import_numeric_fields:
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except TypeError, ValueError:
+            return None
+        if not math.isfinite(number):
+            return None
+        return int(number) if number.is_integer() else round(number, 3)
+    if key in {"exists", "cancelled"}:
+        return value if isinstance(value, bool) else None
+    if key in {"cache_state", "missing", "reason"}:
+        return _sanitize_game_import_structure(value)
+    if isinstance(value, (dict, set, bytes, bytearray)):
+        return None
+    if isinstance(value, (list, tuple)):
+        return None
+    return _redact_game_import_text(value)
+
+
+def _sanitize_game_import_structure(value, depth=0):
+    if depth >= 2:
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [
+            item
+            for item in (
+                _sanitize_game_import_structure(item, depth + 1) for item in value[:32]
+            )
+            if item is not None
+        ]
+    if isinstance(value, dict):
+        return {
+            _redact_game_import_text(key)[:80]: (
+                "<redacted>" if _is_secret_name(key) else sanitized
+            )
+            for key, item in list(value.items())[:32]
+            if (sanitized := _sanitize_game_import_structure(item, depth + 1))
+            is not None
+        }
+    if isinstance(value, (set, bytes, bytearray)):
+        return None
+    return _redact_game_import_text(value)
+
+
+def _redact_game_import_text(value):
+    value = redact_text(value)
+    value = re.sub(
+        r"(?i)\bauthorization\s*([=:])\s*bearer\s+[^\s,;]+",
+        r"authorization\1<redacted>",
+        value,
+    )
+    value = re.sub(
+        r"(?i)([\"']?)(password|passwd|token|api[_-]?key|secret|authorization|cookie)"
+        r"\1\s*([=:])\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;}]+)",
+        r"\1\2\1\3<redacted>",
+        value,
+    )
+    return value[:12_288]
+
+
+def _is_secret_name(value):
+    return bool(
+        re.search(
+            r"(?i)(password|passwd|token|api[_-]?key|secret|authorization|cookie)",
+            str(value),
+        )
+    )
+
+
 def redact_text(value):
     value = str(value)
     home = str(Path.home())
     if home:
         value = value.replace(home, "<home>")
-    value = re.sub(r"(?i)[a-z]:\\Users\\[^\\]+", "<home>", value)
+    value = re.sub(r"(?i)[a-z]:[\\/]Users[\\/][^\\/]+", "<home>", value)
     value = re.sub(r"/(?:Users|home)/[^/]+", "<home>", value)
     return value
 

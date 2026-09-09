@@ -12,6 +12,7 @@ from PIL import Image
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.settings import AppSettings
 from vntts.support import (
+    GameImportLog,
     GenerationTimelineLog,
     NativeSpeechLog,
     RuntimeSupportLog,
@@ -19,6 +20,7 @@ from vntts.support import (
     collect_build_identity,
     collect_ocr_metrics,
     native_speech_context,
+    record_game_import,
     record_native_speech,
     redact_text,
     sanitize_settings,
@@ -441,6 +443,70 @@ class RuntimeSupportLogTest(unittest.TestCase):
         self.assertEqual(persisted["generation"], 7)
 
 
+class GameImportLogTest(unittest.TestCase):
+    def test_bounded_redacted_log_survives_restart(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "game-import.log"
+            log = GameImportLog(maximum_entries=2, path=path)
+            log.record(
+                "folder-result",
+                index=Path.home() / "private" / "index.json",
+                roots=[Path.home() / "Games", r"D:\\Games\\Reverse1999"],
+                missing=["datacfg_1.dat"],
+                cache_state={"narrator_index": True, "bank_count": 4},
+                reason="token=do-not-export",
+            )
+            log.record("complete", characters=12, references=34)
+            log.record("cleanup", cancelled=False)
+            restarted = GameImportLog(maximum_entries=2, path=path)
+            persisted_size = len(path.read_bytes())
+
+        events = restarted.snapshot()
+        self.assertEqual([event["stage"] for event in events], ["complete", "cleanup"])
+        self.assertLessEqual(persisted_size, 512 * 1024)
+
+    def test_fields_keep_diagnostic_structure_but_redact_secrets_and_users(self):
+        log = GameImportLog()
+        log.record(
+            "folder-result",
+            index=Path.home() / "private" / "index.json",
+            roots=[Path.home() / "Games", r"C:\Users\Ada\Games\Reverse1999"],
+            missing=["datacfg_1.dat"],
+            cache_state={"narrator_index": True, "bank_count": 4},
+            stderr_tail=(
+                "failed at D:/Games/Reverse1999; token=do-not-export; "
+                'Authorization: Bearer no-export; {"token":"no-export"}'
+            ),
+        )
+
+        event = log.snapshot()[0]
+        serialized = json.dumps(event)
+        self.assertEqual(
+            event["cache_state"], {"narrator_index": True, "bank_count": 4}
+        )
+        self.assertEqual(event["missing"], ["datacfg_1.dat"])
+        self.assertIn("<home>", event["index"])
+        self.assertIn("D:/Games/Reverse1999", event["stderr_tail"])
+        self.assertNotIn("Ada", serialized)
+        self.assertNotIn("do-not-export", serialized)
+        self.assertNotIn("no-export", serialized)
+
+    def test_logging_is_fail_soft_when_persistence_is_unwritable(self):
+        with TemporaryDirectory() as temporary_directory:
+            log = GameImportLog(path=Path(temporary_directory) / "game-import.log")
+            with patch("vntts.support.atomic_output_path", side_effect=OSError):
+                log.record("failed", reason="permission denied")
+
+        self.assertEqual(log.snapshot()[0]["stage"], "failed")
+
+    def test_global_helper_is_fail_soft_and_uses_global_log(self):
+        log = GameImportLog()
+        with patch("vntts.support.game_import_log", log):
+            record_game_import("available", package_version="1.2.3")
+
+        self.assertEqual(log.snapshot()[0]["package_version"], "1.2.3")
+
+
 class SupportBundleBuilderTest(unittest.TestCase):
     def test_every_sensitive_settings_path_is_redacted_by_metadata(self):
         sensitive = {
@@ -498,6 +564,8 @@ class SupportBundleBuilderTest(unittest.TestCase):
             )
             log = RuntimeSupportLog()
             log.add("status", f"Settings at {Path.home() / 'private'}")
+            imports = GameImportLog()
+            imports.record("failed", missing=["game configuration"])
             settings = AppSettings(
                 ocr_diagnostics_directory=str(diagnostics_directory),
                 screenshot_directory=str(Path.home() / "screenshots"),
@@ -517,32 +585,36 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 diagnostic=diagnostic,
                 dependency_probe=lambda: {"test": "ok"},
                 generation_timelines=GenerationTimelineLog(),
+                game_import_log=imports,
             ).build(directory / "support.zip")
             with zipfile.ZipFile(output) as archive:
                 names = set(archive.namelist())
                 combined = b"\n".join(archive.read(name) for name in names).decode()
                 metrics = json.loads(archive.read("ocr-metrics.json"))
+                imports = json.loads(archive.read("game-import.json"))
 
-        self.assertEqual(
-            names,
-            {
-                "manifest.json",
-                "sanitized-settings.json",
-                "runtime-events.json",
-                "native-speech.json",
-                "build.json",
-                "generation-timelines.json",
-                "ocr-metrics.json",
-                "diagnostics.json",
-                "dependencies.json",
-            },
-        )
+            self.assertEqual(
+                names,
+                {
+                    "manifest.json",
+                    "sanitized-settings.json",
+                    "runtime-events.json",
+                    "game-import.json",
+                    "native-speech.json",
+                    "build.json",
+                    "generation-timelines.json",
+                    "ocr-metrics.json",
+                    "diagnostics.json",
+                    "dependencies.json",
+                },
+            )
         self.assertNotIn("PRIVATE CHARACTER", combined)
         self.assertNotIn("PRIVATE DIALOGUE", combined)
         self.assertNotIn("PRIVATE -> SECRET", combined)
         self.assertNotIn(str(Path.home()), combined)
         self.assertEqual(metrics["sample_count"], 1)
         self.assertEqual(metrics["average_confidence"], 42)
+        self.assertEqual(imports["events"][0]["missing"], ["game configuration"])
 
     def test_ocr_metrics_report_resolved_pending_and_invalid_counts(self):
         with TemporaryDirectory() as temporary_directory:

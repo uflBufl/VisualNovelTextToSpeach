@@ -10,7 +10,7 @@ from PySide6.QtGui import QTextCursor  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from vntts.support import NativeSpeechLog  # noqa: E402
+from vntts.support import GameImportLog, NativeSpeechLog  # noqa: E402
 from vntts.support_ui import SupportCenterDialog  # noqa: E402
 
 
@@ -44,6 +44,18 @@ class SupportCenterDialogTest(unittest.TestCase):
         dialog = SupportCenterDialog(FakeEventLog())
         dialog.refresh()
         self.assertIn("MOSS native: gen_s=1.25", dialog.events.toPlainText())
+        dialog.close()
+        dialog.deleteLater()
+
+    def test_game_import_event_and_details_are_visible_in_runtime_log(self):
+        imports = GameImportLog()
+        imports.record("folder-result", missing=["game configuration"])
+        with patch("vntts.support.game_import_log", imports):
+            dialog = SupportCenterDialog(FakeEventLog())
+            dialog.refresh()
+
+        self.assertIn("Game import: folder-result", dialog.events.toPlainText())
+        self.assertIn("missing=['game configuration']", dialog.events.toPlainText())
         dialog.close()
         dialog.deleteLater()
 

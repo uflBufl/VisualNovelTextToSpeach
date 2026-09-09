@@ -40,7 +40,8 @@ class SupportCenterDialog(QDialog):
         log_layout = QVBoxLayout(log_page)
         log_layout.addWidget(
             QLabel(
-                "Paths and other local identifiers are redacted in exported reports."
+                "Usernames and secrets are redacted in exported reports; game folder "
+                "structure is retained for diagnosis."
             )
         )
         log_layout.addWidget(self.events)
@@ -143,7 +144,9 @@ class SupportCenterDialog(QDialog):
 
     def refresh(self):
         entries = sorted(
-            self.event_log.snapshot() + support.native_speech_log.snapshot(),
+            self.event_log.snapshot()
+            + support.native_speech_log.snapshot()
+            + support.game_import_log.snapshot(),
             key=lambda entry: str(entry.get("recorded_at", "")),
         )
         rendered = []
@@ -151,9 +154,17 @@ class SupportCenterDialog(QDialog):
             timestamp = str(entry.get("recorded_at", ""))
             if "T" in timestamp:
                 timestamp = timestamp.split("T", 1)[1][:8]
+            message = str(entry.get("message", ""))
+            if entry.get("level") == "game-import":
+                details = "; ".join(
+                    f"{key}={_support_value(entry[key])}"
+                    for key in support.game_import_fields
+                    if key != "stage" and key in entry
+                )
+                if details:
+                    message = f"{message}; {details}"
             rendered.append(
-                f"{timestamp} [{str(entry.get('level', '')).upper()}] "
-                f"{entry.get('message', '')}"
+                f"{timestamp} [{str(entry.get('level', '')).upper()}] {message}"
             )
         if rendered == self._rendered_lines:
             return
@@ -229,3 +240,8 @@ class SupportCenterDialog(QDialog):
             )
         else:
             self.operation_status.setText(message or "Support report export cancelled.")
+
+
+def _support_value(value):
+    text = str(value)
+    return text if len(text) <= 500 else f"{text[:485]}... <truncated>"

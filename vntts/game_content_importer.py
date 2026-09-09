@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
+import uuid
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -55,6 +58,12 @@ class Reverse1999GameImporter:
         self.popen_factory = popen_factory
         self.allow_decoder_homebrew = False
         self._narrator_session = None
+        self._operation_id = uuid.uuid4().hex[:12]
+
+    def _record(self, stage, **details):
+        from vntts.support import record_game_import
+
+        record_game_import(stage, operation_id=self._operation_id, **details)
 
     def availability(self):
         command = self.command()
@@ -91,6 +100,27 @@ class Reverse1999GameImporter:
 
     def import_installed(self, cancel_event=None, installation_root=None):
         command = self.command()
+        try:
+            package = importlib.metadata.distribution("reverse1999-extractor")
+            direct_url = json.loads(package.read_text("direct_url.json") or "{}")
+            package_version = package.version
+            package_revision = direct_url.get("vcs_info", {}).get("commit_id")
+        except (
+            importlib.metadata.PackageNotFoundError,
+            OSError,
+            ValueError,
+            AttributeError,
+        ):
+            package_version = package_revision = None
+        self._record(
+            "import-start",
+            path=self.output_root,
+            resource_root=installation_root,
+            executable=command[0] if command else None,
+            command_kind="configured" if self._configured_command else "automatic",
+            package_version=package_version,
+            package_revision=package_revision,
+        )
         if command is None:
             raise GameContentImportError(self.availability().message)
         self.output_root.mkdir(parents=True, exist_ok=True)
@@ -111,29 +141,58 @@ class Reverse1999GameImporter:
             arguments.extend(("--resource-root", str(resource_root)))
             arguments.extend(("--config-directory", str(config_directory)))
             arguments.extend(("--game-audio-directory", str(audio_directory)))
+            self._record(
+                "import-roots",
+                resource_root=resource_root,
+                config_directory=config_directory,
+                audio_directory=audio_directory,
+            )
+        else:
+            self._record(
+                "import-roots", reason="no usable saved source; auto-discovery required"
+            )
         self._run(arguments, cancel_event)
         story_index = self.output_root / "reverse1999" / "story-index.jsonl"
         if not story_index.is_file():
+            self._record(
+                "import-result", outcome="missing-story-index", index=story_index
+            )
             raise GameContentImportError(
                 "The game importer finished without producing story content."
             )
-        return inspect_story_index(story_index, provider_id=self.provider_id)
+        result = inspect_story_index(story_index, provider_id=self.provider_id)
+        self._record("import-result", outcome="complete", index=story_index)
+        return result
 
     def _previous_installation(self):
         """Reuse the imported source before asking platform discovery to find it again."""
         story_index = self.output_root / "reverse1999" / "story-index.jsonl"
+        self._record("saved-source", index=story_index, exists=story_index.is_file())
         try:
             with story_index.open(encoding="utf-8") as stream:
                 metadata = json.loads(stream.readline())
             source = metadata.get("source_bundle")
             if not isinstance(source, str) or not source:
+                self._record("saved-source", reason="source_bundle missing or invalid")
                 return None
             bundle = Path(source)
-            if not bundle.is_file() or bundle.parent.name != "bundles":
+            exists = bundle.is_file()
+            self._record("saved-source", source_bundle=bundle, exists=exists)
+            if not exists or bundle.parent.name != "bundles":
+                self._record(
+                    "saved-source",
+                    reason="bundle absent or not inside bundles directory",
+                )
                 return None
             return resolve_reverse1999_installation(bundle.parent.parent)
-        except OSError, ValueError, AttributeError, GameContentImportError:
+        except (OSError, ValueError, AttributeError, GameContentImportError) as error:
             # Removed/moved sources must not prevent a fresh automatic import.
+            self._record(
+                "saved-source",
+                outcome="rejected",
+                exception_type=type(error).__name__,
+                reason=str(error),
+            )
             return None
 
     def prepare_voice_candidates(self, job, cancel_event=None, *, progress=None):
@@ -150,6 +209,16 @@ class Reverse1999GameImporter:
         story_index = self.output_root / "reverse1999" / "narrator-index.jsonl"
         bank_index = story_index.parent / "english-bank-index.json"
         narrator_banks = story_index.parent / "narrator-banks.json"
+        self._record(
+            "narrator-cache",
+            index=story_index,
+            cache_state={
+                "narrator_index": story_index.is_file(),
+                "bank_index": bank_index.is_file(),
+                "narrator_banks": narrator_banks.is_file(),
+                "explicit_selection": installation_root is not None,
+            },
+        )
         if (
             installation_root is not None
             or not story_index.is_file()
@@ -169,17 +238,35 @@ class Reverse1999GameImporter:
             )
             if record.source_audio_status == "available" and not is_narrator(character):
                 characters.setdefault(normalize_character_name(character), character)
-        return tuple(sorted(characters.values(), key=str.casefold))
+        result = tuple(sorted(characters.values(), key=str.casefold))
+        self._record(
+            "narrator-result",
+            characters=len(result),
+            outcome="complete" if result else "empty",
+        )
+        return result
 
     @staticmethod
     def _bank_index_is_stale(path):
         from r1999extractor.reverse1999_index import bank_index_staleness_reasons
 
+        from vntts.support import record_game_import
+
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
-        except OSError, ValueError:
+        except (OSError, ValueError) as error:
+            record_game_import(
+                "bank-index", index=path, reason=str(error), cache_state="unreadable"
+            )
             return True
-        return bool(bank_index_staleness_reasons(document))
+        reasons = bank_index_staleness_reasons(document)
+        record_game_import(
+            "bank-index",
+            index=path,
+            reason=reasons,
+            cache_state="stale" if reasons else "current",
+        )
+        return bool(reasons)
 
     def narrator_references(self, character):
         from r1999extractor.narrator_references import NarratorReferenceSession
@@ -190,6 +277,11 @@ class Reverse1999GameImporter:
             root / "english-bank-index.json",
             character,
             root / "voice-candidates",
+        )
+        self._record(
+            "narrator-references",
+            references=len(self._narrator_session.references),
+            outcome="complete",
         )
         return self._narrator_session.references
 
@@ -267,6 +359,8 @@ class Reverse1999GameImporter:
         return subprocess.CompletedProcess(arguments, 0, stdout, stderr)
 
     def _run(self, arguments, cancel_event, *, environment=None):
+        started = time.monotonic()
+        self._record("process-start", executable=arguments[0])
         try:
             process = self.popen_factory(
                 tuple(arguments),
@@ -276,6 +370,12 @@ class Reverse1999GameImporter:
                 env=environment,
             )
         except OSError as error:
+            self._record(
+                "process-start",
+                outcome="failed",
+                exception_type=type(error).__name__,
+                reason=str(error),
+            )
             raise GameContentImportError(
                 f"Unable to start the Reverse: 1999 importer: {error}"
             ) from error
@@ -286,12 +386,36 @@ class Reverse1999GameImporter:
                 and process.poll() is None
             ):
                 terminate_process(process)
+                self._record(
+                    "process-exit",
+                    outcome="cancelled",
+                    cancelled=True,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                )
                 raise GameContentImportCancelled("Game import was cancelled")
             try:
                 stdout, stderr = process.communicate(timeout=0.1)
                 break
             except subprocess.TimeoutExpired:
                 continue
+        self._record(
+            "process-exit",
+            exit_code=process.returncode,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+            outcome="failed" if process.returncode else "complete",
+        )
+        if stdout:
+            self._record(
+                "process-stdout",
+                stdout_tail=stdout[-6000:],
+                reason="tail truncated" if len(stdout) > 6000 else None,
+            )
+        if stderr:
+            self._record(
+                "process-stderr",
+                stderr_tail=stderr[-12000:],
+                reason="tail truncated" if len(stderr) > 12000 else None,
+            )
         if process.returncode:
             detail = last_output_line(stderr) or last_output_line(stdout)
             raise GameContentImportError(
@@ -342,7 +466,10 @@ def _candidate_roles(job):
 
 def resolve_reverse1999_installation(path):
     """Resolve one installation, including its split Windows resource folders."""
+    from vntts.support import record_game_import
+
     root = Path(path).expanduser().resolve()
+    record_game_import("folder-selection", path=root, exists=root.is_dir())
     if not root.is_dir():
         raise GameContentImportError(f"The selected game folder does not exist: {root}")
     search_roots = [root]
@@ -354,6 +481,7 @@ def resolve_reverse1999_installation(path):
             sibling = (root.parent / sibling_name).resolve()
             if sibling.is_dir() and sibling.parent == root.parent:
                 search_roots.append(sibling)
+    record_game_import("folder-search", roots=search_roots)
     resource_candidates = [root]
     resource_candidates.extend(
         candidate.parent
@@ -372,15 +500,17 @@ def resolve_reverse1999_installation(path):
         root / "configs",
         *(path for base in search_roots for path in sorted(base.glob("**/configs"))),
     ]
-    config_directory = next(
-        (
-            candidate
-            for candidate in config_candidates
-            if (candidate / "datacfg_1.dat").is_file()
-            and (candidate / "language" / "json_language_en.json.dat").is_file()
-        ),
-        None,
-    )
+    config_directory = None
+    for candidate in dict.fromkeys(config_candidates):
+        missing = [
+            name
+            for name in ("datacfg_1.dat", "language/json_language_en.json.dat")
+            if not (candidate / name).is_file()
+        ]
+        record_game_import("config-candidate", path=candidate, missing=missing)
+        if not missing:
+            config_directory = candidate
+            break
     audio_candidates = [
         root,
         *(path for base in search_roots for path in sorted(base.glob("**/en"))),
@@ -400,6 +530,13 @@ def resolve_reverse1999_installation(path):
         missing.append("game configuration")
     if audio_directory is None:
         missing.append("English voice banks")
+    record_game_import(
+        "folder-result",
+        resource_root=resource_root,
+        config_directory=config_directory,
+        audio_directory=audio_directory,
+        missing=missing,
+    )
     if missing:
         raise GameContentImportError(
             "The selected folder is not a complete Reverse: 1999 installation; "

@@ -134,6 +134,7 @@ from vntts.support import (
     GenerationTimelineLog,
     RuntimeSupportLog,
     SupportBundleBuilder,
+    configure_game_import_log,
 )
 from vntts.support_ui import SupportCenterDialog
 from vntts.voice_preview_ui import VoicePreviewDialog
@@ -1258,6 +1259,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if uses_saved_settings
                 else None
             )
+        )
+        configure_game_import_log(
+            get_local_data_directory() / "game-import.log"
+            if uses_saved_settings
+            else None
         )
         self.generation_timelines = GenerationTimelineLog(
             path=(

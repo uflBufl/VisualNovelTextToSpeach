@@ -4,6 +4,7 @@ from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from traceback import format_exception
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QPixmap
@@ -1146,6 +1147,16 @@ class GameNarratorDialog(QDialog):
             self._update()
             return
         if error is not None:
+            from vntts.support import record_game_import
+
+            record_game_import(
+                "voice-dialog",
+                outcome="failed",
+                command_kind=operation,
+                exception_type=type(error).__name__,
+                reason=str(error),
+                traceback_tail="".join(format_exception(error))[-12000:],
+            )
             if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
                 self, error
             ):
@@ -1153,7 +1164,8 @@ class GameNarratorDialog(QDialog):
                 self._candidate_action(operation)
                 return
             self.status.setText(
-                f"{error}\nRetry, choose a game folder, or cancel. Nothing was assigned."
+                f"{error}\nRetry, choose a game folder, or cancel. Nothing was assigned.\n"
+                "Failure details: Support and logs > Export support report."
             )
         elif operation == "impact":
             self._show_impact(result)
