@@ -460,13 +460,23 @@ class GameImportLogTest(unittest.TestCase):
                 cache_state={"narrator_index": True, "bank_count": 4},
                 reason="token=do-not-export",
             )
-            log.record("complete", characters=12, references=34)
+            log.record(
+                "complete",
+                characters=12,
+                references=34,
+                reference_bytes=606500,
+                duration_seconds=12.634,
+                reference_sha256="a" * 64,
+            )
             log.record("cleanup", cancelled=False)
             restarted = GameImportLog(maximum_entries=2, path=path)
             persisted_size = len(path.read_bytes())
 
         events = restarted.snapshot()
         self.assertEqual([event["stage"] for event in events], ["complete", "cleanup"])
+        self.assertEqual(events[0]["reference_bytes"], 606500)
+        self.assertEqual(events[0]["duration_seconds"], 12.634)
+        self.assertEqual(events[0]["reference_sha256"], "a" * 64)
         self.assertLessEqual(persisted_size, 512 * 1024)
 
     def test_fields_keep_diagnostic_structure_but_redact_secrets_and_users(self):

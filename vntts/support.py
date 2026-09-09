@@ -386,6 +386,9 @@ game_import_fields = (
     "cancelled",
     "characters",
     "references",
+    "reference_bytes",
+    "duration_seconds",
+    "reference_sha256",
     "missing",
     "cache_state",
     "exception_type",
@@ -394,7 +397,7 @@ _game_import_path_fields = frozenset(
     "source_bundle path roots config_directory audio_directory resource_root executable".split()
 )
 _game_import_numeric_fields = frozenset(
-    "elapsed_ms exit_code characters references".split()
+    "elapsed_ms exit_code characters references reference_bytes duration_seconds".split()
 )
 
 

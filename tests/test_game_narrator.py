@@ -61,7 +61,16 @@ class GameNarratorTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             manifest = self.narrator_manifest(root)
-            original = load_original_reference(manifest, "character:centurion")
+            with patch("vntts.support.record_game_import") as record:
+                original = load_original_reference(manifest, "character:centurion")
+            self.assertEqual(record.call_args.args, ("original-reference",))
+            self.assertEqual(record.call_args.kwargs["duration_seconds"], 1.2)
+            self.assertEqual(
+                record.call_args.kwargs["reference_bytes"], len(original.payload)
+            )
+            self.assertEqual(
+                record.call_args.kwargs["reference_sha256"], original.sha256
+            )
             expected = original.path.read_bytes()
             original.path.write_bytes(clean_wav_bytes(seconds=0.06))
             self.assertEqual(original.payload, expected)

@@ -46,6 +46,16 @@ def load_original_reference(manifest, source_id):
     path = voice.references[0]
     payload = read_voice_reference_bytes(voice, path)
     report = analyze_reference_bytes(payload, path=path)
+    from vntts.support import record_game_import
+
+    record_game_import(
+        "original-reference",
+        path=path,
+        reference_bytes=len(payload),
+        duration_seconds=report["duration_seconds"],
+        reference_sha256=report["sha256"],
+        reason=report["rejection_reasons"],
+    )
     return OriginalReference(
         source_id=source_id,
         character=voice.source_character or voice.character,
