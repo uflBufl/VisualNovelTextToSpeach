@@ -20,8 +20,9 @@ measurements in agent memory and completed-work history in Git, not here.
   - Build/check any native change separately, retain the approved Local GPU
     build as baseline, and prepare a short target-PC qualification command.
     Stop at real Windows GPU/quality gates that cannot run on this Mac.
-    Recheck the eight-worker CPU graph test with a bounded 120-second budget
-    after its 30-second CI timeout; retain exact outputs and all ownership cycles.
+    Locate the eight-worker stall inside its first synthetic graph cycle (still
+    incomplete after 120 seconds); retain exact outputs and ownership cycles,
+    do not extend the timeout again or distribute this unqualified candidate.
 - [ ] Verify successful preview replay on Windows with the qualified native profile;
       reuse the saved WAV without a new generation. Request another support export
       only for an unresolved problem, not to repeat already measured retry/device

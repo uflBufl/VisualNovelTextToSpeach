@@ -122,7 +122,7 @@ index 47852a6..4bd47b4 100644
  # VNTTS modification: verifies the diagnostic build selection without a model.
  add_executable(moss-local-gpu-check moss_local_gpu_check.cpp)
 diff --git a/tests/moss_aux_pool_check.cpp b/tests/moss_aux_pool_check.cpp
-index 8ad7174..3f93e7e 100644
+index 8ad7174..557367e 100644
 --- a/tests/moss_aux_pool_check.cpp
 +++ b/tests/moss_aux_pool_check.cpp
 @@ -18,11 +18,11 @@ struct Graph {
@@ -140,7 +140,7 @@ index 8ad7174..3f93e7e 100644
          ggml_init_params params{};
          params.mem_size = 16 * ggml_tensor_overhead() + ggml_graph_overhead();
          params.no_alloc = true;
-@@ -57,18 +57,24 @@ int main() {
+@@ -57,20 +57,32 @@ int main() {
      try {
          double baseline_s = 0, candidate_s = 0;
          constexpr int cycles = 4, runs = 50;
@@ -155,6 +155,8 @@ index 8ad7174..3f93e7e 100644
 +            std::fflush(stderr);
 +            Graph baseline(baseline_threads, false), candidate(baseline_threads, true);
              const auto expected = baseline.run();
++            std::fprintf(stderr, "aux CPU check: baseline graph complete\n");
++            std::fflush(stderr);
              // Initialization is idempotent; repeated use must retain one owner.
              const auto pool = candidate.aux.cpu_pool;
              candidate.aux.init_cpu_pool();
@@ -167,8 +169,23 @@ index 8ad7174..3f93e7e 100644
 +            require(pool == nullptr, "persistent pool unexpectedly attached");
  #endif
              for (int i = 0; i < runs; ++i) {
++                if (i % 10 == 0) {
++                    std::fprintf(stderr, "aux CPU check: alternating run %d/%d\n", i + 1, runs);
++                    std::fflush(stderr);
++                }
                  // Alternate order; these are synthetic timings, not a speech gate.
-@@ -90,11 +96,12 @@ int main() {
+                 for (bool use_candidate : {bool(i % 2), !bool(i % 2)}) {
+                     const auto start = std::chrono::steady_clock::now();
+@@ -82,6 +94,8 @@ int main() {
+                             "CPU graph output changed");
+                 }
+             }
++            std::fprintf(stderr, "aux CPU check: abort and recovery\n");
++            std::fflush(stderr);
+             ggml_backend_cpu_set_abort_callback(candidate.aux.backend, [](void *) { return true; }, nullptr);
+             require(ggml_backend_graph_compute(candidate.aux.backend, candidate.graph) == GGML_STATUS_ABORTED,
+                     "abort callback did not stop graph");
+@@ -90,11 +104,12 @@ int main() {
              // Aux destructors join/free pools after completed or aborted graphs.
          }
          std::printf("{\"schema\":\"vntts.native-aux-pool-check\",\"version\":\"%s\","
