@@ -782,5 +782,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                             sleep(0.05 * (attempt + 1))
 
     def shutdown(self):
-        self.stop()
-        self._stop_server()
+        try:
+            self.stop()
+        finally:
+            self._stop_server()

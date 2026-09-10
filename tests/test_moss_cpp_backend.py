@@ -219,6 +219,23 @@ class MossCppBackendTest(unittest.TestCase):
         backend.shutdown()
         self.assertIsNotNone(self.children[0].poll())
 
+    def test_shutdown_stops_owned_server_when_stop_is_interrupted(self):
+        backend = self.backend()
+        with patch.object(backend, "stop", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                backend.shutdown()
+        self.assertIsNotNone(self.children[0].poll())
+
+    def test_interrupted_startup_stops_owned_server(self):
+        with patch(
+            "vntts.moss_cpp_backend.MossTTSVoiceRouterBackend.__init__",
+            side_effect=KeyboardInterrupt,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                self.backend()
+        self.assertEqual(len(self.children), 1)
+        self.assertIsNotNone(self.children[0].poll())
+
     def test_shutdown_retries_transient_windows_server_log_lock(self):
         backend = self.backend()
         directory = backend.server_directory
