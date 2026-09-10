@@ -20,6 +20,8 @@ measurements in agent memory and completed-work history in Git, not here.
   - Build/check any native change separately, retain the approved Local GPU
     build as baseline, and prepare a short target-PC qualification command.
     Stop at real Windows GPU/quality gates that cannot run on this Mac.
+    Diagnose the eight-worker CI graph-check failure with its actual test log;
+    do not distribute this candidate or relax numerical checks to get green CI.
 - [ ] Verify successful preview replay on Windows with the qualified native profile;
       reuse the saved WAV without a new generation. Request another support export
       only for an unresolved problem, not to repeat already measured retry/device

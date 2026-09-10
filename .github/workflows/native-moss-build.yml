@@ -90,6 +90,17 @@ jobs:
           cmake --build native-build --target moss-tts-server moss-aux-pool-check moss-local-gpu-check --parallel 2
           export PATH="$PWD/native-build/bin:$PATH"
           ctest --test-dir native-build -R '^moss-(aux-pool|local-gpu)-check$' --output-on-failure
+      - name: Report native check failure
+        if: failure()
+        shell: pwsh
+        run: |
+          $Log = 'native-build/Testing/Temporary/LastTest.log'
+          if (Test-Path $Log) {
+            $Message = Get-Content $Log -Raw
+            if ($Message.Length -gt 12000) { $Message = $Message.Substring($Message.Length - 12000) }
+            $Message = $Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Native graph check failed::$Message"
+          }
       - name: Package and verify without model weights
         shell: pwsh
         run: |
