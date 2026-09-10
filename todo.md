@@ -18,10 +18,9 @@ measurements in agent memory and completed-work history in Git, not here.
     Do not enable the whole auxiliary sidecar on the 8 GB target by default.
     Gate any prototype on supported operations, memory headroom, unchanged
     output quality, cancellation and measured end-to-end improvement.
-    Prototype a separate opt-in Local GPU owner for Local decoder weights and
-    audio embeddings, retaining CPU waveform codec and CPU input embeddings.
-    Compile and check ownership without a model first; qualify real Windows
-    VRAM, audio and latency before adoption. Preserve the default Aux path.
+    Qualify the opt-in Local GPU build on real Windows VRAM, audio and latency
+    before adoption. The separate owner, pinned build and no-model checks are
+    implemented; they do not prove GPU execution or acoustic quality.
   - Assess an isolated PyTorch Local 1.5 comparison (not the existing Delay 8B
     adapter): quantify model/tokenizer memory first, then qualify quantization
     and Turing-compatible precision before any target GPU render. Reuse the

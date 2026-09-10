@@ -4,12 +4,15 @@ import argparse
 import json
 import math
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from statistics import median
 from types import SimpleNamespace
 
 from scripts import moss_native_pause_probe as probe
 from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_paths
+from vntts.moss_cpp_installation import _extract_runtime
 from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import load_app_settings
 
@@ -19,10 +22,16 @@ ORDER = ("baseline", "candidate", "candidate", "baseline")
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--baseline", type=Path, required=True, help="Baseline server EXE"
+        "--baseline", type=Path, help="Existing baseline server EXE (advanced)"
     )
     parser.add_argument(
-        "--candidate", type=Path, required=True, help="Candidate server EXE"
+        "--candidate", type=Path, help="Existing candidate server EXE (advanced)"
+    )
+    parser.add_argument(
+        "--downloads",
+        type=Path,
+        default=Path.home() / "Downloads",
+        help="Folder containing the two downloaded CI ZIPs; defaults to ~/Downloads",
     )
     parser.add_argument(
         "--model", type=Path, help="Existing GGUF; defaults to saved configuration"
@@ -33,8 +42,7 @@ def _parser():
     parser.add_argument(
         "--output",
         type=Path,
-        required=True,
-        help="New output directory; never overwritten",
+        help="New output directory; default: unique comparison folder in Downloads",
     )
     parser.add_argument(
         "--gpu-layers",
@@ -47,6 +55,91 @@ def _parser():
         ),
     )
     return parser
+
+
+def _check_builds(builds):
+    if all(builds.values()):
+        keys = ["upstream", "llama", "vntts", "patch_sha256"]
+        if any("local_gpu_patch_sha256" in build for build in builds.values()):
+            keys.append("local_gpu_patch_sha256")
+        for key in keys:
+            if not builds["baseline"].get(key) or builds["baseline"].get(key) != builds[
+                "candidate"
+            ].get(key):
+                raise ValueError(
+                    f"Build manifests differ at {key}; use artifacts from the same workflow run"
+                )
+
+
+def prepare_downloads(options):
+    """Set up the existing comparison without starting a model server."""
+    if bool(options.baseline) != bool(options.candidate):
+        raise ValueError("Provide both --baseline and --candidate, or neither")
+    if not options.baseline and options.gpu_layers == 0:
+        raise ValueError("The Local GPU comparison requires --gpu-layers -1")
+    downloads = options.downloads.expanduser().resolve()
+    if options.baseline and options.output:
+        return
+    variants = {"baseline": "timing", "candidate": "timing-local-gpu"}
+    if not options.baseline:
+        for variant in variants.values():
+            archive = downloads / f"moss-native-{variant}-windows-x64.zip"
+            if not archive.is_file():
+                raise ValueError(
+                    f"Download missing: {archive}. Download both same-run artifacts "
+                    "listed in scripts/native/README.md, or use --downloads FOLDER."
+                )
+    downloads.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="moss-native-", dir=downloads))
+    print(f"Comparison work folder: {work}", flush=True)
+    if not options.baseline:
+        builds = {}
+        for label, variant in variants.items():
+            print(
+                f"Preparing {label}: checking and extracting the downloaded ZIP...",
+                flush=True,
+            )
+            name = f"moss-native-{variant}-windows-x64"
+            unpacked = work / variant / "download"
+            _extract_runtime(downloads / f"{name}.zip", unpacked, None)
+            inner = unpacked / f"{name}.zip"
+            expected = (
+                (unpacked / f"{name}.zip.sha256").read_text(encoding="ascii").strip()
+            )
+            if probe._sha256(inner).lower() != expected.lower():
+                raise ValueError(
+                    f"Checksum mismatch: {inner}; download that artifact again"
+                )
+            runtime = work / variant / "runtime"
+            _extract_runtime(inner, runtime, None)
+            build = json.loads(
+                (runtime / "VNTTS-BUILD.json").read_text(encoding="utf-8-sig")
+            )
+            if build.get("variant") != variant or not build.get(
+                "local_gpu_patch_sha256"
+            ):
+                raise ValueError(
+                    f"Wrong or obsolete {label} build; download the current same-run pair"
+                )
+            builds[label] = build
+            setattr(options, label, runtime / "moss-tts-server.exe")
+        _check_builds(builds)
+        for label, suffix in (("baseline", ""), ("candidate", "-localgpu")):
+            print(f"Checking {label} executable (no model loaded)...", flush=True)
+            result = subprocess.run(
+                [str(getattr(options, label)), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=True,
+            )
+            expected = f"openmoss 0.3.0-vntts-timing1{suffix}"
+            if result.stdout.strip() != expected:
+                raise ValueError(
+                    f"Wrong {label} version: {result.stdout.strip()!r}; expected {expected}"
+                )
+    if options.output is None:
+        options.output = work / "comparison"
 
 
 def _identity(path):
@@ -275,17 +368,7 @@ def run(
                 ):
                     report["inputs"][f"{variant}/{file.name}"] = _identity(file)
         report["build_manifests"] = builds
-        if all(builds.values()):
-            keys = ["upstream", "llama", "vntts", "patch_sha256"]
-            if any("local_gpu_patch_sha256" in build for build in builds.values()):
-                keys.append("local_gpu_patch_sha256")
-            for key in keys:
-                if not builds["baseline"].get(key) or builds["baseline"].get(
-                    key
-                ) != builds["candidate"].get(key):
-                    raise ValueError(
-                        f"Build manifests differ at {key}; use artifacts from the same workflow run"
-                    )
+        _check_builds(builds)
         if (
             report["inputs"]["baseline"]["sha256"]
             == report["inputs"]["candidate"]["sha256"]
@@ -364,9 +447,16 @@ def main(argv=None):
     parser = _parser()
     options = parser.parse_args(argv)
     try:
+        prepare_downloads(options)
         return run(options)
-    except ValueError as error:
-        parser.error(str(error))
+    except KeyboardInterrupt:
+        print(
+            "Comparison interrupted; any existing work folder is retained.", flush=True
+        )
+        return 130
+    except Exception as error:
+        print(f"Comparison failed: {type(error).__name__}: {error}", flush=True)
+        return 1
 
 
 if __name__ == "__main__":

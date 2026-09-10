@@ -1,5 +1,7 @@
 """Exercise native-build comparison orchestration without a native runtime."""
 
+import hashlib
+import io
 import json
 import os
 import unittest
@@ -13,6 +15,7 @@ from unittest.mock import patch
 from scripts import moss_native_compare as compare
 from scripts import moss_native_pause_probe as probe
 from tests.test_moss_native_pause_probe import _FakeBackend, clean_wav_bytes
+from vntts.services.tts_engine import TTSConfigurationError
 from vntts.synthesis import SynthesisCachePolicy, SynthesisCompletion
 
 
@@ -48,6 +51,109 @@ class _LimitedBackend(_FakeBackend):
 
 
 class MossNativeCompareTest(unittest.TestCase):
+    def _download_pair(self, root, *, mismatch=False, checksum_error=False):
+        for label, variant in (
+            ("baseline", "timing"),
+            ("candidate", "timing-local-gpu"),
+        ):
+            name = f"moss-native-{variant}-windows-x64"
+            inner = io.BytesIO()
+            with zipfile.ZipFile(inner, "w") as archive:
+                archive.writestr("moss-tts-server.exe", label.encode())
+                archive.writestr("dependency.dll", b"keep beside executable")
+                archive.writestr(
+                    "VNTTS-BUILD.json",
+                    json.dumps(
+                        {
+                            "variant": variant,
+                            "upstream": "pinned",
+                            "llama": "pinned",
+                            "vntts": label if mismatch else "same-run",
+                            "patch_sha256": "timing-patch",
+                            "local_gpu_patch_sha256": "local-patch",
+                        }
+                    ),
+                )
+            checksum = (
+                "0" * 64
+                if checksum_error
+                else hashlib.sha256(inner.getvalue()).hexdigest()
+            )
+            with zipfile.ZipFile(root / f"{name}.zip", "w") as archive:
+                archive.writestr(f"{name}.zip", inner.getvalue())
+                archive.writestr(f"{name}.zip.sha256", checksum)
+
+    def test_short_launch_extracts_both_layers_and_only_checks_versions(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._download_pair(root)
+            options = compare._parser().parse_args(["--downloads", temporary])
+            with patch.object(
+                compare.subprocess,
+                "run",
+                side_effect=[
+                    SimpleNamespace(stdout="openmoss 0.3.0-vntts-timing1\n"),
+                    SimpleNamespace(stdout="openmoss 0.3.0-vntts-timing1-localgpu\n"),
+                ],
+            ) as execute:
+                compare.prepare_downloads(options)
+            self.assertEqual(execute.call_count, 2)
+            for call in execute.call_args_list:
+                self.assertEqual(call.args[0][1:], ["--version"])
+                self.assertEqual(call.kwargs["timeout"], 15)
+            self.assertEqual(options.baseline.read_bytes(), b"baseline")
+            self.assertEqual(options.candidate.read_bytes(), b"candidate")
+            self.assertTrue((options.candidate.parent / "dependency.dll").is_file())
+            self.assertTrue(options.output.parent.is_dir())
+            self.assertFalse(options.output.exists())
+            self.assertIsNone(options.reference)
+            self.assertIsNone(options.model)
+
+    def test_short_launch_rejects_bad_downloads_before_executing_anything(self):
+        for failure in ("missing", "checksum", "different-run", "unsafe-zip"):
+            with self.subTest(failure=failure), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                if failure != "missing":
+                    self._download_pair(
+                        root,
+                        mismatch=failure == "different-run",
+                        checksum_error=failure == "checksum",
+                    )
+                if failure == "unsafe-zip":
+                    with zipfile.ZipFile(
+                        root / "moss-native-timing-windows-x64.zip", "a"
+                    ) as archive:
+                        archive.writestr("../escape.exe", b"bad")
+                options = compare._parser().parse_args(["--downloads", temporary])
+                with patch.object(compare.subprocess, "run") as execute:
+                    with self.assertRaises((ValueError, TTSConfigurationError)):
+                        compare.prepare_downloads(options)
+                    execute.assert_not_called()
+                self.assertFalse((root / "escape.exe").exists())
+
+    def test_short_launch_rejects_partial_pair_and_cpu_only_before_setup(self):
+        for arguments in (["--baseline", "one.exe"], ["--gpu-layers", "0"]):
+            with (
+                self.subTest(arguments=arguments),
+                patch.object(compare, "run") as render,
+            ):
+                self.assertEqual(compare.main(arguments), 1)
+                render.assert_not_called()
+
+    def test_short_launch_reports_interrupt_and_wrong_version_without_rendering(self):
+        for response, code in (
+            (KeyboardInterrupt(), 130),
+            (SimpleNamespace(stdout="wrong"), 1),
+        ):
+            with self.subTest(code=code), TemporaryDirectory() as temporary:
+                self._download_pair(Path(temporary))
+                with (
+                    patch.object(compare.subprocess, "run", side_effect=[response]),
+                    patch.object(compare, "run") as render,
+                ):
+                    self.assertEqual(compare.main(["--downloads", temporary]), code)
+                    render.assert_not_called()
+
     def test_summary_retains_first_reference_encoding_without_inventing_cache_hits(
         self,
     ):

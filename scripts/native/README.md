@@ -1,201 +1,119 @@
 # Opt-in native MOSS timing build
 
-## Windows comparison: complete setup
+## Windows: download two ZIPs, run one command
 
-This is an **opt-in developer measurement**, not normal VNTTS installation.
-`git pull` does not download these experimental EXEs. You need two builds,
-the existing MOSS GGUF weight pair, and one usable narrator reference.
-The comparison itself downloads nothing and does not change app settings.
+This is an **opt-in developer comparison**, not normal app setup. It compares
+the existing CPU audio-frame model with the experimental Local GPU variant;
+the waveform codec stays on CPU. Production settings are not changed.
 
-Use Windows x64 with Git, uv and an existing VNTTS checkout. Run the blocks below
-in order in **one PowerShell window already opened in the project folder**.
-Close VNTTS and other model applications before the comparison. GPU mode needs
-an installed Vulkan-capable driver; the bundled loader does not install drivers.
-Windows also needs the [Microsoft Visual C++ x64 runtime](https://aka.ms/vc14/vc_redist.x64.exe)
-([Microsoft's download instructions](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)).
+### Before starting
 
-### 1. Update the Python environment
+Use Windows x64, an up-to-date VNTTS checkout, uv, a Vulkan-capable GPU driver
+and the [Microsoft Visual C++ x64 runtime](https://aka.ms/vc14/vc_redist.x64.exe).
+Run commands from the project folder. Close VNTTS and other model applications.
 
-```powershell
-git pull
-if ($LASTEXITCODE -ne 0) { throw 'git pull failed; resolve that before continuing.' }
-uv sync --frozen
-if ($LASTEXITCODE -ne 0) { throw 'Dependency setup failed; do not run the comparison yet.' }
-```
+You need the existing MOSS Local 1.5 GGUF pair (about 9.1 GB) and a saved game
+Narrator reference. If ordinary MOSS speech already works, use those same files.
+If not, complete MOSS setup and save a game narrator in `uv run vntts-app`,
+then **close the app**. An MLX directory or Pocket preset is not sufficient.
+This comparison does not download weights or silently substitute a voice.
 
-This installs project dependencies, not experimental EXEs or MOSS weights.
+### Download
 
-### 2. Download and extract both native builds
+Open [Native MOSS timing build](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/workflows/native-moss-build.yml).
+From **one successful run**, save these two artifacts in Downloads:
 
-Open [Native MOSS timing build](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/workflows/native-moss-build.yml)
-and choose a successful run containing **both** of these artifacts:
+- `moss-native-timing-windows-x64.zip`
+- `moss-native-timing-local-gpu-windows-x64.zip`
 
-- Baseline: `moss-native-timing-windows-x64`
-- Candidate: `moss-native-timing-local-gpu-windows-x64`
+Keep the exact names; remove browser-added `(1)` suffixes. **Do not extract them**
+and do not launch any EXE manually. The `timing-aux-pool` artifact is a different
+experiment, not this candidate. Artifacts expire after 30 days; if missing,
+choose another successful run containing both variants, never mix runs.
+The tool compares source and patch identities, not GitHub run IDs; select the
+pair from one run yourself even when two runs use the same source commit.
 
-This comparison tests GPU audio-frame generation while keeping the waveform
-codec on CPU. The older `timing-aux-pool` artifact is a different experiment;
-do not substitute it here. If a run lacks the Local GPU artifact or is still
-building, wait for a complete successful pair before continuing.
+### Run
 
-Sign in to GitHub if asked. Save both downloads in your user's `Downloads`
-folder with those exact names plus `.zip` (remove browser-added `(1)` suffixes).
-If your browser uses another download folder, change `$MossDownloads` below.
-
-**Artifacts expire after 30 days.** If a link is unavailable, open
-[Native MOSS timing build](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/workflows/native-moss-build.yml),
-choose a successful run, and download **both named artifacts from that same
-run** from its Artifacts section. Do not mix runs or use the ordinary upstream
-release as one half of this comparison. If no complete pair is available, a
-maintainer must run the workflow again; stop here rather than substitute a build.
-
-Each GitHub download is an **outer ZIP containing an inner ZIP and its checksum**.
-This block extracts both layers, verifies the inner ZIP checksums, and keeps
-each runtime in its own new folder. It never replaces the app's installed runtime.
+After updating the checkout with `git pull`, run this **single PowerShell command**:
 
 ```powershell
-$ErrorActionPreference = 'Stop'
-$MossDownloads = Join-Path $env:USERPROFILE 'Downloads'
-$MossWork = Join-Path $MossDownloads ("moss-native-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-if (Test-Path -LiteralPath $MossWork) { throw "Folder already exists: $MossWork. Run this block again after a second." }
-foreach ($Variant in @('timing', 'timing-local-gpu')) {
-    $Name = "moss-native-$Variant-windows-x64"
-    $Outer = Join-Path $MossDownloads "$Name.zip"
-    if (-not (Test-Path -LiteralPath $Outer -PathType Leaf)) { throw "Download is missing: $Outer" }
-    $Downloaded = Join-Path $MossWork "$Variant\download"
-    Expand-Archive -LiteralPath $Outer -DestinationPath $Downloaded
-    $Inner = Join-Path $Downloaded "$Name.zip"
-    $Expected = (Get-Content -LiteralPath "$Inner.sha256" -Raw).Trim()
-    if ((Get-FileHash -LiteralPath $Inner -Algorithm SHA256).Hash -ne $Expected) {
-        throw "Checksum mismatch: $Inner. Download that artifact again; do not run it."
-    }
-    Expand-Archive -LiteralPath $Inner -DestinationPath (Join-Path $MossWork "$Variant\runtime")
-}
-$MossBaseline = Join-Path $MossWork 'timing\runtime\moss-tts-server.exe'
-$MossCandidate = Join-Path $MossWork 'timing-local-gpu\runtime\moss-tts-server.exe'
-Write-Host "Baseline:  $MossBaseline"
-Write-Host "Candidate: $MossCandidate"
+uv run --frozen python -m scripts.moss_native_compare
 ```
 
-Keep all extracted files, including DLLs, `VNTTS-BUILD.json` and notices, together.
-Do not move just the EXE. Confirm both programs start **without loading weights**:
+It installs any missing locked Python dependencies, then:
+
+1. Checks and extracts both ZIP layers into a new `Downloads/moss-native-...`
+   folder, keeping the DLLs and manifests together. Verifies checksums, matching
+   build provenance and exact EXE versions using short, timed `--version` calls.
+2. Reads the saved GGUF location and Narrator reference, checks audible PCM16
+   mono speech (1–30 seconds), and snapshots the reference for the comparison.
+3. Runs **12 generations**, using one owned server at a time:
+   baseline, candidate, candidate, baseline; three phrases per server.
+   Each server is shut down before the next one starts.
+4. Prints `Comparison archive:` with the ZIP to send back. Nothing is uploaded.
+
+No separate server-start, warm-up or application-launch command is needed.
+The first request includes reference encoding; later requests are measured
+separately. Expect several minutes. Keep other model applications closed.
+
+**To cancel:** press Ctrl+C once and wait for cleanup and partial-report writing.
+Do not close/force-kill the terminal while cleanup is running. Normal completion,
+handled errors and Ctrl+C run owned-server cleanup; forcibly terminating the
+Python process or closing the terminal is not a guaranteed cleanup path.
+
+### Optional paths and retrying
+
+Only if Downloads is elsewhere:
 
 ```powershell
-foreach ($Entry in @(
-    @($MossBaseline, 'openmoss 0.3.0-vntts-timing1'),
-    @($MossCandidate, 'openmoss 0.3.0-vntts-timing1-localgpu')
-)) {
-    if (-not (Test-Path -LiteralPath $Entry[0] -PathType Leaf)) { throw "EXE is missing: $($Entry[0])" }
-    $Version = (& $Entry[0] --version | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $Version -ne $Entry[1]) {
-        throw "Native startup failed or wrong build: $($Entry[0]); exit=$LASTEXITCODE; version=$Version. Check full extraction and the Visual C++ x64 runtime."
-    }
-    Write-Host $Version
-}
+uv run --frozen python -m scripts.moss_native_compare --downloads "D:\Downloads"
 ```
 
-Expected: the two exact version strings above. A build/startup pass is not an
-audio or GPU-performance qualification.
-
-### 3. Locate the weights and narrator reference
-
-**The downloaded artifacts contain no model weights.** You need both
-`moss-tts-local-1.5-q8_0.gguf` and
-`moss-tts-local-1.5-q8_0.extras.gguf` in the same folder (about 9.1 GB total).
-An MLX model directory is not this weight pair.
-
-If MOSS already generates speech in VNTTS on this Windows PC, reuse its files.
-The block below first checks the same model location the app uses; it asks for
-an existing main GGUF path only if that file is absent. Paste paths without quotes.
+Only if the saved model or narrator is not the one you want:
 
 ```powershell
-$MossModel = (uv run --no-sync python -c "from vntts.moss_cpp_installation import configured_paths; from vntts.settings import load_app_settings; print(configured_paths(load_app_settings().tts_model)[1])" | Out-String).Trim()
-if ($LASTEXITCODE -ne 0) { throw 'Could not read the configured model location.' }
-Write-Host "Configured model: $MossModel"
-if (-not (Test-Path -LiteralPath $MossModel -PathType Leaf)) {
-    $MossModel = Read-Host 'Paste the full path of your existing main .gguf file (not .extras.gguf)'
-}
-if ([IO.Path]::GetExtension($MossModel) -ne '.gguf' -or $MossModel.EndsWith('.extras.gguf')) {
-    throw 'Choose the main .gguf, not an MLX directory or .extras.gguf.'
-}
-$MossSidecar = [IO.Path]::ChangeExtension($MossModel, '.extras.gguf')
-foreach ($File in @($MossModel, $MossSidecar)) {
-    if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { throw "Required weight file is missing: $File" }
-}
+uv run --frozen python -m scripts.moss_native_compare --model "D:\Models\moss-tts-local-1.5-q8_0.gguf" --reference "D:\Voices\centurion.wav"
 ```
 
-If you have **neither weight file**, do not continue this benchmark. Run
-`uv run vntts-app`, select **MOSS-TTS Local v1.5**, and complete its normal first
-speech setup; on Windows x64 the app downloads/verifies the native runtime and
-both weights, with progress (about 9.1 GB of weights). Then close the app and
-repeat this step. If you use custom runtime/model environment overrides, normal
-setup may intentionally not download them; use your existing configured GGUF
-pair or remove those overrides in a fresh shell before ordinary setup.
+These are **alternatives**, not additional steps. A retry uses the same command
+and creates a fresh folder; there are no shell variables to restore. Existing
+outputs are never overwritten. A missing/invalid input is reported before
+generation; fix the named file or saved voice instead of bypassing its check.
+The sidecar must be next to the main model, named `<model>.extras.gguf`.
 
-By default, the benchmark uses the **saved Narrator assignment**, which must
-resolve to exactly one existing spoken reference WAV: **PCM16 mono, 1–30 seconds**,
-with audible speech. A selected character name
-alone or a Pocket preset is not sufficient. Save the game narrator selection in
-VNTTS first, or add `--reference` with an explicit usable spoken WAV as shown
-below. The script checks the reference before starting a server, snapshots it,
-and uses that same audio for both builds. It does not silently select another
-voice. If preflight rejects a silent/too-short reference, choose a usable spoken
-one; do not bypass that check.
+Keep the default `--gpu-layers -1`. This candidate requires a GPU; do not use
+`--gpu-layers 0` or enable the full auxiliary codec on GPU. No CUDA Python or
+MLX environment is needed for this C++/Vulkan test.
 
-### 4. Run the comparison
+### Results
 
-Keep the same PowerShell window so the paths above are still defined:
+Send the single ZIP printed as **Comparison archive**. It contains timings,
+available CPU/RSS/GPU measurements, binary identities, reports and generated
+speech. It excludes weights and the original reference, but reports contain
+local paths. The unarchived reference snapshot stays in your work folder.
 
-```powershell
-$MossOutput = Join-Path $MossWork ("comparison-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-uv run --no-sync python -m scripts.moss_native_compare --baseline "$MossBaseline" --candidate "$MossCandidate" --model "$MossModel" --output "$MossOutput"
-Write-Host "Exit code: $LASTEXITCODE"
-Write-Host "Results: $MossOutput"
-Write-Host "Archive: $MossOutput.zip"
-```
+- Exit 0: all 12 requests completed technically, **not** acoustic approval.
+- Exit 1: failure; read the printed reason. Partial results are retained.
+- Exit 130: interrupted; existing results are retained.
+- ZIP creation failure: reports remain in the output folder; resolve the cause
+  (for example, full disk) before retrying.
+- Startup/DLL error: verify the Visual C++ runtime and download an intact pair.
+- Suspected leftover from an older run: close the app and check Task Manager
+  before retrying. This command does not kill unrelated existing servers.
 
-For an explicit reference, **before running that command**, set
-`$MossReference = Read-Host 'Full path to the spoken reference WAV'` and append
-`--reference "$MossReference"` to the `uv run` line. Do not run both commands.
-Keep the default `--gpu-layers -1` for this experiment. Both builds receive
-the CPU-auxiliary setting, but the Local GPU candidate overrides placement
-only for its audio-frame model. Its codec and input embeddings remain on CPU.
-The candidate requires a GPU; `--gpu-layers 0` is not supported by this build.
-No separate CUDA Python environment or MLX installation is needed.
+After sending results, the printed `moss-native-...` work folder may be deleted
+when no comparison is running; it contains extracted experimental binaries,
+the reference snapshot and results, not the installed app or model weights.
 
-There are **12 generations**: baseline, candidate, candidate, baseline, with
-three identical phrases per fresh server, seed 1, production native stable
-sampling and synthesis caches bypassed. Startup and the first request are
-separate from warm requests. Process-cold does not mean cleared OS/disk caches.
-Expect several minutes. Do not start
-another model while measuring. Ctrl+C stops the run and preserves partial results
-once cleanup finishes; allow it to finish writing rather than killing the shell.
-
-### 5. Results and recovery
-
-Send the **single ZIP printed as `Comparison archive:`**. It contains per-run
-reports, timings, available CPU/RSS measurements, input/binary/DLL identities and
-generated WAVs. It excludes weights and original reference audio; reports still
-contain local paths. Nothing is uploaded automatically.
-
-- Exit 0: all 12 requests completed technically. This is **not** voice approval.
-- Exit 1: a failed/limited request, missing file, mismatched build, or another
-  technical failure. Read the printed error; partial reports/audio are retained.
-- Exit 130: interrupted. Partial results are retained where output was created.
-- Missing EXE: recheck step 2 and the printed path; `git pull` cannot install it.
-- Missing GGUF/sidecar: complete step 3; do not install MLX to solve this.
-- Invalid saved Narrator: supply `--reference` as described in step 4.
-- Existing output directory/archive: rerun step 4 for a new timestamp. Do not
-  delete previous results merely to retry.
-- Checksum/build mismatch: obtain an intact same-run pair; do not bypass checks.
-- If ZIP creation fails (for example, full disk), reports already written remain
-  in the output directory. Resolve the reported cause before another run.
-
-Failed/limited cases do not count as speed gains. Exact WAV equality is reported,
-but the API does not expose codec codes. These measurements do not by themselves
-prove acoustic quality, cancellation safety, idle CPU behavior or leak-free
-real-model load/unload. Keep the installed default runtime unchanged until those
-qualification gates pass.
+For developers comparing other trusted, already extracted builds, the existing
+advanced interface remains: `--baseline PATH --candidate PATH --model PATH
+--output NEW_FOLDER` (and optional `--reference PATH`). Explicit EXE mode skips
+archive and version checks; it compares manifest source identities only when
+both manifests exist. It is not the validated download setup described above.
+Ordinary users need none of these EXE paths.
+Failed/limited generations never count as speed gains; real Windows audio,
+memory and shutdown qualification is still required before adopting the variant.
 
 ## Native patch details
 
@@ -212,11 +130,9 @@ Windows Vulkan artifact from these exact revisions. It checks startup without
 loading weights; that is not GPU, performance or audio-quality qualification.
 It never publishes a release or changes VNTTS's automatic runtime installer.
 
-For a controlled test, extract the entire archive into a separate directory,
-keeping its DLLs beside the EXE. Use the existing `scripts/run-moss-windows.ps1`
-with `-Server` pointing to that EXE and `-Model` pointing to the existing GGUF.
-Leave `-CodecOnGpu` unset on the 8 GB test GPU. Exit that shell afterwards to
-discard its runtime overrides. Do not overwrite the managed runtime folder.
+For the controlled test, use the comparison command above. The separate
+`scripts/run-moss-windows.ps1` launcher opens an interactive app; it is **not**
+a prerequisite for the comparison. Do not overwrite the managed runtime folder.
 
 ## Experimental Local audio-frame model on GPU
 
