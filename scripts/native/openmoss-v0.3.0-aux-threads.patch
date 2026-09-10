@@ -122,7 +122,7 @@ index 47852a6..4bd47b4 100644
  # VNTTS modification: verifies the diagnostic build selection without a model.
  add_executable(moss-local-gpu-check moss_local_gpu_check.cpp)
 diff --git a/tests/moss_aux_pool_check.cpp b/tests/moss_aux_pool_check.cpp
-index 8ad7174..557367e 100644
+index 8ad7174..71339f8 100644
 --- a/tests/moss_aux_pool_check.cpp
 +++ b/tests/moss_aux_pool_check.cpp
 @@ -18,11 +18,11 @@ struct Graph {
@@ -140,10 +140,14 @@ index 8ad7174..557367e 100644
          ggml_init_params params{};
          params.mem_size = 16 * ggml_tensor_overhead() + ggml_graph_overhead();
          params.no_alloc = true;
-@@ -57,20 +57,32 @@ int main() {
+@@ -56,21 +56,33 @@ struct Graph {
+ int main() {
      try {
          double baseline_s = 0, candidate_s = 0;
-         constexpr int cycles = 4, runs = 50;
+-        constexpr int cycles = 4, runs = 50;
++        // Correctness smoke, not a benchmark: exercise each order twice per owner.
++        // Repeated identical-input runs are costly on constrained CI runners.
++        constexpr int cycles = 4, runs = 4;
 +        constexpr int baseline_threads = 4;
 +        constexpr int candidate_threads = openmoss::Model::Aux::cpu_threads();
 +        static_assert(candidate_threads >= 1 && candidate_threads <= 16,
@@ -169,10 +173,8 @@ index 8ad7174..557367e 100644
 +            require(pool == nullptr, "persistent pool unexpectedly attached");
  #endif
              for (int i = 0; i < runs; ++i) {
-+                if (i % 10 == 0) {
-+                    std::fprintf(stderr, "aux CPU check: alternating run %d/%d\n", i + 1, runs);
-+                    std::fflush(stderr);
-+                }
++                std::fprintf(stderr, "aux CPU check: alternating run %d/%d\n", i + 1, runs);
++                std::fflush(stderr);
                  // Alternate order; these are synthetic timings, not a speech gate.
                  for (bool use_candidate : {bool(i % 2), !bool(i % 2)}) {
                      const auto start = std::chrono::steady_clock::now();
