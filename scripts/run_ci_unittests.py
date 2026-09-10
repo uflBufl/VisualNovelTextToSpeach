@@ -169,7 +169,9 @@ def _run_sharded_full_discovery(system):
                             file=sys.stderr,
                         )
                 return completed.returncode
-    print(f"Ran all {len(test_ids)} exact discovered tests once in {len(shards)} shards")
+    print(
+        f"Ran all {len(test_ids)} exact discovered tests once in {len(shards)} shards"
+    )
     return 0
 
 
