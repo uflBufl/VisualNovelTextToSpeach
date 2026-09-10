@@ -1,42 +1,13 @@
 # Opt-in native MOSS timing build
 
-## Next experiment: four versus eight CPU codec workers
+## Windows: compare four versus eight CPU codec workers
 
-Use this after the Local GPU comparison, whose three candidate clips are already
+This is an **opt-in developer comparison**, not normal app setup. Use it after
+the Local GPU comparison, whose three candidate clips are already
 accepted. This changes **only CPU auxiliary worker count**; both builds keep
 Local audio-frame generation on GPU, codec/reference encoding on CPU and the
 persistent CPU pool OFF. More workers are an experiment, not a promised speedup.
-
-Update the checkout with `git pull`. From one successful
-[Native MOSS timing build run](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/workflows/native-moss-build.yml),
-download these two ZIPs into Downloads, without extracting or launching them:
-
-- `moss-native-timing-local-gpu-windows-x64.zip` (four workers, baseline)
-- `moss-native-timing-local-gpu-aux8-windows-x64.zip` (eight workers, candidate)
-
-Use a fresh matching pair, not the earlier baseline ZIP: the manifests now also
-identify the auxiliary-thread patch. Close VNTTS, then run:
-
-```powershell
-uv run --frozen python -m scripts.moss_native_compare --experiment codec-threads
-```
-
-The existing saved GGUF/reference and all safety checks below apply. It performs
-12 fresh generations, shuts down each owned server, and prints one comparison
-archive to send. Reports now include original-process exit confirmation;
-missing confirmation is never inferred from an empty error list. Ctrl+C once
-stops the run and preserves partial results after cleanup.
-
-We compare codec/reference time, total time, memory and exact WAV identity.
-If output is byte-identical to accepted audio, do not request the same listening
-again. Otherwise acoustic approval remains necessary. Keep the installed
-production runtime unchanged until the experiment passes.
-
-## Windows: download two ZIPs, run one command
-
-This is an **opt-in developer comparison**, not normal app setup. It compares
-the existing CPU audio-frame model with the experimental Local GPU variant;
-the waveform codec stays on CPU. Production settings are not changed.
+Production settings are not changed.
 
 ### Before starting
 
@@ -55,12 +26,13 @@ This comparison does not download weights or silently substitute a voice.
 Open [Native MOSS timing build](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/workflows/native-moss-build.yml).
 From **one successful run**, save these two artifacts in Downloads:
 
-- `moss-native-timing-windows-x64.zip`
-- `moss-native-timing-local-gpu-windows-x64.zip`
+- `moss-native-timing-local-gpu-windows-x64.zip` (four workers, baseline)
+- `moss-native-timing-local-gpu-aux8-windows-x64.zip` (eight workers, candidate)
 
 Keep the exact names; remove browser-added `(1)` suffixes. **Do not extract them**
-and do not launch any EXE manually. The `timing-aux-pool` artifact is a different
-experiment, not this candidate. Artifacts expire after 30 days; if missing,
+and do not launch any EXE manually. Neither `timing` nor `timing-aux-pool` is
+part of this comparison. Use a fresh matching pair: both manifests must identify
+the auxiliary-thread patch. Artifacts expire after 30 days; if missing,
 choose another successful run containing both variants, never mix runs.
 The tool compares source and patch identities, not GitHub run IDs; select the
 pair from one run yourself even when two runs use the same source commit.
@@ -70,8 +42,13 @@ pair from one run yourself even when two runs use the same source commit.
 After updating the checkout with `git pull`, run this **single PowerShell command**:
 
 ```powershell
-uv run --frozen python -m scripts.moss_native_compare
+uv run --frozen python -m scripts.moss_native_compare --experiment codec-threads
 ```
+
+Keep `--experiment codec-threads` in the command. Omitting it runs the older
+Local GPU OFF/ON comparison, with four workers in both builds, not this test.
+Use this checkout's guide; README copies bundled in older ZIPs are snapshots
+and may still describe that earlier experiment.
 
 It installs any missing locked Python dependencies, then:
 
@@ -82,7 +59,8 @@ It installs any missing locked Python dependencies, then:
    mono speech (1–30 seconds), and snapshots the reference for the comparison.
 3. Runs **12 generations**, using one owned server at a time:
    baseline, candidate, candidate, baseline; three phrases per server.
-   Each server is shut down before the next one starts.
+   Each server is shut down before the next one starts. Reports record exit
+   confirmation for every observed owned process, including replacement servers.
 4. Prints `Comparison archive:` with the ZIP to send back. Nothing is uploaded.
 
 No separate server-start, warm-up or application-launch command is needed.
@@ -99,13 +77,13 @@ Python process or closing the terminal is not a guaranteed cleanup path.
 Only if Downloads is elsewhere:
 
 ```powershell
-uv run --frozen python -m scripts.moss_native_compare --downloads "D:\Downloads"
+uv run --frozen python -m scripts.moss_native_compare --experiment codec-threads --downloads "D:\Downloads"
 ```
 
 Only if the saved model or narrator is not the one you want:
 
 ```powershell
-uv run --frozen python -m scripts.moss_native_compare --model "D:\Models\moss-tts-local-1.5-q8_0.gguf" --reference "D:\Voices\centurion.wav"
+uv run --frozen python -m scripts.moss_native_compare --experiment codec-threads --model "D:\Models\moss-tts-local-1.5-q8_0.gguf" --reference "D:\Voices\centurion.wav"
 ```
 
 These are **alternatives**, not additional steps. A retry uses the same command
@@ -124,6 +102,11 @@ Send the single ZIP printed as **Comparison archive**. It contains timings,
 available CPU/RSS/GPU measurements, binary identities, reports and generated
 speech. It excludes weights and the original reference, but reports contain
 local paths. The unarchived reference snapshot stays in your work folder.
+
+We compare codec/reference time, total time, memory and exact WAV identity.
+Byte-identical output keeps its existing listening approval; changed audio needs
+listening. Missing process-exit confirmation is not inferred from an empty error
+list. Keep the installed production runtime unchanged until qualification passes.
 
 - Exit 0: all 12 requests completed technically, **not** acoustic approval.
 - Exit 1: failure; read the printed reason. Partial results are retained.
@@ -170,7 +153,8 @@ a prerequisite for the comparison. Do not overwrite the managed runtime folder.
 
 The `timing-local-gpu` build enables `OPENMOSS_LOCAL_GPU` (default OFF) and
 identifies itself as `0.3.0-vntts-timing1-localgpu`. All builds apply the same
-two pinned patches; only the feature options differ. Both patch hashes are
+three pinned patches (timings, Local GPU and auxiliary threads); only the feature
+options differ. All three patch hashes are
 included in the build manifest and must match across a comparison pair.
 
 This candidate keeps CPU-owned input embeddings and the waveform codec, but
@@ -252,8 +236,11 @@ Auxiliary graph calls already synchronize and return host data.
 
 In this pinned runtime, CPU graph planning defaults to four threads for main
 model CPU work, and the separate auxiliary backend also defaults to four. No
-thread CLI is exposed. Increasing thread counts or moving the full auxiliary
-sidecar to GPU requires a separate measured change; neither is done here.
+thread CLI is exposed. The `timing-local-gpu-aux8` build sets
+`OPENMOSS_AUX_CPU_THREADS=8` and identifies itself as
+`0.3.0-vntts-timing1-localgpu-aux8`; only auxiliary workers change, not main-model
+CPU threads. Moving the full auxiliary sidecar to GPU remains a separate,
+unqualified change.
 
 ## Third-party notices
 
