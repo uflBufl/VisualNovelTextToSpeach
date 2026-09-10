@@ -1,13 +1,12 @@
 # Opt-in native MOSS timing build
 
-## Windows: compare four versus eight CPU codec workers
+## Windows adaptive runtime
 
-This is an **opt-in developer comparison**, not normal app setup. Use it after
-the Local GPU comparison, whose three candidate clips are already
-accepted. This changes **only CPU auxiliary worker count**; both builds keep
-Local audio-frame generation on GPU, codec/reference encoding on CPU and the
-persistent CPU pool OFF. More workers are an experiment, not a promised speedup.
-Production settings are not changed.
+This is an **opt-in developer runtime**, not normal app setup. One Windows x64
+Vulkan build selects its auxiliary CPU worker count and Local audio-frame GPU
+placement at process start. It never switches a loaded model in place: fallback
+is an owned-server restart without `--local-gpu`. The persistent CPU pool stays
+OFF and remains a separate experiment.
 
 ### Before starting
 
@@ -24,111 +23,52 @@ This comparison does not download weights or silently substitute a voice.
 ### Download
 
 Open [Native MOSS timing build](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/workflows/native-moss-build.yml).
-From **one successful run**, save these two artifacts in Downloads:
+From one successful run, save `moss-native-timing-adaptive-windows-x64.zip`.
+Keep the exact name and do not mix it with older `timing-local-gpu` or `aux8`
+artifacts. Its `VNTTS-BUILD.json` records the pinned sources, patch hashes and
+runtime-control bounds.
 
-- `moss-native-timing-local-gpu-windows-x64.zip` (four workers, baseline)
-- `moss-native-timing-local-gpu-aux8-windows-x64.zip` (eight workers, candidate)
+Before loading weights, inspect the machine-readable contract:
 
-Keep the exact names; remove browser-added `(1)` suffixes. **Do not extract them**
-and do not launch any EXE manually. Neither `timing` nor `timing-aux-pool` is
-part of this comparison. Use a fresh matching pair: both manifests must identify
-the auxiliary-thread patch. Artifacts expire after 30 days; if missing,
-choose another successful run containing both variants, never mix runs.
-The tool compares source and patch identities, not GitHub run IDs; select the
-pair from one run yourself even when two runs use the same source commit.
+```powershell
+.\moss-tts-server.exe --capabilities-json
+```
+
+It emits schema `vntts.openmoss.capabilities`, version `1`, and booleans
+`vulkan_optional`, `vulkan_available`, `local_gpu`, `aux_cpu_threads`, plus
+default/min/max thread fields. `local_gpu` means the binary compiled the path;
+`vulkan_available` is no-model backend-device enumeration for this machine.
+The adaptive Python contract is already present, but the pinned v0.3.0 runtime
+remains legacy until an immutable adaptive runtime release is available.
 
 ### Run
 
-After updating the checkout with `git pull`, run this **single PowerShell command**:
+The native server accepts these process-start controls:
 
-```powershell
-uv run --frozen python -m scripts.moss_native_compare --experiment codec-threads
+```text
+--aux-cpu --aux-cpu-threads N    N is 1..16; default is 4
+--aux-cpu --local-gpu            Local decoder only, on the selected Vulkan device
 ```
 
-Keep `--experiment codec-threads` in the command. Omitting it runs the older
-Local GPU OFF/ON comparison, with four workers in both builds, not this test.
-Use this checkout's guide; README copies bundled in older ZIPs are snapshots
-and may still describe that earlier experiment.
+`--aux-cpu-threads` other than the default and `--local-gpu` both require
+`--aux-cpu`; Local GPU also requires a GPU backbone (`--n-gpu-layers` must not
+be `0`). Bad startup controls print exactly
+`VNTTS_STARTUP_FAILURE_JSON={"category":"..."}`. Eligible Local GPU categories
+are `local_gpu`, `vulkan_device`, and `vulkan_allocation`. Failures while
+creating or loading the optional Local GPU owner are `local_gpu`, so the retry
+keeps the backbone placement and moves only Local to CPU; model corruption and
+ordinary request failures are not classified as fallback candidates.
 
-It installs any missing locked Python dependencies, then:
+The existing two-artifact `moss_native_compare` workflow intentionally remains
+for the legacy runtime until the immutable adaptive runtime is released. Do not
+feed it this single adaptive artifact yet. The native contract is safe to inspect with
+`--version`, `--help`, and `--capabilities-json` without model weights.
 
-1. Checks and extracts both ZIP layers into a new `Downloads/moss-native-...`
-   folder, keeping the DLLs and manifests together. Verifies checksums, matching
-   build provenance and exact EXE versions using short, timed `--version` calls.
-2. Reads the saved GGUF location and Narrator reference, checks audible PCM16
-   mono speech (1–30 seconds), and snapshots the reference for the comparison.
-3. Runs **12 generations**, using one owned server at a time:
-   baseline, candidate, candidate, baseline; three phrases per server.
-   Each server is shut down before the next one starts. Reports record exit
-   confirmation for every observed owned process, including replacement servers.
-4. Prints `Comparison archive:` with the ZIP to send back. Nothing is uploaded.
-
-No separate server-start, warm-up or application-launch command is needed.
-The first request includes reference encoding; later requests are measured
-separately. Expect several minutes. Keep other model applications closed.
-
-**To cancel:** press Ctrl+C once and wait for cleanup and partial-report writing.
-Do not close/force-kill the terminal while cleanup is running. Normal completion,
-handled errors and Ctrl+C run owned-server cleanup; forcibly terminating the
-Python process or closing the terminal is not a guaranteed cleanup path.
-
-### Optional paths and retrying
-
-Only if Downloads is elsewhere:
-
-```powershell
-uv run --frozen python -m scripts.moss_native_compare --experiment codec-threads --downloads "D:\Downloads"
-```
-
-Only if the saved model or narrator is not the one you want:
-
-```powershell
-uv run --frozen python -m scripts.moss_native_compare --experiment codec-threads --model "D:\Models\moss-tts-local-1.5-q8_0.gguf" --reference "D:\Voices\centurion.wav"
-```
-
-These are **alternatives**, not additional steps. A retry uses the same command
-and creates a fresh folder; there are no shell variables to restore. Existing
-outputs are never overwritten. A missing/invalid input is reported before
-generation; fix the named file or saved voice instead of bypassing its check.
-The sidecar must be next to the main model, named `<model>.extras.gguf`.
-
-Keep the default `--gpu-layers -1`. This candidate requires a GPU; do not use
-`--gpu-layers 0` or enable the full auxiliary codec on GPU. No CUDA Python or
-MLX environment is needed for this C++/Vulkan test.
-
-### Results
-
-Send the single ZIP printed as **Comparison archive**. It contains timings,
-available CPU/RSS/GPU measurements, binary identities, reports and generated
-speech. It excludes weights and the original reference, but reports contain
-local paths. The unarchived reference snapshot stays in your work folder.
-
-We compare codec/reference time, total time, memory and exact WAV identity.
-Byte-identical output keeps its existing listening approval; changed audio needs
-listening. Missing process-exit confirmation is not inferred from an empty error
-list. Keep the installed production runtime unchanged until qualification passes.
-
-- Exit 0: all 12 requests completed technically, **not** acoustic approval.
-- Exit 1: failure; read the printed reason. Partial results are retained.
-- Exit 130: interrupted; existing results are retained.
-- ZIP creation failure: reports remain in the output folder; resolve the cause
-  (for example, full disk) before retrying.
-- Startup/DLL error: verify the Visual C++ runtime and download an intact pair.
-- Suspected leftover from an older run: close the app and check Task Manager
-  before retrying. This command does not kill unrelated existing servers.
-
-After sending results, the printed `moss-native-...` work folder may be deleted
-when no comparison is running; it contains extracted experimental binaries,
-the reference snapshot and results, not the installed app or model weights.
-
-For developers comparing other trusted, already extracted builds, the existing
-advanced interface remains: `--baseline PATH --candidate PATH --model PATH
---output NEW_FOLDER` (and optional `--reference PATH`). Explicit EXE mode skips
-archive and version checks; it compares manifest source identities only when
-both manifests exist. It is not the validated download setup described above.
-Ordinary users need none of these EXE paths.
-Failed/limited generations never count as speed gains; real Windows audio,
-memory and shutdown qualification is still required before adopting the variant.
+Windows qualification still needs a real Local v1.5 GGUF pair, a Vulkan-capable
+device and an owned-process restart test: CPU Local with 4 and 8 workers must
+remain byte-identical; Local GPU with 8 workers needs resource, technical and
+listening approval. CI compilation and no-model checks do not prove GPU kernels,
+VRAM headroom, model ownership or speech quality.
 
 ## Native patch details
 
@@ -151,11 +91,10 @@ a prerequisite for the comparison. Do not overwrite the managed runtime folder.
 
 ## Experimental Local audio-frame model on GPU
 
-The `timing-local-gpu` build enables `OPENMOSS_LOCAL_GPU` (default OFF) and
-identifies itself as `0.3.0-vntts-timing1-localgpu`. All builds apply the same
-three pinned patches (timings, Local GPU and auxiliary threads); only the feature
-options differ. All three patch hashes are
-included in the build manifest and must match across a comparison pair.
+The `timing-adaptive` build compiles both CPU and Local GPU paths. `--local-gpu`
+selects the separate Local decoder owner at model load; omitting it preserves the
+CPU Local path. The build identifies itself as `0.3.0-vntts-timing1`; the manifest
+records the pinned patch hashes and runtime-control bounds.
 
 This candidate keeps CPU-owned input embeddings and the waveform codec, but
 uses a separate GPU owner for the Local transformer, its text head and a copy
@@ -171,7 +110,7 @@ this candidate with a different model architecture or without a GPU.
 The separate GPU path checks graph operation support before execution and
 returns the backend and unsupported operation name instead of attempting it.
 
-`moss-local-gpu-check.exe` exercises selection and routing without model weights.
+`moss-local-gpu-check.exe` exercises runtime-control validation and routing without model weights.
 CI compilation and this check do not qualify GPU kernels, speech quality,
 real model ownership, VRAM headroom or speed. Compare fresh WAVs and resources
 on Windows before adoption; unlike the CPU pool test, different arithmetic
@@ -184,9 +123,9 @@ reference timing remains unavailable, not an inferred zero or proven cache hit.
 
 ## Experimental auxiliary CPU pool
 
-The workflow also produces a separate `timing-aux-pool` archive, identifying
-itself as `0.3.0-vntts-timing1-pool1`. Its only additional change is enabling
-`-DOPENMOSS_PERSISTENT_AUX_CPU_POOL=ON` (default `OFF`). The auxiliary CPU
+The adaptive workflow fixes `OPENMOSS_PERSISTENT_AUX_CPU_POOL=OFF`. A separate
+future pool experiment may enable it and identify itself as
+`0.3.0-vntts-timing1-pool1`. The auxiliary CPU
 backend retains its four workers across graphs instead of creating and joining
 them for every graph. Idle workers sleep (`poll=0`); the disposable baseline
 uses GGML's default polling policy. The Aux owner detaches and frees the pool
@@ -235,12 +174,9 @@ work can be charged to the following phase when the next output is read.
 Auxiliary graph calls already synchronize and return host data.
 
 In this pinned runtime, CPU graph planning defaults to four threads for main
-model CPU work, and the separate auxiliary backend also defaults to four. No
-thread CLI is exposed. The `timing-local-gpu-aux8` build sets
-`OPENMOSS_AUX_CPU_THREADS=8` and identifies itself as
-`0.3.0-vntts-timing1-localgpu-aux8`; only auxiliary workers change, not main-model
-CPU threads. Moving the full auxiliary sidecar to GPU remains a separate,
-unqualified change.
+model CPU work. `--aux-cpu-threads N` changes only the separate direct auxiliary
+CPU backend (default 4; supported range 1..16), not main-model CPU threads.
+Moving the full auxiliary sidecar to GPU remains a separate, unqualified change.
 
 ## Third-party notices
 
