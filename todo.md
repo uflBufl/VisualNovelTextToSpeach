@@ -3,18 +3,21 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P0 - Integrate the qualified Windows MOSS runtime
+
+- [ ] Publish the Local GPU, eight-auxiliary-worker Windows x64 runtime as a
+      durable, immutable release asset. Do not use expiring Actions artifacts
+      or replace the installed runtime before publication is explicitly approved.
+- [ ] Point automatic MOSS setup at the published asset with its exact version,
+      byte size and SHA-256. Verify the selected runtime reports Local GPU and
+      eight auxiliary workers instead of accepting any executable whose `--help`
+      succeeds.
+- [ ] Qualify a clean install, reuse, interrupted-download recovery and one real
+      preview through `uv run vntts-app` before making the runtime the default.
+      Preserve the current pinned upstream runtime until these gates pass.
+
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Qualify four versus eight CPU auxiliary workers on the Windows target.
-      Both builds use Local GPU with the persistent CPU pool OFF. Download a
-      matching fresh pair of `timing-local-gpu` and `timing-local-gpu-aux8` ZIPs
-      and run `uv run --frozen python -m scripts.moss_native_compare --experiment codec-threads`.
-  - Require warm codec/total improvement without output or memory regression;
-    inspect first-use reference encoding separately and confirm owned processes
-    exited. CI's tiny graph smoke is correctness evidence, not target-PC speed.
-  - Compare WAV hashes against the three accepted Local GPU clips before asking
-    for more listening. Keep four workers if eight do not improve the result;
-    do not change production defaults before the remaining lifetime gates below.
 - [ ] Verify successful preview replay on Windows with the qualified native profile;
       reuse the saved WAV without a new generation. Request another support export
       only for an unresolved problem, not to repeat already measured retry/device
@@ -42,10 +45,6 @@ measurements in agent memory and completed-work history in Git, not here.
     `response_pcm_decode_s` to distinguish client work from native execution.
     Add a reference-conversion cache only if Windows measurements justify it;
     server and registered reference-code reuse already exist.
-  - For CPU thread tuning, change and qualify the native runtime first: pinned
-    openmoss v0.3.0 exposes no thread CLI option. Python/PyTorch thread or CUDA
-    settings do not tune this C++/Vulkan runtime. Preserve server-lifetime
-    reference-code reuse and intentional cancellation/error teardown.
   - Before adopting the CPU-pool candidate, qualify safe shutdown/cancellation,
     idle CPU/RSS and CPU-only behavior. Reuse the completed ABBA measurements;
     do not repeat the same comparison unless the implementation changes.
