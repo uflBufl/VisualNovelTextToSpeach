@@ -120,6 +120,7 @@ def summarize(runs):
                     if valid
                     else None
                     for key in (
+                        "reference_encoding_s",
                         "prefill_s",
                         "gen_s",
                         "gen_backbone_s",

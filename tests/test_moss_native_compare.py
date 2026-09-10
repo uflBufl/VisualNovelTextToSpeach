@@ -48,6 +48,45 @@ class _LimitedBackend(_FakeBackend):
 
 
 class MossNativeCompareTest(unittest.TestCase):
+    def test_summary_retains_first_reference_encoding_without_inventing_cache_hits(
+        self,
+    ):
+        runs = [
+            {
+                "variant": variant,
+                "report": {
+                    "attempts": [
+                        {
+                            "text": text,
+                            "completion": "complete",
+                            "result": {"cache_source": "fresh-generation"},
+                            "raw_response": {"http_status": 200},
+                            "native": {"reference_encoding_s": 13.0}
+                            if index == 0
+                            else {},
+                        }
+                        for index, (_, text) in enumerate(probe.TEXTS)
+                    ]
+                },
+            }
+            for variant in compare.ORDER
+        ]
+        cases = compare.summarize(runs)["cases"]
+        for variant in ("baseline", "candidate"):
+            self.assertEqual(
+                cases[0][variant]["phases_seconds_median"]["reference_encoding_s"],
+                13.0,
+            )
+            self.assertIsNone(
+                cases[1][variant]["phases_seconds_median"]["reference_encoding_s"]
+            )
+        runs[0]["report"]["attempts"][0]["native"].clear()
+        self.assertIsNone(
+            compare.summarize(runs)["cases"][0]["baseline"]["phases_seconds_median"][
+                "reference_encoding_s"
+            ]
+        )
+
     def _options(self, root):
         reference = root / "reference.wav"
         reference.write_bytes(clean_wav_bytes())

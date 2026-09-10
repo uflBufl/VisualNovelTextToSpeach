@@ -11,6 +11,25 @@ measurements in agent memory and completed-work history in Git, not here.
       behavior. Acoustic quality remains a separate check from technical gates.
 - [ ] Optimize the measured native bottleneck: later completed requests spend
       about 61% in generation and 38% in CPU codec decoding.
+  - Reduce first-use reference encoding cost without duplicating the existing
+    server-lifetime code cache. Consider encoder acceleration or explicit
+    preparation only after separating first-use work from repeated synthesis.
+  - Evaluate selective native GPU placement, starting with tensor sizes and
+    temporary buffers for the Local frame decoder versus waveform codec.
+    Do not enable the whole auxiliary sidecar on the 8 GB target by default.
+    Gate any prototype on supported operations, memory headroom, unchanged
+    output quality, cancellation and measured end-to-end improvement.
+    Prototype a separate opt-in Local GPU owner for Local decoder weights and
+    audio embeddings, retaining CPU waveform codec and CPU input embeddings.
+    Compile and check ownership without a model first; qualify real Windows
+    VRAM, audio and latency before adoption. Preserve the default Aux path.
+  - Assess an isolated PyTorch Local 1.5 comparison (not the existing Delay 8B
+    adapter): quantify model/tokenizer memory first, then qualify quantization
+    and Turing-compatible precision before any target GPU render. Reuse the
+    reference and comparison reporting infrastructure; no automatic promotion.
+  - Select the implementation only after comparing cold/warm time, RAM/VRAM,
+    audio correctness and Windows installation complexity. Keep production
+    placement and sampling unchanged during experiments.
   - Use support-export `reference_prepare_s`, `http_round_trip_s` and
     `response_pcm_decode_s` to distinguish client work from native execution.
     Add a reference-conversion cache only if Windows measurements justify it;
