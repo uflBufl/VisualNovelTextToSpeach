@@ -12,8 +12,8 @@ from pathlib import Path
 from vntts.cli import cli_message
 
 SHARD_TIMEOUTS = {
-    "Darwin": {"qt-app": 180, "qt-assets": 60, "remainder": 900},
-    "Windows": {"qt-app": 180, "qt-assets": 60, "remainder": 900},
+    "Darwin": {"qt-app": 180, "qt-assets": 60, "qt-ocr": 60, "remainder": 900},
+    "Windows": {"qt-app": 180, "qt-assets": 60, "qt-ocr": 60, "remainder": 900},
 }
 
 
@@ -54,13 +54,24 @@ def partition_ui_test_ids(test_ids):
     assets = tuple(
         value for value in values if value.startswith("tests.test_asset_ui.")
     )
-    isolated = set((*app, *assets))
+    ocr = tuple(
+        value
+        for value in values
+        if value.startswith(("tests.test_ocr_corrections.", "tests.test_ocr_review."))
+    )
+    isolated = set((*app, *assets, *ocr))
     remainder = tuple(value for value in values if value not in isolated)
-    if not app or not assets or not remainder or isolated.intersection(remainder):
+    if (
+        not app
+        or not assets
+        or not ocr
+        or not remainder
+        or isolated.intersection(remainder)
+    ):
         raise ValueError("UI unittest shards are incomplete or overlap")
-    if sorted((*app, *assets, *remainder)) != sorted(values):
+    if sorted((*app, *assets, *ocr, *remainder)) != sorted(values):
         raise ValueError("UI unittest shards do not cover exact discovery")
-    return app, assets, remainder
+    return app, assets, ocr, remainder
 
 
 def _run_exact_test_file(path):
@@ -92,7 +103,7 @@ def _run_sharded_full_discovery(system):
     suite = unittest.defaultTestLoader.discover("tests", top_level_dir=".")
     test_ids = tuple(value.id() for value in _flatten_suite(suite))
     try:
-        app_ids, asset_ids, remainder_ids = partition_ui_test_ids(test_ids)
+        app_ids, asset_ids, ocr_ids, remainder_ids = partition_ui_test_ids(test_ids)
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
@@ -101,6 +112,7 @@ def _run_sharded_full_discovery(system):
         shards = (
             ("qt-app", app_ids),
             ("qt-assets", asset_ids),
+            ("qt-ocr", ocr_ids),
             ("remainder", remainder_ids),
         )
         for name, ids in shards:

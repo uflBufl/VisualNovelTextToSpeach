@@ -80,6 +80,9 @@ macOS MLX, explicit custom runtimes and Linux behavior outside this change.
       The runner now dumps thread stacks before its unchanged timeout; inspect
       the next failing transcript for leaked event/modal/worker state and fix
       only the demonstrated cause, then repeat the shard and runner tests.
+  - The Windows remainder shard also stalled in the asynchronous OCR-review
+    close test. OCR UI tests now run in their own process so prior Qt state cannot
+    contaminate them; inspect its focused stack if that shorter shard stalls.
 
 ## P2 - Automate the fresh-install player journey (deferred until UI redesign)
 
