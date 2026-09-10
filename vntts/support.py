@@ -497,7 +497,9 @@ _native_fields = frozenset(
     "gen_s decode_s logical_key attempt_id reason stage elapsed_ms backend profile "
     "cache_source text_characters text_words reference_s reference_sample_rate "
     "reference_channels sampling resources native_version model_key model_bytes "
-    "codec_bytes gpu_layers aux_cpu context_size http_status quality thresholds "
+    "codec_bytes gpu_layers aux_cpu local_gpu aux_cpu_threads fallback_reason "
+    "capability_version vulkan_available "
+    "context_size http_status quality thresholds "
     "native_error_hint exit_code reference_prepare_s http_round_trip_s "
     "response_pcm_decode_s gen_backbone_s gen_frame_decoder_s "
     "gen_input_embedding_s".split()

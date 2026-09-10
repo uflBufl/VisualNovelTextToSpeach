@@ -36,6 +36,56 @@ from vntts.speech_backend_runtime import _source_identity
 from vntts.support import native_speech_context, record_native_speech
 
 NATIVE_GENERATION_CONTRACT = "nonzero-seed-stable-1.7-v2"
+_MANAGED_STARTUP_FAILURE_PREFIX = "VNTTS_STARTUP_FAILURE_JSON="
+
+
+def _aux_cpu_workers(logical_count=None):
+    """Keep the native auxiliary work small enough to leave the game a core."""
+    try:
+        logical_count = os.cpu_count() if logical_count is None else logical_count
+        logical_count = int(logical_count)
+    except TypeError, ValueError:
+        logical_count = 1
+    if logical_count < 4:
+        return 1
+    if logical_count < 8:
+        return 2
+    if logical_count < 16:
+        return 4
+    return 8
+
+
+def _managed_runtime(model_name):
+    """Explicit server/model paths are advanced integrations, never guessed."""
+    return not (
+        os.environ.get("VNTTS_MOSS_CPP_EXECUTABLE")
+        or os.environ.get("VNTTS_MOSS_GGUF")
+        or str(model_name or "").lower().endswith(".gguf")
+    )
+
+
+def _startup_failure_category(path):
+    """Read the native machine-readable startup category, never free-form logs."""
+    if path is None:
+        return None
+    try:
+        with open(path, "rb") as log:
+            log.seek(0, os.SEEK_END)
+            log.seek(max(0, log.tell() - 64 * 1024))
+            output = log.read(64 * 1024).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(output.splitlines()):
+        if not line.startswith(_MANAGED_STARTUP_FAILURE_PREFIX):
+            continue
+        try:
+            category = json.loads(
+                line.removeprefix(_MANAGED_STARTUP_FAILURE_PREFIX)
+            ).get("category")
+        except AttributeError, json.JSONDecodeError:
+            return None
+        return category if isinstance(category, str) else None
+    return None
 
 
 def _diagnostic_file_size(path):
@@ -195,9 +245,18 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             model_name, cancellation=startup_cancellation, progress=startup_progress
         )
         self.executable, self.gguf, self.sidecar = moss_cpp_paths(model_name)
+        self._managed_runtime = _managed_runtime(model_name)
         self.gpu_layers = _integer_setting("VNTTS_MOSS_GPU_LAYERS", -1, -1, 1000)
         self.aux_cpu = _integer_setting("VNTTS_MOSS_AUX_CPU", 1, 0, 1)
         self.context_size = _integer_setting("VNTTS_MOSS_CONTEXT", 4096, 512, 131072)
+        self.local_gpu = False
+        self.aux_cpu_threads = None
+        self._managed_local_gpu = False
+        self._native_capabilities = None
+        self._adaptive_managed_runtime = False
+        self._fallback_category = None
+        self._fallback_used = False
+        self._effective_controls = None
         self.startup_timeout = float(startup_timeout)
         self.request_timeout = float(request_timeout)
         if not all(
@@ -222,15 +281,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self.startup_progress("Checking MOSS C++ model and audio codec...")
         # Bind generated audio to both weight files and the executable. GGUF and
         # MLX outputs must never share cache identity even with the same voice.
-        identity = (
-            "openmoss-cpp:"
-            + ":".join(
-                _source_identity(p) for p in (self.executable, self.gguf, self.sidecar)
-            )
-            + f":layers={self.gpu_layers}:aux_cpu={self.aux_cpu}:ctx={self.context_size}"
-            + f":{NATIVE_GENERATION_CONTRACT}"
+        self._source_identity = "openmoss-cpp:" + ":".join(
+            _source_identity(p) for p in (self.executable, self.gguf, self.sidecar)
         )
-        self._native_model_key = hashlib.sha256(identity.encode()).hexdigest()[:24]
+        self._native_model_key = hashlib.sha256(
+            self._source_identity.encode()
+        ).hexdigest()[:24]
         try:
             from vntts.runtime_installation import _run
 
@@ -243,10 +299,19 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self.voice_registry_supported = bool(
                 re.search(rb"(?:^|\s)--voice-dir(?:\s|$)", help_output)
             )
+            if self._managed_runtime:
+                capabilities = self._managed_capabilities(_run, help_output)
+                self._native_capabilities = capabilities
+                self._adaptive_managed_runtime = capabilities is not None
+                self._managed_local_gpu = bool(
+                    capabilities
+                    and capabilities.get("local_gpu") is True
+                    and capabilities.get("vulkan_available") is True
+                )
             self._start_server(self._startup_cancelled)
             super().__init__(
                 registry,
-                model_name=identity,
+                model_name=self._native_identity(),
                 model_factory=lambda *_args, **_kwargs: SimpleNamespace(
                     sample_rate=48000
                 ),
@@ -266,6 +331,103 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             else False
         )
 
+    def _managed_capabilities(self, run, help_output):
+        """Require the managed archive's small, versioned adaptation contract."""
+        if not re.search(rb"(?:^|\s)--capabilities-json(?:\s|$)", help_output):
+            return None  # Pinned v0.3.0: retain its existing managed behavior.
+        try:
+            payload = json.loads(
+                run(
+                    [str(self.executable), "--capabilities-json"],
+                    cancellation=self._startup_cancelled,
+                    timeout=min(30, self.startup_timeout),
+                    include_stderr=True,
+                )
+            )
+        except (TypeError, ValueError, TTSConfigurationError) as error:
+            raise TTSConfigurationError(
+                "Managed MOSS runtime does not provide valid capabilities JSON. "
+                "Install the current managed runtime."
+            ) from error
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema") != "vntts.openmoss.capabilities"
+            or payload.get("version") != 1
+            or payload.get("vulkan_optional") is not True
+        ):
+            raise TTSConfigurationError(
+                "Managed MOSS runtime capabilities do not support the required optional Vulkan path. "
+                "Install the current managed runtime."
+            )
+        if (
+            payload.get("aux_cpu_threads") is not True
+            or payload.get("aux_cpu_threads_default") != 4
+            or payload.get("aux_cpu_threads_min") != 1
+            or payload.get("aux_cpu_threads_max") != 16
+            or type(payload.get("local_gpu")) is not bool
+            or type(payload.get("vulkan_available")) is not bool
+        ):
+            raise TTSConfigurationError(
+                "Managed MOSS runtime cannot limit auxiliary CPU workers. "
+                "Install the current managed runtime."
+            )
+        return payload
+
+    def _controls_for_start(self):
+        workers = _aux_cpu_workers()
+        if not self._adaptive_managed_runtime:
+            return {
+                "gpu_layers": self.gpu_layers,
+                "aux_cpu": self.aux_cpu,
+                "local_gpu": False,
+                "aux_cpu_threads": None,
+            }
+        if self._fallback_category == "local_gpu":
+            return {
+                "gpu_layers": -1,
+                "aux_cpu": 1,
+                "local_gpu": False,
+                "aux_cpu_threads": workers,
+            }
+        if self._fallback_category in {"vulkan_allocation", "vulkan_device"}:
+            return {
+                "gpu_layers": 0,
+                "aux_cpu": 1,
+                "local_gpu": False,
+                "aux_cpu_threads": workers,
+            }
+        return {
+            "gpu_layers": -1,
+            "aux_cpu": 1,
+            "local_gpu": self._managed_local_gpu,
+            "aux_cpu_threads": workers,
+        }
+
+    def _native_identity(self, controls=None):
+        controls = controls or self._effective_controls or self._controls_for_start()
+        return (
+            self._source_identity
+            + f":layers={controls['gpu_layers']}:aux_cpu={controls['aux_cpu']}"
+            + f":local_gpu={int(controls['local_gpu'])}"
+            + f":aux_cpu_threads={controls['aux_cpu_threads']}:ctx={self.context_size}"
+            + f":{NATIVE_GENERATION_CONTRACT}"
+        )
+
+    def _set_effective_controls(self, controls):
+        self._effective_controls = dict(controls)
+        self.gpu_layers = controls["gpu_layers"]
+        self.aux_cpu = controls["aux_cpu"]
+        self.local_gpu = controls["local_gpu"]
+        self.aux_cpu_threads = controls["aux_cpu_threads"]
+        identity = self._native_identity(controls)
+        self._native_model_key = hashlib.sha256(identity.encode()).hexdigest()[:24]
+        if hasattr(self, "persistent_cache_keys"):
+            # A resumed owned server may observe a different CPU topology. Never
+            # reuse generated WAVs across an effective native control change.
+            self.model_name = identity
+            self.persistent_cache_keys.model = identity
+            self.audio_cache.clear()
+
     def _diagnostic_key(self, value):
         payload = json.dumps(value, sort_keys=True).encode("utf-8")
         return hashlib.sha256(self._diagnostic_salt + payload).hexdigest()[:24]
@@ -279,6 +441,39 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         return status
 
     def _confirmed_runtime_status(self):
+        placement = (
+            self.server_info.get("placement")
+            if isinstance(self.server_info, dict)
+            else None
+        )
+        if self._adaptive_managed_runtime and isinstance(placement, dict):
+            backbone = placement.get("backbone")
+            auxiliary = placement.get("auxiliary")
+            local = placement.get("local")
+            layers = placement.get("gpu_layers")
+            workers = placement.get("aux_cpu_threads")
+            if not all(
+                isinstance(value, str) and value.strip()
+                for value in (backbone, auxiliary, local)
+            ) or (
+                not isinstance(layers, int)
+                or isinstance(layers, bool)
+                or layers < 0
+                or not isinstance(workers, int)
+                or isinstance(workers, bool)
+                or workers < 1
+            ):
+                return "MOSS C++: managed placement unconfirmed"
+            fallback = (
+                f"; fallback: {self._fallback_category.replace('_', ' ')}"
+                if self._fallback_category
+                else ""
+            )
+            return (
+                f"MOSS C++: backbone {backbone.strip()} ({layers} GPU layers); "
+                f"audio frame model: {local.strip()}; audio model/codec: "
+                f"{auxiliary.strip()}; auxiliary CPU workers: {workers}{fallback}"
+            )
         # Read through a separate handle: seeking the child's shared log handle
         # would move its write position and could overwrite earlier messages.
         with self.server_lock:
@@ -323,6 +518,57 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         with self.server_lock:
             if self.server is not None and self.server.poll() is None:
                 return
+        # Hardware availability may change between owned-server lifetimes.
+        # A fallback is one attempt, not a verdict cached by this backend.
+        self._fallback_category = None
+        self._fallback_used = False
+        controls = self._controls_for_start()
+        while True:
+            self._set_effective_controls(controls)
+            started, category, exit_code = self._start_server_once(cancelled, controls)
+            if started:
+                return
+            record_native_speech(
+                operation="server-failed",
+                outcome="failed",
+                model_key=self._native_model_key,
+                exit_code=exit_code,
+                fallback_reason=category,
+                gpu_layers=self.gpu_layers,
+                local_gpu=self.local_gpu,
+                aux_cpu_threads=self.aux_cpu_threads,
+                **_native_stage_timings(
+                    self.server_log.name if self.server_log is not None else None,
+                    0,
+                    {},
+                    self.startup_timeout,
+                ),
+            )
+            fallback = self._startup_fallback(category)
+            self._stop_server()
+            if fallback is None:
+                raise TTSConfigurationError(
+                    "MOSS C++ server exited while loading. Check its DLLs and model "
+                    "files; automatic hardware fallback was not applicable."
+                )
+            controls = fallback
+
+    def _startup_fallback(self, category):
+        if not self._adaptive_managed_runtime or self._fallback_used:
+            return None
+        if category == "local_gpu" and self.local_gpu:
+            self._fallback_category = category
+        elif category in {"vulkan_allocation", "vulkan_device"} and self.gpu_layers:
+            self._fallback_category = category
+        else:
+            return None
+        self._fallback_used = True
+        self.startup_progress(
+            "MOSS GPU startup failed; retrying once with a safer managed placement."
+        )
+        return self._controls_for_start()
+
+    def _start_server_once(self, cancelled, controls):
         self._stop_server()
         self.server_directory = TemporaryDirectory(prefix="vntts-moss-")
         (Path(self.server_directory.name) / "voices").mkdir()
@@ -339,7 +585,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             str(self.port),
             "--no-webui",
             "--n-gpu-layers",
-            str(self.gpu_layers),
+            str(controls["gpu_layers"]),
             "--n-ctx",
             str(self.context_size),
         ]
@@ -347,18 +593,22 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             command.extend(
                 ["--voice-dir", str(Path(self.server_directory.name) / "voices")]
             )
-        if self.aux_cpu:
+        if controls["aux_cpu"]:
             command.append("--aux-cpu")
+        if controls["local_gpu"]:
+            command.append("--local-gpu")
+        if controls["aux_cpu_threads"] is not None:
+            command.extend(["--aux-cpu-threads", str(controls["aux_cpu_threads"])])
         placement = (
             "CPU only for backbone"
-            if self.gpu_layers == 0
+            if controls["gpu_layers"] == 0
             else "automatic GPU offload"
-            if self.gpu_layers == -1
-            else f"up to {self.gpu_layers} GPU layers"
+            if controls["gpu_layers"] == -1
+            else f"up to {controls['gpu_layers']} GPU layers"
         )
         self.startup_progress(
             f"Loading MOSS Local v1.5: {placement}; "
-            f"audio model/codec {'on CPU' if self.aux_cpu else 'on the selected device'}. "
+            f"audio model/codec {'on CPU' if controls['aux_cpu'] else 'on the selected device'}. "
             "Actual acceleration depends on available hardware and drivers."
         )
         with self.server_lock:
@@ -380,25 +630,13 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if cancelled():
                 raise TTSSynthesisError("MOSS C++ startup cancelled")
             if self.server is None or self.server.poll() is not None:
-                with self.server_lock:
-                    stages = _native_stage_timings(
-                        self.server_log.name if self.server_log is not None else None,
-                        0,
-                        {},
-                        self.startup_timeout,
-                    )
-                record_native_speech(
-                    operation="server-failed",
-                    outcome="failed",
-                    model_key=self._native_model_key,
-                    exit_code=self.server.returncode
-                    if self.server is not None
-                    else None,
-                    **stages,
-                )
-                raise TTSConfigurationError(
-                    "MOSS C++ server exited while loading. Check its DLLs and model "
-                    "files; reduce VNTTS_MOSS_GPU_LAYERS if GPU memory is exhausted."
+                path = self.server_log.name if self.server_log is not None else None
+                return (
+                    False,
+                    _startup_failure_category(path)
+                    if self._adaptive_managed_runtime
+                    else "server_exit_unclassified",
+                    self.server.returncode if self.server is not None else None,
                 )
             try:
                 status, _headers, data = self._http("GET", "/info", timeout=0.5)
@@ -420,6 +658,13 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 raise TTSConfigurationError(
                     "MOSS C++ requires Local v1.5 with its loaded 48 kHz stereo codec"
                 )
+            if self._adaptive_managed_runtime and not self._valid_managed_placement(
+                info
+            ):
+                raise TTSConfigurationError(
+                    "Managed MOSS runtime did not confirm placement and worker count. "
+                    "Install the current managed runtime."
+                )
             self.server_info = info
             self._runtime_status = self._confirmed_runtime_status()
             record_native_speech(
@@ -436,13 +681,43 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 model_key=self._native_model_key,
                 model_bytes=_diagnostic_file_size(self.gguf),
                 codec_bytes=_diagnostic_file_size(self.sidecar),
-                gpu_layers=self.gpu_layers,
+                gpu_layers=info.get("placement", {}).get("gpu_layers", self.gpu_layers)
+                if isinstance(info.get("placement"), dict)
+                else self.gpu_layers,
                 aux_cpu=self.aux_cpu,
+                local_gpu=self.local_gpu,
+                aux_cpu_threads=info.get("placement", {}).get(
+                    "aux_cpu_threads", self.aux_cpu_threads
+                )
+                if isinstance(info.get("placement"), dict)
+                else self.aux_cpu_threads,
+                fallback_reason=self._fallback_category,
+                capability_version=(self._native_capabilities or {}).get("version"),
+                vulkan_available=(self._native_capabilities or {}).get(
+                    "vulkan_available"
+                ),
                 context_size=self.context_size,
             )
             self.startup_progress(self._runtime_status)
-            return
+            return True, None, None
         raise TTSConfigurationError("MOSS C++ model startup timed out")
+
+    @staticmethod
+    def _valid_managed_placement(info):
+        placement = info.get("placement")
+        return (
+            isinstance(placement, dict)
+            and all(
+                isinstance(placement.get(key), str) and placement[key].strip()
+                for key in ("backbone", "local", "auxiliary")
+            )
+            and isinstance(placement.get("gpu_layers"), int)
+            and not isinstance(placement.get("gpu_layers"), bool)
+            and placement["gpu_layers"] >= 0
+            and isinstance(placement.get("aux_cpu_threads"), int)
+            and not isinstance(placement.get("aux_cpu_threads"), bool)
+            and placement["aux_cpu_threads"] >= 1
+        )
 
     def _http(self, method, path, body=None, *, timeout=None):
         connection = http.client.HTTPConnection(

@@ -17,6 +17,7 @@ import soundfile as sf
 
 from vntts.moss_cpp_backend import (
     MossCppVoiceRouterBackend,
+    _aux_cpu_workers,
     _diagnostic_file_size,
     _native_stage_timings,
     moss_cpp_paths,
@@ -40,13 +41,33 @@ from pathlib import Path
 from socketserver import TCPServer
 root = Path(__file__).parent
 legacy = (root / 'legacy-runtime').exists()
+adaptive = (root / 'adaptive-runtime').exists()
 if '--help' in sys.argv:
     if (root / 'slow-help').exists():
         (root / 'help-started').touch()
         time.sleep(30)
-    print('Usage: --model PATH --n-gpu-layers N' + ('' if legacy else ' --voice-dir DIR'), file=sys.stderr)
+    print('Usage: --model PATH --n-gpu-layers N' + ('' if legacy else ' --voice-dir DIR') + (' --capabilities-json' if adaptive else ''), file=sys.stderr)
+    sys.exit(0)
+if '--capabilities-json' in sys.argv:
+    print(json.dumps({} if (root / 'adaptive-invalid').exists() else {
+        'schema': 'vntts.openmoss.capabilities', 'version': 1,
+        'vulkan_optional': True,
+        'vulkan_available': not (root / 'no-vulkan').exists(),
+        'local_gpu': True, 'aux_cpu_threads': True,
+        'aux_cpu_threads_default': 4, 'aux_cpu_threads_min': 1,
+        'aux_cpu_threads_max': 16,
+    }))
     sys.exit(0)
 if legacy and '--voice-dir' in sys.argv: sys.exit('unknown arg: --voice-dir')
+if adaptive and '--local-gpu' in sys.argv and (root / 'fail-local-gpu').exists():
+    print('VNTTS_STARTUP_FAILURE_JSON={"category":"local_gpu"}', flush=True)
+    sys.exit(23)
+if adaptive and sys.argv[sys.argv.index('--n-gpu-layers') + 1] == '-1' and (root / 'fail-vulkan').exists():
+    print('VNTTS_STARTUP_FAILURE_JSON={"category":"vulkan_allocation"}', flush=True)
+    sys.exit(24)
+if adaptive and (root / 'fail-unknown').exists():
+    print('VNTTS_STARTUP_FAILURE_JSON={"category":"model_corrupt"}', flush=True)
+    sys.exit(25)
 port = int(sys.argv[sys.argv.index('--port') + 1])
 voice_dir = None if '--voice-dir' not in sys.argv else Path(sys.argv[sys.argv.index('--voice-dir') + 1])
 if voice_dir is not None: voice_dir.mkdir(parents=True, exist_ok=True)
@@ -58,11 +79,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(json.dumps(dict(
+        info = dict(
             architecture='moss_tts_local', sampling_rate=48000, n_channels=2,
             n_vq=12, codec_loaded=True, version='0.2.0' if legacy else '0.3.0',
             voice_registry=voice_dir is not None and not (root / 'disable-registry').exists(),
-        )).encode())
+        )
+        if adaptive and '--aux-cpu-threads' in sys.argv:
+            layers = int(sys.argv[sys.argv.index('--n-gpu-layers') + 1])
+            workers = int(sys.argv[sys.argv.index('--aux-cpu-threads') + 1])
+            info['placement'] = dict(
+                backbone='CPU' if layers == 0 else 'Vulkan GPU',
+                local='Vulkan GPU' if '--local-gpu' in sys.argv else 'CPU',
+                auxiliary='CPU', gpu_layers=0 if layers == 0 else 37,
+                aux_cpu_threads=workers,
+            )
+        self.wfile.write(json.dumps(info).encode())
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         (root / 'request.json').write_text(json.dumps(body))
@@ -166,8 +197,9 @@ class MossCppBackendTest(unittest.TestCase):
             if "--help" in command:
                 self.probes.append(child)
                 return child
-            self.commands.append(command)
-            self.children.append(child)
+            if "--port" in command:
+                self.commands.append(command)
+                self.children.append(child)
             return child
 
         patch("vntts.moss_cpp_backend.subprocess.Popen", side_effect=launch).start()
@@ -906,6 +938,189 @@ class MossCppBackendTest(unittest.TestCase):
                     )
                 )
                 backend.shutdown()
+
+    def test_aux_cpu_worker_ladder_is_conservative(self):
+        self.assertEqual(
+            [_aux_cpu_workers(value) for value in (0, 1, 3, 4, 7, 8, 15, 16)],
+            [1, 1, 1, 2, 2, 4, 4, 8],
+        )
+
+    def _managed_backend(self):
+        return MossCppVoiceRouterBackend(
+            CharacterVoiceRegistry(),
+            narrator_reference=self.reference,
+            persistent_audio_cache_directory=self.root / "cache",
+            prompt_cache_directory=self.root / "prompts",
+            startup_timeout=10,
+        )
+
+    def test_managed_runtime_adapts_workers_and_confirms_structured_placement(self):
+        (self.root / "adaptive-runtime").touch()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
+            patch(
+                "vntts.moss_cpp_backend.moss_cpp_paths",
+                return_value=(
+                    Path(sys.executable),
+                    self.model,
+                    self.model.with_suffix(".extras.gguf"),
+                ),
+            ),
+            patch("vntts.moss_cpp_backend.os.cpu_count", return_value=8),
+        ):
+            backend = self._managed_backend()
+        self.addCleanup(backend.shutdown)
+        command = self.commands[-1]
+        self.assertIn("--local-gpu", command)
+        self.assertEqual(command[command.index("--aux-cpu-threads") + 1], "4")
+        self.assertIn("Vulkan GPU", backend.runtime_status)
+        self.assertIn("auxiliary CPU workers: 4", backend.runtime_status)
+        self.assertIn("local_gpu=1:aux_cpu_threads=4", backend.model_name)
+        backend._stop_server()
+        with patch("vntts.moss_cpp_backend.os.cpu_count", return_value=16):
+            backend._start_server(lambda: False)
+        self.assertEqual(
+            self.commands[-1][self.commands[-1].index("--aux-cpu-threads") + 1], "8"
+        )
+        self.assertIn("aux_cpu_threads=8", backend.model_name)
+
+    def test_managed_runtime_skips_local_gpu_when_vulkan_is_unavailable(self):
+        (self.root / "adaptive-runtime").touch()
+        (self.root / "no-vulkan").touch()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
+            patch(
+                "vntts.moss_cpp_backend.moss_cpp_paths",
+                return_value=(
+                    Path(sys.executable),
+                    self.model,
+                    self.model.with_suffix(".extras.gguf"),
+                ),
+            ),
+        ):
+            backend = self._managed_backend()
+        self.addCleanup(backend.shutdown)
+        self.assertNotIn("--local-gpu", self.commands[-1])
+        self.assertFalse(self.native_log.report()["latest_runtime"]["vulkan_available"])
+
+    def test_managed_local_gpu_failure_restarts_once_without_local_gpu(self):
+        (self.root / "adaptive-runtime").touch()
+        (self.root / "fail-local-gpu").touch()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
+            patch(
+                "vntts.moss_cpp_backend.moss_cpp_paths",
+                return_value=(
+                    Path(sys.executable),
+                    self.model,
+                    self.model.with_suffix(".extras.gguf"),
+                ),
+            ),
+            patch("vntts.moss_cpp_backend.os.cpu_count", return_value=4),
+        ):
+            backend = self._managed_backend()
+        self.addCleanup(backend.shutdown)
+        self.assertEqual(len(self.children), 2)
+        self.assertIn("--local-gpu", self.commands[0])
+        self.assertNotIn("--local-gpu", self.commands[1])
+        self.assertEqual(
+            self.commands[1][self.commands[1].index("--n-gpu-layers") + 1], "-1"
+        )
+        self.assertIn("fallback: local gpu", backend.runtime_status)
+        self.assertIn("local_gpu=0:aux_cpu_threads=2", backend.model_name)
+        runtime = self.native_log.report()["latest_runtime"]
+        self.assertEqual(runtime["fallback_reason"], "local_gpu")
+        self.assertEqual(runtime["aux_cpu_threads"], 2)
+        (self.root / "fail-local-gpu").unlink()
+        backend._stop_server()
+        backend._start_server(lambda: False)
+        self.assertIn("--local-gpu", self.commands[-1])
+        self.assertNotIn("fallback:", backend.runtime_status)
+
+    def test_managed_vulkan_failure_restarts_once_on_cpu(self):
+        (self.root / "adaptive-runtime").touch()
+        (self.root / "fail-vulkan").touch()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
+            patch(
+                "vntts.moss_cpp_backend.moss_cpp_paths",
+                return_value=(
+                    Path(sys.executable),
+                    self.model,
+                    self.model.with_suffix(".extras.gguf"),
+                ),
+            ),
+        ):
+            backend = self._managed_backend()
+        self.addCleanup(backend.shutdown)
+        self.assertEqual(len(self.children), 2)
+        self.assertEqual(
+            self.commands[1][self.commands[1].index("--n-gpu-layers") + 1], "0"
+        )
+        self.assertNotIn("--local-gpu", self.commands[1])
+        self.assertIn("fallback: vulkan allocation", backend.runtime_status)
+
+    def test_advertised_invalid_managed_capabilities_are_rejected(self):
+        (self.root / "adaptive-runtime").touch()
+        (self.root / "adaptive-invalid").touch()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
+            patch(
+                "vntts.moss_cpp_backend.moss_cpp_paths",
+                return_value=(
+                    Path(sys.executable),
+                    self.model,
+                    self.model.with_suffix(".extras.gguf"),
+                ),
+            ),
+            self.assertRaisesRegex(TTSConfigurationError, "capabilities"),
+        ):
+            self._managed_backend()
+        self.assertEqual(self.children, [])
+
+    def test_managed_runtime_does_not_retry_unrelated_startup_failure(self):
+        (self.root / "adaptive-runtime").touch()
+        (self.root / "fail-unknown").touch()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
+            patch(
+                "vntts.moss_cpp_backend.moss_cpp_paths",
+                return_value=(
+                    Path(sys.executable),
+                    self.model,
+                    self.model.with_suffix(".extras.gguf"),
+                ),
+            ),
+            self.assertRaisesRegex(
+                TTSConfigurationError, "fallback was not applicable"
+            ),
+        ):
+            self._managed_backend()
+        self.assertEqual(len(self.children), 1)
+
+    def test_explicit_runtime_does_not_negotiate_managed_controls(self):
+        (self.root / "adaptive-runtime").touch()
+        with (
+            patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
+            patch(
+                "vntts.moss_cpp_backend.moss_cpp_paths",
+                return_value=(
+                    Path(sys.executable),
+                    self.model,
+                    self.model.with_suffix(".extras.gguf"),
+                ),
+            ),
+        ):
+            backend = self._managed_backend()
+        self.addCleanup(backend.shutdown)
+        self.assertNotIn("--local-gpu", self.commands[-1])
+        self.assertNotIn("--aux-cpu-threads", self.commands[-1])
 
     def test_server_failure_and_truncated_wav_cannot_populate_cache(self):
         backend = self.backend()
