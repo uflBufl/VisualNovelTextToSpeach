@@ -955,10 +955,18 @@ class MossCppBackendTest(unittest.TestCase):
             startup_timeout=10,
         )
 
+    @staticmethod
+    def _managed_environment():
+        return {
+            name: value
+            for name, value in os.environ.items()
+            if not name.startswith("VNTTS_")
+        }
+
     def test_managed_runtime_adapts_workers_and_confirms_structured_placement(self):
         (self.root / "adaptive-runtime").touch()
         with (
-            patch.dict(os.environ, {}, clear=True),
+            patch.dict(os.environ, self._managed_environment(), clear=True),
             patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
             patch(
                 "vntts.moss_cpp_backend.moss_cpp_paths",
@@ -991,7 +999,7 @@ class MossCppBackendTest(unittest.TestCase):
         (self.root / "adaptive-runtime").touch()
         (self.root / "no-vulkan").touch()
         with (
-            patch.dict(os.environ, {}, clear=True),
+            patch.dict(os.environ, self._managed_environment(), clear=True),
             patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
             patch(
                 "vntts.moss_cpp_backend.moss_cpp_paths",
@@ -1011,7 +1019,7 @@ class MossCppBackendTest(unittest.TestCase):
         (self.root / "adaptive-runtime").touch()
         (self.root / "fail-local-gpu").touch()
         with (
-            patch.dict(os.environ, {}, clear=True),
+            patch.dict(os.environ, self._managed_environment(), clear=True),
             patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
             patch(
                 "vntts.moss_cpp_backend.moss_cpp_paths",
@@ -1047,7 +1055,7 @@ class MossCppBackendTest(unittest.TestCase):
         (self.root / "adaptive-runtime").touch()
         (self.root / "fail-vulkan").touch()
         with (
-            patch.dict(os.environ, {}, clear=True),
+            patch.dict(os.environ, self._managed_environment(), clear=True),
             patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
             patch(
                 "vntts.moss_cpp_backend.moss_cpp_paths",
@@ -1074,7 +1082,7 @@ class MossCppBackendTest(unittest.TestCase):
         (self.root / "adaptive-runtime").touch()
         (self.root / "adaptive-invalid").touch()
         with (
-            patch.dict(os.environ, {}, clear=True),
+            patch.dict(os.environ, self._managed_environment(), clear=True),
             patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
             patch(
                 "vntts.moss_cpp_backend.moss_cpp_paths",
@@ -1093,7 +1101,7 @@ class MossCppBackendTest(unittest.TestCase):
         (self.root / "adaptive-runtime").touch()
         (self.root / "fail-unknown").touch()
         with (
-            patch.dict(os.environ, {}, clear=True),
+            patch.dict(os.environ, self._managed_environment(), clear=True),
             patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
             patch(
                 "vntts.moss_cpp_backend.moss_cpp_paths",
