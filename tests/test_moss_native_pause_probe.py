@@ -97,6 +97,37 @@ class _LimitedThenInterruptedBackend(_FakeBackend):
         return self._result(request, SynthesisCompletion.LIMITED)
 
 
+class _OwnedServer:
+    def __init__(self, pid):
+        self.pid = pid
+        self.returncode = None
+
+    def poll(self):
+        return self.returncode
+
+
+class _LimitedThenReplacementBackend(_FakeBackend):
+    def __init__(self, registry, *, replacement_stops, **options):
+        super().__init__(registry, **options)
+        self.replacement_stops = replacement_stops
+        self.server = _OwnedServer(101)
+
+    def render(self, request):
+        self.requests.append(request)
+        self._http("POST", "/tts", {"text": request.text})
+        if len(self.requests) == 1:
+            self.server.returncode = 0
+            return self._result(request, SynthesisCompletion.LIMITED)
+        if len(self.requests) == 2:
+            self.server = _OwnedServer(202)
+        return self._result(request, SynthesisCompletion.COMPLETE)
+
+    def shutdown(self):
+        super().shutdown()
+        if self.replacement_stops:
+            self.server.returncode = 0
+
+
 def _options(root):
     reference = root / "reference.wav"
     reference.write_bytes(clean_wav_bytes())
@@ -106,6 +137,37 @@ def _options(root):
 
 
 class MossNativePauseProbeTest(unittest.TestCase):
+    def test_replacement_servers_all_receive_shutdown_receipts(self):
+        for replacement_stops, expected in ((False, False), (True, True)):
+            with self.subTest(replacement_stops=replacement_stops):
+                with TemporaryDirectory() as temporary:
+                    options = _options(Path(temporary))
+                    self.assertEqual(
+                        probe.run(
+                            options,
+                            backend_factory=lambda registry, **options: (
+                                _LimitedThenReplacementBackend(
+                                    registry,
+                                    replacement_stops=replacement_stops,
+                                    **options,
+                                )
+                            ),
+                            path_check=lambda _: (
+                                Path("server"),
+                                Path("model.gguf"),
+                                Path("codec.gguf"),
+                            ),
+                            settings_loader=lambda: SimpleNamespace(tts_model=None),
+                        ),
+                        0 if replacement_stops else 1,
+                    )
+                    report = json.loads((options.output / "report.json").read_text())
+                    receipt = report["server_shutdown"]
+                    self.assertEqual(receipt["confirmed_exited"], expected)
+                    self.assertEqual(
+                        [item["pid"] for item in receipt["servers"]], [101, 202]
+                    )
+
     def test_surviving_owned_server_fails_probe_and_retains_report(self):
         def factory(registry, **options):
             backend = _FakeBackend(registry, **options)

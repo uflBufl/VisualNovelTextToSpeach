@@ -388,8 +388,13 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertEqual(
             report["server_shutdown"],
             {
-                "pid": self.children[0].pid,
-                "returncode": self.children[0].returncode,
+                "servers": [
+                    {
+                        "pid": self.children[0].pid,
+                        "returncode": self.children[0].returncode,
+                        "confirmed_exited": True,
+                    }
+                ],
                 "confirmed_exited": True,
             },
         )

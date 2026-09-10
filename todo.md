@@ -15,8 +15,6 @@ measurements in agent memory and completed-work history in Git, not here.
     CPU workers, with the persistent pool OFF in both to isolate thread count.
     Reuse the existing graph checks, same sampling/reference and short launcher;
     require real warm codec/total improvement without output or memory regression.
-  - Exercise server ownership across startup failure, cancellation, repeated
-    load/unload and shutdown; add a bounded no-model regression for any gap.
   - Build/check any native change separately, retain the approved Local GPU
     build as baseline, and prepare a short target-PC qualification command.
     Stop at real Windows GPU/quality gates that cannot run on this Mac.

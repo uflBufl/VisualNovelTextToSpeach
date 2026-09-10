@@ -325,6 +325,12 @@ def _render_attempt(
     return record
 
 
+def _capture_owned_server(backend, servers):
+    server = getattr(backend, "server", None)
+    if server is not None and not any(server is known for known in servers):
+        servers.append(server)
+
+
 def run(
     options,
     *,
@@ -374,7 +380,7 @@ def run(
             ),
         }
     backend = None
-    owned_server = None
+    owned_servers = []
     exit_code = 0
     try:
         print(
@@ -418,7 +424,7 @@ def run(
                 persistent_audio_cache_directory=output / ".cache-disabled",
                 persistent_audio_cache_max_entries=0,
             )
-            owned_server = getattr(backend, "server", None)
+            _capture_owned_server(backend, owned_servers)
             report["startup_seconds"] = round(monotonic() - startup_started, 3)
             report["runtime"] = getattr(backend, "server_info", None)
             report["compute"] = getattr(backend, "runtime_status", None)
@@ -438,26 +444,29 @@ def run(
                         f"[{index}/{len(sampling_profiles) * len(TEXTS)}] {profile} {label}",
                         flush=True,
                     )
-                    attempt = _render_attempt(
-                        backend,
-                        output,
-                        index,
-                        profile,
-                        label,
-                        text,
-                        responses,
-                        sampling_profiles=sampling_profiles,
-                    )
-                    report["attempts"].append(attempt)
-                    _write_json(output / f"{attempt['id']}.json", attempt)
-                    _write_json(output / "report.json", report)
-                    if attempt["completion"] == "failed":
-                        exit_code = 1
-                        break
-                    if attempt.get("interrupted"):
-                        report["interrupted"] = True
-                        exit_code = 130
-                        break
+                    try:
+                        attempt = _render_attempt(
+                            backend,
+                            output,
+                            index,
+                            profile,
+                            label,
+                            text,
+                            responses,
+                            sampling_profiles=sampling_profiles,
+                        )
+                        report["attempts"].append(attempt)
+                        _write_json(output / f"{attempt['id']}.json", attempt)
+                        _write_json(output / "report.json", report)
+                        if attempt["completion"] == "failed":
+                            exit_code = 1
+                            break
+                        if attempt.get("interrupted"):
+                            report["interrupted"] = True
+                            exit_code = 130
+                            break
+                    finally:
+                        _capture_owned_server(backend, owned_servers)
             finally:
                 restore()
     except KeyboardInterrupt:
@@ -469,6 +478,7 @@ def run(
         exit_code = 1
     finally:
         if backend is not None:
+            _capture_owned_server(backend, owned_servers)
             try:
                 backend.shutdown()
             except (Exception, KeyboardInterrupt) as error:
@@ -478,23 +488,43 @@ def run(
                     if isinstance(error, KeyboardInterrupt) or exit_code == 130
                     else 1
                 )
-        # Keep the original Popen, not a PID lookup: shutdown clears backend.server
+        # Keep each observed Popen, not a PID lookup: shutdown clears backend.server
         # and the OS may reuse its PID. Unknown is not proof of clean shutdown.
-        report["server_shutdown"] = {"confirmed_exited": None}
-        if owned_server is not None:
+        receipts = []
+        for server in owned_servers:
             try:
-                returncode = owned_server.poll()
-                report["server_shutdown"] = {
-                    "pid": owned_server.pid,
-                    "returncode": returncode,
-                    "confirmed_exited": returncode is not None,
-                }
-                if returncode is None:
-                    report["shutdown_error"] = "Owned native server is still running"
-                    exit_code = 130 if exit_code == 130 else 1
+                returncode = server.poll()
+                receipts.append(
+                    {
+                        "pid": server.pid,
+                        "returncode": returncode,
+                        "confirmed_exited": returncode is not None,
+                    }
+                )
             except Exception as error:
-                report["server_shutdown"]["error"] = f"{type(error).__name__}: {error}"
-                exit_code = 130 if exit_code == 130 else 1
+                receipts.append(
+                    {
+                        "confirmed_exited": None,
+                        "error": f"{type(error).__name__}: {error}",
+                    }
+                )
+        confirmed = [receipt["confirmed_exited"] for receipt in receipts]
+        report["server_shutdown"] = {
+            "servers": receipts,
+            "confirmed_exited": (
+                False
+                if False in confirmed
+                else None
+                if None in confirmed or not confirmed
+                else True
+            ),
+        }
+        if False in confirmed:
+            report["shutdown_error"] = "Owned native server is still running"
+            exit_code = 130 if exit_code == 130 else 1
+        elif None in confirmed:
+            report["shutdown_error"] = "Owned native server shutdown status is unknown"
+            exit_code = 130 if exit_code == 130 else 1
         report["archive"] = archive.name
         _write_json(output / "report.json", report)
         _write_json(output / "native-speech.json", support.native_speech_log.report())
