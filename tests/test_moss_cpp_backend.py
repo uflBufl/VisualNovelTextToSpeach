@@ -90,7 +90,8 @@ class Handler(BaseHTTPRequestHandler):
             info['placement'] = dict(
                 backbone='CPU' if layers == 0 else 'Vulkan GPU',
                 local='Vulkan GPU' if '--local-gpu' in sys.argv else 'CPU',
-                auxiliary='CPU', gpu_layers=0 if layers == 0 else 37,
+                auxiliary='CPU', device=None if layers == 0 else 'Test Vulkan GPU',
+                gpu_layers=0 if layers == 0 else 37,
                 aux_cpu_threads=workers,
             )
         self.wfile.write(json.dumps(info).encode())
@@ -975,6 +976,7 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertIn("--local-gpu", command)
         self.assertEqual(command[command.index("--aux-cpu-threads") + 1], "4")
         self.assertIn("Vulkan GPU", backend.runtime_status)
+        self.assertIn("Test Vulkan GPU", backend.runtime_status)
         self.assertIn("auxiliary CPU workers: 4", backend.runtime_status)
         self.assertIn("local_gpu=1:aux_cpu_threads=4", backend.model_name)
         backend._stop_server()
@@ -1034,6 +1036,7 @@ class MossCppBackendTest(unittest.TestCase):
         runtime = self.native_log.report()["latest_runtime"]
         self.assertEqual(runtime["fallback_reason"], "local_gpu")
         self.assertEqual(runtime["aux_cpu_threads"], 2)
+        self.assertEqual(runtime["device"], "Test Vulkan GPU")
         (self.root / "fail-local-gpu").unlink()
         backend._stop_server()
         backend._start_server(lambda: False)
@@ -1063,6 +1066,8 @@ class MossCppBackendTest(unittest.TestCase):
         )
         self.assertNotIn("--local-gpu", self.commands[1])
         self.assertIn("fallback: vulkan allocation", backend.runtime_status)
+        self.assertIn("MOSS may be slow on CPU", backend.runtime_status)
+        self.assertIsNone(self.native_log.report()["latest_runtime"]["device"])
 
     def test_advertised_invalid_managed_capabilities_are_rejected(self):
         (self.root / "adaptive-runtime").touch()

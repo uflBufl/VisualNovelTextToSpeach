@@ -464,15 +464,22 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 or workers < 1
             ):
                 return "MOSS C++: managed placement unconfirmed"
+            device = placement.get("device")
             fallback = (
                 f"; fallback: {self._fallback_category.replace('_', ' ')}"
                 if self._fallback_category
                 else ""
             )
+            device_label = (
+                f" on {device.strip()}" if isinstance(device, str) and device else ""
+            )
+            cpu_warning = "; MOSS may be slow on CPU" if layers == 0 else ""
             return (
-                f"MOSS C++: backbone {backbone.strip()} ({layers} GPU layers); "
+                f"MOSS C++: backbone {backbone.strip()}{device_label} "
+                f"({layers} GPU layers); "
                 f"audio frame model: {local.strip()}; audio model/codec: "
                 f"{auxiliary.strip()}; auxiliary CPU workers: {workers}{fallback}"
+                f"{cpu_warning}"
             )
         # Read through a separate handle: seeking the child's shared log handle
         # would move its write position and could overwrite earlier messages.
@@ -686,6 +693,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 else self.gpu_layers,
                 aux_cpu=self.aux_cpu,
                 local_gpu=self.local_gpu,
+                device=info.get("placement", {}).get("device")
+                if isinstance(info.get("placement"), dict)
+                else None,
                 aux_cpu_threads=info.get("placement", {}).get(
                     "aux_cpu_threads", self.aux_cpu_threads
                 )
@@ -714,6 +724,14 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             and isinstance(placement.get("gpu_layers"), int)
             and not isinstance(placement.get("gpu_layers"), bool)
             and placement["gpu_layers"] >= 0
+            and (
+                isinstance(placement.get("device"), str)
+                and 1 <= len(placement["device"]) <= 128
+                and bool(placement["device"].strip())
+                and placement["device"].isprintable()
+                if placement["gpu_layers"] > 0
+                else placement.get("device") is None or placement.get("device") == ""
+            )
             and isinstance(placement.get("aux_cpu_threads"), int)
             and not isinstance(placement.get("aux_cpu_threads"), bool)
             and placement["aux_cpu_threads"] >= 1

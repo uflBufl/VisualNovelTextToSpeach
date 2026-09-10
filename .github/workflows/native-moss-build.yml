@@ -123,6 +123,7 @@ jobs:
               aux_cpu_threads = @{ default = 4; minimum = 1; maximum = 16 }
               vulkan_optional = $true
               vulkan_available = 'runtime device enumeration'
+              info_placement_device = 'selected backend device label; empty on CPU; max 128 chars'
             }
             persistent_pool_idle_poll = 0
             vulkan_runtime_sha256 = (Get-FileHash native-dist/vulkan-1.dll -Algorithm SHA256).Hash

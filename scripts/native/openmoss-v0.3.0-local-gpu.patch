@@ -35,6 +35,7 @@ index 8c8cc1e..923bae5 100644
 +    const char * auxiliary_backend() const;
 +    int auxiliary_cpu_threads() const;
 +    int32_t backbone_gpu_layers() const { return m_backbone_gpu_layers; }
++    const std::string & backbone_device() const { return m_backbone_device; }
  
      // Public so free helpers in model.cpp can populate it; consumers should
      // ignore this (use the typed accessors above).
@@ -51,6 +52,7 @@ index 8c8cc1e..923bae5 100644
      std::unique_ptr<Aux>                m_aux;
 +    std::unique_ptr<Aux>                m_local_aux;
 +    int32_t                             m_backbone_gpu_layers = 0;
++    std::string                         m_backbone_device;
      std::unique_ptr<class Tokenizer>    m_tokenizer;
      std::unique_ptr<class CodecGraphs>  m_codec;
      std::unique_ptr<class DiTGraph,   DiTGraphDeleter>   m_dit;
@@ -198,6 +200,16 @@ index 338c293..498f1ad 100644
 +        const int32_t requested_layers = opts.n_gpu_layers < 0
 +            ? n_backbone_layers : opts.n_gpu_layers;
 +        self->m_backbone_gpu_layers = std::clamp(requested_layers, 0, n_backbone_layers);
++        if (self->m_backbone_gpu_layers > 0) {
++            // Prefer the user-facing hardware description; retain the backend
++            // label only if a backend omits it. Bound public JSON either way.
++            const char * device = ggml_backend_dev_description(picked_dev);
++            if (!device) device = ggml_backend_dev_name(picked_dev);
++            if (device) {
++                self->m_backbone_device.assign(
++                    device, std::min<size_t>(std::strlen(device), 128));
++            }
++        }
 +    }
  
      llama_context_params cp = llama_context_default_params();
@@ -504,6 +516,7 @@ index 56f2281..a3545fa 100644
 +            {"local_decoder_separate_weight_bytes", model->local_decoder_separate_weight_bytes()},
 +            {"placement", {
 +                {"backbone", model->backbone_gpu_layers() > 0 ? "gpu" : "cpu"},
++                {"device", model->backbone_device()},
 +                {"local", model->local_decoder_backend()},
 +                {"auxiliary", model->auxiliary_backend()},
 +                {"gpu_layers", model->backbone_gpu_layers()},

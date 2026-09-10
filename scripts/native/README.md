@@ -41,6 +41,11 @@ default/min/max thread fields. `local_gpu` means the binary compiled the path;
 The adaptive Python contract is already present, but the pinned v0.3.0 runtime
 remains legacy until an immutable adaptive runtime release is available.
 
+After a successful load, `/info.placement` reports actual `backbone`, `device`,
+`local`, `auxiliary`, `gpu_layers`, and `aux_cpu_threads`. `device` is the
+selected hardware description, capped at 128 characters, and is empty for CPU-only
+placement.
+
 ### Run
 
 The native server accepts these process-start controls:
