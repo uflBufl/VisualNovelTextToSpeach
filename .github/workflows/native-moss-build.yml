@@ -156,7 +156,7 @@ jobs:
           & ./native-dist/moss-tts-server.exe --help
           if ($LASTEXITCODE -ne 0) { throw 'Native help/startup failed.' }
           $Check = Start-Process -FilePath ./native-dist/moss-aux-pool-check.exe -PassThru -NoNewWindow -RedirectStandardOutput native-dist/aux-pool-check.json
-          if (-not $Check.WaitForExit(30000)) {
+          if (-not $Check.WaitForExit(120000)) {
             Stop-Process -Id $Check.Id -Force
             throw 'Packaged auxiliary pool check timed out.'
           }

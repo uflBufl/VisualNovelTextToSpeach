@@ -106,8 +106,23 @@ index 498f1ad..1119078 100644
      }
  
      // Cache convenient dim shortcuts on Aux.
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 47852a6..4bd47b4 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -6,7 +6,9 @@ add_executable(moss-aux-pool-check moss_aux_pool_check.cpp)
+ target_include_directories(moss-aux-pool-check PRIVATE ${CMAKE_SOURCE_DIR}/src)
+ target_link_libraries(moss-aux-pool-check PRIVATE openmoss_core ggml-cpu)
+ add_test(NAME moss-aux-pool-check COMMAND moss-aux-pool-check)
+-set_tests_properties(moss-aux-pool-check PROPERTIES TIMEOUT 30)
++# Disposable worker creation can dominate these repeated tiny graphs on CI.
++# Keep every exact-output and ownership cycle; this is not a latency gate.
++set_tests_properties(moss-aux-pool-check PROPERTIES TIMEOUT 120)
+ 
+ # VNTTS modification: verifies the diagnostic build selection without a model.
+ add_executable(moss-local-gpu-check moss_local_gpu_check.cpp)
 diff --git a/tests/moss_aux_pool_check.cpp b/tests/moss_aux_pool_check.cpp
-index 8ad7174..36f934c 100644
+index 8ad7174..3f93e7e 100644
 --- a/tests/moss_aux_pool_check.cpp
 +++ b/tests/moss_aux_pool_check.cpp
 @@ -18,11 +18,11 @@ struct Graph {
@@ -125,7 +140,7 @@ index 8ad7174..36f934c 100644
          ggml_init_params params{};
          params.mem_size = 16 * ggml_tensor_overhead() + ggml_graph_overhead();
          params.no_alloc = true;
-@@ -57,18 +57,21 @@ int main() {
+@@ -57,18 +57,24 @@ int main() {
      try {
          double baseline_s = 0, candidate_s = 0;
          constexpr int cycles = 4, runs = 50;
@@ -135,6 +150,9 @@ index 8ad7174..36f934c 100644
 +                      "candidate thread count must be in the supported range");
          for (int cycle = 0; cycle < cycles; ++cycle) {
 -            Graph baseline(false), candidate(true);
++            std::fprintf(stderr, "aux CPU check: cycle %d/%d, workers %d vs %d\n",
++                         cycle + 1, cycles, baseline_threads, candidate_threads);
++            std::fflush(stderr);
 +            Graph baseline(baseline_threads, false), candidate(baseline_threads, true);
              const auto expected = baseline.run();
              // Initialization is idempotent; repeated use must retain one owner.
@@ -150,7 +168,7 @@ index 8ad7174..36f934c 100644
  #endif
              for (int i = 0; i < runs; ++i) {
                  // Alternate order; these are synthetic timings, not a speech gate.
-@@ -90,11 +93,12 @@ int main() {
+@@ -90,11 +96,12 @@ int main() {
              // Aux destructors join/free pools after completed or aborted graphs.
          }
          std::printf("{\"schema\":\"vntts.native-aux-pool-check\",\"version\":\"%s\","
