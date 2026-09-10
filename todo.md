@@ -9,23 +9,12 @@ Goal: ship one Windows x64 runtime that works across CPU-only and Vulkan-capable
 machines. Ordinary users choose a voice, not GPU layers or worker counts. Keep
 macOS MLX, explicit custom runtimes and Linux behavior outside this change.
 
-- [ ] Verify the universal artifact before publication.
-  - Windows CI must build and inspect the one artifact, then execute option
-    validation, CPU fallback without Vulkan, Local tensor routing, bit-identical
-    1/4/8-worker synthetic output, abort/recovery and clean owner teardown.
-  - Installer checks: install beside the old runtime, validate capabilities before
-    model download, reuse the existing GGUF pair, resume interrupted downloads and
-    repair corruption without publishing partial files.
+- [ ] Qualify the universal artifact on real Windows before publication.
   - Real Windows gate: automatic mode selects Local GPU plus eight workers on the
     16-thread RTX 2070 SUPER, preserves the accepted WAV hashes, stays within the
     measured memory envelope, cancels/restarts cleanly and leaves no server after
     exit. Force CPU mode once to prove the fallback path; do not require listening
     again when WAV bytes match.
-  - Provide one qualification command for the single Actions artifact. It must
-    validate the manifest/capability contract, reuse the saved GGUF/reference,
-    run CPU Local with four and eight workers plus adaptive Local GPU with eight,
-    compare matching CPU WAV hashes, retain timings/resources/placement, confirm
-    every owned server exited and produce one local results archive.
 - [ ] After every gate passes, create a production-versioned immutable GitHub
       Release asset, then update the pinned runtime URL/version/size/SHA-256 in a
       separate change. Verify one clean app install and preview before making it
