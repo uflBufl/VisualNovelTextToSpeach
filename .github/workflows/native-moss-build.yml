@@ -25,15 +25,23 @@ jobs:
           - variant: timing
             pool: 'OFF'
             local_gpu: 'OFF'
+            aux_threads: 4
             version: 0.3.0-vntts-timing1
           - variant: timing-aux-pool
             pool: 'ON'
             local_gpu: 'OFF'
+            aux_threads: 4
             version: 0.3.0-vntts-timing1-pool1
           - variant: timing-local-gpu
             pool: 'OFF'
             local_gpu: 'ON'
+            aux_threads: 4
             version: 0.3.0-vntts-timing1-localgpu
+          - variant: timing-local-gpu-aux8
+            pool: 'OFF'
+            local_gpu: 'ON'
+            aux_threads: 8
+            version: 0.3.0-vntts-timing1-localgpu-aux8
     steps:
       - uses: actions/checkout@v5
         with:
@@ -69,12 +77,15 @@ jobs:
           git -C native-source apply ../scripts/native/openmoss-v0.3.0-timings.patch
           git -C native-source apply --check ../scripts/native/openmoss-v0.3.0-local-gpu.patch
           git -C native-source apply ../scripts/native/openmoss-v0.3.0-local-gpu.patch
+          git -C native-source apply --check ../scripts/native/openmoss-v0.3.0-aux-threads.patch
+          git -C native-source apply ../scripts/native/openmoss-v0.3.0-aux-threads.patch
           cmake -S spirv-headers -B spirv-build -DCMAKE_INSTALL_PREFIX="$PWD/spirv-install"
           cmake --build spirv-build --target install --config Release
           cmake -S native-source -B native-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_OPENMP=OFF \
             -DOPENMOSS_PERSISTENT_AUX_CPU_POOL=${{ matrix.pool }} \
             -DOPENMOSS_LOCAL_GPU=${{ matrix.local_gpu }} \
+            -DOPENMOSS_AUX_CPU_THREADS=${{ matrix.aux_threads }} \
             -DCMAKE_PREFIX_PATH="$PWD/spirv-install"
           cmake --build native-build --target moss-tts-server moss-aux-pool-check moss-local-gpu-check --parallel 2
           export PATH="$PWD/native-build/bin:$PATH"
@@ -107,6 +118,7 @@ jobs:
           Copy-Item native-source/third_party/llama.cpp/vendor/cpp-httplib/LICENSE native-dist/LICENSE-cpp-httplib.txt
           Copy-Item scripts/native/openmoss-v0.3.0-timings.patch native-dist/
           Copy-Item scripts/native/openmoss-v0.3.0-local-gpu.patch native-dist/
+          Copy-Item scripts/native/openmoss-v0.3.0-aux-threads.patch native-dist/
           Copy-Item scripts/native/README.md native-dist/
           @{
             upstream = 'bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1'
@@ -115,11 +127,12 @@ jobs:
             variant = '${{ matrix.variant }}'
             persistent_aux_cpu_pool = '${{ matrix.pool }}'
             local_decoder_gpu = '${{ matrix.local_gpu }}'
-            auxiliary_threads = 4
+            auxiliary_threads = ${{ matrix.aux_threads }}
             persistent_pool_idle_poll = 0
             vulkan_runtime_sha256 = (Get-FileHash native-dist/vulkan-1.dll -Algorithm SHA256).Hash
             patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-timings.patch -Algorithm SHA256).Hash
             local_gpu_patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-local-gpu.patch -Algorithm SHA256).Hash
+            aux_threads_patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-aux-threads.patch -Algorithm SHA256).Hash
             qualification = 'Build and no-model startup only; Windows GPU/audio qualification still required.'
           } | ConvertTo-Json | Set-Content native-dist/VNTTS-BUILD.json -Encoding utf8
           $Version = (& ./native-dist/moss-tts-server.exe --version | Out-String).Trim()

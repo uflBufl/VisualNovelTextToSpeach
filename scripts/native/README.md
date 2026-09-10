@@ -1,5 +1,37 @@
 # Opt-in native MOSS timing build
 
+## Next experiment: four versus eight CPU codec workers
+
+Use this after the Local GPU comparison, whose three candidate clips are already
+accepted. This changes **only CPU auxiliary worker count**; both builds keep
+Local audio-frame generation on GPU, codec/reference encoding on CPU and the
+persistent CPU pool OFF. More workers are an experiment, not a promised speedup.
+
+Update the checkout with `git pull`. From one successful
+[Native MOSS timing build run](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/workflows/native-moss-build.yml),
+download these two ZIPs into Downloads, without extracting or launching them:
+
+- `moss-native-timing-local-gpu-windows-x64.zip` (four workers, baseline)
+- `moss-native-timing-local-gpu-aux8-windows-x64.zip` (eight workers, candidate)
+
+Use a fresh matching pair, not the earlier baseline ZIP: the manifests now also
+identify the auxiliary-thread patch. Close VNTTS, then run:
+
+```powershell
+uv run --frozen python -m scripts.moss_native_compare --experiment codec-threads
+```
+
+The existing saved GGUF/reference and all safety checks below apply. It performs
+12 fresh generations, shuts down each owned server, and prints one comparison
+archive to send. Reports now include original-process exit confirmation;
+missing confirmation is never inferred from an empty error list. Ctrl+C once
+stops the run and preserves partial results after cleanup.
+
+We compare codec/reference time, total time, memory and exact WAV identity.
+If output is byte-identical to accepted audio, do not request the same listening
+again. Otherwise acoustic approval remains necessary. Keep the installed
+production runtime unchanged until the experiment passes.
+
 ## Windows: download two ZIPs, run one command
 
 This is an **opt-in developer comparison**, not normal app setup. It compares

@@ -5,6 +5,21 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
+- [ ] Finish the approved Local GPU experiment without changing production
+      defaults prematurely. Preserve the accepted three exact candidate WAVs;
+      do not request that listening or the unchanged ABBA benchmark again.
+  - Trace CPU waveform decode/reference encode for avoidable repeated work and
+    supported selective acceleration; choose the smallest measured candidate.
+    Keep codec working buffers and GPU memory budget explicit.
+    Compare approved Local GPU + four CPU workers against Local GPU + eight
+    CPU workers, with the persistent pool OFF in both to isolate thread count.
+    Reuse the existing graph checks, same sampling/reference and short launcher;
+    require real warm codec/total improvement without output or memory regression.
+  - Exercise server ownership across startup failure, cancellation, repeated
+    load/unload and shutdown; add a bounded no-model regression for any gap.
+  - Build/check any native change separately, retain the approved Local GPU
+    build as baseline, and prepare a short target-PC qualification command.
+    Stop at real Windows GPU/quality gates that cannot run on this Mac.
 - [ ] Verify successful preview replay on Windows with the qualified native profile;
       reuse the saved WAV without a new generation. Request another support export
       only for an unresolved problem, not to repeat already measured retry/device
@@ -18,9 +33,9 @@ measurements in agent memory and completed-work history in Git, not here.
     Do not enable the whole auxiliary sidecar on the 8 GB target by default.
     Gate any prototype on supported operations, memory headroom, unchanged
     output quality, cancellation and measured end-to-end improvement.
-    Qualify the opt-in Local GPU build on real Windows VRAM, audio and latency
-    before adoption. The separate owner, pinned build and no-model checks are
-    implemented; they do not prove GPU execution or acoustic quality.
+    Qualify remaining cancellation, idle and real-model lifetime behavior before
+    adoption; target-PC speed/memory measurements and the three sample listening
+    decisions are complete, not blanket approval for future generations.
   - Assess an isolated PyTorch Local 1.5 comparison (not the existing Delay 8B
     adapter): quantify model/tokenizer memory first, then qualify quantization
     and Turing-compatible precision before any target GPU render. Reuse the

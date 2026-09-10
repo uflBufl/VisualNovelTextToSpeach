@@ -51,10 +51,17 @@ class _LimitedBackend(_FakeBackend):
 
 
 class MossNativeCompareTest(unittest.TestCase):
-    def _download_pair(self, root, *, mismatch=False, checksum_error=False):
-        for label, variant in (
-            ("baseline", "timing"),
-            ("candidate", "timing-local-gpu"),
+    def _download_pair(
+        self,
+        root,
+        *,
+        mismatch=False,
+        checksum_error=False,
+        experiment="local-gpu",
+        candidate_threads=8,
+    ):
+        for label, (variant, _) in zip(
+            ("baseline", "candidate"), compare.EXPERIMENTS[experiment], strict=True
         ):
             name = f"moss-native-{variant}-windows-x64"
             inner = io.BytesIO()
@@ -71,6 +78,14 @@ class MossNativeCompareTest(unittest.TestCase):
                             "vntts": label if mismatch else "same-run",
                             "patch_sha256": "timing-patch",
                             "local_gpu_patch_sha256": "local-patch",
+                            "aux_threads_patch_sha256": "threads-patch",
+                            "auxiliary_threads": candidate_threads
+                            if variant.endswith("aux8")
+                            else 4,
+                            "persistent_aux_cpu_pool": "OFF",
+                            "local_decoder_gpu": "ON"
+                            if "local-gpu" in variant
+                            else "OFF",
                         }
                     ),
                 )
@@ -108,6 +123,54 @@ class MossNativeCompareTest(unittest.TestCase):
             self.assertFalse(options.output.exists())
             self.assertIsNone(options.reference)
             self.assertIsNone(options.model)
+
+    def test_codec_threads_uses_approved_gpu_baseline_and_eight_worker_candidate(self):
+        with TemporaryDirectory() as temporary:
+            self._download_pair(Path(temporary), experiment="codec-threads")
+            options = compare._parser().parse_args(
+                ["--downloads", temporary, "--experiment", "codec-threads"]
+            )
+            with patch.object(
+                compare.subprocess,
+                "run",
+                side_effect=[
+                    SimpleNamespace(stdout="openmoss 0.3.0-vntts-timing1-localgpu\n"),
+                    SimpleNamespace(
+                        stdout="openmoss 0.3.0-vntts-timing1-localgpu-aux8\n"
+                    ),
+                ],
+            ) as execute:
+                compare.prepare_downloads(options)
+            self.assertEqual(execute.call_count, 2)
+            self.assertIn("timing-local-gpu", options.baseline.parts)
+            self.assertIn("timing-local-gpu-aux8", options.candidate.parts)
+
+    def test_shutdown_summary_does_not_promote_missing_evidence(self):
+        runs = [
+            {
+                "variant": variant,
+                "report": {"server_shutdown": {"confirmed_exited": True}},
+            }
+            for variant in compare.ORDER
+        ]
+        self.assertTrue(compare.summarize(runs)["owned_servers_confirmed_stopped"])
+        runs[0]["report"]["server_shutdown"]["confirmed_exited"] = False
+        self.assertFalse(compare.summarize(runs)["owned_servers_confirmed_stopped"])
+        runs[0]["report"].clear()
+        self.assertIsNone(compare.summarize(runs)["owned_servers_confirmed_stopped"])
+
+    def test_codec_threads_rejects_wrong_worker_count_before_startup(self):
+        with TemporaryDirectory() as temporary:
+            self._download_pair(
+                Path(temporary), experiment="codec-threads", candidate_threads=4
+            )
+            options = compare._parser().parse_args(
+                ["--downloads", temporary, "--experiment", "codec-threads"]
+            )
+            with patch.object(compare.subprocess, "run") as execute:
+                with self.assertRaisesRegex(ValueError, "codec-thread settings"):
+                    compare.prepare_downloads(options)
+                execute.assert_not_called()
 
     def test_short_launch_rejects_bad_downloads_before_executing_anything(self):
         for failure in ("missing", "checksum", "different-run", "unsafe-zip"):

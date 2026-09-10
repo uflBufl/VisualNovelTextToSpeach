@@ -1,0 +1,167 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5625f95..9306a25 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -5,13 +5,21 @@ project(openmoss VERSION 0.3.0 LANGUAGES CXX C)
+ # VNTTS modification: diagnostic variants, never default changes.
+ option(OPENMOSS_PERSISTENT_AUX_CPU_POOL "Reuse four auxiliary CPU workers" OFF)
+ option(OPENMOSS_LOCAL_GPU "Run only the Local frame decoder on the GPU" OFF)
++set(OPENMOSS_AUX_CPU_THREADS 4 CACHE STRING "Auxiliary CPU backend thread count (1-16)")
++if(NOT OPENMOSS_AUX_CPU_THREADS MATCHES "^([1-9]|1[0-6])$")
++    message(FATAL_ERROR "OPENMOSS_AUX_CPU_THREADS must be an integer from 1 to 16")
++endif()
++
++set(OPENMOSS_VNTTS_VARIANT "")
+ if(OPENMOSS_LOCAL_GPU)
+-    add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1-localgpu")
++    string(APPEND OPENMOSS_VNTTS_VARIANT "-localgpu")
+ elseif(OPENMOSS_PERSISTENT_AUX_CPU_POOL)
+-    add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1-pool1")
+-else()
+-    add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1")
++    string(APPEND OPENMOSS_VNTTS_VARIANT "-pool1")
++endif()
++if(NOT OPENMOSS_AUX_CPU_THREADS EQUAL 4)
++    string(APPEND OPENMOSS_VNTTS_VARIANT "-aux${OPENMOSS_AUX_CPU_THREADS}")
+ endif()
++add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1${OPENMOSS_VNTTS_VARIANT}")
+ 
+ set(CMAKE_CXX_STANDARD 17)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+@@ -62,10 +70,10 @@ add_library(openmoss_core STATIC
+     src/wav.cpp
+ )
+ target_include_directories(openmoss_core PUBLIC include)
+-target_link_libraries(openmoss_core PUBLIC llama ggml ggml-base)
++target_link_libraries(openmoss_core PUBLIC llama ggml ggml-base ggml-cpu)
++target_compile_definitions(openmoss_core PUBLIC OPENMOSS_AUX_CPU_THREADS=${OPENMOSS_AUX_CPU_THREADS})
+ if(OPENMOSS_PERSISTENT_AUX_CPU_POOL)
+     target_compile_definitions(openmoss_core PUBLIC OPENMOSS_PERSISTENT_AUX_CPU_POOL=1)
+-    target_link_libraries(openmoss_core PUBLIC ggml-cpu)
+ endif()
+ if(OPENMOSS_LOCAL_GPU)
+     target_compile_definitions(openmoss_core PUBLIC OPENMOSS_LOCAL_GPU=1)
+diff --git a/src/aux_internal.h b/src/aux_internal.h
+index 10c72bf..487bad3 100644
+--- a/src/aux_internal.h
++++ b/src/aux_internal.h
+@@ -51,26 +51,25 @@ struct Model::Aux {
+     // use it. ggml_backend_free() does not own an attached threadpool.
+     ggml_threadpool_t cpu_pool = nullptr;
+ 
+-    // Returns true only when the opt-in build attached the fixed four-thread
+-    // pool. A false return leaves the backend on GGML's disposable-pool path.
++    // Configure the direct auxiliary CPU backend, and attach its optional pool.
++    // A false return means the backend cannot be configured.
++    static constexpr int cpu_threads() { return OPENMOSS_AUX_CPU_THREADS; }
++
+     bool init_cpu_pool() {
+-#if defined(OPENMOSS_PERSISTENT_AUX_CPU_POOL) && OPENMOSS_PERSISTENT_AUX_CPU_POOL
+         if (!backend || !ggml_backend_is_cpu(backend)) return false;
++        ggml_backend_cpu_set_n_threads(backend, cpu_threads());
++#if defined(OPENMOSS_PERSISTENT_AUX_CPU_POOL) && OPENMOSS_PERSISTENT_AUX_CPU_POOL
+         if (cpu_pool) return true;
+ 
+-        constexpr int n_threads = GGML_DEFAULT_N_THREADS;
+-        struct ggml_threadpool_params params = ggml_threadpool_params_default(n_threads);
++        struct ggml_threadpool_params params = ggml_threadpool_params_default(cpu_threads());
+         params.poll = 0; // persistent idle workers sleep instead of busy-polling
+         ggml_threadpool_t pool = ggml_threadpool_new(&params);
+         if (!pool) return false;
+ 
+-        ggml_backend_cpu_set_n_threads(backend, n_threads);
+         ggml_backend_cpu_set_threadpool(backend, pool);
+         cpu_pool = pool;
+-        return true;
+-#else
+-        return false;
+ #endif
++        return true;
+     }
+ 
+     ~Aux() {
+diff --git a/src/model.cpp b/src/model.cpp
+index 498f1ad..1119078 100644
+--- a/src/model.cpp
++++ b/src/model.cpp
+@@ -676,12 +676,17 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
+     gguf_free(bb_spec.gctx);
+     ggml_free(bb_spec.meta_ctx);
+ 
+-    // VNTTS modification: opt-in CPU-only experiment, after raw GGUF contexts
+-    // released, so the GGML pool constructor cannot extend their cleanup path.
++    // VNTTS modification: configure the direct auxiliary CPU backend after raw
++    // GGUF contexts are released, so optional pool construction stays separate.
+     if (self->m_aux->init_cpu_pool()) {
++#if defined(OPENMOSS_PERSISTENT_AUX_CPU_POOL) && OPENMOSS_PERSISTENT_AUX_CPU_POOL
++        constexpr const char * pool_mode = "persistent pool, idle poll=0";
++#else
++        constexpr const char * pool_mode = "disposable pool";
++#endif
+         std::fprintf(stderr,
+-                     "Model::load: persistent aux CPU pool = %d threads (idle poll=0)\n",
+-                     GGML_DEFAULT_N_THREADS);
++                     "Model::load: aux CPU backend = %d threads (%s)\n",
++                     Aux::cpu_threads(), pool_mode);
+     }
+ 
+     // Cache convenient dim shortcuts on Aux.
+diff --git a/tests/moss_aux_pool_check.cpp b/tests/moss_aux_pool_check.cpp
+index 8ad7174..36f934c 100644
+--- a/tests/moss_aux_pool_check.cpp
++++ b/tests/moss_aux_pool_check.cpp
+@@ -18,11 +18,11 @@ struct Graph {
+     ggml_cgraph * graph = nullptr;
+     ggml_tensor * output = nullptr;
+ 
+-    explicit Graph(bool initialize_pool) {
++    explicit Graph(int n_threads, bool initialize_pool) {
+         aux.backend = ggml_backend_cpu_init();
+         require(aux.backend != nullptr, "CPU backend unavailable");
+-        ggml_backend_cpu_set_n_threads(aux.backend, 4);
+-        if (initialize_pool) aux.init_cpu_pool();
++        ggml_backend_cpu_set_n_threads(aux.backend, n_threads);
++        if (initialize_pool) require(aux.init_cpu_pool(), "aux CPU configuration failed");
+         ggml_init_params params{};
+         params.mem_size = 16 * ggml_tensor_overhead() + ggml_graph_overhead();
+         params.no_alloc = true;
+@@ -57,18 +57,21 @@ int main() {
+     try {
+         double baseline_s = 0, candidate_s = 0;
+         constexpr int cycles = 4, runs = 50;
++        constexpr int baseline_threads = 4;
++        constexpr int candidate_threads = openmoss::Model::Aux::cpu_threads();
++        static_assert(candidate_threads >= 1 && candidate_threads <= 16,
++                      "candidate thread count must be in the supported range");
+         for (int cycle = 0; cycle < cycles; ++cycle) {
+-            Graph baseline(false), candidate(true);
++            Graph baseline(baseline_threads, false), candidate(baseline_threads, true);
+             const auto expected = baseline.run();
+             // Initialization is idempotent; repeated use must retain one owner.
+             const auto pool = candidate.aux.cpu_pool;
+             candidate.aux.init_cpu_pool();
+             require(pool == candidate.aux.cpu_pool, "pool replaced during reinitialization");
+ #ifdef OPENMOSS_PERSISTENT_AUX_CPU_POOL
+-            static_assert(GGML_DEFAULT_N_THREADS == 4, "experiment requires four workers");
+             require(pool != nullptr, "expected persistent workers");
+ #else
+-            require(pool == nullptr, "default build unexpectedly attached a pool");
++            require(pool == nullptr, "persistent pool unexpectedly attached");
+ #endif
+             for (int i = 0; i < runs; ++i) {
+                 // Alternate order; these are synthetic timings, not a speech gate.
+@@ -90,11 +93,12 @@ int main() {
+             // Aux destructors join/free pools after completed or aborted graphs.
+         }
+         std::printf("{\"schema\":\"vntts.native-aux-pool-check\",\"version\":\"%s\","
+-                    "\"threads\":4,\"cycles\":%d,\"runs_per_cycle\":%d,"
++                    "\"baseline_threads\":%d,\"candidate_threads\":%d,\"cycles\":%d,\"runs_per_cycle\":%d,"
+                     "\"output_identical\":true,\"abort_recovery\":true,"
+                     "\"baseline_s\":%.6f,\"candidate_s\":%.6f,"
+                     "\"scope\":\"synthetic CPU graphs, not speech performance\"}\n",
+-                    OPENMOSS_VERSION, cycles, runs, baseline_s, candidate_s);
++                    OPENMOSS_VERSION, baseline_threads, candidate_threads, cycles, runs,
++                    baseline_s, candidate_s);
+         return 0;
+     } catch (const std::exception & error) {
+         std::fprintf(stderr, "aux pool check failed: %s\n", error.what());

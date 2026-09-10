@@ -17,10 +17,23 @@ from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import load_app_settings
 
 ORDER = ("baseline", "candidate", "candidate", "baseline")
+EXPERIMENTS = {
+    "local-gpu": (("timing", ""), ("timing-local-gpu", "-localgpu")),
+    "codec-threads": (
+        ("timing-local-gpu", "-localgpu"),
+        ("timing-local-gpu-aux8", "-localgpu-aux8"),
+    ),
+}
 
 
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--experiment",
+        choices=EXPERIMENTS,
+        default="local-gpu",
+        help="Downloaded build pair: GPU frame model, or 4 vs 8 codec CPU workers",
+    )
     parser.add_argument(
         "--baseline", type=Path, help="Existing baseline server EXE (advanced)"
     )
@@ -60,8 +73,9 @@ def _parser():
 def _check_builds(builds):
     if all(builds.values()):
         keys = ["upstream", "llama", "vntts", "patch_sha256"]
-        if any("local_gpu_patch_sha256" in build for build in builds.values()):
-            keys.append("local_gpu_patch_sha256")
+        for key in ("local_gpu_patch_sha256", "aux_threads_patch_sha256"):
+            if any(key in build for build in builds.values()):
+                keys.append(key)
         for key in keys:
             if not builds["baseline"].get(key) or builds["baseline"].get(key) != builds[
                 "candidate"
@@ -80,9 +94,11 @@ def prepare_downloads(options):
     downloads = options.downloads.expanduser().resolve()
     if options.baseline and options.output:
         return
-    variants = {"baseline": "timing", "candidate": "timing-local-gpu"}
+    variants = dict(
+        zip(("baseline", "candidate"), EXPERIMENTS[options.experiment], strict=True)
+    )
     if not options.baseline:
-        for variant in variants.values():
+        for variant, _ in variants.values():
             archive = downloads / f"moss-native-{variant}-windows-x64.zip"
             if not archive.is_file():
                 raise ValueError(
@@ -94,7 +110,7 @@ def prepare_downloads(options):
     print(f"Comparison work folder: {work}", flush=True)
     if not options.baseline:
         builds = {}
-        for label, variant in variants.items():
+        for label, (variant, _) in variants.items():
             print(
                 f"Preparing {label}: checking and extracting the downloaded ZIP...",
                 flush=True,
@@ -121,10 +137,19 @@ def prepare_downloads(options):
                 raise ValueError(
                     f"Wrong or obsolete {label} build; download the current same-run pair"
                 )
+            if options.experiment == "codec-threads" and (
+                not build.get("aux_threads_patch_sha256")
+                or build.get("auxiliary_threads") != (4 if label == "baseline" else 8)
+                or build.get("persistent_aux_cpu_pool") != "OFF"
+                or build.get("local_decoder_gpu") != "ON"
+            ):
+                raise ValueError(
+                    f"Wrong {label} codec-thread settings; download the 4/8-worker pair"
+                )
             builds[label] = build
             setattr(options, label, runtime / "moss-tts-server.exe")
         _check_builds(builds)
-        for label, suffix in (("baseline", ""), ("candidate", "-localgpu")):
+        for label, (_, suffix) in variants.items():
             print(f"Checking {label} executable (no model loaded)...", flush=True)
             result = subprocess.run(
                 [str(getattr(options, label)), "--version"],
@@ -262,11 +287,17 @@ def summarize(runs):
             }
         )
     compute = [run["report"].get("compute") for run in runs]
+    stopped = [
+        run["report"].get("server_shutdown", {}).get("confirmed_exited") for run in runs
+    ]
     return {
         "startup": groups,
         "cases": comparisons,
         "same_reported_compute": len(set(compute)) == 1
         if len(compute) == 4 and all(compute)
+        else None,
+        "owned_servers_confirmed_stopped": all(stopped)
+        if len(stopped) == 4 and all(value is not None for value in stopped)
         else None,
         "qualification": "Measurements only; no automatic performance or voice approval.",
         "output_code_identity": "unavailable: native API returns WAV, not codec codes",
