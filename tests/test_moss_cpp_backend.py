@@ -1067,6 +1067,7 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertNotIn("--local-gpu", self.commands[1])
         self.assertIn("fallback: vulkan allocation", backend.runtime_status)
         self.assertIn("MOSS may be slow on CPU", backend.runtime_status)
+        self.assertIn("choose Pocket TTS in Voices", backend.runtime_status)
         self.assertIsNone(self.native_log.report()["latest_runtime"]["device"])
 
     def test_advertised_invalid_managed_capabilities_are_rejected(self):

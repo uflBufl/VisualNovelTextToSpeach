@@ -473,7 +473,11 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             device_label = (
                 f" on {device.strip()}" if isinstance(device, str) and device else ""
             )
-            cpu_warning = "; MOSS may be slow on CPU" if layers == 0 else ""
+            cpu_warning = (
+                "; MOSS may be slow on CPU; choose Pocket TTS in Voices for faster generation"
+                if layers == 0
+                else ""
+            )
             return (
                 f"MOSS C++: backbone {backbone.strip()}{device_label} "
                 f"({layers} GPU layers); "

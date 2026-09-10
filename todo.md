@@ -9,54 +9,10 @@ Goal: ship one Windows x64 runtime that works across CPU-only and Vulkan-capable
 machines. Ordinary users choose a voice, not GPU layers or worker counts. Keep
 macOS MLX, explicit custom runtimes and Linux behavior outside this change.
 
-- [ ] Replace the compile-time Local-GPU and auxiliary-thread variants with one
-      load-time native contract.
-  - Add `LoadOptions` and server arguments for Local GPU on/off and 1-16
-    auxiliary CPU workers. Keep the default CPU-safe and reject invalid option
-    combinations before allocating model tensors.
-  - Compile both CPU and Local-GPU paths into the same Vulkan-enabled binary.
-    A requested Local-GPU failure must unwind the partial model cleanly; fallback
-    happens by restarting the owned server without that option, not by mutating a
-    loaded model in place. Keep the persistent CPU pool out of this runtime.
-  - Add a no-model JSON capability command for installer validation, a stable
-    machine-readable startup failure category for the parent process, and
-    structured `/info` fields for requested/actual placement, selected Vulkan
-    device, offloaded layers and auxiliary worker count. Do not infer cross-vendor
-    capability from `nvidia-smi` or a hard-coded GPU list.
-  - Collapse the experimental build matrix and chained feature variants into one
-    reproducible candidate artifact with pinned openmoss/llama revisions,
-    manifest capabilities, licenses and checksums.
-- [ ] Add an automatic managed-runtime launch policy in VNTTS.
-  - Recompute the policy on every server start; never persist a hardware verdict.
-    Use a conservative 1/2/4/8 worker ladder capped at half the reported logical
-    CPUs, with eight selected only at 16 or more logical CPUs. Keep an expert
-    override outside normal UI.
-  - Use the native capability result to skip Local GPU when Vulkan is unavailable.
-    Otherwise try automatic backbone offload plus Local GPU once. On a structured
-    Local-GPU failure, retry once with CPU Local and automatic backbone placement;
-    on a broader Vulkan allocation/device failure, retry once fully on CPU.
-  - Never retry cancellation, timeout, corrupt model/DLL, invalid contract or an
-    arbitrary failure. If the single fallback also fails, stop and show the real
-    error. Do not silently switch voices or substitute Pocket TTS.
-  - Restrict automatic fallback to the pinned managed runtime. Explicit custom
-    server/model paths remain advanced opt-outs whose capabilities are not guessed.
-- [ ] Make the selected runtime state understandable and diagnosable.
-  - During load, show the attempted mode and any one-time fallback. After startup,
-    show only confirmed placement and worker count; CPU fallback warns that MOSS
-    may be slow but does not call the machine unsupported.
-  - Treat RAM figures as advisory because availability changes while the app runs.
-    Warn clearly on a constrained CPU fallback and let the user choose Pocket TTS,
-    but do not block setup with an unproven RAM/VRAM threshold.
-  - Include bounded capability, requested/actual placement, workers and fallback
-    reason in support exports. Exclude raw native logs, environment values, voice
-    paths and dialogue text. Include effective controls in cache identity.
 - [ ] Verify the universal artifact before publication.
-  - Native checks: option validation, CPU fallback without Vulkan, Local tensor
-    routing, bit-identical 1/4/8-worker synthetic output, abort/recovery and clean
-    owner teardown. Windows CI must build and inspect the one artifact.
-  - Python checks: worker policy boundaries, structured status over log parsing,
-    exactly one eligible fallback, no retry for excluded failures, explicit-path
-    opt-out, cache identity and user-facing status/support redaction.
+  - Windows CI must build and inspect the one artifact, then execute option
+    validation, CPU fallback without Vulkan, Local tensor routing, bit-identical
+    1/4/8-worker synthetic output, abort/recovery and clean owner teardown.
   - Installer checks: install beside the old runtime, validate capabilities before
     model download, reuse the existing GGUF pair, resume interrupted downloads and
     repair corruption without publishing partial files.
