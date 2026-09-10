@@ -15,6 +15,7 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 
+from scripts import moss_native_pause_probe as native_probe
 from vntts.moss_cpp_backend import (
     MossCppVoiceRouterBackend,
     _aux_cpu_workers,
@@ -1208,6 +1209,31 @@ class MossCppBackendTest(unittest.TestCase):
             cancellation.set()
             backend.shutdown()
             task.join(5)
+
+    def test_qualification_cancellation_receipt_confirms_fresh_server(self):
+        backend = self.backend()
+        output = self.root / "qualification"
+        output.mkdir()
+        responses, restore = native_probe._capture_native_response(backend)
+        try:
+            receipt = native_probe._cancel_and_restart(
+                backend,
+                output,
+                7,
+                responses,
+                timeout=5,
+                cancellation_text="Wait.",
+            )
+        finally:
+            restore()
+        self.assertEqual(receipt["cancelled_completion"], "cancelled")
+        self.assertEqual(receipt["cancelled_outcome"], "cancelled")
+        self.assertTrue(receipt["cancelled_server"]["confirmed_exited"])
+        self.assertEqual(receipt["restart_attempt"]["completion"], "complete")
+        self.assertIn("raw_response", receipt["restart_attempt"])
+        self.assertNotEqual(
+            receipt["cancelled_server"]["pid"], receipt["restart_server_pid"]
+        )
 
     def test_weights_and_runtime_settings_have_distinct_cache_identity(self):
         backend = self.backend()

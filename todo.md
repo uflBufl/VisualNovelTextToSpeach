@@ -10,11 +10,11 @@ machines. Ordinary users choose a voice, not GPU layers or worker counts. Keep
 macOS MLX, explicit custom runtimes and Linux behavior outside this change.
 
 - [ ] Qualify the universal artifact on real Windows before publication.
-  - Real Windows gate: automatic mode selects Local GPU plus eight workers on the
-    16-thread RTX 2070 SUPER, preserves the accepted WAV hashes, stays within the
-    measured memory envelope, cancels/restarts cleanly and leaves no server after
-    exit. Force CPU mode once to prove the fallback path; do not require listening
-    again when WAV bytes match.
+  - Run `scripts/qualify-moss-adaptive-windows.ps1` on the 16-thread RTX 2070
+    SUPER. Automatic mode must select Local GPU plus eight workers, preserve the
+    accepted WAV hashes, stay within the measured memory envelope, cancel/restart
+    cleanly and leave no server after exit. Force CPU mode once to prove the
+    fallback path; do not require listening again when WAV bytes match.
 - [ ] After every gate passes, create a production-versioned immutable GitHub
       Release asset, then update the pinned runtime URL/version/size/SHA-256 in a
       separate change. Verify one clean app install and preview before making it
@@ -159,14 +159,6 @@ format compatibility, model/decoder installation, OS permissions, native focus
 or audio-device behavior. Keep the real fresh-install qualification below.
 Interruption/recovery expansion and packaged-executable smoke coverage remain
 separate follow-up work, not prerequisites for this first journey.
-
-## P1 - Run MOSS Local v1.5 on Windows
-
-- [ ] Qualify real Windows CPU/8 GB GPU rendering with
-      normal `uv run vntts-app` first-launch setup and, for GPU tuning,
-      `scripts/run-moss-windows.ps1`: record memory use, latency and blind accent
-      fidelity against MLX with the same character references. Verify native
-      DLL loading, cancellation/reload and shutdown on the target machine.
 
 ## P0 - Choose a game narrator on a fresh install
 

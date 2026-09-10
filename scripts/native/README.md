@@ -59,7 +59,9 @@ The command verifies and extracts the artifact in a temporary folder, reuses the
 installed GGUF pair and saved Narrator reference, then renders the same six samples
 with CPU Local/4 workers, CPU Local/8 workers and adaptive Local GPU/8 workers. It
 fails on a capability or placement mismatch, different CPU WAV hashes, an
-incomplete render or a server left running. The resulting
+incomplete render or a server left running. The GPU run also cancels one active
+uncached request, confirms that process exited and completes a fresh render in a
+new owned process. The resulting
 `moss-adaptive-qualification-*.zip` stays in Downloads and contains timings,
 resource measurements and audio for the final GPU listening check. It does not
 change saved app settings or install the candidate runtime.

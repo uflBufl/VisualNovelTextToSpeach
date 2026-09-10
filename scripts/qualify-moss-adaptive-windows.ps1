@@ -76,8 +76,10 @@ try {
         [Environment]::SetEnvironmentVariable('VNTTS_MOSS_GPU_LAYERS', $Run.Layers, 'Process')
         [Environment]::SetEnvironmentVariable('VNTTS_MOSS_AUX_CPU_THREADS', $Run.Workers, 'Process')
         Write-Host ("[{0}/3] {1}" -f $Index, $Run.Name)
+        $Extra = @()
+        if ($Run.Name -eq 'gpu-8') { $Extra = @('--cancel-restart') }
         & uv run --frozen python scripts/moss_native_pause_probe.py `
-            --executable $Server --output (Join-Path $Output $Run.Name)
+            --executable $Server --output (Join-Path $Output $Run.Name) @Extra
         if ($LASTEXITCODE -ne 0) { throw "$($Run.Name) probe failed." }
         Remove-Item -LiteralPath (Join-Path $Output "$($Run.Name).zip") -Force
     }
@@ -113,6 +115,13 @@ try {
         [string]::IsNullOrWhiteSpace($GpuPlacement.device)) {
         throw 'gpu-8 reported unexpected device placement.'
     }
+    $CancelRestart = $Reports['gpu-8'].cancel_restart
+    if ($CancelRestart.cancelled_completion -ne 'cancelled' -or
+        $CancelRestart.cancelled_outcome -ne 'cancelled' -or
+        $CancelRestart.cancelled_server.confirmed_exited -ne $true -or
+        $CancelRestart.restart_server_pid -eq $CancelRestart.cancelled_server.pid) {
+        throw 'gpu-8 cancellation/restart contract failed.'
+    }
 
     $Summary = [ordered]@{
         schema = 'vntts.moss-adaptive-qualification'
@@ -124,7 +133,11 @@ try {
         runs = @{
             'cpu-4' = @{ runtime = $Reports['cpu-4'].runtime; compute = $Reports['cpu-4'].compute }
             'cpu-8' = @{ runtime = $Reports['cpu-8'].runtime; compute = $Reports['cpu-8'].compute }
-            'gpu-8' = @{ runtime = $Reports['gpu-8'].runtime; compute = $Reports['gpu-8'].compute }
+            'gpu-8' = @{
+                runtime = $Reports['gpu-8'].runtime
+                compute = $Reports['gpu-8'].compute
+                cancel_restart = $CancelRestart
+            }
         }
         all_servers_confirmed_stopped = $true
     }

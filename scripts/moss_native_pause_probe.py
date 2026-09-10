@@ -11,6 +11,7 @@ import zipfile
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
+from threading import Event, Thread
 from time import monotonic
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ from vntts.speech_backend import (
 from vntts.support import collect_build_identity, native_speech_context
 from vntts.synthesis import (
     SynthesisCachePolicy,
+    SynthesisCompletion,
     SynthesisRequest,
     moss_generation_limits,
 )
@@ -58,6 +60,11 @@ def _parser():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", type=Path)
     parser.add_argument("--executable", type=Path)
+    parser.add_argument(
+        "--cancel-restart",
+        action="store_true",
+        help="Cancel one active request, then prove a fresh request restarts the server",
+    )
     return parser
 
 
@@ -331,6 +338,109 @@ def _capture_owned_server(backend, servers):
         servers.append(server)
 
 
+def _cancel_and_restart(
+    backend,
+    output,
+    index,
+    responses,
+    *,
+    timeout=15,
+    cancellation_text="The qualification request must remain active until cancellation is observed.",
+):
+    cancellation = Event()
+    attempt_id = uuid4().hex
+    result = []
+
+    def render():
+        try:
+            with native_speech_context.set({"attempt_id": attempt_id}):
+                result.append(
+                    backend.render(
+                        SynthesisRequest(
+                            "Narrator",
+                            cancellation_text,
+                            seed=1,
+                            generation_profile="stable",
+                            cache_policy=SynthesisCachePolicy.BYPASS,
+                            cancellation=cancellation,
+                        )
+                    ).collect()
+                )
+        except BaseException as error:
+            result.append(error)
+
+    task = Thread(target=render, daemon=True)
+    task.start()
+    deadline = monotonic() + timeout
+    old_server = None
+    while task.is_alive() and monotonic() < deadline:
+        started = any(
+            event.get("native", {}).get("attempt_id") == attempt_id
+            and event["native"].get("operation") == "request-start"
+            for event in support.native_speech_log.report()["events"]
+        )
+        if started:
+            with backend.server_lock:
+                old_server = backend.server
+            break
+        cancellation.wait(0.05)
+    if old_server is None:
+        cancellation.set()
+        task.join(timeout=2)
+        raise RuntimeError("Cancellation probe did not observe an active request")
+
+    # Let the HTTP worker enter native generation; the real candidate is much
+    # slower than this bounded delay, while the fake server blocks explicitly.
+    cancellation.wait(0.25)
+    cancellation.set()
+    task.join(timeout=timeout)
+    if task.is_alive():
+        backend.shutdown()
+        raise RuntimeError("Cancelled MOSS request did not stop")
+    if len(result) != 1 or isinstance(result[0], BaseException):
+        error = result[0] if result else RuntimeError("missing cancellation result")
+        raise RuntimeError(f"Cancelled MOSS request failed: {error}")
+    if result[0].completion is not SynthesisCompletion.CANCELLED:
+        raise RuntimeError(
+            f"MOSS request completed before cancellation: {result[0].completion.value}"
+        )
+    if old_server.poll() is None:
+        raise RuntimeError("Cancelled MOSS server is still running")
+
+    restart = _render_attempt(
+        backend,
+        output,
+        index,
+        "stable",
+        "restart",
+        "The server restarted cleanly.",
+        responses,
+    )
+    if restart["completion"] != SynthesisCompletion.COMPLETE.value:
+        raise RuntimeError("Fresh render after cancellation did not complete")
+    with backend.server_lock:
+        new_server = backend.server
+    if new_server is None or new_server.pid == old_server.pid:
+        raise RuntimeError("Fresh render did not start a new owned server")
+    cancelled_event = next(
+        event["native"]
+        for event in reversed(support.native_speech_log.report()["events"])
+        if event.get("native", {}).get("attempt_id") == attempt_id
+        and event["native"].get("operation") == "fresh-generation"
+    )
+    return {
+        "cancelled_completion": result[0].completion.value,
+        "cancelled_outcome": cancelled_event.get("outcome"),
+        "cancelled_server": {
+            "pid": old_server.pid,
+            "returncode": old_server.poll(),
+            "confirmed_exited": old_server.poll() is not None,
+        },
+        "restart_server_pid": new_server.pid,
+        "restart_attempt": restart,
+    }
+
+
 def run(
     options,
     *,
@@ -467,6 +577,21 @@ def run(
                             break
                     finally:
                         _capture_owned_server(backend, owned_servers)
+                if getattr(options, "cancel_restart", False) and exit_code == 0:
+                    print("[cancel/restart] active request", flush=True)
+                    receipt = _cancel_and_restart(
+                        backend, output, len(report["attempts"]) + 1, responses
+                    )
+                    report["cancel_restart"] = {
+                        key: value
+                        for key, value in receipt.items()
+                        if key != "restart_attempt"
+                    }
+                    report["attempts"].append(receipt["restart_attempt"])
+                    attempt = receipt["restart_attempt"]
+                    _write_json(output / f"{attempt['id']}.json", attempt)
+                    _write_json(output / "report.json", report)
+                    _capture_owned_server(backend, owned_servers)
             finally:
                 restore()
     except KeyboardInterrupt:
