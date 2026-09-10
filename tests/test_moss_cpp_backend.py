@@ -947,6 +947,28 @@ class MossCppBackendTest(unittest.TestCase):
         _exe, model, _sidecar = moss_cpp_paths("/old/models/moss-mlx-int8")
         self.assertEqual(model, self.model.resolve())
 
+    def test_missing_native_files_identify_paths_instead_of_claiming_mlx(self):
+        missing = self.root / "missing-server.exe"
+        with patch.dict(os.environ, {"VNTTS_MOSS_CPP_EXECUTABLE": str(missing)}):
+            with self.assertRaises(TTSConfigurationError) as caught:
+                moss_cpp_paths("/old/models/moss-mlx-int8")
+        message = str(caught.exception)
+        self.assertIn(f"Native server executable is missing: {missing}", message)
+        self.assertNotIn("Model GGUF is missing", message)
+        self.assertNotIn("MLX", message)
+
+        self.model.unlink()
+        self.model.with_suffix(".extras.gguf").unlink()
+        with self.assertRaises(TTSConfigurationError) as caught:
+            moss_cpp_paths()
+        message = str(caught.exception)
+        self.assertIn(f"Model GGUF is missing: {self.model}", message)
+        self.assertIn(
+            f"Audio sidecar is missing: {self.model.with_suffix('.extras.gguf')}",
+            message,
+        )
+        self.assertIn("--model PATH", message)
+
     def test_invalid_setup_and_windows_routing(self):
         settings = AppSettings(speech_backend="moss-tts", tts_model=str(self.model))
         self.assertEqual(

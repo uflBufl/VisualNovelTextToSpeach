@@ -126,19 +126,23 @@ def moss_cpp_paths(model_name=None):
     from vntts.moss_cpp_installation import configured_paths
 
     executable, model, sidecar = configured_paths(model_name)
-    if (
-        not executable.is_file()
-        or not model.is_file()
-        or model.suffix.lower() != ".gguf"
-    ):
-        raise TTSConfigurationError(
-            "MOSS Local on Windows/Linux or Intel Mac uses C++/GGUF, not the "
-            "Apple Silicon MLX Python runtime. Set VNTTS_MOSS_CPP_EXECUTABLE to moss-tts-server "
-            "and VNTTS_MOSS_GGUF (or the Model setting) pointing to the Local v1.5 "
-            "GGUF. See scripts/run-moss-windows.ps1."
-        )
+    problems = []
+    if not executable.is_file():
+        problems.append(f"Native server executable is missing: {executable}")
+    if not model.is_file():
+        problems.append(f"Model GGUF is missing: {model}")
+    if model.suffix.lower() != ".gguf":
+        problems.append(f"Model must be a .gguf file, not a model directory: {model}")
     if not sidecar.is_file():
-        raise TTSConfigurationError(f"MOSS C++ audio sidecar is missing: {sidecar}")
+        problems.append(f"Audio sidecar is missing: {sidecar}")
+    if problems:
+        raise TTSConfigurationError(
+            "MOSS C++/GGUF file check failed:\n"
+            + "\n".join(problems)
+            + "\nCheck the server path and existing Local v1.5 GGUF pair. "
+            "For the native comparison, use --model PATH if weights are stored "
+            "outside the configured location."
+        )
     return executable.resolve(), model.resolve(), sidecar.resolve()
 
 
