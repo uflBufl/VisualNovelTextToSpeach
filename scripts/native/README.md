@@ -46,6 +46,24 @@ After a successful load, `/info.placement` reports actual `backbone`, `device`,
 selected hardware description, capped at 128 characters, and is empty for CPU-only
 placement.
 
+### Real Windows qualification
+
+After downloading the successful Actions artifact to the default Downloads
+folder, close VNTTS and run this once from the project folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\qualify-moss-adaptive-windows.ps1
+```
+
+The command verifies and extracts the artifact in a temporary folder, reuses the
+installed GGUF pair and saved Narrator reference, then renders the same six samples
+with CPU Local/4 workers, CPU Local/8 workers and adaptive Local GPU/8 workers. It
+fails on a capability or placement mismatch, different CPU WAV hashes, an
+incomplete render or a server left running. The resulting
+`moss-adaptive-qualification-*.zip` stays in Downloads and contains timings,
+resource measurements and audio for the final GPU listening check. It does not
+change saved app settings or install the candidate runtime.
+
 ### Run
 
 The native server accepts these process-start controls:

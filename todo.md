@@ -21,6 +21,11 @@ macOS MLX, explicit custom runtimes and Linux behavior outside this change.
     measured memory envelope, cancels/restarts cleanly and leaves no server after
     exit. Force CPU mode once to prove the fallback path; do not require listening
     again when WAV bytes match.
+  - Provide one qualification command for the single Actions artifact. It must
+    validate the manifest/capability contract, reuse the saved GGUF/reference,
+    run CPU Local with four and eight workers plus adaptive Local GPU with eight,
+    compare matching CPU WAV hashes, retain timings/resources/placement, confirm
+    every owned server exited and produce one local results archive.
 - [ ] After every gate passes, create a production-versioned immutable GitHub
       Release asset, then update the pinned runtime URL/version/size/SHA-256 in a
       separate change. Verify one clean app install and preview before making it

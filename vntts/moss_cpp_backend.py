@@ -57,6 +57,8 @@ def _aux_cpu_workers(logical_count=None):
 
 def _managed_runtime(model_name):
     """Explicit server/model paths are advanced integrations, never guessed."""
+    if os.environ.get("VNTTS_MOSS_QUALIFY_ADAPTIVE") == "1":
+        return True
     return not (
         os.environ.get("VNTTS_MOSS_CPP_EXECUTABLE")
         or os.environ.get("VNTTS_MOSS_GGUF")
@@ -374,13 +376,22 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         return payload
 
     def _controls_for_start(self):
-        workers = _aux_cpu_workers()
+        workers = _integer_setting(
+            "VNTTS_MOSS_AUX_CPU_THREADS", _aux_cpu_workers(), 1, 16
+        )
         if not self._adaptive_managed_runtime:
             return {
                 "gpu_layers": self.gpu_layers,
                 "aux_cpu": self.aux_cpu,
                 "local_gpu": False,
                 "aux_cpu_threads": None,
+            }
+        if self.gpu_layers == 0:
+            return {
+                "gpu_layers": 0,
+                "aux_cpu": 1,
+                "local_gpu": False,
+                "aux_cpu_threads": workers,
             }
         if self._fallback_category == "local_gpu":
             return {

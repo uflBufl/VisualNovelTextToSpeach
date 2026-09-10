@@ -1015,6 +1015,24 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertNotIn("--local-gpu", self.commands[-1])
         self.assertFalse(self.native_log.report()["latest_runtime"]["vulkan_available"])
 
+    def test_adaptive_qualification_can_force_cpu_and_worker_count(self):
+        (self.root / "adaptive-runtime").touch()
+        with patch.dict(
+            os.environ,
+            {
+                "VNTTS_MOSS_QUALIFY_ADAPTIVE": "1",
+                "VNTTS_MOSS_GPU_LAYERS": "0",
+                "VNTTS_MOSS_AUX_CPU_THREADS": "4",
+            },
+        ):
+            backend = self._managed_backend()
+        self.addCleanup(backend.shutdown)
+        command = self.commands[-1]
+        self.assertEqual(command[command.index("--n-gpu-layers") + 1], "0")
+        self.assertNotIn("--local-gpu", command)
+        self.assertEqual(command[command.index("--aux-cpu-threads") + 1], "4")
+        self.assertIn("auxiliary CPU workers: 4", backend.runtime_status)
+
     def test_managed_local_gpu_failure_restarts_once_without_local_gpu(self):
         (self.root / "adaptive-runtime").touch()
         (self.root / "fail-local-gpu").touch()
