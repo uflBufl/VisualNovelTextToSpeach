@@ -188,8 +188,9 @@ class OCRCorrectionsDialogTest(unittest.TestCase):
             )
             dialog = OCRCorrectionsDialog("game", "Game", store)
             self.assertEqual(dialog.tabs.currentIndex(), 1)
-            dialog._append_row(dialog.global_table, "Mareus", "Marcus")
-            dialog._append_row(dialog.profile_table, "Vertln", "Vertin")
+            dialog._append_row(dialog.global_table, " Mareus ", " Marcus ")
+            dialog._append_row(dialog.global_table, " ", " ")
+            dialog._append_row(dialog.profile_table, " Vertln ", " Vertin ")
 
             dialog.save()
             self.wait_for(lambda: not dialog._save_active)

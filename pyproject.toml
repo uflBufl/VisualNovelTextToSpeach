@@ -93,7 +93,6 @@ reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.gi
 
 [dependency-groups]
 dev = [
-    "deptree>=0.0.12",
     "mypy>=2.3,<3",
     "nbstripout>=0.9.1,<1",
     "pyinstaller>=6.22,<7",

@@ -1,7 +1,17 @@
+import importlib.util
 import unittest
 from pathlib import Path
+from unittest.mock import call, patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEPENDENCY_COLLECTION_PATH = (
+    PROJECT_ROOT / "packaging" / "pyinstaller" / "dependency_collection.py"
+)
+dependency_collection_spec = importlib.util.spec_from_file_location(
+    "dependency_collection", DEPENDENCY_COLLECTION_PATH
+)
+dependency_collection = importlib.util.module_from_spec(dependency_collection_spec)
+dependency_collection_spec.loader.exec_module(dependency_collection)
 
 
 class ReleasePackagingTest(unittest.TestCase):
@@ -33,24 +43,71 @@ class ReleasePackagingTest(unittest.TestCase):
                 self.assertIn('os.environ["VNTTS_SPEECH_RUNTIMES_DIR"]', spec)
                 self.assertIn('"runtime-manifest.json"', spec)
 
-    def test_platform_bundles_include_the_reverse1999_content_provider(self):
-        for relative_path in (
-            "packaging/macos/vntts.spec",
-            "packaging/windows/vntts.spec",
-        ):
-            with self.subTest(path=relative_path):
-                spec = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
-                self.assertIn('collect_all("r1999extractor")', spec)
-                self.assertIn('"reverse1999-extractor"', spec)
+    def test_shared_dependency_collector_preserves_inventory(self):
+        def copy_distribution_metadata(distribution):
+            if distribution == "torchcodec":
+                raise RuntimeError("metadata unavailable")
+            return [(f"{distribution}-metadata", "metadata")]
 
-    def test_platform_specs_copy_torchcodec_metadata(self):
+        packages = "r1999extractor TTS coqpit gruut ko_speech_tools trainer".split()
+        distributions = (
+            "coqui-tts coqpit gruut ko-speech-tools torch torchaudio torchcodec "
+            "trainer transformers reverse1999-extractor"
+        ).split()
+        datas, binaries, hidden_imports = [], [], []
+        with (
+            patch.object(
+                dependency_collection,
+                "collect_all",
+                side_effect=lambda package: (
+                    [(f"{package}-data", "data")],
+                    [(f"{package}-binary", "binary")],
+                    [f"{package}.import"],
+                ),
+            ) as collect_all,
+            patch.object(
+                dependency_collection,
+                "copy_metadata",
+                side_effect=copy_distribution_metadata,
+            ) as copy_metadata,
+        ):
+            dependency_collection.collect_packaged_dependencies(
+                datas, binaries, hidden_imports
+            )
+
+        self.assertEqual(
+            collect_all.call_args_list, [call(package) for package in packages]
+        )
+        self.assertEqual(
+            copy_metadata.call_args_list, [call(item) for item in distributions]
+        )
+        self.assertEqual(
+            datas,
+            [(f"{name}-data", "data") for name in packages]
+            + [
+                (f"{name}-metadata", "metadata")
+                for name in distributions
+                if name != "torchcodec"
+            ],
+        )
+        self.assertEqual(binaries, [(f"{name}-binary", "binary") for name in packages])
+        self.assertEqual(hidden_imports, [f"{name}.import" for name in packages])
+
+    def test_platform_specs_use_shared_dependency_collector(self):
         for relative_path in (
             "packaging/macos/vntts.spec",
             "packaging/windows/vntts.spec",
         ):
             with self.subTest(path=relative_path):
                 spec = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
-                self.assertIn('"torchcodec"', spec)
+                self.assertIn(
+                    "from dependency_collection import collect_packaged_dependencies",
+                    spec,
+                )
+                self.assertIn(
+                    "collect_packaged_dependencies(datas, binaries, hidden_imports)",
+                    spec,
+                )
 
     def test_windows_spec_collects_staged_runtime(self):
         spec = (PROJECT_ROOT / "packaging/windows/vntts.spec").read_text(

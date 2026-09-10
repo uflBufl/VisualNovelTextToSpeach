@@ -1850,12 +1850,6 @@ def _read_pcm16_mono_wav_bytes(payload):
     return samples, sample_rate
 
 
-def _numeric_metric(value):
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    return None
-
-
 def _route_outcome(
     route,
     status,

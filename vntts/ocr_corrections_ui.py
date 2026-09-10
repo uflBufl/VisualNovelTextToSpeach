@@ -308,21 +308,9 @@ class OCRCorrectionsDialog(QDialog):
         del signal_blockers
         return tuple(errors)
 
-    @staticmethod
-    def _entries_from_table(table):
-        entries = {}
-        for row in range(table.rowCount()):
-            source_item = table.item(row, 0)
-            replacement_item = table.item(row, 1)
-            source = source_item.text().strip() if source_item is not None else ""
-            replacement = (
-                replacement_item.text().strip() if replacement_item is not None else ""
-            )
-            if not source and not replacement:
-                continue
-            if not source or not replacement:
-                raise ValueError(f"Complete both fields in row {row + 1}")
-            if source.casefold() in {key.casefold() for key in entries}:
-                raise ValueError(f"Duplicate OCR correction source: {source}")
-            entries[source] = replacement
-        return entries
+    def _entries_from_table(self, table):
+        return {
+            source.strip(): replacement.strip()
+            for source, replacement in self._table_rows(table)
+            if source.strip()
+        }

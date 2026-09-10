@@ -1,11 +1,15 @@
 import importlib.metadata
 import os
+import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_submodules
 
 
 project_root = Path(SPEC).resolve().parents[2]
+sys.path.insert(0, str(project_root / "packaging" / "pyinstaller"))
+from dependency_collection import collect_packaged_dependencies
+
 tesseract_directory = Path(os.environ["VNTTS_TESSERACT_DIR"]).resolve()
 espeak_directory = Path(os.environ["VNTTS_ESPEAK_DIR"]).resolve()
 speech_runtimes_directory = Path(os.environ["VNTTS_SPEECH_RUNTIMES_DIR"]).resolve()
@@ -64,33 +68,7 @@ binaries = [
 hidden_imports = collect_submodules("transformers.models.gpt2")
 hidden_imports.extend(["ApplicationServices", "Quartz"])
 
-provider_datas, provider_binaries, provider_imports = collect_all("r1999extractor")
-datas.extend(provider_datas)
-binaries.extend(provider_binaries)
-hidden_imports.extend(provider_imports)
-
-for package in ("TTS", "coqpit", "gruut", "ko_speech_tools", "trainer"):
-    package_datas, package_binaries, package_imports = collect_all(package)
-    datas.extend(package_datas)
-    binaries.extend(package_binaries)
-    hidden_imports.extend(package_imports)
-
-for distribution in (
-    "coqui-tts",
-    "coqpit",
-    "gruut",
-    "ko-speech-tools",
-    "torch",
-    "torchaudio",
-    "torchcodec",
-    "trainer",
-    "transformers",
-    "reverse1999-extractor",
-):
-    try:
-        datas.extend(copy_metadata(distribution))
-    except Exception:
-        pass
+collect_packaged_dependencies(datas, binaries, hidden_imports)
 
 analysis = Analysis(
     [str(project_root / "vntts" / "app.py")],

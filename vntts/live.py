@@ -1464,10 +1464,6 @@ class LiveDialogReader:
         self.frame_route_epoch += 1
         self._reset_stable_frame_candidate_locked()
 
-    def _reset_stable_frame_candidate(self):
-        with self.state_lock:
-            self._reset_stable_frame_candidate_locked()
-
     def _reset_stable_frame_candidate_locked(self):
         self.candidate_frame_fingerprint = object()
         self.candidate_frame_count = 0
@@ -1510,10 +1506,6 @@ class LiveDialogReader:
         self._set_generation(tracker.generation)
         self._schedule(tracker.flush())
         self._update_dialog_ready(tracker)
-
-    def _speech_is_active(self):
-        with self.state_lock:
-            return self.current_chunk is not None
 
     def _is_focused(self):
         try:

@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.document_identity import is_lowercase_sha256
 
 TERMINAL_CONFLICT_MERGE_SCHEMA = "vntts.authoring-terminal-conflict-workspace-merge"
 TERMINAL_CONFLICT_MERGE_VERSION = 1
@@ -43,11 +44,7 @@ def require_terminal_conflict_sha256(
     value, label, *, error_type=TerminalConflictRecordError, message=None
 ):
     """Require one lowercase hexadecimal SHA-256 value."""
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    ):
+    if not is_lowercase_sha256(value):
         raise error_type(message or f"{label} must be lowercase SHA-256")
     return value
 

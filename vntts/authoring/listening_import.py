@@ -560,15 +560,6 @@ def _verify_controls_unchanged(inspection):
             )
 
 
-def _load_schema(path, schema, description):
-    value = _load_json(path, description)
-    if value.get("schema") != schema or value.get("schema_version") != SCHEMA_VERSION:
-        raise ListeningImportError(
-            f"Unsupported {description} schema; expected {schema!r} version {SCHEMA_VERSION}"
-        )
-    return value
-
-
 def _load_schema_snapshot(path, schema, description):
     path = Path(path)
     try:

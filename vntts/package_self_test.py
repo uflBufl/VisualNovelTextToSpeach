@@ -118,11 +118,8 @@ def probe_bundled_pocket_runtime(bundle_root=None, runner=subprocess.run):
 def _sha256(path):
     import hashlib
 
-    digest = hashlib.sha256()
     with Path(path).open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def _huggingface_snapshot_inventory(cache_root):

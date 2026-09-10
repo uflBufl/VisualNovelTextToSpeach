@@ -1,5 +1,7 @@
 """Latest-result-wins Qt workers for blocking diagnostic probes."""
 
+from functools import partial
+
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 
@@ -48,7 +50,7 @@ class LatestTaskRunner(QObject):
         self._serial += 1
         self._set_active(True)
         if keyword_arguments:
-            function = _KeywordTask(function, keyword_arguments)
+            function = partial(function, **keyword_arguments)
         self.thread_pool.start(_Task(self._serial, function, arguments, self._signals))
         return self._serial
 
@@ -71,12 +73,3 @@ class LatestTaskRunner(QObject):
             return
         self._active = active
         self.activeChanged.emit(active)
-
-
-class _KeywordTask:
-    def __init__(self, function, keyword_arguments):
-        self.function = function
-        self.keyword_arguments = keyword_arguments
-
-    def __call__(self, *arguments):
-        return self.function(*arguments, **self.keyword_arguments)
