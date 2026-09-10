@@ -236,6 +236,8 @@ For the pinned Q8 GGUF pair, the extra GPU weight group is about 205 MiB
 bytes, not a VRAM-fit guarantee: graph buffers, device allocations, context and
 other applications also consume memory. Keep `-CodecOnGpu` unset. Do not use
 this candidate with a different model architecture or without a GPU.
+The separate GPU path checks graph operation support before execution and
+returns the backend and unsupported operation name instead of attempting it.
 
 `moss-local-gpu-check.exe` exercises selection and routing without model weights.
 CI compilation and this check do not qualify GPU kernels, speech quality,

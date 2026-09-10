@@ -303,7 +303,7 @@ index 338c293..498f1ad 100644
                  "Model::load: arch is moss_tts_local but moss.local_text_head.weight "
                  "is missing from the sidecar; reconvert the model");
 diff --git a/src/local_transformer.cpp b/src/local_transformer.cpp
-index 540bc98..6083e76 100644
+index 540bc98..315d3ac 100644
 --- a/src/local_transformer.cpp
 +++ b/src/local_transformer.cpp
 @@ -104,7 +104,7 @@ public:
@@ -324,7 +324,30 @@ index 540bc98..6083e76 100644
          const int T_prev = cache.n_pos;
          const int T      = T_prev + 1;
          if (pos != T_prev) {
-@@ -398,11 +398,11 @@ public:
+@@ -300,6 +300,22 @@ public:
+             ggml_build_forward_expand(graph, v_new[size_t(li)]);
+         }
+ 
++        if (m_owner.local_gpu_separate_owner()) {
++            for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
++                const ggml_tensor * node = ggml_graph_node(graph, i);
++                if (!ggml_backend_supports_op(aux->backend, node)) {
++                    const char * backend = ggml_backend_name(aux->backend);
++                    const char * op = ggml_op_name(node->op);
++                    ggml_free(ctx);
++                    throw std::runtime_error(
++                        "LocalTransformer::step: backend "
++                        + std::string(backend ? backend : "unavailable")
++                        + " does not support op "
++                        + std::string(op ? op : "unknown"));
++                }
++            }
++        }
++
+         if (!ggml_gallocr_alloc_graph(m_galloc, graph)) {
+             ggml_free(ctx);
+             throw std::runtime_error("LocalTransformer::step: gallocr_alloc_graph failed");
+@@ -398,11 +414,11 @@ public:
                      + ", expected " + std::to_string(m_row_width));
              }
          }
