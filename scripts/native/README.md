@@ -27,10 +27,16 @@ This installs project dependencies, not experimental EXEs or MOSS weights.
 
 ### 2. Download and extract both native builds
 
-Verified successful build, checked on 2026-09-10:
+Open [Native MOSS timing build](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/workflows/native-moss-build.yml)
+and choose a successful run containing **both** of these artifacts:
 
-- [Baseline: moss-native-timing-windows-x64](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/runs/34415763439/artifacts/10129171883)
-- [Candidate: moss-native-timing-aux-pool-windows-x64](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/runs/34415763439/artifacts/10129177893)
+- Baseline: `moss-native-timing-windows-x64`
+- Candidate: `moss-native-timing-local-gpu-windows-x64`
+
+This comparison tests GPU audio-frame generation while keeping the waveform
+codec on CPU. The older `timing-aux-pool` artifact is a different experiment;
+do not substitute it here. If a run lacks the Local GPU artifact or is still
+building, wait for a complete successful pair before continuing.
 
 Sign in to GitHub if asked. Save both downloads in your user's `Downloads`
 folder with those exact names plus `.zip` (remove browser-added `(1)` suffixes).
@@ -52,7 +58,7 @@ $ErrorActionPreference = 'Stop'
 $MossDownloads = Join-Path $env:USERPROFILE 'Downloads'
 $MossWork = Join-Path $MossDownloads ("moss-native-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 if (Test-Path -LiteralPath $MossWork) { throw "Folder already exists: $MossWork. Run this block again after a second." }
-foreach ($Variant in @('timing', 'timing-aux-pool')) {
+foreach ($Variant in @('timing', 'timing-local-gpu')) {
     $Name = "moss-native-$Variant-windows-x64"
     $Outer = Join-Path $MossDownloads "$Name.zip"
     if (-not (Test-Path -LiteralPath $Outer -PathType Leaf)) { throw "Download is missing: $Outer" }
@@ -66,7 +72,7 @@ foreach ($Variant in @('timing', 'timing-aux-pool')) {
     Expand-Archive -LiteralPath $Inner -DestinationPath (Join-Path $MossWork "$Variant\runtime")
 }
 $MossBaseline = Join-Path $MossWork 'timing\runtime\moss-tts-server.exe'
-$MossCandidate = Join-Path $MossWork 'timing-aux-pool\runtime\moss-tts-server.exe'
+$MossCandidate = Join-Path $MossWork 'timing-local-gpu\runtime\moss-tts-server.exe'
 Write-Host "Baseline:  $MossBaseline"
 Write-Host "Candidate: $MossCandidate"
 ```
@@ -77,7 +83,7 @@ Do not move just the EXE. Confirm both programs start **without loading weights*
 ```powershell
 foreach ($Entry in @(
     @($MossBaseline, 'openmoss 0.3.0-vntts-timing1'),
-    @($MossCandidate, 'openmoss 0.3.0-vntts-timing1-pool1')
+    @($MossCandidate, 'openmoss 0.3.0-vntts-timing1-localgpu')
 )) {
     if (-not (Test-Path -LiteralPath $Entry[0] -PathType Leaf)) { throw "EXE is missing: $($Entry[0])" }
     $Version = (& $Entry[0] --version | Out-String).Trim()
@@ -151,15 +157,17 @@ Write-Host "Archive: $MossOutput.zip"
 For an explicit reference, **before running that command**, set
 `$MossReference = Read-Host 'Full path to the spoken reference WAV'` and append
 `--reference "$MossReference"` to the `uv run` line. Do not run both commands.
-The default `--gpu-layers -1` requests GPU backbone with CPU auxiliary; a
-separate CPU-only comparison uses `--gpu-layers 0` and a new output path.
+Keep the default `--gpu-layers -1` for this experiment. Both builds receive
+the CPU-auxiliary setting, but the Local GPU candidate overrides placement
+only for its audio-frame model. Its codec and input embeddings remain on CPU.
+The candidate requires a GPU; `--gpu-layers 0` is not supported by this build.
 No separate CUDA Python environment or MLX installation is needed.
 
 There are **12 generations**: baseline, candidate, candidate, baseline, with
 three identical phrases per fresh server, seed 1, production native stable
 sampling and synthesis caches bypassed. Startup and the first request are
 separate from warm requests. Process-cold does not mean cleared OS/disk caches.
-Expect several minutes, potentially longer in CPU-only mode. Do not start
+Expect several minutes. Do not start
 another model while measuring. Ctrl+C stops the run and preserves partial results
 once cleanup finishes; allow it to finish writing rather than killing the shell.
 
@@ -193,7 +201,7 @@ qualification gates pass.
 
 This diagnostic patch is based on Apache-2.0 openmoss v0.3.0,
 revision `bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1`, with llama.cpp
-`050ee92d04c2e1f639025786dea701c70e7d4204`. Both diagnostic variants add timing and
+`050ee92d04c2e1f639025786dea701c70e7d4204`. The baseline and CPU-pool variants add timing and
 backbone ownership cleanup, without changing sampling, device placement, thread
 counts or audio limits. Modified sections
 are marked in the patch. The built server identifies itself as
@@ -209,6 +217,36 @@ keeping its DLLs beside the EXE. Use the existing `scripts/run-moss-windows.ps1`
 with `-Server` pointing to that EXE and `-Model` pointing to the existing GGUF.
 Leave `-CodecOnGpu` unset on the 8 GB test GPU. Exit that shell afterwards to
 discard its runtime overrides. Do not overwrite the managed runtime folder.
+
+## Experimental Local audio-frame model on GPU
+
+The `timing-local-gpu` build enables `OPENMOSS_LOCAL_GPU` (default OFF) and
+identifies itself as `0.3.0-vntts-timing1-localgpu`. All builds apply the same
+two pinned patches; only the feature options differ. Both patch hashes are
+included in the build manifest and must match across a comparison pair.
+
+This candidate keeps CPU-owned input embeddings and the waveform codec, but
+uses a separate GPU owner for the Local transformer, its text head and a copy
+of the audio embedding tables. It does not move the whole auxiliary sidecar.
+The actual split is reported in startup status and `/info`; a different
+`same_reported_compute` value in the comparison is intentional, not a failure.
+
+For the pinned Q8 GGUF pair, the extra GPU weight group is about 205 MiB
+(145 MiB Local weights plus 60 MiB audio embeddings). These are static tensor
+bytes, not a VRAM-fit guarantee: graph buffers, device allocations, context and
+other applications also consume memory. Keep `-CodecOnGpu` unset. Do not use
+this candidate with a different model architecture or without a GPU.
+
+`moss-local-gpu-check.exe` exercises selection and routing without model weights.
+CI compilation and this check do not qualify GPU kernels, speech quality,
+real model ownership, VRAM headroom or speed. Compare fresh WAVs and resources
+on Windows before adoption; unlike the CPU pool test, different arithmetic
+may produce different WAV bytes without proving an audible regression.
+
+First-use reference encoding remains on CPU. The existing
+`reference_encoding_s` measurement is included in comparison phase summaries;
+do not attribute that one-time work to audio-frame generation. Missing warm
+reference timing remains unavailable, not an inferred zero or proven cache hit.
 
 ## Experimental auxiliary CPU pool
 

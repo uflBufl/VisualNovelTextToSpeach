@@ -475,6 +475,15 @@ class MossCppBackendTest(unittest.TestCase):
             (
                 "-1",
                 "load_tensors: offloaded 37/37 layers to GPU\n"
+                "llama_model_load: using device Vulkan0 (NVIDIA GeForce RTX 2070 SUPER)\n"
+                "Model::load: aux backend = CPU\n"
+                "Model::load: local decoder backend = Vulkan0\n",
+                "GPU: NVIDIA GeForce RTX 2070 SUPER (Vulkan0), 37/37 GPU layers; "
+                "audio frame model: Vulkan0; input embeddings/codec: CPU",
+            ),
+            (
+                "-1",
+                "load_tensors: offloaded 37/37 layers to GPU\n"
                 "llama_model_load: using device Vulkan0 (NVIDIA GeForce RTX 2070 SUPER) (0000:01:00.0) - 8000 MiB free\n"
                 "Model::load: aux backend = CPU\n",
                 "GPU: NVIDIA GeForce RTX 2070 SUPER (Vulkan0), 37/37 GPU layers; audio model/codec: CPU",

@@ -41,7 +41,10 @@ def _parser():
         type=int,
         choices=(-1, 0),
         default=-1,
-        help="-1: automatic GPU backbone; 0: CPU only. Auxiliary stays on CPU.",
+        help=(
+            "-1: automatic GPU backbone; 0: CPU only. Requests CPU auxiliary; "
+            "the opt-in Local GPU build selectively offloads the frame model."
+        ),
     )
     return parser
 
@@ -273,7 +276,10 @@ def run(
                     report["inputs"][f"{variant}/{file.name}"] = _identity(file)
         report["build_manifests"] = builds
         if all(builds.values()):
-            for key in ("upstream", "llama", "vntts", "patch_sha256"):
+            keys = ["upstream", "llama", "vntts", "patch_sha256"]
+            if any("local_gpu_patch_sha256" in build for build in builds.values()):
+                keys.append("local_gpu_patch_sha256")
+            for key in keys:
                 if not builds["baseline"].get(key) or builds["baseline"].get(
                     key
                 ) != builds["candidate"].get(key):

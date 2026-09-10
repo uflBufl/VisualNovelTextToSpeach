@@ -309,6 +309,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             backbone = "device unconfirmed (GPU offload requested)"
         aux = re.search(r"Model::load: aux backend = ([^\r\n]+)", output)
         auxiliary = aux[1].strip() if aux else "device unconfirmed"
+        local = re.search(r"Model::load: local decoder backend = ([^\r\n]+)", output)
+        if local:
+            return (
+                f"MOSS C++: {backbone}; audio frame model: {local[1].strip()}; "
+                f"input embeddings/codec: {auxiliary}"
+            )
         return f"MOSS C++: {backbone}; audio model/codec: {auxiliary}"
 
     def _start_server(self, cancelled):

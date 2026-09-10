@@ -21,10 +21,16 @@ jobs:
         include:
           - variant: timing
             pool: 'OFF'
+            local_gpu: 'OFF'
             version: 0.3.0-vntts-timing1
           - variant: timing-aux-pool
             pool: 'ON'
+            local_gpu: 'OFF'
             version: 0.3.0-vntts-timing1-pool1
+          - variant: timing-local-gpu
+            pool: 'OFF'
+            local_gpu: 'ON'
+            version: 0.3.0-vntts-timing1-localgpu
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,15 +64,18 @@ jobs:
           test "$(git -C native-source/third_party/llama.cpp rev-parse HEAD)" = 050ee92d04c2e1f639025786dea701c70e7d4204
           git -C native-source apply --check ../scripts/native/openmoss-v0.3.0-timings.patch
           git -C native-source apply ../scripts/native/openmoss-v0.3.0-timings.patch
+          git -C native-source apply --check ../scripts/native/openmoss-v0.3.0-local-gpu.patch
+          git -C native-source apply ../scripts/native/openmoss-v0.3.0-local-gpu.patch
           cmake -S spirv-headers -B spirv-build -DCMAKE_INSTALL_PREFIX="$PWD/spirv-install"
           cmake --build spirv-build --target install --config Release
           cmake -S native-source -B native-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_OPENMP=OFF \
             -DOPENMOSS_PERSISTENT_AUX_CPU_POOL=${{ matrix.pool }} \
+            -DOPENMOSS_LOCAL_GPU=${{ matrix.local_gpu }} \
             -DCMAKE_PREFIX_PATH="$PWD/spirv-install"
-          cmake --build native-build --target moss-tts-server moss-aux-pool-check --parallel 2
+          cmake --build native-build --target moss-tts-server moss-aux-pool-check moss-local-gpu-check --parallel 2
           export PATH="$PWD/native-build/bin:$PATH"
-          ctest --test-dir native-build -R '^moss-aux-pool-check$' --output-on-failure
+          ctest --test-dir native-build -R '^moss-(aux-pool|local-gpu)-check$' --output-on-failure
       - name: Package and verify without model weights
         shell: pwsh
         run: |
@@ -79,6 +88,7 @@ jobs:
           New-Item -ItemType Directory -Path native-dist | Out-Null
           Copy-Item native-build/moss-tts-server.exe native-dist/
           Copy-Item native-build/moss-aux-pool-check.exe native-dist/
+          Copy-Item native-build/moss-local-gpu-check.exe native-dist/
           Copy-Item native-build/bin/*.dll native-dist/
           # SDK cache restores files, not the runner's system-wide Vulkan loader.
           # Ship the x64 runtime dependency beside the EXE, including its notices.
@@ -93,6 +103,7 @@ jobs:
           Copy-Item native-source/third_party/llama.cpp/licenses native-dist/llama-licenses -Recurse
           Copy-Item native-source/third_party/llama.cpp/vendor/cpp-httplib/LICENSE native-dist/LICENSE-cpp-httplib.txt
           Copy-Item scripts/native/openmoss-v0.3.0-timings.patch native-dist/
+          Copy-Item scripts/native/openmoss-v0.3.0-local-gpu.patch native-dist/
           Copy-Item scripts/native/README.md native-dist/
           @{
             upstream = 'bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1'
@@ -100,10 +111,12 @@ jobs:
             vntts = '${{ github.sha }}'
             variant = '${{ matrix.variant }}'
             persistent_aux_cpu_pool = '${{ matrix.pool }}'
+            local_decoder_gpu = '${{ matrix.local_gpu }}'
             auxiliary_threads = 4
             persistent_pool_idle_poll = 0
             vulkan_runtime_sha256 = (Get-FileHash native-dist/vulkan-1.dll -Algorithm SHA256).Hash
             patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-timings.patch -Algorithm SHA256).Hash
+            local_gpu_patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-local-gpu.patch -Algorithm SHA256).Hash
             qualification = 'Build and no-model startup only; Windows GPU/audio qualification still required.'
           } | ConvertTo-Json | Set-Content native-dist/VNTTS-BUILD.json -Encoding utf8
           $Version = (& ./native-dist/moss-tts-server.exe --version | Out-String).Trim()
@@ -121,6 +134,12 @@ jobs:
             throw 'Packaged auxiliary pool check timed out.'
           }
           if ($Check.ExitCode -ne 0) { throw 'Packaged auxiliary pool check failed.' }
+          $LocalCheck = Start-Process -FilePath ./native-dist/moss-local-gpu-check.exe -PassThru -NoNewWindow -RedirectStandardOutput native-dist/local-gpu-check.json
+          if (-not $LocalCheck.WaitForExit(30000)) {
+            Stop-Process -Id $LocalCheck.Id -Force
+            throw 'Packaged Local GPU selection check timed out.'
+          }
+          if ($LocalCheck.ExitCode -ne 0) { throw 'Packaged Local GPU selection check failed.' }
           Compress-Archive -Path native-dist/* -DestinationPath moss-native-${{ matrix.variant }}-windows-x64.zip
           (Get-FileHash moss-native-${{ matrix.variant }}-windows-x64.zip -Algorithm SHA256).Hash |
             Set-Content moss-native-${{ matrix.variant }}-windows-x64.zip.sha256 -Encoding ascii

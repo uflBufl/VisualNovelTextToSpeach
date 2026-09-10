@@ -194,32 +194,34 @@ class MossNativeCompareTest(unittest.TestCase):
                     )
 
     def test_mismatched_build_manifests_stop_before_generation(self):
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            options = self._options(root)
-            for variant in ("baseline", "candidate"):
-                directory = root / variant
-                directory.mkdir()
-                executable = directory / "server.exe"
-                getattr(options, variant).rename(executable)
-                setattr(options, variant, executable)
-                (directory / "VNTTS-BUILD.json").write_text(
-                    json.dumps(
-                        {
-                            "upstream": "same",
-                            "llama": "same",
-                            "vntts": variant,
-                            "patch_sha256": "same",
-                        }
-                    ),
-                    encoding="utf-8-sig",
-                )
-            _FakeBackend.instances.clear()
-            self.assertEqual(self._run(options, _FakeBackend), 1)
-            self.assertEqual(_FakeBackend.instances, [])
-            report = json.loads((options.output / "report.json").read_text())
-            self.assertIn("Build manifests differ at vntts", report["error"])
-            self.assertTrue(options.output.with_suffix(".zip").is_file())
+        for key in ("vntts", "local_gpu_patch_sha256"):
+            with self.subTest(key=key), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                options = self._options(root)
+                for variant in ("baseline", "candidate"):
+                    directory = root / variant
+                    directory.mkdir()
+                    executable = directory / "server.exe"
+                    getattr(options, variant).rename(executable)
+                    setattr(options, variant, executable)
+                    (directory / "VNTTS-BUILD.json").write_text(
+                        json.dumps(
+                            {
+                                "upstream": "same",
+                                "llama": "same",
+                                "vntts": "same",
+                                "patch_sha256": "same",
+                                key: variant,
+                            }
+                        ),
+                        encoding="utf-8-sig",
+                    )
+                _FakeBackend.instances.clear()
+                self.assertEqual(self._run(options, _FakeBackend), 1)
+                self.assertEqual(_FakeBackend.instances, [])
+                report = json.loads((options.output / "report.json").read_text())
+                self.assertIn(f"Build manifests differ at {key}", report["error"])
+                self.assertTrue(options.output.with_suffix(".zip").is_file())
 
     def test_failed_and_cancelled_probe_runs_preserve_partial_audio_and_reports(self):
         cases = ((_FailedBackend, 1, "failed"), (_CancelledBackend, 130, "cancelled"))

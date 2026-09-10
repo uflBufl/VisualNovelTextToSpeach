@@ -9,8 +9,7 @@ measurements in agent memory and completed-work history in Git, not here.
       reuse the saved WAV without a new generation. Request another support export
       only for an unresolved problem, not to repeat already measured retry/device
       behavior. Acoustic quality remains a separate check from technical gates.
-- [ ] Optimize the measured native bottleneck: later completed requests spend
-      about 61% in generation and 38% in CPU codec decoding.
+- [ ] Reduce native CPU audio-frame generation and waveform decoding time.
   - Reduce first-use reference encoding cost without duplicating the existing
     server-lifetime code cache. Consider encoder acceleration or explicit
     preparation only after separating first-use work from repeated synthesis.
@@ -38,26 +37,13 @@ measurements in agent memory and completed-work history in Git, not here.
     openmoss v0.3.0 exposes no thread CLI option. Python/PyTorch thread or CUDA
     settings do not tune this C++/Vulkan runtime. Preserve server-lifetime
     reference-code reuse and intentional cancellation/error teardown.
-  - Benchmark the opt-in `timing-aux-pool` build against `timing`, retaining four
-    threads before increasing thread counts. The pinned non-OpenMP backend
-    creates/joins/frees workers for each auxiliary graph. Isolate auxiliary
-    reuse from backbone changes; detach/free the pool after requests quiesce.
-    Gate: same output-code identity, safe shutdown/cancellation, cold/warm phase
-    timings and CPU/RSS on Windows, including CPU-only and CPU-auxiliary modes.
-    Do not infer a speedup from source inspection alone.
-    Use `python -m scripts.moss_native_compare` with artifacts from the same
-    workflow run; it captures ABBA process-cold/warm measurements and WAV hashes.
-    Output-code identity is still unavailable through the native WAV API.
+  - Before adopting the CPU-pool candidate, qualify safe shutdown/cancellation,
+    idle CPU/RSS and CPU-only behavior. Reuse the completed ABBA measurements;
+    do not repeat the same comparison unless the implementation changes.
   - Qualify native backbone ownership with repeated real-model load/unload,
     failed context creation and request shutdown: no leaks or double frees.
     The cleanup is shared by both diagnostic variants; compilation and no-model
     pool checks do not exercise live libllama context/model destruction.
-  - Qualify the opt-in native timing build on Windows with the existing spoken
-    reference, fixed text/seed, unchanged sampling/caps and CPU auxiliary default.
-    Use `gen_backbone_s`, `gen_frame_decoder_s`, `gen_input_embedding_s` and
-    `decode_s` to choose the actual optimization; prefill is still a mixed phase.
-    A successful CI build is not GPU/audio qualification. Keep the managed
-    runtime unchanged until measured output and performance pass.
   - Evaluate codec-only acceleration separately from auxiliary-decoder placement;
     require a supported native build and memory/quality measurements before
     enabling it by default. Native reference-cache hit and EOS stop-reason

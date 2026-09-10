@@ -1,0 +1,482 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c07881a..5625f95 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,9 +2,12 @@ cmake_minimum_required(VERSION 3.18)
+ project(openmoss VERSION 0.3.0 LANGUAGES CXX C)
+ 
+ # Surfaced by --version and GET /info so a bug report names a build, not "latest".
+-# VNTTS modification: experimental auxiliary pool, never a default change.
++# VNTTS modification: diagnostic variants, never default changes.
+ option(OPENMOSS_PERSISTENT_AUX_CPU_POOL "Reuse four auxiliary CPU workers" OFF)
+-if(OPENMOSS_PERSISTENT_AUX_CPU_POOL)
++option(OPENMOSS_LOCAL_GPU "Run only the Local frame decoder on the GPU" OFF)
++if(OPENMOSS_LOCAL_GPU)
++    add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1-localgpu")
++elseif(OPENMOSS_PERSISTENT_AUX_CPU_POOL)
+     add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1-pool1")
+ else()
+     add_compile_definitions(OPENMOSS_VERSION="${PROJECT_VERSION}-vntts-timing1")
+@@ -64,6 +67,9 @@ if(OPENMOSS_PERSISTENT_AUX_CPU_POOL)
+     target_compile_definitions(openmoss_core PUBLIC OPENMOSS_PERSISTENT_AUX_CPU_POOL=1)
+     target_link_libraries(openmoss_core PUBLIC ggml-cpu)
+ endif()
++if(OPENMOSS_LOCAL_GPU)
++    target_compile_definitions(openmoss_core PUBLIC OPENMOSS_LOCAL_GPU=1)
++endif()
+ 
+ # Platform-specific compile options
+ if(MSVC)
+diff --git a/include/openmoss/model.h b/include/openmoss/model.h
+index 8c8cc1e..923bae5 100644
+--- a/include/openmoss/model.h
++++ b/include/openmoss/model.h
+@@ -8,6 +8,7 @@
+ 
+ #pragma once
+ 
++#include <cstddef>
+ #include <cstdint>
+ #include <memory>
+ #include <string>
+@@ -221,11 +222,17 @@ public:
+     int32_t n_audio_head_loaded()  const;
+     bool    codec_present()        const;   // metadata says GGUF carries a codec
+     bool    codec_loaded()         const;   // codec tensors are actually in aux memory
++    bool    local_gpu_separate_owner() const;
++    size_t  local_decoder_separate_weight_bytes() const;
++    const char * local_decoder_backend() const;
++    static bool local_gpu_build_enabled();
+ 
+     // Public so free helpers in model.cpp can populate it; consumers should
+     // ignore this (use the typed accessors above).
+     struct Aux;
+     Aux * aux() const { return m_aux.get(); }
++    Aux * local_aux() const;
++    ggml_tensor * local_audio_embed(int i) const;
+ 
+ private:
+     Model();
+@@ -234,6 +241,7 @@ private:
+     llama_context * m_backbone_ctx   = nullptr;
+ 
+     std::unique_ptr<Aux>                m_aux;
++    std::unique_ptr<Aux>                m_local_aux;
+     std::unique_ptr<class Tokenizer>    m_tokenizer;
+     std::unique_ptr<class CodecGraphs>  m_codec;
+     std::unique_ptr<class DiTGraph,   DiTGraphDeleter>   m_dit;
+diff --git a/src/aux_internal.h b/src/aux_internal.h
+index fae1bf9..10c72bf 100644
+--- a/src/aux_internal.h
++++ b/src/aux_internal.h
+@@ -7,6 +7,7 @@
+ 
+ #include "openmoss/model.h"
+ 
++#include <cstddef>
+ #include <cstdint>
+ #include <string>
+ #include <unordered_map>
+@@ -41,6 +42,7 @@ struct Model::Aux {
+     int32_t n_vq             = 0;
+     int32_t audio_vocab_full = 0;
+     int32_t text_vocab_size  = 0;
++    size_t weight_bytes = 0;
+ 
+     ggml_gallocr_t galloc = nullptr;
+ 
+diff --git a/src/model.cpp b/src/model.cpp
+index 338c293..498f1ad 100644
+--- a/src/model.cpp
++++ b/src/model.cpp
+@@ -24,6 +24,7 @@
+ #include "openmoss/tokenizer.h"
+ 
+ #include "aux_internal.h"
++#include "local_gpu_routing.h"
+ 
+ #include <algorithm>
+ #include <cstdint>
+@@ -307,20 +308,29 @@ void upload_tensor_data(const LoadSpec & spec, Model::Aux & aux) {
+     }
+ }
+ 
+-// Walk a metadata ctx and pick the moss-prefixed tensor names.
+-//   include_codec=false skips the moss.codec.* tensors (saves ~3.4 GB VRAM
+-//   when the caller only needs the LM-side path).
+-void collect_moss_names(LoadSpec & spec, bool include_codec) {
++// Keep codec and prompt embeddings on CPU. The Local decoder gets its own GPU
++// owner plus duplicate audio embeddings for its tied output heads.
++void collect_moss_names(LoadSpec & spec, bool include_codec, bool exclude_local_gpu) {
+     for (ggml_tensor * cur = ggml_get_first_tensor(spec.meta_ctx);
+          cur; cur = ggml_get_next_tensor(spec.meta_ctx, cur))
+     {
+         std::string n = cur->name;
+         if (n.rfind("moss.", 0) != 0) continue;
+         if (!include_codec && n.rfind("moss.codec.", 0) == 0) continue;
++        if (exclude_local_gpu && local_gpu_weight_name(n)) continue;
+         spec.wanted.emplace_back(n, n);
+     }
+ }
+ 
++void collect_local_gpu_names(LoadSpec & spec, ggml_context * meta_ctx) {
++    for (ggml_tensor * cur = ggml_get_first_tensor(meta_ctx);
++         cur; cur = ggml_get_next_tensor(spec.meta_ctx, cur))
++    {
++        const std::string n = cur->name;
++        if (local_gpu_tensor_name(n)) spec.wanted.emplace_back(n, n);
++    }
++}
++
+ } // namespace
+ 
+ // ───────────────────────────────────────────────────────────────────────────
+@@ -405,8 +415,44 @@ bool Model::codec_loaded() const {
+     return m_aux->tensors.count("moss.codec.quantizer.q.0.codebook.weight") > 0;
+ }
+ 
++bool Model::local_gpu_separate_owner() const {
++    return m_local_aux != nullptr;
++}
++
++size_t Model::local_decoder_separate_weight_bytes() const {
++    return m_local_aux ? m_local_aux->weight_bytes : 0;
++}
++
++const char * Model::local_decoder_backend() const {
++    const Aux * aux = m_local_aux ? m_local_aux.get() : m_aux.get();
++    return aux && aux->backend ? ggml_backend_name(aux->backend) : "unavailable";
++}
++
++bool Model::local_gpu_build_enabled() {
++#if defined(OPENMOSS_LOCAL_GPU) && OPENMOSS_LOCAL_GPU
++    return true;
++#else
++    return false;
++#endif
++}
++
++Model::Aux * Model::local_aux() const {
++    return m_local_aux ? m_local_aux.get() : m_aux.get();
++}
++
++ggml_tensor * Model::local_audio_embed(int i) const {
++    Aux * aux = local_aux();
++    if (!aux || i < 0 || i >= aux->n_vq) return nullptr;
++    const auto it = aux->tensors.find("moss.audio_embed." + std::to_string(i) + ".weight");
++    return it == aux->tensors.end() ? nullptr : it->second;
++}
++
+ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOptions & opts) {
+     auto self = std::unique_ptr<Model>(new Model());
++    if (local_gpu_build_enabled() && opts.n_gpu_layers == 0) {
++        throw std::runtime_error(
++            "Model::load: OPENMOSS_LOCAL_GPU requires GPU backbone; --n-gpu-layers 0 unsupported");
++    }
+ 
+     // ── 0. Pick which GPU we want to live on (used for both libllama and the
+     //       aux backend). On a multi-GPU box, leaving libllama in its default
+@@ -484,11 +530,16 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
+     }
+ 
+     LoadSpec sc_spec; sc_spec.path = sidecar_path;
++    // Local spec borrows sidecar metadata; sc_spec remains the sole owner and
++    // releases both contexts once CPU and Local uploads have completed.
++    LoadSpec local_spec; local_spec.path = sidecar_path;
+     LoadSpec bb_spec; bb_spec.path = gguf_path;
+     gguf_init_params gip{}; gip.no_alloc = true;
+ 
+     gip.ctx = &sc_spec.meta_ctx;
+     sc_spec.gctx = gguf_init_from_file(sidecar_path.c_str(), gip);
++    local_spec.gctx = sc_spec.gctx;
++    local_spec.meta_ctx = sc_spec.meta_ctx;
+ 
+     gip.ctx = &bb_spec.meta_ctx;
+     bb_spec.gctx = gguf_init_from_file(gguf_path.c_str(), gip);
+@@ -498,14 +549,38 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
+         throw std::runtime_error("Model::load: gguf_init_from_file failed for backbone " + gguf_path);
+     }
+ 
++    const bool local_gpu = local_gpu_build_enabled();
++    std::string local_gpu_problem;
+     if (!sc_spec.gctx) {
++        if (local_gpu) {
++            local_gpu_problem =
++                "Model::load: OPENMOSS_LOCAL_GPU requires a Local sidecar GGUF";
++        }
+         std::fprintf(stderr,
+             "Model::load: warning — sidecar %s not found; audio heads/embeds and codec are unavailable\n",
+             sidecar_path.c_str());
+     } else {
+         read_moss_kv(sc_spec.gctx, self->m_dims, self->m_aux->codec_present);
++        if (local_gpu && !opts.aux_cpu) {
++            local_gpu_problem =
++                "Model::load: OPENMOSS_LOCAL_GPU requires --aux-cpu to keep codec on CPU";
++        } else if (local_gpu && !picked_dev) {
++            local_gpu_problem =
++                "Model::load: OPENMOSS_LOCAL_GPU requires an available GPU device";
++        } else if (local_gpu && self->m_dims.arch != Arch::TTSLocal) {
++            local_gpu_problem =
++                "Model::load: OPENMOSS_LOCAL_GPU supports moss_tts_local only, not "
++                + std::string(arch_name(self->m_dims.arch));
++        }
+         const bool include_codec = self->m_aux->codec_present && !opts.skip_codec;
+-        collect_moss_names(sc_spec, include_codec);
++        collect_moss_names(sc_spec, include_codec, local_gpu);
++        if (local_gpu && local_gpu_problem.empty()) {
++            collect_local_gpu_names(local_spec, sc_spec.meta_ctx);
++            if (local_spec.wanted.empty()) {
++                local_gpu_problem =
++                    "Model::load: OPENMOSS_LOCAL_GPU found no Local decoder tensors";
++            }
++        }
+         if (self->m_aux->codec_present && opts.skip_codec) {
+             std::fprintf(stderr, "Model::load: codec tensors skipped (LoadOptions::skip_codec=true)\n");
+         }
+@@ -545,9 +620,11 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
+     }
+ 
+     try {
++        if (!local_gpu_problem.empty()) throw std::runtime_error(local_gpu_problem);
+         size_t total_bytes = 0;
+         if (sc_spec.gctx) stage_tensor_descriptors(sc_spec, *self->m_aux, total_bytes);
+         stage_tensor_descriptors(bb_spec, *self->m_aux, total_bytes);
++        self->m_aux->weight_bytes = total_bytes;
+ 
+         self->m_aux->buffer = ggml_backend_alloc_ctx_tensors(self->m_aux->ctx, self->m_aux->backend);
+         if (!self->m_aux->buffer) {
+@@ -557,6 +634,35 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
+ 
+         if (sc_spec.gctx) upload_tensor_data(sc_spec, *self->m_aux);
+         upload_tensor_data(bb_spec, *self->m_aux);
++
++        if (!local_spec.wanted.empty()) {
++            self->m_local_aux = std::make_unique<Aux>();
++            self->m_local_aux->backend = ggml_backend_dev_init(picked_dev, nullptr);
++            if (!self->m_local_aux->backend) {
++                throw std::runtime_error("Model::load: failed to initialise Local GPU backend");
++            }
++            ggml_init_params local_ip{};
++            local_ip.mem_size = ggml_tensor_overhead() * (local_spec.wanted.size() + 16);
++            local_ip.no_alloc = true;
++            self->m_local_aux->ctx = ggml_init(local_ip);
++            if (!self->m_local_aux->ctx) {
++                throw std::runtime_error("Model::load: ggml_init for Local GPU ctx failed");
++            }
++            size_t local_bytes = 0;
++            stage_tensor_descriptors(local_spec, *self->m_local_aux, local_bytes);
++            self->m_local_aux->weight_bytes = local_bytes;
++            self->m_local_aux->buffer = ggml_backend_alloc_ctx_tensors(
++                self->m_local_aux->ctx, self->m_local_aux->backend);
++            if (!self->m_local_aux->buffer) {
++                throw std::runtime_error(
++                    "Model::load: failed to allocate Local GPU weights ("
++                    + std::to_string(local_bytes / (1024 * 1024)) + " MiB)");
++            }
++            upload_tensor_data(local_spec, *self->m_local_aux);
++            std::fprintf(stderr, "Model::load: local decoder backend = %s (%zu MiB weights)\n",
++                         ggml_backend_name(self->m_local_aux->backend),
++                         local_bytes / (1024 * 1024));
++        }
+     } catch (...) {
+         if (sc_spec.gctx) gguf_free(sc_spec.gctx);
+         if (sc_spec.meta_ctx) ggml_free(sc_spec.meta_ctx);
+@@ -599,6 +705,11 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
+     }
+     self->m_aux->galloc =
+         ggml_gallocr_new(ggml_backend_get_default_buffer_type(self->m_aux->backend));
++    if (self->m_local_aux) {
++        self->m_local_aux->hidden_size = self->m_dims.hidden_size;
++        self->m_local_aux->n_vq = self->m_dims.n_vq;
++        self->m_local_aux->audio_vocab_full = self->m_dims.audio_vocab_size + 1;
++    }
+ 
+     std::fprintf(stderr,
+         "Model::load: arch=%s, %d audio embeds, %d audio heads, codec=%s (v%d, %d ch @ %d Hz), "
+@@ -623,7 +734,7 @@ std::unique_ptr<Model> Model::load(const std::string & gguf_path, const LoadOpti
+                 "Model::load: arch is moss_tts_local but the sidecar carries no "
+                 "local-transformer geometry (moss.local.n_layer); reconvert the model");
+         }
+-        if (!self->m_aux->tensors.count("moss.local_text_head.weight")) {
++        if (!self->local_aux()->tensors.count("moss.local_text_head.weight")) {
+             throw std::runtime_error(
+                 "Model::load: arch is moss_tts_local but moss.local_text_head.weight "
+                 "is missing from the sidecar; reconvert the model");
+diff --git a/src/local_transformer.cpp b/src/local_transformer.cpp
+index 540bc98..6083e76 100644
+--- a/src/local_transformer.cpp
++++ b/src/local_transformer.cpp
+@@ -104,7 +104,7 @@ public:
+                 "); no projection exists between them");
+         }
+ 
+-        auto * aux = owner.aux();
++        auto * aux = owner.local_aux();
+         if (!aux || !aux->backend) {
+             throw std::runtime_error("LocalTransformer: aux backend not initialised");
+         }
+@@ -178,7 +178,7 @@ public:
+     void step(const float * x, int pos, Cache & cache,
+               const std::vector<Head> & heads,
+               std::vector<std::vector<float>> & logits_out) {
+-        auto * aux = m_owner.aux();
++        auto * aux = m_owner.local_aux();
+         const int T_prev = cache.n_pos;
+         const int T      = T_prev + 1;
+         if (pos != T_prev) {
+@@ -398,11 +398,11 @@ public:
+                     + ", expected " + std::to_string(m_row_width));
+             }
+         }
+-        m_text_head = model.aux()->tensors.at("moss.local_text_head.weight");
++        m_text_head = model.local_aux()->tensors.at("moss.local_text_head.weight");
+         m_cb_history.resize(size_t(m_dims.n_vq));
+ 
+         for (int k = 0; k < m_dims.n_vq; ++k) {
+-            ggml_tensor * e = model.audio_embed(k);
++            ggml_tensor * e = model.local_audio_embed(k);
+             if (!e) throw std::runtime_error("LocalFrameDecoder: missing audio embedding "
+                                              + std::to_string(k));
+             if (e->type != GGML_TYPE_F16) {
+diff --git a/src/codec.cpp b/src/codec.cpp
+index 29f8281..a62f95f 100644
+--- a/src/codec.cpp
++++ b/src/codec.cpp
+@@ -1567,6 +1567,7 @@ Model::~Model() {
+         llama_model_free(m_backbone_model);
+         m_backbone_model = nullptr;
+     }
++    m_local_aux.reset();
+     m_aux.reset();
+ }
+ 
+diff --git a/src/server/moss_tts_server.cpp b/src/server/moss_tts_server.cpp
+index 56f2281..a3545fa 100644
+--- a/src/server/moss_tts_server.cpp
++++ b/src/server/moss_tts_server.cpp
+@@ -632,8 +632,9 @@ int main(int argc, char ** argv) {
+     lo.aux_cpu      = aux_cpu;
+     auto model = openmoss::Model::load(model_path, lo);
+     std::fprintf(stderr,
+-                  "[server] model loaded; codec=%s\n",
+-                  model->codec_loaded() ? "on" : "off");
++                  "[server] model loaded; codec=%s, local_decoder=%s (separate weights=%zu bytes)\n",
++                  model->codec_loaded() ? "on" : "off",
++                  model->local_decoder_backend(), model->local_decoder_separate_weight_bytes());
+ 
+     // Resolve which delay checkpoint this server is treating the model as.
+     // Explicit --template wins; Auto keeps the historical n_vq guess.
+@@ -939,6 +940,9 @@ int main(int argc, char ** argv) {
+             {"frame_rate_hz",     double(d.sampling_rate) / double(d.downsample_rate)},
+             {"codec_present",     model->codec_present()},
+             {"codec_loaded",      model->codec_loaded()},
++            {"local_decoder_separate_gpu", model->local_gpu_separate_owner()},
++            {"local_decoder_backend", model->local_decoder_backend()},
++            {"local_decoder_separate_weight_bytes", model->local_decoder_separate_weight_bytes()},
+             {"requests_served",   uint64_t(n_requests.load())},
+         };
+         // Which checkpoint the delay family is being served as — the GGUF alone
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 8a47d0a..47852a6 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -8,6 +8,13 @@ target_link_libraries(moss-aux-pool-check PRIVATE openmoss_core ggml-cpu)
+ add_test(NAME moss-aux-pool-check COMMAND moss-aux-pool-check)
+ set_tests_properties(moss-aux-pool-check PROPERTIES TIMEOUT 30)
+ 
++# VNTTS modification: verifies the diagnostic build selection without a model.
++add_executable(moss-local-gpu-check moss_local_gpu_check.cpp)
++target_include_directories(moss-local-gpu-check PRIVATE ${CMAKE_SOURCE_DIR}/src)
++target_link_libraries(moss-local-gpu-check PRIVATE openmoss_core)
++add_test(NAME moss-local-gpu-check COMMAND moss-local-gpu-check)
++set_tests_properties(moss-local-gpu-check PROPERTIES TIMEOUT 30)
++
+ add_executable(moss-tts-info ${CMAKE_CURRENT_SOURCE_DIR}/moss_tts_info.cpp)
+ target_link_libraries(moss-tts-info PRIVATE openmoss_core)
+ 
+diff --git a/src/local_gpu_routing.h b/src/local_gpu_routing.h
+new file mode 100644
+index 0000000..178b21b
+--- /dev/null
++++ b/src/local_gpu_routing.h
+@@ -0,0 +1,20 @@
++// SPDX-License-Identifier: Apache-2.0
++// Tensor ownership rules for the opt-in MOSS Local GPU decoder.
++
++#pragma once
++
++#include <string_view>
++
++namespace openmoss {
++
++inline bool local_gpu_weight_name(std::string_view name) {
++    return name.substr(0, 11) == "moss.local."
++        || name == "moss.local_text_head.weight";
++}
++
++inline bool local_gpu_tensor_name(std::string_view name) {
++    return local_gpu_weight_name(name)
++        || name.substr(0, 17) == "moss.audio_embed.";
++}
++
++} // namespace openmoss
+diff --git a/tests/moss_local_gpu_check.cpp b/tests/moss_local_gpu_check.cpp
+new file mode 100644
+index 0000000..7aeccf9
+--- /dev/null
++++ b/tests/moss_local_gpu_check.cpp
+@@ -0,0 +1,53 @@
++// SPDX-License-Identifier: Apache-2.0
++// No-model check: the build option must be explicit and queryable.
++
++#include "openmoss/model.h"
++#include "local_gpu_routing.h"
++
++#include <array>
++#include <cstdio>
++#include <cstring>
++
++namespace {
++
++struct Tensor {
++    const char * name;
++    std::array<unsigned char, 3> bytes;
++};
++
++bool route_tensor_groups() {
++    const Tensor tensors[] = {
++        {"moss.local.h.0.attn.c_attn.weight", {1, 2, 3}},
++        {"moss.local_text_head.weight", {4, 5, 6}},
++        {"moss.audio_embed.0.weight", {7, 8, 9}},
++        {"moss.codec.dec.0.weight", {10, 11, 12}},
++    };
++    std::array<std::array<unsigned char, 3>, 4> cpu{};
++    std::array<std::array<unsigned char, 3>, 4> gpu{};
++    size_t n_cpu = 0, n_gpu = 0;
++    for (const Tensor & tensor : tensors) {
++        if (!openmoss::local_gpu_weight_name(tensor.name)) cpu[n_cpu++] = tensor.bytes;
++        if (openmoss::local_gpu_tensor_name(tensor.name)) gpu[n_gpu++] = tensor.bytes;
++    }
++    return n_cpu == 2 && n_gpu == 3
++        && std::memcmp(cpu[0].data(), tensors[2].bytes.data(), tensors[2].bytes.size()) == 0
++        && std::memcmp(cpu[1].data(), tensors[3].bytes.data(), tensors[3].bytes.size()) == 0
++        && std::memcmp(gpu[0].data(), tensors[0].bytes.data(), tensors[0].bytes.size()) == 0
++        && std::memcmp(gpu[1].data(), tensors[1].bytes.data(), tensors[1].bytes.size()) == 0
++        && std::memcmp(gpu[2].data(), tensors[2].bytes.data(), tensors[2].bytes.size()) == 0;
++}
++
++} // namespace
++
++int main() {
++    const bool enabled = openmoss::Model::local_gpu_build_enabled();
++#if defined(OPENMOSS_LOCAL_GPU) && OPENMOSS_LOCAL_GPU
++    if (!enabled) return 1;
++#else
++    if (enabled) return 1;
++#endif
++    if (!route_tensor_groups()) return 1;
++    std::printf("{\"schema\":\"vntts.local-gpu-check\",\"enabled\":%s,\"routing\":\"ok\"}\n",
++                enabled ? "true" : "false");
++    return 0;
++}
+
