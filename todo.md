@@ -5,23 +5,16 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Finish the approved Local GPU experiment without changing production
-      defaults prematurely. Preserve the accepted three exact candidate WAVs;
-      do not request that listening or the unchanged ABBA benchmark again.
-  - Trace CPU waveform decode/reference encode for avoidable repeated work and
-    supported selective acceleration; choose the smallest measured candidate.
-    Keep codec working buffers and GPU memory budget explicit.
-    Compare approved Local GPU + four CPU workers against Local GPU + eight
-    CPU workers, with the persistent pool OFF in both to isolate thread count.
-    Reuse the existing graph checks, same sampling/reference and short launcher;
-    require real warm codec/total improvement without output or memory regression.
-  - Build/check any native change separately, retain the approved Local GPU
-    build as baseline, and prepare a short target-PC qualification command.
-    Stop at real Windows GPU/quality gates that cannot run on this Mac.
-    Verify the bounded correctness smoke after removing duplicate timing runs:
-    keep four ownership cycles, both run orders, bit-exact comparisons and
-    abort/recovery. Measure actual speed separately on the target PC; the tiny
-    graph loop progresses but is extremely slow with eight workers on CI.
+- [ ] Qualify four versus eight CPU auxiliary workers on the Windows target.
+      Both builds use Local GPU with the persistent CPU pool OFF. Download a
+      matching fresh pair of `timing-local-gpu` and `timing-local-gpu-aux8` ZIPs
+      and run `uv run --frozen python -m scripts.moss_native_compare --experiment codec-threads`.
+  - Require warm codec/total improvement without output or memory regression;
+    inspect first-use reference encoding separately and confirm owned processes
+    exited. CI's tiny graph smoke is correctness evidence, not target-PC speed.
+  - Compare WAV hashes against the three accepted Local GPU clips before asking
+    for more listening. Keep four workers if eight do not improve the result;
+    do not change production defaults before the remaining lifetime gates below.
 - [ ] Verify successful preview replay on Windows with the qualified native profile;
       reuse the saved WAV without a new generation. Request another support export
       only for an unresolved problem, not to repeat already measured retry/device
