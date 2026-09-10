@@ -106,6 +106,32 @@ def _options(root):
 
 
 class MossNativePauseProbeTest(unittest.TestCase):
+    def test_surviving_owned_server_fails_probe_and_retains_report(self):
+        def factory(registry, **options):
+            backend = _FakeBackend(registry, **options)
+            backend.server = SimpleNamespace(pid=123, poll=lambda: None)
+            return backend
+
+        with TemporaryDirectory() as temporary:
+            options = _options(Path(temporary))
+            self.assertEqual(
+                probe.run(
+                    options,
+                    backend_factory=factory,
+                    path_check=lambda _: (
+                        Path("server"),
+                        Path("model.gguf"),
+                        Path("codec.gguf"),
+                    ),
+                    settings_loader=lambda: SimpleNamespace(tts_model=None),
+                ),
+                1,
+            )
+            report = json.loads((options.output / "report.json").read_text())
+            self.assertFalse(report["server_shutdown"]["confirmed_exited"])
+            self.assertIn("still running", report["shutdown_error"])
+            self.assertTrue(options.output.with_suffix(".zip").is_file())
+
     def test_missing_explicit_narrator_never_falls_back_to_base_voice(self):
         with TemporaryDirectory() as temporary:
             reference = Path(temporary) / "old.wav"
@@ -141,6 +167,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
 
             report = json.loads((options.output / "report.json").read_text())
             self.assertEqual(report["http_capture_method"], "_http")
+            self.assertIsNone(report["server_shutdown"]["confirmed_exited"])
             self.assertEqual(len(report["attempts"]), 6)
             joined = next(
                 item

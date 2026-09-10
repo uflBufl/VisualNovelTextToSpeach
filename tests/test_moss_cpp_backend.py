@@ -385,6 +385,14 @@ class MossCppBackendTest(unittest.TestCase):
         )
         self.assertEqual(sum("--port" in command for command in self.commands), 1)
         self.assertTrue(all(child.poll() is not None for child in self.children))
+        self.assertEqual(
+            report["server_shutdown"],
+            {
+                "pid": self.children[0].pid,
+                "returncode": self.children[0].returncode,
+                "confirmed_exited": True,
+            },
+        )
         body = json.loads((self.root / "request.json").read_text())
         self.assertEqual(body["sampling"]["audio_temperature"], 1.7)
         self.assertEqual(body["sampling"]["seed"], 1)

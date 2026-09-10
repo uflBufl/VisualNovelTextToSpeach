@@ -374,6 +374,7 @@ def run(
             ),
         }
     backend = None
+    owned_server = None
     exit_code = 0
     try:
         print(
@@ -417,6 +418,7 @@ def run(
                 persistent_audio_cache_directory=output / ".cache-disabled",
                 persistent_audio_cache_max_entries=0,
             )
+            owned_server = getattr(backend, "server", None)
             report["startup_seconds"] = round(monotonic() - startup_started, 3)
             report["runtime"] = getattr(backend, "server_info", None)
             report["compute"] = getattr(backend, "runtime_status", None)
@@ -476,6 +478,23 @@ def run(
                     if isinstance(error, KeyboardInterrupt) or exit_code == 130
                     else 1
                 )
+        # Keep the original Popen, not a PID lookup: shutdown clears backend.server
+        # and the OS may reuse its PID. Unknown is not proof of clean shutdown.
+        report["server_shutdown"] = {"confirmed_exited": None}
+        if owned_server is not None:
+            try:
+                returncode = owned_server.poll()
+                report["server_shutdown"] = {
+                    "pid": owned_server.pid,
+                    "returncode": returncode,
+                    "confirmed_exited": returncode is not None,
+                }
+                if returncode is None:
+                    report["shutdown_error"] = "Owned native server is still running"
+                    exit_code = 130 if exit_code == 130 else 1
+            except Exception as error:
+                report["server_shutdown"]["error"] = f"{type(error).__name__}: {error}"
+                exit_code = 130 if exit_code == 130 else 1
         report["archive"] = archive.name
         _write_json(output / "report.json", report)
         _write_json(output / "native-speech.json", support.native_speech_log.report())
