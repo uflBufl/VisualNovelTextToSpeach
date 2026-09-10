@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -23,7 +23,7 @@ jobs:
         run: scripts/build-macos.sh
 
       - name: Upload macOS package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: VisualNovelTextToSpeech-macos
           path: |

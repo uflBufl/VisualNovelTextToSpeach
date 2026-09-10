@@ -50,7 +50,7 @@ jobs:
 
       - name: Preserve runtime smoke report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: runtime-${{ matrix.backend }}-${{ matrix.os }}
           path: runtime-smoke.json

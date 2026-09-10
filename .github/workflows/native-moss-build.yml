@@ -15,6 +15,9 @@ jobs:
   windows-vulkan:
     runs-on: windows-2022
     timeout-minutes: 60
+    env:
+      # msvc-dev-cmd and gha-setup-ninja still declare Node 20 upstream.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     strategy:
       fail-fast: false
       matrix:
@@ -32,17 +35,17 @@ jobs:
             local_gpu: 'ON'
             version: 0.3.0-vntts-timing1-localgpu
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: pwilkin/openmoss
           ref: bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1
           submodules: recursive
           path: native-source
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: KhronosGroup/SPIRV-Headers
           ref: 09913f088a1197aba4aefd300a876b2ebbaa3391
@@ -143,7 +146,7 @@ jobs:
           Compress-Archive -Path native-dist/* -DestinationPath moss-native-${{ matrix.variant }}-windows-x64.zip
           (Get-FileHash moss-native-${{ matrix.variant }}-windows-x64.zip -Algorithm SHA256).Hash |
             Set-Content moss-native-${{ matrix.variant }}-windows-x64.zip.sha256 -Encoding ascii
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: moss-native-${{ matrix.variant }}-windows-x64
           path: |

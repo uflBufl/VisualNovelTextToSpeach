@@ -34,14 +34,15 @@ on:
 
 jobs:
   qualify:
+    # Node 24 actions require Actions Runner 2.327.1 or newer.
     runs-on: [self-hosted, windows-11, interactive]
     timeout-minutes: 120
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download portable application
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: VisualNovelTextToSpeech-windows-x64
           path: dist/release
@@ -81,7 +82,7 @@ jobs:
           scripts\run-windows-release-test.ps1 @Arguments
 
       - name: Upload release evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows-release-evidence-${{ inputs.profile }}
           path: build/windows/release-evidence.json
