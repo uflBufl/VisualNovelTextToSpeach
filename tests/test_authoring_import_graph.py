@@ -58,6 +58,9 @@ from vntts.authoring.terminal_conflict_workspace import (
     merge_terminal_conflict_resolution,
 )
 from vntts.authoring.workbench import (
+    _rename_directory_no_replace as workbench_rename_directory_no_replace,
+)
+from vntts.authoring.workbench import (
     _selected_voice_manifest,
     _terminal_review_outcome,
     _workspace_config_fingerprint,
@@ -198,6 +201,14 @@ print(json.dumps({
         self.assertEqual(
             _production_importers(
                 "vntts.authoring.bulk_generation", "_canonical_sha256"
+            ),
+            [],
+        )
+
+    def test_atomic_publication_has_no_private_game_pack_importers(self):
+        self.assertEqual(
+            _production_importers(
+                "vntts.authoring.game_pack", "_rename_directory_no_replace"
             ),
             [],
         )
@@ -431,6 +442,10 @@ print(json.dumps({
         )
         self.assertIs(
             game_pack_module._rename_directory_no_replace,
+            rename_directory_no_replace,
+        )
+        self.assertIs(
+            workbench_rename_directory_no_replace,
             rename_directory_no_replace,
         )
 

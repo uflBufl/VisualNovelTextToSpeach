@@ -25,8 +25,8 @@ from vntts.authoring.bulk_generation import (
     generation_failure_repair_plan,
     normalized_failure_record,
 )
-from vntts.authoring.game_pack import _rename_directory_no_replace
 from vntts.authoring.private_files import private_file_is_restricted
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
@@ -330,7 +330,7 @@ def publish_failure_reference_audit(
                 raise FailureReferenceAuditError(
                     f"Reference changed during publication: {source}"
                 )
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         return FailureReferenceAudit(
             output,
             audit_id,

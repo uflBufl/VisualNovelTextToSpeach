@@ -27,12 +27,12 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
-from vntts.authoring.game_pack import _rename_directory_no_replace
 from vntts.authoring.listening import (
     ModelListeningError,
     create_listening_session_from_reports,
     load_listening_session,
 )
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_FIELD,
     SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
@@ -303,7 +303,7 @@ def import_source_reference_review(report_path, review_path, story_index_path, o
                 candidate["reference_sha256"],
                 f"candidate reference {candidate['reference_relative']}",
             )
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         return SourceReferencePlanResult(
             output,
             len(clusters),
@@ -684,7 +684,7 @@ def publish_source_reference_bindings(
             raise SourceReferenceReviewError(
                 "Source-reference quality review changed during binding publication"
             )
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         return SourceReferenceBindingsResult(
             output, len(selected_variants), len(queue_overrides)
         )
@@ -881,7 +881,7 @@ def publish_source_reference_binding_successor(
                 _assert_source_unchanged(
                     source, digest, f"successor voice reference {source.name}"
                 )
-            _rename_directory_no_replace(staging, output)
+            rename_directory_no_replace(staging, output)
             return SourceReferenceBindingsResult(
                 output, len(selected_variants), len(overrides)
             )
@@ -1092,7 +1092,7 @@ def publish_source_reference_binding_retirement(
             _assert_source_unchanged(
                 source, digest, f"retired binding reference {source.name}"
             )
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         staging = None
         return SourceReferenceBindingsResult(
             output, len(remaining_variants), len(overrides)
@@ -1340,7 +1340,7 @@ def publish_source_reference_evaluation(plan_directory, output):
                 raise SourceReferenceReviewError(
                     f"Evaluation reference changed before publication: {source}"
                 )
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         return SourceReferenceEvaluationResult(output, len(variants), len(items))
     except Exception:
         if staging.exists():
@@ -1634,7 +1634,7 @@ def publish_source_reference_listening_reports(
             _assert_source_unchanged(
                 audio, expected_sha256, f"evaluation audio {audio.name}"
             )
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         return SourceReferenceListeningReportsResult(
             output,
             len(reports),

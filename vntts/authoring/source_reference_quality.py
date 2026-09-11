@@ -16,8 +16,8 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
 )
-from vntts.authoring.game_pack import _rename_directory_no_replace
 from vntts.authoring.generation_state import validate_generation_state_document
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.source_reference_quality_records import (
     QUALITY_DECISIONS,
     QUALITY_REVIEW_SCHEMA,
@@ -370,7 +370,7 @@ def publish_source_reference_quality_review(
                 raise SourceReferenceQualityError(
                     f"Source changed during quality review publication: {source.name}"
                 )
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         return SourceReferenceQualityResult(
             output, len(cards), generated_count, excluded_count
         )

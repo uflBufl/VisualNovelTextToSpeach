@@ -26,6 +26,7 @@ from vntts.authoring.failure_reference_binding_records import (
     load_failure_reference_binding_document as load_failure_reference_binding_document,
 )
 from vntts.authoring.private_files import private_file_is_restricted
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.document_identity import canonical_document_sha256
 
@@ -240,9 +241,7 @@ def publish_failure_reference_binding(audit_directory, output_directory):
                 raise FailureReferenceBindingError(
                     "Selected reference changed before binding publication"
                 )
-        from vntts.authoring.game_pack import _rename_directory_no_replace
-
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         staging = None
     except Exception:
         if staging is not None and staging.exists():

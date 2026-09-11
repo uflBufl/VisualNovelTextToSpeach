@@ -22,11 +22,11 @@ from vntts.authoring.failure_repair import (
     DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
     compress_single_sentence_boundary_silence,
 )
-from vntts.authoring.game_pack import _rename_directory_no_replace
 from vntts.authoring.listening import (
     ModelListeningError,
     create_listening_session_from_reports,
 )
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256
 
@@ -361,7 +361,7 @@ def publish_silence_comparison(
         for path, digest, label in checked_sources:
             if sha256_file(path) != digest:
                 raise SilenceComparisonError(f"{label.title()} changed during staging")
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         return SilenceComparisonResult(
             output,
             len(records),

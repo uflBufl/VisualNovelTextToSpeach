@@ -83,10 +83,7 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
     FailureRepairPolicyError,
 )
-from vntts.authoring.game_pack import (
-    FinalGamePackError,
-    _rename_directory_no_replace,
-)
+from vntts.authoring.game_pack import FinalGamePackError
 from vntts.authoring.generation_lease import (
     LEASE_SCHEMA,
     LEASE_VERSION,
@@ -106,6 +103,9 @@ from vntts.authoring.offline_fallback_authority import (
     validate_offline_fallback_authority_records,
 )
 from vntts.authoring.publication import generation_publication_leases
+from vntts.authoring.publication import (
+    rename_directory_no_replace as _rename_directory_no_replace,
+)
 from vntts.authoring.queue_extension import (
     WORKSPACE_SCHEMA as QUEUE_EXTENSION_WORKSPACE_SCHEMA,
 )

@@ -25,7 +25,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
-from vntts.authoring.game_pack import _rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.source_reference_quality_records import (
     QUALITY_REVIEW_SCHEMA,
     QUALITY_REVIEW_VERSION,
@@ -271,7 +271,7 @@ def publish_composite_quality_review(composite_directory, state_path, output):
                 raise ReferenceCompositeError(
                     f"Composite quality source changed: {source.name}"
                 )
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         return SourceReferenceQualityResult(output, 1, len(generated), len(excluded))
     except Exception:
         if staging.exists():
@@ -579,7 +579,7 @@ def publish_exact_bank_reference_composite(
                 raise ReferenceCompositeError(
                     f"Candidate reference changed during publication: {source.name}"
                 )
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         return ReferenceCompositeResult(
             output,
             len(clip_records),

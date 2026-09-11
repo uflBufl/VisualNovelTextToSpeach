@@ -26,13 +26,13 @@ from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewIncomplete,
     FailureReferencePreviewService,
 )
-from vntts.authoring.game_pack import _rename_directory_no_replace
 from vntts.authoring.listening import (
     ModelListeningError,
     aggregate_listening_report,
     create_listening_session_from_reports,
     load_listening_session,
 )
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
@@ -410,7 +410,7 @@ def publish_reference_render_comparison(
         document = {**body, "comparison_id": comparison_id}
         atomic_write_json(staging / "comparison.json", document)
         _assert_plan_and_audit_unchanged(plan)
-        _rename_directory_no_replace(staging, output)
+        rename_directory_no_replace(staging, output)
         staging = None
         return ReferenceRenderComparison(
             output,
