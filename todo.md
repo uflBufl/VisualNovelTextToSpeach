@@ -5,6 +5,13 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P1 - Calibrate automatic pregeneration decisions
 
+- [ ] Backfill explicit defect reasons for the 11 legacy `bad` WAVs in
+      `current-character-story-human-labelled-v3` without replaying acceptable
+      audio or rewriting old decisions. Add a resumable checksum-bound review
+      that plays only this residual set and publishes new v4 cohort decisions
+      beside their original plans. Completion gate: all 11 have at least one
+      explicit reason and a newly published corpus validates with no unclassified
+      bad samples.
 - [ ] Collect independently reason-labelled bad generations for pacing,
       repetition, truncation, pronunciation, artifacts and speaker identity.
       Reserve separate fit and held-out groups; do not expand mandatory review.

@@ -616,6 +616,11 @@ def _build_sources(decision_inputs, failure_workspaces):
                 raise SpeechRobustnessCorpusError(
                     f"Conflicting human labels for {workspace_id}/{queue_id}"
                 )
+            else:
+                record["human_defect_reasons"] = sorted(
+                    set(record["human_defect_reasons"])
+                    | set(assessment["human_defect_reasons"])
+                )
             record["decision_ids"].append(decision["decision_id"])
         previous = decision_documents.setdefault(
             decision["decision_id"], decision_snapshot.payload
