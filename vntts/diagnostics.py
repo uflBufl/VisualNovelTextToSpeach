@@ -40,7 +40,7 @@ def resolve_voice_label(voice_router, character):
         if voice is None:
             reference = getattr(voice_router, "narrator_reference", None)
             return str(reference or voice_router.narrator_speaker or "Default narrator")
-    return f"{voice.source_character or voice.character} ({voice.speaker})"
+    return f"{voice.source_character or voice.character}; voice ID: {voice.speaker}"
 
 
 def macos_permission_warnings(

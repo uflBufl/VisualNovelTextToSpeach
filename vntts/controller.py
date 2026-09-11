@@ -2836,7 +2836,7 @@ class AppController:
             source = (
                 f"source voice: {identity['source_character']}"
                 + (
-                    f" ({identity['speaker']})"
+                    f"; voice ID: {identity['speaker']}"
                     if identity["speaker"] != identity["source_character"]
                     else ""
                 )

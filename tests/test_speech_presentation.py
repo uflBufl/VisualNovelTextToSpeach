@@ -6,8 +6,10 @@ from unittest.mock import Mock, patch
 from vntts.generated_audio import GeneratedAudioFallbackBackend
 from vntts.settings import AppSettings
 from vntts.speech_presentation import (
+    compact_runtime_label,
     engine_model_label,
     narrator_voice_label,
+    playback_labels,
     reading_policy_label,
     speech_configuration_label,
     speech_runtime_label,
@@ -15,6 +17,50 @@ from vntts.speech_presentation import (
 
 
 class SpeechPresentationTest(unittest.TestCase):
+    def test_compact_compute_retains_device_and_cpu_fallback_warning(self):
+        raw = (
+            "Compute: GPU: RTX 2070 SUPER (37 GPU layers); audio model/codec: CPU; "
+            "auxiliary CPU workers: 4; fallback: memory pressure"
+        )
+        compact = compact_runtime_label(raw)
+        self.assertNotIn("layers", compact)
+        self.assertNotIn("workers", compact)
+        self.assertIn("RTX 2070 SUPER", compact)
+        self.assertIn("codec: CPU", compact)
+        self.assertIn("fallback: memory pressure", compact)
+
+    def test_live_voice_keeps_variant_and_hides_only_explicit_internal_identity(self):
+        voice, _ = playback_labels(
+            "MOSS live", "Rhiannon (child); voice ID: private-id"
+        )
+        self.assertEqual(voice, "Rhiannon (child)")
+        self.assertEqual(playback_labels("MOSS live", "Rhiannon (child)")[0], voice)
+
+    def test_saved_voice_identity_is_separate_from_live_defaults_and_hashes(self):
+        source = (
+            "Generated audio (line opaque-id)\nRecorded with: moss-tts; "
+            "model: openmoss-cpp:sha256:"
+            + "a" * 64
+            + "; voice role: Aderyn; source voice: Rhiannon (child); voice ID: voice-123"
+        )
+        voice, label = playback_labels(source, "Alba")
+        self.assertEqual(voice, "Rhiannon (child)")
+        self.assertIn("no generation", label)
+        self.assertNotIn("sha256", label)
+        self.assertNotIn("opaque-id", label)
+        self.assertNotIn("Alba", label)
+        self.assertIn(
+            "not recorded", playback_labels("Generated audio (line 1)", "Alba")[0]
+        )
+
+    def test_compact_model_identity_keeps_exact_version_in_details(self):
+        model = "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8"
+        with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False):
+            label = engine_model_label("moss-tts", model, compact=True)
+            self.assertIn("8-bit MLX", label)
+            self.assertNotIn("shraey/", label)
+            self.assertIn(model, engine_model_label("moss-tts", model))
+
     def test_compute_reports_actual_runtime_and_never_guesses_from_settings(self):
         backend = SimpleNamespace(runtime_status="GPU: RTX 2070 SUPER; auxiliary: CPU")
         self.assertIn("GPU: RTX 2070 SUPER", speech_runtime_label(backend))

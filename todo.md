@@ -3,6 +3,54 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P1 - Make the main player UI understandable and compact
+
+Scope: vntts-app Stories, Voices, Reading, first setup, Settings and their
+readiness/error dialogs. Evaluate task clarity, useful information, visual
+hierarchy, copy/keyboard access, loading/error recovery and cross-screen
+consistency. Coordinate dashboard/app changes with the OpenMOSS lifecycle task.
+
+- [ ] Separate compact speech summaries from exact diagnostic identity in the
+      existing presentation path. Show game speaker, actual recorded/source voice
+      when known, readable engine/model and saved/original/new audio separately
+      from defaults for future generation. Keep reported CPU/GPU and device name
+      visible; distinguish a loaded engine from compute used for this playback.
+      Put full model IDs, hashes, paths, event IDs and placement internals in
+      expandable copyable details. Never guess missing voice/device provenance.
+- [ ] Make dialogue, reference transcripts, status/error messages and diagnostic
+      values selectable by mouse and keyboard. Add discoverable Copy error and
+      Copy details actions; readiness copying must include component and full
+      cause, not just ERROR. Preserve the unmodified original error/path in the
+      copied details (do not insert line breaks into long IDs with textwrap).
+- [ ] Rebalance Stories and Reading around their primary content. Give the story
+      list and current dialogue most of the space, compact engine/narrator
+      summaries, and collapse import/path options once content is available.
+      Show useful nonzero coverage counts. Keep transport/primary actions fixed
+      and avoid nested scrolling or long labels forcing horizontal clipping.
+- [ ] Simplify Voices into role/current assignment, candidate, original/preview
+      playback and Save. Distinguish game discovery from imported catalog in
+      user terms; use reference titles/transcript excerpts instead of asset IDs.
+      Show an unsaved-change banner only after a real settings change, and make
+      the effect on existing recordings clear beside Save. Keep advanced model
+      overrides and detailed impact checks secondary.
+- [ ] Unify busy/error/recovery presentation across the main workflows: one
+      concise state, relevant next action and optional full details. A missing
+      game window should offer window selection, not suggest loading the engine.
+      Keep story-position recovery visible when needed rather than hiding its
+      action under technical details. Preserve progress, cancellation meaning,
+      retry and saved work; avoid repeating the same message in several places.
+- [ ] Reorganize Settings and setup around ordinary player choices (game,
+      narrator, playback, auto advance); move manifest/index/corpus paths and OCR
+      tuning into advanced details. Use consistent names, font hierarchy and
+      spacing across embedded pages, dialogs and action rows; support light/dark
+      palettes and large text without fixed-pixel text breaking the hierarchy.
+- [ ] Verify the redesigned screens with representative empty, populated,
+      loading, ready, recovery and long-error data at 860x660 and 620x440, plus
+      enlarged text. Check actual clipboard contents, keyboard reachability,
+      stable buttons and primary content visibility. Add focused behavior
+      regressions for identified failures; finish native macOS/Windows scaling
+      and screen-reader checks as part of the desktop-experience qualification.
+
 ## P1 - Qualify remaining Python and speech runtimes
 
 - [ ] Qualify the Python 3.14 MOSS Delay candidate on Windows CUDA with its atomic

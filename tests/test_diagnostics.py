@@ -276,7 +276,7 @@ class DiagnosticsTest(unittest.TestCase):
 
         self.assertEqual(
             resolve_voice_label(router, "Marcus"),
-            "Marcus (reverse1999-marcus)",
+            "Marcus; voice ID: reverse1999-marcus",
         )
         self.assertEqual(
             resolve_voice_label(router, "Narrator"),
@@ -288,14 +288,16 @@ class DiagnosticsTest(unittest.TestCase):
         )
         router.registry.resolve.side_effect = lambda _character: voice
         self.assertEqual(
-            resolve_voice_label(router, "Narrator"), "Marcus (reverse1999-marcus)"
+            resolve_voice_label(router, "Narrator"),
+            "Marcus; voice ID: reverse1999-marcus",
         )
         projected = CharacterVoice(
             "Narrator", "game-voice-id", source_character="Centurion"
         )
         router.registry.resolve.side_effect = lambda _character: projected
         self.assertEqual(
-            resolve_voice_label(router, "Narrator"), "Centurion (game-voice-id)"
+            resolve_voice_label(router, "Narrator"),
+            "Centurion; voice ID: game-voice-id",
         )
 
 

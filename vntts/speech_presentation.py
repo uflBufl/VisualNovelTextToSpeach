@@ -1,5 +1,6 @@
 """User-facing speech identity, shared by setup, preparation and reading."""
 
+import re
 from pathlib import Path
 
 from vntts.release_backends import SPEECH_BACKEND_LABELS
@@ -39,7 +40,7 @@ def speech_runtime_label(backend):
     return "Compute device: unknown (not reported by the engine yet)."
 
 
-def engine_model_label(backend, model=None, *, pocket_cloning=False):
+def engine_model_label(backend, model=None, *, pocket_cloning=False, compact=False):
     engine = SPEECH_BACKEND_LABELS.get(backend, backend)
     if backend == "pocket-tts":
         model = (
@@ -63,7 +64,67 @@ def engine_model_label(backend, model=None, *, pocket_cloning=False):
             "coqui-xtts": "tts_models/multilingual/multi-dataset/xtts_v2",
             "chatterbox-nano": "Chatterbox Nano (default model)",
         }.get(backend, "Backend default")
+    if compact:
+        if backend == "moss-tts":
+            engine = "MOSS"
+        return f"{engine} · {readable_model_name(model)}"
     return f"Engine: {engine}\nModel: {model}"
+
+
+def compact_runtime_label(message):
+    """Hide placement counters, never devices, warnings or fallback reasons."""
+    message = re.sub(
+        r"\s*\(\d+(?:/\d+)? GPU layers\)|, \d+/\d+ GPU layers", "", message
+    )
+    return re.sub(r"; auxiliary CPU workers: \d+", "", message)
+
+
+def readable_model_name(model):
+    """Keep known model names readable; retain exact identity in details."""
+    if not model:
+        return "Default model"
+    name = str(model).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    aliases = {
+        "MOSS-TTS-Local-Transformer-v1.5-MLX-int8": "Local v1.5 · 8-bit MLX",
+        "moss-tts-local-v1.5-mlx-int8": "Local v1.5 · 8-bit MLX",
+        "moss-tts-local-1.5-q8_0.gguf": "Local v1.5 · 8-bit GGUF",
+        "xtts_v2": "XTTS v2",
+    }
+    if str(model).startswith("openmoss-cpp:"):
+        return "OpenMOSS (exact model in details)"
+    return aliases.get(name, name if len(name) <= 70 else "Custom model (see details)")
+
+
+def playback_labels(source, voice):
+    """Summarize the diagnostic source; never substitute live defaults for a WAV."""
+    voice = voice.partition("; voice ID: ")[0]
+    if "/" in voice or "\\" in voice:
+        voice = "Reference: " + voice.replace("\\", "/").rsplit("/", 1)[-1]
+    if source.startswith("Generated audio"):
+        recorded_voice = "Voice not recorded"
+        for part in source.split("; "):
+            if part.startswith("source voice: "):
+                recorded_voice = part.removeprefix("source voice: ")
+        provider = source.partition("Recorded with: ")[2].split("; ")[0]
+        model = source.partition("; model: ")[2].split("; ")[0]
+        engine = SPEECH_BACKEND_LABELS.get(provider, provider)
+        label = "Prepared recording · no generation"
+        if engine:
+            label += f"\n{engine}"
+        if model:
+            label += f" · {readable_model_name(model)}"
+        return recorded_voice, label
+    if source.startswith("Original game audio"):
+        return "Original game voice", "Played by the game · no generation"
+    if source.startswith("Original game cue"):
+        return "See playback details", "Game sound, followed by speech"
+    if "memory cache" in source or "persistent cache" in source:
+        return voice, "Saved preview or cached speech · no generation"
+    if source.startswith("MOSS "):
+        return voice, "MOSS · new speech"
+    if source in {"Not selected", ""}:
+        return voice, "No audio yet"
+    return voice, "Audio source: see details"
 
 
 def narrator_voice_label(settings):
@@ -100,13 +161,15 @@ def narrator_voice_label(settings):
     return "Not chosen yet"
 
 
-def speech_configuration_label(settings, *, narrator=None):
+def speech_configuration_label(settings, *, narrator=None, compact=False):
     return (
-        f"Narrator voice: {narrator or narrator_voice_label(settings)}\n"
+        f"Narrator voice: {narrator or narrator_voice_label(settings)}"
+        + (" · " if compact else "\n")
         + engine_model_label(
             settings.speech_backend,
             settings.tts_model,
             pocket_cloning=settings.pocket_gated_model_accepted,
+            compact=compact,
         )
     )
 
