@@ -3129,7 +3129,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             "Narrator",
         )
 
-    def test_review_silence_attention_policy_v2_boundaries(self):
+    def test_review_silence_attention_policy_v3_boundaries(self):
         def flags(silence_ratio, internal_pause):
             result = {
                 "quality": {"duration_seconds": 1.5, "peak": 0.2},
@@ -3142,11 +3142,12 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 result, "Three deliberate words"
             )[3]
 
-        self.assertEqual(workbench_module.REVIEW_ATTENTION_POLICY_VERSION, 2)
+        self.assertEqual(workbench_module.REVIEW_ATTENTION_POLICY_VERSION, 3)
         self.assertEqual(flags(0.2245, 0.96), ())
         self.assertEqual(flags(0.2999, 0.999), ())
-        self.assertEqual(flags(0.30, 1.0), ("notable silence", "notable pause"))
-        self.assertEqual(flags(0.40, 2.4), ("notable silence", "notable pause"))
+        self.assertEqual(flags(0.30, 1.0), ())
+        self.assertEqual(flags(0.40, 1.2), ("notable pause",))
+        self.assertEqual(flags(0.50, 2.4), ("notable pause",))
 
         self.assertEqual(bulk_generation_module.MAX_SILENCE_RATIO, 0.5)
         self.assertEqual(

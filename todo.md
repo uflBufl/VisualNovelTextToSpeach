@@ -3,18 +3,6 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P1 - Calibrate automatic pregeneration decisions
-
-- [ ] Use `current-character-story-human-labelled-v4` as a regression benchmark,
-      not as a dataset-completion target. Measure existing pause, silence and pace
-      diagnostics against its current labels and relax or remove signals that flag
-      acceptable MOSS output. Do not manufacture missing defect categories or
-      promote a new automatic rejection rule from this corpus alone. Add naturally
-      occurring reviewed failures later only when normal pregeneration exposes
-      them. Completion gate: known acceptable WAVs are not automatically rejected;
-      obvious detected failures still take the existing bounded repair/fallback
-      route without adding mandatory review.
-
 ## P1 - Qualify remaining Python and speech runtimes
 
 - [ ] Qualify the Python 3.14 MOSS Delay candidate on Windows CUDA with its atomic

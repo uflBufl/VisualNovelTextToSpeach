@@ -162,9 +162,9 @@ _canonical_sha256 = canonical_document_sha256
 
 WORKSPACE_SCHEMA = "vntts.authoring-workspace"
 WORKSPACE_VERSION = 1
-REVIEW_ATTENTION_POLICY_VERSION = 2
-REVIEW_NOTABLE_SILENCE_RATIO = 0.30
-REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS = 1.0
+REVIEW_ATTENTION_POLICY_VERSION = 3
+REVIEW_NOTABLE_SILENCE_RATIO = None
+REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS = 1.2
 PACE_MINIMUM_WORDS = 5
 PACE_MINIMUM_LENGTH_BUCKET_SAMPLES = 3
 PACE_MINIMUM_VOICE_SAMPLES = 5
@@ -2011,16 +2011,10 @@ def _review_technical_metrics(result, text, *, projected_speech_quality=None):
         if is_audio_event or not audible_duration
         else float(word_count * 60 / audible_duration)
     )
-    silence_ratio = speech_quality.get("silence_ratio")
     internal_silence = speech_quality.get("longest_internal_silence_seconds")
     flags = []
     if peak is not None and peak >= 0.98:
         flags.append("near clipping")
-    if (
-        isinstance(silence_ratio, (int, float))
-        and silence_ratio >= REVIEW_NOTABLE_SILENCE_RATIO
-    ):
-        flags.append("notable silence")
     if (
         isinstance(internal_silence, (int, float))
         and internal_silence >= REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS

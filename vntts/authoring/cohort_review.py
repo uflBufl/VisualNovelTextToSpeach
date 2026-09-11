@@ -34,7 +34,7 @@ from vntts.document_identity import is_lowercase_sha256
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
 COHORT_REVIEW_PLAN_VERSION = 1
 COHORT_REVIEW_POLICY_VERSION = REVIEW_ATTENTION_POLICY_VERSION
-SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS = frozenset({1, 2})
+SUPPORTED_COHORT_REVIEW_POLICY_VERSIONS = frozenset({1, 2, 3})
 COHORT_REVIEW_DECISION_SCHEMA = "vntts.authoring-cohort-review-decision"
 COHORT_REVIEW_DECISION_VERSION = 4
 SUPPORTED_COHORT_REVIEW_DECISION_VERSIONS = frozenset({1, 2, 3, 4})
@@ -797,10 +797,17 @@ def _plan_identity_and_document(document):
             raise CohortReviewError(
                 "Legacy cohort review plan thresholds must be implicit"
             )
-    elif thresholds != {
-        "silence_ratio_at_least": REVIEW_NOTABLE_SILENCE_RATIO,
-        "internal_pause_seconds_at_least": (REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS),
-    }:
+    elif thresholds != (
+        {
+            "silence_ratio_at_least": 0.3,
+            "internal_pause_seconds_at_least": 1.0,
+        }
+        if policy_version == 2
+        else {
+            "silence_ratio_at_least": REVIEW_NOTABLE_SILENCE_RATIO,
+            "internal_pause_seconds_at_least": (REVIEW_NOTABLE_INTERNAL_PAUSE_SECONDS),
+        }
+    ):
         raise CohortReviewError("Cohort review plan attention thresholds are invalid")
     clean_samples = policy.get("clean_samples_per_bucket")
     if (

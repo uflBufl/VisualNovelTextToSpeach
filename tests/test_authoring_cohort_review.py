@@ -57,12 +57,12 @@ class AuthoringCohortReviewTest(unittest.TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(first.document["schema_version"], 1)
-        self.assertEqual(first.document["policy"]["schema_version"], 2)
+        self.assertEqual(first.document["policy"]["schema_version"], 3)
         self.assertEqual(
             first.document["policy"]["attention_thresholds"],
             {
-                "silence_ratio_at_least": 0.3,
-                "internal_pause_seconds_at_least": 1.0,
+                "silence_ratio_at_least": None,
+                "internal_pause_seconds_at_least": 1.2,
             },
         )
         self.assertEqual(first.document["cohort_count"], 1)
@@ -97,12 +97,14 @@ class AuthoringCohortReviewTest(unittest.TestCase):
         self.assertEqual(loaded.document["policy"]["schema_version"], 1)
         self.assertNotIn("attention_thresholds", loaded.document["policy"])
 
-    def test_policy_v2_threshold_tamper_is_rejected(self):
+    def test_policy_v3_threshold_tamper_is_rejected(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             workspace, _state, _queue_id = self.create_pending_workspace(root)
             document = deepcopy(build_cohort_review_plan(workspace).document)
-            document["policy"]["attention_thresholds"]["silence_ratio_at_least"] = 0.15
+            document["policy"]["attention_thresholds"][
+                "internal_pause_seconds_at_least"
+            ] = 1.0
             document["plan_id"] = _canonical_sha256(
                 {key: value for key, value in document.items() if key != "plan_id"}
             )
