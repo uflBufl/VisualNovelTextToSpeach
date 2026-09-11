@@ -52,12 +52,6 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P1 - Diagnose intermittent offscreen Qt test stalls
 
-- [ ] Fix the Windows `qt-app` timeout reproduced in CI run `34605082672`.
-      `TrayApplication` instances currently leave their native system-tray icons
-      parented to the process-wide `QApplication`, so the shard accumulates them
-      across tests. Correct ownership and shutdown cleanup, keep every app test
-      covered, and verify the Windows shard with its bounded 300-second budget
-      before closing this item.
 - [ ] Capture thread stacks when the macOS `qt-app` shard stalls in
       `test_settings_are_scrollable_and_grouped_into_visual_regions` (180-second
       timeout). Ten fresh-process repeats passed without reproducing the stall.
