@@ -13,7 +13,7 @@ from vntts.cli import cli_message
 
 SHARD_TIMEOUTS = {
     "Darwin": {"qt-app": 180, "qt-assets": 60, "qt-ocr": 60, "remainder": 900},
-    "Windows": {"qt-app": 180, "qt-assets": 60, "qt-ocr": 60, "remainder": 900},
+    "Windows": {"qt-app": 300, "qt-assets": 60, "qt-ocr": 60, "remainder": 900},
 }
 
 

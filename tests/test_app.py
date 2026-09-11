@@ -171,10 +171,13 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.support_action.text(),
             "Support and logs",
         )
+        self.assertIs(tray_application.tray.parent(), tray_application)
         self.assertEqual(
             tray_application.macos_permissions_action.text(),
             "macOS permissions...",
         )
+        tray_destroyed = []
+        tray_application.tray.destroyed.connect(lambda: tray_destroyed.append(True))
         self.assertFalse(tray_application.read_action.isEnabled())
         self.assertFalse(tray_application.live_action.isEnabled())
         self.assertFalse(tray_application.sequence_resync_action.isVisible())
@@ -201,6 +204,8 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.support_menu.actions(),
         )
         tray_application.shutdown()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.assertEqual(tray_destroyed, [True])
         controller.shutdown.assert_called_once_with()
 
     def test_runtime_capabilities_match_all_three_control_surfaces(self):

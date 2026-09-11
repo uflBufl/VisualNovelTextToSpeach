@@ -1342,7 +1342,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard = ControlDashboard(self.settings)
         self.compact_controller = CompactController()
 
-        self.tray = QSystemTrayIcon(self._application_icon(), application)
+        self.tray = QSystemTrayIcon(self._application_icon(), self)
         self.menu = QMenu()
         self.status_action = QAction("Starting...")
         self.status_action.setEnabled(False)
@@ -3525,6 +3525,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.unknown_speaker_cancel_button = None
         self.dashboard.keep_running_on_close = False
         self.dashboard._quitting = True
+        self.tray.hide()
+        self.tray.deleteLater()
         self.dashboard.close()
         self.compact_controller.close()
         if self.diagnostics_dialog is not None:
