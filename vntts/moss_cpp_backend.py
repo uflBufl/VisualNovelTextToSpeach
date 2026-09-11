@@ -880,11 +880,30 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             with ExitStack() as reference_stack:
                 reference_identity = None
                 reference = prepared.prompt_audio_codes
+
+                def registered_reference(identity):
+                    cached = self._registered_references.get(identity)
+                    if cached is None:
+                        return None
+                    return (
+                        cached
+                        if (server_directory / "voices" / f"{cached[0]}.wav").is_file()
+                        else None
+                    )
+
                 if registered:
+                    digest = hashlib.sha256()
+                    with open(prepared.prompt_audio_codes, "rb") as source:
+                        while chunk := source.read(1024 * 1024):
+                            digest.update(chunk)
+                    reference_identity = digest.hexdigest()
+                cached_reference = registered_reference(reference_identity)
+                if registered and cached_reference is None:
                     source = reference_stack.enter_context(
                         open(prepared.prompt_audio_codes, "rb")
                     )
-                    # Keep the identity and decoded audio on one immutable snapshot.
+                    # Keep a cache miss's identity and decoded audio on one
+                    # immutable snapshot in case the source changes mid-read.
                     reference = reference_stack.enter_context(
                         SpooledTemporaryFile(max_size=8 * 1024 * 1024)
                     )
@@ -894,16 +913,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                         reference.write(chunk)
                     reference.seek(0)
                     reference_identity = digest.hexdigest()
-                cached_reference = self._registered_references.get(reference_identity)
-                if cached_reference is not None:
-                    (
-                        voice_id,
-                        reference_s,
-                        reference_sample_rate,
-                        reference_channels,
-                    ) = cached_reference
-                    if not (server_directory / "voices" / f"{voice_id}.wav").is_file():
-                        cached_reference = None
+                    cached_reference = registered_reference(reference_identity)
                 if cached_reference is None:
                     (
                         reference_wav,
@@ -913,6 +923,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     ) = _normalize_reference_audio(reference)
                     voice_id = hashlib.sha256(reference_wav).hexdigest()
                 else:
+                    (
+                        voice_id,
+                        reference_s,
+                        reference_sample_rate,
+                        reference_channels,
+                    ) = cached_reference
                     reference_wav = None
             seed = prepared.seed
             if seed is not None and (type(seed) is not int or not 0 <= seed < 2**64):

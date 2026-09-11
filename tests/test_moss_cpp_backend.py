@@ -452,6 +452,22 @@ class MossCppBackendTest(unittest.TestCase):
         body = json.loads((self.root / "request.json").read_text())
         self.assertEqual(body["voice"], expected_voice)
 
+    def test_registered_reference_cache_hit_does_not_copy_the_source(self):
+        backend = self.backend()
+        backend.render(SynthesisRequest("Narrator", "First line.")).collect()
+        first_voice = json.loads((self.root / "request.json").read_text())["voice"]
+
+        with patch(
+            "vntts.moss_cpp_backend.SpooledTemporaryFile",
+            side_effect=AssertionError("cache hit copied the reference"),
+        ):
+            backend.render(SynthesisRequest("Narrator", "Second line.")).collect()
+
+        self.assertEqual(
+            json.loads((self.root / "request.json").read_text())["voice"],
+            first_voice,
+        )
+
     def test_inline_reference_compatibility_when_registry_not_reported(self):
         (self.root / "disable-registry").touch()
         backend = self.backend()
