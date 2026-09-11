@@ -1663,6 +1663,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         QTimer.singleShot(250, self._start_hotkeys_safely)
 
     def _start_hotkeys_safely(self):
+        if self._shutting_down:
+            return
         if sys.platform == "darwin":
             self.support_log.add(
                 "warning",

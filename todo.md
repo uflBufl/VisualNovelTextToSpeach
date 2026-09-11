@@ -3,29 +3,6 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P0 - Automate the redesigned fresh-install player journey
-
-Prove that a new player can import installed content, choose a game narrator,
-prepare one story, activate its audio, restart VNTTS and use the saved recordings
-without repeating configuration. Build on the existing self-service and Qt tests;
-do not add another test framework or production-only test switches.
-
-- [ ] Run the journey in two child processes against one isolated temporary user
-      directory. Block network/model downloads, native audio, real OCR/input,
-      tray/login registration and access to the developer's installed game.
-- [ ] In the first process, drive the real onboarding, import and preparation UI:
-      import at least two stories, prepare one, choose and preview a game narrator,
-      retain a separately voiced character, generate audio and activate the pack.
-      Assert that every screen agrees on narrator, engine and model, progress is
-      visible, and unavailable actions stay disabled.
-- [ ] In the second process, verify that onboarding does not repeat, both stories
-      remain listed, the selected story and narrator binding persist, and a known
-      prepared line reaches a recording audio sink as the exact expected WAV.
-      Fail on synthesis, a voice prompt, reimport or regeneration.
-- [ ] Add the journey to the existing OS CI jobs with deadline-based Qt waits and
-      useful failure artifacts. Completion gate: the two-process journey, focused
-      component tests, Ruff and mypy pass without leaked workers.
-
 ## P1 - Calibrate automatic pregeneration decisions
 
 - [ ] Collect independently reason-labelled bad generations for pacing,
