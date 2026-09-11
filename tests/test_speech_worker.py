@@ -20,6 +20,7 @@ from vntts.speech_worker import (
     _runtime_paths,
     _serialize_registry,
     _write_frame,
+    create_moss_worker_backend,
     worker_main,
 )
 from vntts.synthesis import (
@@ -69,6 +70,21 @@ class FakeWorkerBackend:
             )
 
         return SynthesisChunkStream(produce())
+
+
+class BackendFactoryTests(unittest.TestCase):
+    @patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True)
+    @patch("vntts.moss_cpp_backend.MossCppVoiceRouterBackend")
+    def test_native_moss_drops_pocket_only_permission(self, native, _requested):
+        registry = CharacterVoiceRegistry()
+
+        create_moss_worker_backend(
+            registry,
+            model_name="model.gguf",
+            allow_gated_model_access=True,
+        )
+
+        native.assert_called_once_with(registry, model_name="model.gguf")
 
 
 class FakeProcess:
