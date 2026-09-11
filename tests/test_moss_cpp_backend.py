@@ -1293,6 +1293,10 @@ class MossCppBackendTest(unittest.TestCase):
         self.assertTrue(receipt["cancelled_server"]["confirmed_exited"])
         self.assertEqual(receipt["restart_attempt"]["completion"], "complete")
         self.assertIn("raw_response", receipt["restart_attempt"])
+        self.assertEqual(
+            json.loads((self.root / "request.json").read_text())["text"],
+            "The storm has passed.",
+        )
         self.assertNotEqual(
             receipt["cancelled_server"]["pid"], receipt["restart_server_pid"]
         )

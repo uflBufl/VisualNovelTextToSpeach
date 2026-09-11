@@ -413,7 +413,7 @@ def _cancel_and_restart(
         index,
         "stable",
         "restart",
-        "The server restarted cleanly.",
+        "The storm has passed.",
         responses,
     )
     if restart["completion"] != SynthesisCompletion.COMPLETE.value:
