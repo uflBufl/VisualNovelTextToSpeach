@@ -6,10 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import (
-    Qt,
-    QThreadPool,
-)
+from PySide6.QtCore import QThreadPool
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -23,7 +20,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -48,6 +44,7 @@ from vntts.authoring.review_context_ui import (
     ReviewDecisionContext,
     review_form_layout,
     review_model_label,
+    review_scroll_area,
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_audio import play_audio_bytes, release_audio_buffer
@@ -295,13 +292,10 @@ class FailureReferenceAuditDialog(QDialog):
         review_layout.addLayout(decisions_row)
         review_layout.addWidget(self.technical_details)
         review_layout.addWidget(self.cases)
-        self.review_scroll = QScrollArea()
-        self.review_scroll.setAccessibleName("Scrollable failed-reference audit")
-        self.review_scroll.setWidgetResizable(True)
-        self.review_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        self.review_scroll = review_scroll_area(
+            review_content,
+            "Scrollable failed-reference audit",
         )
-        self.review_scroll.setWidget(review_content)
         layout = QVBoxLayout(self)
         layout.addWidget(self.review_scroll, 1)
         layout.addWidget(buttons)

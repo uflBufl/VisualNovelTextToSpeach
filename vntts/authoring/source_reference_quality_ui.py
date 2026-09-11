@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -27,6 +26,7 @@ from vntts.authoring.review_context_ui import (
     ReviewDecisionContext,
     review_form_layout,
     review_model_label,
+    review_scroll_area,
 )
 from vntts.authoring.source_reference_quality_records import (
     load_source_reference_quality_review,
@@ -180,13 +180,10 @@ class SourceReferenceQualityDialog(QDialog):
         review_layout.addWidget(self.failures)
         review_layout.addWidget(self.status)
         review_layout.addLayout(decisions)
-        self.review_scroll = QScrollArea()
-        self.review_scroll.setAccessibleName("Scrollable source-reference review")
-        self.review_scroll.setWidgetResizable(True)
-        self.review_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        self.review_scroll = review_scroll_area(
+            review_content,
+            "Scrollable source-reference review",
         )
-        self.review_scroll.setWidget(review_content)
         layout = QVBoxLayout(self)
         layout.addWidget(self.review_scroll, 1)
         layout.addWidget(buttons)

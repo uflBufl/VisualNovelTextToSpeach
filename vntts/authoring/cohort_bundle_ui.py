@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -59,6 +58,7 @@ from vntts.authoring.review_context_ui import (
     ReviewDecisionContext,
     review_form_layout,
     review_model_label,
+    review_scroll_area,
 )
 from vntts.authoring.voice_quality_gate import (
     inspect_voice_quality_cohort,
@@ -614,11 +614,11 @@ class CohortReviewBundleDialog(QDialog):
         review_layout.addWidget(cohort_group)
         review_layout.addWidget(sample_group)
         review_layout.addWidget(self.table, 1)
-        self.review_scroll = QScrollArea()
-        self.review_scroll.setAccessibleName("Scrollable cohort review context")
-        self.review_scroll.setWidgetResizable(True)
-        self.review_scroll.setMinimumHeight(240)
-        self.review_scroll.setWidget(review_content)
+        self.review_scroll = review_scroll_area(
+            review_content,
+            "Scrollable cohort review context",
+            minimum_height=240,
+        )
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)

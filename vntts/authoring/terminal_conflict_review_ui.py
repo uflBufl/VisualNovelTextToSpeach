@@ -16,13 +16,16 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.authoring.review_context_ui import ReviewDecisionContext, review_form_layout
+from vntts.authoring.review_context_ui import (
+    ReviewDecisionContext,
+    review_form_layout,
+    review_scroll_area,
+)
 from vntts.authoring.terminal_conflict_review import (
     NEITHER_ACCEPTABLE,
     TerminalConflictReviewError,
@@ -154,13 +157,10 @@ class TerminalConflictReviewDialog(QDialog):
         review_layout.addWidget(self.evidence)
         review_layout.addWidget(self.status)
         review_layout.addLayout(decisions)
-        self.review_scroll = QScrollArea()
-        self.review_scroll.setAccessibleName("Scrollable terminal conflict review")
-        self.review_scroll.setWidgetResizable(True)
-        self.review_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        self.review_scroll = review_scroll_area(
+            review_content,
+            "Scrollable terminal conflict review",
         )
-        self.review_scroll.setWidget(review_content)
         layout = QVBoxLayout(self)
         layout.addWidget(self.review_scroll, 1)
         layout.addWidget(buttons)

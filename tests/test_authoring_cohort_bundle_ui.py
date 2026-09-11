@@ -489,6 +489,10 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             bundle = self.create_bundle(Path(directory))
             dialog = CohortReviewBundleDialog(bundle, confirmer=lambda *_args: True)
+            self.assertEqual(
+                dialog.review_scroll.horizontalScrollBarPolicy(),
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+            )
             base_point_size = dialog.font().pointSizeF()
             for scale in (1.5, 2.0, None):
                 font = dialog.font()

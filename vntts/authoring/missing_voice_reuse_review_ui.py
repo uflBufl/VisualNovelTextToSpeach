@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +34,7 @@ from vntts.authoring.review_context_ui import (
     ReviewDecisionContext,
     review_form_layout,
     review_model_label,
+    review_scroll_area,
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 
@@ -268,13 +268,10 @@ class MissingVoiceReuseReviewDialog(QDialog):
         review_layout.addLayout(playback_controls)
         review_layout.addWidget(decision_box)
         review_layout.addWidget(self.status)
-        self.review_scroll = QScrollArea()
-        self.review_scroll.setAccessibleName("Scrollable missing voice review")
-        self.review_scroll.setWidgetResizable(True)
-        self.review_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        self.review_scroll = review_scroll_area(
+            review_content,
+            "Scrollable missing voice review",
         )
-        self.review_scroll.setWidget(review_content)
         layout = QVBoxLayout(self)
         layout.addWidget(self.review_scroll, 1)
         layout.addWidget(close_buttons)

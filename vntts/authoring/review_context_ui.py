@@ -6,7 +6,14 @@ from collections.abc import Mapping
 from pathlib import PureWindowsPath
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFormLayout, QGroupBox, QLabel, QToolButton, QVBoxLayout
+from PySide6.QtWidgets import (
+    QFormLayout,
+    QGroupBox,
+    QLabel,
+    QScrollArea,
+    QToolButton,
+    QVBoxLayout,
+)
 
 
 def review_form_layout(parent=None):
@@ -20,6 +27,18 @@ def review_form_layout(parent=None):
 def review_model_label(model):
     """Shorten paths from either host without changing the recorded identity."""
     return PureWindowsPath(model).name or model
+
+
+def review_scroll_area(content, accessible_name, *, minimum_height=None):
+    """Keep review content vertically scrollable at every display scale."""
+    scroll = QScrollArea()
+    scroll.setAccessibleName(accessible_name)
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    if minimum_height is not None:
+        scroll.setMinimumHeight(minimum_height)
+    scroll.setWidget(content)
+    return scroll
 
 
 class ReviewDecisionContext(QGroupBox):
