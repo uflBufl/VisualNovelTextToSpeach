@@ -22,7 +22,8 @@ This comparison does not download weights or silently substitute a voice.
 
 ### Download
 
-Open [Native MOSS timing build](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/workflows/native-moss-build.yml).
+Open the [VNTTS adaptive Windows runtime](https://github.com/AlexRedby/openmoss/actions/workflows/vntts-adaptive-windows.yml)
+workflow in the OpenMOSS fork.
 From one successful run, save `moss-native-timing-adaptive-windows-x64.zip`.
 Keep the exact name and do not mix it with older `timing-local-gpu` or `aux8`
 artifacts. Its `VNTTS-BUILD.json` records the pinned fork, upstream and llama.cpp
@@ -105,8 +106,8 @@ backbone ownership cleanup, without changing sampling, device placement, thread
 counts or audio limits. The built server identifies itself as
 `0.3.0-vntts-timing1` in `/info` and `--version`.
 
-The **Native MOSS timing build** GitHub Actions workflow builds a separate
-Windows Vulkan artifact from one exact fork commit. It checks startup without
+The **VNTTS adaptive Windows runtime** GitHub Actions workflow in the OpenMOSS
+fork builds a separate Windows Vulkan artifact from its exact commit. It checks startup without
 loading weights; that is not GPU, performance or audio-quality qualification.
 It never publishes a release or changes VNTTS's automatic runtime installer.
 
