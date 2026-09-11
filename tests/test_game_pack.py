@@ -14,7 +14,11 @@ from vntts_artifacts.game_pack import GamePackError, write_game_pack
 from vntts_artifacts.generated_audio import write_generated_audio_manifest
 from vntts_artifacts.hashing import text_sha256
 from vntts_artifacts.live_sequence import write_live_sequence_plan
-from vntts_artifacts.story_index import write_story_index
+from vntts_artifacts.story_index import (
+    load_story_index,
+    load_story_index_document,
+    write_story_index,
+)
 from vntts_artifacts.voice_manifest import write_voice_manifest
 
 from vntts.chapter_voice_preload import ChapterVoicePreloader
@@ -302,12 +306,29 @@ class GamePackImportTest(unittest.TestCase):
                 include_semantics=True,
             )
 
-            imported = import_game_pack(pack_path)
+            with (
+                patch(
+                    "vntts_artifacts.game_pack.load_story_index",
+                    wraps=load_story_index,
+                ) as artifact_story_load,
+                patch(
+                    "vntts.game_pack.load_story_index_document",
+                    wraps=load_story_index_document,
+                ) as vntts_story_load,
+                patch(
+                    "vntts.source_audio_semantics.load_story_index_document",
+                    wraps=load_story_index_document,
+                ) as redundant_story_load,
+            ):
+                imported = import_game_pack(pack_path)
 
         self.assertEqual(
             imported.source_audio_semantic_evidence.name,
             "source-audio-semantic-evidence.json",
         )
+        self.assertEqual(artifact_story_load.call_count, 1)
+        self.assertEqual(vntts_story_load.call_count, 1)
+        redundant_story_load.assert_not_called()
 
     def test_import_rejects_modified_semantic_evidence(self):
         with TemporaryDirectory() as directory:

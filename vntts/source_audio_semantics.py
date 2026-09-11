@@ -9,7 +9,11 @@ import unicodedata
 from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import (
+    StoryIndexDocument,
+    StoryIndexError,
+    load_story_index_document,
+)
 
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
@@ -144,11 +148,14 @@ def validate_source_audio_semantic_evidence(document):
     return document
 
 
-def validate_story_semantic_evidence(story_index_path, evidence_path, evidence):
-    try:
-        story = load_story_index_document(story_index_path)
-    except StoryIndexError as error:
-        raise SourceAudioSemanticEvidenceError(str(error)) from error
+def validate_story_semantic_evidence(story_index, evidence_path, evidence):
+    if isinstance(story_index, StoryIndexDocument):
+        story = story_index
+    else:
+        try:
+            story = load_story_index_document(story_index)
+        except StoryIndexError as error:
+            raise SourceAudioSemanticEvidenceError(str(error)) from error
     metadata = story.metadata.get("source_audio_semantics")
     if not isinstance(metadata, dict):
         raise SourceAudioSemanticEvidenceError(

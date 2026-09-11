@@ -14,6 +14,7 @@ from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
+    validate_story_semantic_evidence,
 )
 
 
@@ -86,9 +87,8 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
         else None
     )
     try:
-        story_metadata = load_story_index_document(pack.story_index.path).metadata.get(
-            "source_audio_semantics"
-        )
+        story = load_story_index_document(pack.story_index.path)
+        story_metadata = story.metadata.get("source_audio_semantics")
     except StoryIndexError as error:
         raise GamePackError(str(error)) from error
     if extension is None:
@@ -125,10 +125,8 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
     ):
         raise GamePackError("Game pack semantic evidence checksum changed")
     try:
-        document = load_source_audio_semantic_evidence(
-            evidence_path,
-            pack.story_index.path,
-        )
+        document = load_source_audio_semantic_evidence(evidence_path)
+        validate_story_semantic_evidence(story, evidence_path, document)
     except SourceAudioSemanticEvidenceError as error:
         raise GamePackError(str(error)) from error
     if document["evidence_id"] != extension.get("evidence_id") or len(
