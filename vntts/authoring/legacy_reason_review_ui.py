@@ -73,8 +73,9 @@ class LegacyReasonReviewDialog(QDialog):
         self.progress = QLabel()
         self.progress.setStyleSheet("font-weight: 700;")
         self.context = QLabel(
-            "Every item here was already rejected. Play it and mark why; good WAVs "
-            "are intentionally excluded."
+            "Every item here was rejected in an earlier review. Judge it against "
+            "your current practical MOSS quality bar: mark a clear defect, or mark "
+            "it acceptable now. Previously accepted WAVs are excluded."
         )
         self.context.setWordWrap(True)
         self.speaker = QLabel()
@@ -89,6 +90,10 @@ class LegacyReasonReviewDialog(QDialog):
             lambda _error, message: self.status.setText(f"Playback failed: {message}")
         )
 
+        self.acceptable = QCheckBox(
+            "Sounds acceptable now (minor imperfections are okay)"
+        )
+        self.acceptable.toggled.connect(self._acceptable_changed)
         reasons = QGridLayout()
         self.reason_controls = {}
         for index, (reason, label) in enumerate(_REASON_LABELS.items()):
@@ -115,6 +120,7 @@ class LegacyReasonReviewDialog(QDialog):
         layout.addWidget(self.speaker)
         layout.addWidget(self.text)
         layout.addWidget(self.play)
+        layout.addWidget(self.acceptable)
         layout.addLayout(reasons)
         layout.addWidget(self.status)
         layout.addLayout(actions)
@@ -143,9 +149,34 @@ class LegacyReasonReviewDialog(QDialog):
         )
         item = self.current_item()
         if reasons:
+            self._syncing = True
+            try:
+                self.acceptable.setChecked(False)
+            finally:
+                self._syncing = False
             self.selections[item.item_id] = reasons
         else:
             self.selections.pop(item.item_id, None)
+        self._save_current()
+
+    def _acceptable_changed(self, checked):
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            for control in self.reason_controls.values():
+                control.setChecked(False)
+                control.setEnabled(not checked)
+        finally:
+            self._syncing = False
+        item = self.current_item()
+        if checked:
+            self.selections[item.item_id] = ()
+        else:
+            self.selections.pop(item.item_id, None)
+        self._save_current()
+
+    def _save_current(self):
         try:
             self.progress_writer(self.review, self.progress_path, self.selections)
         except (OSError, LegacyReasonReviewError) as error:
@@ -169,16 +200,20 @@ class LegacyReasonReviewDialog(QDialog):
         self.speaker.setText(f"Speaker: {item.speaker} | Line: {item.line_id}")
         self.text.setText(item.text)
         selected = set(self.selections.get(item.item_id, ()))
+        classified = item.item_id in self.selections
+        acceptable = classified and not selected
         self._syncing = True
         try:
+            self.acceptable.setChecked(acceptable)
             for reason, control in self.reason_controls.items():
                 control.setChecked(reason in selected)
+                control.setEnabled(not acceptable)
         finally:
             self._syncing = False
         self.status.setText(
-            "This WAV still needs a reason."
-            if not selected
-            else "Reason saved; replay or continue."
+            "This WAV still needs a current assessment."
+            if not classified
+            else "Current assessment saved; replay or continue."
         )
         self._update_actions()
 

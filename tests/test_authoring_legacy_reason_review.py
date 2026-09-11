@@ -80,6 +80,23 @@ class LegacyReasonReviewTest(unittest.TestCase):
         self.assertEqual(sample["human_defect_reasons"], ["pause_or_pacing"])
         self.assertEqual(len(sample["decision_ids"]), 2)
 
+    def test_reassesses_legacy_bad_sample_as_acceptable(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace, _queue_id, _decision_path, corpus = _legacy_bad_fixture(root)
+            review = build_legacy_reason_review(corpus, root)
+
+            publish_reason_review_decisions(review, {review.items[0].item_id: ()})
+            updated = root / "corpus-v4-input"
+            publish_speech_robustness_corpus(
+                [workspace / "cohort-reviews"], [], updated
+            )
+            sample = load_speech_robustness_corpus(updated).document["samples"][0]
+
+        self.assertEqual(sample["human_label"], "acceptable")
+        self.assertEqual(sample["human_defect_reasons"], [])
+        self.assertEqual(len(sample["decision_ids"]), 2)
+
     def test_progress_is_bound_to_exact_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -24,7 +24,7 @@ class LegacyReasonReviewDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_plays_only_bad_wav_and_requires_reason_before_publish(self):
+    def test_plays_only_legacy_bad_wav_and_accepts_current_reassessment(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             _workspace, _queue_id, _decision, corpus = _legacy_bad_fixture(root)
@@ -40,15 +40,15 @@ class LegacyReasonReviewDialogTest(unittest.TestCase):
             )
 
             self.assertFalse(dialog.finish.isEnabled())
-            self.assertIn("already rejected", dialog.context.text())
+            self.assertIn("acceptable now", dialog.context.text())
             dialog.play.click()
             player.setSource.assert_called_once()
             player.play.assert_called_once()
-            dialog.reason_controls["pause_or_pacing"].click()
+            dialog.acceptable.click()
             self.assertTrue(dialog.finish.isEnabled())
             dialog.finish.click()
 
-        publisher.assert_called_once()
+        self.assertEqual(publisher.call_args.args[1], {review.items[0].item_id: ()})
         self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
 

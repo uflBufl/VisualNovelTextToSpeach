@@ -483,6 +483,7 @@ def _build_sources(decision_inputs, failure_workspaces):
     decision_documents = {}
     audio_payloads = {}
     samples = {}
+    sample_decision_versions = {}
     workspace_cache = {}
 
     def workspace_authority(path):
@@ -612,11 +613,22 @@ def _build_sources(decision_inputs, failure_workspaces):
                     "decision_ids": [],
                 }
                 samples[key] = record
+                sample_decision_versions[key] = decision["schema_version"]
             elif record["human_label"] != label:
-                raise SpeechRobustnessCorpusError(
-                    f"Conflicting human labels for {workspace_id}/{queue_id}"
-                )
+                previous_version = sample_decision_versions[key]
+                current_version = decision["schema_version"]
+                if {previous_version, current_version} != {1, 4}:
+                    raise SpeechRobustnessCorpusError(
+                        f"Conflicting human labels for {workspace_id}/{queue_id}"
+                    )
+                if current_version == 4:
+                    record["human_label"] = label
+                    record["human_defect_reasons"] = assessment["human_defect_reasons"]
+                    sample_decision_versions[key] = current_version
             else:
+                sample_decision_versions[key] = max(
+                    sample_decision_versions[key], decision["schema_version"]
+                )
                 record["human_defect_reasons"] = sorted(
                     set(record["human_defect_reasons"])
                     | set(assessment["human_defect_reasons"])

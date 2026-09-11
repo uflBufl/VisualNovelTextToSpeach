@@ -177,13 +177,14 @@ def write_reason_review_progress(review, path, selections):
 
 
 def publish_reason_review_decisions(review, selections):
-    """Write additive v4 decisions; never rewrite or reapply old review state."""
+    """Write additive v4 reassessments; never rewrite or reapply old review state."""
     selections = _validated_selections(review, selections, complete=True)
     reasons_by_key = dict(review.known_reasons)
+    labels_by_key = {}
     for item in review.items:
-        reasons_by_key[(item.workspace_id, item.queue_id, item.audio_sha256)] = (
-            selections[item.item_id]
-        )
+        key = (item.workspace_id, item.queue_id, item.audio_sha256)
+        reasons_by_key[key] = selections[item.item_id]
+        labels_by_key[key] = "bad" if selections[item.item_id] else "acceptable"
     source_paths = _source_decision_paths(review)
     selected_decision_ids = {
         decision_id
@@ -210,11 +211,12 @@ def publish_reason_review_decisions(review, selections):
             if assessment == "bad" and frozenset(reasons) in _UNCLASSIFIED_REASONS:
                 evidence = reviewed[queue_id]
                 key = (workspace_id, queue_id, evidence["audio_sha256"])
-                reasons = reasons_by_key.get(key, ())
-                if not reasons:
+                if key not in labels_by_key:
                     raise LegacyReasonReviewError(
-                        f"No explicit defect reason was supplied for {queue_id!r}"
+                        f"No current assessment was supplied for {queue_id!r}"
                     )
+                assessment = labels_by_key[key]
+                reasons = reasons_by_key[key]
                 covered.add(key)
             assessments[queue_id] = {
                 "assessment": assessment,
@@ -286,8 +288,8 @@ def _validated_reasons(values):
     if not isinstance(values, (list, tuple, set, frozenset)):
         raise LegacyReasonReviewError("Defect reasons must be a list")
     reasons = tuple(sorted(set(values)))
-    if not reasons or not set(reasons).issubset(_ALLOWED_REASONS):
-        raise LegacyReasonReviewError("Choose at least one supported defect reason")
+    if not set(reasons).issubset(_ALLOWED_REASONS):
+        raise LegacyReasonReviewError("Choose only supported defect reasons")
     return reasons
 
 
