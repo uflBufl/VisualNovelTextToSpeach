@@ -772,6 +772,26 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                             "cancelled",
                         )
 
+    def test_audio_limit_plan_retries_whole_multi_sentence_text(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            text = "Are you certain? We can leave before the storm arrives."
+            item = queue_item(text=text)
+            queue = write_queue(root / "queue.jsonl", [item])
+            renderer = SyntheticRenderer([SynthesisCompletion.LIMITED])
+            failed = self.run_generation(
+                queue,
+                root / "output",
+                renderer,
+                retries=0,
+                seed=0,
+            )
+
+            plan = generation_failure_repair_plan(failed.state, queue)
+
+        self.assertEqual([request.text for request in renderer.requests], [text])
+        self.assertEqual(plan["records"][0]["action"], "bounded_seed_retry")
+
     def test_failure_report_reconciles_typed_and_legacy_cohorts(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

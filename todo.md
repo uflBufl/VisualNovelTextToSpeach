@@ -5,12 +5,6 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Verify one clean Windows app install plus narrator preview and replay with
-      the released native profile. The first play may generate once; replay must
-      reuse the saved WAV without another generation. Request another support
-      export only for an unresolved problem, not to repeat already measured
-      retry/device behavior. Acoustic quality remains a separate check from
-      technical gates.
 - [ ] Reduce native CPU audio-frame generation and waveform decoding time.
   - Reduce first-use reference encoding cost without duplicating the existing
     server-lifetime code cache. Consider encoder acceleration or explicit

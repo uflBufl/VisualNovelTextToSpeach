@@ -1029,10 +1029,7 @@ def generation_failure_repair_plan(state_path, queue_path):
             provider_attempts = record["attempts_by_provider"].get(
                 record["provider"], attempts
             )
-            if len(safe_sentence_segments(record["text"])) >= 2:
-                action = "sentence_boundary_segmentation"
-                reason = "multiple complete sentence boundaries"
-            elif provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
+            if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
                 action = "bounded_seed_retry"
                 reason = "fewer than three completed attempts for the current provider"
             else:

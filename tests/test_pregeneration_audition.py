@@ -200,6 +200,17 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, group, _manifest = ambiguous_fixture(root)
+            original_group = group
+            group = replace(
+                group,
+                sample_text="Are you certain? We can leave before the storm arrives.",
+            )
+            plan = replace(
+                plan,
+                groups=tuple(
+                    group if value is original_group else value for value in plan.groups
+                ),
+            )
             backend = FakeBackend("moss-tts")
             factory_calls = []
             progress = []
@@ -278,6 +289,7 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             self.assertEqual(len(factory_calls), 1)
             self.assertEqual(len(backend.requests), 1)
             self.assertEqual(backend.requests[0].voice, "Rhiannon")
+            self.assertEqual(backend.requests[0].text, group.sample_text)
             self.assertEqual(backend.shutdown_count, 1)
 
     def test_native_preview_does_not_reuse_old_sampling_caches(self):
