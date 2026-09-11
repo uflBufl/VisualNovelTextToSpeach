@@ -86,6 +86,7 @@ from vntts.macos import (
     get_macos_permission_status,
 )
 from vntts.macos_ui import MacOSPermissionsDialog
+from vntts.moss_runtime import RetainedMossRuntime
 from vntts.ocr_corrections import OCRCorrectionStore
 from vntts.ocr_corrections_ui import OCRCorrectionsDialog
 from vntts.ocr_review_ui import OCRReviewDialog
@@ -96,6 +97,8 @@ from vntts.pregeneration_activation import (
     OfflinePackActivationResult,
     OfflinePackActivator,
 )
+from vntts.pregeneration_audition import VoiceAuditionPreviewService
+from vntts.pregeneration_generation import OfflineGenerationWorker
 from vntts.pregeneration_pack import OfflinePackResult
 from vntts.pregeneration_setup import GameContent
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog
@@ -1243,6 +1246,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         profile_store=None,
         correction_store=None,
         pregeneration_activator=None,
+        moss_runtime=None,
     ):
         super().__init__()
         self.application = application
@@ -1272,6 +1276,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 else None
             )
         )
+        self.moss_runtime = moss_runtime or RetainedMossRuntime()
         self.controller = controller_factory(
             self.settings,
             status_handler=self.signals.status_changed.emit,
@@ -1283,6 +1288,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             route_trace_handler=self.record_audio_route,
             pipeline_event_handler=self.generation_timelines.record,
         )
+        if isinstance(self.controller, AppController):
+            self.controller.moss_backend_factory = self.moss_runtime
         self.live_stop_runner = LatestTaskRunner(self)
         self.live_stop_runner.finished.connect(self._live_stop_finished)
         self._live_stop_continuation = None
@@ -1295,6 +1302,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
         self._live_scope_generation = None
+        self.moss_runtime_runner = LatestTaskRunner(self)
+        self.moss_runtime_runner.finished.connect(self._moss_runtime_finished)
         self.pregeneration_activator = pregeneration_activator or OfflinePackActivator()
         self.pregeneration_activation_runner = LatestTaskRunner(self)
         self.pregeneration_activation_runner.finished.connect(
@@ -1374,6 +1383,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.pregeneration_action = QAction("Prepare offline audio...")
         self.setup_action = QAction("Run setup")
         self.assets_action = QAction("Manage models and voices...")
+        self.moss_runtime_action = QAction("Load OpenMOSS")
         self.voice_preview_action = QAction("Choose narrator voice...")
         self.speaker_mapping_action = QAction("Manage character voices...")
         self.history_action = QAction("Dialogue history...")
@@ -1428,6 +1438,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.setup_menu.addAction(self.settings_action)
         self.setup_menu.addAction(self.profiles_action)
         self.setup_menu.addAction(self.assets_action)
+        self.setup_menu.addAction(self.moss_runtime_action)
         self.setup_menu.addAction(self.voice_preview_action)
         self.setup_menu.addAction(self.speaker_mapping_action)
         self.setup_menu.addAction(self.corrections_action)
@@ -1467,6 +1478,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.pregeneration_action.triggered.connect(self.open_pregeneration)
         self.setup_action.triggered.connect(self.run_onboarding)
         self.assets_action.triggered.connect(self.open_assets)
+        self.moss_runtime_action.triggered.connect(self.toggle_moss_runtime)
         self.voice_preview_action.triggered.connect(self.open_voice_previews)
         self.speaker_mapping_action.triggered.connect(self.open_speaker_mapping)
         self.history_action.triggered.connect(self.open_history)
@@ -1527,6 +1539,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.diagnostics_requested.connect(self.open_support_center)
         self.dashboard.settings_requested.connect(self.open_settings)
         self.dashboard.compact_requested.connect(self.show_compact_controls)
+        self.dashboard.moss_runtime_requested.connect(self.toggle_moss_runtime)
         self.dashboard.quit_requested.connect(self.request_quit)
         self.dashboard.hidden_to_background.connect(self.notify_background_mode)
         self.compact_controller.read_requested.connect(self.read_once)
@@ -1546,14 +1559,74 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._refresh_speech_runtime()
 
     def _speech_runtime_label(self):
+        retained = self.moss_runtime.backend
         return speech_runtime_label(
             None
             if self._shutting_down
-            else getattr(self.controller, "speech_backend", None)
+            else retained or getattr(self.controller, "speech_backend", None)
         )
 
     def _refresh_speech_runtime(self):
         self.dashboard.speech_runtime.setText(self._speech_runtime_label())
+        loaded = self.moss_runtime.loaded
+        label = (
+            "Loading OpenMOSS..."
+            if self.moss_runtime_runner.active
+            else "Unload OpenMOSS"
+            if loaded
+            else "Load OpenMOSS"
+        )
+        self.dashboard.moss_runtime_button.setText(label)
+        self.moss_runtime_action.setText(label)
+        visible = self.settings.speech_backend == "moss-tts"
+        self.dashboard.moss_runtime_button.setVisible(visible)
+        self.moss_runtime_action.setVisible(visible)
+        preparing = bool(
+            self.pregeneration_dialog is not None
+            and self.pregeneration_dialog.has_pending_work()
+        )
+        enabled = not (
+            self.moss_runtime_runner.active
+            or self._controller_busy
+            or self.controller.is_live_running is True
+            or preparing
+            or self._shutting_down
+        )
+        self.dashboard.moss_runtime_button.setEnabled(enabled)
+        self.moss_runtime_action.setEnabled(enabled)
+
+    def toggle_moss_runtime(self):
+        if self.settings.speech_backend != "moss-tts" or self._shutting_down:
+            return
+        if self.moss_runtime.loaded:
+            self.moss_runtime.unload()
+            self.set_status("OpenMOSS unloaded. It will load again on the next speech.")
+            self._refresh_speech_runtime()
+            return
+        if self.moss_runtime_runner.active:
+            return
+        registry = self.controller.voice_registry_initializer(
+            self.settings, self.report_controller_error
+        )
+        if registry is None:
+            return
+        self.set_status("Loading OpenMOSS in the background...")
+        self.moss_runtime_runner.start(
+            self.moss_runtime.backend_for,
+            registry,
+            model_name=self.settings.tts_model,
+            language=self.settings.tts_language or "English",
+            generation_profile=self.settings.tts_profile,
+            volume=self.settings.output_volume_percent / 100,
+            startup_progress=self.signals.status_changed.emit,
+        )
+
+    def _moss_runtime_finished(self, _backend, error):
+        if error is not None:
+            self.show_error(f"Unable to load OpenMOSS: {error}")
+        elif not self._shutting_down:
+            self.set_status("OpenMOSS is loaded and ready.")
+        self._refresh_speech_runtime()
 
     def _update_auto_advance_action(self):
         allowed, enabled, reason = auto_advance_control_state(
@@ -2353,8 +2426,21 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return None
+        retained_runtime = (
+            {
+                "audition_service": VoiceAuditionPreviewService(
+                    backend_factory=self.moss_runtime.benchmark_backend
+                ),
+                "generator": OfflineGenerationWorker(
+                    backend_factory=self.moss_runtime.benchmark_backend
+                ),
+            }
+            if self.settings.speech_backend == "moss-tts"
+            else {}
+        )
         dialog = OfflineAudioPreparationDialog(
             self.settings,
+            **retained_runtime,
             game_narrator_chooser=self._open_preparation_narrator,
             automatic_activation=True,
             parent=self.dashboard,
@@ -3499,6 +3585,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         profile_shutdown_owned = self.profile_restart_runner.active
         self.profile_restart_runner.cancel()
         self.configuration_runner.cancel()
+        self.moss_runtime_runner.cancel()
         activation_shutdown_owned = self.pregeneration_activation_runner.active
         self._pregeneration_activation_restore_runtime.clear()
         if self._pregeneration_activation_cancellation is not None:
@@ -3543,6 +3630,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and not activation_shutdown_owned
         ):
             self.controller.shutdown()
+        self.moss_runtime.shutdown()
 
     def request_quit(self):
         self._quit_requested = True

@@ -472,6 +472,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             return None
         return status
 
+    def load(self):
+        """Ensure the owned native model is ready without synthesizing audio."""
+        self.playback_stop.clear()
+        self._start_server(self._startup_cancelled)
+        return self.runtime_status
+
     def _confirmed_runtime_status(self):
         placement = (
             self.server_info.get("placement")

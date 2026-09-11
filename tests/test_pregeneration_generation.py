@@ -223,6 +223,47 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
         popen.assert_not_called()
         self.assertEqual(result.total, generation_input.ready_items)
 
+    def test_moss_generation_uses_the_in_process_retained_backend(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            generation_input, plan = generation_inputs(
+                root, backend="moss-tts", model="model-id"
+            )
+            output = root / f"generation-output-{generation_input.identity[:16]}"
+            expected = OfflineGenerationResult(
+                output,
+                output / "generation-state.json",
+                output / "manifest.json",
+                3,
+                0,
+                0,
+            )
+            backend_factory = Mock()
+            popen = Mock()
+            worker = OfflineGenerationWorker(
+                command=("worker",),
+                popen_factory=popen,
+                backend_factory=backend_factory,
+            )
+
+            with (
+                patch(
+                    "vntts.authoring.cli_generation.run_generation"
+                ) as run_generation,
+                patch(
+                    "vntts.pregeneration_generation._load_result",
+                    return_value=expected,
+                ),
+                patch.object(worker, "inspect", side_effect=OfflineGenerationError),
+            ):
+                result = worker.generate(generation_input, plan)
+
+        popen.assert_not_called()
+        self.assertIs(result, expected)
+        self.assertIs(
+            run_generation.call_args.kwargs["backend_factory"], backend_factory
+        )
+
     def test_pocket_cloning_opt_in_reaches_isolated_worker(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, plan = generation_inputs(Path(temporary_directory))

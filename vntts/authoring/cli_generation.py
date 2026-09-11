@@ -300,7 +300,13 @@ def _load_stable_voice_registry(manifest_path):
     return CharacterVoiceRegistry(voices), digest, document, entries
 
 
-def _generate(arguments: argparse.Namespace) -> int:
+def run_generation(
+    arguments: argparse.Namespace,
+    *,
+    backend_factory=None,
+    cancellation=None,
+):
+    backend_factory = backend_factory or create_backend
     missing_policy = missing_voice_policy(arguments)
     repair_policy = failure_repair_policy(arguments)
     projection_ids = tuple(arguments.audio_event_spoken_projection_queue_ids or ())
@@ -476,7 +482,7 @@ def _generate(arguments: argparse.Namespace) -> int:
     )
     with cache_context as cache_directory:
         Path(cache_directory).mkdir(parents=True, exist_ok=True)
-        backend = create_backend(
+        backend = backend_factory(
             arguments.backend,
             registry,
             cache_directory,
@@ -547,9 +553,15 @@ def _generate(arguments: argparse.Namespace) -> int:
                     if arguments.cache_directory is not None
                     else "bypass"
                 ),
+                cancellation=cancellation,
             )
         finally:
             shutdown_speech_backend(backend)
+    return result
+
+
+def _generate(arguments: argparse.Namespace) -> int:
+    result = run_generation(arguments)
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
     return 0
 

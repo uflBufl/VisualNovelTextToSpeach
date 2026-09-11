@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -52,10 +53,18 @@ class OfflineGenerationProgress:
 
 
 class OfflineGenerationWorker:
-    def __init__(self, *, command=None, popen_factory=subprocess.Popen):
+    def __init__(
+        self,
+        *,
+        command=None,
+        popen_factory=subprocess.Popen,
+        backend_factory=None,
+    ):
         self._configured_command = tuple(command) if command else None
         self.popen_factory = popen_factory
+        self.backend_factory = backend_factory
         self._process = None
+        self._in_process_active = False
 
     def command(self):
         if self._configured_command:
@@ -175,11 +184,16 @@ class OfflineGenerationWorker:
         active = state.get("active")
         runtime_status = None
         process = self._process
-        if (
-            isinstance(active, dict)
-            and process is not None
-            and active.get("runtime_worker_pid") == process.pid
-            and process.poll() is None
+        if isinstance(active, dict) and (
+            (
+                process is not None
+                and active.get("runtime_worker_pid") == process.pid
+                and process.poll() is None
+            )
+            or (
+                self._in_process_active
+                and active.get("runtime_worker_pid") == os.getpid()
+            )
         ):
             reported = active.get("runtime_status")
             if isinstance(reported, str) and reported.strip():
@@ -248,6 +262,39 @@ class OfflineGenerationWorker:
     ):
         if cancel_event is not None and cancel_event.is_set():
             raise OfflineGenerationCancelled("Offline speech generation was cancelled")
+        if self.backend_factory is not None and "--backend" in arguments:
+            from vntts.authoring.cli import create_parser
+            from vntts.authoring.cli_generation import run_generation
+
+            command_index = arguments.index("generate")
+            parsed = create_parser().parse_args(arguments[command_index:])
+            if parsed.backend != "moss-tts":
+                parsed = None
+        else:
+            parsed = None
+        if parsed is not None:
+            self._in_process_active = True
+            try:
+                run_generation(
+                    parsed,
+                    backend_factory=self.backend_factory,
+                    cancellation=cancel_event,
+                )
+            except Exception as error:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise OfflineGenerationCancelled(
+                        "Offline speech generation was cancelled"
+                    ) from error
+                raise OfflineGenerationError(
+                    f"Offline speech could not be generated: {error}"
+                ) from error
+            finally:
+                self._in_process_active = False
+            if cancel_event is not None and cancel_event.is_set():
+                raise OfflineGenerationCancelled(
+                    "Offline speech generation was cancelled"
+                )
+            return _load_result(output, generation_input)
         try:
             process = self.popen_factory(
                 tuple(arguments),
