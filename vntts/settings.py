@@ -1,7 +1,9 @@
 import os
 import sys
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from typing import Self, TypeAlias, TypedDict, Unpack
 
 from vntts.application_directories import (
     application_directory_name as application_directory_name,
@@ -28,8 +30,68 @@ speaker_announcement_modes = {
 live_sequence_audio_modes = frozenset({"audio-manual", "audio-auto"})
 live_sequence_modes = {"off", "shadow", *live_sequence_audio_modes}
 
+PathInput: TypeAlias = str | Path
+Environment: TypeAlias = Mapping[str, str]
+WarningHandler: TypeAlias = Callable[[str], None]
 
-def is_live_sequence_audio_mode(value):
+
+class AppSettingsChanges(TypedDict, total=False):
+    schema_version: int
+    onboarding_completed: bool
+    xtts_terms_accepted: bool
+    pocket_gated_model_accepted: bool
+    read_hotkey: str
+    live_hotkey: str
+    pause_hotkey: str
+    skip_hotkey: str
+    repeat_hotkey: str
+    clear_queue_hotkey: str
+    emergency_stop_hotkey: str
+    screenshot_directory: str
+    ocr_diagnostics_directory: str
+    retain_uncertain_frames: bool
+    capture_mode: str
+    game_window_title: str | None
+    live_interval_ms: int
+    live_stability_frames: int
+    live_idle_flush_ms: int
+    live_min_chunk_characters: int
+    auto_advance_enabled: bool
+    speaker_announcement_mode: str
+    announce_speaker_changes: bool
+    auto_advance_key: str
+    auto_advance_delay_ms: int
+    ocr_minimum_confidence: int
+    ocr_language: str
+    speech_backend: str
+    audio_source_policy: str
+    tts_model: str | None
+    tts_speaker: str | None
+    tts_language: str | None
+    tts_speaker_wav: str | None
+    tts_profile: str
+    output_volume_percent: int
+    speech_rate_percent: int
+    warm_up_voices: bool
+    launch_at_login: bool
+    keep_running_on_close: bool
+    compact_controls: bool
+    last_main_section: str
+    game_pack: str | None
+    voice_manifest: str | None
+    story_index: str | None
+    live_sequence_plan: str | None
+    live_sequence_mode: str
+    live_speaker_corpus: str | None
+    generated_audio_manifest: str | None
+    narrator_speaker: str | None
+    voice_assignments: dict[str, str]
+    character_voice_defaults: dict[str, str]
+    force_live_narrator: bool
+    active_profile_id: str | None
+
+
+def is_live_sequence_audio_mode(value: object) -> bool:
     return value in live_sequence_audio_modes
 
 
@@ -46,7 +108,7 @@ restart_required_setting_names = (
 )
 
 
-def get_settings_path(*, environment=None):
+def get_settings_path(*, environment: Environment | None = None) -> Path:
     environment = os.environ if environment is None else environment
     configured_path = environment.get("VNTTS_SETTINGS_FILE")
     if configured_path:
@@ -142,10 +204,15 @@ class AppSettings:
     active_profile_id: str | None = None
 
     @classmethod
-    def from_mapping(cls, values, *, warn=None):
-        warn = (lambda _message: None) if warn is None else warn
+    def from_mapping(
+        cls,
+        values: Mapping[str, object],
+        *,
+        warn: WarningHandler | None = None,
+    ) -> Self:
+        report: WarningHandler = (lambda _message: None) if warn is None else warn
         defaults = cls()
-        parsed = {}
+        parsed: dict[str, object] = {}
         source_schema = values.get("schema_version", 0)
         if isinstance(source_schema, bool) or not isinstance(source_schema, int):
             source_schema = 0
@@ -211,7 +278,7 @@ class AppSettings:
             if isinstance(value, str) and value.strip():
                 parsed[name] = value.strip()
             else:
-                warn(f"Invalid {name!r} setting; using its default")
+                report(f"Invalid {name!r} setting; using its default")
 
         for name in optional_string_fields:
             value = values.get(name, getattr(defaults, name))
@@ -220,7 +287,7 @@ class AppSettings:
             elif isinstance(value, str) and value.strip():
                 parsed[name] = value.strip()
             else:
-                warn(f"Invalid {name!r} setting; using its default")
+                report(f"Invalid {name!r} setting; using its default")
 
         for name, minimum in numeric_fields.items():
             value = values.get(name, getattr(defaults, name))
@@ -234,7 +301,7 @@ class AppSettings:
             ):
                 parsed[name] = value
             else:
-                warn(f"Invalid {name!r} setting; using its default")
+                report(f"Invalid {name!r} setting; using its default")
 
         # Schema 11 shipped the conservative 700ms idle delay as its only
         # effective value. Move that default forward while preserving an
@@ -247,7 +314,7 @@ class AppSettings:
             if isinstance(value, bool):
                 parsed[name] = value
             else:
-                warn(f"Invalid {name!r} setting; using its default")
+                report(f"Invalid {name!r} setting; using its default")
 
         # Schema 27 promotes guarded sequence control for new installations.
         # Settings created before that rollout retain their former conservative
@@ -262,22 +329,22 @@ class AppSettings:
         if isinstance(profile, str) and profile.strip():
             parsed["tts_profile"] = profile.strip().casefold()
         else:
-            warn("Invalid 'tts_profile' setting; using its default")
+            report("Invalid 'tts_profile' setting; using its default")
 
         capture_mode = values.get("capture_mode", defaults.capture_mode)
         if capture_mode in {"screen", "window"}:
             parsed["capture_mode"] = capture_mode
         else:
-            warn("Invalid 'capture_mode' setting; using its default")
+            report("Invalid 'capture_mode' setting; using its default")
 
         last_main_section = values.get("last_main_section", defaults.last_main_section)
         if last_main_section in main_sections:
             parsed["last_main_section"] = last_main_section
         else:
-            warn("Invalid 'last_main_section' setting; using Stories")
+            report("Invalid 'last_main_section' setting; using Stories")
 
         if parsed["auto_advance_key"] not in {"space", "enter", "right", "down"}:
-            warn("Invalid 'auto_advance_key' setting; using its default")
+            report("Invalid 'auto_advance_key' setting; using its default")
             parsed["auto_advance_key"] = defaults.auto_advance_key
 
         if parsed["speech_backend"] not in {
@@ -286,18 +353,18 @@ class AppSettings:
             "moss-tts",
             "pocket-tts",
         }:
-            warn("Invalid 'speech_backend' setting; using its default")
+            report("Invalid 'speech_backend' setting; using its default")
             parsed["speech_backend"] = defaults.speech_backend
 
         if parsed["audio_source_policy"] not in audio_source_policies:
-            warn("Invalid 'audio_source_policy' setting; using its default")
+            report("Invalid 'audio_source_policy' setting; using its default")
             parsed["audio_source_policy"] = defaults.audio_source_policy
 
         if parsed["speaker_announcement_mode"] not in speaker_announcement_modes:
-            warn("Invalid 'speaker_announcement_mode' setting; using its default")
+            report("Invalid 'speaker_announcement_mode' setting; using its default")
             parsed["speaker_announcement_mode"] = defaults.speaker_announcement_mode
         if parsed["live_sequence_mode"] not in live_sequence_modes:
-            warn("Invalid 'live_sequence_mode' setting; disabling sequence control")
+            report("Invalid 'live_sequence_mode' setting; disabling sequence control")
             parsed["live_sequence_mode"] = "off"
         if (
             "speaker_announcement_mode" not in values
@@ -305,6 +372,7 @@ class AppSettings:
         ):
             parsed["speaker_announcement_mode"] = "all-speakers"
 
+        validated_assignments: dict[str, dict[str, str]] = {}
         for name in ("voice_assignments", "character_voice_defaults"):
             assignments = values.get(name, getattr(defaults, name))
             if isinstance(assignments, dict) and all(
@@ -314,40 +382,50 @@ class AppSettings:
                 and source_id.strip()
                 for character, source_id in assignments.items()
             ):
-                parsed[name] = {
+                validated_assignments[name] = {
                     character.strip(): source_id.strip()
                     for character, source_id in assignments.items()
                 }
             else:
-                warn(f"Invalid {name!r} setting; using its default")
-                parsed[name] = {}
-        for character in tuple(parsed["character_voice_defaults"]):
+                report(f"Invalid {name!r} setting; using its default")
+                validated_assignments[name] = {}
+            parsed[name] = validated_assignments[name]
+        character_voice_defaults = validated_assignments["character_voice_defaults"]
+        for character in tuple(character_voice_defaults):
             if is_narrator(character):
-                warn("Narrator cannot be set in 'character_voice_defaults'")
-                del parsed["character_voice_defaults"][character]
+                report("Narrator cannot be set in 'character_voice_defaults'")
+                del character_voice_defaults[character]
 
         # Before schema 22 a saved Narrator assignment always bypassed source
         # and pregenerated audio. Preserve that behavior during migration while
         # making the routing choice explicit for newly saved settings.
         if source_schema < 22 and any(
             character.strip().casefold() == "narrator"
-            for character in parsed["voice_assignments"]
+            for character in validated_assignments["voice_assignments"]
         ):
             parsed["force_live_narrator"] = True
 
-        return cls(**parsed)
+        # The keys and values above are validated dynamically from versioned JSON;
+        # typeshed cannot express that mapping through dataclasses.replace.
+        replace_settings: Callable[..., Self] = replace
+        return replace_settings(defaults, **parsed)
 
     @property
-    def effective_speaker_announcement_mode(self):
+    def effective_speaker_announcement_mode(self) -> str:
         if self.speaker_announcement_mode != "off":
             return self.speaker_announcement_mode
         if self.announce_speaker_changes:
             return "all-speakers"
         return "off"
 
-    def with_environment_overrides(self, environment=None, *, warn=None):
+    def with_environment_overrides(
+        self,
+        environment: Environment | None = None,
+        *,
+        warn: WarningHandler | None = None,
+    ) -> Self:
         environment = os.environ if environment is None else environment
-        warn = (lambda _message: None) if warn is None else warn
+        report: WarningHandler = (lambda _message: None) if warn is None else warn
         values = asdict(self)
         string_overrides = {
             "VNTTS_HOTKEY": "read_hotkey",
@@ -398,22 +476,24 @@ class AppSettings:
             try:
                 values[setting_name] = int(configured)
             except ValueError:
-                warn(
+                report(
                     f"Invalid {environment_name} {configured!r}; using saved/default value"
                 )
 
-        return self.from_mapping(values, warn=warn)
+        return self.from_mapping(values, warn=report)
 
-    def save(self, path=None):
+    def save(self, path: PathInput | None = None) -> Path:
         path = get_settings_path() if path is None else Path(path).expanduser()
         write_versioned_json(path, settings_schema_version, asdict(self))
         return path
 
-    def updated(self, **changes):
+    def updated(self, **changes: Unpack[AppSettingsChanges]) -> Self:
         return replace(self, **changes)
 
 
-def restart_required_setting_changes(current, requested):
+def restart_required_setting_changes(
+    current: object, requested: object
+) -> tuple[str, ...]:
     """Return runtime-bound fields that cannot change in the current process."""
     if not isinstance(current, AppSettings) or not isinstance(requested, AppSettings):
         raise TypeError("Restart comparison requires AppSettings values")
@@ -424,7 +504,9 @@ def restart_required_setting_changes(current, requested):
     )
 
 
-def preserve_loaded_runtime_settings(current, requested):
+def preserve_loaded_runtime_settings(
+    current: AppSettings, requested: AppSettings
+) -> AppSettings:
     """Apply ordinary settings while retaining the loaded runtime identity."""
     changes = restart_required_setting_changes(current, requested)
     if not changes:
@@ -433,24 +515,30 @@ def preserve_loaded_runtime_settings(current, requested):
 
 
 def load_app_settings(
-    path=None, *, environment=None, warn=None, on_game_pack_error=None
-):
+    path: PathInput | None = None,
+    *,
+    environment: Environment | None = None,
+    warn: WarningHandler | None = None,
+    on_game_pack_error: Callable[[Exception], None] | None = None,
+) -> AppSettings:
     environment = os.environ if environment is None else environment
-    warn = (lambda message: print(message, file=sys.stderr)) if warn is None else warn
+    report: WarningHandler = (
+        (lambda message: print(message, file=sys.stderr)) if warn is None else warn
+    )
     path = get_settings_path(environment=environment) if path is None else Path(path)
 
     settings = load_versioned_json(
         path,
         schema_version=settings_schema_version,
         document_name="settings",
-        decode=lambda values: AppSettings.from_mapping(values, warn=warn),
+        decode=lambda values: AppSettings.from_mapping(values, warn=report),
         fallback=AppSettings,
-        warn=warn,
+        warn=report,
         allow_older=True,
         allow_unversioned=True,
     )
 
-    settings = settings.with_environment_overrides(environment, warn=warn)
+    settings = settings.with_environment_overrides(environment, warn=report)
     if settings.game_pack:
         from vntts.game_pack import GamePackError, apply_game_pack
 

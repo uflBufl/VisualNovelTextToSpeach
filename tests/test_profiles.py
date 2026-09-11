@@ -211,6 +211,38 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(store.profiles, [])
         self.assertIn("unsupported game profiles schema version", warnings[0])
 
+    def test_unhashable_sequence_mode_falls_back_to_empty_store(self):
+        warnings = []
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "profiles.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": profiles_schema_version,
+                        "profiles": [
+                            {
+                                "id": "damaged",
+                                "name": "Damaged game",
+                                "capture_mode": "screen",
+                                "dialog_region": {
+                                    "left": 0.1,
+                                    "top": 0.6,
+                                    "width": 0.8,
+                                    "height": 0.3,
+                                },
+                                "live_sequence_mode": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            store = GameProfileStore.load(path, warn=warnings.append)
+
+        self.assertEqual(store.profiles, [])
+        self.assertIn("Unable to load game profiles", warnings[0])
+
 
 class GameProfilesDialogTest(unittest.TestCase):
     @classmethod

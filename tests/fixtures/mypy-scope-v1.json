@@ -7,10 +7,12 @@
     "vntts/live_snapshot.py",
     "vntts/live_speech.py",
     "vntts/playback.py",
+    "vntts/profiles.py",
     "vntts/runtime_installation.py",
     "vntts/runtime_paths.py",
     "vntts/speech_backend_runtime.py",
     "vntts/speech_worker_messages.py",
+    "vntts/settings.py",
     "vntts/subprocess_utils.py",
     "vntts/synthesis.py"
   ]
