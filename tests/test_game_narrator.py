@@ -1819,7 +1819,7 @@ class GameNarratorTest(unittest.TestCase):
             )
             previews.close.assert_called_once()
 
-    def test_moss_picker_keeps_engine_without_cpp_or_apple_silicon(self):
+    def test_moss_picker_uses_openmoss_default_on_non_apple_silicon(self):
         with (
             TemporaryDirectory() as directory,
             patch("platform.machine", return_value="AMD64"),
@@ -1855,7 +1855,7 @@ class GameNarratorTest(unittest.TestCase):
             self.run_task(pool)
             plan = previews.generate.call_args.args[0]
             self.assertEqual(plan.synthesis_backend, "moss-tts")
-            self.assertEqual(plan.synthesis_model, "local-moss")
+            self.assertIsNone(plan.synthesis_model)
             self.assertEqual(plan.synthesis_profile, "natural")
             self.assertIn("MOSS runtime unavailable", dialog.status.text())
             self.assertEqual(dialog._settings().speech_backend, "moss-tts")
