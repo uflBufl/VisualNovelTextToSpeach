@@ -3046,6 +3046,64 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertEqual(status["approved"], 1)
             self.assertEqual(status["schema"], STATE_SCHEMA)
 
+    def test_cli_generate_records_resolved_openmoss_model_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            voice_manifest = root / "voices.json"
+            voice_manifest.write_text("{}\n", encoding="utf-8")
+            reference = root / "hero.wav"
+            reference.write_bytes(b"synthetic reference")
+            registry = CharacterVoiceRegistry(
+                [CharacterVoice("Hero", "hero", references=(reference,))]
+            )
+            renderer = SyntheticRenderer()
+            renderer.name = "moss-tts"
+            renderer.model_name = "openmoss-cpp:sha256:resolved"
+            renderer.shutdown = Mock()
+
+            with (
+                patch(
+                    "vntts.authoring.cli_generation._load_stable_voice_registry",
+                    return_value=(registry, sha256_file(voice_manifest), {}, ()),
+                ),
+                patch(
+                    "vntts.authoring.cli_generation.create_backend",
+                    return_value=renderer,
+                ),
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(
+                    authoring_main(
+                        [
+                            "generate",
+                            "--queue",
+                            str(queue),
+                            "--output",
+                            str(output),
+                            "--voice-manifest",
+                            str(voice_manifest),
+                            "--backend",
+                            "moss-tts",
+                            "--model",
+                            "shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+                            "--narrator-character",
+                            "Hero",
+                            "--retries",
+                            "0",
+                        ]
+                    ),
+                    0,
+                )
+
+            state = load_generation_state(output / "generation-state.json", queue)
+            self.assertEqual(
+                state["items"][item["queue_id"]]["model"],
+                "openmoss-cpp:sha256:resolved",
+            )
+
     def test_cli_persistent_cache_reuses_audio_across_independent_outputs(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

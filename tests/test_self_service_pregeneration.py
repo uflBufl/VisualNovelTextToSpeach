@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
 from PySide6.QtGui import QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QSizePolicy  # noqa: E402
 
 from tests.test_authoring_bulk_generation import SyntheticRenderer  # noqa: E402
 from tests.test_pregeneration_setup import (  # noqa: E402
@@ -136,6 +136,27 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def test_generation_exception_wraps_inside_preparation_window(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            error = RuntimeError("C:\\models\\" + "mlx-model-segment-" * 20)
+
+            dialog._generation_finished(None, error)
+
+            lines = dialog.resume_status.text().splitlines()
+            self.assertGreater(len(lines), 1)
+            self.assertLessEqual(max(map(len, lines)), 72)
+            self.assertEqual(
+                dialog.resume_status.sizePolicy().horizontalPolicy(),
+                QSizePolicy.Policy.Ignored,
+            )
+            dialog.deleteLater()
 
     def test_quit_button_finishes_idle_embedded_preparation(self):
         for action in ("button", "window", "tray"):

@@ -1,5 +1,6 @@
 """Guided player UI for selecting content to prepare for offline speech."""
 
+from textwrap import fill
 from threading import Event
 from time import monotonic
 
@@ -394,6 +395,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self.selection_status.setWordWrap(True)
         self.resume_status = QLabel()
         self.resume_status.setWordWrap(True)
+        self.resume_status.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
         self.resume_status.setAccessibleName("Offline preparation phase detail")
 
         self.progress_panel = QGroupBox("Preparation progress")
@@ -1206,6 +1211,16 @@ class OfflineAudioPreparationDialog(QDialog):
         self._selection_changed()
         QTimer.singleShot(0, self._emit_task_progress)
 
+    def _set_resume_error(self, prefix, error):
+        self.resume_status.setText(
+            fill(
+                f"{prefix}: {error}",
+                width=72,
+                break_long_words=True,
+                break_on_hyphens=False,
+            )
+        )
+
     def _show_waiting_phase(self, phase, detail, cancel_consequence):
         self._show_phase(phase, detail, cancel_consequence)
         self.progress_bar.setRange(0, 0)
@@ -1945,7 +1960,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.selected_story_ids(),
             )
         except (OSError, PregenerationSetupError) as error:
-            self.resume_status.setText(f"Unable to save preparation: {error}")
+            self._set_resume_error("Unable to save preparation", error)
             return
         self._story_job_statuses = self.job_store.story_statuses(content)
         for selection_id in self._job.selected_story_ids:
@@ -2049,7 +2064,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 else:
                     self.resume_status.setText("Voice matching cancelled.")
                 return
-            self.resume_status.setText(f"Unable to match character voices: {error}")
+            self._set_resume_error("Unable to match character voices", error)
             if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
                 self, error
             ):
@@ -2176,7 +2191,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 else:
                     self.resume_status.setText("Offline preparation cancelled.")
                 return
-            self.resume_status.setText(f"Unable to prepare generation: {error}")
+            self._set_resume_error("Unable to prepare generation", error)
             return
         self._generation_input, changes = prepared
         if not isinstance(changes, OfflinePreparationChanges):
@@ -2244,7 +2259,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     "Generation cancelled. Continue later to resume saved lines."
                 )
                 return
-            self.resume_status.setText(f"Unable to generate offline audio: {error}")
+            self._set_resume_error("Unable to generate offline audio", error)
             return
         self._generation_result = result
         self._render_generation_result(result)
@@ -2297,7 +2312,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     "Automatic recovery cancelled. Continue later to resume saved lines."
                 )
                 return
-            self.resume_status.setText(f"Unable to recover offline audio: {error}")
+            self._set_resume_error("Unable to recover offline audio", error)
             return
         self._recovery_result = result
         self._generation_result = result.generation
@@ -2365,7 +2380,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     "Final checks cancelled. Continue later to resume saved lines."
                 )
                 return
-            self.resume_status.setText(f"Unable to finish offline audio: {error}")
+            self._set_resume_error("Unable to finish offline audio", error)
             return
         self._acceptance_result = result
         self._generation_result = result.generation
@@ -2406,7 +2421,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     "Final save cancelled. Continue later to reuse prepared lines."
                 )
                 return
-            self.resume_status.setText(f"Unable to create offline game pack: {error}")
+            self._set_resume_error("Unable to create offline game pack", error)
             return
         self._pack_result = result
         status_error = None

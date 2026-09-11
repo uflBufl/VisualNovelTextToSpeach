@@ -57,6 +57,12 @@ def resolve_pregeneration_settings(settings):
     backend = settings.speech_backend
     if backend == "pocket-tts":
         return settings.updated(tts_model=None, tts_profile="default")
+    if backend == "moss-tts":
+        from vntts.moss_cpp_backend import moss_cpp_requested
+
+        model = settings.tts_model
+        if moss_cpp_requested(model) and not str(model or "").lower().endswith(".gguf"):
+            settings = settings.updated(tts_model=None)
     try:
         get_tts_profile(settings.tts_profile)
     except ValueError:

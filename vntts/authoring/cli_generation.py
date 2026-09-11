@@ -492,8 +492,10 @@ def _generate(arguments: argparse.Namespace) -> int:
             profile = arguments.generation_profile or getattr(
                 backend, "generation_profile", "stable"
             )
-            model = arguments.model or str(
-                getattr(backend, "model_name", arguments.backend)
+            model = str(
+                getattr(backend, "model_identity", None)
+                or getattr(backend, "model_name", None)
+                or arguments.backend
             )
             result = run_bulk_generation(
                 arguments.queue,

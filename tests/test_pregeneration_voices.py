@@ -3,6 +3,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from PIL import Image
 from vntts_artifacts import write_story_index_document
@@ -328,13 +329,14 @@ class VoicePlanStoreTest(unittest.TestCase):
         return job, jobs
 
     def test_self_service_preserves_selected_backend_and_normalizes_profile(self):
-        unsupported_moss = resolve_pregeneration_settings(
-            AppSettings(
-                speech_backend="moss-tts",
-                tts_model="local-moss",
-                tts_profile="stable",
-            ),
-        )
+        with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False):
+            unsupported_moss = resolve_pregeneration_settings(
+                AppSettings(
+                    speech_backend="moss-tts",
+                    tts_model="local-moss",
+                    tts_profile="stable",
+                ),
+            )
         invalid_profile = resolve_pregeneration_settings(
             AppSettings(speech_backend="coqui-xtts", tts_profile="obsolete"),
         )
@@ -344,6 +346,18 @@ class VoicePlanStoreTest(unittest.TestCase):
         self.assertEqual(unsupported_moss.tts_profile, "stable")
         self.assertEqual(invalid_profile.speech_backend, "coqui-xtts")
         self.assertEqual(invalid_profile.tts_profile, "stable")
+
+    def test_self_service_drops_mlx_model_when_openmoss_is_required(self):
+        with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True):
+            settings = resolve_pregeneration_settings(
+                AppSettings(
+                    speech_backend="moss-tts",
+                    tts_model="shraey/MOSS-TTS-Local-Transformer-v1.5-MLX-int8",
+                )
+            )
+
+        self.assertEqual(settings.speech_backend, "moss-tts")
+        self.assertIsNone(settings.tts_model)
 
     def test_metadata_does_not_change_voice_groups_or_selection(self):
         with TemporaryDirectory() as temporary_directory:
