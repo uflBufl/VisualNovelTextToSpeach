@@ -17,13 +17,14 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
 
+import vntts.authoring.workbench as workbench_module
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
 from vntts.authoring.cohort_bundle import CohortReviewBundle
 from vntts.authoring.workbench import (
     ReviewItem,
-    list_review_items,
+    load_workbench_projection_data,
     prepare_review_audio,
     review_workspace_item,
 )
@@ -1482,14 +1483,14 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             workspace = self.create_workspace(root)
             dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
 
-            def mutate_after_review_rows(path):
-                rows = list_review_items(path)
+            def mutate_after_projection(*arguments, **keywords):
+                data = load_workbench_projection_data(*arguments, **keywords)
                 (workspace / "queue.jsonl").write_bytes(b"tampered after rows")
-                return rows
+                return data
 
             with patch(
-                "vntts.authoring.workbench_ui.list_review_items",
-                side_effect=mutate_after_review_rows,
+                "vntts.authoring.workbench_ui.load_workbench_projection_data",
+                side_effect=mutate_after_projection,
             ):
                 dialog.refresh()
 
@@ -1506,6 +1507,80 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.reference_play,
             ):
                 self.assertFalse(action.isEnabled(), action.accessibleName())
+
+    def test_mid_refresh_voice_control_mutation_is_caught_and_fail_closed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            document = json.loads(
+                (workspace / "workspace.json").read_text(encoding="utf-8")
+            )
+            control = workspace / document["voice_manifest"]["controls"][0]["path"]
+
+            def mutate_after_projection(*arguments, **keywords):
+                data = load_workbench_projection_data(*arguments, **keywords)
+                control.write_bytes(b"tampered voice control")
+                return data
+
+            with patch(
+                "vntts.authoring.workbench_ui.load_workbench_projection_data",
+                side_effect=mutate_after_projection,
+            ):
+                dialog.refresh()
+
+            self.assertIsNone(dialog.summary)
+            self.assertIn("BLOCKED", dialog.status.text())
+            self.assertIn("Voice reference snapshot was modified", dialog.status.text())
+            self.assertEqual(dialog.review_table.rowCount(), 0)
+
+    def test_refresh_projects_one_bounded_authority_snapshot(self):
+        with TemporaryDirectory() as directory:
+            workspace = self.create_workspace(Path(directory))
+            output = workspace / "generated-audio"
+            poll_paths = (
+                workspace / "workspace.json",
+                workspace / "queue.jsonl",
+                workspace / "inputs/story-index.jsonl",
+                workspace / "inputs/voice/manifest.json",
+                output / "generation-state.json",
+                output / "manifest.json",
+                output / ".generation-lease.json",
+                output / ".job-process.json",
+            )
+
+            with (
+                patch.object(
+                    workbench_module,
+                    "_load_workspace",
+                    wraps=workbench_module._load_workspace,
+                ) as workspace_load,
+                patch.object(
+                    workbench_module.VoiceGenerationQueue,
+                    "load",
+                    wraps=workbench_module.VoiceGenerationQueue.load,
+                ) as queue_load,
+                patch.object(
+                    workbench_module,
+                    "load_generation_state",
+                    wraps=workbench_module.load_generation_state,
+                ) as state_load,
+                patch.object(
+                    workbench_module,
+                    "load_story_index_document",
+                    wraps=workbench_module.load_story_index_document,
+                ) as story_load,
+            ):
+                projection = _load_workbench_projection(
+                    workspace, None, None, None, poll_paths
+                )
+
+            self.assertIsNotNone(projection.summary)
+            self.assertEqual(len(projection.collections), 2)
+            self.assertLessEqual(workspace_load.call_count, 2)
+            self.assertLessEqual(queue_load.call_count, 2)
+            self.assertEqual(state_load.call_count, 1)
+            self.assertEqual(story_load.call_count, 1)
 
     def test_failed_row_and_external_owner_disable_review_and_retry(self):
         with TemporaryDirectory() as directory:

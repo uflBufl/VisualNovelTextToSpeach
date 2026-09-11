@@ -401,6 +401,43 @@ class WorkspaceVoice:
     references: tuple[Path, ...]
 
 
+@dataclass(frozen=True)
+class WorkbenchProjectionData:
+    """One internally consistent workbench refresh projection."""
+
+    summary: WorkspaceSummary
+    reviews: tuple[ReviewItem, ...]
+    workspace: dict
+    collections: tuple[WorkspaceCollection, ...]
+    collection_selection: CollectionSelection
+    history: tuple[ImmutableHistoryTimestamp, ...]
+    voices: tuple[WorkspaceVoice, ...]
+    _voice_controls: tuple[tuple[Path, str], ...]
+
+    def verify_voice_controls(self):
+        """Fail if a voice reference changed after the projection was built."""
+        for path, digest in self._voice_controls:
+            _read_bound_bytes(path, digest, "Voice reference snapshot")
+
+
+@dataclass(frozen=True)
+class _WorkbenchProjectionRead:
+    """Validated input objects shared only by one projection build."""
+
+    directory: Path
+    workspace: dict
+    workspace_sha256: str
+    queue_path: Path
+    queue: VoiceGenerationQueue
+    output: Path
+    state_path: Path | None
+    state: dict | None
+    state_sha256: str | None
+    story: object
+    voices: tuple[WorkspaceVoice, ...]
+    voice_controls: tuple[tuple[Path, str], ...]
+
+
 def default_workspaces_root():
     return (
         user_data_path("VisualNovelTextToSpeech", appauthor=False)
@@ -1738,13 +1775,44 @@ def inspect_workspace(
         raise AuthoringWorkbenchError(str(error)) from error
     state_path = output / "generation-state.json"
     state = None
-    state_items = {}
     if state_path.is_file():
         try:
             state = load_generation_state(state_path, queue_path)
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
-        state_items = state["items"]
+
+    return _inspect_workspace_from_read(
+        directory,
+        workspace,
+        queue_path,
+        output,
+        queue,
+        state_path if state_path.is_file() else None,
+        state,
+        voice_manifest=voice_manifest,
+        local_process_id=local_process_id,
+        local_process_started_at=local_process_started_at,
+        process_checker=process_checker,
+        process_start_checker=process_start_checker,
+    )
+
+
+def _inspect_workspace_from_read(
+    directory,
+    workspace,
+    queue_path,
+    output,
+    queue,
+    state_path,
+    state,
+    *,
+    voice_manifest=None,
+    local_process_id=None,
+    local_process_started_at=None,
+    process_checker=process_is_alive,
+    process_start_checker=process_started_at,
+):
+    state_items = {} if state is None else state["items"]
 
     audio_event_config = workspace.get("audio_event_composition")
     audio_event_ids = (
@@ -1892,7 +1960,7 @@ def inspect_workspace(
         failure_reasons=tuple(failures.most_common()),
         queue=queue_path,
         output=output,
-        state=state_path if state_path.is_file() else None,
+        state=state_path,
         voice_manifest=selected_voice_manifest,
         latest_line=latest_line,
         latest_text=latest_text,
@@ -2068,20 +2136,23 @@ def _review_voice_character(item, result):
     )
 
 
+def _normalize_review_queue_ids(queue_ids):
+    if queue_ids is None:
+        return None
+    if not isinstance(queue_ids, (list, tuple, set, frozenset)):
+        raise AuthoringWorkbenchError("Review queue IDs must be a collection")
+    selected = set()
+    for queue_id in queue_ids:
+        if not isinstance(queue_id, str) or not queue_id:
+            raise AuthoringWorkbenchError("Review queue ID must be non-empty text")
+        if queue_id in selected:
+            raise AuthoringWorkbenchError(f"Review queue ID is duplicated: {queue_id}")
+        selected.add(queue_id)
+    return selected
+
+
 def list_review_items(workspace_directory, queue_ids=None):
-    selected_queue_ids = None
-    if queue_ids is not None:
-        if not isinstance(queue_ids, (list, tuple, set, frozenset)):
-            raise AuthoringWorkbenchError("Review queue IDs must be a collection")
-        selected_queue_ids = set()
-        for queue_id in queue_ids:
-            if not isinstance(queue_id, str) or not queue_id:
-                raise AuthoringWorkbenchError("Review queue ID must be non-empty text")
-            if queue_id in selected_queue_ids:
-                raise AuthoringWorkbenchError(
-                    f"Review queue ID is duplicated: {queue_id}"
-                )
-            selected_queue_ids.add(queue_id)
+    selected_queue_ids = _normalize_review_queue_ids(queue_ids)
     directory, workspace = _load_workspace(workspace_directory)
     queue_path = _within(
         directory, _safe_relative(workspace["queue"], "Queue"), "Queue"
@@ -2096,17 +2167,40 @@ def list_review_items(workspace_directory, queue_ids=None):
         return ()
     queue = _load_bound_workspace_queue(directory, workspace)
     story = _load_bound_story_document(directory, workspace)
-    collection_by_record = {
-        (record.line_id, record.text_sha256): collection.collection_id
-        for collection in story.collections
-        for record in story.records_for_collection(collection.collection_id)
-    }
     state_sha256 = sha256_file(state_path)
     state = load_generation_state(state_path, queue_path)
     if sha256_file(state_path) != state_sha256:
         raise AuthoringWorkbenchError(
             "Generation state changed while review rows were being projected"
         )
+    return _list_review_items_from_read(
+        queue,
+        story,
+        state_path,
+        state,
+        state_sha256,
+        queue_path,
+        output,
+        selected_queue_ids=selected_queue_ids,
+    )
+
+
+def _list_review_items_from_read(
+    queue,
+    story,
+    state_path,
+    state,
+    state_sha256,
+    queue_path,
+    output,
+    *,
+    selected_queue_ids=None,
+):
+    collection_by_record = {
+        (record.line_id, record.text_sha256): collection.collection_id
+        for collection in story.collections
+        for record in story.records_for_collection(collection.collection_id)
+    }
     records = []
     for item in queue.items:
         if selected_queue_ids is not None and item.queue_id not in selected_queue_ids:
@@ -2311,8 +2405,57 @@ def inspect_generation_readiness(
     )
     queue = VoiceGenerationQueue.load(summary.queue)
     state_items = {}
+    state = None
     if summary.state is not None:
-        state_items = load_generation_state(summary.state, summary.queue)["items"]
+        state = load_generation_state(summary.state, summary.queue)
+        state_items = state["items"]
+    control_workspace = _load_workspace(workspace_directory)[1]
+    return _inspect_generation_readiness_from_read(
+        loaded_directory,
+        loaded_workspace,
+        summary,
+        queue,
+        state,
+        queue_ids=queue_ids,
+        regenerate_existing=regenerate_existing,
+        projection_ids=projection_ids,
+        state_items=state_items,
+        control_workspace=control_workspace,
+    )
+
+
+def _inspect_generation_readiness_from_read(
+    directory,
+    workspace,
+    summary,
+    queue,
+    state,
+    *,
+    queue_ids=None,
+    regenerate_existing=False,
+    projection_ids=None,
+    state_items=None,
+    control_workspace=None,
+):
+    if regenerate_existing and queue_ids is None:
+        raise AuthoringWorkbenchError(
+            "Workspace regeneration requires explicit queue IDs"
+        )
+    projection_ids = (
+        set(
+            workspace_audio_event_spoken_projection_queue_ids(
+                workspace, error_type=AuthoringWorkbenchError
+            )
+        )
+        if projection_ids is None
+        else set(projection_ids)
+    )
+    state_items = (
+        state["items"]
+        if state_items is None and state is not None
+        else ({} if state_items is None else state_items)
+    )
+    control_workspace = workspace if control_workspace is None else control_workspace
     known = {item.queue_id for item in queue.items}
     selected = None
     if queue_ids is not None:
@@ -2349,14 +2492,14 @@ def inspect_generation_readiness(
             candidates.append(item)
     manifest = summary.voice_manifest
     missing, reasons = _voice_readiness(
-        loaded_workspace,
+        workspace,
         candidates,
         set(),
         manifest,
-        directory=loaded_directory,
+        directory=directory,
     )
     reasons = (
-        *_workspace_control_reasons(_load_workspace(workspace_directory)[1]),
+        *_workspace_control_reasons(control_workspace),
         *reasons,
     )
     if not candidates:
@@ -2382,6 +2525,17 @@ def inspect_collection_selection(workspace_directory, *, collection_ids=None):
     directory, workspace = _load_workspace(workspace_directory)
     document = _load_bound_story_document(directory, workspace)
     queue = _load_bound_workspace_queue(directory, workspace)
+    selected, record_keys, queue_ids = _collection_selection_scope(
+        document, queue, collection_ids
+    )
+    readiness = inspect_generation_readiness(
+        workspace_directory,
+        queue_ids=queue_ids,
+    )
+    return _collection_selection_from_scope(selected, record_keys, queue_ids, readiness)
+
+
+def _collection_selection_scope(document, queue, collection_ids):
     declared = tuple(collection.collection_id for collection in document.collections)
     if collection_ids is None:
         selected = declared
@@ -2404,10 +2558,10 @@ def inspect_collection_selection(workspace_directory, *, collection_ids=None):
         for item in queue.items
         if (item.line_id, item.text_sha256) in record_keys
     )
-    readiness = inspect_generation_readiness(
-        workspace_directory,
-        queue_ids=queue_ids,
-    )
+    return selected, record_keys, queue_ids
+
+
+def _collection_selection_from_scope(selected, record_keys, queue_ids, readiness):
     return CollectionSelection(
         collection_ids=selected,
         collection_count=len(selected),
@@ -2421,6 +2575,10 @@ def inspect_collection_selection(workspace_directory, *, collection_ids=None):
 def list_workspace_collections(workspace_directory):
     directory, workspace = _load_workspace(workspace_directory)
     document = _load_bound_story_document(directory, workspace)
+    return _workspace_collections_from_document(document)
+
+
+def _workspace_collections_from_document(document):
     return tuple(
         WorkspaceCollection(
             collection_id=collection.collection_id,
@@ -2435,9 +2593,20 @@ def list_workspace_collections(workspace_directory):
 def workspace_voice_snapshot(workspace_directory):
     """Load exact hash-bound voice tokens without trusting cached resolved paths."""
     directory, workspace = _load_workspace(workspace_directory)
+    return _workspace_voice_snapshot_from_read(directory, workspace)
+
+
+def _workspace_voice_snapshot_from_read(directory, workspace):
+    voices, _controls = _workspace_voice_projection_from_read(
+        directory, workspace, verify_controls=True
+    )
+    return voices
+
+
+def _workspace_voice_projection_from_read(directory, workspace, *, verify_controls):
     voice = workspace.get("voice_manifest")
     if not isinstance(voice, dict):
-        return ()
+        return (), ()
     manifest_path = _within(
         directory,
         _safe_relative(voice.get("path"), "Voice manifest snapshot"),
@@ -2479,7 +2648,8 @@ def workspace_voice_snapshot(workspace_directory):
                 raise AuthoringWorkbenchError(
                     f"Voice reference is absent from workspace controls: {value!r}"
                 )
-            _read_bound_bytes(path, expected, "Voice reference snapshot")
+            if verify_controls:
+                _read_bound_bytes(path, expected, "Voice reference snapshot")
             references.append(path)
             used.add(path)
         values.append(
@@ -2494,7 +2664,7 @@ def workspace_voice_snapshot(workspace_directory):
         raise AuthoringWorkbenchError(
             "Workspace voice control inventory does not match the manifest snapshot"
         )
-    return tuple(values)
+    return tuple(values), tuple(controls.items())
 
 
 def _failure_reference_runtime_binding(directory, workspace):
@@ -2568,6 +2738,10 @@ def _read_bound_bytes(path, expected_sha256, label):
 def immutable_history_timestamps(workspace_directory):
     """Return friendly timestamps from immutable source and workspace records."""
     directory, workspace = _load_workspace(workspace_directory)
+    return _immutable_history_timestamps_from_read(directory, workspace)
+
+
+def _immutable_history_timestamps_from_read(directory, workspace):
     snapshot, snapshot_sha256, _payload = _load_json_snapshot(
         directory / workspace["source"]["snapshot"],
         "workspace import snapshot",
@@ -2603,6 +2777,120 @@ def immutable_history_timestamps(workspace_directory):
             )
         )
     return tuple(value for _instant, _kind, value in sorted(values))
+
+
+def _load_workbench_projection_read(workspace_directory):
+    directory, workspace, workspace_sha256 = load_workspace_authority(
+        workspace_directory
+    )
+    queue_path = _within(
+        directory, _safe_relative(workspace["queue"], "Queue"), "Queue"
+    )
+    output = _within(directory, _safe_relative(workspace["output"], "Output"), "Output")
+    queue = _load_bound_workspace_queue(directory, workspace)
+    state_path = output / "generation-state.json"
+    state = None
+    state_sha256 = None
+    if state_path.is_file():
+        state_sha256 = sha256_file(state_path)
+        try:
+            state = load_generation_state(state_path, queue_path)
+        except BulkGenerationError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
+        if sha256_file(state_path) != state_sha256:
+            raise AuthoringWorkbenchError(
+                "Generation state changed while review rows were being projected"
+            )
+    queue_sha256 = workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError)
+    if sha256_file(queue_path) != queue_sha256:
+        raise AuthoringWorkbenchError("Workspace queue was modified")
+    story = _load_bound_story_document(directory, workspace)
+    voices, voice_controls = _workspace_voice_projection_from_read(
+        directory, workspace, verify_controls=False
+    )
+    if sha256_file(directory / "workspace.json") != workspace_sha256:
+        raise AuthoringWorkbenchError("Workspace authority changed while it was loaded")
+    return _WorkbenchProjectionRead(
+        directory=directory,
+        workspace=workspace,
+        workspace_sha256=workspace_sha256,
+        queue_path=queue_path,
+        queue=queue,
+        output=output,
+        state_path=state_path if state is not None else None,
+        state=state,
+        state_sha256=state_sha256,
+        story=story,
+        voices=voices,
+        voice_controls=voice_controls,
+    )
+
+
+def load_workbench_projection_data(
+    workspace_directory,
+    selected_collection_ids=None,
+    *,
+    local_process_id=None,
+    local_process_started_at=None,
+):
+    """Build one full UI projection from one bounded authority read."""
+    read = _load_workbench_projection_read(workspace_directory)
+    summary = _inspect_workspace_from_read(
+        read.directory,
+        read.workspace,
+        read.queue_path,
+        read.output,
+        read.queue,
+        read.state_path,
+        read.state,
+        local_process_id=local_process_id,
+        local_process_started_at=local_process_started_at,
+    )
+    reviews = (
+        ()
+        if read.state_path is None
+        else _list_review_items_from_read(
+            read.queue,
+            read.story,
+            read.state_path,
+            read.state,
+            read.state_sha256,
+            read.queue_path,
+            read.output,
+        )
+    )
+    collections = _workspace_collections_from_document(read.story)
+    declared = tuple(value.collection_id for value in collections)
+    if selected_collection_ids is None:
+        selected = declared
+    else:
+        requested = set(selected_collection_ids)
+        selected = tuple(value for value in declared if value in requested)
+    selected, record_keys, queue_ids = _collection_selection_scope(
+        read.story, read.queue, selected
+    )
+    readiness = _inspect_generation_readiness_from_read(
+        read.directory,
+        read.workspace,
+        summary,
+        read.queue,
+        read.state,
+        queue_ids=queue_ids,
+    )
+    collection_selection = _collection_selection_from_scope(
+        selected, record_keys, queue_ids, readiness
+    )
+    history = _immutable_history_timestamps_from_read(read.directory, read.workspace)
+    return WorkbenchProjectionData(
+        summary=summary,
+        reviews=tuple(reviews),
+        workspace=read.workspace,
+        collections=collections,
+        collection_selection=collection_selection,
+        history=history,
+        voices=read.voices,
+        _voice_controls=read.voice_controls,
+    )
 
 
 def _parse_history_timestamp(value):
@@ -5625,6 +5913,7 @@ __all__ = [
     "GenerationReadiness",
     "ImmutableHistoryTimestamp",
     "ReviewItem",
+    "WorkbenchProjectionData",
     "WorkspaceCreationResult",
     "WorkspaceCollection",
     "WorkspaceSummary",
@@ -5644,6 +5933,7 @@ __all__ = [
     "immutable_history_timestamps",
     "list_workspace_collections",
     "list_review_items",
+    "load_workbench_projection_data",
     "load_workspace_authority",
     "load_workspace_json",
     "load_workspace_json_snapshot",

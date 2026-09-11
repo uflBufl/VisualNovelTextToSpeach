@@ -72,11 +72,9 @@ from vntts.authoring.workbench import (
     WorkspaceCollection,
     WorkspaceSummary,
     generation_command,
-    immutable_history_timestamps,
-    inspect_collection_selection,
     inspect_workspace,
     list_review_items,
-    list_workspace_collections,
+    load_workbench_projection_data,
     load_workspace_authority,
     prepare_review_audio,
     review_selected_item,
@@ -195,6 +193,12 @@ class VoiceReferenceController:
 
     @classmethod
     def from_workspace(cls, workspace_directory, manifest_path):
+        return cls.from_voices(
+            manifest_path, workspace_voice_snapshot(workspace_directory)
+        )
+
+    @classmethod
+    def from_voices(cls, manifest_path, workspace_voices):
         instance = cls.__new__(cls)
         instance.manifest_path = Path(manifest_path).expanduser().resolve()
         voices = tuple(
@@ -204,7 +208,7 @@ class VoiceReferenceController:
                 aliases=value.aliases,
                 references=value.references,
             )
-            for value in workspace_voice_snapshot(workspace_directory)
+            for value in workspace_voices
         )
         instance.registry = CharacterVoiceRegistry(voices)
         instance._characters = tuple(
@@ -304,46 +308,32 @@ def _load_workbench_projection(
     poll_paths,
 ):
     before = _poll_signature(poll_paths)
-    summary = inspect_workspace(
+    data = load_workbench_projection_data(
         workspace_directory,
+        selected_collection_ids,
         local_process_id=local_process_id,
         local_process_started_at=local_process_started_at,
     )
-    reviews = tuple(list_review_items(workspace_directory))
-    _directory, workspace, _workspace_sha256 = load_workspace_authority(
-        workspace_directory
-    )
-    collections = tuple(list_workspace_collections(workspace_directory))
-    declared = tuple(value.collection_id for value in collections)
-    if selected_collection_ids is None:
-        selected = declared
-    else:
-        requested = set(selected_collection_ids)
-        selected = tuple(value for value in declared if value in requested)
-    collection_selection = inspect_collection_selection(
-        workspace_directory,
-        collection_ids=selected,
-    )
-    history = tuple(immutable_history_timestamps(workspace_directory))
     voice_controller = (
         None
-        if summary.voice_manifest is None
-        else VoiceReferenceController.from_workspace(
-            workspace_directory, summary.voice_manifest
+        if data.summary.voice_manifest is None
+        else VoiceReferenceController.from_voices(
+            data.summary.voice_manifest, data.voices
         )
     )
+    data.verify_voice_controls()
     after = _poll_signature(poll_paths)
     if before != after:
         raise AuthoringWorkbenchError(
             "Workspace authority changed while the workbench projection was loading"
         )
     return _WorkbenchProjection(
-        summary=summary,
-        reviews=reviews,
-        workspace=workspace,
-        collections=collections,
-        collection_selection=collection_selection,
-        history=history,
+        summary=data.summary,
+        reviews=data.reviews,
+        workspace=data.workspace,
+        collections=data.collections,
+        collection_selection=data.collection_selection,
+        history=data.history,
         voice_controller=voice_controller,
         poll_signature=after,
     )
