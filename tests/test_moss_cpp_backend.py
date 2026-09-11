@@ -1,6 +1,7 @@
 """Exercise the C++ adapter over HTTP and real child-process lifecycle, without weights."""
 
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -21,6 +22,7 @@ from vntts.moss_cpp_backend import (
     _aux_cpu_workers,
     _diagnostic_file_size,
     _native_stage_timings,
+    _normalize_reference_audio,
     moss_cpp_paths,
 )
 from vntts.onboarding import OnboardingDiagnostics
@@ -470,21 +472,59 @@ class MossCppBackendTest(unittest.TestCase):
     def test_references_are_reused_by_content_and_cleaned_up_on_restart(self):
         backend = self.backend()
         directory = Path(backend.server_directory.name)
-        for text in ("First line.", "Another line."):
-            backend.render(SynthesisRequest("Narrator", text)).collect()
-        encoded = json.loads((self.root / "encoded.json").read_text())
-        self.assertEqual(len(encoded), 1)
-        voice = json.loads((self.root / "request.json").read_text())["voice"]
-        self.assertEqual(voice, encoded[0])
-        self.assertEqual(len(list((directory / "voices").glob("*.wav"))), 1)
-        # A content change at the same reference path must get new native codes.
-        sf.write(self.reference, np.full(4800, 0.2), 48000)
-        backend.render(SynthesisRequest("Narrator", "Changed voice.")).collect()
-        self.assertEqual(len(json.loads((self.root / "encoded.json").read_text())), 2)
-        backend._stop_server()
-        self.assertFalse(directory.exists())
-        backend.render(SynthesisRequest("Narrator", "After restart.")).collect()
-        self.assertEqual(len(json.loads((self.root / "encoded.json").read_text())), 1)
+        with patch(
+            "vntts.moss_cpp_backend._normalize_reference_audio",
+            wraps=_normalize_reference_audio,
+        ) as normalize:
+            for text in ("First line.", "Another line."):
+                backend.render(SynthesisRequest("Narrator", text)).collect()
+            self.assertEqual(normalize.call_count, 1)
+            encoded = json.loads((self.root / "encoded.json").read_text())
+            self.assertEqual(len(encoded), 1)
+            voice = json.loads((self.root / "request.json").read_text())["voice"]
+            self.assertEqual(voice, encoded[0])
+            self.assertEqual(len(list((directory / "voices").glob("*.wav"))), 1)
+            # A content change at the same reference path must get new native codes.
+            original_stat = self.reference.stat()
+            sf.write(self.reference, np.full(4800, 0.2), 48000)
+            os.utime(
+                self.reference,
+                ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+            )
+            self.assertEqual(self.reference.stat().st_size, original_stat.st_size)
+            self.assertEqual(
+                self.reference.stat().st_mtime_ns, original_stat.st_mtime_ns
+            )
+            backend.render(SynthesisRequest("Narrator", "Changed voice.")).collect()
+            self.assertEqual(normalize.call_count, 2)
+            self.assertEqual(
+                len(json.loads((self.root / "encoded.json").read_text())), 2
+            )
+            backend._stop_server()
+            self.assertFalse(directory.exists())
+            backend.render(SynthesisRequest("Narrator", "After restart.")).collect()
+            self.assertEqual(normalize.call_count, 3)
+            self.assertEqual(
+                len(json.loads((self.root / "encoded.json").read_text())), 1
+            )
+
+    def test_registered_reference_normalizes_the_hashed_snapshot(self):
+        backend = self.backend()
+        expected_wav, *_ = _normalize_reference_audio(self.reference)
+        expected_voice = hashlib.sha256(expected_wav).hexdigest()
+
+        def mutate_source_before_normalizing(reference):
+            sf.write(self.reference, np.full(4800, 0.2), 48000)
+            return _normalize_reference_audio(reference)
+
+        with patch(
+            "vntts.moss_cpp_backend._normalize_reference_audio",
+            side_effect=mutate_source_before_normalizing,
+        ):
+            backend.render(SynthesisRequest("Narrator", "Snapshot voice.")).collect()
+
+        body = json.loads((self.root / "request.json").read_text())
+        self.assertEqual(body["voice"], expected_voice)
 
     def test_inline_reference_compatibility_when_registry_not_reported(self):
         (self.root / "disable-registry").touch()

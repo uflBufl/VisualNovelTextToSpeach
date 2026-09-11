@@ -16,8 +16,9 @@ import socket
 import subprocess
 import sys
 import wave
+from contextlib import ExitStack
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import SpooledTemporaryFile, TemporaryDirectory
 from threading import Event, Lock, Thread
 from time import monotonic, sleep
 from types import SimpleNamespace
@@ -95,6 +96,27 @@ def _diagnostic_file_size(path):
         return path.stat().st_size
     except OSError:
         return None
+
+
+def _normalize_reference_audio(path):
+    with sf.SoundFile(path) as reference:
+        duration = round(reference.frames / reference.samplerate, 6)
+        sample_rate = reference.samplerate
+        channels = reference.channels
+        if channels not in {1, 2} or not 8000 <= sample_rate <= 192000:
+            raise TTSConfigurationError(
+                "MOSS C++ reference must be mono/stereo audio at 8-192 kHz"
+            )
+        if reference.frames > sample_rate * 120:
+            raise TTSConfigurationError(
+                "MOSS C++ reference must be at most 120 seconds"
+            )
+        audio = reference.read(dtype="float32", always_2d=True)
+        if audio.size == 0 or not np.isfinite(audio).all():
+            raise TTSConfigurationError("MOSS C++ reference contains invalid audio")
+        wav = io.BytesIO()
+        sf.write(wav, audio, sample_rate, format="WAV", subtype="PCM_16")
+    return wav.getvalue(), duration, sample_rate, channels
 
 
 def _native_stage_timings(path, offset, headers, maximum_seconds):
@@ -278,6 +300,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self.server_info = None
         self._diagnostic_salt = secrets.token_bytes(32)
         self._runtime_status = None
+        self._registered_references = {}
         self.startup_cancellation = startup_cancellation
         self.startup_progress = startup_progress or (lambda _message: None)
         self.startup_progress("Checking MOSS C++ model and audio codec...")
@@ -843,30 +866,47 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             offset = Path(path).stat().st_size
             stage = "reference"
             reference_started = monotonic()
-            with sf.SoundFile(prepared.prompt_audio_codes) as reference:
-                reference_s = round(reference.frames / reference.samplerate, 6)
-                reference_sample_rate = reference.samplerate
-                reference_channels = reference.channels
-                if (
-                    reference.channels not in {1, 2}
-                    or not 8000 <= reference.samplerate <= 192000
-                ):
-                    raise TTSConfigurationError(
-                        "MOSS C++ reference must be mono/stereo audio at 8-192 kHz"
+            registered = (
+                self.voice_registry_supported
+                and server_info.get("voice_registry") is True
+            )
+            with ExitStack() as reference_stack:
+                reference_identity = None
+                reference = prepared.prompt_audio_codes
+                if registered:
+                    source = reference_stack.enter_context(
+                        open(prepared.prompt_audio_codes, "rb")
                     )
-                if reference.frames > reference.samplerate * 120:
-                    raise TTSConfigurationError(
-                        "MOSS C++ reference must be at most 120 seconds"
+                    # Keep the identity and decoded audio on one immutable snapshot.
+                    reference = reference_stack.enter_context(
+                        SpooledTemporaryFile(max_size=8 * 1024 * 1024)
                     )
-                audio = reference.read(dtype="float32", always_2d=True)
-                if audio.size == 0 or not np.isfinite(audio).all():
-                    raise TTSConfigurationError(
-                        "MOSS C++ reference contains invalid audio"
-                    )
-                wav = io.BytesIO()
-                sf.write(
-                    wav, audio, reference.samplerate, format="WAV", subtype="PCM_16"
-                )
+                    digest = hashlib.sha256()
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                        reference.write(chunk)
+                    reference.seek(0)
+                    reference_identity = digest.hexdigest()
+                cached_reference = self._registered_references.get(reference_identity)
+                if cached_reference is not None:
+                    (
+                        voice_id,
+                        reference_s,
+                        reference_sample_rate,
+                        reference_channels,
+                    ) = cached_reference
+                    if not (server_directory / "voices" / f"{voice_id}.wav").is_file():
+                        cached_reference = None
+                if cached_reference is None:
+                    (
+                        reference_wav,
+                        reference_s,
+                        reference_sample_rate,
+                        reference_channels,
+                    ) = _normalize_reference_audio(reference)
+                    voice_id = hashlib.sha256(reference_wav).hexdigest()
+                else:
+                    reference_wav = None
             seed = prepared.seed
             if seed is not None and (type(seed) is not int or not 0 <= seed < 2**64):
                 raise TTSConfigurationError(
@@ -887,28 +927,30 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     "max_audio_frames": frame_limit,
                 },
             }
-            voice_id = hashlib.sha256(wav.getvalue()).hexdigest()
             reference_key = self._diagnostic_key(voice_id)
             request_key = self._diagnostic_key({**body, "reference": reference_key})
-            if (
-                self.voice_registry_supported
-                and server_info.get("voice_registry") is True
-            ):
+            if registered:
                 # openmoss caches registered reference codes. Inline WAVs are
                 # encoded again on every line, even when the voice is unchanged.
                 # ponytail: codes/WAVs live until server shutdown; add eviction
                 # only if long-running sessions with many unique voices need it.
                 reference_mode = "registered"
                 reference_path = server_directory / "voices" / f"{voice_id}.wav"
-                if not reference_path.is_file():
+                if reference_wav is not None:
                     reference_path.with_suffix(".json").write_text(
                         "{}", encoding="utf-8"
                     )
-                    reference_path.write_bytes(wav.getvalue())
+                    reference_path.write_bytes(reference_wav)
+                self._registered_references[reference_identity] = (
+                    voice_id,
+                    reference_s,
+                    reference_sample_rate,
+                    reference_channels,
+                )
                 body["voice"] = voice_id
             else:
                 reference_mode = "inline"
-                body["reference_wav_b64"] = base64.b64encode(wav.getvalue()).decode(
+                body["reference_wav_b64"] = base64.b64encode(reference_wav).decode(
                     "ascii"
                 )
             reference_prepare_s = round(monotonic() - reference_started, 6)
@@ -1054,6 +1096,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             directory, self.server_directory = self.server_directory, None
             self.server_info = None
             self._runtime_status = None
+            self._registered_references.clear()
             try:
                 if server is not None:
                     if server.poll() is None:
