@@ -9,6 +9,7 @@ from collections import OrderedDict
 from functools import lru_cache
 from hashlib import blake2b
 from pathlib import Path
+from typing import Generic, Protocol, TypeAlias, TypeVar
 
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -19,23 +20,27 @@ from vntts.runtime_paths import (
 )
 from vntts.services.tts_engine import TTSConfigurationError
 
-_managed_runtime_uses = {}
+PathInput: TypeAlias = str | Path
+CacheKey = TypeVar("CacheKey")
+CacheValue = TypeVar("CacheValue")
+
+_managed_runtime_uses: dict[str, object] = {}
 
 
-class BoundedCache:
+class BoundedCache(Generic[CacheKey, CacheValue]):
     """Small least-recently-used cache with a deliberately minimal interface."""
 
-    def __init__(self, max_entries):
+    def __init__(self, max_entries: int) -> None:
         self.max_entries = max(0, int(max_entries))
-        self._values = OrderedDict()
+        self._values: OrderedDict[CacheKey, CacheValue] = OrderedDict()
 
-    def get(self, key):
+    def get(self, key: CacheKey) -> CacheValue | None:
         value = self._values.pop(key, None)
         if value is not None:
             self._values[key] = value
         return value
 
-    def put(self, key, value):
+    def put(self, key: CacheKey, value: CacheValue) -> None:
         if self.max_entries == 0:
             return
         self._values.pop(key, None)
@@ -43,11 +48,11 @@ class BoundedCache:
         while len(self._values) > self.max_entries:
             self._values.popitem(last=False)
 
-    def clear(self):
+    def clear(self) -> None:
         self._values.clear()
 
 
-def shutdown_speech_backend(backend):
+def shutdown_speech_backend(backend: object) -> None:
     """Shut down a backend if present and return the cleared slot value."""
     shutdown = getattr(backend, "shutdown", None)
     if callable(shutdown):
@@ -60,12 +65,12 @@ def shutdown_speech_backend(backend):
 
 
 def activate_backend_runtime(
-    runtime_directory,
+    runtime_directory: PathInput | None,
     *,
-    environment_variable,
-    backend_directory,
-    missing_message,
-):
+    environment_variable: str,
+    backend_directory: str,
+    missing_message: str,
+) -> Path:
     """Expose one standalone backend environment to the current interpreter."""
     configured = runtime_directory or os.environ.get(environment_variable, "")
     bundle_root = get_bundle_root() if not configured else None
@@ -81,9 +86,10 @@ def activate_backend_runtime(
         if bundle_root is None
         else bundle_root / "speech-runtimes" / backend_directory
     )
-    runtime_directory = (
-        Path(configured or bundled or source_runtime).expanduser().resolve()
-    )
+    selected_runtime = configured or bundled or source_runtime
+    if selected_runtime is None:
+        raise TTSConfigurationError(missing_message)
+    runtime_directory = Path(selected_runtime).expanduser().resolve()
     if sys.platform == "win32":
         site_packages = runtime_directory / "Lib" / "site-packages"
     else:
@@ -113,7 +119,7 @@ def activate_backend_runtime(
     return site_packages
 
 
-def validate_volume(volume):
+def validate_volume(volume: int | float) -> float:
     if isinstance(volume, bool) or not isinstance(volume, (int, float)):
         raise TTSConfigurationError("Volume must be a number from 0 to 1")
     if not 0 <= volume <= 1:
@@ -121,7 +127,7 @@ def validate_volume(volume):
     return float(volume)
 
 
-def validate_speed(speed):
+def validate_speed(speed: int | float) -> float:
     if isinstance(speed, bool) or not isinstance(speed, (int, float)):
         raise TTSConfigurationError("Speech speed must be a number")
     if not 0.5 <= speed <= 1.5:
@@ -130,11 +136,11 @@ def validate_speed(speed):
 
 
 @lru_cache(maxsize=1024)
-def _file_content_identity(path, size, _modified_ns):
+def _file_content_identity(path: str, size: int, _modified_ns: int) -> str:
     return f"sha256:{sha256_file(path)}:{size}"
 
 
-def _source_identity(source):
+def _source_identity(source: object) -> str:
     source_path = Path(str(source)).expanduser()
     try:
         if source_path.is_file():
@@ -151,8 +157,20 @@ def _source_identity(source):
         return str(source)
 
 
-def voice_source_identity(voice_key, source):
+def voice_source_identity(voice_key: str, source: object) -> str:
     return f"{voice_key}:{_source_identity(source)}"
+
+
+class CacheKeyBuilder(Protocol):
+    def key(
+        self,
+        *,
+        backend: str,
+        model: str,
+        voice: str,
+        text: str,
+        settings: dict[str, object],
+    ) -> str: ...
 
 
 class SpeechCacheKeyFactory:
@@ -160,13 +178,13 @@ class SpeechCacheKeyFactory:
 
     def __init__(
         self,
-        cache,
+        cache: CacheKeyBuilder,
         *,
-        backend,
-        model,
-        sample_rate,
-        model_identity=None,
-    ):
+        backend: str,
+        model: object,
+        sample_rate: int,
+        model_identity: str | None = None,
+    ) -> None:
         self.cache = cache
         self.backend = backend
         self.model = model_identity or (
@@ -174,7 +192,15 @@ class SpeechCacheKeyFactory:
         )
         self.sample_rate = sample_rate
 
-    def key(self, *, voice_key, source, text, speed, **settings):
+    def key(
+        self,
+        *,
+        voice_key: str,
+        source: object,
+        text: str,
+        speed: float,
+        **settings: object,
+    ) -> str:
         return self.cache.key(
             backend=self.backend,
             model=self.model,
@@ -189,13 +215,13 @@ class SpeechCacheKeyFactory:
 
 
 def voice_artifact_cache_path(
-    directory,
+    directory: PathInput,
     *,
-    voice_key,
-    source,
-    model_identity,
-    suffix,
-):
+    voice_key: str,
+    source: object,
+    model_identity: str,
+    suffix: str,
+) -> Path:
     """Return a stable cache path for model state derived from one voice source."""
     digest = blake2b(
         f"{model_identity}:{_source_identity(source)}".encode(),

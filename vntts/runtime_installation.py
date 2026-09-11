@@ -7,7 +7,10 @@ import platform
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from time import monotonic
+from typing import Literal, Protocol, TypeAlias, runtime_checkable
 from uuid import uuid4
 
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -32,11 +35,25 @@ from vntts.runtime_paths import (
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.subprocess_utils import terminate_process
 
+PathInput: TypeAlias = str | Path
+RuntimePaths: TypeAlias = tuple[Path, Path, Path]
+ProgressCallback: TypeAlias = Callable[[str], None]
 
-def _check_cancelled(cancellation):
+
+@runtime_checkable
+class CancellationToken(Protocol):
+    def is_set(self) -> bool: ...
+
+
+Cancellation: TypeAlias = CancellationToken | Callable[[], bool] | None
+
+
+def _check_cancelled(cancellation: Cancellation) -> None:
     if cancellation is not None:
         cancelled = (
-            cancellation.is_set() if hasattr(cancellation, "is_set") else cancellation()
+            cancellation.is_set()
+            if isinstance(cancellation, CancellationToken)
+            else cancellation()
         )
         if cancelled:
             raise TTSSynthesisError(
@@ -44,7 +61,7 @@ def _check_cancelled(cancellation):
             )
 
 
-def runtime_installation_available(backend):
+def runtime_installation_available(backend: str) -> bool:
     """Never upgrade explicit/source environments or install experimental stacks."""
     variable = RUNTIME_ENVIRONMENT_VARIABLES.get(backend)
     if variable is None or os.environ.get(variable) or get_bundle_root() is not None:
@@ -75,15 +92,15 @@ def runtime_installation_available(backend):
 
 
 def _run(
-    command,
+    command: Sequence[str],
     *,
-    cancellation,
-    environment=None,
-    input_bytes=None,
-    timeout=1800,
-    runtime_use=None,
-    include_stderr=False,
-):
+    cancellation: Cancellation,
+    environment: Mapping[str, str] | None = None,
+    input_bytes: bytes | None = None,
+    timeout: float = 1800,
+    runtime_use: RuntimeUse | None = None,
+    include_stderr: bool = False,
+) -> bytes:
     """Drain child output while keeping cancellation and shutdown bounded."""
     _check_cancelled(cancellation)
     if runtime_use is not None:
@@ -95,10 +112,10 @@ def _run(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=environment,
-            **(
-                {"creationflags": subprocess.CREATE_NO_WINDOW}
+            creationflags=(
+                getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 if sys.platform == "win32"
-                else {}
+                else 0
             ),
         )
     except Exception:
@@ -132,7 +149,9 @@ def _run(
             terminate_process(process)
 
 
-def _nvidia_driver_status(cancellation):
+def _nvidia_driver_status(
+    cancellation: Cancellation,
+) -> Literal["not-applicable", "unknown", "detected", "not-detected"]:
     """Driver discovery is informational, never authority to install CUDA."""
     if sys.platform not in {"win32", "linux"}:
         return "not-applicable"
@@ -151,8 +170,12 @@ def _nvidia_driver_status(cancellation):
 
 
 def ensure_speech_runtime(
-    backend, *, runtime_directory=None, cancellation=None, progress=None
-):
+    backend: str,
+    *,
+    runtime_directory: PathInput | None = None,
+    cancellation: Cancellation = None,
+    progress: ProgressCallback | None = None,
+) -> RuntimePaths:
     try:
         paths = _ensure_speech_runtime(
             backend,
@@ -173,17 +196,21 @@ def ensure_speech_runtime(
 
 
 def _ensure_speech_runtime(
-    backend, *, runtime_directory=None, cancellation=None, progress=None
-):
+    backend: str,
+    *,
+    runtime_directory: PathInput | None = None,
+    cancellation: Cancellation = None,
+    progress: ProgressCallback | None = None,
+) -> RuntimePaths:
     """Return a usable runtime, installing only when no user runtime is present."""
     from vntts.speech_worker import probe_speech_runtime, resolve_speech_runtime_paths
 
-    progress = progress or (lambda _message: None)
+    report: ProgressCallback = progress or (lambda _message: None)
     _check_cancelled(cancellation)
     try:
         paths = resolve_speech_runtime_paths(backend, runtime_directory)
         if owned_generation(backend, paths[0]) is not None:
-            progress(f"Checking installed {backend} runtime dependencies...")
+            report(f"Checking installed {backend} runtime dependencies...")
             probe_speech_runtime(backend, paths, cancellation=cancellation)
         return paths
     except TTSConfigurationError, OSError, EOFError:
@@ -191,10 +218,15 @@ def _ensure_speech_runtime(
             raise
     location = managed_runtime_location(backend)
     project = source_runtime_project(backend)
+    uv = shutil.which("uv")
+    if location is None or project is None or uv is None:
+        raise TTSConfigurationError(
+            "Speech runtime preparation is unavailable. Retry when ready."
+        )
     try:
         with exclusive_advisory_lock(location / "installation.lock"):
             _check_cancelled(cancellation)
-            progress("Checking hardware before preparing the speech runtime...")
+            report("Checking hardware before preparing the speech runtime...")
             hardware = {
                 "platform": sys.platform,
                 "machine": platform.machine(),
@@ -205,7 +237,7 @@ def _ensure_speech_runtime(
             action = (
                 "Repairing" if (location / "verified.json").exists() else "Preparing"
             )
-            progress(
+            report(
                 f"{action} {label} runtime for {device} in a separate copy. Downloading locked dependencies; this may take several minutes..."
                 + (
                     " NVIDIA detected; Pocket TTS currently uses the CPU runtime."
@@ -232,7 +264,7 @@ def _ensure_speech_runtime(
             try:
                 _run(
                     [
-                        shutil.which("uv"),
+                        uv,
                         "sync",
                         "--project",
                         str(project),
@@ -246,7 +278,7 @@ def _ensure_speech_runtime(
                     environment=environment,
                     runtime_use=use,
                 )
-                progress(f"Checking {label} dependencies in the isolated worker...")
+                report(f"Checking {label} dependencies in the isolated worker...")
                 paths = resolve_speech_runtime_paths(
                     backend, generation / "environment"
                 )
@@ -276,8 +308,8 @@ def _ensure_speech_runtime(
                     try:
                         remove_inactive_generation(backend, generation)
                     except OSError as error:
-                        progress(f"Incomplete runtime cleanup was deferred: {error}")
-            progress(f"{label} runtime dependencies are verified.")
+                        report(f"Incomplete runtime cleanup was deferred: {error}")
+            report(f"{label} runtime dependencies are verified.")
             return paths
     except AdvisoryLockBusyError as error:
         raise TTSConfigurationError(

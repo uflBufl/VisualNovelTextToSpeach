@@ -3,7 +3,7 @@
 import subprocess
 
 
-def terminate_process(process, *, timeout=5):
+def terminate_process(process: subprocess.Popen[bytes], *, timeout: float = 5) -> None:
     process.terminate()
     try:
         process.communicate(timeout=timeout)
@@ -12,7 +12,7 @@ def terminate_process(process, *, timeout=5):
         process.communicate()
 
 
-def last_output_line(value):
+def last_output_line(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     return next(

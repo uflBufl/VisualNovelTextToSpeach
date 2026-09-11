@@ -4,6 +4,9 @@ import os
 import platform
 import sys
 from pathlib import Path
+from typing import TypeAlias
+
+PathInput: TypeAlias = str | Path
 
 _BUNDLED_SPEECH_RUNTIMES = frozenset(
     {"pocket-tts", "chatterbox-nano", "moss-tts", "moss-tts-delay"}
@@ -17,7 +20,7 @@ RUNTIME_ENVIRONMENT_VARIABLES = {
 }
 
 
-def source_runtime_project(backend):
+def source_runtime_project(backend: str) -> Path | None:
     if backend not in RUNTIME_ENVIRONMENT_VARIABLES or get_bundle_root() is not None:
         return None
     project = Path(__file__).resolve().parents[1] / "backends" / backend
@@ -28,7 +31,7 @@ def source_runtime_project(backend):
     )
 
 
-def managed_runtime_location(backend):
+def managed_runtime_location(backend: str) -> Path | None:
     """Bind app-owned environments to the shipped dependency recipe and host."""
     from vntts.application_directories import get_local_data_directory
 
@@ -43,7 +46,7 @@ def managed_runtime_location(backend):
     return get_local_data_directory() / "speech-runtimes" / backend / digest.hexdigest()
 
 
-def find_managed_speech_runtime(backend):
+def find_managed_speech_runtime(backend: str) -> Path | None:
     location = managed_runtime_location(backend)
     if location is None:
         return None
@@ -74,21 +77,23 @@ def find_managed_speech_runtime(backend):
     return None
 
 
-def default_source_speech_runtime(backend):
+def default_source_speech_runtime(backend: str) -> Path:
     source = Path(__file__).resolve().parents[1] / "backends" / backend / ".venv"
     if source.exists():
         return source
     return find_managed_speech_runtime(backend) or source
 
 
-def get_bundle_root():
+def get_bundle_root() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
     bundle_root = getattr(sys, "_MEIPASS", None)
     return Path(bundle_root).resolve() if bundle_root else None
 
 
-def find_bundled_speech_runtime(backend, bundle_root=None):
+def find_bundled_speech_runtime(
+    backend: str, bundle_root: PathInput | None = None
+) -> Path | None:
     if backend not in _BUNDLED_SPEECH_RUNTIMES:
         return None
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
@@ -98,7 +103,9 @@ def find_bundled_speech_runtime(backend, bundle_root=None):
     return runtime_root if runtime_root.is_dir() else None
 
 
-def find_bundled_espeak(bundle_root=None):
+def find_bundled_espeak(
+    bundle_root: PathInput | None = None,
+) -> tuple[Path, Path] | None:
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
         return None
@@ -114,7 +121,7 @@ def find_bundled_espeak(bundle_root=None):
     return executables[0], data_directories[0]
 
 
-def configure_bundled_dependencies(bundle_root=None):
+def configure_bundled_dependencies(bundle_root: PathInput | None = None) -> Path | None:
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
         return None
