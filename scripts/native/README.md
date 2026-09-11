@@ -25,8 +25,8 @@ This comparison does not download weights or silently substitute a voice.
 Open [Native MOSS timing build](https://github.com/uflBufl/VisualNovelTextToSpeach/actions/workflows/native-moss-build.yml).
 From one successful run, save `moss-native-timing-adaptive-windows-x64.zip`.
 Keep the exact name and do not mix it with older `timing-local-gpu` or `aux8`
-artifacts. Its `VNTTS-BUILD.json` records the pinned sources, patch hashes and
-runtime-control bounds.
+artifacts. Its `VNTTS-BUILD.json` records the pinned fork, upstream and llama.cpp
+commits plus the runtime-control bounds.
 
 Before loading weights, inspect the machine-readable contract:
 
@@ -95,18 +95,18 @@ remain byte-identical; Local GPU with 8 workers needs resource, technical and
 listening approval. CI compilation and no-model checks do not prove GPU kernels,
 VRAM headroom, model ownership or speech quality.
 
-## Native patch details
+## Native source details
 
-This diagnostic patch is based on Apache-2.0 openmoss v0.3.0,
-revision `bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1`, with llama.cpp
-`050ee92d04c2e1f639025786dea701c70e7d4204`. The baseline and CPU-pool variants add timing and
+The [VNTTS OpenMOSS fork](https://github.com/AlexRedby/openmoss) is based on
+Apache-2.0 openmoss v0.3.0 revision
+`bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1`, with llama.cpp
+`050ee92d04c2e1f639025786dea701c70e7d4204`. Its commits add timing and
 backbone ownership cleanup, without changing sampling, device placement, thread
-counts or audio limits. Modified sections
-are marked in the patch. The built server identifies itself as
+counts or audio limits. The built server identifies itself as
 `0.3.0-vntts-timing1` in `/info` and `--version`.
 
 The **Native MOSS timing build** GitHub Actions workflow builds a separate
-Windows Vulkan artifact from these exact revisions. It checks startup without
+Windows Vulkan artifact from one exact fork commit. It checks startup without
 loading weights; that is not GPU, performance or audio-quality qualification.
 It never publishes a release or changes VNTTS's automatic runtime installer.
 
@@ -119,7 +119,7 @@ a prerequisite for the comparison. Do not overwrite the managed runtime folder.
 The `timing-adaptive` build compiles both CPU and Local GPU paths. `--local-gpu`
 selects the separate Local decoder owner at model load; omitting it preserves the
 CPU Local path. The build identifies itself as `0.3.0-vntts-timing1`; the manifest
-records the pinned patch hashes and runtime-control bounds.
+records the pinned source commits and runtime-control bounds.
 
 This candidate keeps CPU-owned input embeddings and the waveform codec, but
 uses a separate GPU owner for the Local transformer, its text head and a copy
@@ -173,7 +173,7 @@ uses the same owner cleanup instead of a separate manual free. This correction
 is shared by both variants so it does not confound the pool comparison. Compile
 and synthetic pool checks do not establish leak-free real-model load/unload;
 that remains a separate qualification. The packaged `VNTTS-BUILD.json` records
-the exact patch hash, since rebuilds may retain the same diagnostic version.
+the exact fork commit, since rebuilds may retain the same diagnostic version.
 
 ## Measurements
 

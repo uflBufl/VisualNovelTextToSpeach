@@ -31,8 +31,8 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v5
         with:
-          repository: pwilkin/openmoss
-          ref: bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1
+          repository: AlexRedby/openmoss
+          ref: 3202d94ff125a30bd3a7c0dc16c9eb39b1ea0f2a
           submodules: recursive
           path: native-source
           persist-credentials: false
@@ -50,18 +50,12 @@ jobs:
           vulkan_version: 1.4.309.0
           install_runtime: true
           cache: true
-      - name: Apply pinned timing patch and build
+      - name: Build pinned VNTTS OpenMOSS fork
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C native-source rev-parse HEAD)" = bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1
+          test "$(git -C native-source rev-parse HEAD)" = 3202d94ff125a30bd3a7c0dc16c9eb39b1ea0f2a
           test "$(git -C native-source/third_party/llama.cpp rev-parse HEAD)" = 050ee92d04c2e1f639025786dea701c70e7d4204
-          git -C native-source apply --recount --check ../scripts/native/openmoss-v0.3.0-timings.patch
-          git -C native-source apply --recount ../scripts/native/openmoss-v0.3.0-timings.patch
-          git -C native-source apply --recount --check ../scripts/native/openmoss-v0.3.0-local-gpu.patch
-          git -C native-source apply --recount ../scripts/native/openmoss-v0.3.0-local-gpu.patch
-          git -C native-source apply --recount --check ../scripts/native/openmoss-v0.3.0-aux-threads.patch
-          git -C native-source apply --recount ../scripts/native/openmoss-v0.3.0-aux-threads.patch
           cmake -S spirv-headers -B spirv-build -DCMAKE_INSTALL_PREFIX="$PWD/spirv-install"
           cmake --build spirv-build --target install --config Release
           cmake -S native-source -B native-build -G Ninja \
@@ -108,11 +102,10 @@ jobs:
           Copy-Item native-source/third_party/llama.cpp/LICENSE native-dist/LICENSE-llama.cpp.txt
           Copy-Item native-source/third_party/llama.cpp/licenses native-dist/llama-licenses -Recurse
           Copy-Item native-source/third_party/llama.cpp/vendor/cpp-httplib/LICENSE native-dist/LICENSE-cpp-httplib.txt
-          Copy-Item scripts/native/openmoss-v0.3.0-timings.patch native-dist/
-          Copy-Item scripts/native/openmoss-v0.3.0-local-gpu.patch native-dist/
-          Copy-Item scripts/native/openmoss-v0.3.0-aux-threads.patch native-dist/
           Copy-Item scripts/native/README.md native-dist/
           @{
+            source = '3202d94ff125a30bd3a7c0dc16c9eb39b1ea0f2a'
+            source_repository = 'AlexRedby/openmoss'
             upstream = 'bfb1f465e0a86fb5a52bbf93e67ceba4b7d0b4e1'
             llama = '050ee92d04c2e1f639025786dea701c70e7d4204'
             vntts = '${{ github.sha }}'
@@ -127,9 +120,6 @@ jobs:
             }
             persistent_pool_idle_poll = 0
             vulkan_runtime_sha256 = (Get-FileHash native-dist/vulkan-1.dll -Algorithm SHA256).Hash
-            patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-timings.patch -Algorithm SHA256).Hash
-            local_gpu_patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-local-gpu.patch -Algorithm SHA256).Hash
-            aux_threads_patch_sha256 = (Get-FileHash scripts/native/openmoss-v0.3.0-aux-threads.patch -Algorithm SHA256).Hash
             qualification = 'Build and no-model startup only; Windows GPU/audio qualification still required.'
           } | ConvertTo-Json | Set-Content native-dist/VNTTS-BUILD.json -Encoding utf8
           $Version = (& ./native-dist/moss-tts-server.exe --version | Out-String).Trim()

@@ -9,12 +9,9 @@ Goal: ship one Windows x64 runtime that works across CPU-only and Vulkan-capable
 machines. Ordinary users choose a voice, not GPU layers or worker counts. Keep
 macOS MLX, explicit custom runtimes and Linux behavior outside this change.
 
-- [ ] Qualify the universal artifact on real Windows before publication.
-  - Run `scripts/qualify-moss-adaptive-windows.ps1` on the 16-thread RTX 2070
-    SUPER. Automatic mode must select Local GPU plus eight workers, preserve the
-    accepted WAV hashes, stay within the measured memory envelope, cancel/restart
-    cleanly and leave no server after exit. Force CPU mode once to prove the
-    fallback path; do not require listening again when WAV bytes match.
+- [ ] Rebuild and repeat the real Windows qualification for the fork-built bytes;
+      automatic mode must select Local GPU plus eight workers, preserve CPU WAV
+      identity, cancel/restart cleanly and leave no server after exit.
 - [ ] After every gate passes, create a production-versioned immutable GitHub
       Release asset, then update the pinned runtime URL/version/size/SHA-256 in a
       separate change. Verify one clean app install and preview before making it
