@@ -237,7 +237,13 @@ def publish_reason_review_decisions(review, selections):
                 ),
             )
             destination = path.parent / f"decision-{supplement.decision_id}.json"
-            write_cohort_review_decision(supplement, destination)
+            if destination.is_file():
+                if load_cohort_review_decision(destination) != supplement:
+                    raise CohortReviewError(
+                        f"Reason-review decision conflicts: {destination}"
+                    )
+            else:
+                write_cohort_review_decision(supplement, destination)
         except (OSError, CohortReviewError) as error:
             raise LegacyReasonReviewError(
                 f"Unable to publish reason labels for {decision_id}: {error}"

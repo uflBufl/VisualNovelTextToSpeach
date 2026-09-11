@@ -5,13 +5,6 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P1 - Calibrate automatic pregeneration decisions
 
-- [ ] Reassess the 11 legacy `bad` WAVs in
-      `current-character-story-human-labelled-v3` against the current practical
-      MOSS quality bar, without replaying previously acceptable audio or rewriting
-      old decisions. The resumable checksum-bound review must allow either an
-      explicit defect reason or `acceptable now`; publish additive v4 decisions
-      beside their original plans. Completion gate: every WAV has a current
-      assessment and a newly published corpus contains no unclassified bad sample.
 - [ ] Collect independently reason-labelled bad generations for pacing,
       repetition, truncation, pronunciation, artifacts and speaker identity.
       Reserve separate fit and held-out groups; do not expand mandatory review.

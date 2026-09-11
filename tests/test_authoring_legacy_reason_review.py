@@ -70,6 +70,9 @@ class LegacyReasonReviewTest(unittest.TestCase):
             self.assertEqual(len(published), 1)
             self.assertNotEqual(published[0], decision_path)
             self.assertEqual(decision_path.read_bytes(), original)
+            self.assertEqual(
+                publish_reason_review_decisions(review, selections), published
+            )
 
             updated = root / "corpus-v4-input"
             publish_speech_robustness_corpus(
