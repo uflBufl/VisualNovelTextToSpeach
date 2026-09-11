@@ -1,6 +1,5 @@
 """Guided player UI for selecting content to prepare for offline speech."""
 
-from textwrap import fill
 from threading import Event
 from time import monotonic
 
@@ -71,6 +70,7 @@ from vntts.pregeneration_voices import (
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
 from vntts.speech_presentation import speech_configuration_label
+from vntts.ui_text import copy_text_button, make_text_copyable
 from vntts.voices import (
     CharacterVoiceRegistry,
     VoiceChoice,
@@ -215,6 +215,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._pack_result = None
         self._awaiting_voice_confirmation = False
         self._changes_text = ""
+        self._resume_error_details = ""
         self._narrator_player = preview_player
         self.setWindowTitle("Prepare offline audio")
         self.setMinimumSize(620, 440)
@@ -225,6 +226,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.story_context = QLabel("Select the stories you want to read.")
         self.story_context.setWordWrap(True)
         self.story_context.setAccessibleName("Selected stories")
+        self.story_context.hide()
 
         self.engine_choice = QComboBox()
         self.engine_choice.setAccessibleName("Offline generation engine")
@@ -262,15 +264,23 @@ class OfflineAudioPreparationDialog(QDialog):
 
         self.narrator_status = QLabel()
         self.narrator_status.setAccessibleName("Selected narrator voice")
-        self.narrator_status.setWordWrap(True)
+        self.narrator_status.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         narrator_row = QHBoxLayout()
         narrator_row.addWidget(self.narrator_status, 1)
+        self.copy_narrator_details = copy_text_button(
+            "Copy details", self._full_narrator_configuration, self
+        )
+        self.copy_narrator_details.setAccessibleName("Copy narrator configuration")
+        narrator_row.addWidget(self.copy_narrator_details)
         self.game_narrator_button = QPushButton("Edit in Voices...")
         self.game_narrator_button.setAccessibleDescription(
             "Choose the narrator and speech engine in the shared Voices editor"
         )
         self.game_narrator_button.setVisible(game_narrator_chooser is not None)
         self.game_narrator_button.clicked.connect(self._choose_game_narrator)
+        narrator_row.addWidget(self.game_narrator_button)
         self._refresh_narrator_status()
 
         self.pocket_voice_cloning = QCheckBox(
@@ -321,6 +331,16 @@ class OfflineAudioPreparationDialog(QDialog):
         import_row = QHBoxLayout()
         import_row.addWidget(self.game_folder_button)
         import_row.addWidget(self.browse_button)
+        self.import_options = QWidget()
+        import_options_layout = QVBoxLayout(self.import_options)
+        import_options_layout.setContentsMargins(0, 0, 0, 0)
+        import_options_layout.setSpacing(4)
+        import_options_layout.addWidget(self.import_button)
+        import_options_layout.addLayout(import_row)
+        self.import_options_toggle = QPushButton("Add or import content...")
+        self.import_options_toggle.setCheckable(True)
+        self.import_options_toggle.toggled.connect(self._update_import_options)
+        source_row.addWidget(self.import_options_toggle)
 
         self.source_status = QLabel()
         self.source_status.setWordWrap(True)
@@ -335,6 +355,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.stories.setAccessibleDescription(
             "Check every story or chapter to prepare for offline speech"
         )
+        self.stories.setMinimumHeight(100)
         self.stories.itemChanged.connect(self._selection_changed)
         self.stories.currentRowChanged.connect(self._story_audio_changed)
         self.check_story_audio = QPushButton("Check story audio")
@@ -365,7 +386,6 @@ class OfflineAudioPreparationDialog(QDialog):
         story_filters.addWidget(self.story_search, 1)
         story_filters.addWidget(self.story_filter)
         self.story_filter_status = QLabel()
-        self.story_filter_status.setWordWrap(True)
         self.story_filter_status.setAccessibleName("Shown and selected story counts")
 
         selection_actions = QHBoxLayout()
@@ -380,6 +400,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         selection_actions.addWidget(self.select_all_button)
         selection_actions.addWidget(self.select_none_button)
+        selection_actions.addWidget(self.change_voices)
         selection_actions.addStretch()
 
         self.summary = QLabel("Select game content to continue.")
@@ -393,6 +414,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.prepare_again.hide()
         self.selection_status = QLabel()
         self.selection_status.setWordWrap(True)
+        self.selection_status.hide()
         self.resume_status = QLabel()
         self.resume_status.setWordWrap(True)
         self.resume_status.setSizePolicy(
@@ -400,6 +422,11 @@ class OfflineAudioPreparationDialog(QDialog):
             QSizePolicy.Policy.Preferred,
         )
         self.resume_status.setAccessibleName("Offline preparation phase detail")
+        self.copy_resume_error = copy_text_button(
+            "Copy error details", lambda: self._resume_error_details, self
+        )
+        self.copy_resume_error.setAccessibleName("Copy full preparation error")
+        self.copy_resume_error.hide()
 
         self.progress_panel = QGroupBox("Preparation progress")
         self.progress_panel.setSizePolicy(
@@ -409,6 +436,15 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_phase = QLabel()
         self.progress_phase.setAccessibleName("Offline preparation phase")
         self.progress_phase.setStyleSheet("font-weight: 600;")
+        self.progress_configuration = QLabel()
+        self.progress_configuration.setWordWrap(True)
+        self.progress_configuration.setAccessibleName("Locked generation configuration")
+        self.copy_progress_configuration = copy_text_button(
+            "Copy config details", self._full_generation_details, self
+        )
+        self.copy_progress_configuration.setAccessibleName(
+            "Copy locked generation configuration"
+        )
         self.progress_bar = QProgressBar()
         self.progress_bar.setAccessibleName("Durably completed generation items")
         self.progress_bar.setTextVisible(True)
@@ -438,6 +474,11 @@ class OfflineAudioPreparationDialog(QDialog):
         progress_layout = QVBoxLayout(self.progress_panel)
         progress_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         progress_layout.addWidget(self.progress_phase)
+        progress_configuration_row = QHBoxLayout()
+        progress_configuration_row.addWidget(self.progress_configuration, 1)
+        progress_configuration_row.addWidget(self.copy_progress_configuration)
+        progress_layout.addLayout(progress_configuration_row)
+        progress_layout.addWidget(self.story_context)
         progress_layout.addWidget(self.progress_bar)
         progress_layout.addWidget(self.progress_counts)
         progress_layout.addWidget(self.progress_timing)
@@ -545,40 +586,35 @@ class OfflineAudioPreparationDialog(QDialog):
         self.selection_panel = QWidget()
         selection_layout = QVBoxLayout(self.selection_panel)
         selection_layout.setContentsMargins(0, 0, 0, 0)
+        selection_layout.setSpacing(4)
+        selection_layout.addLayout(narrator_row)
+        selection_layout.addWidget(self.pocket_voice_cloning)
+        selection_layout.addWidget(self.pocket_terms)
         selection_layout.addWidget(self.engine_controls)
         selection_layout.addLayout(source_row)
-        selection_layout.addWidget(self.import_button)
-        selection_layout.addLayout(import_row)
+        selection_layout.addWidget(self.import_options)
         selection_layout.addWidget(self.source_status)
-        selection_layout.addWidget(self.coverage_summary)
-        stories_heading = QHBoxLayout()
-        stories_heading.addWidget(QLabel("Stories to prepare"))
-        stories_heading.addStretch()
-        stories_heading.addWidget(self.check_story_audio)
-        selection_layout.addLayout(stories_heading)
         selection_layout.addLayout(story_filters)
-        selection_layout.addWidget(self.story_filter_status)
+        story_status_row = QHBoxLayout()
+        story_status_row.addWidget(self.story_filter_status, 1)
+        story_status_row.addWidget(self.check_story_audio)
+        selection_layout.addLayout(story_status_row)
         selection_layout.addWidget(self.stories, 1)
         selection_layout.addLayout(selection_actions)
-        selection_layout.addWidget(self.change_voices)
         selection_layout.addWidget(self.story_audio_status)
-        selection_layout.addWidget(self.summary)
         selection_layout.addWidget(self.prepare_again)
         selection_layout.addWidget(self.selection_status)
 
         content = QWidget()
         layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        layout.addWidget(self.story_context)
-        layout.addLayout(narrator_row)
-        layout.addWidget(self.game_narrator_button)
+        layout.setSpacing(4)
         layout.addWidget(self.discovery_panel)
-        layout.addWidget(self.pocket_voice_cloning)
-        layout.addWidget(self.pocket_terms)
-        layout.addWidget(self.selection_panel, 1)
         layout.addWidget(self.voice_panel)
         layout.addWidget(self.voice_confirmation, 1)
         layout.addWidget(self.progress_panel)
+        layout.addWidget(self.copy_resume_error)
         self.content_scroll = QScrollArea()
         self.content_scroll.setWidgetResizable(True)
         self.content_scroll.setHorizontalScrollBarPolicy(
@@ -587,8 +623,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self.content_scroll.setWidget(content)
         shell = QVBoxLayout(self)
         shell.addWidget(self.step)
+        shell.addWidget(self.selection_panel, 1)
         shell.addWidget(self.content_scroll, 1)
         shell.addWidget(self.buttons)
+        make_text_copyable(self)
         availability = self.importer.availability()
         self.import_button.setEnabled(availability.available)
         self.import_button.setToolTip(availability.message)
@@ -732,6 +770,10 @@ class OfflineAudioPreparationDialog(QDialog):
             self._voice_plan = None
 
     def _refresh_narrator_status(self):
+        self.narrator_status.setText(self._narrator_configuration(compact=True))
+        self.narrator_status.setToolTip(self._full_narrator_configuration())
+
+    def _narrator_configuration(self, *, compact=False):
         settings = resolve_pregeneration_settings(self.settings)
         narrator = None
         if self._awaiting_voice_confirmation and self._voice_plan is not None:
@@ -743,14 +785,20 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
             if self.narrator_choice.currentData() is not None:
                 narrator = self.narrator_choice.currentText()
-        self.narrator_status.setText(
+        return speech_configuration_label(settings, narrator=narrator, compact=compact)
+
+    def _full_narrator_configuration(self):
+        return (
             "Defaults for future preparation and live speech\n"
-            + speech_configuration_label(settings, narrator=narrator)
-            + (
-                "\nThe selected engine is unavailable on this host; preparation will use Pocket TTS."
-                if settings.speech_backend != self.settings.speech_backend
-                else ""
-            )
+            + self._narrator_configuration()
+        )
+
+    def _full_generation_details(self):
+        content = self.current_content()
+        return self._full_narrator_configuration() + (
+            f"\nSource story index: {content.story_index}\n{self.story_context.text()}"
+            if content is not None
+            else ""
         )
 
     def _voice_choices(self, plan):
@@ -1030,6 +1078,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_panel.setVisible(loading)
         self.coverage_summary.setVisible(not loading)
         self.selection_panel.setVisible(not loading)
+        self.content_scroll.setVisible(loading)
         self.selection_panel.setEnabled(not loading)
         self.continue_button.setEnabled(
             not loading
@@ -1054,9 +1103,12 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.source.setCurrentIndex(index)
         self.source.blockSignals(False)
         if self._content:
+            self.import_options_toggle.setChecked(False)
+            self._update_import_options()
             self.source_status.setText(
                 f"Found {len(self._content)} local game source(s)."
             )
+            self.source_status.hide()
             self._source_changed(self.source.currentIndex())
         else:
             detail = f" {discovery.errors[0]}" if discovery.errors else ""
@@ -1064,7 +1116,22 @@ class OfflineAudioPreparationDialog(QDialog):
                 "No extracted game content was found. Run the supported game "
                 "importer or choose an existing story-index file." + detail
             )
+            self.source_status.show()
+            self._update_import_options()
             self._populate_stories(None)
+        self.content_scroll.hide()
+        self.selection_panel.show()
+
+    def _update_import_options(self, _checked=None):
+        has_content = bool(self._content)
+        expanded = not has_content or self.import_options_toggle.isChecked()
+        self.import_options.setVisible(expanded)
+        self.import_options_toggle.setVisible(has_content)
+        self.import_options_toggle.setText(
+            "Hide import options"
+            if expanded and has_content
+            else "Add or import content..."
+        )
 
     def browse(self):
         path, _selected_filter = QFileDialog.getOpenFileName(
@@ -1079,6 +1146,7 @@ class OfflineAudioPreparationDialog(QDialog):
             content = inspect_story_index(path, provider_id="selected-story-index")
         except PregenerationSetupError as error:
             self.source_status.setText(str(error))
+            self.source_status.show()
             return
         existing = next(
             (
@@ -1097,6 +1165,9 @@ class OfflineAudioPreparationDialog(QDialog):
             existing = len(self._content) - 1
         self.source.setCurrentIndex(existing)
         self.source_status.setText("Selected extracted game content is ready.")
+        self.source_status.show()
+        self.import_options_toggle.setChecked(False)
+        self._update_import_options()
 
     def import_installed_game(self):
         self._start_import(None)
@@ -1115,6 +1186,7 @@ class OfflineAudioPreparationDialog(QDialog):
         availability = self.importer.availability()
         if not availability.available:
             self.source_status.setText(availability.message)
+            self.source_status.show()
             return
         self.importing = True
         self.phaseChanged.emit("Importing installed game")
@@ -1125,6 +1197,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source_status.setText(
             "Finding the installed game and importing story content..."
         )
+        self.source_status.show()
         self.import_runner.start(
             self.importer.import_installed,
             self.import_cancel_event,
@@ -1164,11 +1237,17 @@ class OfflineAudioPreparationDialog(QDialog):
         return self._pack_result
 
     def _show_phase(self, phase, detail, cancel_consequence):
+        self._clear_resume_error()
         self.pocket_voice_cloning.hide()
         self.pocket_terms.hide()
+        self.selection_panel.hide()
+        self.content_scroll.show()
         self.content_scroll.verticalScrollBar().setValue(0)
         self.progress_panel.show()
         self.progress_phase.setText(phase)
+        self.progress_configuration.setText(self._narrator_configuration(compact=True))
+        self.progress_configuration.setToolTip(self._full_generation_details())
+        self.story_context.show()
         self.resume_status.setText(detail)
         self.progress_cancel_consequence.setText(cancel_consequence)
         self._refresh_story_statuses()
@@ -1212,14 +1291,16 @@ class OfflineAudioPreparationDialog(QDialog):
         QTimer.singleShot(0, self._emit_task_progress)
 
     def _set_resume_error(self, prefix, error):
-        self.resume_status.setText(
-            fill(
-                f"{prefix}: {error}",
-                width=72,
-                break_long_words=True,
-                break_on_hyphens=False,
-            )
-        )
+        self._resume_error_details = f"{prefix}: {error}"
+        self.resume_status.setText(self._resume_error_details)
+        self.selection_status.setText(self._resume_error_details)
+        self.selection_status.show()
+        self.copy_resume_error.show()
+
+    def _clear_resume_error(self):
+        self._resume_error_details = ""
+        self.copy_resume_error.hide()
+        self.selection_status.hide()
 
     def _show_waiting_phase(self, phase, detail, cancel_consequence):
         self._show_phase(phase, detail, cancel_consequence)
@@ -1455,11 +1536,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.coverage_runner.cancel()
         self._checking_story = None
         self.story_audio_status.setToolTip("")
-        self.check_story_audio.setEnabled(self.stories.currentItem() is not None)
+        item = self.stories.currentItem()
+        self.check_story_audio.setEnabled(item is not None)
+        self.story_audio_status.setVisible(item is not None)
         self.story_audio_status.setText(
             "Highlight a story and check its saved audio. This does not change Reading settings."
         )
-        item = self.stories.currentItem()
         if item is not None:
             checked = self._story_audio_checks.get(
                 self._story_audio_key(item.data(Qt.ItemDataRole.UserRole))
@@ -1560,6 +1642,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._render_story_audio_check(saved, active, error)
 
     def _render_story_audio_check(self, coverage, active, error):
+        self.story_audio_status.show()
         if error is not None:
             self.story_audio_status.setText(f"Audio needs attention: {error}")
             self.content_scroll.ensureWidgetVisible(self.story_audio_status)
@@ -1582,11 +1665,20 @@ class OfflineAudioPreparationDialog(QDialog):
             if coverage.live
             else "No live speech needed for indexed dialogue"
         )
+        counts = "; ".join(
+            f"{label}: {count}"
+            for label, count in (
+                ("Original game audio (indexed)", coverage.original),
+                ("verified recordings", coverage.generated),
+                ("live speech", coverage.live),
+                ("omitted sounds", coverage.omitted),
+                ("non-spoken", coverage.non_spoken),
+                ("not prepared", coverage.missing),
+            )
+            if count
+        )
         self.story_audio_status.setText(
-            f"Highlighted story: {coverage.title}. {state}.\n"
-            f"Original game audio (indexed): {coverage.original}; verified recordings: {coverage.generated}; "
-            f"live speech: {coverage.live}; omitted sounds: {coverage.omitted}; "
-            f"non-spoken: {coverage.non_spoken}; not prepared: {coverage.missing}.\n"
+            f"{coverage.title}: {state}.\n{counts or 'No indexed dialogue lines.'}\n"
             + (
                 "Checked the active Reading pack."
                 if active_story
@@ -1643,9 +1735,15 @@ class OfflineAudioPreparationDialog(QDialog):
                             coverage.generated or coverage.original or saved_status
                         ):
                             status = "not_started"
-                        detail = (
-                            f"{coverage.generated} recordings, {coverage.original} original, "
-                            f"{coverage.live} live speech, {coverage.missing} missing"
+                        detail = ", ".join(
+                            f"{count} {label}"
+                            for label, count in (
+                                ("recordings", coverage.generated),
+                                ("original", coverage.original),
+                                ("live speech", coverage.live),
+                                ("missing", coverage.missing),
+                            )
+                            if count
                         )
                         if coverage is active:
                             detail += "; active in Reading"
@@ -1672,15 +1770,24 @@ class OfflineAudioPreparationDialog(QDialog):
                     "attention": "Needs attention",
                 }[status]
                 item.setText(
-                    f"{selection.title} - {selection.line_count} line{'s' if selection.line_count != 1 else ''}\n"
-                    f"{label} - {detail}"
+                    f"{selection.title} ({selection.line_count} line{'s' if selection.line_count != 1 else ''}) - "
+                    f"{label}: {detail}"
                 )
                 item.setData(Qt.ItemDataRole.UserRole + 2, status)
                 counts[status] += 1
         self.coverage_summary.setText(
-            f"{counts['ready']} ready, {counts['preparing']} preparing, "
-            f"{counts['in_progress']} partially prepared, {counts['attention']} need attention, "
-            f"{counts['not_started']} not prepared ({len(selections)} stories total)."
+            ", ".join(
+                f"{count} {label}"
+                for key, label in (
+                    ("ready", "ready"),
+                    ("preparing", "preparing"),
+                    ("in_progress", "partially prepared"),
+                    ("attention", "need attention"),
+                    ("not_started", "not prepared"),
+                )
+                if (count := counts[key])
+            )
+            + f" ({len(selections)} stories)."
         )
         self._filter_stories()
 
@@ -1785,8 +1892,13 @@ class OfflineAudioPreparationDialog(QDialog):
             selected += checked
             hidden_selected += checked and not visible
         self.story_filter_status.setText(
-            f"{shown} of {self.stories.count()} stories shown; {selected} selected"
-            + (f" ({hidden_selected} hidden by filters)." if hidden_selected else ".")
+            (
+                f"{shown}/{self.stories.count()} shown; "
+                if query or status is not None
+                else ""
+            )
+            + f"{selected} selected - {self.coverage_summary.text().partition(' (')[0]}"
+            + (f"; {hidden_selected} hidden by filters." if hidden_selected else ".")
             + (
                 " Clear filters to see other stories."
                 if not shown and self.stories.count()
@@ -1861,7 +1973,7 @@ class OfflineAudioPreparationDialog(QDialog):
             item.title for item in content.selections if item.selection_id in selected
         ]
         self.story_context.setText(
-            "Stories: "
+            f"Source: {content.display_name}. Stories: "
             + ", ".join(titles[:3])
             + (f" and {len(titles) - 3} more" if len(titles) > 3 else "")
         )
@@ -2441,6 +2553,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.importing = False
         if self._close_after_voice_cancel:
             self.source_status.setText("Game import cancelled.")
+            self.source_status.show()
             self.reject()
             return
         self.cancel_button.setText("Cancel")
@@ -2452,6 +2565,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 if isinstance(error, GameContentImportCancelled)
                 else f"Unable to import the installed game: {error}"
             )
+            self.source_status.show()
             return
         existing = next(
             (
@@ -2470,6 +2584,9 @@ class OfflineAudioPreparationDialog(QDialog):
             existing = len(self._content) - 1
         self.source.setCurrentIndex(existing)
         self.source_status.setText("Installed game content imported successfully.")
+        self.source_status.show()
+        self.import_options_toggle.setChecked(False)
+        self._update_import_options()
 
     def _set_import_controls(self, enabled):
         self._refresh_story_statuses()
@@ -2563,6 +2680,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._close_after_voice_cancel = True
         self.cancel_button.setEnabled(False)
         self.source_status.setText("Cancelling game import...")
+        self.source_status.show()
 
     def closeEvent(self, event: QCloseEvent):
         self._stop_generation_progress()
@@ -2648,10 +2766,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
 def _content_label(content):
     count = len(content.selections)
-    return (
-        f"{content.display_name} - {count} "
-        f"{'story' if count == 1 else 'stories'} - {content.story_index.name}"
-    )
+    return f"{content.display_name} - {count} {'story' if count == 1 else 'stories'}"
 
 
 __all__ = ["OfflineAudioPreparationDialog"]

@@ -1798,6 +1798,13 @@ class TrayApplicationTest(unittest.TestCase):
                 dialog.resize(620, 500)
                 self.application.processEvents()
                 viewport = dialog.settings_scroll.viewport()
+                caption = dialog.speech_form.labelForField(dialog.speech_backend)
+                self.assertGreater(caption.width(), 0)
+                self.assertGreater(caption.height(), 0)
+                self.assertTrue(
+                    caption.textInteractionFlags()
+                    & Qt.TextInteractionFlag.TextSelectableByKeyboard
+                )
                 self.assertEqual(
                     dialog.settings_scroll.horizontalScrollBar().maximum(), 0
                 )
@@ -2121,6 +2128,11 @@ class TrayApplicationTest(unittest.TestCase):
             )
         )
         dialog.advanced_narrator.setChecked(True)
+        self.assertFalse(dialog.narrator_reference.isHidden())
+        dialog.advanced_settings.setChecked(True)
+        dialog.advanced_settings.setChecked(False)
+        self.assertTrue(dialog.narrator_reference.isHidden())
+        dialog.advanced_settings.setChecked(True)
         self.assertFalse(dialog.narrator_reference.isHidden())
         with patch("vntts.app.QFileDialog.getOpenFileName", return_value=("", "")):
             dialog.browse_narrator_reference()

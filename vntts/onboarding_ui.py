@@ -50,6 +50,7 @@ from vntts.release_backends import (
 from vntts.settings import AppSettings
 from vntts.speech_backend import default_moss_tts_model
 from vntts.speech_presentation import speech_configuration_label
+from vntts.ui_text import make_text_copyable
 from vntts.voices import find_default_voice_manifest, find_voice_assignment
 from vntts.window_capture import WindowCaptureError, WindowCaptureTarget, list_windows
 
@@ -273,7 +274,6 @@ class ConfigurationPage(QWizardPage):
         recommended_form.addRow("", self.auto_advance_notice)
         recommended_form.addRow("", self.auto_advance_reason)
         recommended_form.addRow("Speech engine", self.speech_backend)
-        recommended_form.addRow("TTS model", self.tts_model)
         self.speech_summary = QLabel()
         self.speech_summary.setWordWrap(True)
         self.speech_summary.setAccessibleName("Setup narrator and speech engine")
@@ -287,6 +287,8 @@ class ConfigurationPage(QWizardPage):
         recommended_form.addRow(self.choose_narrator_button)
 
         advanced_form = QFormLayout()
+        self.advanced_form = advanced_form
+        advanced_form.addRow("Speech model override", self.tts_model)
         advanced_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
@@ -365,8 +367,9 @@ class ConfigurationPage(QWizardPage):
         self.update_capture_controls()
         self.update_backend_controls()
         self.update_terms_control()
-        self._set_advanced_expanded(settings.speech_backend != "pocket-tts")
+        self._set_advanced_expanded(False)
         self.update_validation_summary()
+        make_text_copyable(self)
         if reading_setup:
             self.setTitle("Choose the game window")
             self.setSubTitle(
@@ -375,7 +378,7 @@ class ConfigurationPage(QWizardPage):
             recommended_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
             self.auto_advance.setText("Advance after speech")
             recommended_form.setRowVisible(self.speech_backend, False)
-            recommended_form.setRowVisible(self.tts_model, False)
+            advanced_form.setRowVisible(self.tts_model, False)
             self.choose_narrator_button.setText("Change voices...")
             self.choose_narrator_button.setAccessibleName("Change voices in Voices")
             self.choose_narrator_button.setAccessibleDescription(
@@ -554,7 +557,7 @@ class ConfigurationPage(QWizardPage):
         }:
             self.tts_model.setText(default_onboarding_model)
         self.tts_model.setEnabled(uses_xtts or uses_moss)
-        self.recommended_form.setRowVisible(self.tts_model, uses_xtts or uses_moss)
+        self.advanced_form.setRowVisible(self.tts_model, uses_xtts or uses_moss)
         self.tts_language.setEnabled(uses_xtts or uses_moss)
         self.narrator_speaker.setEnabled(uses_xtts)
         self.manage_assets_button.setText(
@@ -687,7 +690,8 @@ class ConfigurationPage(QWizardPage):
                     narrator_speaker=self.narrator_speaker.text().strip() or None,
                     tts_speaker_wav=self.narrator_reference.text().strip() or None,
                     pocket_gated_model_accepted=self.pocket_gated_model.isChecked(),
-                )
+                ),
+                compact=True,
             )
         )
         self.speech_summary.setToolTip(
@@ -702,7 +706,7 @@ class ConfigurationPage(QWizardPage):
                 f"Fix {len(errors)} setting(s) before continuing:\n"
                 + "\n".join(f"- {message}" for _widget, message in errors)
             )
-            self.validation_summary.setStyleSheet("color: #b3261e; font-weight: 600;")
+            self.validation_summary.setStyleSheet("font-weight: 600;")
         else:
             self.validation_summary.setText("Configuration is ready.")
             self.validation_summary.setStyleSheet("")
@@ -1258,7 +1262,7 @@ class OnboardingWizard(QDialog):
         self.step_label.setAccessibleName("Onboarding progress")
         self.step_label.setStyleSheet("font-weight: 600;")
         self.page_title = QLabel()
-        self.page_title.setStyleSheet("font-size: 22px; font-weight: 600;")
+        self.page_title.setStyleSheet("font-weight: 600;")
         self.page_subtitle = QLabel()
         self.page_subtitle.setWordWrap(True)
         self.back_button = QPushButton("Back")

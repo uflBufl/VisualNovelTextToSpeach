@@ -204,7 +204,7 @@ class GameNarratorTest(unittest.TestCase):
                     self.assertIn(
                         "1 prepared lines in 1 stories", dialog.impact_status.text()
                     )
-                    self.assertIn("Chapter 1: 1 changed", dialog.impact_status.text())
+                    self.assertIn("Chapter 1: 1 changed", dialog._impact_copy_text())
                     self.assertIsNone(dialog.result_settings)
                     dialog.consent.setChecked(not dialog.consent.isChecked())
                     self.assertIsNone(dialog._impact_results)
@@ -801,7 +801,8 @@ class GameNarratorTest(unittest.TestCase):
         dialog.model_details.click()
         dialog.model_choice.setText("custom-moss-model")
         self.assertEqual(
-            dialog.engine.text(), engine_model_label("moss-tts", "custom-moss-model")
+            dialog.engine.text(),
+            engine_model_label("moss-tts", "custom-moss-model", compact=True),
         )
         dialog.engine_choice.setCurrentIndex(
             dialog.engine_choice.findData("pocket-tts")
@@ -816,6 +817,29 @@ class GameNarratorTest(unittest.TestCase):
         self.assertIsNone(dialog.result_settings)
         self.assertEqual(original.voice_assignments, {"Narrator": "preset:alba"})
         self.assertEqual(original.speech_backend, "pocket-tts")
+
+    def test_candidate_rows_precede_engine_and_model_details(self):
+        pool = ManualThreadPool()
+        dialog = GameNarratorDialog(
+            AppSettings(),
+            importer=Mock(),
+            preview_service=Mock(),
+            thread_pool=pool,
+            player=Mock(),
+        )
+        try:
+
+            def row(widget):
+                return dialog.form.getWidgetPosition(widget)[0]
+
+            self.assertLess(row(dialog.role), row(dialog.source))
+            self.assertLess(row(dialog.source), row(dialog.game_controls))
+            self.assertLess(row(dialog.game_controls), row(dialog.text))
+            self.assertLess(row(dialog.text), row(dialog.engine_choice))
+            self.assertLess(row(dialog.engine_choice), row(dialog.model_choice))
+        finally:
+            dialog.reject()
+            self.run_task(pool)
 
     def test_game_engine_model_and_consent_are_staged_for_preview_and_save(self):
         with TemporaryDirectory() as directory:
@@ -841,7 +865,7 @@ class GameNarratorTest(unittest.TestCase):
             self.application.processEvents()
             self.assertEqual(
                 dialog.engine.text(),
-                engine_model_label("moss-tts", "saved-custom-model"),
+                engine_model_label("moss-tts", "saved-custom-model", compact=True),
             )
             self.assertTrue(dialog.model_choice.isHidden())
             self.run_task(pool)
@@ -1581,6 +1605,44 @@ class GameNarratorTest(unittest.TestCase):
             self.assertEqual(dialog.player.play_bytes.call_count, 3)
             dialog.characters.clear()
             self.assertEqual(dialog.reference_text.text(), "")
+            dialog.reject()
+            self.run_task(pool)
+
+    def test_voice_choices_signal_only_saved_setting_changes_and_copy_details(self):
+        with TemporaryDirectory() as directory:
+            manifest = self.narrator_manifest(Path(directory))
+            pool = ManualThreadPool()
+            dialog = GameNarratorDialog(
+                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
+                importer=self.narrator_importer(manifest),
+                preview_service=Mock(),
+                thread_pool=pool,
+                player=Mock(),
+            )
+            changed = []
+            dialog.settingsChanged.connect(changed.append)
+            self.application.processEvents()
+            self.run_task(pool)
+            dialog.prepare_button.click()
+            self.run_task(pool)
+
+            self.assertEqual(changed, [])
+            self.assertTrue(
+                dialog.status.textInteractionFlags()
+                & Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            self.assertTrue(
+                dialog.reference_text.textInteractionFlags()
+                & Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+
+            dialog.source.setCurrentIndex(dialog.source.findData("preset"))
+            self.assertEqual(changed, [True])
+            dialog.source.setCurrentIndex(dialog.source.findData("game"))
+            self.assertEqual(changed, [True, False])
+            dialog.references.setCurrentIndex(1)
+            self.assertEqual(changed, [True, False, True])
+            self.assertIn("Source ID: playable-voice:3032:2", dialog._copy_details())
             dialog.reject()
             self.run_task(pool)
 

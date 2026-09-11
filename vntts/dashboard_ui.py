@@ -25,10 +25,13 @@ from PySide6.QtWidgets import (
 
 from vntts.settings import is_live_sequence_audio_mode, main_sections
 from vntts.speech_presentation import (
+    compact_runtime_label,
+    playback_labels,
     reading_policy_label,
     speech_configuration_label,
     speech_runtime_label,
 )
+from vntts.ui_text import copy_text_button, make_text_copyable
 
 
 @dataclass(frozen=True)
@@ -114,14 +117,18 @@ class ControlDashboard(QMainWindow):
         self._live = False
         self._ready = False
         self._sequence_expected_candidate_count = 0
+        self._recovery_required = False
+        self._voice_dirty = False
+        self._voice_busy = False
         self.setWindowTitle("Visual Novel Text to Speech")
         self.setMinimumWidth(620)
         self.setMinimumHeight(340)
         self.resize(860, 660)
 
         self.status = QLabel("Starting...")
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
-        self.status.setStyleSheet("font-weight: 600; font-size: 15px;")
+        self.status.setStyleSheet("font-weight: 600;")
         self.loading_panel = QFrame()
         self.loading_panel.setFrameShape(QFrame.Shape.StyledPanel)
         loading_layout = QVBoxLayout(self.loading_panel)
@@ -197,6 +204,14 @@ class ControlDashboard(QMainWindow):
         self.details_layout.setContentsMargins(0, 0, 0, 0)
         self.details_layout.addLayout(details)
         self.details_layout.addWidget(self.reading_help)
+        self.playback_details = QLabel()
+        self.playback_details.setWordWrap(True)
+        self.playback_details.setTextFormat(Qt.TextFormat.PlainText)
+        self.speech_details = QLabel()
+        self.speech_details.setWordWrap(True)
+        self.speech_details.setTextFormat(Qt.TextFormat.PlainText)
+        self.details_layout.addWidget(self.speech_details)
+        self.details_layout.addWidget(self.playback_details)
         self.details_toggle = QPushButton("Show technical details")
         self.details_toggle.setCheckable(True)
         self.details_toggle.setAccessibleDescription(
@@ -212,9 +227,7 @@ class ControlDashboard(QMainWindow):
         self.skip_button = QPushButton("Skip")
         self.repeat_button = QPushButton("Replay")
         self.stop_button = QPushButton("Emergency stop")
-        self.stop_button.setStyleSheet(
-            "QPushButton { color: #a21818; font-weight: 600; }"
-        )
+        self.stop_button.setStyleSheet("QPushButton { font-weight: 600; }")
         self.live_button.setDefault(True)
         self.live_button.setStyleSheet("font-weight: 700;")
         self.live_button.setAccessibleDescription(
@@ -241,7 +254,13 @@ class ControlDashboard(QMainWindow):
         reading_actions.addWidget(self.live_button, 2)
         reading_actions.addWidget(self.read_button)
         self.prepare_reading_button = QPushButton("Set up reading")
-        self.prepare_reading_button.clicked.connect(self.reading_setup_requested.emit)
+        self.prepare_reading_button.clicked.connect(
+            lambda: (
+                self.settings_requested.emit()
+                if self._window_problem
+                else self.reading_setup_requested.emit()
+            )
+        )
         self.prepare_audio_button = QPushButton("Prepare offline audio...")
         self.prepare_audio_button.setAccessibleDescription(
             "Choose stories and prepare their voices locally with guided defaults"
@@ -277,9 +296,14 @@ class ControlDashboard(QMainWindow):
         self.sequence_group = QGroupBox("Sequence-first story cursor")
         sequence_layout = QVBoxLayout(self.sequence_group)
         sequence_layout.addLayout(sequence_form)
-        sequence_layout.addWidget(self.sequence_guidance)
-        sequence_layout.addWidget(self.sequence_expected_button)
-        sequence_layout.addWidget(self.sequence_resync_button)
+        self.recovery_controls = QWidget()
+        recovery_layout = QVBoxLayout(self.recovery_controls)
+        recovery_layout.setContentsMargins(0, 0, 0, 0)
+        recovery_layout.addWidget(self.sequence_guidance)
+        recovery_actions = QHBoxLayout()
+        recovery_actions.addWidget(self.sequence_expected_button)
+        recovery_actions.addWidget(self.sequence_resync_button)
+        recovery_layout.addLayout(recovery_actions)
         self.details_layout.addWidget(self.sequence_group)
 
         transport_group = QGroupBox("Playback")
@@ -341,7 +365,7 @@ class ControlDashboard(QMainWindow):
         story_context.addRow("Story", self.story_title)
         story_context.addRow("Position", self.sequence_position)
         card_layout.addLayout(story_context)
-        card_layout.addWidget(QLabel("Current dialogue"))
+        self.speaker.setStyleSheet("font-weight: 600;")
         card_layout.addWidget(self.speaker)
         card_layout.addWidget(self.dialogue)
         current_audio = QFormLayout()
@@ -365,12 +389,16 @@ class ControlDashboard(QMainWindow):
         self.moss_runtime_button = QPushButton("Load OpenMOSS")
         self.moss_runtime_button.setAccessibleName("Load or unload OpenMOSS model")
         self.moss_runtime_button.clicked.connect(self.moss_runtime_requested.emit)
+        layout.addWidget(card)
         layout.addWidget(self.reading_defaults)
         layout.addWidget(self.speech_runtime)
         layout.addWidget(self.moss_runtime_button, 0, Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(self.reading_policy)
-        layout.addWidget(card)
-        layout.addWidget(self.details_toggle)
+        self.details_layout.addWidget(self.reading_policy)
+        detail_actions = QHBoxLayout()
+        detail_actions.addWidget(self.details_toggle)
+        self.copy_details_button = copy_text_button("Copy details", self._copy_details)
+        detail_actions.addWidget(self.copy_details_button)
+        layout.addLayout(detail_actions)
         layout.addWidget(self.details_content)
         layout.addWidget(self.compact_button, 0, Qt.AlignmentFlag.AlignRight)
 
@@ -385,6 +413,7 @@ class ControlDashboard(QMainWindow):
         reading_layout = QVBoxLayout(reading_page)
         reading_layout.addWidget(self.content_scroll, 1)
         reading_layout.addWidget(self.action_reason)
+        reading_layout.addWidget(self.recovery_controls)
         reading_layout.addWidget(self.prepare_reading_button)
         reading_layout.addLayout(reading_actions)
         reading_layout.addWidget(transport_group)
@@ -392,7 +421,7 @@ class ControlDashboard(QMainWindow):
         stories_page = QWidget()
         stories_layout = QVBoxLayout(stories_page)
         stories_title = QLabel("Prepare stories for reading")
-        stories_title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        stories_title.setStyleSheet("font-weight: 600;")
         stories_layout.addWidget(stories_title)
         self.stories_guidance = QLabel(
             "Choose installed game content and the stories you want to hear. "
@@ -416,7 +445,7 @@ class ControlDashboard(QMainWindow):
         voices_page = QWidget()
         voices_layout = QVBoxLayout(voices_page)
         voices_title = QLabel("Narrator and character voices")
-        voices_title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        voices_title.setStyleSheet("font-weight: 600;")
         voices_layout.addWidget(voices_title)
         voices_layout.addWidget(self.speech_configuration)
         voice_help = QLabel(
@@ -452,7 +481,13 @@ class ControlDashboard(QMainWindow):
         shell = QWidget()
         shell_layout = QVBoxLayout(shell)
         shell_layout.setContentsMargins(12, 12, 12, 12)
-        shell_layout.addWidget(self.status)
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.status, 1)
+        self.copy_status_button = copy_text_button(
+            "Copy status", lambda: self.status.toolTip() or self.status.text()
+        )
+        status_row.addWidget(self.copy_status_button)
+        shell_layout.addLayout(status_row)
         shell_layout.addWidget(self.loading_panel)
         self.preparation_card = QWidget()
         preparation_layout = QHBoxLayout(self.preparation_card)
@@ -490,6 +525,35 @@ class ControlDashboard(QMainWindow):
         self.set_loading(False)
         self.set_ready(False)
         self.set_configuration(settings)
+        make_text_copyable(self)
+
+    def _copy_details(self):
+        return (
+            "\n\n".join(
+                label.text()
+                for label in (
+                    self.story_title,
+                    self.sequence_position,
+                    self.speaker,
+                    self.dialogue,
+                    self.speech_details,
+                    self.playback_details,
+                    self.reading_policy,
+                    self.configuration,
+                    self.sequence_identity,
+                    self.sequence_guidance,
+                )
+                if label.text()
+            )
+            + "\n\n"
+            + (self.status.toolTip() or self.status.text())
+            + "\n\n"
+            + (self.speech_runtime.toolTip() or self.speech_runtime.text())
+        )
+
+    def set_speech_runtime(self, message):
+        self.speech_runtime.setText("Live engine · " + compact_runtime_label(message))
+        self.speech_runtime.setToolTip(message)
 
     def show_reading(self):
         self.sections.setCurrentIndex(2)
@@ -508,7 +572,9 @@ class ControlDashboard(QMainWindow):
         panel.setMinimumSize(0, 0)
         self.voices_stack.addWidget(panel)
         self.voices_stack.setCurrentWidget(panel)
-        self.voice_edit_status.show()
+        self._voice_dirty = False
+        self._voice_busy = False
+        self.set_voice_editor_busy(False)
         self.show_voices()
         panel.show()
 
@@ -518,11 +584,17 @@ class ControlDashboard(QMainWindow):
         self.voice_edit_status.hide()
 
     def set_voice_editor_busy(self, busy):
+        self._voice_busy = bool(busy)
         self.voice_edit_status.setText(
             "Voice preview running — Show / cancel"
             if busy
             else "Voices: unsaved selection — Show"
         )
+        self.voice_edit_status.setVisible(self._voice_busy or self._voice_dirty)
+
+    def set_voice_editor_dirty(self, dirty):
+        self._voice_dirty = bool(dirty)
+        self.set_voice_editor_busy(self._voice_busy)
 
     def embed_preparation(self, panel, *, show=True):
         panel.setWindowFlags(Qt.WindowType.Widget)
@@ -554,6 +626,7 @@ class ControlDashboard(QMainWindow):
         )
         self.details_toggle.blockSignals(False)
         self.details_content.setVisible(expanded)
+        self.recovery_controls.setVisible(expanded or self._recovery_required)
 
     def _set_setup_expanded(self, expanded):
         expanded = bool(expanded)
@@ -575,9 +648,12 @@ class ControlDashboard(QMainWindow):
         self._set_capture_configuration(settings)
 
     def set_speech_identity(self, settings, narrator=None):
-        summary = speech_configuration_label(settings, narrator=narrator)
+        summary = speech_configuration_label(settings, narrator=narrator, compact=True)
         self.speech_configuration.setText(summary)
-        self.reading_defaults.setText(f"Live speech defaults\n{summary}")
+        self.reading_defaults.setText(f"For new speech: {summary}")
+        self.speech_details.setText(
+            speech_configuration_label(settings, narrator=narrator)
+        )
         self.speech_configuration.setToolTip(self.reading_help.text())
 
     def _set_capture_configuration(self, settings):
@@ -627,6 +703,10 @@ class ControlDashboard(QMainWindow):
         sequence_audio = is_live_sequence_audio_mode(getattr(status, "mode", "off"))
         self.sequence_group.setVisible(sequence_audio)
         if not sequence_audio:
+            self._recovery_required = False
+            self.recovery_controls.setVisible(self.details_toggle.isChecked())
+            self.sequence_expected_button.setEnabled(False)
+            self.sequence_guidance.clear()
             self.story_title.setText("No story position yet")
             self.sequence_position.setText("Not located")
             return
@@ -646,12 +726,12 @@ class ControlDashboard(QMainWindow):
         self.sequence_position.setText(
             "Not located"
             if chapter is None
-            else f"Chapter {chapter}, sequence {sequence if sequence is not None else '-'}"
+            else f"Line {sequence if sequence is not None else '-'}"
         )
         event_id = getattr(status, "event_id", None)
         line_id = getattr(status, "line_id", None)
         self.sequence_identity.setText(
-            f"{event_id or '-'} / {line_id or '-'}; "
+            f"Chapter {chapter}; {event_id or '-'} / {line_id or '-'}; "
             f"{getattr(status, 'next_event_count', 0)} next candidate(s)"
         )
         speaker = getattr(status, "speaker", None)
@@ -667,6 +747,8 @@ class ControlDashboard(QMainWindow):
         guidance = getattr(status, "guidance", "")
         self.sequence_guidance.setText(guidance)
         recovery = bool(getattr(status, "recovery_required", False))
+        self._recovery_required = recovery
+        self.recovery_controls.setVisible(recovery or self.details_toggle.isChecked())
         candidate_count = int(getattr(status, "expected_candidate_count", 0))
         self._sequence_expected_candidate_count = candidate_count
         self.sequence_expected_button.setEnabled(candidate_count > 0 and self._ready)
@@ -689,11 +771,18 @@ class ControlDashboard(QMainWindow):
         self.sequence_resync_button.setToolTip(guidance)
 
     def set_status(self, message):
-        self.status.setText(message)
+        self.status.setToolTip(message)
+        summary = " ".join(message.split())
+        self.status.setText(
+            summary
+            if len(summary) <= 240
+            else summary[:240] + "… Copy status for the full message."
+        )
         if not self._ready:
             self._set_action_reason(
-                f"Reading controls are unavailable: {message}. "
-                "Select Check readiness to recover."
+                "Select the game window to continue."
+                if self._window_problem
+                else "Select Check readiness for the next step."
             )
 
     def set_dialogue(self, speaker, text):
@@ -718,6 +807,11 @@ class ControlDashboard(QMainWindow):
     def set_runtime_controls(self, state):
         self._ready = state.ready
         self.prepare_reading_button.setVisible(not state.ready)
+        window_problem = "window" in (state.unavailable_reason or "").casefold()
+        self._window_problem = window_problem
+        self.prepare_reading_button.setText(
+            "Select game window" if window_problem else "Set up reading"
+        )
         self.read_button.setEnabled(state.can_read)
         self.live_button.setEnabled(state.can_toggle_live)
         self.pause_button.setEnabled(state.can_pause)
@@ -782,20 +876,10 @@ class ControlDashboard(QMainWindow):
     def set_diagnostic(self, snapshot):
         self.speaker.setText(snapshot.character or "Narrator")
         source = snapshot.audio_source or "Not selected"
-        self.voice.setText(
-            "Voice embedded in the saved recording"
-            if "Generated audio" in source
-            else "Original game voice (not synthesized by VNTTS)"
-            if source.startswith("Original game audio")
-            else snapshot.voice or "Not resolved yet"
-        )
-        saved = source.startswith(("Generated audio", "Original game audio")) or (
-            "memory cache" in source or "persistent cache" in source
-        )
-        self.audio_source.setText(
-            source
-            + ("\nSaved audio: no generation for this playback." if saved else "")
-        )
+        voice, audio = playback_labels(source, snapshot.voice or "Not resolved yet")
+        self.voice.setText(voice)
+        self.audio_source.setText(audio)
+        self.playback_details.setText(f"Reported voice: {snapshot.voice}\n{source}")
         self.confidence.setText(f"{snapshot.confidence:.1f}%")
         parts = []
         if snapshot.capture_ms is not None:

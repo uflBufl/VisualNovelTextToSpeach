@@ -184,6 +184,24 @@ class VoicePreviewDialogTest(unittest.TestCase):
         self.assertEqual(dialog.status.text(), "Preview failed: engine unavailable")
         dialog.deleteLater()
 
+    def test_status_and_preview_details_are_selectable_and_copyable(self):
+        dialog = self.create_dialog()
+        dialog.preview_identity.setText("Narrator using Alba: exact text")
+        dialog.status.setText("Preview failed: exact diagnostic")
+
+        self.assertTrue(
+            dialog.status.textInteractionFlags()
+            & Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.assertTrue(
+            dialog.preview_identity.textInteractionFlags()
+            & Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self.assertEqual(dialog.copy_details.text(), "Copy details")
+        self.assertIn("exact diagnostic", dialog._copy_details())
+        self.assertIn("Narrator using Alba", dialog._copy_details())
+        dialog.deleteLater()
+
     def test_narrator_controls_separate_fallback_voice_and_force_live(self):
         clear_assignment_handler = Mock()
         force_live_handler = Mock()

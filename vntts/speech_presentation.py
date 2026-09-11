@@ -171,6 +171,11 @@ def speech_configuration_label(settings, *, narrator=None, compact=False):
             pocket_cloning=settings.pocket_gated_model_accepted,
             compact=compact,
         )
+        + (
+            f"\nConfigured model: {settings.tts_model or '(automatic)'}"
+            if not compact
+            else ""
+        )
     )
 
 

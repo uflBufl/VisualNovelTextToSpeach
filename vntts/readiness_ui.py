@@ -1,5 +1,5 @@
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QCloseEvent, QColor
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QCloseEvent, QColor, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QTableWidget,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.ui_text import copy_text_button, make_text_copyable
 
 
 class ReadinessDialog(QDialog):
@@ -59,6 +61,17 @@ class ReadinessDialog(QDialog):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.itemSelectionChanged.connect(self._update_remediation)
+        self.selected_details = QPlainTextEdit()
+        self.selected_details.setReadOnly(True)
+        self.selected_details.setMaximumHeight(110)
+        self.selected_details.setAccessibleName("Full details of the selected check")
+        self.copy_selected = copy_text_button(
+            "Copy selected check", self._selected_text
+        )
+        self.copy_all = copy_text_button("Copy report", self._report_text)
+        self.copy_shortcut = QShortcut(QKeySequence.StandardKey.Copy, self.table)
+        self.copy_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.copy_shortcut.activated.connect(self.copy_selected.click)
 
         remediation = QHBoxLayout()
         self.remediation_reason = QLabel()
@@ -70,6 +83,8 @@ class ReadinessDialog(QDialog):
         self.remediation_button.clicked.connect(self._run_selected_remediation)
         remediation.addWidget(self.remediation_button)
         controls = QHBoxLayout()
+        controls.addWidget(self.copy_selected)
+        controls.addWidget(self.copy_all)
         controls.addStretch()
         self.refresh_button = QPushButton("Run checks again")
         self.refresh_button.clicked.connect(self.refresh)
@@ -86,10 +101,30 @@ class ReadinessDialog(QDialog):
         layout.addWidget(self.summary)
         layout.addWidget(self.progress)
         layout.addWidget(self.table, 1)
+        layout.addWidget(self.selected_details)
         layout.addLayout(remediation)
         layout.addLayout(controls)
         layout.addWidget(buttons)
+        make_text_copyable(self)
         self.refresh()
+
+    def _selected_text(self):
+        result = self._selected_result()
+        return (
+            f"{result.status.upper()} | {result.name}\n{result.message}"
+            if result
+            else self.summary.text()
+        )
+
+    def _report_text(self):
+        return (
+            self.summary.text()
+            + "\n\n"
+            + "\n\n".join(
+                f"{result.status.upper()} | {result.name}\n{result.message}"
+                for result in self._results
+            )
+        )
 
     def update_settings(self, settings):
         self.settings = settings
@@ -132,13 +167,24 @@ class ReadinessDialog(QDialog):
             return
         self._results = tuple(results)
         self.table.setRowCount(len(results))
+        dark = self.table.palette().color(QPalette.ColorRole.Base).lightness() < 128
         colors = {
-            "ok": QColor("#287a3d"),
-            "warning": QColor("#9a6400"),
-            "error": QColor("#b3261e"),
+            "ok": QColor("#75d894" if dark else "#287a3d"),
+            "warning": QColor("#edc66f" if dark else "#9a6400"),
+            "error": QColor("#ff929c" if dark else "#b3261e"),
         }
         for row, result in enumerate(results):
-            values = (result.status.upper(), result.name, result.message)
+            message = result.message
+            if message.startswith("Installed at "):
+                message = "Installed and ready"
+            elif message.startswith("Cached at "):
+                message = "Downloaded and ready"
+            elif message.startswith("Missing voice reference: "):
+                message = (
+                    "Voice recording missing: "
+                    + message.replace("\\", "/").rsplit("/", 1)[-1]
+                )
+            values = (result.status.upper(), result.name, message)
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 0:
@@ -183,6 +229,8 @@ class ReadinessDialog(QDialog):
         return self._results[row]
 
     def _update_remediation(self):
+        self.selected_details.setPlainText(self._selected_text())
+        self.copy_selected.setEnabled(not self._checks_running)
         self.remediation_button.setEnabled(False)
         self.remediation_button.setText("Fix selected issue")
         if self._checks_running:

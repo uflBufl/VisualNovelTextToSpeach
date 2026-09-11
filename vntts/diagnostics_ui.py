@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from vntts.ui_text import copy_text_button, make_text_copyable
+
 
 class DiagnosticsDialog(QDialog):
     refresh_requested = Signal()
@@ -93,6 +95,8 @@ class DiagnosticsDialog(QDialog):
         controls.addWidget(self.refresh_status, 1)
         controls.addStretch()
         controls.addWidget(self.refresh_button)
+        self.copy_error_button = copy_text_button("Copy warning", self.warning.text)
+        controls.addWidget(self.copy_error_button)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)
@@ -104,6 +108,7 @@ class DiagnosticsDialog(QDialog):
         layout.addWidget(self.warning_action, 0, Qt.AlignmentFlag.AlignRight)
         layout.addLayout(controls)
         layout.addWidget(buttons)
+        make_text_copyable(self)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

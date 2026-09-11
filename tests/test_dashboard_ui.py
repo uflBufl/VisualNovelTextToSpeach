@@ -19,6 +19,76 @@ from vntts.settings import AppSettings  # noqa: E402
 
 
 class ControlDashboardTest(unittest.TestCase):
+    def test_long_status_stays_compact_but_copy_preserves_exact_error_and_compute(self):
+        dashboard = ControlDashboard(AppSettings())
+        message = "Unable to load model: " + "a" * 500 + "\nRetry after downloading."
+        compute = "Compute: GPU: RTX 2070 SUPER (37 GPU layers); audio model/codec: CPU"
+        dashboard.set_status(message)
+        dashboard.set_speech_runtime(compute)
+        self.assertLess(len(dashboard.status.text()), len(message))
+        dashboard.copy_status_button.click()
+        self.assertEqual(self.application.clipboard().text(), message)
+        dashboard.copy_details_button.click()
+        self.assertIn(message, self.application.clipboard().text())
+        self.assertIn(compute, self.application.clipboard().text())
+        dashboard.deleteLater()
+
+    def test_reading_prioritizes_dialogue_and_copies_exact_details(self):
+        dashboard = ControlDashboard(AppSettings())
+        dashboard.show_reading()
+        dashboard.set_ready(True)
+        dashboard.set_dialogue("Hotelier", "Your room is ready.")
+        source = (
+            "Generated audio (line opaque-id)\nRecorded with: moss-tts; model: openmoss-cpp:sha256:"
+            + "a" * 64
+        )
+        dashboard.set_diagnostic(
+            DiagnosticSnapshot(None, character="Hotelier", audio_source=source)
+        )
+        dashboard.resize(620, 440)
+        dashboard.show()
+        self.application.processEvents()
+        self.assertTrue(
+            dashboard.content_scroll.viewport()
+            .rect()
+            .contains(
+                dashboard.dialogue.mapTo(
+                    dashboard.content_scroll.viewport(),
+                    dashboard.dialogue.rect().center(),
+                )
+            )
+        )
+        self.assertNotIn("opaque-id", dashboard.audio_source.text())
+        dashboard.copy_details_button.click()
+        self.assertIn(source, self.application.clipboard().text())
+        dashboard.close()
+        dashboard.deleteLater()
+
+    def test_missing_window_offers_window_settings(self):
+        dashboard = ControlDashboard(AppSettings(onboarding_completed=True))
+        requested = []
+        dashboard.settings_requested.connect(lambda: requested.append("window"))
+        dashboard.reading_setup_requested.connect(lambda: requested.append("engine"))
+        dashboard.set_ready(False, reason="Selected game window is unavailable")
+        self.assertEqual(dashboard.prepare_reading_button.text(), "Select game window")
+        dashboard.prepare_reading_button.click()
+        self.assertEqual(requested, ["window"])
+        dashboard.deleteLater()
+
+    def test_dirty_banner_tracks_changes_separately_from_background_activity(self):
+        dashboard = ControlDashboard(AppSettings())
+        dashboard.set_voice_editor_busy(False)
+        self.assertTrue(dashboard.voice_edit_status.isHidden())
+        dashboard.set_voice_editor_dirty(True)
+        self.assertFalse(dashboard.voice_edit_status.isHidden())
+        dashboard.set_voice_editor_busy(True)
+        self.assertIn("running", dashboard.voice_edit_status.text())
+        dashboard.set_voice_editor_busy(False)
+        self.assertIn("unsaved", dashboard.voice_edit_status.text())
+        dashboard.set_voice_editor_dirty(False)
+        self.assertTrue(dashboard.voice_edit_status.isHidden())
+        dashboard.deleteLater()
+
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
@@ -75,7 +145,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(dashboard.speaker.text(), "Selone")
         self.assertEqual(
             dashboard.audio_source.text(),
-            "MOSS fresh generation (voice Selone)",
+            "MOSS · new speech",
         )
         self.assertIn("first audio 240 ms", dashboard.latency.text())
         self.assertIn("queue 1", dashboard.latency.text())
@@ -141,7 +211,7 @@ class ControlDashboardTest(unittest.TestCase):
         dashboard.set_status("Speech model failed to load")
 
         self.assertFalse(dashboard.live_button.isEnabled())
-        self.assertIn("Speech model failed to load", dashboard.action_reason.text())
+        self.assertIn("Speech model failed to load", dashboard.status.text())
         self.assertIn("Check readiness", dashboard.action_reason.text())
         self.assertEqual(
             dashboard.live_button.toolTip(), dashboard.action_reason.text()
@@ -375,7 +445,8 @@ class ControlDashboardTest(unittest.TestCase):
         )
 
         self.assertIn("desynchronized", dashboard.sequence_state.text())
-        self.assertIn("314601", dashboard.sequence_position.text())
+        self.assertEqual("Line 41", dashboard.sequence_position.text())
+        self.assertIn("314601", dashboard.sequence_identity.text())
         self.assertEqual(dashboard.story_title.text(), "Rhiannon's story")
         self.assertFalse(dashboard.details_content.isAncestorOf(dashboard.story_title))
         self.assertFalse(
@@ -407,6 +478,8 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(dashboard.story_title.text(), "Story title not recorded")
         dashboard.set_sequence_status(LiveSequenceStatus("off", "off"))
         self.assertEqual(dashboard.sequence_position.text(), "Not located")
+        self.assertTrue(dashboard.recovery_controls.isHidden())
+        self.assertFalse(dashboard.sequence_expected_button.isEnabled())
         dashboard.deleteLater()
 
     def test_close_quits_by_default_instead_of_hiding_silently(self):

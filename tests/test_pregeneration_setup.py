@@ -443,7 +443,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.story_context.text(), "No stories selected.")
             dialog.source.setCurrentIndex(1)
             self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
-            self.assertIn("0 of 2 stories shown", dialog.story_filter_status.text())
+            self.assertIn("0/2 shown", dialog.story_filter_status.text())
             self.assertIn("2 hidden by filters", dialog.story_filter_status.text())
             dialog.source.setCurrentIndex(0)
             self.assertEqual(dialog.selected_story_ids(), ())
@@ -455,12 +455,59 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.select_all_button.click()
             dialog.refresh_button.click()
             self.assertEqual(dialog.selected_story_ids(), ("main-1",))
-            self.assertIn(
-                "1 of 2 stories shown; 1 selected", dialog.story_filter_status.text()
-            )
+            self.assertIn("1/2 shown; 1 selected", dialog.story_filter_status.text())
             dialog.story_search.setText("missing story")
             self.assertIn("Clear filters", dialog.story_filter_status.text())
             self.assertEqual(dialog.selected_story_ids(), ("main-1",))
+
+    def test_story_controls_are_compact_and_copy_full_details(self):
+        from vntts.dashboard_ui import ControlDashboard
+
+        with TemporaryDirectory() as temporary_directory:
+            content = inspect_story_index(write_story_index(Path(temporary_directory)))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(Path(temporary_directory) / "jobs"),
+            )
+            dashboard = ControlDashboard(AppSettings())
+            dashboard.embed_preparation(dialog)
+            self.addCleanup(dashboard.deleteLater)
+            dashboard.resize(620, 440)
+            dashboard.show()
+            self.application.processEvents()
+
+            self.assertTrue(dialog.import_options.isHidden())
+            self.assertFalse(dialog.content_scroll.isVisibleTo(dashboard))
+            self.assertGreaterEqual(dialog.stories.viewport().height(), 90)
+            self.assertNotIn("story-index", dialog.source.currentText())
+            dialog.import_options_toggle.click()
+            self.assertFalse(dialog.import_options.isHidden())
+            self.assertTrue(
+                dialog.story_filter_status.textInteractionFlags()
+                & Qt.TextInteractionFlag.TextSelectableByKeyboard
+            )
+            self.assertTrue(
+                dialog.narrator_status.textInteractionFlags()
+                & Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            self.assertEqual(
+                dialog.coverage_summary.text(), "2 not prepared (2 stories)."
+            )
+            dialog.copy_narrator_details.click()
+            self.assertIn("Engine:", self.application.clipboard().text())
+            self.assertIn("Model:", self.application.clipboard().text())
+
+            error = "unbroken-error-" * 12
+            dialog._set_resume_error("Unable to save preparation", error)
+            self.assertEqual(
+                dialog.resume_status.text(), f"Unable to save preparation: {error}"
+            )
+            dialog.copy_resume_error.click()
+            self.assertEqual(
+                self.application.clipboard().text(),
+                f"Unable to save preparation: {error}",
+            )
 
     def test_unstarted_story_selection_survives_close_without_creating_jobs(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1074,7 +1121,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.stories.count(), 2)
             self.assertIn("Not prepared", dialog.stories.item(0).text())
             self.assertIn(
-                "Partially prepared - saved audio; check readiness",
+                "Partially prepared: saved audio; check readiness",
                 dialog.stories.item(1).text(),
             )
             dialog.close()
@@ -1327,12 +1374,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
             self.assertIn(
-                "2 partially prepared, 0 need attention, 0 not prepared",
+                "2 partially prepared (2 stories)",
                 dialog.coverage_summary.text(),
             )
             self.assertIn("Saved offline audio found", dialog.resume_status.text())
             self.assertIn(
-                "Partially prepared - saved audio; check readiness",
+                "Partially prepared: saved audio; check readiness",
                 dialog.stories.item(1).text(),
             )
             self.assertIn("Partially prepared", dialog.stories.item(0).text())
@@ -1411,13 +1458,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.job().status, "prepared")
             self.assertTrue(
                 all(
-                    "Partially prepared - saved audio; check readiness"
+                    "Partially prepared: saved audio; check readiness"
                     in dialog.stories.item(row).text()
                     for row in range(dialog.stories.count())
                 )
             )
             self.assertIn(
-                "2 partially prepared, 0 need attention, 0 not prepared",
+                "2 partially prepared (2 stories)",
                 dialog.coverage_summary.text(),
             )
             self.assertTrue(dialog.selection_panel.isHidden())

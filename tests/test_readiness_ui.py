@@ -4,6 +4,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QColor, QPalette  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QHeaderView, QLabel  # noqa: E402
 
@@ -13,6 +14,41 @@ from vntts.settings import AppSettings  # noqa: E402
 
 
 class ReadinessDialogTest(unittest.TestCase):
+    def test_copy_selected_check_keeps_full_error_and_path(self):
+        pool = ManualThreadPool()
+        message = "Missing voice reference: C:/voices/" + "a" * 100 + "/centurion.wav"
+        diagnostics = type(
+            "Diagnostics",
+            (),
+            {
+                "run": lambda _self, _settings: (
+                    DiagnosticResult("Narrator", "error", message),
+                )
+            },
+        )()
+        dialog = ReadinessDialog(AppSettings(), diagnostics, thread_pool=pool)
+        palette = dialog.table.palette()
+        palette.setColor(QPalette.ColorRole.Base, QColor("#222222"))
+        dialog.table.setPalette(palette)
+        pool.run_next()
+        self.application.processEvents()
+        dialog.show()
+        dialog.table.setFocus()
+        self.application.processEvents()
+        dialog.copy_selected.click()
+        expected = f"ERROR | Narrator\n{message}"
+        self.assertEqual(self.application.clipboard().text(), expected)
+        self.application.clipboard().clear()
+        QTest.keyClick(dialog.table, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(self.application.clipboard().text(), expected)
+        self.assertEqual(dialog.selected_details.toPlainText(), expected)
+        self.assertNotIn("a" * 100, dialog.table.item(0, 2).text())
+        self.assertGreater(
+            dialog.table.item(0, 0).foreground().color().lightness(), 128
+        )
+        dialog.close()
+        dialog.deleteLater()
+
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])

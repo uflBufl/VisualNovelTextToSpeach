@@ -140,6 +140,7 @@ from vntts.support import (
     configure_game_import_log,
 )
 from vntts.support_ui import SupportCenterDialog
+from vntts.ui_text import make_text_copyable
 from vntts.voice_preview_ui import VoicePreviewDialog
 from vntts.voices import find_default_voice_manifest, find_voice_assignment
 from vntts.window_capture import (
@@ -560,6 +561,7 @@ class SettingsDialog(QDialog):
             )
         )
         speech_form.setRowVisible(narrator_reference_layout, False)
+        self.narrator_reference_layout = narrator_reference_layout
         _add_composite_form_row(
             speech_form, "Game pack", self.game_pack, game_pack_layout
         )
@@ -605,6 +607,28 @@ class SettingsDialog(QDialog):
         playback_form.addRow("Speaker announcements", self.speaker_announcement_mode)
         playback_form.addRow("Advance key", self.auto_advance_key)
         playback_form.addRow("Advance delay", self.auto_advance_delay)
+
+        self.advanced_settings = QCheckBox("Show advanced settings")
+        self._advanced_rows = (
+            (capture_form, screenshot_layout),
+            (capture_form, self.ocr_minimum_confidence),
+            (capture_form, self.ocr_language),
+            (capture_form, self.retain_uncertain_frames),
+            (capture_form, diagnostics_layout),
+            (speech_form, self.tts_language),
+            (speech_form, self.advanced_narrator),
+            (speech_form, game_pack_layout),
+            (speech_form, voice_manifest_layout),
+            (speech_form, story_index_layout),
+            (speech_form, live_sequence_plan_layout),
+            (speech_form, live_speaker_corpus_layout),
+            (speech_form, generated_audio_manifest_layout),
+            (speech_form, self.tts_profile),
+            (playback_form, self.live_sequence_mode),
+            (playback_form, self.auto_advance_key),
+            (playback_form, self.auto_advance_delay),
+        )
+        self.advanced_settings.toggled.connect(self._set_advanced_settings)
 
         application_form = QFormLayout()
         application_form.addRow("Startup readiness", self.warm_up_voices)
@@ -676,6 +700,7 @@ class SettingsDialog(QDialog):
         layout.addLayout(section_navigation_layout)
         layout.addWidget(self.validation_summary)
         layout.addWidget(self.settings_scroll, 1)
+        layout.addWidget(self.advanced_settings)
         layout.addWidget(buttons)
         self._resize_for_available_screen()
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
@@ -698,6 +723,17 @@ class SettingsDialog(QDialog):
         self.update_auto_advance_controls()
         self.update_validation_summary()
         self.section_navigation.setCurrentIndex(1)
+        self._set_advanced_settings(False)
+        make_text_copyable(self)
+
+    def _set_advanced_settings(self, visible):
+        for form, field in self._advanced_rows:
+            form.setRowVisible(field, visible)
+        self.speech_form.setRowVisible(
+            self.narrator_reference_layout,
+            visible and self.advanced_narrator.isChecked(),
+        )
+        self.update_speech_backend_controls()
 
     @staticmethod
     def _settings_region(title, form):
@@ -984,7 +1020,7 @@ class SettingsDialog(QDialog):
                 f"Fix {len(errors)} setting(s) before saving:\n"
                 + "\n".join(f"- {message}" for _section, _widget, message in errors)
             )
-            self.validation_summary.setStyleSheet("color: #b3261e; font-weight: 600;")
+            self.validation_summary.setStyleSheet("font-weight: 600;")
         else:
             self.validation_summary.setText("All settings are valid.")
             self.validation_summary.setStyleSheet("")
@@ -1125,12 +1161,15 @@ class SettingsDialog(QDialog):
         }:
             self.tts_model.setText(default_xtts_model)
         self.tts_model.setEnabled(uses_xtts or uses_moss)
-        self.speech_form.setRowVisible(self.tts_model, uses_xtts or uses_moss)
+        advanced = self.advanced_settings.isChecked()
+        self.speech_form.setRowVisible(
+            self.tts_model, advanced and (uses_xtts or uses_moss)
+        )
         self.tts_language.setEnabled(uses_xtts or uses_moss)
         self.narrator_reference.setEnabled(True)
         self.narrator_reference_button.setEnabled(True)
         self.narrator_speaker.setEnabled(uses_xtts)
-        self.speech_form.setRowVisible(self.narrator_speaker, uses_xtts)
+        self.speech_form.setRowVisible(self.narrator_speaker, advanced and uses_xtts)
         self.tts_profile.setEnabled(uses_xtts or uses_moss)
         self.speech_rate.setEnabled(uses_xtts)
         self.update_terms_control()
@@ -1139,6 +1178,7 @@ class SettingsDialog(QDialog):
         errors = self.update_validation_summary()
         if errors:
             section, widget, _message = errors[0]
+            self.advanced_settings.setChecked(True)
             if widget is self.narrator_reference:
                 self.advanced_narrator.setChecked(True)
             self.section_navigation.setCurrentIndex(section)
@@ -1567,7 +1607,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _refresh_speech_runtime(self):
-        self.dashboard.speech_runtime.setText(self._speech_runtime_label())
+        self.dashboard.set_speech_runtime(self._speech_runtime_label())
         loaded = self.moss_runtime.loaded
         label = (
             "Loading OpenMOSS..."
@@ -2879,12 +2919,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._resume_live_after_narrator = resume_live
         dialog.finished.connect(self._narrator_finished)
         dialog.runner.activeChanged.connect(self.dashboard.set_voice_editor_busy)
+        dialog.settingsChanged.connect(self.dashboard.set_voice_editor_dirty)
         self.show_dashboard()
         self.dashboard.embed_narrator(dialog)
         self._apply_controller_action_state()
-        self.set_status(
-            "Choose narrator or character defaults in Voices. Navigation keeps your unsaved selection."
-        )
+        self.set_status("Choose a voice in Voices. Changes apply when you save.")
 
     def _open_preparation_narrator(self, _settings, _parent, *, character=None):
         self.open_voice_previews(character=character)
@@ -3153,6 +3192,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             initial_character=initial_character,
             fixed_character=contextual_character,
             engine_description=engine_model_label(
+                self.settings.speech_backend,
+                self.settings.tts_model,
+                pocket_cloning=self.settings.pocket_gated_model_accepted,
+                compact=True,
+            ),
+            engine_details=engine_model_label(
                 self.settings.speech_backend,
                 self.settings.tts_model,
                 pocket_cloning=self.settings.pocket_gated_model_accepted,

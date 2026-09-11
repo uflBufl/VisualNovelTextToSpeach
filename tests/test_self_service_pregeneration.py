@@ -137,7 +137,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_generation_exception_wraps_inside_preparation_window(self):
+    def test_generation_exception_keeps_exact_copyable_details(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             dialog = OfflineAudioPreparationDialog(
@@ -149,9 +149,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
 
             dialog._generation_finished(None, error)
 
-            lines = dialog.resume_status.text().splitlines()
-            self.assertGreater(len(lines), 1)
-            self.assertLessEqual(max(map(len, lines)), 72)
+            details = f"Unable to generate offline audio: {error}"
+            self.assertEqual(dialog.resume_status.text(), details)
+            dialog.copy_resume_error.click()
+            self.assertEqual(self.application.clipboard().text(), details)
             self.assertEqual(
                 dialog.resume_status.sizePolicy().horizontalPolicy(),
                 QSizePolicy.Policy.Ignored,
@@ -451,9 +452,12 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertFalse(dialog._awaiting_voice_confirmation)
             self.assertTrue(dialog.voice_confirmation.isHidden())
             self.assertIn("Step 1", dialog.step.text())
+            self.assertIn("MOSS", dialog.narrator_status.text())
+            self.assertNotIn("Engine:", dialog.narrator_status.text())
+            dialog.copy_narrator_details.click()
             self.assertIn(
                 engine_model_label("moss-tts", "selected/model"),
-                dialog.narrator_status.text(),
+                self.application.clipboard().text(),
             )
             self.assertEqual(dialog.engine_choice.currentData(), "moss-tts")
             self.assertEqual(dialog.model_choice.text(), "selected/model")
@@ -499,12 +503,18 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             dialog.show()
             self.application.processEvents()
-            self.assertTrue(dialog.narrator_status.isVisibleTo(dialog))
+            self.assertTrue(dialog.progress_configuration.isVisibleTo(dialog))
             self.assertTrue(dialog.story_context.isVisibleTo(dialog))
             self.assertFalse(dialog.engine_choice.isEnabled())
             self.assertFalse(dialog.model_choice.isEnabled())
             self.assertFalse(dialog.game_narrator_button.isEnabled())
-            self.assertIn("Centurion", dialog.narrator_status.text())
+            self.assertIn("Centurion", dialog.progress_configuration.text())
+            self.assertNotIn("Model:", dialog.progress_configuration.text())
+            self.assertIn("Source:", dialog.story_context.text())
+            self.assertTrue(dialog.copy_progress_configuration.isVisibleTo(dialog))
+            dialog.copy_progress_configuration.click()
+            self.assertIn("Model: selected/model", self.application.clipboard().text())
+            self.assertIn(str(content.story_index), self.application.clipboard().text())
             dialog.reject()
             dialog.deleteLater()
 
@@ -594,7 +604,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             dialog.show_all_voice_routes.setChecked(False)
             self.assertIn("Step 2", dialog.step.text())
-            self.assertIn("Model:", dialog.narrator_status.text())
+            self.assertIn("Pocket TTS", dialog.narrator_status.text())
+            dialog.copy_narrator_details.click()
+            self.assertIn("Model:", self.application.clipboard().text())
             self.assertNotIn("Model:", dialog.voice_configuration.text())
             self.assertIn(
                 "Changing voices or model may require new recordings",

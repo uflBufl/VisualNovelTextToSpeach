@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from vntts.speech_presentation import speech_runtime_label
+from vntts.speech_presentation import compact_runtime_label, speech_runtime_label
+from vntts.ui_text import copy_text_button, make_text_copyable
 
 
 class VoicePreviewSignals(QObject):
@@ -36,6 +37,7 @@ class VoicePreviewDialog(QDialog):
         initial_character=None,
         fixed_character=None,
         engine_description=None,
+        engine_details=None,
         runtime_status_handler=None,
         game_narrator_handler=None,
         parent=None,
@@ -108,6 +110,9 @@ class VoicePreviewDialog(QDialog):
         self.preview_identity = QLabel("No preview is active.")
         self.preview_identity.setAccessibleName("Exact voice preview identity")
         self.preview_identity.setWordWrap(True)
+        self._engine_details = (
+            engine_details or engine_description or "Current speech engine"
+        )
         self.engine_description = QLabel(engine_description or "Current speech engine")
         self.engine_description.setWordWrap(True)
         self.engine_description.setAccessibleName("Voice preview engine and model")
@@ -125,12 +130,12 @@ class VoicePreviewDialog(QDialog):
             )
 
         form = QFormLayout()
-        form.addRow("Generate preview with", self.engine_description)
+        form.addRow("Engine", self.engine_description)
         form.addRow(self.runtime)
         form.addRow(self.game_narrator_button)
-        form.addRow("Narrator or character", self.character)
+        form.addRow("Voice for", self.character)
         form.addRow("Routing", self.routing_note)
-        form.addRow("Candidate voice", self.voice)
+        form.addRow("Candidate", self.voice)
         form.addRow("", self.description)
         form.addRow("Preview text", self.text)
         form.addRow("", self.preview_button)
@@ -143,7 +148,11 @@ class VoicePreviewDialog(QDialog):
         buttons.rejected.connect(self.close)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
-        layout.addWidget(self.status)
+        status_layout = QVBoxLayout()
+        status_layout.addWidget(self.status)
+        self.copy_details = copy_text_button("Copy details", self._copy_details, self)
+        status_layout.addWidget(self.copy_details)
+        layout.addLayout(status_layout)
         layout.addWidget(buttons)
         self.signals.finished.connect(self.preview_finished)
         self.voice.currentIndexChanged.connect(self.update_description)
@@ -156,16 +165,31 @@ class VoicePreviewDialog(QDialog):
         self._refresh_runtime()
         self.update_description()
         self.target_changed()
+        make_text_copyable(self)
 
     def update_description(self):
         self.description.setText(self.voice.currentData(3) or "")
 
+    def _copy_details(self):
+        return "\n\n".join(
+            value
+            for value in (
+                self.status.text(),
+                self._engine_details,
+                self.runtime.toolTip() or self.runtime.text(),
+                self.preview_identity.text(),
+            )
+            if value
+        )
+
     def _refresh_runtime(self):
-        self.runtime.setText(
+        message = (
             self.runtime_status_handler()
             if self.runtime_status_handler is not None
             else speech_runtime_label(None)
         )
+        self.runtime.setText(compact_runtime_label(message))
+        self.runtime.setToolTip(message)
 
     def _choose_game_narrator(self, handler):
         if handler(self):

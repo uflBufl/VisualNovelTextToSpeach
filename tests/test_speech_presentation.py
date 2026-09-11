@@ -91,6 +91,9 @@ class SpeechPresentationTest(unittest.TestCase):
         )
         self.assertIn("Narrator voice: Centurion", speech_configuration_label(settings))
         self.assertIn("Model: my-model.gguf", speech_configuration_label(settings))
+        self.assertIn(
+            "Configured model: my-model.gguf", speech_configuration_label(settings)
+        )
         self.assertNotIn(
             "irrelevant-xtts", engine_model_label("pocket-tts", "irrelevant-xtts")
         )
