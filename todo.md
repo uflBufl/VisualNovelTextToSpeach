@@ -5,17 +5,15 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P1 - Calibrate automatic pregeneration decisions
 
-- [ ] Collect independently reason-labelled bad generations for pacing,
-      repetition, truncation, pronunciation, artifacts and speaker identity.
-      Reserve separate fit and held-out groups; do not expand mandatory review.
-- [ ] Compare a stronger local ASR or forced aligner using that corpus. Promote an
-      automatic rejection rule only after measuring false positives and false
-      negatives. Until then keep current quality signals diagnostic-only and use
-      safe sentence repair, one bounded provider-local retry, then typed fallback.
-- [ ] Validate speaker identity on independently reviewed `same-speaker`,
-      `different-speaker` and `same-character/different-age` pairs. Publish a
-      threshold only if held-out evaluation preserves every known age/identity
-      boundary; otherwise keep variants separate.
+- [ ] Use `current-character-story-human-labelled-v4` as a regression benchmark,
+      not as a dataset-completion target. Measure existing pause, silence and pace
+      diagnostics against its current labels and relax or remove signals that flag
+      acceptable MOSS output. Do not manufacture missing defect categories or
+      promote a new automatic rejection rule from this corpus alone. Add naturally
+      occurring reviewed failures later only when normal pregeneration exposes
+      them. Completion gate: known acceptable WAVs are not automatically rejected;
+      obvious detected failures still take the existing bounded repair/fallback
+      route without adding mandatory review.
 
 ## P1 - Qualify remaining Python and speech runtimes
 
