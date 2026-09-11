@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from unittest.mock import patch
 
 from vntts_artifacts import write_story_index_document
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -364,7 +365,17 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 manifest_path=manifest,
             )
 
-            result = PregenerationInputStore(jobs).materialize(job, plan)
+            with (
+                patch(
+                    "vntts.pregeneration_queue.load_source_audio_semantic_evidence",
+                    wraps=load_source_audio_semantic_evidence,
+                ) as evidence_load,
+                patch(
+                    "vntts.source_audio_semantics.load_story_index_document",
+                    wraps=load_story_index_document,
+                ) as story_load,
+            ):
+                result = PregenerationInputStore(jobs).materialize(job, plan)
             evidence = load_source_audio_semantic_evidence(
                 result.source_audio_semantic_evidence,
                 result.story_index,
@@ -377,6 +388,8 @@ class PregenerationInputStoreTest(unittest.TestCase):
             selected_story.metadata["source_audio_semantics"]["applied_count"],
             1,
         )
+        self.assertEqual(evidence_load.call_count, 2)
+        self.assertEqual(story_load.call_count, 2)
 
     def test_same_identity_resumes_without_rewriting(self):
         with TemporaryDirectory() as temporary_directory:

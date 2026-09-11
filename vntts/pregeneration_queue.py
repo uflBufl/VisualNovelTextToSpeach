@@ -142,10 +142,7 @@ class PregenerationInputStore:
                 validate_story_semantic_evidence(
                     story_path,
                     semantic_evidence,
-                    load_source_audio_semantic_evidence(
-                        semantic_evidence,
-                        story_path,
-                    ),
+                    load_source_audio_semantic_evidence(semantic_evidence),
                 )
             _raise_if_cancelled(cancellation)
             voices = _write_effective_voices(staging, effective)
