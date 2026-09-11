@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from os.path import commonprefix
 
-from vntts_artifacts.story_index import StoryIndexError, load_story_index
+from vntts_artifacts.story_index import (
+    StoryIndexError,
+    load_story_index,
+    load_story_index_document,
+)
 
 
 def _normalize(value):
@@ -133,9 +137,15 @@ class ChapterVoicePreloader:
         if not path:
             return cls(lookahead_rows=lookahead_rows)
         try:
-            metadata, indexed_lines = load_story_index(path)
-        except StoryIndexError:
-            return cls(lookahead_rows=lookahead_rows)
+            document = load_story_index_document(path)
+        except StoryIndexError, ValueError:
+            document = None
+            try:
+                metadata, indexed_lines = load_story_index(path)
+            except StoryIndexError:
+                return cls(lookahead_rows=lookahead_rows)
+        else:
+            metadata, indexed_lines = document.metadata, document.records
         needs_source_audio_bridge = bool(
             indexed_lines and not hasattr(indexed_lines[0], "source_audio_status")
         )
@@ -148,14 +158,21 @@ class ChapterVoicePreloader:
             "duration-seconds",
             "verified-media-duration-seconds",
         }
-        source_audio_by_line_id = (
-            _load_source_audio_extensions(
+        if document is not None and completion_declared:
+            source_audio_by_line_id = {
+                line.line_id: _source_audio_extension(
+                    line.document,
+                    completion_contract=completion_contract,
+                )
+                for line in indexed_lines
+            }
+        elif needs_source_audio_bridge or completion_declared:
+            source_audio_by_line_id = _load_source_audio_extensions(
                 path,
                 completion_contract=completion_contract or None,
             )
-            if needs_source_audio_bridge or completion_declared
-            else {}
-        )
+        else:
+            source_audio_by_line_id = {}
 
         def source_audio(line):
             return source_audio_by_line_id.get(
@@ -718,6 +735,27 @@ def _source_audio_completeness(
     return value if value in {"full", "partial", "unknown"} else "unknown"
 
 
+def _source_audio_extension(entry, *, completion_contract=None):
+    source_audio_id = (
+        str(entry.get("source_audio_id") or entry.get("source_voice_id") or "").strip()
+        or None
+    )
+    duration_seconds = _source_audio_duration_seconds(
+        entry,
+        completion_contract=completion_contract,
+    )
+    return (
+        _source_audio_status(entry),
+        source_audio_id,
+        duration_seconds,
+        _source_audio_completeness(
+            entry,
+            completion_contract=completion_contract,
+            duration_seconds=duration_seconds,
+        ),
+    )
+
+
 def _load_source_audio_extensions(path, *, completion_contract=None):
     """Retain optional source-audio fields omitted by older contract readers."""
     result = {}
@@ -729,27 +767,9 @@ def _load_source_audio_extensions(path, *, completion_contract=None):
                 line_id = str(record.get("line_id") or "").strip()
                 if not line_id:
                     continue
-                source_audio_id = (
-                    str(
-                        record.get("source_audio_id")
-                        or record.get("source_voice_id")
-                        or ""
-                    ).strip()
-                    or None
-                )
-                duration_seconds = _source_audio_duration_seconds(
+                result[line_id] = _source_audio_extension(
                     record,
                     completion_contract=completion_contract,
-                )
-                result[line_id] = (
-                    _source_audio_status(record),
-                    source_audio_id,
-                    duration_seconds,
-                    _source_audio_completeness(
-                        record,
-                        completion_contract=completion_contract,
-                        duration_seconds=duration_seconds,
-                    ),
                 )
     except OSError, TypeError, ValueError, json.JSONDecodeError:
         return {}

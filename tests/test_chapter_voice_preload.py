@@ -6,6 +6,8 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from vntts_artifacts.story_index import load_story_index_document
+
 from vntts.chapter_voice_preload import (
     ChapterDialogue,
     ChapterMatch,
@@ -721,9 +723,15 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
                     b"These old ones are enough to carry everyone."
                 ).hexdigest(),
             )
-            with patch(
-                "vntts.chapter_voice_preload.load_story_index",
-                return_value=({}, (legacy_line,)),
+            with (
+                patch(
+                    "vntts.chapter_voice_preload.load_story_index_document",
+                    side_effect=ValueError("legacy contract"),
+                ),
+                patch(
+                    "vntts.chapter_voice_preload.load_story_index",
+                    return_value=({}, (legacy_line,)),
+                ),
             ):
                 preloader = ChapterVoicePreloader.load_optional(path)
 
@@ -733,6 +741,42 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
             preloader.dialogue[0].source_audio_duration_seconds,
             2.75,
         )
+
+    def test_lossless_loader_reuses_records_for_source_audio_extensions(self):
+        records = [json.loads(row) for row in story_index_document().splitlines()]
+        records[0]["collections"] = [
+            {
+                "collection_id": "test-story",
+                "title": "Test story",
+                "kind": "story",
+                "order": 1,
+            }
+        ]
+        for row in records[1:]:
+            row["collection_id"] = "test-story"
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "story.jsonl"
+            path.write_text("\n".join(json.dumps(row) for row in records) + "\n")
+            with (
+                patch(
+                    "vntts.chapter_voice_preload.load_story_index_document",
+                    wraps=load_story_index_document,
+                ) as load_document,
+                patch("vntts.chapter_voice_preload.load_story_index") as load_legacy,
+                patch(
+                    "vntts.chapter_voice_preload._load_source_audio_extensions"
+                ) as reparse_extensions,
+            ):
+                preloader = ChapterVoicePreloader.load_optional(path)
+
+        load_document.assert_called_once_with(path)
+        load_legacy.assert_not_called()
+        reparse_extensions.assert_not_called()
+        line = preloader.dialogue[0]
+        self.assertEqual(line.line_id, "test:0")
+        self.assertEqual(line.source_audio_duration_seconds, 2.75)
+        self.assertEqual(line.source_audio_completeness, "full")
+        self.assertEqual(line.story_title, "Test story")
 
     def test_invalid_source_audio_completion_duration_is_ignored(self):
         document = dialogue_document()
