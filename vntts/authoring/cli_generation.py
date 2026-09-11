@@ -59,6 +59,7 @@ from vntts.authoring.workbench import (
     generation_control_bindings,
     generation_output_identity,
 )
+from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.tts_benchmark import create_backend
 from vntts.voices import (
     CharacterVoice,
@@ -546,9 +547,7 @@ def _generate(arguments: argparse.Namespace) -> int:
                 ),
             )
         finally:
-            stop = getattr(backend, "stop", None)
-            if callable(stop):
-                stop()
+            shutdown_speech_backend(backend)
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
     return 0
 

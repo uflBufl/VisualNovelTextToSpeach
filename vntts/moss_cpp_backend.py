@@ -20,7 +20,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
 from threading import Event, Lock, Thread
-from time import monotonic, sleep
+from time import monotonic
 from types import SimpleNamespace
 
 import numpy as np
@@ -295,7 +295,6 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self.server = None
         self.server_log = None
         self.server_directory = None
-        self._deferred_server_directories = []
         self.port = None
         self.server_info = None
         self._diagnostic_salt = secrets.token_bytes(32)
@@ -614,7 +613,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
 
     def _start_server_once(self, cancelled, controls):
         self._stop_server()
-        self.server_directory = TemporaryDirectory(prefix="vntts-moss-")
+        self.server_directory = TemporaryDirectory(
+            prefix="vntts-moss-", ignore_cleanup_errors=True
+        )
         (Path(self.server_directory.name) / "voices").mkdir()
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
@@ -1110,26 +1111,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 if log is not None:
                     log.close()
                 if directory is not None:
-                    self._deferred_server_directories.append(directory)
-                for directory in tuple(self._deferred_server_directories):
-                    # A Windows log reader can outlive our stopped server. Keep
-                    # cleanup pending instead of failing otherwise valid audio.
-                    for attempt in range(3):
-                        try:
-                            directory.cleanup()
-                            self._deferred_server_directories.remove(directory)
-                            break
-                        except PermissionError as error:
-                            if getattr(error, "winerror", None) != 32:
-                                raise
-                            if attempt == 2:
-                                record_native_speech(
-                                    operation="server-cleanup",
-                                    outcome="deferred",
-                                    reason="windows-sharing-violation",
-                                )
-                                break
-                            sleep(0.05 * (attempt + 1))
+                    # Windows scanners and log viewers may briefly retain the
+                    # closed log. Temporary cleanup must not replace speech.
+                    directory.cleanup()
 
     def shutdown(self):
         try:

@@ -9,7 +9,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -2930,6 +2930,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             queue = write_queue(root / "queue.jsonl", [item])
             output = root / "output"
             renderer = SyntheticRenderer()
+            renderer.shutdown = Mock()
             generated_output = StringIO()
             voice_manifest = root / "voices.json"
             voice_manifest.write_text("{}\n", encoding="utf-8")
@@ -2980,7 +2981,8 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             generated = json.loads(generated_output.getvalue())
             self.assertEqual(exit_code, 0)
             self.assertEqual(generated["generated"], 1)
-            self.assertEqual(renderer.stop_calls, 1)
+            renderer.shutdown.assert_called_once_with()
+            self.assertEqual(renderer.stop_calls, 0)
             state = load_generation_state(output / "generation-state.json", queue)
             controls = next(iter(state["synthesis_controls"].values()))
             self.assertTrue(
