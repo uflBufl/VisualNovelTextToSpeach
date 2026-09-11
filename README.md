@@ -502,7 +502,7 @@ the Microsoft Visual C++ x64 runtime; setup checks native loading before
 downloading the models and preserves the underlying error if the check fails.
 
 For custom runtime paths or GPU tuning, the same checkpoint can use the
-[openmoss C++ runtime](https://github.com/pwilkin/openmoss/releases/tag/v0.3.0).
+[qualified VNTTS OpenMOSS runtime](https://github.com/AlexRedby/openmoss/releases/tag/v0.3.0-vntts-timing-1).
 Download and extract a Windows release (CUDA for NVIDIA, Vulkan for other
 supported GPUs), keeping its DLLs together. Download **both** files from
 [the Local v1.5 Q8 model](https://huggingface.co/ilintar/moss-tts-local-gguf/tree/main):

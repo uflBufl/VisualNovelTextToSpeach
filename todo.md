@@ -3,27 +3,14 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P0 - Build and integrate a hardware-adaptive Windows MOSS runtime
-
-Goal: ship one Windows x64 runtime that works across CPU-only and Vulkan-capable
-machines. Ordinary users choose a voice, not GPU layers or worker counts. Keep
-macOS MLX, explicit custom runtimes and Linux behavior outside this change.
-
-- [ ] Rebuild and repeat the real Windows qualification for the fork-built bytes;
-      automatic mode must select Local GPU plus eight workers, preserve CPU WAV
-      identity, cancel/restart cleanly and leave no server after exit.
-- [ ] After every gate passes, create a production-versioned immutable GitHub
-      Release asset, then update the pinned runtime URL/version/size/SHA-256 in a
-      separate change. Verify one clean app install and preview before making it
-      the default. Publication still requires explicit approval; expiring Actions
-      artifacts are never production dependencies.
-
 ## P0 - Qualify Windows narrator preview latency
 
-- [ ] Verify successful preview replay on Windows with the qualified native profile;
-      reuse the saved WAV without a new generation. Request another support export
-      only for an unresolved problem, not to repeat already measured retry/device
-      behavior. Acoustic quality remains a separate check from technical gates.
+- [ ] Verify one clean Windows app install plus narrator preview and replay with
+      the released native profile. The first play may generate once; replay must
+      reuse the saved WAV without another generation. Request another support
+      export only for an unresolved problem, not to repeat already measured
+      retry/device behavior. Acoustic quality remains a separate check from
+      technical gates.
 - [ ] Reduce native CPU audio-frame generation and waveform decoding time.
   - Reduce first-use reference encoding cost without duplicating the existing
     server-lifetime code cache. Consider encoder acceleration or explicit

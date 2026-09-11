@@ -359,7 +359,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
     def _managed_capabilities(self, run, help_output):
         """Require the managed archive's small, versioned adaptation contract."""
         if not re.search(rb"(?:^|\s)--capabilities-json(?:\s|$)", help_output):
-            return None  # Pinned v0.3.0: retain its existing managed behavior.
+            return None  # Legacy custom v0.3.0 runtime: retain existing behavior.
         try:
             payload = json.loads(
                 run(
