@@ -9,8 +9,6 @@ Goal: ship one Windows x64 runtime that works across CPU-only and Vulkan-capable
 machines. Ordinary users choose a voice, not GPU layers or worker counts. Keep
 macOS MLX, explicit custom runtimes and Linux behavior outside this change.
 
-- [ ] Pass OpenMOSS Windows CI plus focused VNTTS qualification tests, then
-      commit and push both repositories.
 - [ ] Rebuild and repeat the real Windows qualification for the fork-built bytes;
       automatic mode must select Local GPU plus eight workers, preserve CPU WAV
       identity, cancel/restart cleanly and leave no server after exit.
