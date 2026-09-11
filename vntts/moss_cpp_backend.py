@@ -343,7 +343,6 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     [str(self.executable), "--capabilities-json"],
                     cancellation=self._startup_cancelled,
                     timeout=min(30, self.startup_timeout),
-                    include_stderr=True,
                 )
             )
         except (TypeError, ValueError, TTSConfigurationError) as error:

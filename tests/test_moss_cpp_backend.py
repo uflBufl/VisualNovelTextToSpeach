@@ -50,6 +50,8 @@ if '--help' in sys.argv:
     print('Usage: --model PATH --n-gpu-layers N' + ('' if legacy else ' --voice-dir DIR') + (' --capabilities-json' if adaptive else ''), file=sys.stderr)
     sys.exit(0)
 if '--capabilities-json' in sys.argv:
+    if (root / 'capabilities-stderr').exists():
+        print('ggml_vulkan: found 1 Vulkan devices:', file=sys.stderr)
     print(json.dumps({} if (root / 'adaptive-invalid').exists() else {
         'schema': 'vntts.openmoss.capabilities', 'version': 1,
         'vulkan_optional': True,
@@ -1115,6 +1117,26 @@ class MossCppBackendTest(unittest.TestCase):
         ):
             self._managed_backend()
         self.assertEqual(self.children, [])
+
+    def test_managed_capabilities_ignore_vulkan_stderr(self):
+        (self.root / "adaptive-runtime").touch()
+        (self.root / "capabilities-stderr").touch()
+        with (
+            patch.dict(os.environ, self._managed_environment(), clear=True),
+            patch("vntts.moss_cpp_installation.ensure_moss_cpp"),
+            patch(
+                "vntts.moss_cpp_backend.moss_cpp_paths",
+                return_value=(
+                    Path(sys.executable),
+                    self.model,
+                    self.model.with_suffix(".extras.gguf"),
+                ),
+            ),
+        ):
+            backend = self._managed_backend()
+        self.addCleanup(backend.shutdown)
+        self.assertTrue(backend._adaptive_managed_runtime)
+        self.assertEqual(len(self.children), 1)
 
     def test_managed_runtime_does_not_retry_unrelated_startup_failure(self):
         (self.root / "adaptive-runtime").touch()
