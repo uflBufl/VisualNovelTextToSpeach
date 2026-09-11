@@ -27,7 +27,9 @@ workflow in the OpenMOSS fork.
 From one successful run, save `moss-native-timing-adaptive-windows-x64.zip`.
 Keep the exact name and do not mix it with older `timing-local-gpu` or `aux8`
 artifacts. Its `VNTTS-BUILD.json` records the pinned fork, upstream and llama.cpp
-commits plus the runtime-control bounds.
+commits plus the runtime-control bounds. It must also report `ggml_native: false`;
+the build deliberately targets portable AVX2 instead of the instruction set of
+whichever GitHub runner happened to compile it.
 
 Before loading weights, inspect the machine-readable contract:
 

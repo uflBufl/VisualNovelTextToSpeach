@@ -9,6 +9,9 @@ Goal: ship one Windows x64 runtime that works across CPU-only and Vulkan-capable
 machines. Ordinary users choose a voice, not GPU layers or worker counts. Keep
 macOS MLX, explicit custom runtimes and Linux behavior outside this change.
 
+- [ ] Rebuild the OpenMOSS artifact with `GGML_NATIVE=OFF` and bind Windows
+      qualification to that portable build contract. The first fork-owned
+      artifact crashed on the target host with `0xC000001D` during model load.
 - [ ] Rebuild and repeat the real Windows qualification for the fork-built bytes;
       automatic mode must select Local GPU plus eight workers, preserve CPU WAV
       identity, cancel/restart cleanly and leave no server after exit.

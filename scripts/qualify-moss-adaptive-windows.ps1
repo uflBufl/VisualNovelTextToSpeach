@@ -48,8 +48,9 @@ try {
     $Server = Join-Path $Runtime 'moss-tts-server.exe'
     $Manifest = Get-Content (Join-Path $Runtime 'VNTTS-BUILD.json') -Raw | ConvertFrom-Json
     if ($Manifest.variant -ne 'timing-adaptive' -or
+        $Manifest.ggml_native -ne $false -or
         $Manifest.runtime_controls.local_gpu -ne $true) {
-        throw 'Adaptive build manifest contract mismatch.'
+        throw 'Adaptive build is not portable. Download the latest OpenMOSS Actions artifact.'
     }
     $Capabilities = (& $Server --capabilities-json | Out-String) | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or
