@@ -149,7 +149,11 @@ from vntts.authoring.workspace_foundation import (
     require_sha256,
     safe_relative_path,
 )
-from vntts.authoring.workspace_state import load_stable_workspace_generation_state
+from vntts.authoring.workspace_state import (
+    cached_workspace_generation_state,
+    load_stable_workspace_generation_state,
+    shared_workspace_state_reads,
+)
 from vntts.authoring.workspace_voice_runtime import (
     FailureReferenceRuntimeBinding,
     load_failure_reference_runtime_binding,
@@ -2914,6 +2918,11 @@ def _immutable_history_timestamps_from_read(directory, workspace):
 
 
 def _load_workbench_projection_read(workspace_directory):
+    with shared_workspace_state_reads():
+        return _load_workbench_projection_read_scoped(workspace_directory)
+
+
+def _load_workbench_projection_read_scoped(workspace_directory):
     directory, workspace, workspace_sha256 = load_workspace_authority(
         workspace_directory
     )
@@ -2921,16 +2930,24 @@ def _load_workbench_projection_read(workspace_directory):
         directory, _safe_relative(workspace["queue"], "Queue"), "Queue"
     )
     output = _within(directory, _safe_relative(workspace["output"], "Output"), "Output")
-    queue = _load_bound_workspace_queue(directory, workspace)
+    cached_state = cached_workspace_generation_state(directory, workspace)
+    queue = (
+        cached_state[0]
+        if cached_state is not None
+        else _load_bound_workspace_queue(directory, workspace)
+    )
     state_path = output / "generation-state.json"
     state = None
     state_sha256 = None
     if state_path.is_file():
-        state_sha256 = sha256_file(state_path)
-        try:
-            state = load_generation_state(state_path, queue_path)
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
+        if cached_state is not None:
+            state, state_sha256 = cached_state[1], cached_state[3]
+        else:
+            state_sha256 = sha256_file(state_path)
+            try:
+                state = load_generation_state(state_path, queue_path)
+            except BulkGenerationError as error:
+                raise AuthoringWorkbenchError(str(error)) from error
         if sha256_file(state_path) != state_sha256:
             raise AuthoringWorkbenchError(
                 "Generation state changed while review rows were being projected"
@@ -4394,6 +4411,11 @@ def _validate_existing_workspace(
 
 
 def _load_workspace(workspace_directory):
+    with shared_workspace_state_reads():
+        return _load_workspace_scoped(workspace_directory)
+
+
+def _load_workspace_scoped(workspace_directory):
     directory = Path(workspace_directory).expanduser().resolve()
     workspace_path = directory / "workspace.json"
     if workspace_path.is_symlink():
@@ -4498,11 +4520,41 @@ def _load_workspace(workspace_directory):
     )
     run_config = workspace.get("run_config")
     _workspace_run_config_with_policy(run_config)
+    stable_state_extensions = (
+        "known_role_live_fallback",
+        "audio_event_omission",
+        "audio_event_projection_fallback",
+        "reviewed_waveform_publication",
+        "reviewed_rejection_live_fallback",
+    )
+    direct_state_extensions = (
+        "outcome_merge",
+        "terminal_conflict_merge",
+        "config_rebase",
+        "explicit_fallback_merge",
+    )
+    carry = workspace.get("carry_forward")
+    state = None
+    state_sha256 = None
+    if any(workspace.get(field) is not None for field in stable_state_extensions):
+        _queue, state, _payload, state_sha256 = _stable_workspace_state(
+            directory, workspace, "workspace validation"
+        )
+    elif any(workspace.get(field) is not None for field in direct_state_extensions) or (
+        isinstance(carry, dict) and carry.get("schema_version") in {2, 3, 4}
+    ):
+        try:
+            state = load_generation_state(
+                directory / "generated-audio/generation-state.json",
+                directory / "queue.jsonl",
+            )
+        except BulkGenerationError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
     _validate_workspace_input_config(directory, workspace, snapshot)
     _validate_workspace_failure_reference_binding(directory, workspace)
-    _validate_workspace_offline_fallback_state(directory, workspace)
-    _validate_workspace_outcome_merge(directory, workspace)
-    _validate_workspace_terminal_conflict_merge(directory, workspace)
+    _validate_workspace_offline_fallback_state(directory, workspace, state=state)
+    _validate_workspace_outcome_merge(directory, workspace, state=state)
+    _validate_workspace_terminal_conflict_merge(directory, workspace, state=state)
     try:
         validate_audio_event_composition_workspace(directory, workspace)
     except AudioEventWorkspaceError as error:
@@ -4510,11 +4562,13 @@ def _load_workspace(workspace_directory):
     config_rebase = workspace.get("config_rebase")
     if config_rebase is not None:
         module = importlib.import_module("vntts.authoring.config_rebase")
-        module.validate_config_rebase_workspace(directory, workspace)
+        module.validate_config_rebase_workspace(directory, workspace, state=state)
     explicit_fallback_merge = workspace.get("explicit_fallback_merge")
     if explicit_fallback_merge is not None:
         module = importlib.import_module("vntts.authoring.explicit_fallback_merge")
-        module.validate_explicit_fallback_merge_workspace(directory, workspace)
+        module.validate_explicit_fallback_merge_workspace(
+            directory, workspace, state=state
+        )
     known_role_live_fallback = workspace.get("known_role_live_fallback")
     if known_role_live_fallback is not None:
         module = importlib.import_module("vntts.authoring.known_role_live_fallback")
@@ -4564,6 +4618,10 @@ def _load_workspace(workspace_directory):
         or match.group(2) != expected_config[:16]
     ):
         raise AuthoringWorkbenchError("Workspace configuration identity was modified")
+    if state_sha256 is not None and sha256_file(
+        directory / "generated-audio/generation-state.json"
+    ) != state_sha256:
+        raise AuthoringWorkbenchError("Workspace generation state changed while loaded")
     return directory, workspace
 
 
@@ -5225,16 +5283,17 @@ def _validate_workspace_carry_forward(directory, workspace):
         )
 
 
-def _validate_workspace_offline_fallback_state(directory, workspace):
+def _validate_workspace_offline_fallback_state(directory, workspace, *, state=None):
     carry = workspace.get("carry_forward")
     if not isinstance(carry, dict) or carry.get("schema_version") not in {2, 3, 4}:
         return
     queue_path = directory / "queue.jsonl"
     state_path = directory / "generated-audio" / "generation-state.json"
-    try:
-        state = load_generation_state(state_path, queue_path)
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
+    if state is None:
+        try:
+            state = load_generation_state(state_path, queue_path)
+        except BulkGenerationError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
     ledger = {
         item["queue_id"]: {
             key: value for key, value in item.items() if key != "queue_id"
@@ -5521,7 +5580,7 @@ def _copy_workspace_tree_snapshot(source, target, snapshots):
     )
 
 
-def _validate_workspace_outcome_merge(directory, workspace):
+def _validate_workspace_outcome_merge(directory, workspace, *, state=None):
     merge = workspace.get("outcome_merge")
     if merge is None:
         return
@@ -5631,13 +5690,14 @@ def _validate_workspace_outcome_merge(directory, workspace):
     )
     queue_ids = []
     counts = Counter()
-    try:
-        state = load_generation_state(
-            directory / "generated-audio/generation-state.json",
-            directory / "queue.jsonl",
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
+    if state is None:
+        try:
+            state = load_generation_state(
+                directory / "generated-audio/generation-state.json",
+                directory / "queue.jsonl",
+            )
+        except BulkGenerationError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
     for item in items:
         if not isinstance(item, dict) or set(item) != {
             "queue_id",
@@ -5737,7 +5797,7 @@ def _validate_workspace_outcome_merge(directory, workspace):
         )
 
 
-def _validate_workspace_terminal_conflict_merge(directory, workspace):
+def _validate_workspace_terminal_conflict_merge(directory, workspace, *, state=None):
     merge = workspace.get("terminal_conflict_merge")
     if merge is None:
         return
@@ -5833,13 +5893,14 @@ def _validate_workspace_terminal_conflict_merge(directory, workspace):
         raise AuthoringWorkbenchError(
             "Workspace terminal conflict item ledger is empty"
         )
-    try:
-        state = load_generation_state(
-            directory / "generated-audio/generation-state.json",
-            directory / "queue.jsonl",
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
+    if state is None:
+        try:
+            state = load_generation_state(
+                directory / "generated-audio/generation-state.json",
+                directory / "queue.jsonl",
+            )
+        except BulkGenerationError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
     queue_ids = []
     counts = Counter()
     for item in items:

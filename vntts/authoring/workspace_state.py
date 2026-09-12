@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
@@ -16,6 +18,28 @@ from vntts.authoring.generation_state import (
 from vntts.authoring.workspace_config import workspace_queue_sha256
 from vntts.authoring.workspace_foundation import read_regular_file
 
+_SHARED_STATE_READS = ContextVar("shared_workspace_state_reads", default=None)
+
+
+@contextmanager
+def shared_workspace_state_reads():
+    """Reuse one fully validated immutable state during a bounded UI read."""
+    if _SHARED_STATE_READS.get() is not None:
+        yield
+        return
+    token = _SHARED_STATE_READS.set({})
+    try:
+        yield
+    finally:
+        _SHARED_STATE_READS.reset(token)
+
+
+def cached_workspace_generation_state(directory, workspace):
+    cache = _SHARED_STATE_READS.get()
+    if cache is None:
+        return None
+    return cache.get(_state_cache_key(directory, workspace))
+
 
 def load_stable_workspace_generation_state(
     directory,
@@ -26,6 +50,10 @@ def load_stable_workspace_generation_state(
 ):
     """Capture one inactive queue-bound state and its exact payload identity."""
     directory = Path(directory).expanduser().resolve()
+    cache = _SHARED_STATE_READS.get()
+    cache_key = _state_cache_key(directory, workspace)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
     expected_queue_sha256 = workspace_queue_sha256(workspace, error_type=error_type)
     queue_path = directory / "queue.jsonl"
     if queue_path.is_symlink() or not queue_path.is_file():
@@ -63,7 +91,21 @@ def load_stable_workspace_generation_state(
         raise error_type(f"Outcome merge {label} has a generation lease")
     if any(output.rglob("*.partial.wav")):
         raise error_type(f"Outcome merge {label} has a partial generation artifact")
-    return queue, parsed, payload, digest
+    result = queue, parsed, payload, digest
+    if cache is not None:
+        cache[cache_key] = result
+    return result
 
 
-__all__ = ["load_stable_workspace_generation_state"]
+def _state_cache_key(directory, workspace):
+    return (
+        str(Path(directory).expanduser().resolve()),
+        workspace.get("config_fingerprint"),
+    )
+
+
+__all__ = [
+    "cached_workspace_generation_state",
+    "load_stable_workspace_generation_state",
+    "shared_workspace_state_reads",
+]

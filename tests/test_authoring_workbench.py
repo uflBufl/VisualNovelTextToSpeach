@@ -27,6 +27,7 @@ from vntts_artifacts.voice_generation_queue import (
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
+import vntts.authoring.workspace_state as workspace_state_module
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_legacy_import import write_legacy_fixture
 from tests.test_authoring_offline_fallback_authority import write_authority
@@ -425,6 +426,34 @@ def write_terminal_merge_reconciliation(root, base, source, queue_id):
 
 
 class AuthoringWorkbenchTest(unittest.TestCase):
+    def test_bounded_workspace_read_validates_generation_state_once(self):
+        with TemporaryDirectory() as directory:
+            _fixture, _imported, workspace = create_test_workspace(Path(directory))
+            document = json.loads(
+                (workspace.directory / "workspace.json").read_text(encoding="utf-8")
+            )
+            state_path = workspace.directory / "generated-audio/generation-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["active"] = None
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            for partial in state_path.parent.rglob("*.partial.wav"):
+                partial.unlink()
+            validate = workspace_state_module.validate_generation_state_document
+            with patch.object(
+                workspace_state_module,
+                "validate_generation_state_document",
+                wraps=validate,
+            ) as validation:
+                with workspace_state_module.shared_workspace_state_reads():
+                    workspace_state_module.load_stable_workspace_generation_state(
+                        workspace.directory, document, "first"
+                    )
+                    workspace_state_module.load_stable_workspace_generation_state(
+                        workspace.directory, document, "second"
+                    )
+
+            validation.assert_called_once()
+
     def test_workspace_binds_selected_reference_extension_to_copied_wavs(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

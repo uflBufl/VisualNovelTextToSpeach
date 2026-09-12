@@ -333,7 +333,7 @@ def merge_explicit_live_fallbacks(
     return WorkspaceCreationResult(destination, True)
 
 
-def validate_explicit_fallback_merge_workspace(directory, workspace):
+def validate_explicit_fallback_merge_workspace(directory, workspace, *, state=None):
     """Validate the self-contained fallback overlay in a published workspace."""
     merge = workspace.get("explicit_fallback_merge")
     if merge is None:
@@ -388,13 +388,14 @@ def validate_explicit_fallback_merge_workspace(directory, workspace):
     if not isinstance(items, list) or not items:
         raise AuthoringWorkbenchError("Explicit fallback merge item ledger is empty")
     queue_ids = []
-    try:
-        state = load_generation_state(
-            Path(directory) / "generated-audio/generation-state.json",
-            Path(directory) / "queue.jsonl",
-        )
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
+    if state is None:
+        try:
+            state = load_generation_state(
+                Path(directory) / "generated-audio/generation-state.json",
+                Path(directory) / "queue.jsonl",
+            )
+        except BulkGenerationError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
     for ledger in items:
         if not isinstance(ledger, dict) or set(ledger) != {
             "queue_id",
