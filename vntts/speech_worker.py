@@ -1225,6 +1225,89 @@ class IsolatedSpeechBackend:
         return prepared
 
 
+class _RetainedWorkerLease:
+    def __init__(self, backend):
+        self._backend = backend
+
+    def shutdown(self):
+        return None
+
+    def __getattr__(self, name):
+        return getattr(self._backend, name)
+
+
+class RetainedWorkerRuntime:
+    """Keep one unchanged isolated worker alive across controller restarts."""
+
+    supports_startup_cancellation = True
+    supports_startup_progress = True
+
+    def __init__(self, backend, *, backend_factory=None):
+        self.backend = backend
+        self.backend_factory = backend_factory or (
+            lambda registry, **options: IsolatedSpeechBackend(
+                backend, registry, **options
+            )
+        )
+        self._lock = threading.Lock()
+        self._instance = None
+        self._identity = None
+
+    def __call__(self, registry, **options):
+        identity = self._configuration_identity(registry, options)
+        with self._lock:
+            instance = self._instance
+            process = getattr(instance, "process", None)
+            dead = instance is not None and hasattr(instance, "process") and (
+                process is None or process.poll() is not None
+            )
+            if instance is not None and (identity != self._identity or dead):
+                instance.shutdown()
+                instance = None
+            if instance is None:
+                instance = self.backend_factory(registry, **options)
+                self._instance = instance
+                self._identity = identity
+            else:
+                instance.registry = registry
+                instance.narrator_reference = options.get(
+                    "narrator_reference", instance.narrator_reference
+                )
+                instance.startup_cancellation = options.get("startup_cancellation")
+                instance.startup_progress = options.get("startup_progress")
+                if "volume" in options:
+                    instance.set_volume(options["volume"])
+        return _RetainedWorkerLease(instance)
+
+    def shutdown(self):
+        with self._lock:
+            instance, self._instance = self._instance, None
+            self._identity = None
+        if instance is not None:
+            instance.shutdown()
+
+    @staticmethod
+    def _configuration_identity(registry, options):
+        stable_options = {
+            key: _worker_option_identity(value)
+            for key, value in options.items()
+            if key not in {"startup_cancellation", "startup_progress", "volume"}
+        }
+        return json.dumps(
+            [_serialize_registry(registry), stable_options],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+
+def _worker_option_identity(value):
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Path):
+        return str(value.expanduser().resolve())
+    return {"object_id": id(value)}
+
+
 def create_pocket_worker_backend(registry, **options):
     return IsolatedSpeechBackend("pocket-tts", registry, **options)
 

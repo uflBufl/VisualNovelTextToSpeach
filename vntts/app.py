@@ -134,6 +134,7 @@ from vntts.settings import (
 )
 from vntts.speech_backend import default_moss_tts_model
 from vntts.speech_presentation import engine_model_label, speech_runtime_label
+from vntts.speech_worker import RetainedWorkerRuntime
 from vntts.support import (
     GenerationTimelineLog,
     RuntimeSupportLog,
@@ -1331,6 +1332,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         correction_store=None,
         pregeneration_activator=None,
         moss_runtime=None,
+        pocket_runtime=None,
     ):
         super().__init__()
         self.application = application
@@ -1372,6 +1374,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         )
         self.moss_runtime = moss_runtime or RetainedMossRuntime()
+        self.pocket_runtime = pocket_runtime or RetainedWorkerRuntime("pocket-tts")
         self.controller = controller_factory(
             self.settings,
             status_handler=self.signals.status_changed.emit,
@@ -1385,6 +1388,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         if isinstance(self.controller, AppController):
             self.controller.moss_backend_factory = self.moss_runtime
+            self.controller.pocket_backend_factory = self.pocket_runtime
         self.live_stop_runner = LatestTaskRunner(self)
         self.live_stop_runner.finished.connect(self._live_stop_finished)
         self._live_stop_continuation = None
@@ -3814,6 +3818,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         ):
             self.controller.shutdown()
         self.moss_runtime.shutdown()
+        self.pocket_runtime.shutdown()
 
     def request_quit(self):
         self._quit_requested = True

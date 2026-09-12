@@ -15,6 +15,7 @@ from vntts.speech_backend import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_worker import (
     _REQUIRED_MODULES,
     IsolatedSpeechBackend,
+    RetainedWorkerRuntime,
     _module_health,
     _read_frame,
     _runtime_paths,
@@ -73,6 +74,31 @@ class FakeWorkerBackend:
 
 
 class BackendFactoryTests(unittest.TestCase):
+    def test_retained_worker_reuses_only_unchanged_live_process(self):
+        registry = CharacterVoiceRegistry()
+        first = MagicMock(narrator_reference="alba")
+        first.process.poll.return_value = None
+        second = MagicMock(narrator_reference="bella")
+        second.process.poll.return_value = None
+        factory = MagicMock(side_effect=(first, second))
+        runtime = RetainedWorkerRuntime(
+            "pocket-tts",
+            backend_factory=factory,
+        )
+
+        runtime(registry, narrator_reference="alba", volume=0.5).shutdown()
+        runtime(registry, narrator_reference="alba", volume=0.8).shutdown()
+
+        factory.assert_called_once()
+        first.set_volume.assert_called_once_with(0.8)
+
+        runtime(registry, narrator_reference="bella", volume=0.8).shutdown()
+        self.assertEqual(factory.call_count, 2)
+        first.shutdown.assert_called_once_with()
+
+        runtime.shutdown()
+        second.shutdown.assert_called_once_with()
+
     @patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True)
     @patch("vntts.moss_cpp_backend.MossCppVoiceRouterBackend")
     def test_native_moss_drops_pocket_only_permission(self, native, _requested):

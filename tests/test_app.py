@@ -50,6 +50,20 @@ class TrayApplicationTest(unittest.TestCase):
             QTest.qWait(5)
         self.fail("Timed out waiting for an asynchronous UI operation")
 
+    def test_application_owns_retained_pocket_runtime(self):
+        runtime = Mock()
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            pocket_runtime=runtime,
+        )
+
+        self.assertIs(tray.controller.pocket_backend_factory, runtime)
+        tray.shutdown()
+        runtime.shutdown.assert_called_once_with()
+        delete_dialog(tray.dashboard)
+        delete_dialog(tray.compact_controller)
+
     def test_live_compute_tracks_backend_replacement_without_technical_details(self):
         controller = Mock()
         controller.speech_backend.runtime_status = "GPU: RTX 2070 SUPER"
