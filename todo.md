@@ -3,6 +3,16 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P0 - Measure and remove remaining user-visible stalls
+
+- [ ] Profile startup/settings, story preparation, narrator loading and pack
+      activation against realistic local data; rank only repeatable operations
+      above 100 ms.
+- [ ] Fix confirmed duplicate parsing, hashing, filesystem scans or synchronous
+      UI work at the shared ownership boundary without weakening validation.
+- [ ] Add one focused regression per fix, rerun the full suite, record before/after
+      timings, then remove this completed section.
+
 ## P0 - Reduce OpenMOSS generation latency
 
 - [ ] Run the qualified GPU/8 profile beside Reverse: 1999 and confirm game-time
@@ -12,29 +22,6 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Evaluate multiple native servers only on hosts with multiple GPUs or
       measured RAM/VRAM headroom. Keep one serialized server as the default.
 
-## P1 - Reduce structural code debt
-
-- [ ] Continue splitting the largest authoring orchestration functions along
-      their existing validation, execution, persistence and publication phases.
-      Extract item execution and finalization from `run_bulk_generation`, then
-      split `_carry_forward_review_outcomes`; preserve stored-format compatibility
-      and observable failure behavior.
-- [ ] Enable Ruff complexity checks through a versioned ratchet. Fix the current
-      baseline of 677 findings (295 C901, 199 PLR0912 and 183 PLR0915), then
-      reject new violations without requiring an all-at-once rewrite of existing
-      code.
-- [ ] Expand the existing mypy scope ratchet beyond its current 14 production
-      files. Type complete ownership boundaries at a time, beginning with the
-      refactored authoring flows, and keep `Any`, casts and ignores from replacing
-      real contracts.
-- [ ] Consolidate remaining authoring publication lifecycle and value-validation
-      primitives. Reuse `workspace_foundation` and add one minimal staged-directory
-      context manager to `publication` only after inventorying error-message and
-      whitespace-normalization differences at every caller.
-- [ ] Audit external consumers of the 435-name `vntts.authoring` compatibility
-      facade, define the supported public surface, migrate repository callers to
-      owning modules, and deprecate or remove unused lazy exports and the digest
-      test that freezes the oversized inventory.
 ## P1 - Qualify remaining Python and speech runtimes
 
 - [ ] Qualify the Python 3.14 MOSS Delay candidate on Windows CUDA with its atomic
