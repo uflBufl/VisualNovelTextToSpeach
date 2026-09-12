@@ -555,6 +555,7 @@ def resolve_reverse1999_installation(path):
     """Resolve one installation, including its split Windows resource folders."""
     from vntts.support import record_game_import
 
+    started = time.perf_counter()
     root = Path(path).expanduser().resolve()
     record_game_import("folder-selection", path=root, exists=root.is_dir())
     if not root.is_dir():
@@ -569,46 +570,8 @@ def resolve_reverse1999_installation(path):
             if sibling.is_dir() and sibling.parent == root.parent:
                 search_roots.append(sibling)
     record_game_import("folder-search", roots=search_roots)
-    resource_candidates = [root]
-    resource_candidates.extend(
-        candidate.parent
-        for search_root in search_roots
-        for candidate in sorted(search_root.glob("**/bundles"))
-    )
-    resource_root = next(
-        (
-            candidate
-            for candidate in resource_candidates
-            if (candidate / "bundles").is_dir()
-        ),
-        None,
-    )
-    config_candidates = [
-        root / "configs",
-        *(path for base in search_roots for path in sorted(base.glob("**/configs"))),
-    ]
-    config_directory = None
-    for candidate in dict.fromkeys(config_candidates):
-        missing = [
-            name
-            for name in ("datacfg_1.dat", "language/json_language_en.json.dat")
-            if not (candidate / name).is_file()
-        ]
-        record_game_import("config-candidate", path=candidate, missing=missing)
-        if not missing:
-            config_directory = candidate
-            break
-    audio_candidates = [
-        root,
-        *(path for base in search_roots for path in sorted(base.glob("**/en"))),
-    ]
-    audio_directory = next(
-        (
-            candidate
-            for candidate in audio_candidates
-            if candidate.is_dir() and any(candidate.glob("*.bnk"))
-        ),
-        None,
+    resource_root, config_directory, audio_directory = _find_installation_parts(
+        root, search_roots, record_game_import
     )
     missing = []
     if resource_root is None:
@@ -623,12 +586,59 @@ def resolve_reverse1999_installation(path):
         config_directory=config_directory,
         audio_directory=audio_directory,
         missing=missing,
+        elapsed_ms=round((time.perf_counter() - started) * 1000, 3),
     )
     if missing:
         raise GameContentImportError(
             "The selected folder is not a complete Reverse: 1999 installation; "
             f"missing {', '.join(missing)}."
         )
+    return resource_root, config_directory, audio_directory
+
+
+def _find_installation_parts(root, search_roots, record):
+    resource_root = root if (root / "bundles").is_dir() else None
+    config_directory = None
+    audio_directory = root if any(root.glob("*.bnk")) else None
+    checked_configs = set()
+
+    for search_root in search_roots:
+        for directory, names, files in os.walk(search_root):
+            current = Path(directory)
+            if resource_root is None and "bundles" in names:
+                resource_root = current.resolve()
+            if current.name == "configs":
+                checked_configs.add(current)
+                missing = [
+                    name
+                    for name in (
+                        "datacfg_1.dat",
+                        "language/json_language_en.json.dat",
+                    )
+                    if not (current / name).is_file()
+                ]
+                record("config-candidate", path=current, missing=missing)
+                if not missing:
+                    config_directory = current.resolve()
+            if (
+                audio_directory is None
+                and current.name.casefold() == "en"
+                and any(name.casefold().endswith(".bnk") for name in files)
+            ):
+                audio_directory = current.resolve()
+            # Asset bundles are huge and cannot contain another installation part.
+            names[:] = [name for name in names if name != "bundles"]
+            if resource_root and config_directory and audio_directory:
+                return resource_root, config_directory, audio_directory
+
+    direct_config = root / "configs"
+    if config_directory is None and direct_config not in checked_configs:
+        missing = [
+            name
+            for name in ("datacfg_1.dat", "language/json_language_en.json.dat")
+            if not (direct_config / name).is_file()
+        ]
+        record("config-candidate", path=direct_config, missing=missing)
     return resource_root, config_directory, audio_directory
 
 

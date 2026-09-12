@@ -128,6 +128,32 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 candidate["missing"], ["language/json_language_en.json.dat"]
             )
 
+    def test_installation_search_skips_bundle_contents(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "bundles" / "decoy" / "configs").mkdir(parents=True)
+            resources = root / "content"
+            configs = resources / "configs"
+            (configs / "language").mkdir(parents=True)
+            (configs / "datacfg_1.dat").touch()
+            (configs / "language" / "json_language_en.json.dat").touch()
+            audio = resources / "audios" / "en"
+            audio.mkdir(parents=True)
+            (audio / "voice.bnk").touch()
+
+            with patch("vntts.support.record_game_import") as record:
+                resolved = resolve_reverse1999_installation(root)
+
+            self.assertEqual(
+                resolved, (root.resolve(), configs.resolve(), audio.resolve())
+            )
+            result = next(
+                call.kwargs
+                for call in record.call_args_list
+                if call.args[0] == "folder-result"
+            )
+            self.assertGreaterEqual(result["elapsed_ms"], 0)
+
     def test_narrator_decoder_uses_cancellable_subprocess_runner(self):
         cancellation = Event()
         cancellation.set()
