@@ -102,7 +102,12 @@ def import_game_pack(path: str | Path) -> GamePackImport:
     )
 
 
-def _record_pack_timing(started, cpu_started, outcome, **details):
+def _record_pack_timing(
+    started: float,
+    cpu_started: float,
+    outcome: str,
+    **details: int,
+) -> None:
     from vntts.support import record_background_operation
 
     record_background_operation(
