@@ -1,8 +1,11 @@
 """Latest-result-wins Qt workers for blocking diagnostic probes."""
 
 from functools import partial
+from time import perf_counter
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+
+from vntts.support import record_background_operation
 
 
 class _TaskSignals(QObject):
@@ -18,12 +21,31 @@ class _Task(QRunnable):
         self.signals = signals
 
     def run(self):
+        started = perf_counter()
         try:
             result = self.function(*self.arguments)
         except Exception as error:
+            record_background_operation(
+                _operation_name(self.function),
+                (perf_counter() - started) * 1000,
+                "failed",
+            )
             self.signals.finished.emit(self.serial, None, error)
         else:
+            record_background_operation(
+                _operation_name(self.function),
+                (perf_counter() - started) * 1000,
+                "complete",
+            )
             self.signals.finished.emit(self.serial, result, None)
+
+
+def _operation_name(function):
+    while isinstance(function, partial):
+        function = function.func
+    owner = getattr(function, "__self__", None)
+    name = getattr(function, "__name__", type(function).__name__)
+    return f"{type(owner).__name__}.{name}" if owner is not None else name
 
 
 class LatestTaskRunner(QObject):

@@ -361,6 +361,62 @@ class RuntimeSupportLog:
             return list(self.entries)
 
 
+performance_fields = ("operation", "outcome", "elapsed_ms")
+
+
+class PerformanceLog(RuntimeSupportLog):
+    """Retain slow background-stage timings without user content or paths."""
+
+    def __init__(self, maximum_entries=200, **kwargs):
+        super().__init__(
+            maximum_entries=maximum_entries,
+            detail_fields=performance_fields,
+            **kwargs,
+        )
+
+    def record(self, operation, elapsed_ms, outcome):
+        if outcome == "complete" and elapsed_ms < 100:
+            return
+        self.add(
+            "performance",
+            f"Background operation: {operation}",
+            operation=operation,
+            outcome=outcome,
+            elapsed_ms=round(elapsed_ms, 3),
+        )
+
+    def report(self):
+        events = [sanitize_event(entry) for entry in self.snapshot()]
+        summary = {}
+        for event in events:
+            operation = event["operation"]
+            aggregate = summary.setdefault(
+                operation, {"count": 0, "total_ms": 0.0, "max_ms": 0.0}
+            )
+            aggregate["count"] += 1
+            aggregate["total_ms"] = round(
+                aggregate["total_ms"] + event["elapsed_ms"], 3
+            )
+            aggregate["max_ms"] = max(aggregate["max_ms"], event["elapsed_ms"])
+        return {"threshold_ms": 100, "summary": summary, "events": events}
+
+
+performance_log = PerformanceLog()
+
+
+def configure_performance_log(path=None):
+    global performance_log
+    performance_log = PerformanceLog(path=path)
+    return performance_log
+
+
+def record_background_operation(operation, elapsed_ms, outcome):
+    try:
+        performance_log.record(str(operation), float(elapsed_ms), str(outcome))
+    except Exception:
+        pass
+
+
 game_import_fields = (
     "stage",
     "outcome",
@@ -610,6 +666,7 @@ class SupportBundleBuilder:
         dependency_probe=None,
         generation_timelines=None,
         game_import_log=None,
+        performance_log_value=None,
     ):
         self.settings = settings
         self.event_log = event_log
@@ -617,6 +674,7 @@ class SupportBundleBuilder:
         self.dependency_probe = dependency_probe or collect_dependency_status
         self.generation_timelines = generation_timelines
         self.game_import_log = game_import_log
+        self.performance_log = performance_log_value
 
     def build(self, path):
         path = Path(path).expanduser()
@@ -642,6 +700,7 @@ class SupportBundleBuilder:
                     for entry in (self.game_import_log or game_import_log).snapshot()
                 ]
             },
+            "performance.json": (self.performance_log or performance_log).report(),
             "native-speech.json": {
                 **native_speech_log.report(),
                 "timing_note": (
@@ -729,6 +788,12 @@ def sanitize_event(entry):
             (key, _sanitize_game_import_value(key, entry[key]))
             for key in game_import_fields
             if key in entry and _sanitize_game_import_value(key, entry[key]) is not None
+        )
+    if entry.get("level") == "performance":
+        sanitized.update(
+            (key, _sanitize_event_value(entry[key]))
+            for key in performance_fields
+            if key in entry
         )
     if isinstance(entry.get("native"), dict):
         sanitized["native"] = {

@@ -15,6 +15,7 @@ from vntts.support import (
     GameImportLog,
     GenerationTimelineLog,
     NativeSpeechLog,
+    PerformanceLog,
     RuntimeSupportLog,
     SupportBundleBuilder,
     collect_build_identity,
@@ -447,6 +448,20 @@ class RuntimeSupportLogTest(unittest.TestCase):
         self.assertEqual(persisted["generation"], 7)
 
 
+class PerformanceLogTest(unittest.TestCase):
+    def test_reports_only_slow_successes_and_all_failures(self):
+        log = PerformanceLog()
+
+        log.record("fast", 99.9, "complete")
+        log.record("scan", 125.4, "complete")
+        log.record("scan", 25.0, "failed")
+
+        report = log.report()
+        self.assertEqual(set(report["summary"]), {"scan"})
+        self.assertEqual(report["summary"]["scan"]["count"], 2)
+        self.assertEqual(report["summary"]["scan"]["max_ms"], 125.4)
+
+
 class GameImportLogTest(unittest.TestCase):
     def test_bounded_redacted_log_survives_restart(self):
         with TemporaryDirectory() as temporary_directory:
@@ -614,6 +629,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                     "sanitized-settings.json",
                     "runtime-events.json",
                     "game-import.json",
+                    "performance.json",
                     "native-speech.json",
                     "build.json",
                     "generation-timelines.json",

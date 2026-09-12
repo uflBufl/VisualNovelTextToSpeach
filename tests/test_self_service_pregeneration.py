@@ -265,9 +265,12 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         runner.cancel()
         runner.deleteLater()
         QCoreApplication.sendPostedEvents(runner, QEvent.Type.DeferredDelete)
-        pool.tasks.pop(0).run()
+        with patch("vntts.async_ui.record_background_operation") as timing:
+            pool.tasks.pop(0).run()
         self.application.processEvents()
         self.assertEqual(received, [])
+        self.assertEqual(timing.call_args.args[0], "<lambda>")
+        self.assertEqual(timing.call_args.args[2], "complete")
 
     def test_embedded_preparation_keeps_work_on_navigation_and_waits_before_quit(self):
         with TemporaryDirectory() as directory:

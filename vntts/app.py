@@ -4,6 +4,7 @@ from dataclasses import asdict
 from multiprocessing import freeze_support
 from pathlib import Path
 from threading import Event, Thread
+from time import perf_counter
 
 from pynput import keyboard
 from PySide6.QtCore import (
@@ -138,6 +139,8 @@ from vntts.support import (
     RuntimeSupportLog,
     SupportBundleBuilder,
     configure_game_import_log,
+    configure_performance_log,
+    record_background_operation,
 )
 from vntts.support_ui import SupportCenterDialog
 from vntts.ui_text import make_text_copyable
@@ -1291,10 +1294,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         super().__init__()
         self.application = application
         uses_saved_settings = settings is None
+        if uses_saved_settings:
+            configure_performance_log(get_local_data_directory() / "performance.log")
         self._startup_game_pack_errors = []
+        settings_started = perf_counter()
         self.settings = settings or load_app_settings(
             on_game_pack_error=self._startup_game_pack_errors.append
         )
+        if uses_saved_settings:
+            record_background_operation(
+                "application-settings-and-pack-load",
+                (perf_counter() - settings_started) * 1000,
+                "complete",
+            )
         self.signals = AppSignals()
         self.last_controller_error = None
         self.support_log = RuntimeSupportLog(
@@ -1309,6 +1321,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if uses_saved_settings
             else None
         )
+        if not uses_saved_settings:
+            configure_performance_log()
         self.generation_timelines = GenerationTimelineLog(
             path=(
                 get_local_data_directory() / "generation-timelines.json"
