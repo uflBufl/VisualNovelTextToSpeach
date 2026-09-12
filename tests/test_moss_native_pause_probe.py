@@ -257,6 +257,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
                 self.assertTrue((options.output / f"{attempt['id']}.json").is_file())
             backend = _FakeBackend.instances[0]
             self.assertTrue(backend.shutdown_called)
+            self.assertFalse(Path(backend.options["prompt_cache_directory"]).exists())
             self.assertFalse((options.output / ".cache-disabled").exists())
             self.assertTrue(all(request.seed == 1 for request in backend.requests))
             self.assertTrue(

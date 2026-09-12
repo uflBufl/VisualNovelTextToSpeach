@@ -490,6 +490,9 @@ def run(
             ),
         }
     backend = None
+    prompt_cache = tempfile.TemporaryDirectory(
+        prefix="vntts-moss-probe-voices-", ignore_cleanup_errors=True
+    )
     owned_servers = []
     exit_code = 0
     try:
@@ -533,6 +536,7 @@ def run(
                 audio_cache_size=0,
                 persistent_audio_cache_directory=output / ".cache-disabled",
                 persistent_audio_cache_max_entries=0,
+                prompt_cache_directory=Path(prompt_cache.name),
             )
             _capture_owned_server(backend, owned_servers)
             report["startup_seconds"] = round(monotonic() - startup_started, 3)
@@ -613,6 +617,7 @@ def run(
                     if isinstance(error, KeyboardInterrupt) or exit_code == 130
                     else 1
                 )
+        prompt_cache.cleanup()
         # Keep each observed Popen, not a PID lookup: shutdown clears backend.server
         # and the OS may reuse its PID. Unknown is not proof of clean shutdown.
         receipts = []

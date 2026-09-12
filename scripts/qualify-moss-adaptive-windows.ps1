@@ -49,6 +49,7 @@ try {
     $Manifest = Get-Content (Join-Path $Runtime 'VNTTS-BUILD.json') -Raw | ConvertFrom-Json
     if ($Manifest.variant -ne 'timing-adaptive' -or
         $Manifest.ggml_native -ne $false -or
+        $Manifest.runtime_controls.persistent_voice_codes -ne $true -or
         $Manifest.runtime_controls.local_gpu -ne $true) {
         throw 'Adaptive build is not portable. Download the latest OpenMOSS Actions artifact.'
     }
@@ -57,7 +58,8 @@ try {
         $Capabilities.schema -ne 'vntts.openmoss.capabilities' -or
         $Capabilities.version -ne 1 -or
         $Capabilities.local_gpu -ne $true -or
-        $Capabilities.aux_cpu_threads -ne $true) {
+        $Capabilities.aux_cpu_threads -ne $true -or
+        $Capabilities.persistent_voice_codes -ne $true) {
         throw 'Adaptive runtime capability contract mismatch.'
     }
     if ($Capabilities.vulkan_available -ne $true) {
@@ -65,7 +67,9 @@ try {
     }
 
     $Runs = @(
+        @{ Name = 'cpu-2'; Layers = '0'; Workers = '2' },
         @{ Name = 'cpu-4'; Layers = '0'; Workers = '4' },
+        @{ Name = 'cpu-6'; Layers = '0'; Workers = '6' },
         @{ Name = 'cpu-8'; Layers = '0'; Workers = '8' },
         @{ Name = 'gpu-8'; Layers = '-1'; Workers = '8' }
     )
@@ -76,7 +80,7 @@ try {
         $Index++
         [Environment]::SetEnvironmentVariable('VNTTS_MOSS_GPU_LAYERS', $Run.Layers, 'Process')
         [Environment]::SetEnvironmentVariable('VNTTS_MOSS_AUX_CPU_THREADS', $Run.Workers, 'Process')
-        Write-Host ("[{0}/3] {1}" -f $Index, $Run.Name)
+        Write-Host ("[{0}/{1}] {2}" -f $Index, $Runs.Count, $Run.Name)
         $Extra = @()
         if ($Run.Name -eq 'gpu-8') { $Extra = @('--cancel-restart') }
         & uv run --frozen python scripts/moss_native_pause_probe.py `
@@ -92,16 +96,14 @@ try {
             throw "$($Run.Name) did not confirm native server shutdown."
         }
     }
-    $Cpu4 = @($Reports['cpu-4'].attempts | ForEach-Object { $_.raw_response.sha256 })
-    $Cpu8 = @($Reports['cpu-8'].attempts | ForEach-Object { $_.raw_response.sha256 })
-    if ($Cpu4.Count -eq 0 -or $Cpu4.Count -ne $Cpu8.Count -or
-        (Compare-Object $Cpu4 $Cpu8 -SyncWindow 0)) {
-        throw 'CPU 4/8-worker WAV hashes differ.'
-    }
-    foreach ($ExpectedRun in @(
-        @{ Name = 'cpu-4'; Workers = 4 },
-        @{ Name = 'cpu-8'; Workers = 8 }
-    )) {
+    $CpuRuns = @($Runs | Where-Object { $_.Name -like 'cpu-*' })
+    $ExpectedHashes = @($Reports[$CpuRuns[0].Name].attempts | ForEach-Object { $_.raw_response.sha256 })
+    foreach ($ExpectedRun in $CpuRuns) {
+        $Hashes = @($Reports[$ExpectedRun.Name].attempts | ForEach-Object { $_.raw_response.sha256 })
+        if ($ExpectedHashes.Count -eq 0 -or $ExpectedHashes.Count -ne $Hashes.Count -or
+            (Compare-Object $ExpectedHashes $Hashes -SyncWindow 0)) {
+            throw "CPU WAV hashes differ for $($ExpectedRun.Name)."
+        }
         $Placement = $Reports[$ExpectedRun.Name].runtime.placement
         if ($Placement.gpu_layers -ne 0 -or
             $Placement.aux_cpu_threads -ne $ExpectedRun.Workers -or
@@ -123,6 +125,20 @@ try {
         $CancelRestart.restart_server_pid -eq $CancelRestart.cancelled_server.pid) {
         throw 'gpu-8 cancellation/restart contract failed.'
     }
+    $Restart = @($Reports['gpu-8'].attempts | Where-Object { $_.id -match '-restart$' })[-1]
+    if ($Restart.native.reference -ne 'cached-codes' -or
+        $Restart.native.reference_encoding_s -ne $null) {
+        throw 'gpu-8 restart did not restore persistent reference codes.'
+    }
+
+    $RunSummary = @{}
+    foreach ($Run in $Runs) {
+        $RunSummary[$Run.Name] = @{
+            runtime = $Reports[$Run.Name].runtime
+            compute = $Reports[$Run.Name].compute
+        }
+    }
+    $RunSummary['gpu-8']['cancel_restart'] = $CancelRestart
 
     $Summary = [ordered]@{
         schema = 'vntts.moss-adaptive-qualification'
@@ -131,15 +147,7 @@ try {
         build = $Manifest
         capabilities = $Capabilities
         cpu_wav_identity = $true
-        runs = @{
-            'cpu-4' = @{ runtime = $Reports['cpu-4'].runtime; compute = $Reports['cpu-4'].compute }
-            'cpu-8' = @{ runtime = $Reports['cpu-8'].runtime; compute = $Reports['cpu-8'].compute }
-            'gpu-8' = @{
-                runtime = $Reports['gpu-8'].runtime
-                compute = $Reports['gpu-8'].compute
-                cancel_restart = $CancelRestart
-            }
-        }
+        runs = $RunSummary
         all_servers_confirmed_stopped = $true
     }
     $Summary | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $Output 'qualification.json') -Encoding utf8
