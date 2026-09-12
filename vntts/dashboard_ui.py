@@ -99,7 +99,6 @@ class ControlDashboard(QMainWindow):
     repeat_requested = Signal()
     stop_requested = Signal()
     pregeneration_requested = Signal()
-    preparation_cancel_requested = Signal()
     readiness_requested = Signal()
     calibration_requested = Signal()
     voices_requested = Signal()
@@ -489,29 +488,6 @@ class ControlDashboard(QMainWindow):
         status_row.addWidget(self.copy_status_button)
         shell_layout.addLayout(status_row)
         shell_layout.addWidget(self.loading_panel)
-        self.preparation_card = QWidget()
-        preparation_layout = QHBoxLayout(self.preparation_card)
-        preparation_layout.setContentsMargins(0, 0, 0, 0)
-        self.preparation_summary = QLabel()
-        self.preparation_summary.setTextFormat(Qt.TextFormat.PlainText)
-        self.preparation_summary.setWordWrap(True)
-        preparation_layout.addWidget(self.preparation_summary, 1)
-        self.preparation_status = QPushButton("Show")
-        self.preparation_status.setAccessibleName("Ongoing story preparation")
-        self.preparation_status.clicked.connect(self.show_stories)
-        preparation_layout.addWidget(self.preparation_status)
-        self.preparation_cancel = QPushButton("Cancel")
-        self.preparation_cancel.setAccessibleName(
-            "Cancel story preparation and keep saved progress"
-        )
-        self.preparation_cancel.setToolTip(
-            "Cancel remaining work; completed recordings stay saved."
-        )
-        self.preparation_cancel.clicked.connect(self.preparation_cancel_requested)
-        self.preparation_cancel.hide()
-        preparation_layout.addWidget(self.preparation_cancel)
-        self.preparation_card.hide()
-        shell_layout.addWidget(self.preparation_card)
         self.voice_edit_status = QPushButton("Voices: unsaved selection — Show")
         self.voice_edit_status.setAccessibleName("Pending voice selection")
         self.voice_edit_status.clicked.connect(self.show_voices)
@@ -608,14 +584,6 @@ class ControlDashboard(QMainWindow):
     def remove_preparation(self, panel):
         self.stories_stack.removeWidget(panel)
         self.stories_stack.setCurrentIndex(0)
-        self.preparation_card.hide()
-
-    def set_preparation_phase(self, phase):
-        self.preparation_summary.setText(f"Story preparation: {phase}")
-        self.preparation_card.show()
-
-    def set_preparation_active(self, active):
-        self.preparation_cancel.setVisible(active)
 
     def _set_details_expanded(self, expanded):
         expanded = bool(expanded)

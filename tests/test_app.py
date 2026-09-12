@@ -551,7 +551,7 @@ class TrayApplicationTest(unittest.TestCase):
         controller.start.assert_not_called()
         tray.shutdown()
 
-    def test_preparation_card_cancels_only_explicit_pending_work(self):
+    def test_navigation_preserves_pending_preparation_without_global_progress(self):
         tray = TrayApplication(
             self.application,
             AppSettings(),
@@ -563,24 +563,15 @@ class TrayApplicationTest(unittest.TestCase):
         preparation.has_pending_work.return_value = True
         tray.pregeneration_dialog = preparation
         tray.dashboard.show()
-        tray.dashboard.set_preparation_phase("Generating 2/4; saved 1")
         tray._preparation_activity_changed(True)
-        summary = tray.dashboard.preparation_summary.text()
-        self.assertTrue(tray.dashboard.preparation_cancel.isVisibleTo(tray.dashboard))
         with patch.object(AppSettings, "save"):
             tray.dashboard.show_voices()
             tray.dashboard.show_reading()
         preparation._cancel_or_reject.assert_not_called()
-        tray.dashboard.preparation_cancel.click()
-        preparation._cancel_or_reject.assert_called_once()
         preparation.reject.assert_not_called()
         preparation.has_pending_work.return_value = False
         tray._preparation_activity_changed(False)
-        self.assertTrue(tray.dashboard.preparation_cancel.isHidden())
-        self.assertFalse(tray.dashboard.preparation_card.isHidden())
-        self.assertEqual(tray.dashboard.preparation_summary.text(), summary)
-        tray.dashboard.preparation_cancel_requested.emit()
-        preparation._cancel_or_reject.assert_called_once()
+        preparation._cancel_or_reject.assert_not_called()
         tray.pregeneration_dialog = None
         tray.shutdown()
 

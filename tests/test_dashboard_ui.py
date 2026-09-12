@@ -19,6 +19,45 @@ from vntts.settings import AppSettings  # noqa: E402
 
 
 class ControlDashboardTest(unittest.TestCase):
+    def test_story_discovery_never_opens_an_orphan_coverage_window(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        from vntts.pregeneration_setup import ContentDiscovery, PregenerationJobStore
+        from vntts.pregeneration_ui import OfflineAudioPreparationDialog
+
+        with TemporaryDirectory() as directory:
+            dashboard = ControlDashboard(AppSettings())
+            dashboard.show()
+            self.application.processEvents()
+            before = {
+                widget
+                for widget in self.application.topLevelWidgets()
+                if widget.isVisible()
+            }
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery(()),
+                job_store=PregenerationJobStore(Path(directory) / "jobs"),
+                parent=dashboard,
+            )
+            dashboard.embed_preparation(dialog)
+            for _ in range(2):
+                dialog._set_discovery_loading(True)
+                dialog._discovery_finished(ContentDiscovery(()), None)
+                self.application.processEvents()
+                self.assertEqual(
+                    {
+                        widget
+                        for widget in self.application.topLevelWidgets()
+                        if widget.isVisible()
+                    },
+                    before,
+                )
+            dialog.reject()
+            dashboard.close()
+            dashboard.deleteLater()
+
     def test_long_status_stays_compact_but_copy_preserves_exact_error_and_compute(self):
         dashboard = ControlDashboard(AppSettings())
         message = "Unable to load model: " + "a" * 500 + "\nRetry after downloading."
@@ -93,33 +132,21 @@ class ControlDashboardTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_preparation_task_stays_visible_across_sections_and_supports_keyboard_cancel(
-        self,
-    ):
+    def test_preparation_is_embedded_only_in_stories_not_a_separate_window(self):
         dashboard = ControlDashboard(AppSettings())
-        cancelled = []
-        dashboard.preparation_cancel_requested.connect(lambda: cancelled.append(True))
-        phase = "Generating: 24 of 83 lines complete. Saved progress is available for continuing."
-        dashboard.set_preparation_phase(phase)
-        dashboard.set_preparation_active(True)
+        panel = QGroupBox("Selected story preparation")
+        dashboard.embed_preparation(panel)
         dashboard.resize(660, 520)
         dashboard.setFont(QFont("Arial", 16))
         dashboard.show()
         for index in range(3):
             dashboard.sections.setCurrentIndex(index)
             self.application.processEvents()
-            self.assertTrue(dashboard.preparation_card.isVisibleTo(dashboard))
-            self.assertIn(phase, dashboard.preparation_summary.text())
-            self.assertTrue(dashboard.preparation_summary.wordWrap())
-            self.assertEqual(cancelled, [])
-        dashboard.preparation_cancel.setFocus()
-        QTest.keyClick(dashboard.preparation_cancel, Qt.Key.Key_Space)
-        self.assertEqual(cancelled, [True])
-        dashboard.set_preparation_active(False)
-        self.assertTrue(dashboard.preparation_card.isVisibleTo(dashboard))
-        self.assertFalse(dashboard.preparation_cancel.isVisibleTo(dashboard))
-        dashboard.preparation_status.click()
-        self.assertEqual(dashboard.sections.currentIndex(), 0)
+            self.assertEqual(panel.isVisibleTo(dashboard), index == 0)
+            self.assertFalse(panel.isWindow())
+            self.assertIs(panel.window(), dashboard)
+        dashboard.show_stories()
+        self.assertTrue(panel.isVisibleTo(dashboard))
         dashboard.close()
         dashboard.deleteLater()
 

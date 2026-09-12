@@ -718,6 +718,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
+            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()

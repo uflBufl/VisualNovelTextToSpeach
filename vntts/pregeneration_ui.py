@@ -345,10 +345,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.source_status = QLabel()
         self.source_status.setWordWrap(True)
         self.source_status.setAccessibleName("Game content status")
-        self.coverage_summary = QLabel("Offline audio coverage is not available yet.")
-        self.coverage_summary.setWordWrap(True)
-        self.coverage_summary.setAccessibleName("Offline audio coverage by story")
-        self.coverage_summary.setStyleSheet("font-weight: 600;")
         self.stories = QListWidget()
         self.stories.setWordWrap(True)
         self.stories.setAccessibleName("Stories and chapters")
@@ -1076,7 +1072,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.game_narrator_button.setEnabled(not loading)
         self.pocket_voice_cloning.setEnabled(not loading)
         self.discovery_panel.setVisible(loading)
-        self.coverage_summary.setVisible(not loading)
         self.selection_panel.setVisible(not loading)
         self.content_scroll.setVisible(loading)
         self.selection_panel.setEnabled(not loading)
@@ -1700,7 +1695,6 @@ class OfflineAudioPreparationDialog(QDialog):
         content = self.current_content()
         if content is None:
             return
-        counts = dict(not_started=0, preparing=0, in_progress=0, ready=0, attention=0)
         selections = {value.selection_id: value for value in content.selections}
         with QSignalBlocker(self.stories):
             for row in range(self.stories.count()):
@@ -1774,21 +1768,6 @@ class OfflineAudioPreparationDialog(QDialog):
                     f"{label}: {detail}"
                 )
                 item.setData(Qt.ItemDataRole.UserRole + 2, status)
-                counts[status] += 1
-        self.coverage_summary.setText(
-            ", ".join(
-                f"{count} {label}"
-                for key, label in (
-                    ("ready", "ready"),
-                    ("preparing", "preparing"),
-                    ("in_progress", "partially prepared"),
-                    ("attention", "need attention"),
-                    ("not_started", "not prepared"),
-                )
-                if (count := counts[key])
-            )
-            + f" ({len(selections)} stories)."
-        )
         self._filter_stories()
 
     def _can_start_reading(self):
@@ -1827,9 +1806,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     )
             selected_ids = self._story_selection_drafts.get(
                 content.story_index_sha256,
-                set(resumed.selected_story_ids)
-                if resumed
-                else {selection.selection_id for selection in content.selections},
+                set(resumed.selected_story_ids) if resumed else set(),
             )
             self._story_selection_drafts[content.story_index_sha256] = set(selected_ids)
             story_statuses = self.job_store.story_statuses(content)
@@ -1858,9 +1835,6 @@ class OfflineAudioPreparationDialog(QDialog):
             self.selection_status.setText(message)
             self.resume_status.setText(message)
         else:
-            self.coverage_summary.setText(
-                "Offline audio coverage is not available yet."
-            )
             self.selection_status.clear()
             self.resume_status.clear()
         self.stories.blockSignals(False)
@@ -1897,7 +1871,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 if query or status is not None
                 else ""
             )
-            + f"{selected} selected - {self.coverage_summary.text().partition(' (')[0]}"
+            + f"{selected} selected"
             + (f"; {hidden_selected} hidden by filters." if hidden_selected else ".")
             + (
                 " Clear filters to see other stories."
@@ -1943,7 +1917,13 @@ class OfflineAudioPreparationDialog(QDialog):
                     != "not_started"
                     for row in range(self.stories.count())
                 )
-                else "Prepare"
+                else (
+                    "Choose a story"
+                    if not selected
+                    else "Prepare selected story"
+                    if len(selected) == 1
+                    else f"Prepare {len(selected)} stories"
+                )
             )
         if not can_read and not self._generation_engine_available():
             self.summary.setText(

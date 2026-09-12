@@ -288,6 +288,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             with patch("vntts.app.OfflineAudioPreparationDialog", return_value=dialog):
                 tray.open_pregeneration()
+                dialog.select_all_button.click()
                 dialog.continue_button.click()
                 self.assertTrue(dialog.has_pending_work())
                 tray.dashboard.show_reading()
@@ -359,6 +360,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 thread_pool=pool,
             )
             self.assertFalse(dialog.choose_character_voice.isEnabled())
+            dialog.select_all_button.click()
             dialog.continue_button.click()
             for _ in range(2):
                 pool.tasks.pop(0).run()
@@ -432,6 +434,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 game_narrator_chooser=Mock(return_value=selected),
                 thread_pool=pool,
             )
+            dialog.select_all_button.click()
             stories = dialog.selected_story_ids()
             dialog.continue_button.click()
             for _ in range(2):
@@ -495,6 +498,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.model_choice.setText("selected/model")
             self.assertEqual(dialog.settings.tts_model, "selected/model")
             self.assertEqual(settings.speech_backend, "pocket-tts")
+            dialog.select_all_button.click()
             self.assertIn("Stories:", dialog.story_context.text())
             dialog._set_import_controls(False)
             dialog.selection_panel.hide()
@@ -537,6 +541,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.engine_choice.setCurrentIndex(
                 dialog.engine_choice.findData("pocket-tts")
             )
+            dialog.select_all_button.click()
             self.assertTrue(dialog.continue_button.isEnabled())
             dialog.reject()
             dialog.deleteLater()
@@ -568,6 +573,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
+            dialog.select_all_button.click()
             dialog.continue_button.click()
             pool.tasks.pop(0).run()
             self.application.processEvents()
@@ -701,6 +707,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 thread_pool=pool,
                 preview_player=player,
             )
+            dialog.select_all_button.click()
             dialog.continue_button.click()
             pool.tasks.pop(0).run()
             self.application.processEvents()
@@ -733,6 +740,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 job_store=PregenerationJobStore(root / "jobs"),
                 thread_pool=pool,
             )
+            dialog.select_all_button.click()
             dialog.continue_button.click()
             pool.tasks.pop(0).run()
             self.application.processEvents()
@@ -844,6 +852,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             visible_text = [dialog.summary.text(), dialog.resume_status.text()]
 
+            dialog.select_all_button.click()
             dialog.continue_button.click()
             for _step in range(12):
                 if dialog.pack_result() is not None:
@@ -969,6 +978,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
+            first.select_all_button.click()
             first.continue_button.click()
             pool.tasks.pop(0).run()
             self.application.processEvents()
@@ -1058,6 +1068,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
+            first.select_all_button.click()
             first.continue_button.click()
             for _step in range(8):
                 if first.progress_phase.text() == "Generation paused":

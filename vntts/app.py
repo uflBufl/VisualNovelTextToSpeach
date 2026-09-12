@@ -1572,7 +1572,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.repeat_requested.connect(self.repeat_last_speech)
         self.dashboard.stop_requested.connect(self.emergency_stop)
         self.dashboard.pregeneration_requested.connect(self.open_pregeneration)
-        self.dashboard.preparation_cancel_requested.connect(self._cancel_preparation)
         self.dashboard.readiness_requested.connect(self.open_readiness)
         self.dashboard.calibration_requested.connect(self.calibrate)
         self.dashboard.voices_requested.connect(self.open_voice_previews)
@@ -2487,7 +2486,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.pregeneration_dialog = dialog
         dialog.finished.connect(self._pregeneration_finished)
-        dialog.phaseChanged.connect(self.dashboard.set_preparation_phase)
         dialog.readingRequested.connect(self._read_prepared_story)
         dialog.preparationRequested.connect(self._remember_preparation_context)
         dialog.packReady.connect(self._activate_ready_preparation)
@@ -2537,15 +2535,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._shutting_down:
             return
         self._apply_controller_action_state()
-        self.dashboard.set_preparation_active(
-            self.pregeneration_dialog is not None
-            and self.pregeneration_dialog.has_pending_work()
-        )
-
-    def _cancel_preparation(self):
-        dialog = self.pregeneration_dialog
-        if dialog is not None and dialog.has_pending_work():
-            dialog._cancel_or_reject()
 
     def _pregeneration_finished(self, result):
         dialog = self.pregeneration_dialog

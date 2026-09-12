@@ -390,6 +390,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
                 self.assertFalse(dialog.discovery_panel.isVisible())
                 self.assertTrue(dialog.selection_panel.isVisible())
+                dialog.select_all_button.click()
                 self.assertTrue(dialog.continue_button.isEnabled())
                 dialog.refresh_button.click()
                 self.assertEqual(len(pool.tasks), 1)
@@ -441,7 +442,13 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.selected_story_ids(), ())
             self.assertFalse(dialog.continue_button.isEnabled())
             self.assertEqual(dialog.story_context.text(), "No stories selected.")
+
             dialog.source.setCurrentIndex(1)
+            dialog.story_filter.setCurrentIndex(dialog.story_filter.findData(None))
+            dialog.select_all_button.click()
+            dialog.story_filter.setCurrentIndex(
+                dialog.story_filter.findData("in_progress")
+            )
             self.assertEqual(dialog.selected_story_ids(), ("main-1", "rhiannon"))
             self.assertIn("0/2 shown", dialog.story_filter_status.text())
             self.assertIn("2 hidden by filters", dialog.story_filter_status.text())
@@ -459,6 +466,40 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.story_search.setText("missing story")
             self.assertIn("Clear filters", dialog.story_filter_status.text())
             self.assertEqual(dialog.selected_story_ids(), ("main-1",))
+
+    def test_fresh_catalog_starts_with_no_story_selected(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+
+            self.assertEqual(dialog.selected_story_ids(), ())
+            self.assertFalse(dialog.continue_button.isEnabled())
+            self.assertEqual(dialog.story_context.text(), "No stories selected.")
+
+    def test_preparing_one_story_creates_job_for_only_that_story(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=ManualThreadPool(),
+            )
+            self.addCleanup(dialog.deleteLater)
+
+            self.assertIsNone(dialog.job())
+            self.assertFalse(dialog.has_pending_work())
+            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            self.assertEqual(dialog.continue_button.text(), "Prepare selected story")
+            dialog.continue_button.click()
+            self.assertEqual(dialog.job().selected_story_ids, ("main-1",))
 
     def test_story_controls_are_compact_and_copy_full_details(self):
         from vntts.dashboard_ui import ControlDashboard
@@ -491,8 +532,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 dialog.narrator_status.textInteractionFlags()
                 & Qt.TextInteractionFlag.TextSelectableByMouse
             )
-            self.assertEqual(
-                dialog.coverage_summary.text(), "2 not prepared (2 stories)."
+            self.assertTrue(
+                all(
+                    "Not prepared" in dialog.stories.item(row).text()
+                    for row in range(2)
+                )
             )
             dialog.copy_narrator_details.click()
             self.assertIn("Engine:", self.application.clipboard().text())
@@ -528,6 +572,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             first = reopen()
             first.select_none_button.click()
             first.source.setCurrentIndex(1)
+            first.stories.item(0).setCheckState(Qt.CheckState.Checked)
             first.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
             first.close()
             second = reopen()
@@ -618,6 +663,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
             self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
             dialog.stories.setCurrentRow(0)
             dialog.check_story_audio.click()
             self.assertEqual(len(pool.tasks), 1)
@@ -739,7 +785,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
             self.addCleanup(dialog.deleteLater)
-            self.assertEqual(dialog.continue_button.text(), "Prepare")
+            dialog.select_all_button.click()
+            self.assertEqual(dialog.continue_button.text(), "Prepare 2 stories")
             updates = []
             dialog.phaseChanged.connect(updates.append)
             dialog.continue_button.click()
@@ -829,6 +876,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 job_store=PregenerationJobStore(root / "jobs"),
             )
             self.addCleanup(dialog.deleteLater)
+            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
             dialog.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
             dialog.stories.setCurrentRow(0)
             ready = StoryAudioCoverage(
@@ -937,6 +985,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 job_store=PregenerationJobStore(root / "jobs"),
             )
             self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
             plan = SimpleNamespace(
                 synthesis_backend="pocket-tts", synthesis_model="pocket-tts"
             )
@@ -973,6 +1022,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 job_store=PregenerationJobStore(root / "jobs"),
             )
             self.addCleanup(preparation.deleteLater)
+            preparation.stories.item(0).setCheckState(Qt.CheckState.Checked)
             preparation.stories.item(1).setCheckState(Qt.CheckState.Unchecked)
             preparation.stories.setCurrentRow(0)
             ready = StoryAudioCoverage(
@@ -1155,6 +1205,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertEqual(dialog.stories.count(), 2)
+            dialog.select_all_button.click()
             self.assertTrue(
                 all(
                     dialog.stories.item(row).checkState() == Qt.CheckState.Checked
@@ -1373,10 +1424,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
 
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
-            self.assertIn(
-                "2 partially prepared (2 stories)",
-                dialog.coverage_summary.text(),
-            )
             self.assertIn("Saved offline audio found", dialog.resume_status.text())
             self.assertIn(
                 "Partially prepared: saved audio; check readiness",
@@ -1424,6 +1471,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
+            dialog.select_all_button.click()
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
@@ -1462,10 +1510,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     in dialog.stories.item(row).text()
                     for row in range(dialog.stories.count())
                 )
-            )
-            self.assertIn(
-                "2 partially prepared (2 stories)",
-                dialog.coverage_summary.text(),
             )
             self.assertTrue(dialog.selection_panel.isHidden())
             self.assertIn("Step 4", dialog.step.text())
@@ -1617,6 +1661,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
+            dialog.select_all_button.click()
             dialog.continue_button.click()
             dialog.cancel_button.click()
 
@@ -1708,6 +1753,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
+            dialog.select_all_button.click()
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
@@ -1739,6 +1785,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
+            dialog.select_all_button.click()
             dialog.change_voices.setChecked(True)
             dialog.continue_button.click()
             pool.tasks.pop().run()
@@ -1785,6 +1832,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 thread_pool=pool,
             )
 
+            dialog.select_all_button.click()
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
