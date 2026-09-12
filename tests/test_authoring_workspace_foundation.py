@@ -71,6 +71,21 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
         with self.assertRaisesRegex(FoundationError, "hexadecimal"):
             require_sha256("z" * 64, "Digest", error_type=FoundationError)
 
+    def test_json_object_label_preserves_domain_error_wording(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(
+                FoundationError,
+                "^Generation state must be a JSON object$",
+            ):
+                load_json_object(
+                    path,
+                    "generation state",
+                    error_type=FoundationError,
+                    object_label="Generation state",
+                )
+
     def test_generation_wav_copy_is_checksum_and_collision_bound(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

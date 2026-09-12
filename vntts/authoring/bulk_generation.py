@@ -213,6 +213,7 @@ from vntts.authoring.terminal_conflict_records import (
     TerminalConflictRecordError,
     validate_terminal_conflict_state_binding,
 )
+from vntts.authoring.workspace_foundation import load_json_object
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
     SynthesisCachePolicy,
@@ -3741,15 +3742,12 @@ def _assert_control_files_unchanged(controls):
 
 
 def _load_json(path, description):
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise BulkGenerationError(
-            f"Unable to read {description} {path}: {error}"
-        ) from error
-    if not isinstance(value, dict):
-        raise BulkGenerationError(f"{description.capitalize()} must be a JSON object")
-    return value
+    return load_json_object(
+        path,
+        description,
+        error_type=BulkGenerationError,
+        object_label=description.capitalize(),
+    )
 
 
 _canonical_sha256 = canonical_document_sha256

@@ -20,14 +20,20 @@ def read_regular_file(path, label, *, error_type=ValueError):
         raise error_type(f"Unable to read {label}: {error}") from error
 
 
-def load_json_object(path, description, *, error_type=ValueError):
+def load_json_object(
+    path,
+    description,
+    *,
+    error_type=ValueError,
+    object_label=None,
+):
     """Load one JSON object from a filesystem path."""
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise error_type(f"Unable to read {description} {path}: {error}") from error
     if not isinstance(value, dict):
-        raise error_type(f"{description.title()} must be a JSON object")
+        raise error_type(f"{object_label or description.title()} must be a JSON object")
     return value
 
 

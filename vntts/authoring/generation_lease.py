@@ -18,6 +18,7 @@ from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
+from vntts.authoring.workspace_foundation import load_json_object
 
 LEASE_SCHEMA = "vntts.authoring-generation-lease"
 LEASE_VERSION = 1
@@ -260,15 +261,12 @@ class GenerationLease:
 
 
 def _load_json(path):
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise BulkGenerationError(
-            f"Unable to read generation lease {path}: {error}"
-        ) from error
-    if not isinstance(value, dict):
-        raise BulkGenerationError("Generation lease must be a JSON object")
-    return value
+    return load_json_object(
+        path,
+        "generation lease",
+        error_type=BulkGenerationError,
+        object_label="Generation lease",
+    )
 
 
 __all__ = [
