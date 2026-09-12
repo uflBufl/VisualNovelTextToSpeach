@@ -193,6 +193,7 @@ def import_source_reference_review(report_path, review_path, story_index_path, o
             candidate["source_bank"],
         )
         groups.setdefault(identity, []).append(candidate)
+    queue_items_by_character = _queue_items_by_character(story)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(
@@ -238,7 +239,9 @@ def import_source_reference_review(report_path, review_path, story_index_path, o
                     }
                 )
                 copied_sources.append(candidate)
-            queue_items = _queue_items_for_cluster(story, identity)
+            queue_items = queue_items_by_character.get(
+                (normalize_character_name(character), portrait), ()
+            )
             mapped_queue_ids.update(item["queue_id"] for item in queue_items)
             clusters.append(
                 {
@@ -1815,20 +1818,14 @@ def _load_decisions(review, candidates):
     return decisions, invalidated
 
 
-def _queue_items_for_cluster(story, identity):
-    character, portrait, _bank = identity
-    target = normalize_character_name(character)
-    values = []
+def _queue_items_by_character(story):
+    values = {}
     for record in story.records:
         record_portrait = record.producer_fields.get("portrait")
-        if (
-            normalize_character_name(record.voice_character) != target
-            or record_portrait != portrait
-            or not record.speakable
-            or record.source_audio_status == "available"
-        ):
+        if not record.speakable or record.source_audio_status == "available":
             continue
-        values.append(
+        key = (normalize_character_name(record.voice_character), record_portrait)
+        values.setdefault(key, []).append(
             {
                 "queue_id": expected_voice_generation_queue_id(
                     record.line_id, record.text_sha256
