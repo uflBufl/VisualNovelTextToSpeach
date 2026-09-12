@@ -3,16 +3,6 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P0 - Measure and remove remaining user-visible stalls
-
-- [ ] Profile startup/settings, story preparation, narrator loading and pack
-      activation against realistic local data; rank only repeatable operations
-      above 100 ms.
-- [ ] Fix confirmed duplicate parsing, hashing, filesystem scans or synchronous
-      UI work at the shared ownership boundary without weakening validation.
-- [ ] Add one focused regression per fix, rerun the full suite, record before/after
-      timings, then remove this completed section.
-
 ## P0 - Reduce OpenMOSS generation latency
 
 - [ ] Run the qualified GPU/8 profile beside Reverse: 1999 and confirm game-time
