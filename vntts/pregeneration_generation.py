@@ -70,6 +70,7 @@ class OfflineGenerationWorker:
         self.backend_factory = backend_factory
         self._process = None
         self._in_process_active = False
+        self._startup_status = None
 
     def command(self):
         if self._configured_command:
@@ -166,7 +167,12 @@ class OfflineGenerationWorker:
         output = _generation_output(generation_input)
         state_path = output / "generation-state.json"
         if not state_path.is_file():
-            return OfflineGenerationProgress(available=False)
+            return OfflineGenerationProgress(
+                available=False,
+                runtime_status=self._startup_status
+                if self._in_process_active
+                else None,
+            )
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError, UnicodeError) as error:
@@ -281,11 +287,13 @@ class OfflineGenerationWorker:
             parsed = None
         if parsed is not None:
             self._in_process_active = True
+            self._startup_status = "Starting OpenMOSS..."
             try:
                 run_generation(
                     parsed,
                     backend_factory=self.backend_factory,
                     cancellation=cancel_event,
+                    startup_progress=self._set_startup_status,
                 )
             except Exception as error:
                 if cancel_event is not None and cancel_event.is_set():
@@ -297,6 +305,7 @@ class OfflineGenerationWorker:
                 ) from error
             finally:
                 self._in_process_active = False
+                self._startup_status = None
             if cancel_event is not None and cancel_event.is_set():
                 raise OfflineGenerationCancelled(
                     "Offline speech generation was cancelled"
@@ -335,6 +344,10 @@ class OfflineGenerationWorker:
                 + (f": {detail}" if detail else ".")
             )
         return _load_result(output, generation_input)
+
+    def _set_startup_status(self, message):
+        if isinstance(message, str) and message.strip():
+            self._startup_status = message.strip()[:2000]
 
 
 def _ensure_remaining_disk_space(generation_input):

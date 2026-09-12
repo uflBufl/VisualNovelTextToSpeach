@@ -305,6 +305,7 @@ def run_generation(
     *,
     backend_factory=None,
     cancellation=None,
+    startup_progress=None,
 ):
     backend_factory = backend_factory or create_backend
     missing_policy = missing_voice_policy(arguments)
@@ -493,6 +494,8 @@ def run_generation(
                 512,
                 len(policy_queue.items) * 2,
             ),
+            startup_cancellation=cancellation,
+            startup_progress=startup_progress,
         )
         try:
             profile = arguments.generation_profile or getattr(

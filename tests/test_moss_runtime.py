@@ -106,6 +106,25 @@ class RetainedMossRuntimeTests(unittest.TestCase):
         probe.join(1)
         runtime.shutdown()
 
+    @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
+    def test_offline_openmoss_installs_and_loads_without_manual_preload(self, _):
+        created = []
+
+        def factory(registry, **options):
+            backend = _Backend(registry, **options)
+            created.append(backend)
+            return backend
+
+        runtime = RetainedMossRuntime(
+            "/tmp/vntts-moss-runtime-test", backend_factory=factory
+        )
+
+        runtime.benchmark_backend("moss-tts", "voices", None, model_name="model-a")
+
+        self.assertTrue(created[0].options["allow_download"])
+        self.assertTrue(runtime.loaded)
+        runtime.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -160,6 +160,7 @@ class RetainedMossRuntime:
                 )
                 retained_options["prompt_cache_directory"] = self.root / "voices"
                 retained_options.setdefault("persistent_audio_cache_max_entries", 512)
+                retained_options.setdefault("allow_download", True)
                 self._backend = self.backend_factory(registry, **retained_options)
                 self._model_name = model_name
             else:

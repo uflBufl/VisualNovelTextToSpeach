@@ -92,6 +92,18 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 OfflineGenerationWorker().inspect_progress(inputs).available
             )
 
+    def test_in_process_startup_progress_is_visible_before_generation_state(self):
+        with TemporaryDirectory() as directory:
+            inputs, _plan = generation_inputs(Path(directory))
+            worker = OfflineGenerationWorker()
+            worker._in_process_active = True
+            worker._set_startup_status("Downloading OpenMOSS: 12%")
+
+            progress = worker.inspect_progress(inputs)
+
+        self.assertFalse(progress.available)
+        self.assertEqual(progress.runtime_status, "Downloading OpenMOSS: 12%")
+
     def test_progress_reads_partial_durable_state_before_manifest_publication(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -245,6 +257,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 popen_factory=popen,
                 backend_factory=backend_factory,
             )
+            cancellation = Event()
 
             with (
                 patch(
@@ -256,13 +269,17 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 ),
                 patch.object(worker, "inspect", side_effect=OfflineGenerationError),
             ):
-                result = worker.generate(generation_input, plan)
+                result = worker.generate(
+                    generation_input, plan, cancel_event=cancellation
+                )
 
         popen.assert_not_called()
         self.assertIs(result, expected)
         self.assertIs(
             run_generation.call_args.kwargs["backend_factory"], backend_factory
         )
+        self.assertIsNotNone(run_generation.call_args.kwargs["startup_progress"])
+        self.assertIs(run_generation.call_args.kwargs["cancellation"], cancellation)
 
     def test_pocket_cloning_opt_in_reaches_isolated_worker(self):
         with TemporaryDirectory() as temporary_directory:
