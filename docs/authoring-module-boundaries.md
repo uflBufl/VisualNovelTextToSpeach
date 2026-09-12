@@ -178,12 +178,11 @@ their historical bulk-generation pickle and introspection identity.
 
 ## Public compatibility facade
 
-`vntts.authoring` preserves its 435-name public `__all__`, but resolves each
-name lazily from a static owning-module table and caches the result. Importing
-the package or a leaf such as `generation_state` no longer imports workbench or
-PySide. Normal Python submodule imports remain available, and a fresh-process
-regression binds the exact ordered export inventory by SHA-256 while checking
-that UI modules stay unloaded.
+`vntts.authoring` publicly exposes only `MissingVoicePolicy`, `NARRATOR_ROLES`
+and `publish_final_game_pack`. Normal Python submodule imports remain available.
+The former flat compatibility names still resolve lazily with a deprecation
+warning so existing callers can migrate to their owning modules. Importing the
+package or a leaf such as `generation_state` does not import workbench or PySide.
 
 ## Generation state foundation
 

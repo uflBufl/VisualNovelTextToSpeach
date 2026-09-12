@@ -24,8 +24,8 @@ from vntts_artifacts.voice_generation_queue import (
     write_voice_generation_queue,
 )
 
-import vntts.authoring as authoring_package
 import vntts.authoring.bulk_generation as bulk_generation_module
+import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_legacy_import import write_legacy_fixture
@@ -473,15 +473,15 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
     def test_collection_selection_api_is_exported_from_authoring_package(self):
         self.assertIs(
-            authoring_package.inspect_collection_selection,
+            workbench_module.inspect_collection_selection,
             inspect_collection_selection,
         )
         self.assertIs(
-            authoring_package.CollectionSelection,
+            workbench_module.CollectionSelection,
             CollectionSelection,
         )
         self.assertIs(
-            authoring_package.merge_reconciled_terminal_outcomes,
+            reconciliation_merge_module.merge_reconciled_terminal_outcomes,
             merge_reconciled_terminal_outcomes,
         )
 

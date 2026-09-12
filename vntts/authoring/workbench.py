@@ -33,7 +33,7 @@ from vntts_artifacts.voice_manifest import (
     validate_voice_manifest,
 )
 
-from vntts.authoring import legacy_import
+import vntts.authoring.legacy_import as legacy_import
 from vntts.authoring.audio_event_composition import (
     AudioEventCompositionError,
     load_audio_event_composition,

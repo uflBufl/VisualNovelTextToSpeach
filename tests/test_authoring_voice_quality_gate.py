@@ -5,7 +5,6 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import vntts.authoring as authoring_package
 import vntts.authoring.voice_quality_gate as voice_quality_gate_module
 from tests import test_authoring_cohort_review
 from tests.test_authoring_workbench import create_test_workspace
@@ -30,11 +29,11 @@ from vntts.authoring.workbench import create_resume_workspace
 class AuthoringVoiceQualityGateTest(unittest.TestCase):
     def test_cohort_compatibility_api_is_public(self):
         self.assertIs(
-            authoring_package.inspect_voice_quality_cohort,
+            voice_quality_gate_module.inspect_voice_quality_cohort,
             inspect_voice_quality_cohort,
         )
         self.assertIs(
-            authoring_package.VoiceQualityCohortCompatibility,
+            voice_quality_gate_module.VoiceQualityCohortCompatibility,
             voice_quality_gate_module.VoiceQualityCohortCompatibility,
         )
 

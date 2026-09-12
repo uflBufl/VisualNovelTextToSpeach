@@ -127,15 +127,13 @@ def _production_importers(module, imported_name):
 
 
 class AuthoringImportGraphTest(unittest.TestCase):
-    def test_public_facade_is_lazy_and_keeps_its_export_inventory(self):
+    def test_public_facade_is_lazy_and_keeps_its_supported_surface(self):
         script = """
-import hashlib
 import json
 import sys
 import vntts.authoring as authoring
 print(json.dumps({
-    "count": len(authoring.__all__),
-    "digest": hashlib.sha256(json.dumps(authoring.__all__, separators=(",", ":")).encode()).hexdigest(),
+    "exports": authoring.__all__,
     "workbench": "vntts.authoring.workbench" in sys.modules,
     "pyside": any(name.startswith("PySide") for name in sys.modules),
 }))
@@ -143,10 +141,9 @@ print(json.dumps({
         observed = json.loads(
             subprocess.check_output([sys.executable, "-c", script], text=True)
         )
-        self.assertEqual(observed["count"], 435)
         self.assertEqual(
-            observed["digest"],
-            "f14ac35bb1c82bdcadade461a175a3a39f3747371ec3ae49c2533a013e99369d",
+            observed["exports"],
+            ["MissingVoicePolicy", "NARRATOR_ROLES", "publish_final_game_pack"],
         )
         self.assertFalse(observed["workbench"])
         self.assertFalse(observed["pyside"])

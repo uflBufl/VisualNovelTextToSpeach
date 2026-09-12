@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 import importlib
+import warnings
+
+_PUBLIC_EXPORTS = (
+    "MissingVoicePolicy",
+    "NARRATOR_ROLES",
+    "publish_final_game_pack",
+)
 
 _EXPORTS = {
     "AUDIO_EVENT_PLAN_FIELD": (
@@ -1573,13 +1580,20 @@ _EXPORTS = {
     ),
 }
 
-__all__ = list(_EXPORTS)
+__all__ = list(_PUBLIC_EXPORTS)
 
 
 def __getattr__(name):
     target = _EXPORTS.get(name)
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if name not in _PUBLIC_EXPORTS:
+        warnings.warn(
+            f"vntts.authoring.{name} is a compatibility export; import it from "
+            f"{target[0]} instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     module_name, attribute = target
     value = getattr(importlib.import_module(module_name), attribute)
     globals()[name] = value
