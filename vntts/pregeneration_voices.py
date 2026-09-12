@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import StoryIndexError
 from vntts_artifacts.voice_generation_queue import (
     expected_voice_generation_queue_id,
     text_sha256,
@@ -21,6 +21,7 @@ from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
 )
+from vntts.pregeneration_setup import load_verified_story_index_document
 from vntts.services.tts_engine import default_tts_profile, get_tts_profile
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 from vntts.voices import (
@@ -633,23 +634,13 @@ class VoicePlanStore:
 def _load_bound_story(job):
     path = Path(job.story_index).expanduser().resolve()
     try:
-        before = sha256_file(path)
-        if before != job.story_index_sha256:
-            raise PregenerationVoiceError(
-                "Selected dialogue changed after offline preparation was planned"
-            )
-        document = load_story_index_document(path)
-        after = sha256_file(path)
+        document = load_verified_story_index_document(path, job.story_index_sha256)
     except PregenerationVoiceError:
         raise
     except (OSError, StoryIndexError, ValueError) as error:
         raise PregenerationVoiceError(
             f"Unable to read selected dialogue: {error}"
         ) from error
-    if before != after or before != job.story_index_sha256:
-        raise PregenerationVoiceError(
-            "Selected dialogue changed after offline preparation was planned"
-        )
     return document
 
 

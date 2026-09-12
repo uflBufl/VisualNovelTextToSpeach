@@ -166,7 +166,8 @@ def inspect_story_index(path, *, provider_id="local-story-index"):
     if not path.is_file():
         raise PregenerationSetupError(f"Story content was not found: {path}")
     try:
-        document = load_story_index_document(path)
+        checksum = sha256_file(path)
+        document = _cached_story_index_document(str(path), checksum)
     except (OSError, StoryIndexError, ValueError) as error:
         raise PregenerationSetupError(f"Story content is invalid: {error}") from error
     selections = _story_selections(document)
@@ -181,9 +182,25 @@ def inspect_story_index(path, *, provider_id="local-story-index"):
         if isinstance(version, str) and version.strip()
         else None,
         story_index=path,
-        story_index_sha256=sha256_file(path),
+        story_index_sha256=checksum,
         selections=selections,
     )
+
+
+@lru_cache(maxsize=8)
+def _cached_story_index_document(path, expected_sha256):
+    document = load_story_index_document(path)
+    if sha256_file(path) != expected_sha256:
+        raise ValueError("Story content changed while it was being read")
+    return document
+
+
+def load_verified_story_index_document(path, expected_sha256):
+    """Reuse an immutable parse while still checking the current file bytes."""
+    path = Path(path).expanduser().resolve()
+    if sha256_file(path) != expected_sha256:
+        raise ValueError("Story content checksum changed")
+    return _cached_story_index_document(str(path), expected_sha256)
 
 
 @lru_cache(maxsize=8)

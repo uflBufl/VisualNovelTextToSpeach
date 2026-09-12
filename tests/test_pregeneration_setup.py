@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 from vntts_artifacts import write_story_index_document  # noqa: E402
+from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
 from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
@@ -31,10 +32,12 @@ from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
     PregenerationSetupError,
+    _cached_story_index_document,
     _story_selections,
     discover_game_content,
     estimate_preparation,
     inspect_story_index,
+    load_verified_story_index_document,
 )
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import PregenerationVoiceCancelled  # noqa: E402
@@ -124,6 +127,22 @@ class ManualThreadPool:
 
 
 class PregenerationSetupTest(unittest.TestCase):
+    def test_verified_story_parse_is_reused_by_checksum(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = write_story_index(Path(temporary_directory))
+            _cached_story_index_document.cache_clear()
+            with patch(
+                "vntts.pregeneration_setup.load_story_index_document",
+                wraps=load_story_index_document,
+            ) as load:
+                content = inspect_story_index(path)
+                document = load_verified_story_index_document(
+                    path, content.story_index_sha256
+                )
+
+            self.assertEqual(load.call_count, 1)
+            self.assertEqual(len(document.records), 3)
+
     def test_story_records_are_grouped_in_one_pass(self):
         class CountingRecords(tuple):
             iterations = 0

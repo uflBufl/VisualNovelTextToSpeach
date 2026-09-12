@@ -18,7 +18,6 @@ from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
     StoryIndexError,
-    load_story_index_document,
     write_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
@@ -38,6 +37,7 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
+from vntts.pregeneration_setup import load_verified_story_index_document
 from vntts.pregeneration_voices import VoicePlan
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
@@ -215,15 +215,7 @@ class PregenerationInputStore:
 def _load_story(job):
     path = Path(job.story_index).expanduser().resolve()
     try:
-        before = sha256_file(path)
-        if before != job.story_index_sha256:
-            raise PregenerationQueueError(
-                "Selected dialogue changed after preparation was planned"
-            )
-        story = load_story_index_document(path)
-        if sha256_file(path) != before:
-            raise PregenerationQueueError("Selected dialogue changed while it was read")
-        return story
+        return load_verified_story_index_document(path, job.story_index_sha256)
     except PregenerationQueueError:
         raise
     except (OSError, StoryIndexError, ValueError) as error:
