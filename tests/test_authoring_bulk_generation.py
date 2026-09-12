@@ -284,9 +284,7 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     active = json.loads(
                         (output / "generation-state.json").read_text(encoding="utf-8")
                     )["active"]
-                    active_during_second.append(
-                        (active["queue_id"], active["phase"])
-                    )
+                    active_during_second.append((active["queue_id"], active["phase"]))
                     second_started.set()
 
             renderer.inspect_state = inspect_state
