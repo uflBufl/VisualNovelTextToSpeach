@@ -3,13 +3,6 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P0 - Make first-time OpenMOSS setup safe
-
-- [ ] Before downloading the two pinned Windows model files, show that OpenMOSS
-      needs about 9.1 GB plus working space, verify sufficient free disk space,
-      and require an explicit Install action. Keep the existing resumable,
-      checksum-bound download and cancellation behavior.
-
 ## P0 - Reduce OpenMOSS generation latency
 
 - [ ] Record cold and warm timings for startup, reference preparation, native

@@ -36,6 +36,16 @@ MODELS = (
         4462667968,
     ),
 )
+DOWNLOAD_HEADROOM_BYTES = 128 * 1024 * 1024
+
+
+class MossCppInstallRequired(TTSConfigurationError):
+    def __init__(self, download_bytes, required_bytes, free_bytes):
+        self.download_space = (download_bytes, required_bytes, free_bytes)
+        super().__init__(
+            "OpenMOSS files are not installed. Return to setup and choose "
+            "Install OpenMOSS."
+        )
 
 
 def installation_root():
@@ -57,6 +67,39 @@ def configured_paths(model_name=None, *, root=None):
     return server, model, model.with_suffix(".extras.gguf")
 
 
+def _remaining_download_bytes(output, size):
+    if not output.is_symlink() and output.is_file() and output.stat().st_size == size:
+        return 0
+    partial = output.with_suffix(output.suffix + ".part")
+    received = (
+        partial.stat().st_size if not partial.is_symlink() and partial.is_file() else 0
+    )
+    return size - received if 0 <= received <= size else size
+
+
+def managed_download_space(model_name=None, *, root=None):
+    """Return remaining download, required free, and available bytes."""
+    root = Path(root or installation_root())
+    paths = configured_paths(model_name, root=root)
+    targets = []
+    archive = root / "runtime.zip"
+    if not os.environ.get("VNTTS_MOSS_CPP_EXECUTABLE") and (
+        archive.exists() or archive.is_symlink() or not paths[0].is_file()
+    ):
+        targets.append((archive, ARCHIVE[2]))
+    if not (
+        os.environ.get("VNTTS_MOSS_GGUF")
+        or str(model_name or "").lower().endswith(".gguf")
+    ):
+        targets.extend((paths[1].parent / name, size) for name, _digest, size in MODELS)
+    remaining = sum(_remaining_download_bytes(output, size) for output, size in targets)
+    parent = root
+    while not parent.exists():
+        parent = parent.parent
+    required = remaining + DOWNLOAD_HEADROOM_BYTES if remaining else 0
+    return remaining, required, shutil.disk_usage(parent).free
+
+
 def _hash(path, cancellation):
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -66,7 +109,16 @@ def _hash(path, cancellation):
     return digest.hexdigest()
 
 
-def _download(url, expected, size, output, progress, cancellation):
+def _download(
+    url,
+    expected,
+    size,
+    output,
+    progress,
+    cancellation,
+    *,
+    allow_download=False,
+):
     _check_cancelled(cancellation)
     if output.is_symlink():
         raise TTSConfigurationError(f"Unsafe MOSS download path: {output}")
@@ -88,7 +140,11 @@ def _download(url, expected, size, output, progress, cancellation):
             return
         partial.unlink()
         received = 0
-    if shutil.disk_usage(output.parent).free < size - received + 128 * 1024 * 1024:
+    required = size - received + DOWNLOAD_HEADROOM_BYTES
+    free = shutil.disk_usage(output.parent).free
+    if not allow_download:
+        raise MossCppInstallRequired(size - received, required, free)
+    if free < required:
         raise TTSConfigurationError(
             "Not enough free disk space for MOSS. Its model files require about 9.1 GB."
         )
@@ -176,7 +232,14 @@ def _extract_runtime(archive, destination, cancellation):
             partial.replace(target)
 
 
-def ensure_moss_cpp(model_name=None, *, cancellation=None, progress=None, root=None):
+def ensure_moss_cpp(
+    model_name=None,
+    *,
+    cancellation=None,
+    progress=None,
+    root=None,
+    allow_download=False,
+):
     progress = progress or (lambda _message: None)
     root = Path(root or installation_root())
     paths = configured_paths(model_name, root=root)
@@ -191,21 +254,69 @@ def ensure_moss_cpp(model_name=None, *, cancellation=None, progress=None, root=N
         raise TTSConfigurationError(
             "Automatic MOSS C++ setup currently supports Windows x64. Configure a native server and GGUF model on this platform."
         )
+    remaining, required, free = managed_download_space(model_name, root=root)
+    if remaining and not allow_download:
+        raise MossCppInstallRequired(remaining, required, free)
+    if free < required:
+        raise TTSConfigurationError(
+            "Not enough free disk space for OpenMOSS: "
+            f"{required / 1e9:.1f} GB required including working space, "
+            f"{free / 1e9:.1f} GB available."
+        )
     try:
         with exclusive_advisory_lock(root / "setup.lock"):
             _check_cancelled(cancellation)
-            if not explicit_server:
+            if not explicit_server and (
+                (root / "runtime.zip").exists()
+                or (root / "runtime.zip").is_symlink()
+                or not paths[0].is_file()
+            ):
                 archive = root / "runtime.zip"
-                _download(*ARCHIVE, archive, progress, cancellation)
+                _download(
+                    *ARCHIVE,
+                    archive,
+                    progress,
+                    cancellation,
+                    allow_download=allow_download,
+                )
                 _extract_runtime(archive, paths[0].parent, cancellation)
             progress("Checking MOSS native runtime...")
             try:
                 _run([str(paths[0]), "--help"], cancellation=cancellation, timeout=30)
             except TTSConfigurationError as error:
-                raise TTSConfigurationError(
-                    "MOSS native runtime check failed. "
-                    f"Model downloads have not started. {error}"
-                ) from error
+                repaired = False
+                archive = root / "runtime.zip"
+                if not explicit_server and not archive.is_file():
+                    remaining = _remaining_download_bytes(archive, ARCHIVE[2])
+                    required = remaining + DOWNLOAD_HEADROOM_BYTES
+                    free = shutil.disk_usage(root).free
+                    if not allow_download:
+                        raise MossCppInstallRequired(
+                            remaining, required, free
+                        ) from error
+                    _download(
+                        *ARCHIVE,
+                        archive,
+                        progress,
+                        cancellation,
+                        allow_download=True,
+                    )
+                    _extract_runtime(archive, paths[0].parent, cancellation)
+                    try:
+                        _run(
+                            [str(paths[0]), "--help"],
+                            cancellation=cancellation,
+                            timeout=30,
+                        )
+                    except TTSConfigurationError as repaired_error:
+                        error = repaired_error
+                    else:
+                        repaired = True
+                if not repaired:
+                    raise TTSConfigurationError(
+                        "MOSS native runtime check failed. "
+                        f"Model downloads have not started. {error}"
+                    ) from error
             if not explicit_model:
                 for name, digest, size in MODELS:
                     _download(
@@ -215,6 +326,7 @@ def ensure_moss_cpp(model_name=None, *, cancellation=None, progress=None, root=N
                         paths[1].parent / name,
                         progress,
                         cancellation,
+                        allow_download=allow_download,
                     )
             progress("MOSS C++ runtime and model files are ready.")
             return paths

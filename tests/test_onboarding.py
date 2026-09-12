@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QLabel, QSizePolicy  # noqa
 
 from vntts.calibration import DialogRegionOverlay  # noqa: E402
 from vntts.game_pack import GamePackError  # noqa: E402
+from vntts.moss_cpp_installation import MossCppInstallRequired  # noqa: E402
 from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
@@ -835,6 +836,82 @@ class OnboardingWizardTest(unittest.TestCase):
         self.application.processEvents()
         self.assertFalse(page.complete)
         self.assertIn("cancelled", page.status.text().lower())
+        wizard.deleteLater()
+
+    def test_first_moss_install_waits_for_explicit_action(self):
+        class ManualThreadPool:
+            def __init__(self):
+                self.tasks = []
+
+            def start(self, task):
+                self.tasks.append(task)
+
+        diagnostics = OnboardingDiagnostics()
+        diagnostics.moss_installation_space = Mock(
+            return_value=(9_100_000_000, 9_300_000_000, 20_000_000_000)
+        )
+        diagnostics.prepare_and_run = Mock(
+            return_value=(DiagnosticResult("Runtime", "ok", "Ready"),)
+        )
+        wizard = OnboardingWizard(
+            AppSettings(speech_backend="moss-tts"), diagnostics=diagnostics
+        )
+        page = wizard.diagnostics_page
+        pool = ManualThreadPool()
+        page.runner.thread_pool = pool
+
+        wizard.show_page(2)
+
+        self.assertEqual(pool.tasks, [])
+        self.assertFalse(page.install_moss_button.isHidden())
+        self.assertTrue(page.install_moss_button.isEnabled())
+        self.assertIn("9.1 GB download", page.status.text())
+        self.assertIn("20.0 GB", page.status.text())
+
+        page.install_moss_button.click()
+        pool.tasks.pop().run()
+        self.application.processEvents()
+
+        self.assertTrue(page.complete)
+        self.assertTrue(
+            diagnostics.prepare_and_run.call_args.kwargs["allow_moss_download"]
+        )
+        wizard.deleteLater()
+
+    def test_moss_install_space_can_be_refreshed(self):
+        diagnostics = OnboardingDiagnostics()
+        diagnostics.moss_installation_space = Mock(
+            side_effect=[
+                (9_100_000_000, 9_300_000_000, 8_000_000_000),
+                (9_100_000_000, 9_300_000_000, 20_000_000_000),
+            ]
+        )
+        wizard = OnboardingWizard(
+            AppSettings(speech_backend="moss-tts"), diagnostics=diagnostics
+        )
+        page = wizard.diagnostics_page
+
+        wizard.show_page(2)
+        self.assertFalse(page.install_moss_button.isEnabled())
+        self.assertEqual(page.retry_button.text(), "Refresh disk space")
+
+        page.retry_button.click()
+
+        self.assertTrue(page.install_moss_button.isEnabled())
+        self.assertIn("20.0 GB", page.status.text())
+        wizard.deleteLater()
+
+    def test_corrupt_moss_install_can_be_explicitly_repaired(self):
+        wizard = OnboardingWizard(AppSettings())
+        page = wizard.diagnostics_page
+
+        page._checks_finished(
+            (), MossCppInstallRequired(4_600_000_000, 4_800_000_000, 9_000_000_000)
+        )
+
+        self.assertFalse(page.install_moss_button.isHidden())
+        self.assertTrue(page.install_moss_button.isEnabled())
+        self.assertIn("4.6 GB download", page.status.text())
         wizard.deleteLater()
 
     def test_diagnostics_explains_external_dependency_installation(self):

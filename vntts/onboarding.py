@@ -1,3 +1,5 @@
+import platform
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,7 +54,29 @@ class OnboardingDiagnostics:
             results.insert(2, permission_result)
         return tuple(results)
 
-    def prepare_and_run(self, settings, *, cancellation, progress):
+    def moss_installation_space(self, settings):
+        if (
+            settings.speech_backend != "moss-tts"
+            or sys.platform != "win32"
+            or platform.machine().casefold() not in {"amd64", "x86_64"}
+        ):
+            return None
+        from vntts.moss_cpp_backend import moss_cpp_requested
+        from vntts.moss_cpp_installation import managed_download_space
+
+        if not moss_cpp_requested(settings.tts_model):
+            return None
+        remaining, required, free = managed_download_space(settings.tts_model)
+        return (remaining, required, free) if remaining else None
+
+    def prepare_and_run(
+        self,
+        settings,
+        *,
+        cancellation,
+        progress,
+        allow_moss_download=False,
+    ):
         """Only the setup journey provisions dependencies; ordinary probes stay read-only."""
         from vntts.moss_cpp_backend import moss_cpp_requested
         from vntts.runtime_installation import ensure_speech_runtime
@@ -63,7 +87,10 @@ class OnboardingDiagnostics:
             from vntts.moss_cpp_installation import ensure_moss_cpp
 
             ensure_moss_cpp(
-                settings.tts_model, cancellation=cancellation, progress=progress
+                settings.tts_model,
+                cancellation=cancellation,
+                progress=progress,
+                allow_download=allow_moss_download,
             )
 
         if settings.speech_backend in {"pocket-tts", "moss-tts"} and not (

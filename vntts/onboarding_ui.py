@@ -785,6 +785,7 @@ class DiagnosticsPage(QWizardPage):
         self.diagnostics = diagnostics
         self.flow = None
         self.complete = False
+        self.moss_download_allowed = False
         self.diagnostic_results = ()
         self.cancellation = Event()
         self.runtime_progress.connect(self._runtime_progress)
@@ -818,6 +819,13 @@ class DiagnosticsPage(QWizardPage):
         self.cancel_button = QPushButton("Cancel checks")
         self.cancel_button.clicked.connect(self.cancel_checks)
         self.cancel_button.setEnabled(False)
+        self.install_moss_button = QPushButton("Install OpenMOSS")
+        self.install_moss_button.setAccessibleDescription(
+            "Download and install the displayed OpenMOSS runtime and model files"
+        )
+        self.install_moss_button.clicked.connect(self.install_moss)
+        self.install_moss_button.hide()
+        actions.addWidget(self.install_moss_button)
         actions.addWidget(self.retry_button)
         actions.addWidget(self.cancel_button)
         actions.addStretch()
@@ -829,9 +837,46 @@ class DiagnosticsPage(QWizardPage):
         layout.addLayout(actions)
 
     def initializePage(self):
+        self.moss_download_allowed = False
+        self.start_checks()
+
+    def _request_moss_installation(self, remaining, required, free):
+        self.runner.cancel()
+        self.results.clear()
+        self.diagnostic_results = ()
+        self.complete = False
+        enough = free >= required
+        self.status.setText(
+            f"OpenMOSS needs a {remaining / 1e9:.1f} GB download and "
+            f"{required / 1e9:.1f} GB free including working space. "
+            f"This computer has {free / 1e9:.1f} GB free."
+            + (
+                " Choose Install OpenMOSS to continue."
+                if enough
+                else " Free disk space, then refresh this check."
+            )
+        )
+        self.progress.hide()
+        self.install_moss_button.show()
+        self.install_moss_button.setEnabled(enough)
+        self.retry_button.setText("Refresh disk space")
+        self.retry_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self._update_remediation()
+        self.completeChanged.emit()
+
+    def install_moss(self):
+        self.moss_download_allowed = True
         self.start_checks()
 
     def start_checks(self):
+        if not self.moss_download_allowed and isinstance(
+            self.diagnostics, OnboardingDiagnostics
+        ):
+            space = self.diagnostics.moss_installation_space(self.flow.draft_settings)
+            if space is not None:
+                self._request_moss_installation(*space)
+                return
         self.cancellation.set()
         self.cancellation = Event()
         self.runner.cancel()
@@ -842,6 +887,8 @@ class DiagnosticsPage(QWizardPage):
             "Preparing speech runtime and checking required components. Please wait..."
         )
         self.progress.show()
+        self.install_moss_button.hide()
+        self.retry_button.setText("Run checks again")
         self.retry_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self._update_remediation()
@@ -855,6 +902,7 @@ class DiagnosticsPage(QWizardPage):
                 progress=lambda message: self.runtime_progress.emit(
                     cancellation, message
                 ),
+                allow_moss_download=self.moss_download_allowed,
             )
         else:
             self.runner.start(self.diagnostics.run, self.flow.draft_settings)
@@ -888,6 +936,12 @@ class DiagnosticsPage(QWizardPage):
         self.retry_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         if error is not None:
+            from vntts.moss_cpp_installation import MossCppInstallRequired
+
+            if isinstance(error, MossCppInstallRequired):
+                self.moss_download_allowed = False
+                self._request_moss_installation(*error.download_space)
+                return
             self.complete = False
             self.diagnostic_results = ()
             self.results.clear()
