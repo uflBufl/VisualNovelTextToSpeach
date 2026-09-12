@@ -3,14 +3,6 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P0 - Restore live reading without prepared story data
-
-- [ ] Let a freshly configured user start OCR-driven live TTS without a story
-      index or speaker corpus. Use the selected Narrator for unattributed text,
-      keep the existing one-time decision when a named speaker appears, and do
-      not require chapter identification until prepared/story-aware routing is
-      actually enabled. Align the README and setup copy with this behavior.
-
 ## P0 - Make first-time OpenMOSS setup safe
 
 - [ ] Before downloading the two pinned Windows model files, show that OpenMOSS

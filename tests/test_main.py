@@ -3848,7 +3848,7 @@ class MainTest(unittest.TestCase):
         )
         preloader.recommend("Selene", "This is not Selone.")
         controller = AppController(
-            AppSettings(),
+            AppSettings(audio_source_policy="prefer-generated"),
             tts_factory=Mock(),
             dialog_handler=lambda _character, _text: None,
             unknown_speaker_handler=offered.append,
@@ -4004,7 +4004,7 @@ class MainTest(unittest.TestCase):
             lookahead_rows=4,
         )
         controller = AppController(
-            AppSettings(),
+            AppSettings(audio_source_policy="prefer-game-audio"),
             tts_factory=Mock(),
             chapter_voice_preloader=preloader,
         )
@@ -4037,7 +4037,7 @@ class MainTest(unittest.TestCase):
         )
         preloader.recommend("Hotelier", "Welcome.")
         controller = AppController(
-            AppSettings(),
+            AppSettings(audio_source_policy="prefer-generated"),
             tts_factory=Mock(),
             chapter_voice_preloader=preloader,
         )
@@ -4068,7 +4068,7 @@ class MainTest(unittest.TestCase):
         )
         preloader.recommend("Selone", "Line")
         controller = AppController(
-            AppSettings(),
+            AppSettings(audio_source_policy="prefer-generated"),
             tts_factory=Mock(),
             chapter_voice_preloader=preloader,
         )
@@ -4253,7 +4253,7 @@ class MainTest(unittest.TestCase):
             }
         )
         controller = AppController(
-            AppSettings(),
+            AppSettings(audio_source_policy="prefer-generated"),
             tts_factory=Mock(),
             status_handler=statuses.append,
             chapter_voice_preloader=preloader,
@@ -4283,6 +4283,43 @@ class MainTest(unittest.TestCase):
         controller.approve_live_narrator_fallbacks(["Selone"])
         self.assertTrue(controller.toggle_live())
         controller.live_reader.toggle.assert_called_once_with()
+
+    def test_live_tts_only_starts_without_identifying_loaded_story_scope(self):
+        offered = []
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker_name": "Selone",
+                        "text": "Line",
+                    }
+                ]
+            }
+        )
+        controller = AppController(
+            AppSettings(audio_source_policy="live-tts-only", story_index="story.jsonl"),
+            tts_factory=Mock(),
+            unknown_speaker_handler=offered.append,
+            chapter_voice_preloader=preloader,
+        )
+        controller.voice_router = Mock()
+        controller.voice_router.registry.assignments = {}
+        controller.voice_router.registry.resolve.return_value = None
+        controller.speech_backend = SimpleNamespace()
+        controller.live_reader = Mock(is_running=False)
+        controller.live_reader.toggle.return_value = True
+
+        self.assertEqual(controller.unresolved_live_speakers(), ())
+        self.assertTrue(controller.toggle_live())
+
+        controller.live_reader.toggle.assert_called_once_with()
+        self.assertIsNone(preloader.current_match)
+        self.assertFalse(controller._dialog_observed("Selone", "Line"))
+        self.assertEqual(offered, ["Selone"])
+        controller._live_sequence_audio_active = Mock(return_value=True)
+        self.assertEqual(controller.unresolved_live_speakers(), ("Selone",))
 
     def test_direct_live_toggle_rechecks_empty_scope_after_staged_approval(self):
         statuses = []

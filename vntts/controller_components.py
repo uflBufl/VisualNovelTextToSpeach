@@ -941,6 +941,12 @@ class VoiceAssignmentComponent:
 
     def unresolved_live_speakers(self) -> Any:
         controller = self.controller
+        if (
+            controller.settings.audio_source_policy == "live-tts-only"
+            and not controller._live_sequence_audio_active()
+            and not controller.settings.live_speaker_corpus
+        ):
+            return ()
         scope = controller.chapter_voice_preloader.live_voice_preflight_rows()
         if not controller.chapter_voice_preloader.dialogue:
             if controller.live_speaker_corpus_error:
