@@ -637,8 +637,15 @@ class MainTest(unittest.TestCase):
             read_dialog_safely,
             tts,
             screenshot_directory,
+            error_handler=None,
+            capture_target=None,
+            speech_handler=None,
             minimum_confidence=60.0,
+            uncertain_frame_recorder=None,
+            diagnostic_handler=None,
+            voice_resolver=None,
             ocr_language="eng",
+            correction_dictionary=None,
         )
 
     def test_scheduler_rejects_one_time_read_while_live_mode_is_active(self):
@@ -4549,6 +4556,74 @@ class MainTest(unittest.TestCase):
 
         outcomes = [event for event in pipeline if event[0] == "playback-outcome"]
         self.assertEqual(outcomes[0][3]["source_audio_lead_ms"], 1600)
+
+    def test_playback_events_keep_shared_telemetry_and_completion_metrics(self):
+        timeline_events = []
+        outcome = PlaybackOutcome(
+            PlaybackStatus.COMPLETED,
+            20.0,
+            underflowed=True,
+            generation_limited=True,
+            first_audio_ms=5.0,
+            synthesis_ms=10.0,
+            cache_source="fresh-generation",
+            audio_source="moss-tts:fresh-generation",
+            source_sample_rate=24_000,
+            playback_sample_rate=48_000,
+            sample_count=960_000,
+            expected_playback_ms=20_000.0,
+        )
+        controller = AppController(
+            AppSettings(),
+            tts_factory=Mock(),
+            pipeline_event_handler=lambda stage, generation, occurred_at, **details: (
+                timeline_events.append((stage, generation, occurred_at, details))
+            ),
+        )
+        controller.live_reader = Mock()
+        controller.live_reader.wait_until_playable.return_value = True
+        controller.speech_backend = StubTypedPlaybackBackend(outcome)
+        chunk = SpeechChunk(4, "Rhiannon", "A line.")
+
+        self.assertTrue(
+            controller._play_live_chunk(chunk, controller.speech_backend.prepared)
+        )
+
+        playback_events = [
+            event
+            for event in timeline_events
+            if event[0] in {"playback-completion", "playback-outcome"}
+        ]
+        self.assertEqual(
+            [event[0] for event in playback_events],
+            ["playback-completion", "playback-outcome"],
+        )
+        completion, playback_outcome = playback_events
+        expected_shared_telemetry = {
+            "outcome": "completed",
+            "underflowed": True,
+            "generation_limited": True,
+            "synthesis_ms": 10.0,
+            "playback_ms": 20.0,
+            "first_audio_ms": 5.0,
+            "cache_source": "fresh-generation",
+            "effective_source": "moss-tts:fresh-generation",
+            "source_audio_lead_ms": None,
+            "chunk_id": chunk.chunk_id,
+            "chunk_ordinal": chunk.ordinal,
+            "chunk_characters": len(chunk.text),
+        }
+        self.assertEqual(playback_outcome[3], expected_shared_telemetry)
+        self.assertEqual(
+            completion[3],
+            expected_shared_telemetry
+            | {
+                "source_sample_rate": 24_000,
+                "playback_sample_rate": 48_000,
+                "sample_count": 960_000,
+                "expected_playback_ms": 20_000.0,
+            },
+        )
 
     def test_sequence_audio_suppresses_a_line_the_cursor_already_played(self):
         statuses = []

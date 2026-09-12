@@ -167,28 +167,19 @@ def create_dialog_read_scheduler(
                 print("A dialog read is already in progress")
                 return False
 
-            options = {}
-            if error_handler is not None:
-                options["error_handler"] = error_handler
-            if capture_target is not None:
-                options["capture_target"] = capture_target
-            if speech_handler is not None:
-                options["speech_handler"] = speech_handler
-            options["minimum_confidence"] = minimum_confidence
-            if uncertain_frame_recorder is not None:
-                options["uncertain_frame_recorder"] = uncertain_frame_recorder
-            if diagnostic_handler is not None:
-                options["diagnostic_handler"] = diagnostic_handler
-            if voice_resolver is not None:
-                options["voice_resolver"] = voice_resolver
-            options["ocr_language"] = ocr_language
-            if correction_dictionary is not None:
-                options["correction_dictionary"] = correction_dictionary
             active_read = executor.submit(
                 read_dialog_safely,
                 voice_router,
                 screenshot_directory,
-                **options,
+                error_handler=error_handler,
+                capture_target=capture_target,
+                speech_handler=speech_handler,
+                minimum_confidence=minimum_confidence,
+                uncertain_frame_recorder=uncertain_frame_recorder,
+                diagnostic_handler=diagnostic_handler,
+                voice_resolver=voice_resolver,
+                ocr_language=ocr_language,
+                correction_dictionary=correction_dictionary,
             )
             return True
 
@@ -489,9 +480,9 @@ class AppController:
             "similarity" in normalized_result and coverage < 0.9
         ):
             self.chapter_voice_preloader.current_match = previous_match
-            self.chapter_voice_preloader.last_resolution_diagnostics[
-                "match_result"
-            ] = "expected-incomplete"
+            self.chapter_voice_preloader.last_resolution_diagnostics["match_result"] = (
+                "expected-incomplete"
+            )
             return None, "expected-incomplete"
         return line, match_result
 
@@ -2648,19 +2639,26 @@ class AppController:
                 if result
                 else "interrupted"
             )
+            playback_telemetry = {
+                "outcome": outcome_name,
+                "underflowed": underflowed,
+                "generation_limited": generation_limited,
+                "synthesis_ms": outcome.synthesis_ms if outcome else None,
+                "playback_ms": outcome.playback_ms if outcome else None,
+                "first_audio_ms": outcome.first_audio_ms if outcome else None,
+                "cache_source": outcome.cache_source if outcome else None,
+                "effective_source": outcome.audio_source if outcome else None,
+                "source_audio_lead_ms": source_audio_lead_ms,
+                "chunk_id": chunk.chunk_id,
+                "chunk_ordinal": chunk.ordinal,
+                "chunk_characters": len(chunk.text),
+            }
             try:
                 self.pipeline_event_handler(
                     "playback-completion",
                     chunk.generation,
                     monotonic(),
-                    underflowed=underflowed,
-                    generation_limited=generation_limited,
-                    outcome=outcome_name,
-                    synthesis_ms=(outcome.synthesis_ms if outcome else None),
-                    playback_ms=(outcome.playback_ms if outcome else None),
-                    first_audio_ms=(outcome.first_audio_ms if outcome else None),
-                    cache_source=(outcome.cache_source if outcome else None),
-                    effective_source=(outcome.audio_source if outcome else None),
+                    **playback_telemetry,
                     source_sample_rate=(
                         outcome.source_sample_rate if outcome else None
                     ),
@@ -2671,27 +2669,12 @@ class AppController:
                     expected_playback_ms=(
                         outcome.expected_playback_ms if outcome else None
                     ),
-                    source_audio_lead_ms=source_audio_lead_ms,
-                    chunk_id=chunk.chunk_id,
-                    chunk_ordinal=chunk.ordinal,
-                    chunk_characters=len(chunk.text),
                 )
                 self.pipeline_event_handler(
                     "playback-outcome",
                     chunk.generation,
                     monotonic(),
-                    outcome=outcome_name,
-                    underflowed=underflowed,
-                    generation_limited=generation_limited,
-                    synthesis_ms=(outcome.synthesis_ms if outcome else None),
-                    playback_ms=(outcome.playback_ms if outcome else None),
-                    first_audio_ms=(outcome.first_audio_ms if outcome else None),
-                    cache_source=(outcome.cache_source if outcome else None),
-                    effective_source=(outcome.audio_source if outcome else None),
-                    source_audio_lead_ms=source_audio_lead_ms,
-                    chunk_id=chunk.chunk_id,
-                    chunk_ordinal=chunk.ordinal,
-                    chunk_characters=len(chunk.text),
+                    **playback_telemetry,
                 )
             except Exception as error:
                 self.error_handler(error)
