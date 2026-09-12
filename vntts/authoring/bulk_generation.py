@@ -353,6 +353,36 @@ class _GenerationExecutionContext:
     regenerate_existing: bool
 
 
+@dataclass(frozen=True)
+class _GenerationConfiguration:
+    limit: int | None
+    retries: int
+    seed: int
+    provider: str
+    model: str
+    generation_profile: str
+    synthesis_cache_policy: SynthesisCachePolicy
+    policy: MissingVoicePolicy
+    character_overrides: dict
+    projection_queue_ids: tuple[str, ...]
+    repair_policy: FailureRepairPolicy
+    text_transform: object | None
+    text_transform_id: str | None
+    render: object
+
+
+@dataclass(frozen=True)
+class _GenerationInputs:
+    queue_path: Path
+    output_argument: Path
+    output_directory: Path
+    queue: VoiceGenerationQueue
+    queue_sha256: str
+    queue_voice_overrides: dict
+    selected_queue_ids: set[str] | None
+    evidence_directory: Path | None
+
+
 @dataclass
 class _PreparedGenerationItem:
     item: object
@@ -2273,38 +2303,65 @@ def _finalize_generation_run(
     )
 
 
-def run_bulk_generation(
-    queue_path,
-    output_directory,
+def _validated_generation_backend(backend, provider, model, retries, repair_policy):
+    render = getattr(backend, "render", None)
+    if not callable(render):
+        raise BulkGenerationError(
+            "Generation backend must implement render(SynthesisRequest)"
+        )
+    backend_name = _required_text(
+        getattr(backend, "name", provider), "Backend identity"
+    )
+    if repair_policy.offline_fallback_queue_ids and retries != 0:
+        raise BulkGenerationError(
+            "Offline fallback is a single backend-owned unseeded attempt; set retries to 0"
+        )
+    if provider == "pocket-tts" and retries != 0:
+        raise BulkGenerationError(
+            "Pocket TTS generation is unseeded and permits exactly one attempt; "
+            "set retries to 0"
+        )
+    if repair_policy.inline_pause_queue_ids and (
+        retries != 0 or provider != "moss-tts"
+    ):
+        raise BulkGenerationError(
+            "Inline pause comparison requires moss-tts and exactly one attempt; "
+            "set retries to 0"
+        )
+    if backend_name != provider:
+        raise BulkGenerationError(
+            f"Configured provider {provider!r} does not match backend {backend_name!r}"
+        )
+    backend_model = getattr(backend, "model_identity", None) or getattr(
+        backend, "model_name", None
+    )
+    if backend_model is None:
+        backend_model = backend_name
+    if str(backend_model) != model:
+        raise BulkGenerationError(
+            f"Configured model {model!r} does not match backend model {backend_model!r}"
+        )
+    return render
+
+
+def _prepare_generation_configuration(
     backend,
     *,
     provider,
     model,
-    generation_profile="stable",
-    limit=None,
-    retries=2,
-    include_prefer_source=False,
-    include_characters=None,
-    include_queue_ids=None,
-    regenerate_existing=False,
-    item_filter=None,
-    seed=0,
-    cancellation=None,
-    control_files=None,
-    text_transform=None,
-    text_transform_id=None,
-    process_checker=None,
-    workspace_output_identity=None,
-    synthesis_character_overrides=None,
-    queue_voice_overrides=None,
-    missing_voice_policy=None,
-    narrator_character=None,
-    failure_repair_policy=None,
-    silence_failure_evidence=None,
-    audio_event_spoken_projection_queue_ids=None,
-    synthesis_cache_policy=SynthesisCachePolicy.BYPASS,
+    generation_profile,
+    limit,
+    retries,
+    seed,
+    synthesis_cache_policy,
+    missing_voice_policy,
+    synthesis_character_overrides,
+    narrator_character,
+    audio_event_spoken_projection_queue_ids,
+    failure_repair_policy,
+    text_transform,
+    text_transform_id,
 ):
-    """Render selected queue items with no device playback and resumable state."""
     limit = _nonnegative_optional_int(limit, "Generation limit")
     retries = _nonnegative_int(retries, "Retry count")
     seed = _integer(seed, "Base seed")
@@ -2344,44 +2401,113 @@ def run_bulk_generation(
         text_transform_id = _required_text(text_transform_id, "Text transform identity")
     elif text_transform_id is not None:
         raise BulkGenerationError("Text transform identity requires a text transform")
-    render = getattr(backend, "render", None)
-    if not callable(render):
-        raise BulkGenerationError(
-            "Generation backend must implement render(SynthesisRequest)"
-        )
-    backend_name = _required_text(
-        getattr(backend, "name", provider), "Backend identity"
+    render = _validated_generation_backend(
+        backend, provider, model, retries, repair_policy
     )
-    if repair_policy.offline_fallback_queue_ids and retries != 0:
+    return _GenerationConfiguration(
+        limit,
+        retries,
+        seed,
+        provider,
+        model,
+        generation_profile,
+        synthesis_cache_policy,
+        policy,
+        character_overrides,
+        projection_queue_ids,
+        repair_policy,
+        text_transform,
+        text_transform_id,
+        render,
+    )
+
+
+def _selected_generation_queue_ids(queue, include_queue_ids):
+    if include_queue_ids is None:
+        return None
+    selected = {
+        _required_text(value, "Selected queue ID") for value in include_queue_ids
+    }
+    unknown = selected - {item.queue_id for item in queue.items}
+    if unknown:
         raise BulkGenerationError(
-            "Offline fallback is a single backend-owned unseeded attempt; set retries to 0"
+            "Selected queue IDs are absent from the bound queue: "
+            + ", ".join(sorted(unknown))
         )
-    if provider == "pocket-tts" and retries != 0:
-        raise BulkGenerationError(
-            "Pocket TTS generation is unseeded and permits exactly one attempt; "
-            "set retries to 0"
-        )
-    if repair_policy.inline_pause_queue_ids and (
-        retries != 0 or provider != "moss-tts"
+    return selected
+
+
+def _validate_audio_event_projection(queue, selected_queue_ids, configuration):
+    projection_queue_ids = configuration.projection_queue_ids
+    if not projection_queue_ids:
+        return
+    if (
+        selected_queue_ids != set(projection_queue_ids)
+        or not configuration.repair_policy.is_empty
+        or configuration.text_transform_id != "audio-event-spoken-projection-v1"
+        or configuration.text_transform is not audio_event_spoken_projection
     ):
         raise BulkGenerationError(
-            "Inline pause comparison requires moss-tts and exactly one attempt; "
-            "set retries to 0"
+            "Audio-event spoken projection requires its exact queue-ID scope "
+            "and canonical text transform"
         )
-    if backend_name != provider:
-        raise BulkGenerationError(
-            f"Configured provider {provider!r} does not match backend {backend_name!r}"
-        )
-    backend_model = getattr(backend, "model_identity", None) or getattr(
-        backend, "model_name", None
-    )
-    if backend_model is None:
-        backend_model = backend_name
-    if str(backend_model) != model:
-        raise BulkGenerationError(
-            f"Configured model {model!r} does not match backend model {backend_model!r}"
-        )
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    for queue_id in projection_queue_ids:
+        item = queue_by_id[queue_id]
+        if item.action != "generate":
+            raise BulkGenerationError(
+                f"Audio-event projection item is not generated: {queue_id!r}"
+            )
+        if audio_event_plan_for_record(item).get(
+            "spoken_text"
+        ) != audio_event_spoken_projection(item.text):
+            raise BulkGenerationError(
+                f"Audio-event projection plan changed for {queue_id!r}"
+            )
 
+
+def _silence_failure_evidence_directory(
+    value, output_directory, selected_queue_ids, retries
+):
+    if value is None:
+        return None
+    directory = Path(value).expanduser()
+    if not directory.name or directory.name in {".", ".."}:
+        raise BulkGenerationError("Silence-failure evidence requires a directory name")
+    if not directory.is_absolute():
+        directory = Path.cwd() / directory
+    directory = directory.parent.resolve() / directory.name
+    try:
+        directory.relative_to(output_directory)
+    except ValueError:
+        pass
+    else:
+        raise BulkGenerationError(
+            "Silence-failure evidence must stay outside generated output"
+        )
+    if selected_queue_ids is None or len(selected_queue_ids) != 1 or retries != 0:
+        raise BulkGenerationError(
+            "Silence-failure evidence requires one exact queue ID and retries=0"
+        )
+    if directory.exists() or directory.is_symlink():
+        raise BulkGenerationError(
+            f"Silence-failure evidence destination already exists: {directory}"
+        )
+    return directory
+
+
+def _prepare_generation_inputs(
+    queue_path,
+    output_directory,
+    *,
+    workspace_output_identity,
+    queue_voice_overrides,
+    include_queue_ids,
+    include_characters,
+    regenerate_existing,
+    silence_failure_evidence,
+    configuration,
+):
     queue_path = Path(queue_path).expanduser().resolve()
     output_argument = Path(output_directory).expanduser()
     if workspace_output_identity is not None:
@@ -2391,76 +2517,20 @@ def run_bulk_generation(
     queue_voice_overrides = _validated_queue_voice_overrides(
         queue_voice_overrides, queue
     )
-    selected_queue_ids = None
-    if include_queue_ids is not None:
-        selected_queue_ids = {
-            _required_text(value, "Selected queue ID") for value in include_queue_ids
-        }
-        known_queue_ids = {item.queue_id for item in queue.items}
-        unknown_queue_ids = selected_queue_ids - known_queue_ids
-        if unknown_queue_ids:
-            raise BulkGenerationError(
-                "Selected queue IDs are absent from the bound queue: "
-                + ", ".join(sorted(unknown_queue_ids))
-            )
-    if not repair_policy.is_empty and selected_queue_ids != set(
-        repair_policy.queue_ids
+    selected_queue_ids = _selected_generation_queue_ids(queue, include_queue_ids)
+    if not configuration.repair_policy.is_empty and selected_queue_ids != set(
+        configuration.repair_policy.queue_ids
     ):
         raise BulkGenerationError(
             "Failure repair requires an exact --queue-id selection matching its policy"
         )
-    if projection_queue_ids:
-        if (
-            selected_queue_ids != set(projection_queue_ids)
-            or not repair_policy.is_empty
-            or text_transform_id != "audio-event-spoken-projection-v1"
-            or text_transform is not audio_event_spoken_projection
-        ):
-            raise BulkGenerationError(
-                "Audio-event spoken projection requires its exact queue-ID scope "
-                "and canonical text transform"
-            )
-        queue_by_id = {item.queue_id: item for item in queue.items}
-        for queue_id in projection_queue_ids:
-            item = queue_by_id[queue_id]
-            if item.action != "generate":
-                raise BulkGenerationError(
-                    f"Audio-event projection item is not generated: {queue_id!r}"
-                )
-            projected = audio_event_spoken_projection(item.text)
-            plan = audio_event_plan_for_record(item)
-            if plan.get("spoken_text") != projected:
-                raise BulkGenerationError(
-                    f"Audio-event projection plan changed for {queue_id!r}"
-                )
-    evidence_directory = None
-    if silence_failure_evidence is not None:
-        evidence_directory = Path(silence_failure_evidence).expanduser()
-        if not evidence_directory.name or evidence_directory.name in {".", ".."}:
-            raise BulkGenerationError(
-                "Silence-failure evidence requires a directory name"
-            )
-        if not evidence_directory.is_absolute():
-            evidence_directory = Path.cwd() / evidence_directory
-        evidence_directory = (
-            evidence_directory.parent.resolve() / evidence_directory.name
-        )
-        try:
-            evidence_directory.relative_to(output_directory)
-        except ValueError:
-            pass
-        else:
-            raise BulkGenerationError(
-                "Silence-failure evidence must stay outside generated output"
-            )
-        if selected_queue_ids is None or len(selected_queue_ids) != 1 or retries != 0:
-            raise BulkGenerationError(
-                "Silence-failure evidence requires one exact queue ID and retries=0"
-            )
-        if evidence_directory.exists() or evidence_directory.is_symlink():
-            raise BulkGenerationError(
-                f"Silence-failure evidence destination already exists: {evidence_directory}"
-            )
+    _validate_audio_event_projection(queue, selected_queue_ids, configuration)
+    evidence_directory = _silence_failure_evidence_directory(
+        silence_failure_evidence,
+        output_directory,
+        selected_queue_ids,
+        configuration.retries,
+    )
     if (
         regenerate_existing
         and selected_queue_ids is None
@@ -2469,6 +2539,103 @@ def run_bulk_generation(
         raise BulkGenerationError(
             "Regenerating existing outcomes requires explicit queue IDs or characters"
         )
+    return _GenerationInputs(
+        queue_path,
+        output_argument,
+        output_directory,
+        queue,
+        queue_sha256,
+        queue_voice_overrides,
+        selected_queue_ids,
+        evidence_directory,
+    )
+
+
+def run_bulk_generation(
+    queue_path,
+    output_directory,
+    backend,
+    *,
+    provider,
+    model,
+    generation_profile="stable",
+    limit=None,
+    retries=2,
+    include_prefer_source=False,
+    include_characters=None,
+    include_queue_ids=None,
+    regenerate_existing=False,
+    item_filter=None,
+    seed=0,
+    cancellation=None,
+    control_files=None,
+    text_transform=None,
+    text_transform_id=None,
+    process_checker=None,
+    workspace_output_identity=None,
+    synthesis_character_overrides=None,
+    queue_voice_overrides=None,
+    missing_voice_policy=None,
+    narrator_character=None,
+    failure_repair_policy=None,
+    silence_failure_evidence=None,
+    audio_event_spoken_projection_queue_ids=None,
+    synthesis_cache_policy=SynthesisCachePolicy.BYPASS,
+):
+    """Render selected queue items with no device playback and resumable state."""
+    configuration = _prepare_generation_configuration(
+        backend,
+        provider=provider,
+        model=model,
+        generation_profile=generation_profile,
+        limit=limit,
+        retries=retries,
+        seed=seed,
+        synthesis_cache_policy=synthesis_cache_policy,
+        missing_voice_policy=missing_voice_policy,
+        synthesis_character_overrides=synthesis_character_overrides,
+        narrator_character=narrator_character,
+        audio_event_spoken_projection_queue_ids=(
+            audio_event_spoken_projection_queue_ids
+        ),
+        failure_repair_policy=failure_repair_policy,
+        text_transform=text_transform,
+        text_transform_id=text_transform_id,
+    )
+    limit = configuration.limit
+    retries = configuration.retries
+    seed = configuration.seed
+    provider = configuration.provider
+    model = configuration.model
+    generation_profile = configuration.generation_profile
+    synthesis_cache_policy = configuration.synthesis_cache_policy
+    policy = configuration.policy
+    character_overrides = configuration.character_overrides
+    projection_queue_ids = configuration.projection_queue_ids
+    repair_policy = configuration.repair_policy
+    text_transform = configuration.text_transform
+    text_transform_id = configuration.text_transform_id
+    render = configuration.render
+
+    inputs = _prepare_generation_inputs(
+        queue_path,
+        output_directory,
+        workspace_output_identity=workspace_output_identity,
+        queue_voice_overrides=queue_voice_overrides,
+        include_queue_ids=include_queue_ids,
+        include_characters=include_characters,
+        regenerate_existing=regenerate_existing,
+        silence_failure_evidence=silence_failure_evidence,
+        configuration=configuration,
+    )
+    queue_path = inputs.queue_path
+    output_argument = inputs.output_argument
+    output_directory = inputs.output_directory
+    queue = inputs.queue
+    queue_sha256 = inputs.queue_sha256
+    queue_voice_overrides = inputs.queue_voice_overrides
+    selected_queue_ids = inputs.selected_queue_ids
+    evidence_directory = inputs.evidence_directory
     controls = _snapshot_control_files(control_files or {})
     recorded_voices = snapshot_recorded_voices(
         controls, narrator_character=narrator_character
