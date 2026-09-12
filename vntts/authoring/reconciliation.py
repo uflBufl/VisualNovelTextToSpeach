@@ -54,6 +54,7 @@ from vntts.authoring.source_reference_quality import (
     validate_source_reference_quality_review_document,
 )
 from vntts.authoring.workbench import (
+    WorkspaceSummary,
     contained_workspace_path,
     inspect_generation_readiness,
     inspect_voice_readiness,
@@ -81,126 +82,180 @@ class AuthoringReconciliation:
         return dict(self.document)
 
 
-def build_authoring_reconciliation(
-    primary_workspace,
-    bundle_root,
-    *,
-    bundle_publications=None,
-    quality_reviews=(),
-):
-    """Build an exact report without choosing or mutating review authority."""
-    primary = Path(primary_workspace).expanduser().resolve()
-    bundle_root = Path(bundle_root).expanduser().resolve()
-    workspaces_root = primary.parent.resolve()
-    authoring_root = workspaces_root.parent.resolve()
-    _require_contained_directory(workspaces_root, primary, "Primary workspace")
-    if not _WORKSPACE_NAME.fullmatch(primary.name):
-        raise AuthoringReconciliationError("Primary workspace name is not canonical")
-    _require_contained_directory(authoring_root, bundle_root, "Review bundle root")
-    selected_publications = _selected_bundle_publications(
-        bundle_root, bundle_publications
-    )
-    bundle_inventory = (
-        _json_inventory(bundle_root) if selected_publications is None else None
+@dataclass(frozen=True)
+class _WorkspaceSnapshot:
+    directory: Path
+    configuration: dict
+    summary: WorkspaceSummary
+    queue_payload: bytes
+    queue: VoiceGenerationQueue
+    state: dict
+    state_sha256: str | None
+    manifest_sha256: str | None
+
+
+@dataclass(frozen=True)
+class _WorkspaceScope:
+    scoped_queue_ids: set[str] | None
+    reportable: tuple
+    approved_ids: set[str]
+    rejected_ids: set[str]
+    generated_ids: set[str]
+    failed_ids: set[str]
+    live_fallback_ids: set[str]
+    missing: set[str]
+    pending_ids: set[str]
+    unconfigured_projection_ids: set[str]
+    selected_blocked_reasons: tuple[str, ...]
+
+
+def _load_review_bundle(path, *, required, snapshots):
+    payload, candidate = _read_json_snapshot(path, "review bundle")
+    if (
+        candidate.get("schema") != COHORT_REVIEW_BUNDLE_SCHEMA
+        or candidate.get("schema_version") != COHORT_REVIEW_BUNDLE_VERSION
+    ):
+        if required:
+            raise AuthoringReconciliationError(
+                f"Unsupported selected review bundle: {path}"
+            )
+        return None
+    _remember_snapshot(snapshots, path, payload)
+    try:
+        original = validate_cohort_review_bundle_document(candidate)
+        current = reconcile_cohort_review_bundle(original)
+    except Exception as error:
+        raise AuthoringReconciliationError(
+            f"Current review bundle is invalid: {path.name}: {error}"
+        ) from error
+    progress = cohort_review_progress_path(path)
+    progress_sha256 = None
+    progress_current = False
+    if progress.is_file():
+        progress_payload, progress_document = _read_json_snapshot(
+            progress, "review bundle progress"
+        )
+        _remember_snapshot(snapshots, progress, progress_payload)
+        progress_sha256 = hashlib.sha256(progress_payload).hexdigest()
+        try:
+            saved = validate_cohort_review_progress_document(
+                progress_document, original
+            )
+        except Exception as error:
+            raise AuthoringReconciliationError(
+                f"Current review progress is invalid: {progress.name}: {error}"
+            ) from error
+        progress_current = saved.bundle_id == current.bundle_id
+    else:
+        _remember_absence(snapshots, progress)
+    return (
+        payload,
+        progress_sha256,
+        CohortReviewResume(
+            path,
+            progress,
+            original,
+            current,
+            progress_current,
+        ),
     )
 
-    snapshots = {}
-    workspace_paths = {primary}
+
+def _index_review_bundle(
+    resume,
+    path,
+    workspace_paths,
+    bundle_actions,
+    bundle_workspace_queue_ids,
+    bundle_queue_ids,
+):
+    for source in resume.original.document["sources"]:
+        workspace_paths.add(Path(source["workspace"]).resolve())
+        workspace_id = source["workspace_id"]
+        for cohort in source["plan"]["cohorts"]:
+            for item in cohort["items"]:
+                bundle_queue_ids.add(item["queue_id"])
+                bundle_workspace_queue_ids.setdefault(workspace_id, set()).add(
+                    item["queue_id"]
+                )
+    for source in resume.current.document["sources"]:
+        workspace_id = source["workspace_id"]
+        for cohort in source["plan"]["cohorts"]:
+            for item in cohort["items"]:
+                key = (workspace_id, item["queue_id"])
+                authority = {
+                    "publication": path.name,
+                    "root_bundle_id": resume.original.bundle_id,
+                    "current_bundle_id": resume.current.bundle_id,
+                    "cohort_id": cohort["cohort_id"],
+                    "sampled": bool(item["sampled"]),
+                    "audio_sha256": item["audio_sha256"],
+                }
+                previous = bundle_actions.setdefault(key, authority)
+                if previous != authority:
+                    raise AuthoringReconciliationError(
+                        "One workspace item has ambiguous current review "
+                        f"bundles: {workspace_id}/{item['queue_id']}"
+                    )
+
+
+def _inspect_review_bundles(bundle_root, selected_publications, snapshots):
+    workspace_paths = set()
     bundle_reports = []
     bundle_actions = {}
     bundle_workspace_queue_ids = {}
     bundle_queue_ids = set()
-    if bundle_root.is_dir():
-        paths = (
-            sorted(bundle_root.glob("*.json"))
-            if selected_publications is None
-            else selected_publications
+    if not bundle_root.is_dir():
+        return (
+            workspace_paths,
+            bundle_reports,
+            bundle_actions,
+            bundle_workspace_queue_ids,
+            bundle_queue_ids,
         )
-        for path in paths:
-            if path.name.endswith(".progress.json"):
-                continue
-            payload, candidate = _read_json_snapshot(path, "review bundle")
-            if (
-                candidate.get("schema") != COHORT_REVIEW_BUNDLE_SCHEMA
-                or candidate.get("schema_version") != COHORT_REVIEW_BUNDLE_VERSION
-            ):
-                if selected_publications is not None:
-                    raise AuthoringReconciliationError(
-                        f"Unsupported selected review bundle: {path}"
-                    )
-                continue
-            _remember_snapshot(snapshots, path, payload)
-            try:
-                original = validate_cohort_review_bundle_document(candidate)
-                current = reconcile_cohort_review_bundle(original)
-            except Exception as error:
-                raise AuthoringReconciliationError(
-                    f"Current review bundle is invalid: {path.name}: {error}"
-                ) from error
-            progress = cohort_review_progress_path(path)
-            progress_sha256 = None
-            progress_current = False
-            if progress.is_file():
-                progress_payload, progress_document = _read_json_snapshot(
-                    progress, "review bundle progress"
-                )
-                _remember_snapshot(snapshots, progress, progress_payload)
-                progress_sha256 = hashlib.sha256(progress_payload).hexdigest()
-                try:
-                    saved = validate_cohort_review_progress_document(
-                        progress_document, original
-                    )
-                except Exception as error:
-                    raise AuthoringReconciliationError(
-                        f"Current review progress is invalid: {progress.name}: {error}"
-                    ) from error
-                progress_current = saved.bundle_id == current.bundle_id
-            else:
-                _remember_absence(snapshots, progress)
-            resume = CohortReviewResume(
-                path,
-                progress,
-                original,
-                current,
-                progress_current,
-            )
-            for source in original.document["sources"]:
-                workspace_paths.add(Path(source["workspace"]).resolve())
-                workspace_id = source["workspace_id"]
-                for cohort in source["plan"]["cohorts"]:
-                    for item in cohort["items"]:
-                        bundle_queue_ids.add(item["queue_id"])
-                        bundle_workspace_queue_ids.setdefault(workspace_id, set()).add(
-                            item["queue_id"]
-                        )
-            for source in current.document["sources"]:
-                workspace_id = source["workspace_id"]
-                for cohort in source["plan"]["cohorts"]:
-                    for item in cohort["items"]:
-                        key = (workspace_id, item["queue_id"])
-                        authority = {
-                            "publication": path.name,
-                            "root_bundle_id": resume.original.bundle_id,
-                            "current_bundle_id": resume.current.bundle_id,
-                            "cohort_id": cohort["cohort_id"],
-                            "sampled": bool(item["sampled"]),
-                            "audio_sha256": item["audio_sha256"],
-                        }
-                        previous = bundle_actions.setdefault(key, authority)
-                        if previous != authority:
-                            raise AuthoringReconciliationError(
-                                "One workspace item has ambiguous current review "
-                                f"bundles: {workspace_id}/{item['queue_id']}"
-                            )
-            bundle_reports.append(
-                {
-                    "publication": path.name,
-                    "publication_sha256": hashlib.sha256(payload).hexdigest(),
-                    "progress_sha256": progress_sha256,
-                    **resume.to_dict(),
-                }
-            )
 
+    paths = (
+        sorted(bundle_root.glob("*.json"))
+        if selected_publications is None
+        else selected_publications
+    )
+    for path in paths:
+        if path.name.endswith(".progress.json"):
+            continue
+        loaded = _load_review_bundle(
+            path,
+            required=selected_publications is not None,
+            snapshots=snapshots,
+        )
+        if loaded is None:
+            continue
+        payload, progress_sha256, resume = loaded
+        _index_review_bundle(
+            resume,
+            path,
+            workspace_paths,
+            bundle_actions,
+            bundle_workspace_queue_ids,
+            bundle_queue_ids,
+        )
+        bundle_reports.append(
+            {
+                "publication": path.name,
+                "publication_sha256": hashlib.sha256(payload).hexdigest(),
+                "progress_sha256": progress_sha256,
+                **resume.to_dict(),
+            }
+        )
+    return (
+        workspace_paths,
+        bundle_reports,
+        bundle_actions,
+        bundle_workspace_queue_ids,
+        bundle_queue_ids,
+    )
+
+
+def _inspect_quality_reviews(authoring_root, quality_reviews, snapshots):
     quality_reports = []
     quality_actions = []
     quality_review_paths = tuple(
@@ -264,22 +319,351 @@ def build_authoring_reconciliation(
                 "decision_counts": dict(sorted(decisions.items())),
             }
         )
+    return quality_reports, quality_actions
 
+
+def _load_workspace_snapshot(workspace_path, workspaces_root, snapshots):
+    _require_contained_directory(
+        workspaces_root, workspace_path, "Review source workspace"
+    )
+    if not _WORKSPACE_NAME.fullmatch(workspace_path.name):
+        raise AuthoringReconciliationError(
+            f"Review source workspace name is not canonical: {workspace_path.name}"
+        )
+    directory, workspace, workspace_sha256 = load_workspace_authority(workspace_path)
+    summary = inspect_workspace(directory)
+    queue_payload = _read_bytes(summary.queue, "workspace queue")
+    queue = _load_queue_snapshot(queue_payload)
+    _remember_snapshot(snapshots, summary.queue, queue_payload)
+    configuration = directory / "workspace.json"
+    configuration_payload = _read_bytes(configuration, "workspace configuration")
+    if hashlib.sha256(configuration_payload).hexdigest() != workspace_sha256:
+        raise AuthoringReconciliationError(
+            "Workspace configuration changed after validation"
+        )
+    _remember_snapshot(snapshots, configuration, configuration_payload)
+    _snapshot_workspace_voice_controls(directory, workspace, snapshots)
+
+    state = {"active": None, "items": {}}
+    state_sha256 = None
+    if summary.state is not None:
+        state_payload, state_document = _read_json_snapshot(
+            summary.state, "workspace state"
+        )
+        _remember_snapshot(snapshots, summary.state, state_payload)
+        state_sha256 = hashlib.sha256(state_payload).hexdigest()
+        try:
+            state = validate_generation_state_document(
+                state_document,
+                summary.output,
+                queue,
+                hashlib.sha256(queue_payload).hexdigest(),
+            )
+        except Exception as error:
+            raise AuthoringReconciliationError(str(error)) from error
+    else:
+        _remember_absence(snapshots, summary.output / "generation-state.json")
+
+    manifest = summary.output / "manifest.json"
+    manifest_sha256 = None
+    if manifest.is_file():
+        manifest_payload = _read_bytes(manifest, "generated manifest")
+        _remember_snapshot(snapshots, manifest, manifest_payload)
+        manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
+    else:
+        _remember_absence(snapshots, manifest)
+    return _WorkspaceSnapshot(
+        directory,
+        workspace,
+        summary,
+        queue_payload,
+        queue,
+        state,
+        state_sha256,
+        manifest_sha256,
+    )
+
+
+def _build_workspace_scope(
+    snapshot,
+    primary,
+    bundle_workspace_queue_ids,
+    bundle_queue_ids,
+):
+    workspace = snapshot.configuration
+    scoped_queue_ids = (
+        None
+        if workspace["workspace_id"] == primary.name
+        else bundle_workspace_queue_ids.get(workspace["workspace_id"], set())
+    )
+    reportable = tuple(
+        item
+        for item in snapshot.queue.items
+        if item.action == "generate"
+        and (
+            (scoped_queue_ids is not None and item.queue_id in scoped_queue_ids)
+            or (
+                scoped_queue_ids is None
+                and (item.queue_id in bundle_queue_ids or is_spoken_queue_item(item))
+            )
+        )
+    )
+    reportable_ids = {item.queue_id for item in reportable}
+    projection_ids = set(
+        workspace_audio_event_spoken_projection_queue_ids(
+            workspace,
+            error_type=AuthoringReconciliationError,
+        )
+    )
+    generation_eligible_ids = {
+        item.queue_id
+        for item in reportable
+        if is_spoken_queue_item(item) or item.queue_id in projection_ids
+    }
+    relevant = {
+        queue_id: value
+        for queue_id, value in snapshot.state["items"].items()
+        if queue_id in reportable_ids
+    }
+    approved_ids = {
+        queue_id
+        for queue_id, value in relevant.items()
+        if value.get("status") == "approved"
+        and value.get("review_status") == "approved"
+    }
+    rejected_ids = {
+        queue_id
+        for queue_id, value in relevant.items()
+        if value.get("status") == "generated"
+        and value.get("review_status") == "rejected"
+    }
+    generated_ids = {
+        queue_id
+        for queue_id, value in relevant.items()
+        if value.get("status") == "generated"
+        and value.get("review_status") == "pending_review"
+    }
+    failed_ids = {
+        queue_id
+        for queue_id, value in relevant.items()
+        if value.get("status") == "failed"
+    }
+    live_fallback_ids = {
+        queue_id
+        for queue_id, value in relevant.items()
+        if isinstance(value.get("live_fallback"), dict)
+    }
+    completed_ids = (
+        approved_ids | rejected_ids | generated_ids | failed_ids | live_fallback_ids
+    )
+    candidates = [item for item in reportable if item.queue_id not in completed_ids]
+    missing, _voice_reasons = inspect_voice_readiness(
+        workspace,
+        candidates,
+        set(),
+        snapshot.summary.voice_manifest,
+        directory=snapshot.directory,
+    )
+    missing = set(missing)
+    pending_ids = reportable_ids - completed_ids - missing
+    selectable_pending_ids = tuple(
+        item.queue_id
+        for item in reportable
+        if item.queue_id in pending_ids and item.queue_id in generation_eligible_ids
+    )
+    selected_blocked_reasons = ()
+    if selectable_pending_ids:
+        try:
+            selected_readiness = inspect_generation_readiness(
+                snapshot.directory,
+                queue_ids=selectable_pending_ids,
+            )
+        except Exception as error:
+            raise AuthoringReconciliationError(
+                f"Unable to inspect exact generation readiness: {error}"
+            ) from error
+        if (
+            selected_readiness.queue_ids != selectable_pending_ids
+            or selected_readiness.selected != len(selectable_pending_ids)
+            or selected_readiness.pending != len(selectable_pending_ids)
+            or selected_readiness.failed != 0
+        ):
+            raise AuthoringReconciliationError(
+                "Exact generation readiness disagrees with the captured state"
+            )
+        selected_blocked_reasons = selected_readiness.blocked_reasons
+    return _WorkspaceScope(
+        scoped_queue_ids=scoped_queue_ids,
+        reportable=reportable,
+        approved_ids=approved_ids,
+        rejected_ids=rejected_ids,
+        generated_ids=generated_ids,
+        failed_ids=failed_ids,
+        live_fallback_ids=live_fallback_ids,
+        missing=missing,
+        pending_ids=pending_ids,
+        unconfigured_projection_ids=pending_ids - generation_eligible_ids,
+        selected_blocked_reasons=selected_blocked_reasons,
+    )
+
+
+def _pending_review_action(workspace, item, result, audio_authority, bundle_actions):
+    bundle = bundle_actions.get((workspace["workspace_id"], item.queue_id))
+    action = "human_cohort_review" if bundle is not None else "review_plan_required"
+    expected_audio_sha256 = result.get("file_sha256")
+    if not isinstance(expected_audio_sha256, str) or not _SHA256.fullmatch(
+        expected_audio_sha256
+    ):
+        raise AuthoringReconciliationError(
+            f"Pending review item lacks WAV authority: {item.queue_id}"
+        )
+    if audio_authority is None or audio_authority[1] != expected_audio_sha256:
+        raise AuthoringReconciliationError(
+            f"Pending review WAV changed: {item.queue_id}"
+        )
+    record = _action_record(
+        workspace,
+        item,
+        action,
+        status=result.get("status"),
+        review_status=result.get("review_status"),
+        reason=(
+            "exact current cohort evidence"
+            if bundle is not None
+            else "pending WAV needs a risk-based cohort review plan"
+        ),
+    )
+    if bundle is not None:
+        record["cohort"] = bundle
+    record["audio_sha256"] = expected_audio_sha256
+    return record, action
+
+
+def _workspace_item_outcome(snapshot, scope, item, bundle_actions, snapshots):
+    workspace = snapshot.configuration
+    result = snapshot.state["items"].get(item.queue_id)
+    if isinstance(result, dict):
+        status = result.get("status")
+        review_status = result.get("review_status")
+        audio_authority = _snapshot_state_audio(
+            snapshot.summary.output, item, result, snapshots
+        )
+        if isinstance(result.get("live_fallback"), dict):
+            return None, None, "explicit_fallback"
+        if status == "approved" and review_status == "approved":
+            return None, None, "approved"
+        if status == "generated" and review_status == "rejected":
+            return None, None, "rejected"
+        if status == "generated" and review_status == "pending_review":
+            record, action = _pending_review_action(
+                workspace, item, result, audio_authority, bundle_actions
+            )
+            return record, action, None
+        if status == "failed":
+            action = "new_hypothesis_required"
+            return (
+                _action_record(
+                    workspace,
+                    item,
+                    action,
+                    status=status,
+                    review_status=review_status,
+                    reason=str(result.get("last_error") or "generation failed"),
+                ),
+                action,
+                None,
+            )
+        raise AuthoringReconciliationError(
+            f"Unsupported nonterminal state for {item.queue_id}: "
+            f"{status}/{review_status}"
+        )
+
+    if item.queue_id in scope.missing:
+        action = "source_reference_or_explicit_fallback"
+        reason = "selected workspace manifest has no usable voice"
+    elif item.queue_id in scope.unconfigured_projection_ids:
+        action = "workspace_blocked"
+        reason = (
+            "bundle-scoped mixed audio-event item requires an exact "
+            "spoken-projection workspace configuration"
+        )
+    elif scope.selected_blocked_reasons:
+        action = "workspace_blocked"
+        reason = "; ".join(scope.selected_blocked_reasons)
+    else:
+        action = "generation_ready_unselected"
+        reason = "voice and immutable controls are ready"
+    return (
+        _action_record(
+            workspace,
+            item,
+            action,
+            status=None,
+            review_status=None,
+            reason=reason,
+        ),
+        action,
+        None,
+    )
+
+
+def _inspect_workspace_actions(
+    snapshot,
+    scope,
+    bundle_actions,
+    snapshots,
+    occurrence_index,
+):
+    actions = []
+    action_counts = Counter()
+    terminal_counts = Counter()
+    for item in scope.reportable:
+        record, action, terminal = _workspace_item_outcome(
+            snapshot, scope, item, bundle_actions, snapshots
+        )
+        if terminal is not None:
+            terminal_counts[terminal] += 1
+            _remember_occurrence(
+                occurrence_index,
+                snapshot.configuration,
+                item,
+                terminal,
+                state_item=snapshot.state["items"][item.queue_id],
+            )
+            continue
+        actions.append(record)
+        action_counts[action] += 1
+        _remember_occurrence(
+            occurrence_index,
+            snapshot.configuration,
+            item,
+            action,
+        )
+    return actions, action_counts, terminal_counts
+
+
+def _inspect_workspaces(
+    workspace_paths,
+    workspaces_root,
+    primary,
+    snapshots,
+    bundle_workspace_queue_ids,
+    bundle_queue_ids,
+    bundle_actions,
+):
     workspace_reports = []
     actions = []
     occurrence_index = {}
     resolved_terminal_conflicts = set()
     for workspace_path in sorted(workspace_paths, key=str):
-        _require_contained_directory(
-            workspaces_root, workspace_path, "Review source workspace"
-        )
-        if not _WORKSPACE_NAME.fullmatch(workspace_path.name):
-            raise AuthoringReconciliationError(
-                f"Review source workspace name is not canonical: {workspace_path.name}"
-            )
-        directory, workspace, workspace_sha256 = load_workspace_authority(
-            workspace_path
-        )
+        snapshot = _load_workspace_snapshot(workspace_path, workspaces_root, snapshots)
+        directory = snapshot.directory
+        workspace = snapshot.configuration
+        summary = snapshot.summary
+        queue_payload = snapshot.queue_payload
+        state = snapshot.state
+        state_sha256 = snapshot.state_sha256
+        manifest_sha256 = snapshot.manifest_sha256
         if directory == primary:
             terminal_merge = workspace.get("terminal_conflict_merge")
             if isinstance(terminal_merge, dict):
@@ -288,276 +672,29 @@ def build_authoring_reconciliation(
                     for item in terminal_merge.get("items", [])
                     if isinstance(item, dict) and isinstance(item.get("queue_id"), str)
                 }
-        summary = inspect_workspace(directory)
-        queue_payload = _read_bytes(summary.queue, "workspace queue")
-        queue = _load_queue_snapshot(queue_payload)
-        _remember_snapshot(snapshots, summary.queue, queue_payload)
-        configuration = directory / "workspace.json"
-        configuration_payload = _read_bytes(configuration, "workspace configuration")
-        if hashlib.sha256(configuration_payload).hexdigest() != workspace_sha256:
-            raise AuthoringReconciliationError(
-                "Workspace configuration changed after validation"
-            )
-        _remember_snapshot(snapshots, configuration, configuration_payload)
-        _snapshot_workspace_voice_controls(directory, workspace, snapshots)
-        state = {"active": None, "items": {}}
-        state_sha256 = None
-        if summary.state is not None:
-            state_payload, state_document = _read_json_snapshot(
-                summary.state, "workspace state"
-            )
-            _remember_snapshot(snapshots, summary.state, state_payload)
-            state_sha256 = hashlib.sha256(state_payload).hexdigest()
-            try:
-                state = validate_generation_state_document(
-                    state_document,
-                    summary.output,
-                    queue,
-                    hashlib.sha256(queue_payload).hexdigest(),
-                )
-            except Exception as error:
-                raise AuthoringReconciliationError(str(error)) from error
-        else:
-            _remember_absence(snapshots, summary.output / "generation-state.json")
-        manifest = summary.output / "manifest.json"
-        manifest_sha256 = None
-        if manifest.is_file():
-            manifest_payload = _read_bytes(manifest, "generated manifest")
-            _remember_snapshot(snapshots, manifest, manifest_payload)
-            manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
-        else:
-            _remember_absence(snapshots, manifest)
-
-        scoped_queue_ids = (
-            None
-            if workspace["workspace_id"] == primary.name
-            else bundle_workspace_queue_ids.get(workspace["workspace_id"], set())
+        scope = _build_workspace_scope(
+            snapshot,
+            primary,
+            bundle_workspace_queue_ids,
+            bundle_queue_ids,
         )
-        reportable = [
-            item
-            for item in queue.items
-            if item.action == "generate"
-            and (
-                (scoped_queue_ids is not None and item.queue_id in scoped_queue_ids)
-                or (
-                    scoped_queue_ids is None
-                    and (
-                        item.queue_id in bundle_queue_ids or is_spoken_queue_item(item)
-                    )
-                )
-            )
-        ]
-        reportable_ids = {item.queue_id for item in reportable}
-        projection_ids = set(
-            workspace_audio_event_spoken_projection_queue_ids(
-                workspace,
-                error_type=AuthoringReconciliationError,
-            )
+        reportable = scope.reportable
+        scoped_queue_ids = scope.scoped_queue_ids
+        approved_ids = scope.approved_ids
+        rejected_ids = scope.rejected_ids
+        generated_ids = scope.generated_ids
+        failed_ids = scope.failed_ids
+        live_fallback_ids = scope.live_fallback_ids
+        missing = scope.missing
+        pending_ids = scope.pending_ids
+        workspace_actions, action_counts, terminal_counts = _inspect_workspace_actions(
+            snapshot,
+            scope,
+            bundle_actions,
+            snapshots,
+            occurrence_index,
         )
-        generation_eligible_ids = {
-            item.queue_id
-            for item in reportable
-            if is_spoken_queue_item(item) or item.queue_id in projection_ids
-        }
-        relevant = {
-            queue_id: value
-            for queue_id, value in state["items"].items()
-            if queue_id in reportable_ids
-        }
-        approved_ids = {
-            queue_id
-            for queue_id, value in relevant.items()
-            if value.get("status") == "approved"
-            and value.get("review_status") == "approved"
-        }
-        rejected_ids = {
-            queue_id
-            for queue_id, value in relevant.items()
-            if value.get("status") == "generated"
-            and value.get("review_status") == "rejected"
-        }
-        generated_ids = {
-            queue_id
-            for queue_id, value in relevant.items()
-            if value.get("status") == "generated"
-            and value.get("review_status") == "pending_review"
-        }
-        failed_ids = {
-            queue_id
-            for queue_id, value in relevant.items()
-            if value.get("status") == "failed"
-        }
-        live_fallback_ids = {
-            queue_id
-            for queue_id, value in relevant.items()
-            if isinstance(value.get("live_fallback"), dict)
-        }
-        completed_ids = (
-            approved_ids | rejected_ids | generated_ids | failed_ids | live_fallback_ids
-        )
-        candidates = [item for item in reportable if item.queue_id not in completed_ids]
-        missing, _voice_reasons = inspect_voice_readiness(
-            workspace,
-            candidates,
-            set(),
-            summary.voice_manifest,
-            directory=directory,
-        )
-        missing = set(missing)
-        pending_ids = reportable_ids - completed_ids - missing
-        selectable_pending_ids = tuple(
-            item.queue_id
-            for item in reportable
-            if item.queue_id in pending_ids and item.queue_id in generation_eligible_ids
-        )
-        unconfigured_projection_ids = pending_ids - generation_eligible_ids
-        selected_blocked_reasons = ()
-        if selectable_pending_ids:
-            try:
-                selected_readiness = inspect_generation_readiness(
-                    directory,
-                    queue_ids=selectable_pending_ids,
-                )
-            except Exception as error:
-                raise AuthoringReconciliationError(
-                    f"Unable to inspect exact generation readiness: {error}"
-                ) from error
-            if (
-                selected_readiness.queue_ids != selectable_pending_ids
-                or selected_readiness.selected != len(selectable_pending_ids)
-                or selected_readiness.pending != len(selectable_pending_ids)
-                or selected_readiness.failed != 0
-            ):
-                raise AuthoringReconciliationError(
-                    "Exact generation readiness disagrees with the captured state"
-                )
-            selected_blocked_reasons = selected_readiness.blocked_reasons
-        action_counts = Counter()
-        terminal_counts = Counter()
-        for item in reportable:
-            result = state["items"].get(item.queue_id)
-            if isinstance(result, dict):
-                status = result.get("status")
-                review_status = result.get("review_status")
-                audio_authority = _snapshot_state_audio(
-                    summary.output, item, result, snapshots
-                )
-                if isinstance(result.get("live_fallback"), dict):
-                    terminal_counts["explicit_fallback"] += 1
-                    _remember_occurrence(
-                        occurrence_index,
-                        workspace,
-                        item,
-                        "explicit_fallback",
-                        state_item=result,
-                    )
-                    continue
-                if status == "approved" and review_status == "approved":
-                    terminal_counts["approved"] += 1
-                    _remember_occurrence(
-                        occurrence_index,
-                        workspace,
-                        item,
-                        "approved",
-                        state_item=result,
-                    )
-                    continue
-                if status == "generated" and review_status == "rejected":
-                    terminal_counts["rejected"] += 1
-                    _remember_occurrence(
-                        occurrence_index,
-                        workspace,
-                        item,
-                        "rejected",
-                        state_item=result,
-                    )
-                    continue
-                if status == "generated" and review_status == "pending_review":
-                    action = "review_plan_required"
-                    bundle = bundle_actions.get(
-                        (workspace["workspace_id"], item.queue_id)
-                    )
-                    if bundle is not None:
-                        action = "human_cohort_review"
-                    expected_audio_sha256 = result.get("file_sha256")
-                    if not isinstance(
-                        expected_audio_sha256, str
-                    ) or not _SHA256.fullmatch(expected_audio_sha256):
-                        raise AuthoringReconciliationError(
-                            f"Pending review item lacks WAV authority: {item.queue_id}"
-                        )
-                    if (
-                        audio_authority is None
-                        or audio_authority[1] != expected_audio_sha256
-                    ):
-                        raise AuthoringReconciliationError(
-                            f"Pending review WAV changed: {item.queue_id}"
-                        )
-                    record = _action_record(
-                        workspace,
-                        item,
-                        action,
-                        status=status,
-                        review_status=review_status,
-                        reason=(
-                            "exact current cohort evidence"
-                            if bundle is not None
-                            else "pending WAV needs a risk-based cohort review plan"
-                        ),
-                    )
-                    if bundle is not None:
-                        record["cohort"] = bundle
-                    record["audio_sha256"] = expected_audio_sha256
-                    actions.append(record)
-                    action_counts[action] += 1
-                    _remember_occurrence(occurrence_index, workspace, item, action)
-                    continue
-                if status == "failed":
-                    action = "new_hypothesis_required"
-                    actions.append(
-                        _action_record(
-                            workspace,
-                            item,
-                            action,
-                            status=status,
-                            review_status=review_status,
-                            reason=str(result.get("last_error") or "generation failed"),
-                        )
-                    )
-                    action_counts[action] += 1
-                    _remember_occurrence(occurrence_index, workspace, item, action)
-                    continue
-                raise AuthoringReconciliationError(
-                    f"Unsupported nonterminal state for {item.queue_id}: "
-                    f"{status}/{review_status}"
-                )
-            if item.queue_id in missing:
-                action = "source_reference_or_explicit_fallback"
-                reason = "selected workspace manifest has no usable voice"
-            elif item.queue_id in unconfigured_projection_ids:
-                action = "workspace_blocked"
-                reason = (
-                    "bundle-scoped mixed audio-event item requires an exact "
-                    "spoken-projection workspace configuration"
-                )
-            elif selected_blocked_reasons:
-                action = "workspace_blocked"
-                reason = "; ".join(selected_blocked_reasons)
-            else:
-                action = "generation_ready_unselected"
-                reason = "voice and immutable controls are ready"
-            actions.append(
-                _action_record(
-                    workspace,
-                    item,
-                    action,
-                    status=None,
-                    review_status=None,
-                    reason=reason,
-                )
-            )
-            action_counts[action] += 1
-            _remember_occurrence(occurrence_index, workspace, item, action)
+        actions.extend(workspace_actions)
         workspace_reports.append(
             {
                 "workspace": str(directory),
@@ -588,6 +725,65 @@ def build_authoring_reconciliation(
                 "action_counts": dict(sorted(action_counts.items())),
             }
         )
+
+    return (
+        workspace_reports,
+        actions,
+        occurrence_index,
+        resolved_terminal_conflicts,
+    )
+
+
+def build_authoring_reconciliation(
+    primary_workspace,
+    bundle_root,
+    *,
+    bundle_publications=None,
+    quality_reviews=(),
+):
+    """Build an exact report without choosing or mutating review authority."""
+    primary = Path(primary_workspace).expanduser().resolve()
+    bundle_root = Path(bundle_root).expanduser().resolve()
+    workspaces_root = primary.parent.resolve()
+    authoring_root = workspaces_root.parent.resolve()
+    _require_contained_directory(workspaces_root, primary, "Primary workspace")
+    if not _WORKSPACE_NAME.fullmatch(primary.name):
+        raise AuthoringReconciliationError("Primary workspace name is not canonical")
+    _require_contained_directory(authoring_root, bundle_root, "Review bundle root")
+    selected_publications = _selected_bundle_publications(
+        bundle_root, bundle_publications
+    )
+    bundle_inventory = (
+        _json_inventory(bundle_root) if selected_publications is None else None
+    )
+
+    snapshots = {}
+    (
+        bundle_workspace_paths,
+        bundle_reports,
+        bundle_actions,
+        bundle_workspace_queue_ids,
+        bundle_queue_ids,
+    ) = _inspect_review_bundles(bundle_root, selected_publications, snapshots)
+    workspace_paths = {primary, *bundle_workspace_paths}
+    quality_reports, quality_actions = _inspect_quality_reviews(
+        authoring_root, quality_reviews, snapshots
+    )
+
+    (
+        workspace_reports,
+        actions,
+        occurrence_index,
+        resolved_terminal_conflicts,
+    ) = _inspect_workspaces(
+        workspace_paths,
+        workspaces_root,
+        primary,
+        snapshots,
+        bundle_workspace_queue_ids,
+        bundle_queue_ids,
+        bundle_actions,
+    )
 
     actions = _project_terminal_merge_actions(actions, occurrence_index)
     for workspace_report in workspace_reports:

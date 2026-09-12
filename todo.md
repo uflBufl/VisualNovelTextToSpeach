@@ -14,10 +14,10 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P1 - Reduce structural code debt
 
-- [ ] Split the largest authoring orchestration functions along their existing
-      validation, execution, persistence and publication phases. Start with
-      `run_bulk_generation`, `_merge_workspace_outcomes`,
-      `_carry_forward_review_outcomes` and `build_authoring_reconciliation`;
+- [ ] Continue splitting the largest authoring orchestration functions along
+      their existing validation, execution, persistence and publication phases.
+      Extract item execution and finalization from `run_bulk_generation`, then
+      split `_merge_workspace_outcomes` and `_carry_forward_review_outcomes`;
       preserve stored-format compatibility and observable failure behavior.
 - [ ] Enable Ruff complexity checks through a versioned ratchet. Fix the current
       baseline of 657 findings (294 C901, 199 PLR0912 and 164 PLR0915), then
