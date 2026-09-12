@@ -2840,6 +2840,36 @@ class MainTest(unittest.TestCase):
         self.assertEqual(pipeline[-1][1]["line_id"], "reverse1999:1:2")
         self.assertEqual(pipeline[-1][1]["outcome"], "reserved")
 
+        pending = PreparedPlayback(object(), None, None, None, "moss-tts:fresh")
+        materialized = replace(pending, generation_completed=True)
+        backend.has_generated_line.return_value = False
+        backend.prepare_route = Mock(
+            return_value=LiveTTSRoute(
+                pending,
+                AudioRouteTrace(
+                    None,
+                    "live",
+                    "exact",
+                    None,
+                    None,
+                    "reverse1999:1:2",
+                    "not-applicable",
+                ),
+                None,
+                None,
+            )
+        )
+        live_backend.materialize_prepared = Mock(return_value=materialized)
+
+        outcome = controller._prefetch_sequence_successor(
+            ("native",), backend, event_id, preloader.dialogue[1]
+        )
+
+        self.assertEqual(outcome, "prepared")
+        live_backend.materialize_prepared.assert_called_once_with(
+            pending, cancellation=ANY
+        )
+
     def test_owned_auto_transition_routes_reserved_generated_successor_before_ocr(self):
         rows = [
             {

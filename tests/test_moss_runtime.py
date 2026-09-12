@@ -1,4 +1,6 @@
 import unittest
+from threading import Event, Thread
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from vntts.moss_runtime import RetainedMossRuntime
@@ -13,6 +15,8 @@ class _Backend:
         self.stops = 0
         self.shutdowns = 0
         self.loads = 0
+        self.play_started = Event()
+        self.release_playback = Event()
 
     def render(self, _request):
         registry = self.registry
@@ -41,6 +45,11 @@ class _Backend:
 
     def set_generation_profile(self, _profile):
         pass
+
+    def play_prepared(self, prepared, *, playback_guard=None):
+        self.play_started.set()
+        self.release_playback.wait(1)
+        return prepared
 
 
 class RetainedMossRuntimeTests(unittest.TestCase):
@@ -75,6 +84,27 @@ class RetainedMossRuntimeTests(unittest.TestCase):
         self.assertEqual(created[0].shutdowns, 2)
         runtime.shutdown()
         self.assertEqual(created[1].shutdowns, 1)
+
+    @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
+    def test_cached_playback_does_not_hold_the_generation_lock(self, _):
+        runtime = RetainedMossRuntime(
+            "/tmp/vntts-moss-runtime-test", backend_factory=_Backend
+        )
+        lease = runtime.backend_for("first", model_name="model-a")
+        prepared = SimpleNamespace(payload=SimpleNamespace(cached_audio=object()))
+        playback = Thread(target=lease.play_prepared, args=(prepared,))
+        playback.start()
+        self.assertTrue(runtime._backend.play_started.wait(0.5))
+
+        loaded = Event()
+        probe = Thread(target=lambda: (lease.load(), loaded.set()))
+        probe.start()
+        self.assertTrue(loaded.wait(0.5))
+
+        runtime._backend.release_playback.set()
+        playback.join(1)
+        probe.join(1)
+        runtime.shutdown()
 
 
 if __name__ == "__main__":

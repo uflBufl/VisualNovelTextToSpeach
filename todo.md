@@ -10,8 +10,6 @@ measurements in agent memory and completed-work history in Git, not here.
       Windows OpenMOSS host. Compare repeated and changing voices.
 - [ ] Evaluate persisting native encoded voice codes across app restarts; require
       checksum-bound invalidation when a reference changes.
-- [ ] Prefetch one known next live line during playback; invalidate it on
-      resync, skip, voice reassignment or generation-setting changes.
 - [ ] Benchmark `VNTTS_MOSS_AUX_CPU_THREADS=2/4/6/8`, GPU layers and Local GPU
       on qualified Windows hardware. Keep only settings with measured gains and
       enough CPU/GPU headroom for the game.

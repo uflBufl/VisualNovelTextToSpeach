@@ -17,6 +17,7 @@ import subprocess
 import sys
 import wave
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from tempfile import SpooledTemporaryFile, TemporaryDirectory
 from threading import Event, Lock, Thread
@@ -27,14 +28,17 @@ import numpy as np
 import soundfile as sf
 
 from vntts.native_resources import NativeResourceSampler
+from vntts.playback import PreparedPlayback
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_backend import (
+    MossTTSPreparedSpeech,
     MossTTSVoiceRouterBackend,
     SpeechBackendCapabilities,
     moss_tts_generation_profiles,
 )
 from vntts.speech_backend_runtime import _source_identity
 from vntts.support import native_speech_context, record_native_speech
+from vntts.synthesis import SynthesisCompletion, SynthesisRequest
 
 NATIVE_GENERATION_CONTRACT = "nonzero-seed-stable-1.7-v2"
 _MANAGED_STARTUP_FAILURE_PREFIX = "VNTTS_STARTUP_FAILURE_JSON="
@@ -251,6 +255,43 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         concurrent_prepare_and_play=False,
         interrupt_on_dialog_replacement=True,
     )
+
+    def materialize_prepared(self, prepared, *, cancellation=None):
+        """Generate native PCM now so playback can overlap the next request."""
+        if not isinstance(prepared, PreparedPlayback) or not isinstance(
+            prepared.payload, MossTTSPreparedSpeech
+        ):
+            raise TTSConfigurationError("MOSS C++ received invalid prepared speech")
+        payload = prepared.payload
+        if payload.cached_audio is not None:
+            return prepared
+        if cancellation is not None and cancellation():
+            return replace(prepared, generation_completed=False)
+        if not self.playback_active:
+            self.playback_stop.clear()
+        result = self._render_prepared(
+            payload,
+            SynthesisRequest(
+                voice=payload.voice_key,
+                text=payload.text,
+                seed=payload.seed,
+                generation_profile=payload.generation_profile,
+                cache_policy=payload.cache_policy,
+            ),
+        ).collect()
+        if result.completion is not SynthesisCompletion.COMPLETE:
+            return replace(prepared, generation_completed=False)
+        return replace(
+            prepared,
+            payload=replace(
+                payload,
+                cached_audio=result.pcm,
+                cache_source=result.diagnostics.cache_source,
+            ),
+            synthesis_ms=result.timing.first_chunk_ms,
+            cache_source=result.diagnostics.cache_source,
+            audio_source=f"moss-tts:{result.diagnostics.cache_source}",
+        )
 
     def __init__(
         self,

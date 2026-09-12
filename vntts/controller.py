@@ -1845,22 +1845,32 @@ class AppController:
             if candidate is not None and candidate.is_speech and candidate.line_id:
                 successor = self._canonical_sequence_line_locked(candidate.event_id)
             self._publish_live_sequence_status()
-        self._schedule_sequence_successor_prefetch(lease.event_id, successor)
+        self._schedule_sequence_successor_prefetch(lease, successor)
         return lease
 
-    def _schedule_sequence_successor_prefetch(self, owner_event_id, line):
+    def _schedule_sequence_successor_prefetch(self, owner_lease, line):
         backend = self.speech_backend
         executor = self.speech_executor
+        live_backend = (
+            backend.live_backend
+            if isinstance(backend, GeneratedAudioFallbackBackend)
+            else backend
+        )
+        can_generate = callable(getattr(live_backend, "materialize_prepared", None))
+        can_reserve = bool(
+            isinstance(backend, GeneratedAudioFallbackBackend)
+            and backend.library is not None
+        )
         if (
             line is None
             or executor is None
-            or not isinstance(backend, GeneratedAudioFallbackBackend)
-            or backend.library is None
+            or not isinstance(owner_lease, SequenceEventLease)
+            or not (can_generate or can_reserve)
             or not line.line_id
             or not line.text_sha256
         ):
             return False
-        key = (id(backend), owner_event_id, line.line_id, line.text_sha256)
+        key = (id(backend), owner_lease, line.line_id, line.text_sha256)
         with self.sequence_prefetch_lock:
             if key in self.sequence_prefetch_keys:
                 return False
@@ -1870,7 +1880,7 @@ class AppController:
                 self._prefetch_sequence_successor,
                 key,
                 backend,
-                owner_event_id,
+                owner_lease,
                 line,
             )
         except RuntimeError:
@@ -1883,16 +1893,19 @@ class AppController:
         self,
         key,
         backend,
-        owner_event_id,
+        owner_lease,
         line,
     ):
         started_at = monotonic()
+        settings = self.settings
         with self.story_cursor_lock:
             cursor = self.story_cursor
-            current = None if cursor is None else cursor.current_event_id
             authorized = bool(
                 backend is self.speech_backend
-                and current == owner_event_id
+                and settings is self.settings
+                and cursor is not None
+                and cursor.current_event_id == owner_lease.event_id
+                and cursor.occurrence_id == owner_lease.occurrence_id
                 and self.game_focused
                 and is_live_sequence_audio_mode(self.settings.live_sequence_mode)
             )
@@ -1900,20 +1913,48 @@ class AppController:
             outcome = "stale"
         else:
             try:
-                outcome = (
-                    "reserved"
-                    if backend.reserve_generated_line_for_early_playback(line)
-                    else "unavailable"
-                )
+                outcome = "unavailable"
+                if isinstance(backend, GeneratedAudioFallbackBackend):
+                    if backend.reserve_generated_line_for_early_playback(line):
+                        outcome = "reserved"
+                    else:
+                        route = backend.prepare_route(
+                            line.speaker, line.text, line_id=line.line_id
+                        )
+                        materialize = getattr(
+                            backend.live_backend, "materialize_prepared", None
+                        )
+                        if isinstance(
+                            route, (LiveFallbackRoute, LiveTTSRoute)
+                        ) and callable(materialize):
+                            materialized = materialize(
+                                route.prepared,
+                                cancellation=lambda: not self.game_focused,
+                            )
+                            outcome = (
+                                "prepared"
+                                if materialized.generation_completed
+                                else "stale"
+                            )
+                else:
+                    materialized = backend.materialize_prepared(
+                        backend.prepare_playback(line.speaker, line.text),
+                        cancellation=lambda: not self.game_focused,
+                    )
+                    outcome = (
+                        "prepared" if materialized.generation_completed else "stale"
+                    )
             except Exception as error:
                 outcome = "failed"
                 self.error_handler(error)
         with self.story_cursor_lock:
             cursor = self.story_cursor
-            if outcome == "reserved" and (
+            if outcome in {"reserved", "prepared"} and (
                 backend is not self.speech_backend
+                or settings is not self.settings
                 or cursor is None
-                or cursor.current_event_id != owner_event_id
+                or cursor.current_event_id != owner_lease.event_id
+                or cursor.occurrence_id != owner_lease.occurrence_id
                 or not self.game_focused
             ):
                 outcome = "stale"
@@ -1929,7 +1970,7 @@ class AppController:
                 "sequence-successor-prefetch",
                 generation,
                 monotonic(),
-                event_id=owner_event_id,
+                event_id=owner_lease.event_id,
                 target_event_id=None if target is None else target.event_id,
                 line_id=line.line_id,
                 outcome=outcome,
@@ -1940,6 +1981,37 @@ class AppController:
         with self.sequence_prefetch_lock:
             self.sequence_prefetch_keys.discard(key)
         return outcome
+
+    def _materialize_live_route(self, route, chunk):
+        if not self._live_sequence_audio_active():
+            return route
+        if isinstance(route, (LiveFallbackRoute, LiveTTSRoute)):
+            backend = self.speech_backend.live_backend
+            prepared = route.prepared
+        elif isinstance(route, PreparedPlayback):
+            backend = self.speech_backend
+            prepared = route
+        else:
+            return route
+        materialize = getattr(backend, "materialize_prepared", None)
+        if not callable(materialize):
+            return route
+        prepared = materialize(
+            prepared,
+            cancellation=lambda: (
+                self.live_reader is not None
+                and not self.live_reader.wait_until_playable(chunk)
+            ),
+        )
+        if isinstance(route, (LiveFallbackRoute, LiveTTSRoute)):
+            return replace(
+                route,
+                prepared=prepared,
+                synthesis_ms=prepared.synthesis_ms,
+                first_audio_ms=prepared.first_audio_ms,
+                cache_source=prepared.cache_source,
+            )
+        return prepared
 
     def _finish_sequence_playback(self, lease, outcome):
         with self.story_cursor_lock:
@@ -2387,10 +2459,13 @@ class AppController:
                 )
             else:
                 raise TypeError("Speech backend does not implement prepare_playback()")
+            prepared = self._materialize_live_route(prepared, chunk)
             try:
                 announcement, announced_speaker = self._prepare_speaker_announcement(
                     chunk, prepared
                 )
+                if announcement is not None:
+                    announcement = self._materialize_live_route(announcement, chunk)
             except Exception as error:
                 announcement, announced_speaker = None, None
                 self.error_handler(error)

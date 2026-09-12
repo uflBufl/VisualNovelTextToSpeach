@@ -257,6 +257,22 @@ class MossCppBackendTest(unittest.TestCase):
         backend.shutdown()
         self.assertIsNotNone(self.children[0].poll())
 
+    def test_materialized_line_is_ready_for_playback_and_reused(self):
+        backend = self.backend()
+        prepared = backend.prepare_playback("Narrator", "Prepared ahead.")
+
+        materialized = backend.materialize_prepared(prepared)
+
+        self.assertIsNotNone(materialized.payload.cached_audio)
+        self.assertTrue(materialized.generation_completed)
+        self.assertEqual(
+            backend.prepare_playback("Narrator", "Prepared ahead.").cache_source,
+            "memory-cache",
+        )
+        self.assertEqual(
+            len((self.root / "requests.jsonl").read_text().splitlines()), 1
+        )
+
     def test_shutdown_stops_owned_server_when_stop_is_interrupted(self):
         backend = self.backend()
         with patch.object(backend, "stop", side_effect=KeyboardInterrupt):

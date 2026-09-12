@@ -81,6 +81,19 @@ class _MossBackendLease:
         backend = self._runtime._backend
         return backend.stop() if backend is not None else False
 
+    def play_prepared(self, prepared, *, playback_guard=None):
+        if (
+            getattr(getattr(prepared, "payload", None), "cached_audio", None)
+            is not None
+        ):
+            backend = self._runtime._backend
+            if backend is None:
+                raise RuntimeError("OpenMOSS runtime is unloaded")
+            return backend.play_prepared(prepared, playback_guard=playback_guard)
+        with self._runtime._operation_lock:
+            backend = self._runtime._configured_backend(self)
+            return backend.play_prepared(prepared, playback_guard=playback_guard)
+
     def __getattr__(self, name):
         backend = self._runtime._backend
         if backend is None:
