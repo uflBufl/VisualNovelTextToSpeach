@@ -8,8 +8,8 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Record cold and warm timings for startup, reference preparation, native
       prefill/generation/decode, WAV validation and publication on the supported
       Windows OpenMOSS host. Compare repeated and changing voices.
-- [ ] Evaluate persisting native encoded voice codes across app restarts; require
-      checksum-bound invalidation when a reference changes.
+- [ ] Add checksum-bound encoded-reference persistence to the VNTTS OpenMOSS
+      server, qualify the rebuilt Windows runtime, then update the pinned archive.
 - [ ] Benchmark `VNTTS_MOSS_AUX_CPU_THREADS=2/4/6/8`, GPU layers and Local GPU
       on qualified Windows hardware. Keep only settings with measured gains and
       enough CPU/GPU headroom for the game.
