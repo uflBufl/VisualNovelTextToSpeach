@@ -3326,7 +3326,7 @@ wheels = [
 [[package]]
 name = "reverse1999-extractor"
 version = "0.1.0"
-source = { git = "https://github.com/AlexRedby/r1999-extractor.git?rev=e7577b72a8dcbab3a8de09d9749539d63ded66c7#e7577b72a8dcbab3a8de09d9749539d63ded66c7" }
+source = { git = "https://github.com/AlexRedby/r1999-extractor.git?rev=719918cab0f622a33b766e1b01520eb3b2a7cd59#719918cab0f622a33b766e1b01520eb3b2a7cd59" }
 dependencies = [
     { name = "cryptography" },
     { name = "numpy" },
@@ -4336,7 +4336,7 @@ requires-dist = [
     { name = "pytesseract", specifier = ">=0.3.13" },
     { name = "python-xlib", marker = "sys_platform == 'linux'", specifier = ">=0.33" },
     { name = "rapidocr", marker = "extra == 'rapidocr'", specifier = ">=3.8.1,<4" },
-    { name = "reverse1999-extractor", git = "https://github.com/AlexRedby/r1999-extractor.git?rev=e7577b72a8dcbab3a8de09d9749539d63ded66c7" },
+    { name = "reverse1999-extractor", git = "https://github.com/AlexRedby/r1999-extractor.git?rev=719918cab0f622a33b766e1b01520eb3b2a7cd59" },
     { name = "sounddevice", specifier = ">=0.5.6,<0.6" },
     { name = "soundfile", specifier = ">=0.14,<0.15" },
     { name = "speechbrain", marker = "extra == 'speaker-identity'", specifier = "==1.1.1" },
@@ -4350,7 +4350,7 @@ requires-dist = [
     { name = "torchcodec", marker = "sys_platform == 'linux'", specifier = ">=0.16,<0.17", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchcodec", marker = "sys_platform == 'win32'", specifier = ">=0.16,<0.17" },
     { name = "transformers", specifier = ">=4.57.6,<5" },
-    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=3d393979501ebf30e8bce744b8ab8ca573a660f6" },
+    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=7ba9fa1704fd5c25f2576db4f9133af4fe155cea" },
 ]
 provides-extras = ["rapidocr", "speaker-identity"]
 
@@ -4371,7 +4371,7 @@ notebook = [
 [[package]]
 name = "vntts-artifacts"
 version = "0.7.2"
-source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=3d393979501ebf30e8bce744b8ab8ca573a660f6#3d393979501ebf30e8bce744b8ab8ca573a660f6" }
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=7ba9fa1704fd5c25f2576db4f9133af4fe155cea#7ba9fa1704fd5c25f2576db4f9133af4fe155cea" }
 dependencies = [
     { name = "durable-file" },
 ]
