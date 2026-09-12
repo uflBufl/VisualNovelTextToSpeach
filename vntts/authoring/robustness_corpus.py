@@ -46,6 +46,7 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_foundation import require_sha256
 
 SPEECH_ROBUSTNESS_CORPUS_SCHEMA = "vntts.speech-robustness-corpus"
 SPEECH_ROBUSTNESS_CORPUS_VERSION = 3
@@ -103,13 +104,7 @@ def _sha256(payload):
 
 
 def _require_sha256(value, label):
-    if not isinstance(value, str) or len(value) != 64:
-        raise SpeechRobustnessCorpusError(f"{label} must be a full SHA-256")
-    try:
-        int(value, 16)
-    except ValueError as error:
-        raise SpeechRobustnessCorpusError(f"{label} must be hexadecimal") from error
-    return value
+    return require_sha256(value, label, error_type=SpeechRobustnessCorpusError)
 
 
 def _required_text(value, label):

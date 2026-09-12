@@ -17,7 +17,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.import_paths import default_import_root
 from vntts.authoring.private_files import private_file_is_restricted
-from vntts.authoring.workspace_foundation import load_json_object
+from vntts.authoring.workspace_foundation import load_json_object, require_sha256
 
 SESSION_SCHEMA = "r1999.model-listening-session"
 KEY_SCHEMA = "r1999.model-listening-key"
@@ -608,12 +608,7 @@ def _within(root, relative, label):
 
 
 def _require_sha256(value, label):
-    if not isinstance(value, str) or len(value) != 64:
-        raise ListeningImportError(f"{label} must be a full SHA-256")
-    try:
-        int(value, 16)
-    except ValueError as error:
-        raise ListeningImportError(f"{label} must be hexadecimal") from error
+    require_sha256(value, label, error_type=ListeningImportError)
 
 
 def _canonical(value):
