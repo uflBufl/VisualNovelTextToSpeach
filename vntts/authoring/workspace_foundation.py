@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, MutableSequence
 from pathlib import Path
 
 from vntts.path_safety import contained_path, contained_regular_file, safe_relative_path
 
 
-def read_regular_file(path, label, *, error_type=ValueError):
+def read_regular_file(
+    path: str | Path,
+    label: str,
+    *,
+    error_type: type[Exception] = ValueError,
+) -> bytes:
     """Read one non-symlink regular file with stable authoring error messages."""
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -21,12 +27,12 @@ def read_regular_file(path, label, *, error_type=ValueError):
 
 
 def load_json_object(
-    path,
-    description,
+    path: str | Path,
+    description: str,
     *,
-    error_type=ValueError,
-    object_label=None,
-):
+    error_type: type[Exception] = ValueError,
+    object_label: str | None = None,
+) -> dict[str, object]:
     """Load one JSON object from a filesystem path."""
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -37,7 +43,12 @@ def load_json_object(
     return value
 
 
-def load_json_object_snapshot(path, description, *, error_type=ValueError):
+def load_json_object_snapshot(
+    path: str | Path,
+    description: str,
+    *,
+    error_type: type[Exception] = ValueError,
+) -> tuple[dict[str, object], str, bytes]:
     """Read and decode one JSON object while retaining exact payload identity."""
     try:
         payload = Path(path).read_bytes()
@@ -53,7 +64,9 @@ def load_json_object_snapshot(path, description, *, error_type=ValueError):
     return value, digest, payload
 
 
-def require_sha256(value, label, *, error_type=ValueError):
+def require_sha256(
+    value: object, label: str, *, error_type: type[Exception] = ValueError
+) -> str:
     """Return one full hexadecimal SHA-256 value or fail with a typed error."""
     if not isinstance(value, str) or len(value) != 64:
         raise error_type(f"{label} must be a full SHA-256")
@@ -64,7 +77,13 @@ def require_sha256(value, label, *, error_type=ValueError):
     return value
 
 
-def copy_workspace_tree_snapshot(source, target, snapshots, *, error_type=ValueError):
+def copy_workspace_tree_snapshot(
+    source: str | Path,
+    target: str | Path,
+    snapshots: MutableSequence[tuple[Path, str]],
+    *,
+    error_type: type[Exception] = ValueError,
+) -> None:
     """Copy one symlink-free immutable input tree and retain source hashes."""
     source = Path(source)
     target = Path(target)
@@ -95,16 +114,16 @@ def copy_workspace_tree_snapshot(source, target, snapshots, *, error_type=ValueE
 
 
 def copy_generation_wavs(
-    base_directory,
-    output,
-    state,
-    snapshots,
-    target_label,
-    error_type=ValueError,
-    source_label="Base WAV",
-):
+    base_directory: str | Path,
+    output: str | Path,
+    state: Mapping[str, Mapping[str, Mapping[str, object]]],
+    snapshots: MutableSequence[tuple[Path, str]],
+    target_label: str,
+    error_type: type[Exception] = ValueError,
+    source_label: str = "Base WAV",
+) -> None:
     """Copy checksum-bound generated WAVs into an immutable successor."""
-    owners = {}
+    owners: dict[str, str] = {}
     for queue_id, result in state["items"].items():
         if not isinstance(result, dict) or not isinstance(result.get("path"), str):
             continue

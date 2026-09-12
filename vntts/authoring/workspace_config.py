@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
@@ -23,7 +24,9 @@ from vntts.authoring.workspace_foundation import (
 )
 
 
-def normalize_workspace_run_config(run_config, *, error_type=ValueError):
+def normalize_workspace_run_config(
+    run_config: object, *, error_type: type[Exception] = ValueError
+) -> dict[str, object]:
     """Normalize every supported workspace run-config generation."""
     if not isinstance(run_config, dict):
         raise error_type("Workspace run configuration is malformed")
@@ -69,16 +72,21 @@ def normalize_workspace_run_config(run_config, *, error_type=ValueError):
 
 
 def workspace_audio_event_spoken_projection_queue_ids(
-    workspace, *, error_type=ValueError
-):
+    workspace: Mapping[str, object], *, error_type: type[Exception] = ValueError
+) -> tuple[str, ...]:
     """Return exact mixed-event IDs authorized for spoken-only pregeneration."""
     config = normalize_workspace_run_config(
         workspace.get("run_config"), error_type=error_type
     )
-    return tuple(config.get("audio_event_spoken_projection_queue_ids", ()))
+    projection_ids = config.get("audio_event_spoken_projection_queue_ids", [])
+    if not isinstance(projection_ids, list):
+        raise error_type("Workspace audio-event spoken projections are malformed")
+    return tuple(value for value in projection_ids if isinstance(value, str))
 
 
-def workspace_missing_voice_policy(workspace, *, error_type=ValueError):
+def workspace_missing_voice_policy(
+    workspace: Mapping[str, object], *, error_type: type[Exception] = ValueError
+) -> MissingVoicePolicy:
     """Load the normalized missing-voice policy bound to a workspace."""
     config = normalize_workspace_run_config(
         workspace.get("run_config"), error_type=error_type
@@ -86,7 +94,9 @@ def workspace_missing_voice_policy(workspace, *, error_type=ValueError):
     return MissingVoicePolicy.from_document(config["missing_voice_policy"])
 
 
-def workspace_failure_repair_policy(workspace, *, error_type=ValueError):
+def workspace_failure_repair_policy(
+    workspace: Mapping[str, object], *, error_type: type[Exception] = ValueError
+) -> FailureRepairPolicy:
     """Load the normalized failure-repair policy bound to a workspace."""
     config = normalize_workspace_run_config(
         workspace.get("run_config"), error_type=error_type
@@ -95,25 +105,25 @@ def workspace_failure_repair_policy(workspace, *, error_type=ValueError):
 
 
 def workspace_config_fingerprint(
-    import_id,
-    story_config,
-    voice_config,
-    narrator_character,
-    run_config,
-    carry_forward=None,
-    outcome_merge=None,
-    failure_reference_binding=None,
-    terminal_conflict_merge=None,
-    config_rebase=None,
-    audio_event_composition=None,
-    explicit_fallback_merge=None,
-    known_role_live_fallback=None,
-    audio_event_omission=None,
-    audio_event_projection_fallback=None,
-    reviewed_waveform_publication=None,
-    reviewed_rejection_live_fallback=None,
-    queue_extension=None,
-):
+    import_id: str,
+    story_config: object,
+    voice_config: object,
+    narrator_character: str,
+    run_config: object,
+    carry_forward: object | None = None,
+    outcome_merge: object | None = None,
+    failure_reference_binding: object | None = None,
+    terminal_conflict_merge: object | None = None,
+    config_rebase: object | None = None,
+    audio_event_composition: object | None = None,
+    explicit_fallback_merge: object | None = None,
+    known_role_live_fallback: object | None = None,
+    audio_event_omission: object | None = None,
+    audio_event_projection_fallback: object | None = None,
+    reviewed_waveform_publication: object | None = None,
+    reviewed_rejection_live_fallback: object | None = None,
+    queue_extension: object | None = None,
+) -> str:
     """Return the canonical SHA-256 identity of one workspace configuration."""
     fingerprint = {
         "import_id": import_id,
@@ -159,7 +169,9 @@ def workspace_config_fingerprint(
     return hashlib.sha256(payload).hexdigest()
 
 
-def workspace_queue_sha256(workspace, *, error_type=ValueError):
+def workspace_queue_sha256(
+    workspace: Mapping[str, object], *, error_type: type[Exception] = ValueError
+) -> str:
     """Return the current immutable queue identity for old and extended workspaces."""
     extension = workspace.get("queue_extension")
     if extension is not None:
@@ -170,10 +182,13 @@ def workspace_queue_sha256(workspace, *, error_type=ValueError):
             "Workspace extended queue SHA-256",
             error_type=error_type,
         )
+    inventory = workspace.get("seed_inventory", [])
+    if not isinstance(inventory, list):
+        inventory = []
     digest = next(
         (
             value.get("sha256")
-            for value in workspace.get("seed_inventory", [])
+            for value in inventory
             if isinstance(value, dict) and value.get("path") == "queue.jsonl"
         ),
         None,
@@ -182,12 +197,12 @@ def workspace_queue_sha256(workspace, *, error_type=ValueError):
 
 
 def selected_voice_manifest_path(
-    directory,
-    workspace,
-    selected=None,
+    directory: str | Path,
+    workspace: Mapping[str, object],
+    selected: str | Path | None = None,
     *,
-    error_type=ValueError,
-):
+    error_type: type[Exception] = ValueError,
+) -> Path | None:
     """Resolve and checksum-validate the selected manifest and its references."""
     value = workspace.get("voice_manifest")
     if not isinstance(value, dict) or not isinstance(value.get("path"), str):

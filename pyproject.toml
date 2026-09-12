@@ -130,7 +130,12 @@ select = ["E4", "E7", "E9", "F", "I"]
 [tool.mypy]
 python_version = "3.14"
 files = [
+    "vntts/authoring/authority.py",
     "vntts/authoring/cli_dispatch.py",
+    "vntts/authoring/import_paths.py",
+    "vntts/authoring/private_files.py",
+    "vntts/authoring/workspace_config.py",
+    "vntts/authoring/workspace_foundation.py",
     "vntts/controller_components.py",
     "vntts/game_pack.py",
     "vntts/live_snapshot.py",

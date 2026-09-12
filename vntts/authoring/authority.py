@@ -24,7 +24,7 @@ class AuthoritySnapshot:
     payload: bytes
     sha256: str
 
-    def json_document(self, label):
+    def json_document(self, label: str) -> dict[str, object]:
         """Decode one captured JSON object without reopening the source path."""
         try:
             document = json.loads(self.payload.decode("utf-8"))
@@ -35,7 +35,9 @@ class AuthoritySnapshot:
         return document
 
 
-def capture_authority_file(path, label, *, root=None):
+def capture_authority_file(
+    path: str | Path, label: str, *, root: str | Path | None = None
+) -> AuthoritySnapshot:
     """Read one non-symlink regular file once and retain its exact identity."""
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
@@ -72,7 +74,9 @@ def capture_authority_file(path, label, *, root=None):
     )
 
 
-def assert_authority_snapshot(snapshot, label="authority"):
+def assert_authority_snapshot(
+    snapshot: AuthoritySnapshot, label: str = "authority"
+) -> None:
     """Require one captured path to remain the same regular-file payload."""
     path = snapshot.path
     if path.is_symlink() or not path.is_file():
@@ -86,12 +90,12 @@ def assert_authority_snapshot(snapshot, label="authority"):
 
 
 def write_json_document_no_replace(
-    output,
-    document,
-    label,
+    output: str | Path,
+    document: object,
+    label: str,
     *,
-    error_type=AuthoringAuthorityError,
-):
+    error_type: type[Exception] = AuthoringAuthorityError,
+) -> Path:
     """Atomically publish one JSON document while refusing replacement."""
     path = Path(output).expanduser().resolve()
     payload = (

@@ -3,7 +3,9 @@ import sys
 from pathlib import Path
 
 
-def private_file_is_restricted(path, *, platform=None):
+def private_file_is_restricted(
+    path: str | Path, *, platform: str | None = None
+) -> bool:
     path = Path(path)
     if not path.is_file() or path.is_symlink():
         return False
