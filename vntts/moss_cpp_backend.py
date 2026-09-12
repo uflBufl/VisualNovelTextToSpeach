@@ -305,12 +305,16 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         startup_progress=None,
         startup_timeout=1800.0,
         request_timeout=600.0,
+        allow_download=False,
         **options,
     ):
         from vntts.moss_cpp_installation import ensure_moss_cpp
 
         ensure_moss_cpp(
-            model_name, cancellation=startup_cancellation, progress=startup_progress
+            model_name,
+            cancellation=startup_cancellation,
+            progress=startup_progress,
+            allow_download=allow_download,
         )
         self.executable, self.gguf, self.sidecar = moss_cpp_paths(model_name)
         self._managed_runtime = _managed_runtime(model_name)

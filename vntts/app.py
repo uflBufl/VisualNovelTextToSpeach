@@ -1644,6 +1644,31 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         if self.moss_runtime_runner.active:
             return
+        download = OnboardingDiagnostics().moss_installation_space(self.settings)
+        if download is not None:
+            remaining, required, free = download
+            if free < required:
+                self.show_error(
+                    "OpenMOSS cannot be installed yet: "
+                    f"{required / 1e9:.1f} GB free is required, but "
+                    f"{free / 1e9:.1f} GB is available."
+                )
+                return
+            amount = (
+                f"{remaining / 1e9:.1f} GB"
+                if remaining >= 1_000_000_000
+                else f"{remaining / 1_000_000:.1f} MB"
+            )
+            answer = QMessageBox.question(
+                self.dashboard,
+                "Install OpenMOSS",
+                f"OpenMOSS needs a {amount} download before it can load. "
+                "Download and install it now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         registry = self.controller.voice_registry_initializer(
             self.settings, self.report_controller_error
         )
@@ -1658,6 +1683,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             generation_profile=self.settings.tts_profile,
             volume=self.settings.output_volume_percent / 100,
             startup_progress=self.signals.status_changed.emit,
+            allow_download=download is not None,
         )
 
     def _moss_runtime_finished(self, _backend, error):

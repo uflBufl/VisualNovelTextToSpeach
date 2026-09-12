@@ -66,6 +66,38 @@ class TrayApplicationTest(unittest.TestCase):
         delete_dialog(tray.dashboard)
         delete_dialog(tray.compact_controller)
 
+    def test_load_openmoss_installs_missing_managed_runtime_after_confirmation(self):
+        controller = Mock(is_live_running=False)
+        controller.voice_registry_initializer.return_value = object()
+        runtime = Mock(loaded=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(speech_backend="moss-tts"),
+            controller_factory=Mock(return_value=controller),
+            moss_runtime=runtime,
+        )
+        tray.moss_runtime_runner = Mock(active=False)
+
+        with (
+            patch(
+                "vntts.app.OnboardingDiagnostics.moss_installation_space",
+                return_value=(17_390_235, 151_607_963, 20_000_000_000),
+            ),
+            patch(
+                "vntts.app.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ) as question,
+        ):
+            tray.toggle_moss_runtime()
+
+        self.assertIn("17.4 MB", question.call_args.args[2])
+        self.assertTrue(
+            tray.moss_runtime_runner.start.call_args.kwargs["allow_download"]
+        )
+        tray.shutdown()
+        delete_dialog(tray.dashboard)
+        delete_dialog(tray.compact_controller)
+
     def test_missing_saved_pack_opens_settings_without_starting_playback(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
