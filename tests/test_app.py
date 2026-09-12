@@ -1239,6 +1239,10 @@ class TrayApplicationTest(unittest.TestCase):
         controller.unresolved_live_speakers.return_value = None
         controller.live_scope_identification_failure = "story-line-no-match"
         controller.live_scope_identification_match_result = "expected-no-match"
+        controller.live_scope_identification_diagnostics = {
+            "eligible_line_count": 42,
+            "best_bounded_similarity": 0.73,
+        }
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -1247,9 +1251,21 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.live_scope_runner = Mock(active=False)
 
         self.assertFalse(tray_application.toggle_live())
-        tray_application._live_scope_finished(False, None)
+        tray_application.dashboard.show_reading()
+        with patch("vntts.app.QMessageBox") as message_box:
+            continue_button, stories_button, cancel_button = object(), object(), object()
+            prompt = message_box.return_value
+            prompt.addButton.side_effect = (
+                continue_button,
+                stories_button,
+                cancel_button,
+            )
+            prompt.clickedButton.return_value = stories_button
+            tray_application._live_scope_finished(False, None)
 
-        self.assertIn("unambiguous line", tray_application.dashboard.status.text())
+        self.assertIn("Stories is open", tray_application.dashboard.status.text())
+        self.assertTrue(tray_application.dashboard.isVisible())
+        self.assertEqual(tray_application.dashboard.sections.currentIndex(), 0)
         self.assertNotIn("not visible", tray_application.dashboard.status.text())
         self.assertIn(
             "expected-no-match",
@@ -1257,6 +1273,46 @@ class TrayApplicationTest(unittest.TestCase):
                 entry["message"] for entry in tray_application.support_log.snapshot()
             ),
         )
+        event = next(
+            entry
+            for entry in reversed(tray_application.support_log.snapshot())
+            if entry["level"] == "live-scope"
+        )
+        self.assertEqual(event["eligible_line_count"], 42)
+        self.assertEqual(event["best_bounded_similarity"], 0.73)
+        tray_application.shutdown()
+
+    def test_live_scope_failure_can_continue_from_ocr_without_changing_pack(self):
+        controller = Mock(is_live_running=False)
+        controller.start_live_from_ocr.return_value = True
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(
+                story_index="story.jsonl",
+                generated_audio_manifest="generated.json",
+            ),
+            controller_factory=Mock(return_value=controller),
+        )
+        with patch("vntts.app.QMessageBox") as message_box:
+            continue_button, stories_button, cancel_button = object(), object(), object()
+            prompt = message_box.return_value
+            prompt.addButton.side_effect = (
+                continue_button,
+                stories_button,
+                cancel_button,
+            )
+            prompt.clickedButton.return_value = continue_button
+
+            self.assertTrue(tray_application._offer_story_match_recovery("No match"))
+
+        controller.start_live_from_ocr.assert_called_once_with()
+        self.assertEqual(tray_application.dashboard.sections.currentIndex(), 2)
+        self.assertEqual(tray_application.settings.story_index, "story.jsonl")
+        self.assertEqual(
+            tray_application.settings.generated_audio_manifest,
+            "generated.json",
+        )
+        self.assertIn("started from OCR", tray_application.dashboard.status.text())
         tray_application.shutdown()
 
     def test_live_scope_failure_explains_empty_capture(self):

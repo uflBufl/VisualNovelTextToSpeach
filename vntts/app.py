@@ -2085,9 +2085,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 None,
             )
             if match_result:
+                details = getattr(
+                    self.controller,
+                    "live_scope_identification_diagnostics",
+                    {},
+                )
+                details = dict(details) if isinstance(details, dict) else {}
+                details["match_result"] = match_result
                 self.support_log.add(
                     "live-scope",
                     f"Initial story matcher result: {match_result}",
+                    **details,
                 )
             if failure == "no-dialog-text":
                 message = (
@@ -2096,9 +2104,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
             elif failure == "story-line-no-match":
                 message = (
-                    "Live reading could not start: the visible text did not match "
-                    "one unambiguous line in the configured story"
+                    "Live reading could not match this dialogue to the prepared "
+                    "story. Continue from OCR with live TTS, or choose the story "
+                    "currently shown in the game."
                 )
+                self._offer_story_match_recovery(message)
+                return
             else:
                 message = (
                     "Live reading could not start: keep a complete dialog line "
@@ -2108,6 +2119,53 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.signals.live_changed.emit(False)
             return
         self._start_live_with_preflight(allow_scope_bootstrap=False)
+
+    def _offer_story_match_recovery(self, message):
+        self.show_dashboard()
+        self.dashboard.show_reading()
+        prompt = QMessageBox(self.dashboard)
+        prompt.setIcon(QMessageBox.Icon.Warning)
+        prompt.setWindowTitle("Prepared story not found")
+        prompt.setText(message)
+        prompt.setInformativeText(
+            "OCR + live TTS reads the visible dialogue without a story position. "
+            "Your prepared pack stays configured and can still supply audio when "
+            "a later line matches."
+        )
+        continue_button = prompt.addButton(
+            "Continue with OCR + live TTS",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        stories_button = prompt.addButton(
+            "Choose stories...",
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        cancel_button = prompt.addButton(
+            "Cancel",
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        prompt.setDefaultButton(continue_button)
+        prompt.setEscapeButton(cancel_button)
+        prompt.exec()
+        if prompt.clickedButton() is continue_button:
+            running = bool(self.controller.start_live_from_ocr())
+            self.signals.live_changed.emit(running)
+            self.set_status(
+                "Live reading started from OCR; unmatched dialogue uses live TTS."
+                if running
+                else "Live reading could not start from OCR."
+            )
+            return running
+        if prompt.clickedButton() is stories_button:
+            self.dashboard.show_stories()
+            self.set_status(
+                "Stories is open: select and prepare the story currently shown in "
+                "the game, then return to Reading and start again."
+            )
+        else:
+            self.set_status("Live reading cancelled: story position was not found.")
+        self.signals.live_changed.emit(False)
+        return False
 
     def _show_live_voice_preflight(self, speakers):
         if self.live_voice_preflight_prompt is not None:

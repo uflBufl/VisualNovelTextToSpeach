@@ -52,6 +52,7 @@ class ChapterVoicePreloader:
 
     def __init__(self, dialogue=(), *, lookahead_rows=80):
         self.dialogue = tuple(dialogue)
+        self.last_resolution_diagnostics = {}
         self.lookahead_rows = max(1, int(lookahead_rows))
         self.by_speaker = defaultdict(list)
         self.by_line_id = {}
@@ -325,15 +326,53 @@ class ChapterVoicePreloader:
     ):
         """Resolve OCR drift only among explicit cursor-authorized line IDs."""
         allowed = tuple(dict.fromkeys(str(line_id) for line_id in line_ids if line_id))
+        allowed_set = set(allowed)
+        valid = tuple(
+            row
+            for row in self.dialogue
+            if row.line_id in allowed_set and row.text_sha256
+        )
+        exact_text = _normalize_exact_text(text)
+        normalized_text = _normalize(text)
+        speaker_key = _normalize(character)
+        self.last_resolution_diagnostics = {
+            "indexed_line_count": len(self.dialogue),
+            "indexed_chapter_count": len(self.by_chapter),
+            "eligible_line_count": len(valid),
+            "normalized_text_characters": len(normalized_text),
+            "normalized_text_tokens": len(normalized_text.split()),
+            "exact_speaker_candidate_count": sum(
+                _normalize(candidate.speaker) == speaker_key
+                and _normalize_exact_text(candidate.text) == exact_text
+                for candidate in valid
+            ),
+            "normalized_speaker_candidate_count": sum(
+                _normalize(candidate.speaker) == speaker_key
+                and self.normalized_text[candidate] == normalized_text
+                for candidate in valid
+            ),
+            "text_only_candidate_count": sum(
+                _normalize_exact_text(candidate.text) == exact_text
+                for candidate in valid
+            ),
+        }
         line, match_result = self.resolve_exact_among(character, text, allowed)
         if line is not None or not allowed:
+            self.last_resolution_diagnostics["match_result"] = match_result
             return line, match_result
         ranked = []
+        best_evidence = None
         for line_id in allowed:
             candidate = self.by_line_id.get(line_id)
             if candidate is None or not candidate.text_sha256:
                 continue
-            match = _bounded_text_match(text, candidate.text)
+            evidence = {}
+            match = _bounded_text_match(text, candidate.text, evidence=evidence)
+            if evidence and (
+                best_evidence is None
+                or evidence["similarity"] > best_evidence["similarity"]
+            ):
+                best_evidence = {**evidence, "line_id": line_id}
             if match is None and allow_speaker_evidence:
                 match = _speaker_bounded_text_match(
                     character,
@@ -353,14 +392,24 @@ class ChapterVoicePreloader:
                     ):
                         continue
                 ranked.append((score, line_id, candidate, method))
+        self.last_resolution_diagnostics["bounded_candidate_count"] = len(ranked)
+        if best_evidence is not None:
+            self.last_resolution_diagnostics.update(
+                best_candidate_line_id=best_evidence["line_id"],
+                best_bounded_similarity=round(best_evidence["similarity"], 4),
+                best_bounded_coverage=round(best_evidence["coverage"], 4),
+            )
         if not ranked:
+            self.last_resolution_diagnostics["match_result"] = "expected-no-match"
             return None, "expected-no-match"
         ranked.sort(reverse=True, key=lambda item: (item[0], item[1]))
         best = ranked[0]
         if len(ranked) > 1 and best[0] - ranked[1][0] < 0.08:
+            self.last_resolution_diagnostics["match_result"] = "expected-ambiguous"
             return None, "expected-ambiguous"
         selected = best[2]
         self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
+        self.last_resolution_diagnostics["match_result"] = best[3]
         return selected, best[3]
 
     def resolve_unique_prefix(
@@ -580,7 +629,7 @@ class ChapterVoicePreloader:
         return ChapterMatch(best_row.chapter, best_row.sequence, best_score)
 
 
-def _bounded_text_match(observed, canonical):
+def _bounded_text_match(observed, canonical, *, evidence=None):
     canonical_text = _normalize(str(canonical).replace("_", " "))
     tokens = _normalize(str(observed).replace("_", " ")).split()
     if not canonical_text or not tokens:
@@ -606,6 +655,8 @@ def _bounded_text_match(observed, canonical):
                 len(candidate), len(canonical_text)
             )
             similarity = SequenceMatcher(None, candidate, canonical_text).ratio()
+            if evidence is not None and similarity > evidence.get("similarity", 0.0):
+                evidence.update(similarity=similarity, coverage=coverage)
             if len(candidate) < 20 or coverage < 0.65 or similarity < 0.88:
                 continue
             match = (similarity, "expected-bounded-similarity")

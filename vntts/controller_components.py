@@ -494,6 +494,7 @@ class LiveSessionComponent:
             return False
         controller.live_scope_identification_failure = None
         controller.live_scope_identification_match_result = None
+        controller.live_scope_identification_diagnostics = {}
         character, text = read_live_snapshot(
             get_screenshot_directory(controller.settings),
             controller.voice_router.registry,
@@ -509,12 +510,29 @@ class LiveSessionComponent:
         if is_empty(text):
             controller.live_scope_identification_failure = "no-dialog-text"
             return False
+        observed_character = character
         character = controller._canonical_observed_character(character, text)
         line, match_result = controller._resolve_initial_live_sequence_line(
             character,
             text,
         )
         controller.live_scope_identification_match_result = str(match_result)
+        latest = controller.get_latest_diagnostic()
+        controller.live_scope_identification_diagnostics = {
+            **controller.chapter_voice_preloader.last_resolution_diagnostics,
+            "live_sequence_mode": controller.settings.live_sequence_mode,
+            "plan_speech_line_count": (
+                sum(
+                    event.is_speech
+                    for event in controller.live_sequence_plan.events.values()
+                )
+                if controller.live_sequence_plan is not None
+                else 0
+            ),
+            "speaker_canonicalized": observed_character != character,
+            "ocr_confidence": round(float(getattr(latest, "confidence", 0.0)), 2),
+            "correction_count": len(getattr(latest, "corrections", ()) or ()),
+        }
         if line is None:
             controller.live_scope_identification_failure = "story-line-no-match"
             return False
@@ -566,6 +584,7 @@ class LiveSessionComponent:
         elif not starting:
             controller.narrator_fallback_speakers.clear()
             controller.narrator_fallback_names.clear()
+            controller.allow_unscoped_live_reading = False
         controller._set_backend_live_mode(running)
         controller.status_handler(
             "Live reading started" if running else "Live reading stopping"
@@ -658,6 +677,7 @@ class LiveSessionComponent:
         if not controller.is_ready:
             return False
         stopped = controller.live_reader.emergency_stop()
+        controller.allow_unscoped_live_reading = False
         controller._set_backend_live_mode(False)
         controller.status_handler("Emergency stop: live reading and speech stopped")
         return stopped
@@ -917,7 +937,10 @@ class VoiceAssignmentComponent:
     def unresolved_live_speakers(self) -> Any:
         controller = self.controller
         if (
-            controller.settings.audio_source_policy == "live-tts-only"
+            (
+                controller.allow_unscoped_live_reading
+                or controller.settings.audio_source_policy == "live-tts-only"
+            )
             and not controller._live_sequence_audio_active()
             and not controller.settings.live_speaker_corpus
         ):

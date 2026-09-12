@@ -36,6 +36,28 @@ audio_route_fields = (
     "chunk_characters",
 )
 
+live_scope_fields = (
+    "indexed_line_count",
+    "indexed_chapter_count",
+    "eligible_line_count",
+    "plan_speech_line_count",
+    "live_sequence_mode",
+    "normalized_text_characters",
+    "normalized_text_tokens",
+    "speaker_canonicalized",
+    "ocr_confidence",
+    "correction_count",
+    "exact_speaker_candidate_count",
+    "normalized_speaker_candidate_count",
+    "text_only_candidate_count",
+    "bounded_candidate_count",
+    "best_candidate_line_id",
+    "best_bounded_similarity",
+    "best_bounded_coverage",
+)
+
+runtime_event_fields = (*audio_route_fields, *live_scope_fields)
+
 generation_timeline_stages = (
     "capture",
     "ocr",
@@ -298,7 +320,7 @@ class RuntimeSupportLog:
         maximum_bytes=512 * 1024,
         clock=None,
         path=None,
-        detail_fields=audio_route_fields,
+        detail_fields=runtime_event_fields,
     ):
         self.entries = deque(maxlen=maximum_entries)
         self.maximum_bytes = max(256, int(maximum_bytes))
@@ -796,7 +818,7 @@ def sanitize_event(entry):
     }
     sanitized.update(
         (key, _sanitize_event_value(entry[key]))
-        for key in audio_route_fields
+        for key in runtime_event_fields
         if key in entry
     )
     if entry.get("level") == "game-import":

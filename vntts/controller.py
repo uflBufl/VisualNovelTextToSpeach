@@ -253,6 +253,8 @@ class AppController:
         )
         self.live_scope_identification_failure = None
         self.live_scope_identification_match_result = None
+        self.live_scope_identification_diagnostics = {}
+        self.allow_unscoped_live_reading = False
         self.history = history or DialogueHistory()
         self.chapter_voice_preloader = (
             chapter_voice_preloader
@@ -357,6 +359,13 @@ class AppController:
 
     def toggle_live(self):
         return self.live_session.toggle()
+
+    def start_live_from_ocr(self):
+        self.allow_unscoped_live_reading = True
+        running = self.live_session.toggle()
+        if not running:
+            self.allow_unscoped_live_reading = False
+        return running
 
     def toggle_speech_pause(self):
         return self.live_session.toggle_speech_pause()
@@ -480,6 +489,9 @@ class AppController:
             "similarity" in normalized_result and coverage < 0.9
         ):
             self.chapter_voice_preloader.current_match = previous_match
+            self.chapter_voice_preloader.last_resolution_diagnostics[
+                "match_result"
+            ] = "expected-incomplete"
             return None, "expected-incomplete"
         return line, match_result
 

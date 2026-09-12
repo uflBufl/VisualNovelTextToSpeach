@@ -3793,6 +3793,55 @@ class MainTest(unittest.TestCase):
 
         self.assertFalse(identified)
         self.assertIsNone(preloader.current_match)
+        self.assertEqual(
+            controller.live_scope_identification_match_result,
+            "expected-no-match",
+        )
+        diagnostics = controller.live_scope_identification_diagnostics
+        self.assertEqual(diagnostics["eligible_line_count"], 1)
+        self.assertEqual(diagnostics["bounded_candidate_count"], 0)
+        self.assertEqual(diagnostics["best_candidate_line_id"], "reverse1999:1:1")
+        self.assertLess(diagnostics["best_bounded_similarity"], 0.88)
+        self.assertNotIn("An unrelated line.", repr(diagnostics))
+        self.assertNotIn("Someone", repr(diagnostics))
+
+    def test_controller_can_use_ocr_live_fallback_for_one_session(self):
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                generated_audio_manifest="generated.json",
+                audio_source_policy="prefer-generated",
+            ),
+            tts_factory=Mock(),
+            chapter_voice_preloader=ChapterVoicePreloader(
+                (
+                    ChapterDialogue(
+                        "line-1",
+                        "1",
+                        1,
+                        "Rhiannon",
+                        "Known line.",
+                        text_sha256("Known line."),
+                    ),
+                )
+            ),
+        )
+        controller.live_reader = Mock(is_running=False, max_speech_jobs=1)
+        controller.voice_router = Mock()
+        controller.speech_backend = Mock()
+
+        def toggle():
+            controller.live_reader.is_running = not controller.live_reader.is_running
+            return controller.live_reader.is_running
+
+        controller.live_reader.toggle.side_effect = toggle
+
+        self.assertTrue(controller.start_live_from_ocr())
+        self.assertTrue(controller.allow_unscoped_live_reading)
+        self.assertEqual(controller.settings.story_index, "story.jsonl")
+        self.assertEqual(controller.settings.generated_audio_manifest, "generated.json")
+        self.assertFalse(controller.toggle_live())
+        self.assertFalse(controller.allow_unscoped_live_reading)
 
     def test_controller_offers_each_confident_unknown_speaker_once(self):
         offered = []

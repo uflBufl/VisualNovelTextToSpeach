@@ -24,6 +24,7 @@ from vntts.support import (
     record_game_import,
     record_native_speech,
     redact_text,
+    sanitize_event,
     sanitize_settings,
     sequence_timeline_stages,
 )
@@ -446,6 +447,28 @@ class RuntimeSupportLogTest(unittest.TestCase):
         )
         self.assertEqual(persisted["line_id"], "reverse1999:24006:12")
         self.assertEqual(persisted["generation"], 7)
+
+    def test_live_scope_match_diagnostics_keep_metrics_without_dialogue(self):
+        log = RuntimeSupportLog()
+
+        log.add(
+            "live-scope",
+            "Initial story matcher result: expected-no-match",
+            match_result="expected-no-match",
+            eligible_line_count=42,
+            normalized_text_characters=25,
+            best_candidate_line_id="reverse1999:314605:87",
+            best_bounded_similarity=0.73,
+            raw_text="private dialogue",
+            raw_speaker="private speaker",
+        )
+
+        entry = sanitize_event(log.snapshot()[0])
+
+        self.assertEqual(entry["eligible_line_count"], 42)
+        self.assertEqual(entry["best_bounded_similarity"], 0.73)
+        self.assertNotIn("raw_text", entry)
+        self.assertNotIn("private dialogue", repr(entry))
 
 
 class PerformanceLogTest(unittest.TestCase):
