@@ -86,13 +86,11 @@ Do not download and upload the runtime again. In the OpenMOSS repository, run
 the **Promote qualified VNTTS runtime** workflow with:
 
 - `build_run_id`: the numeric ID in the qualified adaptive build's Actions URL;
-- `release_tag`: a new tag such as `v0.3.0-vntts-timing-2`;
-- `runtime_sha256`: `runtime_archive.sha256` from the qualification archive's
-  `qualification.json`.
+- `release_tag`: a new tag such as `v0.3.0-vntts-timing-2`.
 
 The workflow accepts only a successful adaptive push build from `main`, downloads
-that exact retained Actions artifact, verifies its source manifest and both
-checksums, then creates the release with only the runtime ZIP and checksum. It
+that exact retained Actions artifact, verifies its source manifest and checksum,
+then creates the release with only the runtime ZIP and checksum. It
 refuses an existing tag or release and never replaces published assets. Actions
 artifacts expire after 30 days, so promote the qualified run before then.
 
