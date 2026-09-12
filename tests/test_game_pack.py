@@ -252,6 +252,18 @@ def write_saved_voice_catalog(root, *, stale_source_id):
 
 
 class GamePackImportTest(unittest.TestCase):
+    def test_import_records_bounded_file_work(self):
+        with TemporaryDirectory() as directory:
+            pack_path, *_unused = write_synthetic_game_pack(Path(directory))
+            with patch("vntts.support.record_background_operation") as record:
+                import_game_pack(pack_path)
+
+        operation = record.call_args
+        self.assertEqual(operation.args[0], "game-pack-validation")
+        self.assertEqual(operation.args[2], "complete")
+        self.assertGreater(operation.kwargs["files_examined"], 0)
+        self.assertGreater(operation.kwargs["bytes_examined"], 0)
+
     def test_implicit_reload_uses_active_narrator_not_stale_catalog_metadata(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

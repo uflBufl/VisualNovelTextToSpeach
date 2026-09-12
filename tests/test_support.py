@@ -453,13 +453,22 @@ class PerformanceLogTest(unittest.TestCase):
         log = PerformanceLog()
 
         log.record("fast", 99.9, "complete")
-        log.record("scan", 125.4, "complete")
+        log.record(
+            "scan",
+            125.4,
+            "complete",
+            files_examined=12,
+            bytes_examined=5000,
+            cache_state="miss",
+        )
         log.record("scan", 25.0, "failed")
 
         report = log.report()
         self.assertEqual(set(report["summary"]), {"scan"})
         self.assertEqual(report["summary"]["scan"]["count"], 2)
         self.assertEqual(report["summary"]["scan"]["max_ms"], 125.4)
+        self.assertEqual(report["summary"]["scan"]["max_files_examined"], 12)
+        self.assertEqual(report["events"][0]["cache_state"], "miss")
 
 
 class GameImportLogTest(unittest.TestCase):

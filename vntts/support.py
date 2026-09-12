@@ -361,7 +361,15 @@ class RuntimeSupportLog:
             return list(self.entries)
 
 
-performance_fields = ("operation", "outcome", "elapsed_ms")
+performance_fields = (
+    "operation",
+    "outcome",
+    "elapsed_ms",
+    "cpu_ms",
+    "files_examined",
+    "bytes_examined",
+    "cache_state",
+)
 
 
 class PerformanceLog(RuntimeSupportLog):
@@ -374,7 +382,7 @@ class PerformanceLog(RuntimeSupportLog):
             **kwargs,
         )
 
-    def record(self, operation, elapsed_ms, outcome):
+    def record(self, operation, elapsed_ms, outcome, **details):
         if outcome == "complete" and elapsed_ms < 100:
             return
         self.add(
@@ -383,6 +391,7 @@ class PerformanceLog(RuntimeSupportLog):
             operation=operation,
             outcome=outcome,
             elapsed_ms=round(elapsed_ms, 3),
+            **{key: details[key] for key in performance_fields if key in details},
         )
 
     def report(self):
@@ -398,6 +407,11 @@ class PerformanceLog(RuntimeSupportLog):
                 aggregate["total_ms"] + event["elapsed_ms"], 3
             )
             aggregate["max_ms"] = max(aggregate["max_ms"], event["elapsed_ms"])
+            for name in ("files_examined", "bytes_examined"):
+                if name in event:
+                    aggregate[f"max_{name}"] = max(
+                        aggregate.get(f"max_{name}", 0), event[name]
+                    )
         return {"threshold_ms": 100, "summary": summary, "events": events}
 
 
@@ -410,9 +424,11 @@ def configure_performance_log(path=None):
     return performance_log
 
 
-def record_background_operation(operation, elapsed_ms, outcome):
+def record_background_operation(operation, elapsed_ms, outcome, **details):
     try:
-        performance_log.record(str(operation), float(elapsed_ms), str(outcome))
+        performance_log.record(
+            str(operation), float(elapsed_ms), str(outcome), **details
+        )
     except Exception:
         pass
 

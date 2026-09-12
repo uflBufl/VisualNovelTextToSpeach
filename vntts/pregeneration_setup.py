@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from time import perf_counter, process_time
 
 from platformdirs import user_data_path
 from vntts_artifacts.file_integrity import sha256_file
@@ -162,11 +163,14 @@ class PregenerationJob:
 
 
 def inspect_story_index(path, *, provider_id="local-story-index"):
+    started = perf_counter()
+    cpu_started = process_time()
     path = Path(path).expanduser().resolve()
     if not path.is_file():
         raise PregenerationSetupError(f"Story content was not found: {path}")
     try:
         checksum = sha256_file(path)
+        cache_hits = _cached_story_index_document.cache_info().hits
         document = _cached_story_index_document(str(path), checksum)
     except (OSError, StoryIndexError, ValueError) as error:
         raise PregenerationSetupError(f"Story content is invalid: {error}") from error
@@ -175,7 +179,7 @@ def inspect_story_index(path, *, provider_id="local-story-index"):
         raise PregenerationSetupError("Story content has no selectable dialogue")
     metadata = document.metadata
     version = metadata.get("game_version")
-    return GameContent(
+    content = GameContent(
         provider_id=provider_id,
         game=document.game or "Visual novel",
         game_version=version.strip()
@@ -185,6 +189,30 @@ def inspect_story_index(path, *, provider_id="local-story-index"):
         story_index_sha256=checksum,
         selections=selections,
     )
+    from vntts.support import record_background_operation
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = None
+    details = {
+        "cpu_ms": round((process_time() - cpu_started) * 1000, 3),
+        "files_examined": 1,
+        "cache_state": (
+            "hit"
+            if _cached_story_index_document.cache_info().hits > cache_hits
+            else "miss"
+        ),
+    }
+    if size is not None:
+        details["bytes_examined"] = size
+    record_background_operation(
+        "story-index-inspection",
+        (perf_counter() - started) * 1000,
+        "complete",
+        **details,
+    )
+    return content
 
 
 @lru_cache(maxsize=8)

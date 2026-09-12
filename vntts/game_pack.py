@@ -5,6 +5,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from time import perf_counter, process_time
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePack, GamePackError, load_game_pack
@@ -61,8 +62,30 @@ class GamePackImport:
 
 def import_game_pack(path: str | Path) -> GamePackImport:
     """Load and fully preflight a versioned game pack for VNTTS consumption."""
-    pack = load_game_pack(path)
-    semantic_evidence = _source_audio_semantic_evidence(pack)
+    started = perf_counter()
+    cpu_started = process_time()
+    try:
+        pack = load_game_pack(path)
+        semantic_evidence = _source_audio_semantic_evidence(pack)
+    except Exception:
+        _record_pack_timing(started, cpu_started, "failed")
+        raise
+    files = (
+        pack.story_index,
+        pack.voice_manifest,
+        *pack.voice_wavs,
+        *((pack.generated_audio,) if pack.generated_audio is not None else ()),
+        *pack.generated_wavs,
+        *((pack.live_sequence_plan,) if pack.live_sequence_plan is not None else ()),
+    )
+    try:
+        total_bytes = sum(binding.path.stat().st_size for binding in files)
+    except OSError:
+        total_bytes = None
+    details = {"files_examined": len(files)}
+    if total_bytes is not None:
+        details["bytes_examined"] = total_bytes
+    _record_pack_timing(started, cpu_started, "complete", **details)
     return GamePackImport(
         pack=pack,
         story_index=pack.story_index.path,
@@ -76,6 +99,18 @@ def import_game_pack(path: str | Path) -> GamePackImport:
             else None
         ),
         source_audio_semantic_evidence=semantic_evidence,
+    )
+
+
+def _record_pack_timing(started, cpu_started, outcome, **details):
+    from vntts.support import record_background_operation
+
+    record_background_operation(
+        "game-pack-validation",
+        (perf_counter() - started) * 1000,
+        outcome,
+        cpu_ms=round((process_time() - cpu_started) * 1000, 3),
+        **details,
     )
 
 

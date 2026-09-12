@@ -1177,9 +1177,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     os.environ, {"VNTTS_SETTINGS_FILE": str(root / "settings.json")}
                 ),
                 patch("vntts.app.SettingsDialog", return_value=settings_dialog),
-                patch(
-                    "vntts.configuration_apply.apply_game_pack", return_value=candidate
-                ),
                 patch.object(tray, "start_hotkeys"),
             ):
                 tray.open_settings()

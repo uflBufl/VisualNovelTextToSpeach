@@ -1013,7 +1013,10 @@ def _copy_file(source, destination):
 
 
 def _link_verified_file(source, destination, expected_sha256):
-    source = Path(source).resolve()
+    source = Path(source)
+    if not source.is_file() or source.is_symlink():
+        raise OfflinePackError(f"Offline pack source is unsafe: {source}")
+    source = source.resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_file():
         if sha256_file(destination) == expected_sha256:
