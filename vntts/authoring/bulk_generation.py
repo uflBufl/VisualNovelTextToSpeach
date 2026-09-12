@@ -1404,6 +1404,64 @@ def _offline_fallback_source(result):
     return None
 
 
+def _select_generation_candidates(
+    queue,
+    state,
+    *,
+    include_prefer_source,
+    include_characters,
+    selected_queue_ids,
+    item_filter,
+    limit,
+    regenerate_existing,
+):
+    eligible_actions = {"generate"}
+    if include_prefer_source:
+        eligible_actions.add("prefer_source_audio")
+    candidates = [item for item in queue.items if item.action in eligible_actions]
+    skipped_actions = len(queue.items) - len(candidates)
+
+    skipped_characters = 0
+    if include_characters is not None:
+        character_filter = set(include_characters)
+        filtered = [
+            item
+            for item in candidates
+            if synthesis_character_for_line(item.speaker, item.voice_character)
+            in character_filter
+        ]
+        skipped_characters = len(candidates) - len(filtered)
+        candidates = filtered
+
+    skipped_items = 0
+    if selected_queue_ids is not None:
+        filtered = [item for item in candidates if item.queue_id in selected_queue_ids]
+        skipped_items += len(candidates) - len(filtered)
+        candidates = filtered
+    if item_filter is not None:
+        filtered = [item for item in candidates if item_filter(item)]
+        skipped_items += len(candidates) - len(filtered)
+        candidates = filtered
+    if limit is not None:
+        candidates = candidates[:limit]
+
+    if regenerate_existing:
+        protected = [
+            item.queue_id
+            for item in candidates
+            if state["items"].get(item.queue_id, {}).get("status")
+            in {"generated", "approved", "live_fallback"}
+            and state["items"][item.queue_id].get("review_status") != "pending_review"
+        ]
+        if protected:
+            raise BulkGenerationError(
+                "Regeneration cannot overwrite an approved or rejected decision: "
+                + ", ".join(protected)
+            )
+
+    return candidates, skipped_actions, skipped_characters, skipped_items
+
+
 def run_bulk_generation(
     queue_path,
     output_directory,
@@ -1686,52 +1744,21 @@ def run_bulk_generation(
         state.setdefault("game", queue.metadata.get("game"))
         state.setdefault("language", queue.metadata.get("language"))
 
-        eligible_actions = {"generate"}
-        if include_prefer_source:
-            eligible_actions.add("prefer_source_audio")
-        candidates = [item for item in queue.items if item.action in eligible_actions]
-        skipped_actions = len(queue.items) - len(candidates)
-        character_filter = (
-            None if include_characters is None else set(include_characters)
+        (
+            candidates,
+            skipped_actions,
+            skipped_characters,
+            skipped_items,
+        ) = _select_generation_candidates(
+            queue,
+            state,
+            include_prefer_source=include_prefer_source,
+            include_characters=include_characters,
+            selected_queue_ids=selected_queue_ids,
+            item_filter=item_filter,
+            limit=limit,
+            regenerate_existing=regenerate_existing,
         )
-        skipped_characters = 0
-        if character_filter is not None:
-            filtered = [
-                item
-                for item in candidates
-                if synthesis_character_for_line(item.speaker, item.voice_character)
-                in character_filter
-            ]
-            skipped_characters = len(candidates) - len(filtered)
-            candidates = filtered
-        skipped_items = 0
-        if selected_queue_ids is not None:
-            filtered = [
-                item for item in candidates if item.queue_id in selected_queue_ids
-            ]
-            skipped_items += len(candidates) - len(filtered)
-            candidates = filtered
-        if item_filter is not None:
-            filtered = [item for item in candidates if item_filter(item)]
-            skipped_items += len(candidates) - len(filtered)
-            candidates = filtered
-        if limit is not None:
-            candidates = candidates[:limit]
-
-        if regenerate_existing:
-            protected = [
-                item.queue_id
-                for item in candidates
-                if state["items"].get(item.queue_id, {}).get("status")
-                in {"generated", "approved", "live_fallback"}
-                and state["items"][item.queue_id].get("review_status")
-                != "pending_review"
-            ]
-            if protected:
-                raise BulkGenerationError(
-                    "Regeneration cannot overwrite an approved or rejected decision: "
-                    + ", ".join(protected)
-                )
 
         generated = 0
         skipped_existing = 0
