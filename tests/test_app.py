@@ -1253,7 +1253,11 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(tray_application.toggle_live())
         tray_application.dashboard.show_reading()
         with patch("vntts.app.QMessageBox") as message_box:
-            continue_button, stories_button, cancel_button = object(), object(), object()
+            continue_button, stories_button, cancel_button = (
+                object(),
+                object(),
+                object(),
+            )
             prompt = message_box.return_value
             prompt.addButton.side_effect = (
                 continue_button,
@@ -1294,7 +1298,11 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=controller),
         )
         with patch("vntts.app.QMessageBox") as message_box:
-            continue_button, stories_button, cancel_button = object(), object(), object()
+            continue_button, stories_button, cancel_button = (
+                object(),
+                object(),
+                object(),
+            )
             prompt = message_box.return_value
             prompt.addButton.side_effect = (
                 continue_button,
