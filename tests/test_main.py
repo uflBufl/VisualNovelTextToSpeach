@@ -3431,6 +3431,87 @@ class MainTest(unittest.TestCase):
         )
         self.assertEqual(controller.story_cursor.current_event_id, "event-1")
 
+    def test_controller_identifies_plan_line_with_nameplate_in_ocr_text(self):
+        canonical = "Pardon?"
+        preloader = ChapterVoicePreloader(
+            (
+                ChapterDialogue(
+                    "reverse1999:1:20",
+                    "1",
+                    20,
+                    "Mrs. Owen",
+                    canonical,
+                    text_sha256(canonical),
+                ),
+            )
+        )
+        plan = stub_live_sequence_plan(*preloader.dialogue)
+        dialogs = []
+        controller = AppController(
+            AppSettings(
+                story_index="story.jsonl",
+                live_sequence_plan="plan.json",
+                live_sequence_mode="audio-auto",
+            ),
+            tts_factory=Mock(),
+            dialog_handler=lambda character, text: dialogs.append((character, text)),
+            chapter_voice_preloader=preloader,
+            live_sequence_plan_factory=Mock(return_value=plan),
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.voice_router = Mock()
+
+        with patch(
+            "vntts.controller_components.read_live_snapshot",
+            return_value=("Mrs. Owen", "garbled Mrs. Owen Pardon?"),
+        ):
+            identified = controller.identify_live_scope()
+
+        self.assertTrue(identified)
+        self.assertEqual(dialogs, [("Mrs. Owen", canonical)])
+        self.assertEqual(
+            controller.live_scope_identification_match_result,
+            "expected-bounded-speaker-text",
+        )
+
+    def test_controller_identifies_pack_line_without_plan_despite_ocr_drift(self):
+        canonical = "The water horse nearly flooded the whole room."
+        preloader = ChapterVoicePreloader(
+            (
+                ChapterDialogue(
+                    "reverse1999:1:21",
+                    "1",
+                    21,
+                    "Hotelier",
+                    canonical,
+                    text_sha256(canonical),
+                ),
+            )
+        )
+        controller = AppController(
+            AppSettings(story_index="story.jsonl"),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
+        controller.live_reader = Mock(is_running=False)
+        controller.voice_router = Mock()
+
+        with patch(
+            "vntts.controller_components.read_live_snapshot",
+            return_value=(
+                "Hotelier",
+                "The water horse nearly floodad the whole room.",
+            ),
+        ):
+            identified = controller.identify_live_scope()
+
+        self.assertTrue(identified)
+        self.assertEqual(
+            controller.live_scope_identification_match_result,
+            "expected-bounded-similarity",
+        )
+        self.assertEqual(preloader.current_match.chapter, "1")
+
     def test_controller_rejects_ambiguous_plan_bounded_startup_match(self):
         texts = (
             "Take the lantern into the western hall before midnight.",

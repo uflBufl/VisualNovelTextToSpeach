@@ -1998,6 +1998,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "live_scope_identification_failure",
                 None,
             )
+            match_result = getattr(
+                self.controller,
+                "live_scope_identification_match_result",
+                None,
+            )
+            if match_result:
+                self.support_log.add(
+                    "live-scope",
+                    f"Initial story matcher result: {match_result}",
+                )
             if failure == "no-dialog-text":
                 message = (
                     "Live reading could not start: no dialog text was recognized "

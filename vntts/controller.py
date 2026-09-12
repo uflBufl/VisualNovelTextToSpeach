@@ -252,6 +252,7 @@ class AppController:
             self.settings.active_profile_id
         )
         self.live_scope_identification_failure = None
+        self.live_scope_identification_match_result = None
         self.history = history or DialogueHistory()
         self.chapter_voice_preloader = (
             chapter_voice_preloader
@@ -442,28 +443,24 @@ class AppController:
     def _resolve_initial_live_sequence_line(self, character, text):
         """Resolve one complete startup line inside the configured sequence."""
         plan = self.live_sequence_plan
-        if plan is None or self.settings.live_sequence_mode == "off":
-            resolve = getattr(
-                self.chapter_voice_preloader,
-                "resolve_exact_with_result",
-                None,
+        line_ids = (
+            tuple(
+                line.line_id
+                for line in self.chapter_voice_preloader.dialogue
+                if line.line_id and line.text_sha256
             )
-            if callable(resolve):
-                return resolve(character, text)
-            line = self.chapter_voice_preloader.resolve_exact(character, text)
-            return line, "exact" if line is not None else "no-match"
-
-        line_ids = tuple(
-            event.line_id
-            for event in plan.events.values()
-            if event.is_speech and event.line_id is not None
+            if plan is None or self.settings.live_sequence_mode == "off"
+            else tuple(
+                event.line_id
+                for event in plan.events.values()
+                if event.is_speech and event.line_id is not None
+            )
         )
         previous_match = self.chapter_voice_preloader.current_match
         line, match_result = self.chapter_voice_preloader.resolve_bounded_among(
             character,
             text,
             line_ids,
-            allow_speaker_evidence=False,
         )
         if line is None:
             return None, match_result

@@ -518,6 +518,7 @@ class LiveSessionComponent:
         if not controller.is_ready or controller.is_live_running:
             return False
         controller.live_scope_identification_failure = None
+        controller.live_scope_identification_match_result = None
         character, text = read_live_snapshot(
             get_screenshot_directory(controller.settings),
             controller.voice_router.registry,
@@ -534,10 +535,11 @@ class LiveSessionComponent:
             controller.live_scope_identification_failure = "no-dialog-text"
             return False
         character = controller._canonical_observed_character(character, text)
-        line, _match_result = controller._resolve_initial_live_sequence_line(
+        line, match_result = controller._resolve_initial_live_sequence_line(
             character,
             text,
         )
+        controller.live_scope_identification_match_result = str(match_result)
         if line is None:
             controller.live_scope_identification_failure = "story-line-no-match"
             return False

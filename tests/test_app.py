@@ -1166,6 +1166,7 @@ class TrayApplicationTest(unittest.TestCase):
         controller = Mock(is_live_running=False)
         controller.unresolved_live_speakers.return_value = None
         controller.live_scope_identification_failure = "story-line-no-match"
+        controller.live_scope_identification_match_result = "expected-no-match"
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -1178,6 +1179,12 @@ class TrayApplicationTest(unittest.TestCase):
 
         self.assertIn("unambiguous line", tray_application.dashboard.status.text())
         self.assertNotIn("not visible", tray_application.dashboard.status.text())
+        self.assertIn(
+            "expected-no-match",
+            "\n".join(
+                entry["message"] for entry in tray_application.support_log.snapshot()
+            ),
+        )
         tray_application.shutdown()
 
     def test_live_scope_failure_explains_empty_capture(self):
