@@ -8,7 +8,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image, ImageDraw
 from vntts_artifacts.file_integrity import sha256_file
@@ -29,6 +29,57 @@ from vntts.live_replay import (
 
 
 class LiveReplayTest(unittest.TestCase):
+    def test_audio_stack_requires_source_completion_only_when_requested(self):
+        runner = object.__new__(LiveReplayRunner)
+        runner.corpus = SimpleNamespace(
+            dialogue=(SimpleNamespace(character="Rhiannon"),)
+        )
+        runner.audio_source_policy = "prefer-game-audio"
+        resolver = object()
+
+        for require_source_audio_completion in (False, True):
+            with self.subTest(
+                require_source_audio_completion=require_source_audio_completion
+            ):
+                library = SimpleNamespace(live_fallbacks={})
+                live_backend = object()
+                audio_output = object()
+                router = Mock()
+                with (
+                    patch(
+                        "vntts.live_replay.GeneratedAudioLibrary",
+                        return_value=library,
+                    ),
+                    patch(
+                        "vntts.live_replay.ReplayLiveSpeechBackend",
+                        return_value=live_backend,
+                    ),
+                    patch(
+                        "vntts.live_replay.ReplayAudioOutput",
+                        return_value=audio_output,
+                    ),
+                    patch(
+                        "vntts.live_replay.GeneratedAudioFallbackBackend",
+                        return_value=router,
+                    ) as fallback_backend,
+                ):
+                    result = runner._create_audio_stack(
+                        object(),
+                        resolver,
+                        require_source_audio_completion=require_source_audio_completion,
+                    )
+
+                self.assertEqual(result, (live_backend, library, audio_output, router))
+                fallback_backend.assert_called_once_with(
+                    live_backend,
+                    library,
+                    resolver,
+                    audio_source_policy="prefer-game-audio",
+                    audio_output=audio_output,
+                    require_source_audio_completion=require_source_audio_completion,
+                )
+                router.set_live_mode_active.assert_called_once_with(True)
+
     def test_ocr_replay_uses_production_confidence_profile_search(self):
         frame = CapturedDialogFrame(Image.new("RGB", (80, 40), "black"), 0.0)
         with patch(

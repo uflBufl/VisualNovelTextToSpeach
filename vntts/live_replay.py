@@ -458,9 +458,9 @@ class LiveReplayRunner:
                     return self._run_sequence(generated_audio_index, *sequence)
                 return self._run_legacy(generated_audio_index)
 
-    def _run_legacy(self, generated_audio_index):
-        frame_source = ReplayFrameSource(self.corpus.dialogue)
-        resolver = ChapterVoicePreloader.from_document(self.corpus.story_document)
+    def _create_audio_stack(
+        self, generated_audio_index, resolver, *, require_source_audio_completion=False
+    ):
         library = (
             GeneratedAudioLibrary(generated_audio_index)
             if generated_audio_index is not None
@@ -476,8 +476,18 @@ class LiveReplayRunner:
             resolver,
             audio_source_policy=self.audio_source_policy,
             audio_output=audio_output,
+            require_source_audio_completion=require_source_audio_completion,
         )
         router.set_live_mode_active(True)
+        return live_backend, library, audio_output, router
+
+    def _run_legacy(self, generated_audio_index):
+        frame_source = ReplayFrameSource(self.corpus.dialogue)
+        resolver = ChapterVoicePreloader.from_document(self.corpus.story_document)
+        _live_backend, library, audio_output, router = self._create_audio_stack(
+            generated_audio_index,
+            resolver,
+        )
         timelines = GenerationTimelineLog(maximum_entries=len(self.corpus.dialogue) + 1)
         played = []
         routes = []
@@ -745,24 +755,11 @@ class LiveReplayRunner:
             self.corpus.dialogue,
             focus_probes=binding.focus_probes,
         )
-        library = (
-            GeneratedAudioLibrary(generated_audio_index)
-            if generated_audio_index is not None
-            else None
-        )
-        live_backend = ReplayLiveSpeechBackend(
-            _replay_voice_characters(self.corpus.dialogue, library)
-        )
-        audio_output = ReplayAudioOutput()
-        router = GeneratedAudioFallbackBackend(
-            live_backend,
-            library,
+        live_backend, library, audio_output, router = self._create_audio_stack(
+            generated_audio_index,
             resolver,
-            audio_source_policy=self.audio_source_policy,
-            audio_output=audio_output,
             require_source_audio_completion=mode == "shadow",
         )
-        router.set_live_mode_active(True)
         pipeline = ReplayPipelineRecorder(len(self.corpus.dialogue) + 1)
         routes, errors = [], []
         statuses, sequence_statuses = [], []
