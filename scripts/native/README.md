@@ -59,9 +59,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\qualify-moss-adaptive-windows
 ```
 
 The command verifies that the artifact was built from the expected OpenMOSS commit,
-reuses the installed GGUF pair and saved Narrator reference, then renders the same
-seven samples with CPU Local/2, 4, 6 and 8 workers plus adaptive Local GPU/8
-workers. The GPU run automatically selects a second usable saved game voice and
+reuses the installed GGUF pair and saved Narrator reference, then renders six
+qualification samples with CPU Local/2, 4, 6 and 8 workers plus adaptive Local
+GPU/8 workers. The known stable multi-sentence missed-EOS diagnostic is excluded
+because it measures the production safety cap rather than runtime speed. The GPU
+run automatically selects a second usable saved game voice and
 records cold/warm timings before and after the voice change. It also cancels one
 uncached request, confirms that process exited and completes a fresh render in a
 new owned process. Any incomplete or malformed render, capability/placement

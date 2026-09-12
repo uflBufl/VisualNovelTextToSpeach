@@ -98,26 +98,35 @@ try {
         & uv run --frozen python scripts/moss_native_pause_probe.py `
             --executable $Server --output (Join-Path $Output $Run.Name) @Extra
         if ($LASTEXITCODE -ne 0) { throw "$($Run.Name) probe failed." }
-        $Reports[$Run.Name] = Get-Content (Join-Path $Output "$($Run.Name)\report.json") -Raw | ConvertFrom-Json
+        $ReportPath = Join-Path $Output "$($Run.Name)\report.json"
+        $Reports[$Run.Name] = Get-Content $ReportPath -Raw | ConvertFrom-Json
         $Attempts = @($Reports[$Run.Name].attempts)
-        $Invalid = @($Attempts | Where-Object {
-            $_.completion -ne 'complete' -or
-            $_.result.cache_source -ne 'fresh-generation' -or
-            $_.raw_response.http_status -ne 200 -or
-            [string]::IsNullOrWhiteSpace([string]$_.raw_response.sha256) -or
-            $_.raw_quality_error -or
-            $_.native.operation -ne 'fresh-generation' -or
-            $null -eq $_.native.request_s -or
-            $null -eq $_.native.prefill_s -or
-            $null -eq $_.native.gen_s -or
-            $null -eq $_.native.decode_s -or
-            $null -eq $_.output_wav_validation_s -or
-            $null -eq $_.raw_wav_validation_s
-        })
+        $Invalid = @()
+        foreach ($Attempt in $Attempts) {
+            $Reasons = @()
+            if ($Attempt.completion -ne 'complete') { $Reasons += "completion=$($Attempt.completion)" }
+            if ($Attempt.result.cache_source -ne 'fresh-generation') { $Reasons += "cache_source=$($Attempt.result.cache_source)" }
+            if ($Attempt.raw_response.http_status -ne 200) { $Reasons += "http_status=$($Attempt.raw_response.http_status)" }
+            if ([string]::IsNullOrWhiteSpace([string]$Attempt.raw_response.sha256)) { $Reasons += 'missing raw WAV SHA-256' }
+            if ($Attempt.raw_quality_error) { $Reasons += "raw_quality_error=$($Attempt.raw_quality_error)" }
+            if ($Attempt.native.operation -ne 'fresh-generation') { $Reasons += "native_operation=$($Attempt.native.operation)" }
+            foreach ($Timing in @('request_s', 'prefill_s', 'gen_s', 'decode_s')) {
+                if ($null -eq $Attempt.native.$Timing) { $Reasons += "missing native.$Timing" }
+            }
+            if ($null -eq $Attempt.output_wav_validation_s) { $Reasons += 'missing output_wav_validation_s' }
+            if ($null -eq $Attempt.raw_wav_validation_s) { $Reasons += 'missing raw_wav_validation_s' }
+            if ($Reasons.Count) { $Invalid += "$($Attempt.id): $($Reasons -join ', ')" }
+        }
+        $RunProblems = @()
+        if ($Reports[$Run.Name].all_requests_complete -ne $true) { $RunProblems += 'all_requests_complete=false' }
+        if ($Attempts.Count -ne $Reports[$Run.Name].expected_attempt_count) {
+            $RunProblems += "attempts=$($Attempts.Count)/$($Reports[$Run.Name].expected_attempt_count)"
+        }
+        $RunProblems += $Invalid
         if ($Reports[$Run.Name].all_requests_complete -ne $true -or
             $Attempts.Count -ne $Reports[$Run.Name].expected_attempt_count -or
             $Invalid.Count -ne 0) {
-            throw "$($Run.Name) contains incomplete or invalid render evidence."
+            throw "$($Run.Name) contains incomplete or invalid render evidence: $($RunProblems -join '; '). Report: $ReportPath"
         }
         if ($Reports[$Run.Name].server_shutdown.confirmed_exited -ne $true) {
             throw "$($Run.Name) did not confirm native server shutdown."

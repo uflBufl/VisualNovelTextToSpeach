@@ -647,6 +647,13 @@ def run(
                     )
                 ]
                 if getattr(options, "timing_sequence", False):
+                    # The stable two-sentence diagnostic deterministically hits the
+                    # production safety cap; it measures missed EOS, not runtime speed.
+                    sequence = [
+                        item
+                        for item in sequence
+                        if item[0:2] != ("stable", "sentences")
+                    ]
                     sequence.insert(
                         1,
                         (

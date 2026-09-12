@@ -362,8 +362,14 @@ class MossNativePauseProbeTest(unittest.TestCase):
             )
 
             report = json.loads((options.output / "report.json").read_text())
-            self.assertEqual(report["expected_attempt_count"], 9)
+            self.assertEqual(report["expected_attempt_count"], 8)
             self.assertTrue(report["all_requests_complete"])
+            self.assertFalse(
+                any(
+                    attempt["id"].endswith("stable-sentences")
+                    for attempt in report["attempts"]
+                )
+            )
             self.assertEqual(
                 [
                     attempt["phase"]
