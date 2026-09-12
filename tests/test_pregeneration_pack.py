@@ -24,6 +24,7 @@ from vntts.authoring.bulk_generation import (
     review_generation_item,
     run_bulk_generation,
 )
+from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.pregeneration_generation import OfflineGenerationResult
 from vntts.pregeneration_pack import (
@@ -31,6 +32,7 @@ from vntts.pregeneration_pack import (
     OfflinePackPublisher,
     _link_verified_file,
     inspect_story_audio,
+    load_saved_pack,
 )
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import (
@@ -336,6 +338,24 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 manifest=pack.manifest,
             )
             self.assertEqual((active.generated, active.live, active.missing), (1, 0, 0))
+            with patch(
+                "vntts.pregeneration_pack.import_game_pack",
+                wraps=import_game_pack,
+            ) as imported:
+                loaded = load_saved_pack(pack.manifest)
+            self.assertEqual(imported.call_count, 1)
+            self.assertEqual(loaded.identity, pack.identity)
+            with patch(
+                "vntts.pregeneration_pack.import_game_pack",
+                side_effect=AssertionError("validated pack was loaded again"),
+            ):
+                reused = inspect_story_audio(
+                    content,
+                    selection.selection_id,
+                    store,
+                    imported_pack=pack.imported,
+                )
+            self.assertEqual(reused.missing, 0)
             outside = Path(directory) / "outside-story.jsonl"
             write_story_index_document(
                 outside,

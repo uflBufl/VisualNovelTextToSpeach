@@ -59,7 +59,10 @@ from vntts.pregeneration_queue import (
     PregenerationInput,
     project_source_audio_semantics,
 )
-from vntts.pregeneration_setup import PregenerationJob
+from vntts.pregeneration_setup import (
+    PregenerationJob,
+    load_verified_story_index_document,
+)
 from vntts.source_audio_semantics import (
     canonical_document_sha256,
     load_source_audio_semantic_evidence,
@@ -107,18 +110,25 @@ class StoryAudioCoverage:
     missing: int = 0
 
 
-def inspect_story_audio(content, selection_id, job_store, *, manifest=None):
+def inspect_story_audio(
+    content, selection_id, job_store, *, manifest=None, imported_pack=None
+):
     """Verify one story against one saved pack; never combine incompatible packs."""
     selection = next(
         value for value in content.selections if value.selection_id == selection_id
     )
-    if sha256_file(content.story_index) != content.story_index_sha256:
+    try:
+        source = load_verified_story_index_document(
+            content.story_index, content.story_index_sha256
+        )
+    except (OSError, StoryIndexError, ValueError) as error:
         raise OfflinePackError(
             "Story content changed. Refresh the story list and retry."
-        )
-    source = load_story_index_document(content.story_index)
-    explicit_pack = manifest is not None
-    if explicit_pack:
+        ) from error
+    explicit_pack = manifest is not None or imported_pack is not None
+    if imported_pack is not None:
+        manifest = imported_pack.pack.manifest_path
+    elif explicit_pack:
         manifest = Path(manifest).expanduser().resolve()
     else:
         manifests = [
@@ -136,15 +146,22 @@ def inspect_story_audio(content, selection_id, job_store, *, manifest=None):
     pack_records = {}
     pack_story = None
     if manifest is not None:
-        imported = import_game_pack(manifest)
-        pack_story = load_story_index_document(imported.story_index)
+        imported_pack = imported_pack or import_game_pack(manifest)
+        pack_story = load_story_index_document(imported_pack.story_index)
         pack_records = {record.line_id: record for record in pack_story.records}
-        if imported.generated_audio_manifest is not None:
+        if imported_pack.generated_audio_manifest is not None:
             library = GeneratedAudioLibrary(
-                load_generated_audio_document(imported.generated_audio_manifest),
+                load_generated_audio_document(imported_pack.generated_audio_manifest),
                 cache_size=1,
             )
-    counts = dict(original=0, generated=0, live=0, omitted=0, non_spoken=0, missing=0)
+    counts = dict(
+        original=0,
+        generated=0,
+        live=0,
+        omitted=0,
+        non_spoken=0,
+        missing=0,
+    )
     line_ids = set(selection.line_ids)
     for record in source.records:
         if record.line_id not in line_ids:
@@ -466,7 +483,9 @@ def load_saved_pack(manifest):
         identity = extension.get("identity") if isinstance(extension, dict) else None
         if not is_lowercase_sha256(identity):
             raise OfflinePackError("Saved offline pack identity is invalid")
-        return _load_existing(imported.pack.manifest_path.parent, identity)
+        return _load_existing(
+            imported.pack.manifest_path.parent, identity, imported=imported
+        )
     except OfflinePackError:
         raise
     except (GamePackError, OSError, ValueError) as error:
@@ -1042,8 +1061,8 @@ def _safe_relative(value, label):
     return relative
 
 
-def _load_existing(destination, identity):
-    imported = import_game_pack(destination / "game-pack.json")
+def _load_existing(destination, identity, *, imported=None):
+    imported = imported or import_game_pack(destination / "game-pack.json")
     extension = imported.pack.extensions.get("vntts.self-service")
     if not isinstance(extension, dict) or extension.get("identity") != identity:
         raise OfflinePackError("Existing offline pack identity changed")

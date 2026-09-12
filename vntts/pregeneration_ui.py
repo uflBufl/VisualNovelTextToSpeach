@@ -1919,7 +1919,10 @@ class OfflineAudioPreparationDialog(QDialog):
         result = load_saved_pack(manifest)
         for selection_id in selected:
             coverage = inspect_story_audio(
-                content, selection_id, self.job_store, manifest=result.manifest
+                content,
+                selection_id,
+                self.job_store,
+                imported_pack=result.imported,
             )
             if coverage.missing:
                 raise OfflinePackError(
