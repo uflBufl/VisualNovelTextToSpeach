@@ -39,6 +39,7 @@ from vntts.pregeneration_setup import (  # noqa: E402
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import PregenerationVoiceCancelled  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.versioned_json import write_versioned_json  # noqa: E402
 
 
@@ -222,6 +223,39 @@ class PregenerationSetupTest(unittest.TestCase):
         self.assertEqual(main.original_audio_lines, 1)
         self.assertEqual(main.generation_lines, 1)
         self.assertEqual(main.speakers, ("Rhiannon",))
+
+    def test_story_summary_escapes_visible_names_and_copies_plain_details(self):
+        with TemporaryDirectory() as temporary_directory:
+            application = QApplication.instance() or QApplication([])
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            content = replace(
+                content,
+                game="Reverse <1999>",
+                selections=(
+                    replace(content.selections[0], title="Main <story>"),
+                    *content.selections[1:],
+                ),
+            )
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+
+            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            self.assertIn("&lt;1999&gt;", dialog.story_context.text())
+            self.assertIn("&lt;story&gt;", dialog.story_context.text())
+            self.assertIn(
+                "Source: Reverse <1999>", plain_label_text(dialog.story_context)
+            )
+            dialog._show_waiting_phase("Checking", "Please wait", "Saved work")
+            dialog.copy_progress_configuration.click()
+            copied = application.clipboard().text()
+            self.assertIn("Source: Reverse <1999>", copied)
+            self.assertIn("Stories: Main <story>", copied)
+            self.assertNotIn("&lt;", copied)
 
     def test_discovery_uses_configured_app_import_and_extractor_locations(self):
         with TemporaryDirectory() as temporary_directory:
@@ -441,7 +475,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.refresh_button.click()
             self.assertEqual(dialog.selected_story_ids(), ())
             self.assertFalse(dialog.continue_button.isEnabled())
-            self.assertEqual(dialog.story_context.text(), "No stories selected.")
+            self.assertEqual(
+                plain_label_text(dialog.story_context), "Stories: No stories selected."
+            )
 
             dialog.source.setCurrentIndex(1)
             dialog.story_filter.setCurrentIndex(dialog.story_filter.findData(None))
@@ -480,7 +516,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertEqual(dialog.selected_story_ids(), ())
             self.assertFalse(dialog.continue_button.isEnabled())
-            self.assertEqual(dialog.story_context.text(), "No stories selected.")
+            self.assertEqual(
+                plain_label_text(dialog.story_context), "Stories: No stories selected."
+            )
 
     def test_preparing_one_story_creates_job_for_only_that_story(self):
         with TemporaryDirectory() as temporary_directory:
@@ -839,7 +877,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._selection_changed()
             self.assertEqual(dialog.continue_button.text(), "Start reading")
             self.assertTrue(dialog.prepare_again.isVisibleTo(dialog))
-            self.assertIn("recorded voice and model", dialog.summary.text())
+            self.assertIn("recorded voice and model", plain_label_text(dialog.summary))
             self.assertEqual(
                 dialog.prepare_again.toolTip(), "Prepare again: Main Story 1"
             )
@@ -1212,9 +1250,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     for row in range(dialog.stories.count())
                 )
             )
-            self.assertIn("3 dialogue lines selected", dialog.summary.text())
-            self.assertNotIn("manifest", dialog.summary.text().casefold())
-            self.assertNotIn("queue", dialog.summary.text().casefold())
+            self.assertIn("3 dialogue lines", plain_label_text(dialog.summary))
+            self.assertNotIn("manifest", plain_label_text(dialog.summary).casefold())
+            self.assertNotIn("queue", plain_label_text(dialog.summary).casefold())
 
             dialog.continue_button.click()
             self.assertTrue(dialog.planning_voices)
@@ -1231,7 +1269,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertFalse(dialog.preparing_inputs)
             self.assertTrue(dialog._awaiting_voice_confirmation)
-            self.assertIn("new lines", dialog.change_summary.text())
+            self.assertIn("new lines", plain_label_text(dialog.change_summary))
             generator.generate.assert_not_called()
             dialog.continue_button.click()
             self.assertTrue(dialog.generating)
@@ -1332,7 +1370,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertEqual(dialog.progress_bar.value(), 1)
-            self.assertIn("1 of 4", dialog.progress_counts.text())
+            self.assertIn("1 of 4", plain_label_text(dialog.progress_counts))
             self.assertIn("saved on disk", dialog.progress_guarantee.text())
             self.assertIn("RTX 2070 SUPER", dialog.progress_runtime.text())
             self.assertTrue(dialog.progress_runtime.isVisible())
@@ -1345,7 +1383,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.progress_phase.text(), "Checking generated audio")
             self.assertNotIn("RTX 2070 SUPER", dialog.progress_runtime.text())
             self.assertIn("confirm CPU/GPU", dialog.progress_runtime.text())
-            self.assertIn("2 prepared, 1 failed", dialog.progress_counts.text())
+            self.assertIn("Prepared: 2", plain_label_text(dialog.progress_counts))
+            self.assertIn("Failed: 1", plain_label_text(dialog.progress_counts))
             self.assertIn("automatic recovery", dialog.progress_failures.text())
             self.assertIn(
                 "only unfinished lines", dialog.progress_cancel_consequence.text()
@@ -1384,21 +1423,25 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._start_generation_progress()
             pool.tasks.pop().run()
             self.application.processEvents()
-            self.assertIn("Estimating", dialog.progress_timing.text())
+            self.assertIn("Estimating", plain_label_text(dialog.progress_timing))
             clock.return_value = 60
             dialog._poll_generation_progress()
             pool.tasks.pop().run()
             self.application.processEvents()
-            self.assertIn("4 min", dialog.progress_timing.text())
+            self.assertIn("4 min", plain_label_text(dialog.progress_timing))
             dialog._poll_generation_progress()
             pool.tasks.pop().run()
             self.application.processEvents()
-            self.assertIn("Progress unavailable", dialog.progress_timing.text())
+            self.assertIn(
+                "Progress unavailable", plain_label_text(dialog.progress_timing)
+            )
             self.assertEqual(dialog.progress_bar.value(), 52)
             dialog._poll_generation_progress()
             pool.tasks.pop().run()
             self.application.processEvents()
-            self.assertIn("Waiting for progress", dialog.progress_timing.text())
+            self.assertIn(
+                "Waiting for progress", plain_label_text(dialog.progress_timing)
+            )
             self.assertEqual(dialog.progress_bar.value(), 52)
             dialog._poll_generation_progress()
             dialog._stop_generation_progress()
@@ -1406,7 +1449,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertEqual(dialog.progress_bar.value(), 52)
-            self.assertEqual(dialog.progress_timing.text(), "")
+            self.assertEqual(plain_label_text(dialog.progress_timing), "")
             dialog.deleteLater()
 
     def test_reopening_restores_the_last_story_selection(self):
@@ -1517,9 +1560,17 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 dialog.progress_phase.text(),
                 "Ready with live speech for remaining lines",
             )
-            self.assertIn("1 original-game-audio", dialog.progress_coverage.text())
-            self.assertIn("2 prepared lines", dialog.progress_coverage.text())
-            self.assertIn("1 live fallback", dialog.progress_coverage.text())
+            self.assertIn(
+                "Original game audio: 1 in this selection",
+                plain_label_text(dialog.progress_coverage),
+            )
+            self.assertIn(
+                "Prepared: 2 in the saved pack",
+                plain_label_text(dialog.progress_coverage),
+            )
+            self.assertIn(
+                "Live fallback: 1", plain_label_text(dialog.progress_coverage)
+            )
             self.assertEqual(dialog.continue_button.text(), "Use prepared audio")
             self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
             dialog.continue_button.click()

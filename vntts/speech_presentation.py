@@ -40,7 +40,7 @@ def speech_runtime_label(backend):
     return "Compute device: unknown (not reported by the engine yet)."
 
 
-def engine_model_label(backend, model=None, *, pocket_cloning=False, compact=False):
+def _engine_model_identity(backend, model=None, *, pocket_cloning=False):
     engine = SPEECH_BACKEND_LABELS.get(backend, backend)
     if backend == "pocket-tts":
         model = (
@@ -64,11 +64,31 @@ def engine_model_label(backend, model=None, *, pocket_cloning=False, compact=Fal
             "coqui-xtts": "tts_models/multilingual/multi-dataset/xtts_v2",
             "chatterbox-nano": "Chatterbox Nano (default model)",
         }.get(backend, "Backend default")
+    return engine, model
+
+
+def engine_model_label(backend, model=None, *, pocket_cloning=False, compact=False):
+    engine, model = _engine_model_identity(
+        backend, model, pocket_cloning=pocket_cloning
+    )
     if compact:
         if backend == "moss-tts":
             engine = "MOSS"
         return f"{engine} · {readable_model_name(model)}"
     return f"Engine: {engine}\nModel: {model}"
+
+
+def speech_configuration_rows(settings, *, narrator=None):
+    engine, model = _engine_model_identity(
+        settings.speech_backend,
+        settings.tts_model,
+        pocket_cloning=settings.pocket_gated_model_accepted,
+    )
+    return (
+        ("Narrator", narrator or narrator_voice_label(settings)),
+        ("Engine", "MOSS" if settings.speech_backend == "moss-tts" else engine),
+        ("Model", readable_model_name(model)),
+    )
 
 
 def compact_runtime_label(message):

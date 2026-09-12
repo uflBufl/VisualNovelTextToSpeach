@@ -6,7 +6,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QGroupBox, QSizePolicy  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QFormLayout,
+    QGroupBox,
+    QLabel,
+    QSizePolicy,
+)
 
 from vntts.controller import LiveSequenceStatus  # noqa: E402
 from vntts.dashboard_ui import (  # noqa: E402
@@ -16,9 +22,39 @@ from vntts.dashboard_ui import (  # noqa: E402
 )
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.ui_text import plain_label_text, set_labeled_text  # noqa: E402
 
 
 class ControlDashboardTest(unittest.TestCase):
+    def test_structured_identity_is_selectable_escaped_and_copies_plain_text(self):
+        dashboard = ControlDashboard(AppSettings())
+        label = dashboard.reading_defaults
+        set_labeled_text(
+            label, (("Narrator", '<Centurion> & "child"'), ("Engine", "MOSS"))
+        )
+        expected = 'Narrator: <Centurion> & "child"\nEngine: MOSS'
+        self.assertEqual(plain_label_text(label), expected)
+        self.assertIn("<b>Narrator:</b>", label.text())
+        self.assertNotIn("<Centurion>", label.text())
+        dashboard.show_reading()
+        dashboard.show()
+        self.application.processEvents()
+        label.setFocus()
+        label.setSelection(0, len(expected))
+        QTest.keyClick(label, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(self.application.clipboard().text(), expected)
+        for form in dashboard.findChildren(QFormLayout):
+            for row in range(form.rowCount()):
+                item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                if item is not None and isinstance(item.widget(), QLabel):
+                    self.assertTrue(item.widget().font().bold())
+                    self.assertNotEqual(
+                        item.widget().sizePolicy().horizontalPolicy(),
+                        QSizePolicy.Policy.Ignored,
+                    )
+        dashboard.close()
+        dashboard.deleteLater()
+
     def test_story_discovery_never_opens_an_orphan_coverage_window(self):
         from pathlib import Path
         from tempfile import TemporaryDirectory
@@ -254,6 +290,8 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(
             {group.title() for group in dashboard.findChildren(QGroupBox)},
             {
+                "Current dialogue",
+                "For new speech",
                 "Playback",
                 "Sequence-first story cursor",
             },

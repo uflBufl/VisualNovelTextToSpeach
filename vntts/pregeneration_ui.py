@@ -69,8 +69,16 @@ from vntts.pregeneration_voices import (
 )
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
-from vntts.speech_presentation import speech_configuration_label
-from vntts.ui_text import copy_text_button, make_text_copyable
+from vntts.speech_presentation import (
+    speech_configuration_label,
+    speech_configuration_rows,
+)
+from vntts.ui_text import (
+    copy_text_button,
+    make_text_copyable,
+    plain_label_text,
+    set_labeled_text,
+)
 from vntts.voices import (
     CharacterVoiceRegistry,
     VoiceChoice,
@@ -214,7 +222,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._acceptance_result = None
         self._pack_result = None
         self._awaiting_voice_confirmation = False
-        self._changes_text = ""
+        self._changes_rows = ()
         self._resume_error_details = ""
         self._narrator_player = preview_player
         self.setWindowTitle("Prepare offline audio")
@@ -709,7 +717,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._recovery_result = None
         self._acceptance_result = None
         self._pack_result = None
-        self._changes_text = ""
+        self._changes_rows = ()
         self._awaiting_voice_confirmation = False
         self.voice_confirmation.hide()
         self.progress_panel.hide()
@@ -766,10 +774,14 @@ class OfflineAudioPreparationDialog(QDialog):
             self._voice_plan = None
 
     def _refresh_narrator_status(self):
-        self.narrator_status.setText(self._narrator_configuration(compact=True))
+        settings, narrator = self._narrator_configuration_values()
+        set_labeled_text(
+            self.narrator_status,
+            speech_configuration_rows(settings, narrator=narrator),
+        )
         self.narrator_status.setToolTip(self._full_narrator_configuration())
 
-    def _narrator_configuration(self, *, compact=False):
+    def _narrator_configuration_values(self):
         settings = resolve_pregeneration_settings(self.settings)
         narrator = None
         if self._awaiting_voice_confirmation and self._voice_plan is not None:
@@ -781,6 +793,10 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
             if self.narrator_choice.currentData() is not None:
                 narrator = self.narrator_choice.currentText()
+        return settings, narrator
+
+    def _narrator_configuration(self, *, compact=False):
+        settings, narrator = self._narrator_configuration_values()
         return speech_configuration_label(settings, narrator=narrator, compact=compact)
 
     def _full_narrator_configuration(self):
@@ -792,7 +808,8 @@ class OfflineAudioPreparationDialog(QDialog):
     def _full_generation_details(self):
         content = self.current_content()
         return self._full_narrator_configuration() + (
-            f"\nSource story index: {content.story_index}\n{self.story_context.text()}"
+            f"\nSource story index: {content.story_index}\n"
+            f"{plain_label_text(self.story_context)}"
             if content is not None
             else ""
         )
@@ -845,6 +862,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_panel.hide()
         self.progress_panel.hide()
         self.voice_confirmation.show()
+        self.work_summary.setTextFormat(Qt.TextFormat.RichText)
         self.work_summary.setText(self.summary.text())
         self.voice_configuration.setText(
             "Original game audio stays. Changing voices or model may require new recordings."
@@ -968,11 +986,13 @@ class OfflineAudioPreparationDialog(QDialog):
             and self._voice_plan.pocket_voice_cloning
             != self.settings.pocket_gated_model_accepted
         )
-        self.change_summary.setText(
-            "Voice choices changed. Update routes to recalculate the changes."
-            if changed
-            else self._changes_text
-        )
+        if changed:
+            set_labeled_text(
+                self.change_summary,
+                (("Voice choices", "Changed. Update routes to recalculate changes."),),
+            )
+        else:
+            set_labeled_text(self.change_summary, self._changes_rows)
         self.continue_button.setText(
             "Update voice routes" if changed else "Generate with these voices"
         )
@@ -1240,7 +1260,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.content_scroll.verticalScrollBar().setValue(0)
         self.progress_panel.show()
         self.progress_phase.setText(phase)
-        self.progress_configuration.setText(self._narrator_configuration(compact=True))
+        settings, narrator = self._narrator_configuration_values()
+        set_labeled_text(
+            self.progress_configuration,
+            speech_configuration_rows(settings, narrator=narrator),
+        )
         self.progress_configuration.setToolTip(self._full_generation_details())
         self.story_context.show()
         self.resume_status.setText(detail)
@@ -1254,7 +1278,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 value
                 for value in (
                     self.progress_phase.text(),
-                    self.progress_counts.text(),
+                    plain_label_text(self.progress_counts),
                     self.resume_status.text() if not self.has_pending_work() else "",
                 )
                 if value
@@ -1311,6 +1335,20 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_coverage.clear()
         self._emit_task_progress()
 
+    def _set_progress_counts(self, completed, total, generated=0, failed=0, other=0):
+        set_labeled_text(
+            self.progress_counts,
+            (
+                ("Progress", f"{completed} of {total} lines processed and saved"),
+                ("Prepared", str(generated)),
+                ("Failed", str(failed)),
+                ("Without prepared audio", str(other)),
+            ),
+        )
+
+    def _set_progress_timing(self, value):
+        set_labeled_text(self.progress_timing, (("Time", value),))
+
     def _start_generation_progress(self):
         self._stop_generation_progress()
         self._progress_baseline = None
@@ -1328,7 +1366,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_bar.setRange(0, max(1, total))
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat(f"0 of {total} processed")
-        self.progress_counts.setText(f"0 of {total} lines processed and saved.")
+        self._set_progress_counts(0, total)
         self.progress_guarantee.setText(
             "Each finished item is saved on disk; cancellation does not discard it."
         )
@@ -1377,14 +1415,14 @@ class OfflineAudioPreparationDialog(QDialog):
             "Model loading and long lines may take time. The estimate excludes final checks."
         )
         if self._progress_error:
-            self.progress_timing.setText(
+            self._set_progress_timing(
                 "Progress unavailable; generation may still be running. Retrying..."
             )
             return
         age = max(0, int(monotonic() - self._progress_changed_at))
         progress = self._progress_snapshot
         if progress is None or not progress.available:
-            self.progress_timing.setText(
+            self._set_progress_timing(
                 f"Waiting for progress ({age}s). Model loading may take time."
             )
             return
@@ -1403,7 +1441,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 estimate = (
                     f"About {max(1, round(seconds / 60))} min of generation left."
                 )
-        self.progress_timing.setText(f"Last progress change {age}s ago. {estimate}")
+        self._set_progress_timing(f"Last progress change {age}s ago. {estimate}")
 
     def _stop_generation_progress(self):
         self.progress_timer.stop()
@@ -1425,10 +1463,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_bar.setRange(0, max(1, total))
         self.progress_bar.setValue(completed)
         self.progress_bar.setFormat(f"{completed} of {total} processed")
-        self.progress_counts.setText(
-            f"{completed} of {total} lines processed and saved: "
-            f"{progress.generated} prepared, {progress.failed} failed, "
-            f"{progress.other_terminal} routed without prepared audio."
+        self._set_progress_counts(
+            completed,
+            total,
+            progress.generated,
+            progress.failed,
+            progress.other_terminal,
         )
         if self.recovering:
             self.progress_failures.setText(
@@ -1486,13 +1526,18 @@ class OfflineAudioPreparationDialog(QDialog):
             "Close leaves the current audio setup unchanged; the saved pack can be "
             "activated by reopening this preparation later.",
         )
-        self.progress_coverage.setText(
-            f"Final coverage: {original} original-game-audio lines in this selection; "
-            f"the saved pack has {prepared} prepared lines and {live} live "
-            f"fallbacks across {story_lines or self._job.estimate.selected_lines} "
-            f"story lines"
-            + (f", with {omissions} explicit omissions." if omissions else ".")
-        )
+        coverage_rows = [
+            ("Original game audio", f"{original} in this selection"),
+            ("Prepared", f"{prepared} in the saved pack"),
+            ("Live fallback", str(live)),
+            (
+                "Story lines",
+                str(story_lines or self._job.estimate.selected_lines),
+            ),
+        ]
+        if omissions:
+            coverage_rows.append(("Omissions", f"{omissions} explicit"))
+        set_labeled_text(self.progress_coverage, coverage_rows)
         self.progress_failures.setText(
             "Automatic recovery finished before this pack was validated."
             if self._recovery_result is not None
@@ -1926,59 +1971,91 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
             )
         if not can_read and not self._generation_engine_available():
-            self.summary.setText(
-                "Choose an available generation engine before preparing stories."
-                + (
-                    " Open Voices to change the engine."
-                    if self.game_narrator_chooser is not None
-                    else ""
-                )
+            set_labeled_text(
+                self.summary,
+                (
+                    (
+                        "Preparation",
+                        "Choose an available generation engine before preparing stories."
+                        + (
+                            " Open Voices to change the engine."
+                            if self.game_narrator_chooser is not None
+                            else ""
+                        ),
+                    ),
+                ),
             )
             self.continue_button.setEnabled(False)
             return
         if content is None:
-            self.story_context.setText("Select the stories you want to read.")
+            set_labeled_text(
+                self.story_context,
+                (("Stories", "Select the stories you want to read."),),
+            )
             self.story_context.setToolTip("")
-            self.summary.setText("Choose or import game content to continue.")
+            set_labeled_text(
+                self.summary,
+                (("Preparation", "Choose or import game content to continue."),),
+            )
             self.continue_button.setEnabled(False)
             return
         if not selected:
-            self.story_context.setText("No stories selected.")
+            set_labeled_text(self.story_context, (("Stories", "No stories selected."),))
             self.story_context.setToolTip("")
-            self.summary.setText("Select at least one story or chapter.")
+            set_labeled_text(
+                self.summary,
+                (("Preparation", "Select at least one story or chapter."),),
+            )
             self.continue_button.setEnabled(False)
             return
         estimate = estimate_preparation(content, selected)
         titles = [
             item.title for item in content.selections if item.selection_id in selected
         ]
-        self.story_context.setText(
-            f"Source: {content.display_name}. Stories: "
-            + ", ".join(titles[:3])
-            + (f" and {len(titles) - 3} more" if len(titles) > 3 else "")
+        set_labeled_text(
+            self.story_context,
+            (
+                ("Source", content.display_name),
+                (
+                    "Stories",
+                    ", ".join(titles[:3])
+                    + (f" and {len(titles) - 3} more" if len(titles) > 3 else ""),
+                ),
+            ),
         )
         self.story_context.setToolTip("\n".join(titles))
         disk_megabytes = max(1, round(estimate.estimated_disk_bytes / 1_000_000))
-        self.summary.setText(
-            f"{estimate.selected_lines} dialogue lines selected. "
-            f"{estimate.original_audio_lines} already use original game voices; "
-            f"up to {estimate.generation_lines} need speech across about "
-            f"{estimate.speaker_count} voices. Rough estimate: "
-            f"{estimate.estimated_generation_minutes} minutes and "
-            f"{disk_megabytes} MB."
-        )
+        summary_rows = [
+            ("Selected", f"{estimate.selected_lines} dialogue lines"),
+            ("Original game audio", f"{estimate.original_audio_lines} lines"),
+            (
+                "Need speech",
+                f"up to {estimate.generation_lines} lines across about "
+                f"{estimate.speaker_count} voices",
+            ),
+            (
+                "Estimate",
+                f"about {estimate.estimated_generation_minutes} minutes; {disk_megabytes} MB",
+            ),
+        ]
         if can_read:
-            self.summary.setText(
-                "Selected stories are ready in the active Reading pack. "
-                "Start reading to open the game reading setup."
-            )
+            summary_rows = [
+                (
+                    "Ready",
+                    "Selected stories are ready in the active Reading pack. Start "
+                    "reading to open the game reading setup.",
+                )
+            ]
         if not self.prepare_again.isHidden():
-            self.summary.setText(
-                self.summary.text()
-                + " Existing recordings keep their recorded voice and model. Preparing again applies current "
-                "defaults only to the checked stories; matching recordings and other stories are kept. "
-                "Reading shows the voice and model of the recording actually played."
+            summary_rows.append(
+                (
+                    "Prepare again",
+                    "Existing recordings keep their recorded voice and model. Current "
+                    "defaults apply only to checked stories; matching recordings and "
+                    "other stories are kept.",
+                )
             )
+        set_labeled_text(self.summary, summary_rows)
         self.prepare_again.setToolTip("Prepare again: " + ", ".join(titles))
         self.continue_button.setEnabled(True)
 
@@ -1997,11 +2074,21 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
         self._selection_changed()
         self.prepare_again.setVisible(bool(selected))
-        self.summary.setText(
-            f"Selected {len(selected)} affected stories with "
-            f"{sum(len(value.changed_line_ids) for value in results)} changed voice lines. "
-            "Choose Prepare selected stories again to review and apply these defaults. "
-            "Original recordings and existing audio stay playable until preparation succeeds."
+        set_labeled_text(
+            self.summary,
+            (
+                ("Affected stories", str(len(selected))),
+                (
+                    "Changed voice lines",
+                    str(sum(len(value.changed_line_ids) for value in results)),
+                ),
+                (
+                    "Next step",
+                    "Choose Prepare selected stories again to review and apply these "
+                    "defaults. Original recordings and existing audio stay playable "
+                    "until preparation succeeds.",
+                ),
+            ),
         )
 
     def _prepare_again_requested(self):
@@ -2200,9 +2287,16 @@ class OfflineAudioPreparationDialog(QDialog):
             self.progress_bar.setRange(0, audition_count)
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("Voice choices remain")
-            self.progress_counts.setText(
-                f"{audition_count} voice choice"
-                f"{'s' if audition_count != 1 else ''} require input before generation."
+            set_labeled_text(
+                self.progress_counts,
+                (
+                    (
+                        "Voice choices",
+                        f"{audition_count} choice"
+                        f"{'s' if audition_count != 1 else ''} require input before "
+                        "generation.",
+                    ),
+                ),
             )
             return
         self.replanning_voice_decisions = False
@@ -2292,17 +2386,26 @@ class OfflineAudioPreparationDialog(QDialog):
                 "Unable to check the changes. Choose Continue to retry."
             )
             return
-        self._changes_text = (
-            f"Reuse: {changes.reused} saved recordings, {changes.original} original game lines.\n"
-            f"Process: {changes.new} new lines, {changes.failed} failed lines.\n"
-            f"Existing live fallbacks: {changes.live_fallbacks}. Omissions: {changes.omissions}.\n"
-            f"On activation: {changes.replacement_candidates} recordings may be replaced; "
-            f"{changes.preserved} in other stories kept."
-            + (
-                " Activating this preparation switches to a different story pack."
-                if changes.switches_pack
-                else ""
-            )
+        self._changes_rows = (
+            (
+                "Reuse",
+                f"{changes.reused} saved recordings; {changes.original} original game lines",
+            ),
+            ("Process", f"{changes.new} new lines; {changes.failed} failed lines"),
+            (
+                "Existing live fallback",
+                f"{changes.live_fallbacks} lines; {changes.omissions} omissions",
+            ),
+            (
+                "On activation",
+                f"{changes.replacement_candidates} recordings may be replaced; "
+                f"{changes.preserved} in other stories stay."
+                + (
+                    " This switches to a different story pack."
+                    if changes.switches_pack
+                    else ""
+                ),
+            ),
         )
         self.change_summary.setToolTip(
             "New work may hit the synthesis cache. Final fallback counts depend on generation. "
@@ -2339,7 +2442,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.progress_timer.stop()
             self.selection_panel.setVisible(True)
             self._preparation_paused("Generation paused", error)
-            self.progress_timing.setText(
+            self._set_progress_timing(
                 "Stopped. Counts show the last available progress report."
             )
             self.progress_cancel_consequence.setText(

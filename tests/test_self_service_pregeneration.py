@@ -56,6 +56,7 @@ from vntts.pregeneration_voices import (  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.speech_presentation import engine_model_label  # noqa: E402
 from vntts.synthesis import SynthesisCompletion  # noqa: E402
+from vntts.ui_text import plain_label_text  # noqa: E402
 
 
 class InProcessPocketGenerator(OfflineGenerationWorker):
@@ -320,12 +321,12 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
 
             self.assertTrue(dialog.game_narrator_button.isVisibleTo(dialog))
-            self.assertIn("Alba", dialog.narrator_status.text())
+            self.assertIn("Alba", plain_label_text(dialog.narrator_status))
             dialog.game_narrator_button.click()
 
             chooser.assert_called_once_with(AppSettings(), dialog)
             self.assertIs(dialog.settings, selected)
-            self.assertIn("Marius", dialog.narrator_status.text())
+            self.assertIn("Marius", plain_label_text(dialog.narrator_status))
             self.assertIn("no account", dialog.pocket_terms.text())
             self.assertTrue(dialog.model_choice.isHidden())
             self.assertTrue(dialog.engine_controls.isHidden())
@@ -455,8 +456,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertFalse(dialog._awaiting_voice_confirmation)
             self.assertTrue(dialog.voice_confirmation.isHidden())
             self.assertIn("Step 1", dialog.step.text())
-            self.assertIn("MOSS", dialog.narrator_status.text())
-            self.assertNotIn("Engine:", dialog.narrator_status.text())
+            self.assertIn("MOSS", plain_label_text(dialog.narrator_status))
+            self.assertIn("Engine:", plain_label_text(dialog.narrator_status))
             dialog.copy_narrator_details.click()
             self.assertIn(
                 engine_model_label("moss-tts", "selected/model"),
@@ -499,7 +500,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertEqual(dialog.settings.tts_model, "selected/model")
             self.assertEqual(settings.speech_backend, "pocket-tts")
             dialog.select_all_button.click()
-            self.assertIn("Stories:", dialog.story_context.text())
+            self.assertIn("Stories:", plain_label_text(dialog.story_context))
             dialog._set_import_controls(False)
             dialog.selection_panel.hide()
             dialog._show_waiting_phase(
@@ -512,9 +513,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertFalse(dialog.engine_choice.isEnabled())
             self.assertFalse(dialog.model_choice.isEnabled())
             self.assertFalse(dialog.game_narrator_button.isEnabled())
-            self.assertIn("Centurion", dialog.progress_configuration.text())
-            self.assertNotIn("Model:", dialog.progress_configuration.text())
-            self.assertIn("Source:", dialog.story_context.text())
+            self.assertIn("Centurion", plain_label_text(dialog.progress_configuration))
+            self.assertIn("Model:", plain_label_text(dialog.progress_configuration))
+            self.assertIn("Source:", plain_label_text(dialog.story_context))
             self.assertTrue(dialog.copy_progress_configuration.isVisibleTo(dialog))
             dialog.copy_progress_configuration.click()
             self.assertIn("Model: selected/model", self.application.clipboard().text())
@@ -536,7 +537,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog._save_selection()
             self.assertIsNone(dialog.job())
             self.assertIn(
-                "Choose an available generation engine", dialog.summary.text()
+                "Choose an available generation engine",
+                plain_label_text(dialog.summary),
             )
             dialog.engine_choice.setCurrentIndex(
                 dialog.engine_choice.findData("pocket-tts")
@@ -610,7 +612,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             dialog.show_all_voice_routes.setChecked(False)
             self.assertIn("Step 2", dialog.step.text())
-            self.assertIn("Pocket TTS", dialog.narrator_status.text())
+            self.assertIn("Pocket TTS", plain_label_text(dialog.narrator_status))
             dialog.copy_narrator_details.click()
             self.assertIn("Model:", self.application.clipboard().text())
             self.assertNotIn("Model:", dialog.voice_configuration.text())
@@ -648,7 +650,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.narrator_choice.setCurrentIndex(
                 dialog.narrator_choice.findData("character:centurion")
             )
-            self.assertIn("Narrator voice: Centurion", dialog.narrator_status.text())
+            self.assertIn(
+                "Narrator: Centurion", plain_label_text(dialog.narrator_status)
+            )
             dialog.continue_button.click()
             self.assertTrue(pool.tasks)
             pool.tasks.pop(0).run()
@@ -1081,7 +1085,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             interrupted_input_id = first.generation_input().identity
             self.assertIn("Generation cancelled", first.resume_status.text())
             self.assertEqual(first.progress_phase.text(), "Generation paused")
-            self.assertIn("last available progress", first.progress_timing.text())
+            self.assertIn(
+                "last available progress", plain_label_text(first.progress_timing)
+            )
             self.assertIn(
                 "generate only unfinished lines",
                 first.progress_cancel_consequence.text(),

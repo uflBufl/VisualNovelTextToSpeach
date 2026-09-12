@@ -29,9 +29,10 @@ from vntts.speech_presentation import (
     playback_labels,
     reading_policy_label,
     speech_configuration_label,
+    speech_configuration_rows,
     speech_runtime_label,
 )
-from vntts.ui_text import copy_text_button, make_text_copyable
+from vntts.ui_text import copy_text_button, make_text_copyable, set_labeled_text
 
 
 @dataclass(frozen=True)
@@ -357,8 +358,7 @@ class ControlDashboard(QMainWindow):
         setup.addWidget(self.setup_secondary_content)
         self.setup_more_button.toggled.connect(self._set_setup_expanded)
 
-        card = QFrame()
-        card.setFrameShape(QFrame.Shape.StyledPanel)
+        card = QGroupBox("Current dialogue")
         card_layout = QVBoxLayout(card)
         story_context = QFormLayout()
         story_context.addRow("Story", self.story_title)
@@ -389,9 +389,15 @@ class ControlDashboard(QMainWindow):
         self.moss_runtime_button.setAccessibleName("Load or unload OpenMOSS model")
         self.moss_runtime_button.clicked.connect(self.moss_runtime_requested.emit)
         layout.addWidget(card)
-        layout.addWidget(self.reading_defaults)
-        layout.addWidget(self.speech_runtime)
-        layout.addWidget(self.moss_runtime_button, 0, Qt.AlignmentFlag.AlignRight)
+        speech_group = QGroupBox("For new speech")
+        speech_layout = QVBoxLayout(speech_group)
+        speech_layout.addWidget(self.reading_defaults)
+        speech_layout.addSpacing(6)
+        speech_layout.addWidget(self.speech_runtime)
+        speech_layout.addWidget(
+            self.moss_runtime_button, 0, Qt.AlignmentFlag.AlignRight
+        )
+        layout.addWidget(speech_group)
         self.details_layout.addWidget(self.reading_policy)
         detail_actions = QHBoxLayout()
         detail_actions.addWidget(self.details_toggle)
@@ -528,7 +534,7 @@ class ControlDashboard(QMainWindow):
         )
 
     def set_speech_runtime(self, message):
-        self.speech_runtime.setText("Live engine · " + compact_runtime_label(message))
+        self.speech_runtime.setText(compact_runtime_label(message).replace("; ", "\n"))
         self.speech_runtime.setToolTip(message)
 
     def show_reading(self):
@@ -618,7 +624,10 @@ class ControlDashboard(QMainWindow):
     def set_speech_identity(self, settings, narrator=None):
         summary = speech_configuration_label(settings, narrator=narrator, compact=True)
         self.speech_configuration.setText(summary)
-        self.reading_defaults.setText(f"For new speech: {summary}")
+        set_labeled_text(
+            self.reading_defaults,
+            speech_configuration_rows(settings, narrator=narrator),
+        )
         self.speech_details.setText(
             speech_configuration_label(settings, narrator=narrator)
         )

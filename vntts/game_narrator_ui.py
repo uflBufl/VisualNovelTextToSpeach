@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -246,6 +247,9 @@ class GameNarratorDialog(QDialog):
         self.original_button = QPushButton("Play original")
         self.original_button.setAccessibleName("Play original game reference")
         self.original_button.clicked.connect(self._original)
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        form.addRow(separator)
         self.text = QLineEdit("The storm has passed. We can continue our journey.")
         form.addRow("Preview text", self.text)
         form.addRow("Engine", self.engine_choice)
@@ -290,7 +294,8 @@ class GameNarratorDialog(QDialog):
         transport.addWidget(self.stop_button)
         layout.addLayout(transport)
         note = QLabel(
-            "Defaults apply to future preparation and live fallback. Existing recordings keep their recorded voices. "
+            "Defaults apply to future preparation and live fallback.\n\n"
+            "Existing recordings keep their recorded voices. "
             "Select affected stories in Stories to prepare them again."
         )
         note.setWordWrap(True)
@@ -448,9 +453,9 @@ class GameNarratorDialog(QDialog):
         self.role_summary.setText(
             f"Saved narrator: {narrator_voice_label(settings)}"
             if narrator
-            else f"{role}: saved default {self._source_label(selected)}. "
+            else f"Saved default: {self._source_label(selected)}\n"
             + (
-                "An existing live override is active; saving this default restores recording priority. "
+                "Live override active. Saving this default restores recording priority.\n"
                 if manual
                 else ""
             )
@@ -471,7 +476,7 @@ class GameNarratorDialog(QDialog):
             if group is not None:
                 self.role_summary.setText(
                     self.role_summary.text()
-                    + f" Planned: {self._source_label(group.source_id)}; {len(group.line_ids)} lines."
+                    + f"\nPlanned: {self._source_label(group.source_id)}\nLines: {len(group.line_ids)}"
                 )
                 if group.portrait_image and group.portrait_image_sha256:
                     try:
@@ -495,7 +500,7 @@ class GameNarratorDialog(QDialog):
         if self._story_titles:
             self.role_summary.setText(
                 self.role_summary.text()
-                + " Selected stories: "
+                + "\nSelected stories: "
                 + ", ".join(self._story_titles[:3])
                 + (
                     f" and {len(self._story_titles) - 3} more"

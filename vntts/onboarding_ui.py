@@ -49,8 +49,8 @@ from vntts.release_backends import (
 )
 from vntts.settings import AppSettings
 from vntts.speech_backend import default_moss_tts_model
-from vntts.speech_presentation import speech_configuration_label
-from vntts.ui_text import make_text_copyable
+from vntts.speech_presentation import speech_configuration_rows
+from vntts.ui_text import make_text_copyable, set_labeled_text
 from vntts.voices import find_default_voice_manifest, find_voice_assignment
 from vntts.window_capture import WindowCaptureError, WindowCaptureTarget, list_windows
 
@@ -679,8 +679,9 @@ class ConfigurationPage(QWizardPage):
         return tuple(errors)
 
     def update_validation_summary(self, *_args):
-        self.speech_summary.setText(
-            speech_configuration_label(
+        set_labeled_text(
+            self.speech_summary,
+            speech_configuration_rows(
                 self.original_settings
                 if self.reading_setup
                 else self.original_settings.updated(
@@ -691,8 +692,7 @@ class ConfigurationPage(QWizardPage):
                     tts_speaker_wav=self.narrator_reference.text().strip() or None,
                     pocket_gated_model_accepted=self.pocket_gated_model.isChecked(),
                 ),
-                compact=True,
-            )
+            ),
         )
         self.speech_summary.setToolTip(
             "Change the narrator, character voices and speech engine in Voices."

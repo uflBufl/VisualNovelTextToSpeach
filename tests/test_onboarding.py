@@ -19,6 +19,7 @@ from vntts.game_pack import GamePackError  # noqa: E402
 from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics  # noqa: E402
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
 
@@ -631,7 +632,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertIn("Select your game and speech engine", page.subTitle())
         self.assertTrue(page.speech_backend.isVisibleTo(wizard))
         self.assertTrue(page.speech_summary.isVisibleTo(wizard))
-        self.assertIn("Narrator voice: Alba", page.speech_summary.text())
+        self.assertIn("Narrator: Alba", plain_label_text(page.speech_summary))
 
         page.advanced_toggle.click()
 
