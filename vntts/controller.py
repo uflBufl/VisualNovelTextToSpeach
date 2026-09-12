@@ -2422,16 +2422,6 @@ class AppController:
             self.diagnostic_handler(snapshot)
         return snapshot
 
-    def _speak_live_chunk(self, chunk):
-        try:
-            return speak_live_chunk(
-                self.voice_router,
-                chunk,
-                playback_guard=lambda: self.live_reader.wait_until_playable(chunk),
-            )
-        finally:
-            self._refresh_diagnostic_metrics()
-
     def _prepare_live_chunk(self, chunk):
         prepared = None
         try:

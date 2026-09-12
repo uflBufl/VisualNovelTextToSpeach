@@ -169,7 +169,6 @@ class AutoAdvanceFakeFrameHarness:
             ocr_executor=Mock(),
             speech_executor=self.speech_executor,
             playback_executor=self.playback_executor,
-            read_snapshot=Mock(),
             capture_frame=Mock(),
             recognize_frame=self._recognize,
             frame_presence=lambda frame: frame.get("visible", True),
@@ -182,7 +181,6 @@ class AutoAdvanceFakeFrameHarness:
             dialog_observed=dialog_observed,
             stable_frame_minimum_seconds=stable_frame_minimum_seconds,
             stable_frame_clock=self.clock,
-            speak_chunk=Mock(),
             prepare_chunk=lambda chunk: f"audio:{chunk.text}",
             play_prepared=self._play,
             report_error=self.errors.append,
@@ -1258,9 +1256,13 @@ class LiveDialogReaderTest(unittest.TestCase):
     def create_reader(self, **overrides):
         options = {
             "capture_executor": Mock(),
+            "ocr_executor": Mock(),
             "speech_executor": ImmediateExecutor(),
-            "read_snapshot": Mock(return_value=("Alice", "Hello.")),
-            "speak_chunk": Mock(),
+            "playback_executor": ImmediateExecutor(),
+            "capture_frame": Mock(),
+            "recognize_frame": Mock(return_value=("Alice", "Hello.")),
+            "prepare_chunk": lambda chunk: chunk,
+            "play_prepared": Mock(),
             "report_error": Mock(),
             "interval_seconds": 0.001,
         }
@@ -1290,28 +1292,6 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader.suppressed_generation = 3
         self.assertFalse(reader.runtime_control_snapshot()["replayable"])
 
-    def test_capture_loop_speaks_stable_text(self):
-        stop_event = Event()
-        snapshots = iter([("Alice", "Hello."), ("Alice", "Hello.")])
-
-        def read_snapshot():
-            snapshot = next(snapshots)
-            if snapshot == ("Alice", "Hello.") and read_snapshot.calls == 1:
-                stop_event.set()
-            read_snapshot.calls += 1
-            return snapshot
-
-        read_snapshot.calls = 0
-        speak_chunk = Mock()
-        reader = self.create_reader(
-            read_snapshot=read_snapshot,
-            speak_chunk=speak_chunk,
-        )
-
-        reader._run(stop_event)
-
-        speak_chunk.assert_called_once_with(SpeechChunk(1, "Alice", "Hello."))
-
     def test_explicit_resync_binds_latest_frame_for_locked_routing(self):
         reader = self.create_reader()
 
@@ -1330,48 +1310,24 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         self.assertEqual(routed, SilentDialogRoute("event-silent"))
 
-    def test_capture_loop_waits_for_unknown_voice_decision_before_speaking(self):
-        stop_event = Event()
-        observations = 0
-
-        def read_snapshot():
-            nonlocal observations
-            observations += 1
-            if observations == 3:
-                stop_event.set()
-            return "Unknown", "Hello."
-
-        decision = Mock(side_effect=[False, True])
-        speak_chunk = Mock()
-        reader = self.create_reader(
-            read_snapshot=read_snapshot,
-            dialog_observed=decision,
-            speak_chunk=speak_chunk,
-        )
-
-        reader._run(stop_event)
-
-        self.assertEqual(decision.call_count, 2)
-        speak_chunk.assert_called_once_with(SpeechChunk(1, "Unknown", "Hello."))
-
-    def test_stale_generation_is_not_spoken(self):
-        speak_chunk = Mock()
-        reader = self.create_reader(speak_chunk=speak_chunk)
+    def test_stale_generation_is_not_prepared(self):
+        prepare_chunk = Mock()
+        reader = self.create_reader(prepare_chunk=prepare_chunk)
         reader.active_generation = 2
 
-        reader._speak_if_current(SpeechChunk(1, "Alice", "Old text."))
+        reader._prepare_if_current(SpeechChunk(1, "Alice", "Old text."))
 
-        speak_chunk.assert_not_called()
+        prepare_chunk.assert_not_called()
 
-    def test_speech_failure_is_reported_without_escaping_worker(self):
+    def test_playback_failure_is_reported_without_escaping_worker(self):
         report_error = Mock()
         reader = self.create_reader(
-            speak_chunk=Mock(side_effect=RuntimeError("audio failed")),
+            play_prepared=Mock(side_effect=RuntimeError("audio failed")),
             report_error=report_error,
         )
         reader.active_generation = 1
 
-        reader._speak_if_current(SpeechChunk(1, "Alice", "Hello."))
+        reader._play_if_current(SpeechChunk(1, "Alice", "Hello."), "prepared")
 
         report_error.assert_called_once()
         self.assertEqual(str(report_error.call_args.args[0]), "audio failed")
@@ -2103,7 +2059,9 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertFalse(reader.toggle_pause())
 
         interrupt_speech.assert_called_once_with()
-        speech_executor.submit.assert_called_once_with(reader._speak_if_current, chunk)
+        speech_executor.submit.assert_called_once_with(
+            reader._prepare_if_current, chunk
+        )
 
     def test_pausing_during_synthesis_resumes_without_duplicate_replay(self):
         speech_executor = Mock()
@@ -2142,21 +2100,33 @@ class LiveDialogReaderTest(unittest.TestCase):
         self.assertFalse(reader.wait_until_playable(chunk))
 
     def test_repeat_queues_last_spoken_chunk_for_current_dialog(self):
-        speak_chunk = Mock()
-        reader = self.create_reader(speak_chunk=speak_chunk)
+        prepare_chunk = Mock(return_value="prepared")
+        play_prepared = Mock()
+        reader = self.create_reader(
+            prepare_chunk=prepare_chunk,
+            play_prepared=play_prepared,
+        )
         reader.active_generation = 3
         reader.last_spoken_chunk = SpeechChunk(1, "Alice", "Repeat me.")
 
         self.assertTrue(reader.repeat_last())
 
-        speak_chunk.assert_called_once_with(
-            SpeechChunk(3, "Alice", "Repeat me.", explicit_replay=True)
+        repeated = SpeechChunk(3, "Alice", "Repeat me.", explicit_replay=True)
+        prepare_chunk.assert_called_once_with(repeated)
+        play_prepared.assert_called_once_with(
+            repeated,
+            "prepared",
         )
 
     def test_explicit_repeat_preserves_seal_and_completed_auto_advance(self):
-        speak_chunk = Mock()
+        prepare_chunk = Mock(return_value="prepared")
+        play_prepared = Mock()
         advance = Mock()
-        reader = self.create_reader(speak_chunk=speak_chunk, auto_advance=advance)
+        reader = self.create_reader(
+            prepare_chunk=prepare_chunk,
+            play_prepared=play_prepared,
+            auto_advance=advance,
+        )
         reader.active_generation = 4
         reader.last_spoken_chunk = SpeechChunk(4, "Alice", "Repeat me.", line_id="a")
         reader.seal_generation(4)
@@ -2165,13 +2135,19 @@ class LiveDialogReaderTest(unittest.TestCase):
             reader.dialog_ready_generation = 4
             self.assertTrue(reader.repeat_last())
             reader._run_auto_advance(4)
-        speak_chunk.assert_called_once_with(
-            SpeechChunk(4, "Alice", "Repeat me.", line_id="a", explicit_replay=True)
+        repeated = SpeechChunk(
+            4,
+            "Alice",
+            "Repeat me.",
+            line_id="a",
+            explicit_replay=True,
         )
+        prepare_chunk.assert_called_once_with(repeated)
+        play_prepared.assert_called_once_with(repeated, "prepared")
         self.assertEqual(reader.sealed_generation, 4)
         self.assertFalse(reader.wait_until_playable(SpeechChunk(4, "Alice", "suffix")))
         reader._schedule([SpeechChunk(4, "Alice", "suffix")])
-        self.assertEqual(speak_chunk.call_count, 1)
+        self.assertEqual(prepare_chunk.call_count, 1)
         advance.assert_not_called()
 
     def test_sequence_replay_completion_preserves_pending_advance_and_cursor(self):
@@ -2429,27 +2405,33 @@ class LiveDialogReaderTest(unittest.TestCase):
         stop_event = Mock()
         stop_event.is_set.side_effect = [False, True]
         capture_state_changed = Mock()
+        capture_frame = Mock()
         reader = self.create_reader(
+            capture_frame=capture_frame,
             focus_probe=Mock(return_value=False),
             capture_state_changed=capture_state_changed,
         )
 
-        reader._run(stop_event)
+        reader._run_capture(stop_event)
 
-        reader.read_snapshot.assert_not_called()
+        capture_frame.assert_not_called()
         capture_state_changed.assert_called_once_with(False, 0.0025)
         stop_event.wait.assert_called_once_with(0.0025)
 
     def test_capture_continues_while_speech_is_active(self):
         stop_event = Mock()
         stop_event.is_set.side_effect = [False, True]
-        reader = self.create_reader(interval_seconds=0.2)
+        capture_frame = Mock()
+        reader = self.create_reader(
+            capture_frame=capture_frame,
+            interval_seconds=0.2,
+        )
         reader.current_chunk = SpeechChunk(1, "Alice", "Speaking now.")
 
-        reader._run(stop_event)
+        reader._run_capture(stop_event)
 
-        reader.read_snapshot.assert_called_once_with()
-        stop_event.wait.assert_called_once_with(0.1)
+        capture_frame.assert_called_once_with()
+        stop_event.wait.assert_called_once_with(0.2)
 
     def test_split_capture_keeps_only_the_latest_unprocessed_frame(self):
         stop_event = Event()

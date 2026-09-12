@@ -287,18 +287,6 @@ class RuntimeLifecycleComponent:
             ocr_executor=controller.ocr_executor,
             speech_executor=controller.speech_executor,
             playback_executor=controller.playback_executor,
-            read_snapshot=lambda: read_live_snapshot(
-                screenshot_directory,
-                controller.voice_router.registry,
-                controller.capture_target,
-                controller.settings.ocr_minimum_confidence,
-                controller._ocr_uncertain,
-                controller.uncertain_frame_recorder,
-                controller._publish_diagnostic,
-                controller._resolve_voice_label,
-                controller.settings.ocr_language,
-                controller.correction_dictionary,
-            ),
             capture_frame=controller._capture_live_frame,
             recognize_frame=controller._recognize_live_frame,
             frame_fingerprint=fingerprint_dialog_frame,
@@ -311,7 +299,6 @@ class RuntimeLifecycleComponent:
             stable_frame_route=controller._stable_live_frame_route,
             stable_frame_owner=controller._stable_live_frame_owner,
             line_id_resolver=controller._live_sequence_line_id,
-            speak_chunk=controller._speak_live_chunk,
             prepare_chunk=controller._prepare_live_chunk,
             play_prepared=controller._play_live_chunk,
             report_error=controller.error_handler,
@@ -420,18 +407,6 @@ class RuntimeLifecycleComponent:
             return None
 
         screenshot_directory = get_screenshot_directory(controller.settings)
-        controller.live_reader.read_snapshot = lambda: read_live_snapshot(
-            screenshot_directory,
-            controller.voice_router.registry,
-            controller.capture_target,
-            controller.settings.ocr_minimum_confidence,
-            controller._ocr_uncertain,
-            controller.uncertain_frame_recorder,
-            controller._publish_diagnostic,
-            controller._resolve_voice_label,
-            controller.settings.ocr_language,
-            controller.correction_dictionary,
-        )
         live_configuration = controller._get_live_configuration()
         controller.live_reader.interval_seconds = live_configuration["interval_seconds"]
         controller.live_reader.tracker_options = live_configuration["tracker_options"]

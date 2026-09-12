@@ -529,13 +529,14 @@ class LiveDialogReader:
         self,
         *,
         capture_executor,
+        ocr_executor,
         speech_executor,
-        read_snapshot,
-        speak_chunk,
+        playback_executor,
+        capture_frame,
+        recognize_frame,
+        prepare_chunk,
+        play_prepared,
         report_error,
-        ocr_executor=None,
-        capture_frame=None,
-        recognize_frame=None,
         frame_fingerprint=None,
         frame_render_fingerprint=None,
         frame_presence=None,
@@ -552,9 +553,6 @@ class LiveDialogReader:
         line_id_resolver=None,
         stable_frame_minimum_seconds=0.12,
         stable_frame_clock=monotonic,
-        playback_executor=None,
-        prepare_chunk=None,
-        play_prepared=None,
         interrupt_speech=None,
         dialog_observed=None,
         interval_seconds=0.2,
@@ -579,13 +577,12 @@ class LiveDialogReader:
         self.speech_executor = speech_executor
         self.ocr_executor = ocr_executor
         self.playback_executor = playback_executor
-        self.read_snapshot = read_snapshot
         self.capture_frame = capture_frame
         self.recognize_frame = recognize_frame
         self.frame_fingerprint = frame_fingerprint or (lambda _frame: None)
         # None means the identity fingerprint is also sufficient for render
         # activity. Keep that as a sentinel so capture does not compute an
-        # expensive fingerprint twice for legacy/replay readers.
+        # expensive fingerprint twice for replay readers.
         self.frame_render_fingerprint = frame_render_fingerprint
         self.frame_presence = frame_presence or (lambda _frame: True)
         self.frame_completion = frame_completion or (lambda _frame: False)
@@ -611,7 +608,6 @@ class LiveDialogReader:
             raise ValueError("stable_frame_minimum_seconds must not be negative")
         self.stable_frame_minimum_seconds = float(stable_frame_minimum_seconds)
         self.stable_frame_clock = stable_frame_clock
-        self.speak_chunk = speak_chunk
         self.prepare_chunk = prepare_chunk
         self.play_prepared = play_prepared
         self.report_error = report_error
@@ -708,20 +704,6 @@ class LiveDialogReader:
         self.next_capture_interval = interval_seconds
         self.pipeline_metrics = LivePipelineMetrics()
 
-        if (prepare_chunk is None) != (play_prepared is None):
-            raise ValueError(
-                "prepare_chunk and play_prepared must be provided together"
-            )
-        if prepare_chunk is not None and playback_executor is None:
-            raise ValueError("playback_executor is required for prepared speech")
-        split_capture_options = (ocr_executor, capture_frame, recognize_frame)
-        if any(value is not None for value in split_capture_options) and not all(
-            value is not None for value in split_capture_options
-        ):
-            raise ValueError(
-                "ocr_executor, capture_frame and recognize_frame must be provided together"
-            )
-
     @property
     def is_running(self):
         with self.state_lock:
@@ -784,20 +766,14 @@ class LiveDialogReader:
             self.processed_frame_version = 0
             self.next_capture_interval = self.interval_seconds
             self.pipeline_metrics = LivePipelineMetrics()
-            if self.capture_frame is None:
-                self.capture_future = self.capture_executor.submit(
-                    self._run,
-                    self.stop_event,
-                )
-            else:
-                self.ocr_future = self.ocr_executor.submit(
-                    self._run_ocr,
-                    self.stop_event,
-                )
-                self.capture_future = self.capture_executor.submit(
-                    self._run_capture,
-                    self.stop_event,
-                )
+            self.ocr_future = self.ocr_executor.submit(
+                self._run_ocr,
+                self.stop_event,
+            )
+            self.capture_future = self.capture_executor.submit(
+                self._run_capture,
+                self.stop_event,
+            )
         return True
 
     def stop(self):
@@ -1470,43 +1446,6 @@ class LiveDialogReader:
         self.candidate_frame_owner = None
         self.candidate_frame_started_at = None
 
-    def _run(self, stop_event):
-        tracker = self.tracker_factory(**self.tracker_options)
-        policy = self.adaptive_policy_factory(
-            base_interval=self.interval_seconds,
-            **self.adaptive_options,
-        )
-        while not stop_event.is_set():
-            focused = self._is_focused()
-            if not focused:
-                interval = policy.observe(None, None, focused=False)
-                self.capture_state_changed(False, interval)
-                stop_event.wait(interval)
-                continue
-            try:
-                character, text = self.read_snapshot()
-                routed_observation = self._report_observation(character, text)
-                if routed_observation is None:
-                    interval = policy.observe(character, text, focused=True)
-                    self.capture_state_changed(True, interval)
-                    stop_event.wait(interval)
-                    continue
-                character, text = routed_observation
-                chunks = tracker.observe(character, text)
-                self._set_generation(tracker.generation)
-                self._schedule(chunks)
-                self._update_dialog_ready(tracker)
-                interval = policy.observe(character, text, focused=True)
-            except Exception as error:
-                self.report_error(error)
-                interval = self.interval_seconds
-            self.capture_state_changed(True, interval)
-            stop_event.wait(interval)
-
-        self._set_generation(tracker.generation)
-        self._schedule(tracker.flush())
-        self._update_dialog_ready(tracker)
-
     def _is_focused(self):
         try:
             focused = bool(self.focus_probe())
@@ -1630,21 +1569,11 @@ class LiveDialogReader:
                     self._defer_chunk_locked(chunk)
                     self._record_speech_metrics_locked(sentence_ready=True)
                     continue
-            target = (
-                self._prepare_if_current
-                if self.prepare_chunk is not None
-                else self._speak_if_current
-            )
-            future = self.speech_executor.submit(target, chunk)
+            future = self.speech_executor.submit(self._prepare_if_current, chunk)
             with self.state_lock:
                 self.speech_futures[future] = chunk
                 self._record_speech_metrics_locked(sentence_ready=True)
-            callback = (
-                self._preparation_finished
-                if self.prepare_chunk is not None
-                else self._speech_finished
-            )
-            future.add_done_callback(callback)
+            future.add_done_callback(self._preparation_finished)
 
     def _speech_finished(self, future):
         with self.state_lock:
@@ -1779,44 +1708,6 @@ class LiveDialogReader:
                 chunk_id=chunk.chunk_id,
                 chunk_ordinal=chunk.ordinal,
                 chunk_characters=len(chunk.text),
-            )
-
-    def _speak_if_current(self, chunk):
-        if not self.wait_until_playable(chunk):
-            return
-        with self.state_lock:
-            self.current_chunk = chunk
-            self.last_spoken_chunk = chunk
-            self._record_speech_metrics_locked(
-                generation_started=True,
-                playback_started=True,
-            )
-        now = monotonic()
-        chunk_details = {
-            "chunk_id": chunk.chunk_id,
-            "chunk_ordinal": chunk.ordinal,
-            "chunk_characters": len(chunk.text),
-        }
-        self._report_pipeline_event(
-            "generation-start", chunk.generation, now, **chunk_details
-        )
-        self._report_pipeline_event("first-pcm", chunk.generation, now, **chunk_details)
-
-        try:
-            self.speak_chunk(chunk)
-        except Exception as error:
-            self.report_error(error)
-        finally:
-            with self.state_lock:
-                self._record_speech_metrics_locked(playback_completed=True)
-                if self.current_chunk == chunk:
-                    self.current_chunk = None
-                self.cancelled_chunk_ids.discard(id(chunk))
-            self._report_pipeline_event(
-                "playback-completion",
-                chunk.generation,
-                monotonic(),
-                **chunk_details,
             )
 
     def _report_observation(self, character, text):
