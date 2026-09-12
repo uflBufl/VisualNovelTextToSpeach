@@ -7,6 +7,7 @@ import json
 import os
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from platformdirs import user_data_path
@@ -185,6 +186,16 @@ def inspect_story_index(path, *, provider_id="local-story-index"):
     )
 
 
+@lru_cache(maxsize=8)
+def _cached_story_index(path, provider_id, expected_sha256):
+    content = inspect_story_index(path, provider_id=provider_id)
+    if content.story_index_sha256 != expected_sha256:
+        raise PregenerationSetupError(
+            "Story content changed while it was being inspected. Refresh to retry."
+        )
+    return content
+
+
 def discover_game_content(settings, *, environment=None, extra_paths=()):
     """Discover bounded, known story-index locations without scanning user files."""
     environment = os.environ if environment is None else environment
@@ -227,7 +238,9 @@ def discover_game_content(settings, *, environment=None, extra_paths=()):
             )
             continue
         try:
-            discovered.append(inspect_story_index(path, provider_id=provider_id))
+            discovered.append(
+                _cached_story_index(str(path), provider_id, sha256_file(path))
+            )
         except PregenerationSetupError as error:
             errors.append(str(error))
     discovered.sort(key=lambda content: len(content.selections), reverse=True)

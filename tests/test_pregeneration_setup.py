@@ -43,7 +43,7 @@ from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.versioned_json import write_versioned_json  # noqa: E402
 
 
-def write_story_index(root):
+def write_story_index(root, *, generated_text="Generate me."):
     root.mkdir(parents=True, exist_ok=True)
     path = root / "story-index.jsonl"
     write_story_index_document(
@@ -91,7 +91,7 @@ def write_story_index(root):
                 "sequence": 2,
                 "speaker": "Rhiannon",
                 "voice_character": "Rhiannon",
-                "text": "Generate me.",
+                "text": generated_text,
                 "kind": "dialogue",
                 "collection_id": "main-1",
                 "source_audio_status": "absent",
@@ -223,6 +223,32 @@ class PregenerationSetupTest(unittest.TestCase):
         self.assertEqual(main.original_audio_lines, 1)
         self.assertEqual(main.generation_lines, 1)
         self.assertEqual(main.speakers, ("Rhiannon",))
+
+    def test_discovery_reuses_unchanged_catalog_and_reloads_changed_bytes(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = write_story_index(root / "content")
+            settings = AppSettings(story_index=str(path))
+            environment = {"R1999_EXTRACTOR_DATA": str(root / "extractor")}
+
+            with (
+                patch(
+                    "vntts.pregeneration_setup.get_local_data_directory",
+                    return_value=root / "app-data",
+                ),
+                patch(
+                    "vntts.pregeneration_setup.inspect_story_index",
+                    wraps=inspect_story_index,
+                ) as inspect,
+            ):
+                discover_game_content(settings, environment=environment)
+                discover_game_content(settings, environment=environment)
+                self.assertEqual(inspect.call_count, 1)
+
+                write_story_index(root / "content", generated_text="Generate again.")
+                discover_game_content(settings, environment=environment)
+
+            self.assertEqual(inspect.call_count, 2)
 
     def test_story_summary_escapes_visible_names_and_copies_plain_details(self):
         with TemporaryDirectory() as temporary_directory:
