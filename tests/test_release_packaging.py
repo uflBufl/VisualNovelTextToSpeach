@@ -141,6 +141,28 @@ class ReleasePackagingTest(unittest.TestCase):
         self.assertIn("--narrator-reference $NarratorReference", script)
         self.assertIn("Test-Path $AudioPath -PathType Leaf", script)
 
+    def test_adaptive_moss_qualification_requires_complete_shareable_evidence(self):
+        script = (PROJECT_ROOT / "scripts/qualify-moss-adaptive-windows.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        for contract in (
+            "ExpectedBuild = '46454ab'",
+            "--require-changing-voice",
+            ".all_requests_complete -ne $true",
+            "$null -eq $_.native.prefill_s",
+            "$null -eq $_.output_wav_validation_s",
+            "$null -eq $_.raw_wav_validation_s",
+            "qualified = $true",
+            "qualified = $false",
+            "contains_generated_voice_audio",
+            "Get-FileHash -LiteralPath $Archive",
+            "$ArchiveFile.Length -gt $MaxArchiveBytes",
+            "publication_seconds",
+        ):
+            self.assertIn(contract, script)
+        self.assertNotIn("artifact = @{ path = $Artifact", script)
+
     def test_macos_runtime_is_injected_without_pyinstaller_reclassification(self):
         spec = (PROJECT_ROOT / "packaging/macos/vntts.spec").read_text(encoding="utf-8")
         script = (PROJECT_ROOT / "scripts/build-macos.sh").read_text(encoding="utf-8")

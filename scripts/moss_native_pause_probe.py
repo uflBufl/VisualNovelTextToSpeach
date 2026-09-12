@@ -38,7 +38,7 @@ from vntts.synthesis import (
     SynthesisRequest,
     moss_generation_limits,
 )
-from vntts.voices import CharacterVoiceRegistry, find_voice_assignment
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry, find_voice_assignment
 
 TEXTS = (
     ("short", "The storm has passed."),
@@ -57,6 +57,13 @@ ZIP_MAX_BYTES = 128 * 1024 * 1024
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=Path)
+    parser.add_argument("--alternate-reference", type=Path)
+    parser.add_argument("--timing-sequence", action="store_true")
+    parser.add_argument(
+        "--require-changing-voice",
+        action="store_true",
+        help="Use a second saved game voice when no alternate reference is supplied",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", type=Path)
     parser.add_argument("--executable", type=Path)
@@ -193,6 +200,43 @@ def _saved_narrator_reference(settings, registry_initializer):
     return references[0].resolve(), registry
 
 
+def _qualification_alternate(options, registry, narrator_reference):
+    explicit = getattr(options, "alternate_reference", None)
+    if explicit is not None:
+        reference = explicit.expanduser().resolve()
+        voices = tuple(
+            {id(voice): voice for voice in registry.voices.values()}.values()
+        )
+        voice = CharacterVoice("Qualification alternate", "alternate", reference)
+        return voice.character, reference, CharacterVoiceRegistry((*voices, voice))
+    if not getattr(options, "require_changing_voice", False):
+        return None, None, registry
+    voices = sorted(
+        {id(voice): voice for voice in registry.voices.values()}.values(),
+        key=lambda voice: voice.character.casefold(),
+    )
+    narrator_sha256 = _sha256(narrator_reference)
+    for voice in voices:
+        if voice.character.casefold() == "narrator" or not voice.references:
+            continue
+        reference = voice.references[0].expanduser().resolve()
+        if (
+            reference == narrator_reference
+            or not reference.is_file()
+            or _sha256(reference) == narrator_sha256
+        ):
+            continue
+        try:
+            preflight = analyze_reference(reference)
+        except OSError, ValueError:
+            continue
+        if preflight["objective_preflight"] == "pass":
+            return voice.character, reference, registry
+    raise ValueError(
+        "no second usable saved game voice was found; pass --alternate-reference PATH"
+    )
+
+
 def _write_archive(output, archive, *, recursive=False):
     paths = [
         path
@@ -230,6 +274,8 @@ def _render_attempt(
     responses,
     *,
     sampling_profiles=PROBE_SAMPLING,
+    voice="Narrator",
+    phase="diagnostic-warm",
 ):
     name = _attempt_name(index, profile, label)
     expected_tokens, expected_seconds = moss_generation_limits(text)
@@ -240,6 +286,8 @@ def _render_attempt(
         "id": name,
         "seed": 1,
         "text": text,
+        "voice": voice,
+        "phase": phase,
         "profile": profile_name,
         "sampling": sampling,
         "production_limits": {
@@ -256,7 +304,7 @@ def _render_attempt(
         with native_speech_context.set({"attempt_id": trace_id}):
             result = backend.render(
                 SynthesisRequest(
-                    "Narrator",
+                    voice,
                     text,
                     seed=1,
                     generation_profile=profile_name,
@@ -276,12 +324,16 @@ def _render_attempt(
                 "max_audio_seconds": result.limits.max_audio_seconds,
             },
         }
+        output_validation_started = monotonic()
         mono = _mono_pcm(result.pcm)
         mono_path = output / f"{name}-output-mono.wav"
         write_pcm16_wav(mono_path, mono, result.sample_rate)
         written_mono, written_info = read_pcm16_mono_wav(mono_path)
         record["output_quality"] = _quality(
             np.asarray(written_mono, dtype=np.int16), written_info.sample_rate
+        )
+        record["output_wav_validation_s"] = round(
+            monotonic() - output_validation_started, 6
         )
         record["files"].update(
             {
@@ -310,6 +362,7 @@ def _render_attempt(
             None,
         )
         for status, headers, data in responses[before:]:
+            raw_validation_started = monotonic()
             raw_path = output / f"{name}-raw.wav"
             raw_path.write_bytes(data)
             record["raw_response"] = {
@@ -329,6 +382,12 @@ def _render_attempt(
                 record["raw_quality"] = _raw_measurements(data)
             except (EOFError, ValueError, wave.Error) as error:
                 record["raw_quality_error"] = str(error)
+            record["raw_wav_validation_s"] = round(
+                record.get("raw_wav_validation_s", 0)
+                + monotonic()
+                - raw_validation_started,
+                6,
+            )
     return record
 
 
@@ -470,10 +529,16 @@ def run(
         raise ValueError(f"output directory already exists: {output}")
     if archive.exists():
         raise ValueError(f"output archive already exists: {archive}")
+    alternate_voice, alternate_reference, registry = _qualification_alternate(
+        options, registry, reference
+    )
     output.mkdir(parents=True)
     report = {
-        "reference": str(reference),
+        "schema": "vntts.moss-native-probe",
+        "schema_version": 1,
+        "reference": reference.name,
         "reference_sha256": _sha256(reference),
+        "contains_generated_voice_audio": True,
         "seed": 1,
         "matrix": {
             "texts": [dict(label=label, text=text) for label, text in TEXTS],
@@ -483,8 +548,10 @@ def run(
     }
     if options.reference is None:
         report["saved_selection"] = {
-            "settings_file": str(get_settings_path()),
-            "voice_manifest": getattr(settings, "voice_manifest", None),
+            "settings_file": get_settings_path().name,
+            "voice_manifest": Path(settings.voice_manifest).name
+            if getattr(settings, "voice_manifest", None)
+            else None,
             "narrator_assignment": find_voice_assignment(
                 getattr(settings, "voice_assignments", {}), "Narrator"
             ),
@@ -497,9 +564,10 @@ def run(
     exit_code = 0
     try:
         print(
-            f"Reference: {reference}\nSHA-256: {report['reference_sha256']}", flush=True
+            f"Reference: {reference.name}\nSHA-256: {report['reference_sha256']}",
+            flush=True,
         )
-        preflight = analyze_reference(reference)
+        preflight = {**analyze_reference(reference), "path": reference.name}
         report["reference_preflight"] = preflight
         if preflight["sha256"] != report["reference_sha256"]:
             raise ValueError("reference changed during preflight")
@@ -514,6 +582,24 @@ def run(
             f"Reference preflight passed: {preflight['duration_seconds']:.3f}s",
             flush=True,
         )
+        if alternate_reference is not None:
+            alternate_preflight = {
+                **analyze_reference(alternate_reference),
+                "path": alternate_reference.name,
+            }
+            alternate_sha256 = _sha256(alternate_reference)
+            if alternate_sha256 == report["reference_sha256"]:
+                raise ValueError("alternate reference contains the same audio")
+            if alternate_preflight["objective_preflight"] != "pass":
+                raise ValueError(
+                    "Alternate reference preflight failed: "
+                    + ", ".join(alternate_preflight["rejection_reasons"])
+                )
+            report["alternate_reference"] = {
+                "name": alternate_reference.name,
+                "sha256": alternate_sha256,
+                "preflight": alternate_preflight,
+            }
         model_name = options.model if options.model is not None else settings.tts_model
         with _configured_native_paths(options.executable, options.model):
             executable, model, sidecar = path_check(model_name)
@@ -521,9 +607,9 @@ def run(
         # explicit. This scope prevents the managed installer from downloading.
         with _configured_native_paths(executable, model):
             report["native_paths"] = {
-                "executable": str(executable),
-                "model": str(model),
-                "sidecar": str(sidecar),
+                "executable": executable.name,
+                "model": model.name,
+                "sidecar": sidecar.name,
             }
             startup_started = monotonic()
             backend = backend_factory(
@@ -546,16 +632,53 @@ def run(
             responses, restore = _capture_native_response(backend)
             report["http_capture_method"] = "_http"
             try:
-                for index, (profile, (label, text)) in enumerate(
+                sequence = [
                     (
+                        profile,
+                        label,
+                        text,
+                        "Narrator",
+                        "process-cold" if not index else "diagnostic-warm",
+                    )
+                    for index, (profile, (label, text)) in enumerate(
                         (profile, item)
                         for profile in sampling_profiles
                         for item in TEXTS
-                    ),
+                    )
+                ]
+                if getattr(options, "timing_sequence", False):
+                    sequence.insert(
+                        1,
+                        (
+                            "stable",
+                            "same-voice-warm",
+                            TEXTS[0][1],
+                            "Narrator",
+                            "same-voice-warm",
+                        ),
+                    )
+                if alternate_reference is not None:
+                    sequence.extend(
+                        (
+                            (
+                                "stable",
+                                phase,
+                                TEXTS[0][1],
+                                alternate_voice,
+                                phase,
+                            )
+                            for phase in ("changed-voice-cold", "changed-voice-warm")
+                        )
+                    )
+                report["expected_attempt_count"] = len(sequence) + int(
+                    getattr(options, "cancel_restart", False)
+                )
+                for index, (profile, label, text, voice, phase) in enumerate(
+                    sequence,
                     1,
                 ):
                     print(
-                        f"[{index}/{len(sampling_profiles) * len(TEXTS)}] {profile} {label}",
+                        f"[{index}/{len(sequence)}] {profile} {label}",
                         flush=True,
                     )
                     try:
@@ -568,6 +691,8 @@ def run(
                             text,
                             responses,
                             sampling_profiles=sampling_profiles,
+                            voice=voice,
+                            phase=phase,
                         )
                         report["attempts"].append(attempt)
                         _write_json(output / f"{attempt['id']}.json", attempt)
@@ -655,6 +780,18 @@ def run(
         elif None in confirmed:
             report["shutdown_error"] = "Owned native server shutdown status is unknown"
             exit_code = 130 if exit_code == 130 else 1
+        report["all_requests_complete"] = (
+            len(report["attempts"]) == report.get("expected_attempt_count")
+            and bool(report["attempts"])
+            and all(
+                attempt.get("completion") == SynthesisCompletion.COMPLETE.value
+                and attempt.get("result", {}).get("cache_source") == "fresh-generation"
+                and attempt.get("raw_response", {}).get("http_status") == 200
+                and "raw_quality_error" not in attempt
+                for attempt in report["attempts"]
+            )
+        )
+        report["exit_code"] = exit_code
         report["archive"] = archive.name
         _write_json(output / "report.json", report)
         _write_json(output / "native-speech.json", support.native_speech_log.report())

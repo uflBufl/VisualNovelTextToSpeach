@@ -58,16 +58,24 @@ folder, close VNTTS and run this once from the project folder:
 powershell -ExecutionPolicy Bypass -File .\scripts\qualify-moss-adaptive-windows.ps1
 ```
 
-The command verifies and extracts the artifact in a temporary folder, reuses the
-installed GGUF pair and saved Narrator reference, then renders the same six samples
-with CPU Local/4 workers, CPU Local/8 workers and adaptive Local GPU/8 workers. It
-fails on a capability or placement mismatch, different CPU WAV hashes, an
-incomplete render or a server left running. The GPU run also cancels one active
+The command verifies that the artifact was built from the expected OpenMOSS commit,
+reuses the installed GGUF pair and saved Narrator reference, then renders the same
+seven samples with CPU Local/2, 4, 6 and 8 workers plus adaptive Local GPU/8
+workers. The GPU run automatically selects a second usable saved game voice and
+records cold/warm timings before and after the voice change. It also cancels one
 uncached request, confirms that process exited and completes a fresh render in a
-new owned process. The resulting
-`moss-adaptive-qualification-*.zip` stays in Downloads and contains timings,
-resource measurements and audio for the final GPU listening check. It does not
-change saved app settings or install the candidate runtime.
+new owned process. Any incomplete or malformed render, capability/placement
+mismatch, different CPU WAV hash, or surviving server fails the qualification.
+Reports separate native phases, output/raw WAV validation, and final archive
+publication time; unavailable required timing is a failure, not zero.
+
+On success, `moss-adaptive-qualification-*.zip` and its `.sha256` and `.json`
+receipt stay in Downloads. The archive declares that it contains generated voice
+audio, timings and resource measurements for the final GPU listening check; JSON
+reports contain basenames and hashes instead of local absolute paths. On failure,
+the unarchived output folder remains with `qualification.json` set to
+`qualified: false`. The command does not change saved app settings or install the
+candidate runtime.
 
 ### Run
 

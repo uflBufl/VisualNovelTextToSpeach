@@ -97,6 +97,12 @@ class _LimitedThenInterruptedBackend(_FakeBackend):
         return self._result(request, SynthesisCompletion.LIMITED)
 
 
+class _NoRawBackend(_FakeBackend):
+    def render(self, request):
+        self.requests.append(request)
+        return self._result(request, SynthesisCompletion.COMPLETE)
+
+
 class _OwnedServer:
     def __init__(self, pid):
         self.pid = pid
@@ -137,6 +143,53 @@ def _options(root):
 
 
 class MossNativePauseProbeTest(unittest.TestCase):
+    def test_missing_raw_responses_never_count_as_complete_evidence(self):
+        with TemporaryDirectory() as temporary:
+            options = _options(Path(temporary))
+
+            self.assertEqual(
+                probe.run(
+                    options,
+                    backend_factory=_NoRawBackend,
+                    path_check=lambda _model: (
+                        Path("server"),
+                        Path("model.gguf"),
+                        Path("codec.gguf"),
+                    ),
+                    settings_loader=lambda: SimpleNamespace(tts_model=None),
+                ),
+                0,
+            )
+
+            report = json.loads((options.output / "report.json").read_text())
+            self.assertFalse(report["all_requests_complete"])
+
+    def test_required_alternate_uses_another_usable_saved_game_voice(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            narrator = root / "narrator.wav"
+            alternate = root / "alternate.wav"
+            narrator.write_bytes(clean_wav_bytes())
+            alternate.write_bytes(clean_wav_bytes(amplitude=0.11))
+            registry = CharacterVoiceRegistry(
+                (
+                    CharacterVoice("Narrator", "narrator", narrator),
+                    CharacterVoice("Centurion", "centurion", alternate),
+                )
+            )
+
+            voice, reference, selected_registry = probe._qualification_alternate(
+                SimpleNamespace(
+                    alternate_reference=None,
+                    require_changing_voice=True,
+                ),
+                registry,
+                narrator,
+            )
+
+            self.assertEqual((voice, reference), ("Centurion", alternate.resolve()))
+            self.assertIs(selected_registry, registry)
+
     def test_replacement_servers_all_receive_shutdown_receipts(self):
         for replacement_stops, expected in ((False, False), (True, True)):
             with self.subTest(replacement_stops=replacement_stops):
@@ -162,6 +215,8 @@ class MossNativePauseProbeTest(unittest.TestCase):
                         0 if replacement_stops else 1,
                     )
                     report = json.loads((options.output / "report.json").read_text())
+                    self.assertFalse(report["all_requests_complete"])
+                    self.assertEqual(report["exit_code"], 0 if replacement_stops else 1)
                     receipt = report["server_shutdown"]
                     self.assertEqual(receipt["confirmed_exited"], expected)
                     self.assertEqual(
@@ -229,6 +284,12 @@ class MossNativePauseProbeTest(unittest.TestCase):
 
             report = json.loads((options.output / "report.json").read_text())
             self.assertEqual(report["http_capture_method"], "_http")
+            self.assertTrue(report["all_requests_complete"])
+            self.assertEqual(report["exit_code"], 0)
+            self.assertEqual(report["reference"], "reference.wav")
+            self.assertEqual(report["reference_preflight"]["path"], "reference.wav")
+            self.assertTrue(report["contains_generated_voice_audio"])
+            self.assertNotIn(str(root.resolve()), json.dumps(report))
             self.assertIsNone(report["server_shutdown"]["confirmed_exited"])
             self.assertEqual(len(report["attempts"]), 6)
             joined = next(
@@ -246,6 +307,8 @@ class MossNativePauseProbeTest(unittest.TestCase):
             )
             self.assertEqual(joined["raw_quality"]["mono"]["analysis_version"], 2)
             for attempt in report["attempts"]:
+                self.assertGreaterEqual(attempt["output_wav_validation_s"], 0)
+                self.assertGreaterEqual(attempt["raw_wav_validation_s"], 0)
                 self.assertTrue(
                     (options.output / attempt["files"]["raw_wav"]["path"]).is_file()
                 )
@@ -274,6 +337,47 @@ class MossNativePauseProbeTest(unittest.TestCase):
                 self.assertIn(
                     joined["files"]["output_mono_wav"]["path"], bundle.namelist()
                 )
+
+    def test_probe_records_cold_warm_and_changed_voice_phases(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            options = _options(root)
+            options.alternate_reference = root / "alternate.wav"
+            options.alternate_reference.write_bytes(clean_wav_bytes(amplitude=0.11))
+            options.require_changing_voice = True
+            options.timing_sequence = True
+
+            self.assertEqual(
+                probe.run(
+                    options,
+                    backend_factory=_FakeBackend,
+                    path_check=lambda _model: (
+                        Path("server"),
+                        Path("model.gguf"),
+                        Path("codec.gguf"),
+                    ),
+                    settings_loader=lambda: SimpleNamespace(tts_model=None),
+                ),
+                0,
+            )
+
+            report = json.loads((options.output / "report.json").read_text())
+            self.assertEqual(report["expected_attempt_count"], 9)
+            self.assertTrue(report["all_requests_complete"])
+            self.assertEqual(
+                [
+                    attempt["phase"]
+                    for attempt in report["attempts"]
+                    if attempt["phase"]
+                    in {
+                        "same-voice-warm",
+                        "changed-voice-cold",
+                        "changed-voice-warm",
+                    }
+                ],
+                ["same-voice-warm", "changed-voice-cold", "changed-voice-warm"],
+            )
+            self.assertEqual(report["alternate_reference"]["name"], "alternate.wav")
 
     def test_probe_never_overwrites_an_existing_output_directory(self):
         with TemporaryDirectory() as temporary:
