@@ -3332,44 +3332,99 @@ def _install_extended_generation_queue(
     return config
 
 
-def _carry_forward_review_outcomes(
-    source_workspace,
-    staging,
-    target_queue,
-    *,
-    import_id,
-    voice_config,
-    run_config,
-    characters,
-    failure_repair_policy,
-    failure_reference_binding,
-    offline_fallback_authorities,
+@dataclass(frozen=True)
+class _CarryForwardSelection:
+    repair_policy: FailureRepairPolicy
+    failed_queue_ids: tuple[str, ...]
+    sentence_queue_ids: frozenset[str]
+    bounded_queue_ids: frozenset[str]
+    offline_queue_ids: frozenset[str]
+    inline_pause_queue_ids: frozenset[str]
+    characters: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _CarryForwardSource:
+    directory: Path
+    document: dict
+    output: Path
+    run_config: dict
+    state: dict
+    state_path: Path
+    state_sha256: str
+
+
+def _validate_carry_forward_source_config(source_document, run_config, selection):
+    source_run_config = source_document.get("run_config")
+    source_run_config_normalized = _workspace_run_config_with_policy(source_run_config)
+    target_run_config_normalized = _workspace_run_config_with_policy(run_config)
+    if (
+        source_run_config_normalized != target_run_config_normalized
+        and not selection.failed_queue_ids
+    ):
+        raise AuthoringWorkbenchError(
+            "Carry-forward source and target model configuration differs"
+        )
+    same_backend = (
+        selection.sentence_queue_ids
+        | selection.bounded_queue_ids
+        | selection.inline_pause_queue_ids
+    )
+    if same_backend and selection.offline_queue_ids:
+        raise AuthoringWorkbenchError(
+            "One carry-forward workspace cannot mix same-backend failure repair "
+            "with cross-backend offline fallback"
+        )
+    source_base_config = dict(source_run_config_normalized)
+    source_base_config["failure_repair_policy"] = FailureRepairPolicy().to_document()
+    target_base_config = dict(target_run_config_normalized)
+    target_base_config["failure_repair_policy"] = FailureRepairPolicy().to_document()
+    if same_backend and source_base_config != target_base_config:
+        raise AuthoringWorkbenchError(
+            "Same-backend repair requires the exact source backend, model, profile "
+            "and missing-voice policy"
+        )
+    if selection.offline_queue_ids and (
+        run_config.get("backend") != "pocket-tts"
+        or source_run_config_normalized.get("backend") == run_config.get("backend")
+        or run_config.get("model") not in {None, "pocket-tts"}
+        or run_config.get("generation_profile") not in {None, "default"}
+    ):
+        raise AuthoringWorkbenchError(
+            "Offline fallback requires a different source backend and the exact "
+            "Pocket TTS default model/profile"
+        )
+    return source_run_config_normalized
+
+
+def _select_carry_forward_outcomes(
+    source_workspace, characters, failure_repair_policy, offline_fallback_authorities
 ):
     repair_policy = failure_repair_policy
-    failed_selected = repair_policy.queue_ids
-    sentence_selected = set(repair_policy.sentence_segment_queue_ids)
-    bounded_selected = set(repair_policy.bounded_seed_retry_queue_ids)
-    offline_selected = set(repair_policy.offline_fallback_queue_ids)
-    inline_pause_selected = set(repair_policy.inline_pause_queue_ids)
-    unsupported_selected = (
-        set(failed_selected)
-        - sentence_selected
-        - bounded_selected
-        - offline_selected
-        - inline_pause_selected
+    failed_queue_ids = repair_policy.queue_ids
+    sentence_queue_ids = frozenset(repair_policy.sentence_segment_queue_ids)
+    bounded_queue_ids = frozenset(repair_policy.bounded_seed_retry_queue_ids)
+    offline_queue_ids = frozenset(repair_policy.offline_fallback_queue_ids)
+    inline_pause_queue_ids = frozenset(repair_policy.inline_pause_queue_ids)
+    unsupported = (
+        set(failed_queue_ids)
+        - sentence_queue_ids
+        - bounded_queue_ids
+        - offline_queue_ids
+        - inline_pause_queue_ids
     )
-    if unsupported_selected:
+    if unsupported:
         raise AuthoringWorkbenchError(
             "Carry-forward currently supports only bounded seed, sentence "
             "segmentation, inline pause and offline fallback failures"
         )
     if source_workspace is None:
-        if characters is not None or offline_selected or offline_fallback_authorities:
+        if characters is not None or offline_queue_ids or offline_fallback_authorities:
             raise AuthoringWorkbenchError(
                 "Carry-forward outcomes require a source workspace"
             )
-        return None, ()
-    if characters is None and not failed_selected:
+        return None
+    if characters is None and not failed_queue_ids:
         raise AuthoringWorkbenchError(
             "Carry-forward requires characters or exact repair failures"
         )
@@ -3389,6 +3444,27 @@ def _carry_forward_review_outcomes(
         raise AuthoringWorkbenchError(
             "Carry-forward characters must be explicit and exclude Narrator"
         )
+    return _CarryForwardSelection(
+        repair_policy,
+        failed_queue_ids,
+        sentence_queue_ids,
+        bounded_queue_ids,
+        offline_queue_ids,
+        inline_pause_queue_ids,
+        selected,
+    )
+
+
+def _load_carry_forward_source(
+    source_workspace,
+    staging,
+    target_queue,
+    *,
+    import_id,
+    run_config,
+    failure_reference_binding,
+    selection,
+):
     source_directory, source_document = _load_workspace(source_workspace)
     if (
         failure_reference_binding is not None
@@ -3398,8 +3474,7 @@ def _carry_forward_review_outcomes(
         raise AuthoringWorkbenchError(
             "Carry-forward failure-reference binding differs from its source"
         )
-    source_source = source_document["source"]
-    if source_source.get("import_id") != import_id:
+    if source_document["source"].get("import_id") != import_id:
         raise AuthoringWorkbenchError(
             "Carry-forward source and target must share one immutable import"
         )
@@ -3416,39 +3491,9 @@ def _carry_forward_review_outcomes(
         raise AuthoringWorkbenchError(
             "Carry-forward source and target queues are not byte-identical"
         )
-    source_run_config = source_document.get("run_config")
-    source_run_config_normalized = _workspace_run_config_with_policy(source_run_config)
-    target_run_config_normalized = _workspace_run_config_with_policy(run_config)
-    cross_backend = source_run_config_normalized != target_run_config_normalized
-    if cross_backend and not failed_selected:
-        raise AuthoringWorkbenchError(
-            "Carry-forward source and target model configuration differs"
-        )
-    same_backend_selected = sentence_selected | bounded_selected | inline_pause_selected
-    if same_backend_selected and offline_selected:
-        raise AuthoringWorkbenchError(
-            "One carry-forward workspace cannot mix same-backend failure repair "
-            "with cross-backend offline fallback"
-        )
-    source_base_config = dict(source_run_config_normalized)
-    source_base_config["failure_repair_policy"] = FailureRepairPolicy().to_document()
-    target_base_config = dict(target_run_config_normalized)
-    target_base_config["failure_repair_policy"] = FailureRepairPolicy().to_document()
-    if same_backend_selected and source_base_config != target_base_config:
-        raise AuthoringWorkbenchError(
-            "Same-backend repair requires the exact source backend, model, profile "
-            "and missing-voice policy"
-        )
-    if offline_selected and (
-        run_config.get("backend") != "pocket-tts"
-        or source_run_config_normalized.get("backend") == run_config.get("backend")
-        or run_config.get("model") not in {None, "pocket-tts"}
-        or run_config.get("generation_profile") not in {None, "default"}
-    ):
-        raise AuthoringWorkbenchError(
-            "Offline fallback requires a different source backend and the exact "
-            "Pocket TTS default model/profile"
-        )
+    source_run_config_normalized = _validate_carry_forward_source_config(
+        source_document, run_config, selection
+    )
     source_output = source_directory / "generated-audio"
     source_state_path = source_output / "generation-state.json"
     source_state_payload = _read_file_bytes(
@@ -3456,42 +3501,49 @@ def _carry_forward_review_outcomes(
     )
     source_state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
     try:
-        parsed_source_state = json.loads(source_state_payload.decode("utf-8"))
-        validated_source_state = load_generation_state(
-            source_state_path, source_queue_path
-        )
+        state = json.loads(source_state_payload.decode("utf-8"))
+        validated_state = load_generation_state(source_state_path, source_queue_path)
     except (UnicodeDecodeError, json.JSONDecodeError, BulkGenerationError) as error:
         raise AuthoringWorkbenchError(
             f"Carry-forward source state is invalid: {error}"
         ) from error
     if (
-        parsed_source_state != validated_source_state
+        state != validated_state
         or sha256_file(source_state_path) != source_state_sha256
     ):
         raise AuthoringWorkbenchError(
             "Carry-forward source state changed while it was loaded"
         )
-    if parsed_source_state.get("active") is not None:
+    if state.get("active") is not None:
         raise AuthoringWorkbenchError(
             "Carry-forward source has an active generation attempt"
         )
+    return _CarryForwardSource(
+        source_directory,
+        source_document,
+        source_output,
+        source_run_config_normalized,
+        state,
+        source_state_path,
+        source_state_sha256,
+    )
 
+
+def _stage_offline_fallback_authorities(staging, source, selection, authorities):
     try:
-        authorities = load_offline_fallback_authorities(
-            offline_fallback_authorities,
-            parsed_source_state.get("items", {}),
-            offline_selected,
+        loaded = load_offline_fallback_authorities(
+            authorities,
+            source.state.get("items", {}),
+            selection.offline_queue_ids,
         )
     except OfflineFallbackAuthorityError as error:
         raise AuthoringWorkbenchError(str(error)) from error
     authority_by_queue_id = {
-        queue_id: authority
-        for authority in authorities
-        for queue_id in authority.queue_ids
+        queue_id: authority for authority in loaded for queue_id in authority.queue_ids
     }
-    authority_records = []
-    authority_sources = []
-    for authority in authorities:
+    records = []
+    sources = []
+    for authority in loaded:
         relative = (
             Path("provenance/offline-fallback-authorities")
             / f"{authority.authority_id}.json"
@@ -3503,15 +3555,16 @@ def _carry_forward_review_outcomes(
             raise AuthoringWorkbenchError(
                 "Unable to preserve offline fallback authority"
             )
-        authority_records.append(authority.snapshot_record(relative.as_posix()))
-        authority_sources.append(
-            (
-                authority.source,
-                authority.source_sha256,
-                "offline fallback authority",
-            )
+        records.append(authority.snapshot_record(relative.as_posix()))
+        sources.append(
+            (authority.source, authority.source_sha256, "offline fallback authority")
         )
+    return loaded, authority_by_queue_id, records, tuple(sources)
 
+
+def _load_carry_forward_target(
+    staging, target_queue_path, voice_config, failure_reference_binding, source
+):
     target_state_path = staging / "generated-audio" / "generation-state.json"
     try:
         target_state = load_generation_state(target_state_path, target_queue_path)
@@ -3521,16 +3574,12 @@ def _carry_forward_review_outcomes(
         raise AuthoringWorkbenchError(
             "Carry-forward target seed has an active generation attempt"
         )
-    target_seed = copy.deepcopy(target_state)
     target_registry = _registry_from_staged_voice(
-        staging,
-        voice_config,
-        failure_reference_binding,
+        staging, voice_config, failure_reference_binding
     )
-    source_registry = _workspace_voice_registry(source_directory, source_document)
+    source_registry = _workspace_voice_registry(source.directory, source.document)
     source_queue_overrides = _workspace_queue_voice_overrides(
-        source_directory,
-        source_document,
+        source.directory, source.document
     )
     target_manifest = _within(
         staging,
@@ -3538,210 +3587,303 @@ def _carry_forward_review_outcomes(
         "Voice manifest snapshot",
     )
     target_queue_overrides = _queue_voice_overrides_for_manifest(target_manifest)
-    target_runtime_binding = _failure_reference_runtime_binding(
-        staging,
-        {"failure_reference_binding": failure_reference_binding},
+    runtime_binding = _failure_reference_runtime_binding(
+        staging, {"failure_reference_binding": failure_reference_binding}
     )
-    if target_runtime_binding is not None:
+    if runtime_binding is not None:
         target_queue_overrides = {
             **target_queue_overrides,
-            **target_runtime_binding.queue_voice_overrides,
+            **runtime_binding.queue_voice_overrides,
         }
+    return (
+        target_state_path,
+        target_state,
+        copy.deepcopy(target_state),
+        source_registry,
+        target_registry,
+        source_queue_overrides,
+        target_queue_overrides,
+    )
+
+
+def _carry_forward_reviewed_items(
+    staging,
+    target_queue,
+    source,
+    target_state,
+    target_seed,
+    selection,
+    source_registry,
+    target_registry,
+    source_queue_overrides,
+    target_queue_overrides,
+):
     source_provenance = None
-    source_audio_snapshots = []
+    snapshots = []
     carried = []
     for queue_item in target_queue.items:
-        result = parsed_source_state["items"].get(queue_item.queue_id)
+        result = source.state["items"].get(queue_item.queue_id)
         if not isinstance(result, dict) or not _terminal_review_outcome(result):
             continue
         character = synthesis_character_for_line(
             queue_item.speaker, queue_item.voice_character
         )
-        if character == "Narrator" or character not in selected:
+        if character == "Narrator" or character not in selection.characters:
             continue
-        seed_result = target_seed["items"].get(queue_item.queue_id)
-        mode = "review-only"
-        if not _same_seed_generation(seed_result, result):
-            mode = "full-outcome"
-            if source_provenance is None:
-                source_provenance = _workspace_generation_provenance(
-                    source_directory, source_document
-                )
-            source_synthesis_character = source_queue_overrides.get(
-                queue_item.queue_id, character
-            )
-            target_synthesis_character = target_queue_overrides.get(
-                queue_item.queue_id, character
-            )
-            if source_synthesis_character != target_synthesis_character:
-                raise AuthoringWorkbenchError(
-                    f"Carry-forward queue voice differs for {queue_item.queue_id!r}"
-                )
-            _validate_full_carry_forward_item(
-                queue_item,
-                result,
-                source_synthesis_character,
-                source_document,
-                source_run_config_normalized,
-                source_provenance,
-                source_registry,
-                target_registry,
-            )
-        relative = _safe_relative(
-            result.get("path"), f"Carry-forward item {queue_item.queue_id!r} path"
+        carry_record, snapshot, source_provenance = _carry_forward_reviewed_item(
+            staging,
+            queue_item,
+            result,
+            character,
+            source,
+            target_state,
+            target_seed,
+            source_provenance,
+            source_registry,
+            target_registry,
+            source_queue_overrides,
+            target_queue_overrides,
         )
-        for other_queue_id, other_result in target_seed["items"].items():
-            if (
-                other_queue_id != queue_item.queue_id
-                and isinstance(other_result, dict)
-                and other_result.get("path") == relative.as_posix()
-            ):
-                raise AuthoringWorkbenchError(
-                    f"Carry-forward WAV path collides with {other_queue_id!r}"
-                )
-        source_audio = _within(source_output, relative, "Carry-forward source WAV")
-        audio_payload = _read_file_bytes(source_audio, "carry-forward source WAV")
-        audio_sha256 = hashlib.sha256(audio_payload).hexdigest()
-        if audio_sha256 != _require_sha256(
-            result.get("file_sha256"),
-            f"Carry-forward item {queue_item.queue_id!r} WAV SHA-256",
-        ):
-            raise AuthoringWorkbenchError(
-                f"Carry-forward source WAV changed for {queue_item.queue_id!r}"
-            )
-        target_audio = _within(
-            staging / "generated-audio", relative, "Carry-forward target WAV"
-        )
-        if mode == "full-outcome":
-            target_audio.parent.mkdir(parents=True, exist_ok=True)
-            target_audio.write_bytes(audio_payload)
-        elif not target_audio.is_file() or sha256_file(target_audio) != audio_sha256:
-            raise AuthoringWorkbenchError(
-                f"Carry-forward seed WAV differs for {queue_item.queue_id!r}"
-            )
-        source_item_sha256 = canonical_document_sha256(result)
-        carry_record = {
-            "mode": mode,
-            "source_workspace_id": source_document["workspace_id"],
-            "source_state_sha256": source_state_sha256,
-            "source_item_sha256": source_item_sha256,
-            "audio_sha256": audio_sha256,
-            "character": character,
-        }
-        copied_result = copy.deepcopy(result)
-        copied_result["carry_forward"] = carry_record
-        target_state["items"][queue_item.queue_id] = copied_result
         carried.append({"queue_id": queue_item.queue_id, **carry_record})
-        source_audio_snapshots.append((source_audio, audio_sha256))
-    queue_by_id = {item.queue_id: item for item in target_queue.items}
-    for queue_id in failed_selected:
-        if queue_id not in queue_by_id:
+        snapshots.append(snapshot)
+    return carried, snapshots
+
+
+def _carry_forward_reviewed_item(
+    staging,
+    queue_item,
+    result,
+    character,
+    source,
+    target_state,
+    target_seed,
+    source_provenance,
+    source_registry,
+    target_registry,
+    source_queue_overrides,
+    target_queue_overrides,
+):
+    mode = "review-only"
+    if not _same_seed_generation(target_seed["items"].get(queue_item.queue_id), result):
+        mode = "full-outcome"
+        if source_provenance is None:
+            source_provenance = _workspace_generation_provenance(
+                source.directory, source.document
+            )
+        source_character = source_queue_overrides.get(queue_item.queue_id, character)
+        target_character = target_queue_overrides.get(queue_item.queue_id, character)
+        if source_character != target_character:
             raise AuthoringWorkbenchError(
-                f"Failure repair references unknown queue item {queue_id!r}"
+                f"Carry-forward queue voice differs for {queue_item.queue_id!r}"
             )
-        result = parsed_source_state["items"].get(queue_id)
-        if not isinstance(result, dict) or result.get("status") != "failed":
-            raise AuthoringWorkbenchError(
-                f"Failure repair requires a current failed source outcome for {queue_id!r}"
-            )
-        failure = normalized_failure_record(result, text=queue_by_id[queue_id].text)
-        attempts = result.get("attempts")
-        source_model = _required_text(
-            result.get("model"), f"Offline fallback source model for {queue_id!r}"
+        _validate_full_carry_forward_item(
+            queue_item,
+            result,
+            source_character,
+            source.document,
+            source.run_config,
+            source_provenance,
+            source_registry,
+            target_registry,
         )
-        source_profile = _required_text(
-            result.get("generation_profile"),
-            f"Offline fallback source profile for {queue_id!r}",
-        )
-        strategy = repair_policy.strategy_for(queue_id)
-        fallback_authority = authority_by_queue_id.get(queue_id)
-        minimum_attempts = (
-            MAX_BOUNDED_TOTAL_ATTEMPTS
-            if strategy == OFFLINE_FALLBACK_BACKEND and fallback_authority is None
-            else 1
-        )
-        attempts_by_provider = result.get("attempts_by_provider")
-        source_provider_attempts = (
-            attempts_by_provider.get(result.get("provider"), attempts)
-            if isinstance(attempts_by_provider, dict)
-            else attempts
-        )
-        source_repair = result.get("failure_repair")
-        source_repair_strategy = (
-            source_repair.get("strategy") if isinstance(source_repair, dict) else None
-        )
-        sentence_mismatch = strategy == SENTENCE_BOUNDARY_SEGMENTATION and not (
-            sentence_repair_matches_failure(failure, queue_by_id[queue_id].text)
-        )
-        inline_pause_mismatch = strategy == INLINE_PAUSE_MARKER and not (
-            inline_pause_matches_failure(failure, queue_by_id[queue_id].text)
-        )
-        if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
-            failure_kind_mismatch = sentence_mismatch
-        elif strategy == INLINE_PAUSE_MARKER:
-            failure_kind_mismatch = inline_pause_mismatch
-        elif strategy == OFFLINE_FALLBACK_BACKEND:
-            failure_kind_mismatch = not (
-                (
-                    fallback_authority is not None
-                    or (
-                        isinstance(source_provider_attempts, int)
-                        and not isinstance(source_provider_attempts, bool)
-                        and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
-                    )
-                )
-                and (
-                    failure.get("kind") == "missed_eos_audio_limit"
-                    or (
-                        failure.get("kind") == "speech_silence"
-                        and source_repair_strategy
-                        in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
-                        and (
-                            fallback_authority is not None
-                            or inline_pause_matches_failure(
-                                failure, queue_by_id[queue_id].text
-                            )
-                        )
-                    )
-                )
-            )
-        else:
-            failure_kind_mismatch = failure.get("kind") != "missed_eos_audio_limit"
+    relative = _safe_relative(
+        result.get("path"), f"Carry-forward item {queue_item.queue_id!r} path"
+    )
+    for other_queue_id, other_result in target_seed["items"].items():
         if (
-            failure_kind_mismatch
-            or not isinstance(attempts, int)
-            or isinstance(attempts, bool)
-            or attempts < minimum_attempts
-            or result.get("provider") != source_run_config_normalized.get("backend")
-            or (
-                source_run_config_normalized.get("model") is not None
-                and source_model != source_run_config_normalized.get("model")
-            )
-            or (
-                source_run_config_normalized.get("generation_profile") is not None
-                and source_profile
-                != source_run_config_normalized.get("generation_profile")
-            )
+            other_queue_id != queue_item.queue_id
+            and isinstance(other_result, dict)
+            and other_result.get("path") == relative.as_posix()
         ):
             raise AuthoringWorkbenchError(
-                f"Failure-repair source is not a compatible typed backend failure for {queue_id!r}"
+                f"Carry-forward WAV path collides with {other_queue_id!r}"
             )
-        if strategy in {BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}:
-            provider_attempts = result.get("attempts_by_provider", {}).get(
-                result.get("provider"), attempts
+    source_audio = _within(source.output, relative, "Carry-forward source WAV")
+    audio_payload = _read_file_bytes(source_audio, "carry-forward source WAV")
+    audio_sha256 = hashlib.sha256(audio_payload).hexdigest()
+    if audio_sha256 != _require_sha256(
+        result.get("file_sha256"),
+        f"Carry-forward item {queue_item.queue_id!r} WAV SHA-256",
+    ):
+        raise AuthoringWorkbenchError(
+            f"Carry-forward source WAV changed for {queue_item.queue_id!r}"
+        )
+    target_audio = _within(
+        staging / "generated-audio", relative, "Carry-forward target WAV"
+    )
+    if mode == "full-outcome":
+        target_audio.parent.mkdir(parents=True, exist_ok=True)
+        target_audio.write_bytes(audio_payload)
+    elif not target_audio.is_file() or sha256_file(target_audio) != audio_sha256:
+        raise AuthoringWorkbenchError(
+            f"Carry-forward seed WAV differs for {queue_item.queue_id!r}"
+        )
+    carry_record = {
+        "mode": mode,
+        "source_workspace_id": source.document["workspace_id"],
+        "source_state_sha256": source.state_sha256,
+        "source_item_sha256": canonical_document_sha256(result),
+        "audio_sha256": audio_sha256,
+        "character": character,
+    }
+    copied_result = copy.deepcopy(result)
+    copied_result["carry_forward"] = carry_record
+    target_state["items"][queue_item.queue_id] = copied_result
+    return carry_record, (source_audio, audio_sha256), source_provenance
+
+
+def _validate_failed_carry_forward_kind(
+    strategy,
+    failure,
+    text,
+    fallback_authority,
+    source_provider_attempts,
+    source_repair_strategy,
+):
+    if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+        return not sentence_repair_matches_failure(failure, text)
+    if strategy == INLINE_PAUSE_MARKER:
+        return not inline_pause_matches_failure(failure, text)
+    if strategy != OFFLINE_FALLBACK_BACKEND:
+        return failure.get("kind") != "missed_eos_audio_limit"
+    attempts_exhausted = (
+        isinstance(source_provider_attempts, int)
+        and not isinstance(source_provider_attempts, bool)
+        and source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+    )
+    speech_silence = (
+        failure.get("kind") == "speech_silence"
+        and source_repair_strategy in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
+        and (
+            fallback_authority is not None
+            or inline_pause_matches_failure(failure, text)
+        )
+    )
+    return not (
+        (fallback_authority is not None or attempts_exhausted)
+        and (failure.get("kind") == "missed_eos_audio_limit" or speech_silence)
+    )
+
+
+def _validate_failed_carry_forward_source(
+    source, selection, queue_by_id, authority_by_queue_id, queue_id
+):
+    if queue_id not in queue_by_id:
+        raise AuthoringWorkbenchError(
+            f"Failure repair references unknown queue item {queue_id!r}"
+        )
+    result = source.state["items"].get(queue_id)
+    if not isinstance(result, dict) or result.get("status") != "failed":
+        raise AuthoringWorkbenchError(
+            f"Failure repair requires a current failed source outcome for {queue_id!r}"
+        )
+    queue_item = queue_by_id[queue_id]
+    failure = normalized_failure_record(result, text=queue_item.text)
+    attempts = result.get("attempts")
+    source_model = _required_text(
+        result.get("model"), f"Offline fallback source model for {queue_id!r}"
+    )
+    source_profile = _required_text(
+        result.get("generation_profile"),
+        f"Offline fallback source profile for {queue_id!r}",
+    )
+    strategy = selection.repair_policy.strategy_for(queue_id)
+    fallback_authority = authority_by_queue_id.get(queue_id)
+    attempts_by_provider = result.get("attempts_by_provider")
+    source_provider_attempts = (
+        attempts_by_provider.get(result.get("provider"), attempts)
+        if isinstance(attempts_by_provider, dict)
+        else attempts
+    )
+    source_repair = result.get("failure_repair")
+    source_repair_strategy = (
+        source_repair.get("strategy") if isinstance(source_repair, dict) else None
+    )
+    minimum_attempts = (
+        MAX_BOUNDED_TOTAL_ATTEMPTS
+        if strategy == OFFLINE_FALLBACK_BACKEND and fallback_authority is None
+        else 1
+    )
+    if (
+        _validate_failed_carry_forward_kind(
+            strategy,
+            failure,
+            queue_item.text,
+            fallback_authority,
+            source_provider_attempts,
+            source_repair_strategy,
+        )
+        or not isinstance(attempts, int)
+        or isinstance(attempts, bool)
+        or attempts < minimum_attempts
+        or result.get("provider") != source.run_config.get("backend")
+        or (
+            source.run_config.get("model") is not None
+            and source_model != source.run_config.get("model")
+        )
+        or (
+            source.run_config.get("generation_profile") is not None
+            and source_profile != source.run_config.get("generation_profile")
+        )
+    ):
+        raise AuthoringWorkbenchError(
+            f"Failure-repair source is not a compatible typed backend failure for {queue_id!r}"
+        )
+    provider_attempts = None
+    if strategy in {BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}:
+        provider_attempts = result.get("attempts_by_provider", {}).get(
+            result.get("provider"), attempts
+        )
+        if (
+            not isinstance(provider_attempts, int)
+            or isinstance(provider_attempts, bool)
+            or not 1 <= provider_attempts < 3
+        ):
+            raise AuthoringWorkbenchError(
+                f"Bounded repair source attempts are exhausted for {queue_id!r}"
             )
-            if (
-                not isinstance(provider_attempts, int)
-                or isinstance(provider_attempts, bool)
-                or not 1 <= provider_attempts < 3
-            ):
-                raise AuthoringWorkbenchError(
-                    f"Bounded repair source attempts are exhausted for {queue_id!r}"
-                )
-        source_item_sha256 = canonical_document_sha256(result)
+    return (
+        result,
+        failure,
+        attempts,
+        source_model,
+        source_profile,
+        strategy,
+        fallback_authority,
+        source_provider_attempts,
+        source_repair_strategy,
+        provider_attempts,
+    )
+
+
+def _carry_forward_failed_items(
+    source,
+    target_state,
+    target_queue,
+    selection,
+    authority_by_queue_id,
+    source_registry,
+):
+    queue_by_id = {item.queue_id: item for item in target_queue.items}
+    carried = []
+    for queue_id in selection.failed_queue_ids:
+        (
+            result,
+            failure,
+            attempts,
+            source_model,
+            source_profile,
+            strategy,
+            fallback_authority,
+            source_provider_attempts,
+            source_repair_strategy,
+            provider_attempts,
+        ) = _validate_failed_carry_forward_source(
+            source, selection, queue_by_id, authority_by_queue_id, queue_id
+        )
+        queue_item = queue_by_id[queue_id]
         requested_character = synthesis_character_for_line(
-            queue_by_id[queue_id].speaker,
-            queue_by_id[queue_id].voice_character,
+            queue_item.speaker, queue_item.voice_character
         )
         effective_character = _required_text(
             result.get("voice_character", requested_character),
@@ -3749,7 +3891,7 @@ def _carry_forward_review_outcomes(
         )
         reference_character = (
             _required_text(
-                source_document.get("narrator_character"),
+                source.document.get("narrator_character"),
                 "Carry-forward source narrator character",
             )
             if effective_character == "Narrator"
@@ -3757,9 +3899,9 @@ def _carry_forward_review_outcomes(
         )
         carry_record = {
             "mode": "failed-outcome",
-            "source_workspace_id": source_document["workspace_id"],
-            "source_state_sha256": source_state_sha256,
-            "source_item_sha256": source_item_sha256,
+            "source_workspace_id": source.document["workspace_id"],
+            "source_state_sha256": source.state_sha256,
+            "source_item_sha256": canonical_document_sha256(result),
             "character": effective_character,
             "source_provider": result["provider"],
             "source_model": source_model,
@@ -3768,8 +3910,7 @@ def _carry_forward_review_outcomes(
             "source_seed": result.get("seed"),
             "source_failure_kind": failure["kind"],
             "source_voice_reference": _voice_reference_identity(
-                source_registry,
-                reference_character,
+                source_registry, reference_character
             ),
         }
         if source_repair_strategy is not None:
@@ -3789,44 +3930,138 @@ def _carry_forward_review_outcomes(
         copied_result["carry_forward"] = carry_record
         target_state["items"][queue_id] = copied_result
         carried.append({"queue_id": queue_id, **carry_record})
+    return carried
+
+
+def _validate_carry_forward_results(selection, carried):
     if not carried:
         raise AuthoringWorkbenchError(
             "Carry-forward source has no terminal review outcomes for the selected characters"
         )
-    unknown = set(selected) - {value["character"] for value in carried}
+    unknown = set(selection.characters) - {value["character"] for value in carried}
     if unknown:
         raise AuthoringWorkbenchError(
             "Carry-forward has no terminal review outcomes for: "
             + ", ".join(sorted(unknown))
         )
+
+
+def _publish_carry_forward_staging(target_state_path, target_state, source, snapshots):
     atomic_write_json(target_state_path, target_state, sort_keys=True)
     try:
         publish_generated_manifest(target_state_path)
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    if sha256_file(source_state_path) != source_state_sha256:
+    if sha256_file(source.state_path) != source.state_sha256:
         raise AuthoringWorkbenchError(
             "Carry-forward source state changed before workspace publication"
         )
-    for path, digest in source_audio_snapshots:
+    for path, digest in snapshots:
         if not path.is_file() or sha256_file(path) != digest:
             raise AuthoringWorkbenchError(
                 "Carry-forward source WAV changed before workspace publication"
             )
+
+
+def _carry_forward_document(source, selection, carried, authorities, authority_records):
     document = {
         "schema": "vntts.authoring-carry-forward",
-        "schema_version": 4 if authorities else (3 if failed_selected else 1),
-        "source_workspace_id": source_document["workspace_id"],
-        "source_state_sha256": source_state_sha256,
-        "characters": list(selected),
+        "schema_version": 4
+        if authorities
+        else (3 if selection.failed_queue_ids else 1),
+        "source_workspace_id": source.document["workspace_id"],
+        "source_state_sha256": source.state_sha256,
+        "characters": list(selection.characters),
         "items": carried,
     }
-    if failed_selected:
-        document["failed_queue_ids"] = list(failed_selected)
-        document["source_run_config"] = source_run_config
+    if selection.failed_queue_ids:
+        document["failed_queue_ids"] = list(selection.failed_queue_ids)
+        document["source_run_config"] = source.document.get("run_config")
     if authorities:
         document["offline_fallback_authorities"] = authority_records
-    return document, tuple(authority_sources)
+    return document
+
+
+def _carry_forward_review_outcomes(
+    source_workspace,
+    staging,
+    target_queue,
+    *,
+    import_id,
+    voice_config,
+    run_config,
+    characters,
+    failure_repair_policy,
+    failure_reference_binding,
+    offline_fallback_authorities,
+):
+    selection = _select_carry_forward_outcomes(
+        source_workspace,
+        characters,
+        failure_repair_policy,
+        offline_fallback_authorities,
+    )
+    if selection is None:
+        return None, ()
+    source = _load_carry_forward_source(
+        source_workspace,
+        staging,
+        target_queue,
+        import_id=import_id,
+        run_config=run_config,
+        failure_reference_binding=failure_reference_binding,
+        selection=selection,
+    )
+    authorities, authority_by_queue_id, authority_records, authority_sources = (
+        _stage_offline_fallback_authorities(
+            staging, source, selection, offline_fallback_authorities
+        )
+    )
+    (
+        target_state_path,
+        target_state,
+        target_seed,
+        source_registry,
+        target_registry,
+        source_queue_overrides,
+        target_queue_overrides,
+    ) = _load_carry_forward_target(
+        staging,
+        staging / "queue.jsonl",
+        voice_config,
+        failure_reference_binding,
+        source,
+    )
+    carried, snapshots = _carry_forward_reviewed_items(
+        staging,
+        target_queue,
+        source,
+        target_state,
+        target_seed,
+        selection,
+        source_registry,
+        target_registry,
+        source_queue_overrides,
+        target_queue_overrides,
+    )
+    carried.extend(
+        _carry_forward_failed_items(
+            source,
+            target_state,
+            target_queue,
+            selection,
+            authority_by_queue_id,
+            source_registry,
+        )
+    )
+    _validate_carry_forward_results(selection, carried)
+    _publish_carry_forward_staging(target_state_path, target_state, source, snapshots)
+    return (
+        _carry_forward_document(
+            source, selection, carried, authorities, authority_records
+        ),
+        authority_sources,
+    )
 
 
 _terminal_review_outcome = is_terminal_review_outcome

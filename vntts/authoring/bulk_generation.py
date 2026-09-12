@@ -283,6 +283,101 @@ class BulkGenerationResult:
 
 
 @dataclass(frozen=True)
+class _GenerationExecutionResult:
+    generated: int
+    skipped_existing: int
+    cancelled: bool
+    captured_silence_failure: dict | None
+
+
+@dataclass(frozen=True)
+class _GenerationItemExecutionResult:
+    generated: bool
+    cancelled: bool
+    captured_silence_failure: dict | None
+    prefetched_render: object | None
+
+
+@dataclass(frozen=True)
+class _GenerationFailureResult:
+    last_error: str
+    cancelled: bool
+    captured_silence_failure: dict | None
+
+
+@dataclass
+class _GenerationAttempt:
+    attempts: int
+    provider_attempts: int
+    attempts_by_provider: dict
+    run_attempts: int
+    attempt_seed: int
+    request_seed: int | None
+    attempt_repair: dict | None
+    partial: Path
+    request: SynthesisRequest
+    rendered: object | None = None
+
+
+@dataclass(frozen=True)
+class _GenerationExecutionContext:
+    state_path: Path
+    state: dict
+    output_directory: Path
+    output_argument: Path
+    workspace_output_identity: object
+    candidates: tuple
+    queue_voice_overrides: dict
+    character_overrides: dict
+    repair_policy: FailureRepairPolicy
+    policy: MissingVoicePolicy
+    narrator_character: str | None
+    synthesis_configuration: dict
+    text_transform: object
+    text_transform_id: str | None
+    provider: str
+    model: str
+    generation_profile: str
+    provenance_sha256: str
+    backend: object
+    render: object
+    controls: tuple
+    lease: GenerationLease
+    render_prefetch: ThreadPoolExecutor
+    seed: int
+    retries: int
+    cancellation: object
+    synthesis_cache_policy: SynthesisCachePolicy
+    recorded_voices: dict
+    evidence_directory: Path | None
+    regenerate_existing: bool
+
+
+@dataclass
+class _PreparedGenerationItem:
+    item: object
+    existing: dict
+    queue_id: str
+    repair_strategy: str | None
+    repair_document: dict | None
+    requested_voice: str
+    voice: str
+    synthesis_fallback: dict | None
+    source_reference_binding: dict | None
+    queue_annotations_sha256: str
+    prompt_sha256: str
+    synthesis_text: str
+    synthesis_text_sha256: str
+    relative: Path
+    destination: Path
+    attempts: int
+    attempts_by_provider: dict[str, int]
+    provider_attempts: int
+    attempt_limit: int
+    last_error: str | None
+
+
+@dataclass(frozen=True)
 class ReviewAuthority:
     """Exact immutable inputs that one human review decision applies to."""
 
@@ -1462,6 +1557,722 @@ def _select_generation_candidates(
     return candidates, skipped_actions, skipped_characters, skipped_items
 
 
+def _skip_existing_generation_item(run, item, existing):
+    queue_id = item.queue_id
+    if existing.get("status") == "live_fallback":
+        if run.regenerate_existing:
+            raise BulkGenerationError(
+                "Regeneration cannot overwrite a terminal live fallback "
+                f"decision for {queue_id!r}"
+            )
+        return True
+    if existing.get("status") in {"generated", "approved"}:
+        _validate_success_item(
+            queue_id,
+            existing,
+            run.output_directory,
+            item,
+            state_schema=run.state["schema"],
+        )
+        if not run.regenerate_existing:
+            return True
+        if existing.get("review_status") != "pending_review":
+            raise BulkGenerationError(
+                "Regeneration cannot overwrite an approved or rejected "
+                f"decision for {queue_id!r}"
+            )
+    return False
+
+
+def _generation_item_voice(run, item):
+    queue_id = item.queue_id
+    requested_voice = _required_text(
+        synthesis_character_for_line(item.speaker, item.voice_character),
+        f"Queue item {queue_id!r} voice",
+    )
+    voice = run.queue_voice_overrides.get(
+        queue_id,
+        run.character_overrides.get(
+            normalize_character_name(requested_voice), requested_voice
+        ),
+    )
+    synthesis_fallback = (
+        None
+        if queue_id in run.queue_voice_overrides
+        else _synthesis_fallback_document(
+            requested_voice,
+            voice,
+            policy=run.policy,
+            narrator_character=run.narrator_character,
+        )
+    )
+    source_reference_binding = (
+        {
+            "schema_version": 1,
+            "queue_id": queue_id,
+            "source_voice_character": requested_voice,
+            "synthesis_voice_character": voice,
+            "queue_voice_overrides_sha256": run.synthesis_configuration[
+                "queue_voice_overrides_sha256"
+            ],
+        }
+        if queue_id in run.queue_voice_overrides
+        else None
+    )
+    return requested_voice, voice, synthesis_fallback, source_reference_binding
+
+
+def _generation_item_text(run, item, repair_strategy, repair_document):
+    queue_id = item.queue_id
+    synthesis_text = (
+        item.text if run.text_transform is None else run.text_transform(item.text)
+    )
+    if not isinstance(synthesis_text, str) or not synthesis_text.strip():
+        raise BulkGenerationError(
+            f"Text transform returned no speech for queue item {queue_id!r}"
+        )
+    if repair_strategy == INLINE_PAUSE_MARKER:
+        if synthesis_text != item.text:
+            raise BulkGenerationError(
+                "Inline pause comparison requires unchanged source text before "
+                f"marker insertion for {queue_id!r}"
+            )
+        synthesis_text, marker_count = inline_sentence_pause_prompt(
+            synthesis_text, pause_ms=run.repair_policy.inline_pause_ms
+        )
+        if (
+            repair_document.get("marker_count") != marker_count
+            or repair_document.get("derived_prompt_sha256")
+            != hashlib.sha256(synthesis_text.encode("utf-8")).hexdigest()
+        ):
+            raise BulkGenerationError(
+                f"Inline pause provenance changed for {queue_id!r}"
+            )
+    return synthesis_text
+
+
+def _generation_item_attempts(run, existing, repair_strategy):
+    attempts = _nonnegative_int(existing.get("attempts", 0), "Attempts")
+    default_attempt_provider = run.provider
+    if (
+        run.regenerate_existing
+        and existing.get("status") == "failed"
+        and not existing.get("provider")
+        and not existing.get("synthesis_provenance_sha256")
+    ):
+        default_attempt_provider = "legacy-unbound"
+    attempts_by_provider = _provider_attempts(
+        existing, attempts, default_provider=default_attempt_provider
+    )
+    provider_attempts = attempts_by_provider.get(run.provider, 0)
+    attempt_limit = run.retries + 1
+    if repair_strategy in {BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}:
+        attempt_limit = min(
+            attempt_limit,
+            MAX_BOUNDED_TOTAL_ATTEMPTS - provider_attempts,
+        )
+    return attempts, attempts_by_provider, provider_attempts, attempt_limit
+
+
+def _prepare_generation_item(run, item):
+    queue_id = item.queue_id
+    existing = run.state["items"].get(queue_id, {})
+    repair_strategy = run.repair_policy.strategy_for(queue_id)
+    repair_document = _failure_repair_document(
+        run.repair_policy, queue_id, item.text, existing=existing
+    )
+    if _skip_existing_generation_item(run, item, existing):
+        return None
+    (
+        requested_voice,
+        voice,
+        synthesis_fallback,
+        source_reference_binding,
+    ) = _generation_item_voice(run, item)
+    synthesis_text = _generation_item_text(run, item, repair_strategy, repair_document)
+    relative = _audio_relative_path(voice, queue_id)
+    if run.workspace_output_identity is not None:
+        _assert_workspace_output_identity(
+            run.output_argument, run.workspace_output_identity
+        )
+    destination = _within(run.output_directory, relative, "Generated WAV")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        _archive_interrupted_artifact(run.output_directory, destination)
+    attempts, attempts_by_provider, provider_attempts, attempt_limit = (
+        _generation_item_attempts(run, existing, repair_strategy)
+    )
+    return _PreparedGenerationItem(
+        item=item,
+        existing=existing,
+        queue_id=queue_id,
+        repair_strategy=repair_strategy,
+        repair_document=repair_document,
+        requested_voice=requested_voice,
+        voice=voice,
+        synthesis_fallback=synthesis_fallback,
+        source_reference_binding=source_reference_binding,
+        queue_annotations_sha256=_canonical_sha256(
+            item.document.get("prompt_adapters") or {}
+        ),
+        prompt_sha256=NO_PROMPT_SHA256,
+        synthesis_text=synthesis_text,
+        synthesis_text_sha256=hashlib.sha256(
+            synthesis_text.encode("utf-8")
+        ).hexdigest(),
+        relative=relative,
+        destination=destination,
+        attempts=attempts,
+        attempts_by_provider=attempts_by_provider,
+        provider_attempts=provider_attempts,
+        attempt_limit=attempt_limit,
+        last_error=str(existing.get("last_error") or "") or None,
+    )
+
+
+def _next_generation_request(run, candidate):
+    existing = run.state["items"].get(candidate.queue_id, {})
+    if existing.get("status") in {"generated", "approved", "live_fallback"}:
+        return None
+    requested = _required_text(
+        synthesis_character_for_line(candidate.speaker, candidate.voice_character),
+        f"Queue item {candidate.queue_id!r} voice",
+    )
+    voice = run.queue_voice_overrides.get(
+        candidate.queue_id,
+        run.character_overrides.get(normalize_character_name(requested), requested),
+    )
+    attempts = _nonnegative_int(existing.get("attempts", 0), "Attempts")
+    provider_attempts = _provider_attempts(
+        existing, attempts, default_provider=run.provider
+    ).get(run.provider, 0)
+    return SynthesisRequest(
+        voice=voice,
+        text=candidate.text,
+        seed=run.seed + provider_attempts,
+        generation_profile=run.generation_profile,
+        cancellation=run.cancellation,
+        cache_policy=run.synthesis_cache_policy,
+    )
+
+
+def _store_successful_generation_attempt(
+    run,
+    plan,
+    *,
+    attempts,
+    attempts_by_provider,
+    attempt_seed,
+    request_seed,
+    attempt_repair,
+    file_sha256,
+    quality,
+    speech_quality,
+):
+    item = plan.item
+    value = {
+        "status": "generated",
+        "review_status": "pending_review",
+        "attempts": attempts,
+        "attempts_by_provider": dict(sorted(attempts_by_provider.items())),
+        "path": plan.relative.as_posix(),
+        "line_id": item.line_id,
+        "text_sha256": item.text_sha256,
+        "file_sha256": file_sha256,
+        "provider": run.provider,
+        "model": run.model,
+        "prompt_sha256": plan.prompt_sha256,
+        "prompt_applied": False,
+        "queue_annotations_sha256": plan.queue_annotations_sha256,
+        "synthesis_text_sha256": plan.synthesis_text_sha256,
+        "text_transform": run.text_transform_id,
+        "synthesis_provenance_sha256": run.provenance_sha256,
+        "synthesis_configuration": run.synthesis_configuration,
+        "seed": attempt_seed,
+        "seed_applied": request_seed is not None,
+        "generation_profile": run.generation_profile,
+        "speaker": item.speaker,
+        "requested_voice_character": plan.requested_voice,
+        "voice_character": plan.voice,
+        "quality": asdict(quality),
+        "speech_quality": asdict(speech_quality),
+        "updated_at": _now(),
+    }
+    recorded_voice = run.recorded_voices.get(normalize_character_name(plan.voice))
+    if recorded_voice is not None:
+        value["vntts.recorded_voice"] = {
+            "schema_version": 1,
+            **recorded_voice,
+            "audio_sha256": file_sha256,
+            "synthesis_provenance_sha256": run.provenance_sha256,
+            "provider": run.provider,
+            "model": run.model,
+            "voice_character": plan.voice,
+        }
+    if plan.synthesis_fallback is not None:
+        value["synthesis_fallback"] = plan.synthesis_fallback
+        value["narrator_character"] = run.narrator_character
+    if plan.source_reference_binding is not None:
+        value["source_reference_binding"] = plan.source_reference_binding
+    if attempt_repair is not None:
+        value["failure_repair"] = attempt_repair
+    if (
+        plan.repair_strategy
+        in {
+            SENTENCE_BOUNDARY_SEGMENTATION,
+            INLINE_PAUSE_MARKER,
+            BOUNDED_SEED_RETRY,
+        }
+        and isinstance(plan.existing.get("carry_forward"), dict)
+        and plan.existing["carry_forward"].get("mode") == "failed-outcome"
+    ):
+        value["carry_forward"] = copy.deepcopy(plan.existing["carry_forward"])
+    run.state["items"][plan.queue_id] = value
+    run.state["active"] = None
+    atomic_write_json(run.state_path, run.state, sort_keys=True)
+
+
+def _store_failed_generation_attempt(
+    run,
+    plan,
+    *,
+    error,
+    completion,
+    request,
+    partial,
+    attempts,
+    attempts_by_provider,
+    attempt_seed,
+    request_seed,
+    attempt_repair,
+    run_attempts,
+):
+    captured_partial = None
+    if (
+        run.evidence_directory is not None
+        and isinstance(error, SpeechSilenceValidationError)
+        and partial.is_file()
+        and not partial.is_symlink()
+    ):
+        captured_partial = partial.read_bytes()
+    if partial.exists():
+        partial.unlink()
+    is_cancelled = (
+        completion is SynthesisCompletion.CANCELLED or request.cancellation_requested()
+    )
+    last_error = str(error) or error.__class__.__name__
+    value = {
+        "status": "failed",
+        "attempts": attempts,
+        "attempts_by_provider": dict(sorted(attempts_by_provider.items())),
+        "seed": attempt_seed,
+        "seed_applied": request_seed is not None,
+        "last_error": last_error,
+        "failure": _failure_record(
+            error,
+            text=plan.synthesis_text,
+            completion=(SynthesisCompletion.CANCELLED if is_cancelled else completion),
+            attempt_binding={
+                "provider": run.provider,
+                "model": run.model,
+                "generation_profile": run.generation_profile,
+                "seed": attempt_seed,
+                "synthesis_provenance_sha256": run.provenance_sha256,
+            },
+        ),
+        "provider": run.provider,
+        "model": run.model,
+        "generation_profile": run.generation_profile,
+        "speaker": plan.item.speaker,
+        "requested_voice_character": plan.requested_voice,
+        "voice_character": plan.voice,
+        "prompt_sha256": plan.prompt_sha256,
+        "prompt_applied": False,
+        "queue_annotations_sha256": plan.queue_annotations_sha256,
+        "synthesis_text_sha256": plan.synthesis_text_sha256,
+        "text_transform": run.text_transform_id,
+        "synthesis_provenance_sha256": run.provenance_sha256,
+        "synthesis_configuration": run.synthesis_configuration,
+        "updated_at": _now(),
+    }
+    if plan.synthesis_fallback is not None:
+        value["synthesis_fallback"] = plan.synthesis_fallback
+        value["narrator_character"] = run.narrator_character
+    if plan.source_reference_binding is not None:
+        value["source_reference_binding"] = plan.source_reference_binding
+    if attempt_repair is not None:
+        value["failure_repair"] = attempt_repair
+    if (
+        plan.repair_strategy
+        in {
+            SENTENCE_BOUNDARY_SEGMENTATION,
+            INLINE_PAUSE_MARKER,
+            BOUNDED_SEED_RETRY,
+        }
+        and isinstance(plan.existing.get("carry_forward"), dict)
+        and plan.existing["carry_forward"].get("mode") == "failed-outcome"
+    ):
+        value["carry_forward"] = copy.deepcopy(plan.existing["carry_forward"])
+    run.state["items"][plan.queue_id] = value
+    if run_attempts < plan.attempt_limit and not is_cancelled:
+        _write_active_phase(
+            run.state_path, run.state, "retrying", last_error=last_error
+        )
+    else:
+        run.state["active"] = None
+        atomic_write_json(run.state_path, run.state, sort_keys=True)
+    captured = None
+    if captured_partial is not None:
+        captured = {
+            "wav_payload": captured_partial,
+            "queue_id": plan.queue_id,
+            "line_id": plan.item.line_id,
+            "text": plan.item.text,
+            "text_sha256": plan.item.text_sha256,
+            "state_item": copy.deepcopy(value),
+        }
+    return _GenerationFailureResult(
+        last_error=last_error,
+        cancelled=is_cancelled,
+        captured_silence_failure=captured,
+    )
+
+
+def _begin_generation_attempt(
+    run,
+    plan,
+    *,
+    attempts,
+    provider_attempts,
+    run_attempts,
+    last_error,
+):
+    attempts += 1
+    provider_attempts += 1
+    plan.attempts_by_provider[run.provider] = provider_attempts
+    run_attempts += 1
+    attempt_seed = run.seed + provider_attempts - 1
+    request_seed = None if run.provider == "pocket-tts" else attempt_seed
+    attempt_repair = None
+    if plan.repair_document is not None:
+        attempt_repair = copy.deepcopy(plan.repair_document)
+        if plan.repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+            attempt_repair["planned_segment_seeds"] = [
+                attempt_seed + index for index in range(len(attempt_repair["segments"]))
+            ]
+    partial = plan.destination.with_suffix(".partial.wav")
+    if partial.exists():
+        _archive_interrupted_artifact(run.output_directory, partial)
+    _write_active(
+        run.state_path,
+        run.state,
+        plan.item,
+        provider=run.provider,
+        model=run.model,
+        generation_profile=run.generation_profile,
+        prompt_sha256=plan.prompt_sha256,
+        queue_annotations_sha256=plan.queue_annotations_sha256,
+        synthesis_text_sha256=plan.synthesis_text_sha256,
+        text_transform_id=run.text_transform_id,
+        synthesis_provenance_sha256=run.provenance_sha256,
+        synthesis_configuration=run.synthesis_configuration,
+        synthesis_voice_character=plan.voice,
+        synthesis_fallback=plan.synthesis_fallback,
+        source_reference_binding=plan.source_reference_binding,
+        failure_repair=attempt_repair,
+        phase="generating",
+        runtime_status=speech_runtime_label(run.backend),
+        attempt=run_attempts,
+        attempt_limit=plan.attempt_limit,
+        total_attempts=attempts,
+        provider_attempt=provider_attempts,
+        attempts_by_provider=plan.attempts_by_provider,
+        seed=attempt_seed,
+        seed_applied=request_seed is not None,
+        started_at=_now(),
+        last_error=last_error,
+    )
+    return _GenerationAttempt(
+        attempts=attempts,
+        provider_attempts=provider_attempts,
+        attempts_by_provider=plan.attempts_by_provider,
+        run_attempts=run_attempts,
+        attempt_seed=attempt_seed,
+        request_seed=request_seed,
+        attempt_repair=attempt_repair,
+        partial=partial,
+        request=SynthesisRequest(
+            voice=plan.voice,
+            text=plan.synthesis_text,
+            seed=request_seed,
+            generation_profile=run.generation_profile,
+            cancellation=run.cancellation,
+            cache_policy=run.synthesis_cache_policy,
+        ),
+    )
+
+
+def _prefetch_next_generation(run, item_index, prefetched_render):
+    if prefetched_render is not None or item_index + 1 >= len(run.candidates):
+        return prefetched_render
+    try:
+        prepared_next = _next_generation_request(run, run.candidates[item_index + 1])
+    except Exception:
+        return None
+    if prepared_next is None:
+        return None
+    # ponytail: one speculative render may finish after the current WAV fails
+    # validation; add per-request cancellation only if waste is measured.
+    return (
+        run.candidates[item_index + 1].queue_id,
+        prepared_next,
+        run.render_prefetch.submit(
+            lambda request=prepared_next: run.render(request).collect()
+        ),
+    )
+
+
+def _render_and_publish_generation_attempt(
+    run,
+    item_index,
+    plan,
+    attempt,
+    prefetched_render,
+    pipeline_enabled,
+):
+    if prefetched_render is not None and prefetched_render[0] == plan.queue_id:
+        prefetched_request, future = prefetched_render[1:]
+        prefetched_render = None
+        if prefetched_request != attempt.request:
+            raise BulkGenerationError("OpenMOSS prefetched request identity changed")
+        attempt.rendered = future.result()
+    elif plan.repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+        attempt.rendered = render_sentence_segments(
+            run.render,
+            attempt.request,
+            safe_sentence_segments(plan.synthesis_text),
+            pause_ms=run.repair_policy.segment_pause_ms,
+        )
+    else:
+        attempt.rendered = run.render(attempt.request).collect()
+    _validate_render_result(attempt.rendered, attempt.request, run.provider)
+    _assert_control_files_unchanged(run.controls)
+    if run.workspace_output_identity is not None:
+        _assert_workspace_output_identity(
+            run.output_argument, run.workspace_output_identity
+        )
+    run.lease.assert_owned()
+    _write_active_phase(run.state_path, run.state, "validating")
+    if pipeline_enabled:
+        prefetched_render = _prefetch_next_generation(
+            run, item_index, prefetched_render
+        )
+    output_pcm = _generated_mono_pcm(attempt.rendered.pcm)
+    if plan.repair_strategy == EDGE_SILENCE_TRIM:
+        trimmed = trim_excess_edge_silence(output_pcm, attempt.rendered.sample_rate)
+        output_pcm = trimmed.pcm
+        attempt.attempt_repair = {
+            **attempt.attempt_repair,
+            "leading_trimmed_samples": trimmed.leading_trimmed_samples,
+            "trailing_trimmed_samples": trimmed.trailing_trimmed_samples,
+        }
+    write_pcm16_wav(attempt.partial, output_pcm, attempt.rendered.sample_rate)
+    quality = inspect_generated_wav(attempt.partial)
+    speech_quality = inspect_generated_speech(attempt.partial, text=plan.synthesis_text)
+    file_sha256 = sha256_file(attempt.partial)
+    _write_active_phase(run.state_path, run.state, "publishing")
+    if run.workspace_output_identity is not None:
+        _assert_workspace_output_identity(
+            run.output_argument, run.workspace_output_identity
+        )
+    os.replace(attempt.partial, plan.destination)
+    _store_successful_generation_attempt(
+        run,
+        plan,
+        attempts=attempt.attempts,
+        attempts_by_provider=attempt.attempts_by_provider,
+        attempt_seed=attempt.attempt_seed,
+        request_seed=attempt.request_seed,
+        attempt_repair=attempt.attempt_repair,
+        file_sha256=file_sha256,
+        quality=quality,
+        speech_quality=speech_quality,
+    )
+    return prefetched_render
+
+
+def _execute_generation_item(
+    run, item_index, plan, prefetched_render, pipeline_enabled
+):
+    attempts = plan.attempts
+    provider_attempts = plan.provider_attempts
+    run_attempts = 0
+    last_error = plan.last_error
+    captured_silence_failure = None
+
+    while run_attempts < plan.attempt_limit:
+        attempt = _begin_generation_attempt(
+            run,
+            plan,
+            attempts=attempts,
+            provider_attempts=provider_attempts,
+            run_attempts=run_attempts,
+            last_error=last_error,
+        )
+        attempts = attempt.attempts
+        provider_attempts = attempt.provider_attempts
+        run_attempts = attempt.run_attempts
+        try:
+            prefetched_render = _render_and_publish_generation_attempt(
+                run,
+                item_index,
+                plan,
+                attempt,
+                prefetched_render,
+                pipeline_enabled,
+            )
+            return _GenerationItemExecutionResult(
+                generated=True,
+                cancelled=False,
+                captured_silence_failure=captured_silence_failure,
+                prefetched_render=prefetched_render,
+            )
+        except (
+            BulkGenerationSourceChangedError,
+            BulkGenerationProvenanceError,
+        ):
+            if attempt.partial.exists():
+                attempt.partial.unlink()
+            raise
+        except Exception as error:
+            failure = _store_failed_generation_attempt(
+                run,
+                plan,
+                error=error,
+                completion=getattr(attempt.rendered, "completion", None),
+                request=attempt.request,
+                partial=attempt.partial,
+                attempts=attempt.attempts,
+                attempts_by_provider=attempt.attempts_by_provider,
+                attempt_seed=attempt.attempt_seed,
+                request_seed=attempt.request_seed,
+                attempt_repair=attempt.attempt_repair,
+                run_attempts=run_attempts,
+            )
+            last_error = failure.last_error
+            if failure.captured_silence_failure is not None:
+                captured_silence_failure = failure.captured_silence_failure
+            if failure.cancelled:
+                return _GenerationItemExecutionResult(
+                    generated=False,
+                    cancelled=True,
+                    captured_silence_failure=captured_silence_failure,
+                    prefetched_render=prefetched_render,
+                )
+    return _GenerationItemExecutionResult(
+        generated=False,
+        cancelled=False,
+        captured_silence_failure=captured_silence_failure,
+        prefetched_render=prefetched_render,
+    )
+
+
+def _execute_generation_candidates(run):
+    candidates = run.candidates
+    generated = 0
+    skipped_existing = 0
+    cancelled = False
+    captured_silence_failure = None
+    prefetched_render = None
+    pipeline_enabled = (
+        run.provider == "moss-tts"
+        and run.repair_policy.is_empty
+        and run.text_transform is None
+        and not run.regenerate_existing
+    )
+
+    for item_index, item in enumerate(candidates):
+        plan = _prepare_generation_item(run, item)
+        if plan is None:
+            skipped_existing += 1
+            continue
+        item_result = _execute_generation_item(
+            run, item_index, plan, prefetched_render, pipeline_enabled
+        )
+        prefetched_render = item_result.prefetched_render
+        generated += int(item_result.generated)
+        if item_result.captured_silence_failure is not None:
+            captured_silence_failure = item_result.captured_silence_failure
+        if item_result.cancelled:
+            cancelled = True
+            break
+
+    return _GenerationExecutionResult(
+        generated=generated,
+        skipped_existing=skipped_existing,
+        cancelled=cancelled,
+        captured_silence_failure=captured_silence_failure,
+    )
+
+
+def _finalize_generation_run(
+    *,
+    queue_path,
+    queue_sha256,
+    controls,
+    workspace_output_identity,
+    output_argument,
+    lease,
+    state,
+    state_path,
+    manifest_path,
+    evidence_directory,
+    provenance_sha256,
+    execution,
+    skipped_actions,
+    skipped_characters,
+    skipped_items,
+):
+    _assert_sources_unchanged(queue_path, queue_sha256, controls)
+    if workspace_output_identity is not None:
+        _assert_workspace_output_identity(output_argument, workspace_output_identity)
+    lease.assert_owned()
+    publish_generated_manifest(
+        state_path, manifest_path=manifest_path, _lease_held=True
+    )
+    captured = execution.captured_silence_failure
+    if captured is not None:
+        publish_silence_failure_evidence(
+            evidence_directory,
+            captured["wav_payload"],
+            {
+                "queue": str(queue_path),
+                "queue_sha256": queue_sha256,
+                "state": str(state_path),
+                "state_sha256": sha256_file(state_path),
+                "queue_id": captured["queue_id"],
+                "line_id": captured["line_id"],
+                "text": captured["text"],
+                "text_sha256": captured["text_sha256"],
+                "state_item": captured["state_item"],
+                "state_item_sha256": _canonical_sha256(captured["state_item"]),
+                "synthesis_controls_sha256": provenance_sha256,
+            },
+        )
+    failed = sum(value.get("status") == "failed" for value in state["items"].values())
+    return BulkGenerationResult(
+        generated=execution.generated,
+        failed=failed,
+        skipped_existing=execution.skipped_existing,
+        skipped_actions=skipped_actions,
+        skipped_characters=skipped_characters,
+        skipped_items=skipped_items,
+        cancelled=execution.cancelled,
+        state=state_path,
+        manifest=manifest_path,
+    )
+
+
 def run_bulk_generation(
     queue_path,
     output_directory,
@@ -1760,541 +2571,57 @@ def run_bulk_generation(
             regenerate_existing=regenerate_existing,
         )
 
-        generated = 0
-        skipped_existing = 0
-        cancelled = False
-        captured_silence_failure = None
-        prefetched_render = None
-        pipeline_enabled = (
-            provider == "moss-tts"
-            and repair_policy.is_empty
-            and text_transform is None
-            and not regenerate_existing
-        )
-
-        def next_request(candidate):
-            existing = state["items"].get(candidate.queue_id, {})
-            if existing.get("status") in {
-                "generated",
-                "approved",
-                "live_fallback",
-            }:
-                return None
-            requested = _required_text(
-                synthesis_character_for_line(
-                    candidate.speaker, candidate.voice_character
-                ),
-                f"Queue item {candidate.queue_id!r} voice",
-            )
-            voice = queue_voice_overrides.get(
-                candidate.queue_id,
-                character_overrides.get(normalize_character_name(requested), requested),
-            )
-            attempts = _nonnegative_int(existing.get("attempts", 0), "Attempts")
-            provider_attempts = _provider_attempts(
-                existing, attempts, default_provider=provider
-            ).get(provider, 0)
-            return SynthesisRequest(
-                voice=voice,
-                text=candidate.text,
-                seed=seed + provider_attempts,
+        execution = _execute_generation_candidates(
+            _GenerationExecutionContext(
+                state_path=state_path,
+                state=state,
+                output_directory=output_directory,
+                output_argument=output_argument,
+                workspace_output_identity=workspace_output_identity,
+                candidates=candidates,
+                queue_voice_overrides=queue_voice_overrides,
+                character_overrides=character_overrides,
+                repair_policy=repair_policy,
+                policy=policy,
+                narrator_character=narrator_character,
+                synthesis_configuration=synthesis_configuration,
+                text_transform=text_transform,
+                text_transform_id=text_transform_id,
+                provider=provider,
+                model=model,
                 generation_profile=generation_profile,
+                provenance_sha256=provenance_sha256,
+                backend=backend,
+                render=render,
+                controls=controls,
+                lease=lease,
+                render_prefetch=render_prefetch,
+                seed=seed,
+                retries=retries,
                 cancellation=cancellation,
-                cache_policy=synthesis_cache_policy,
+                synthesis_cache_policy=synthesis_cache_policy,
+                recorded_voices=recorded_voices,
+                evidence_directory=evidence_directory,
+                regenerate_existing=regenerate_existing,
             )
-
-        for item_index, item in enumerate(candidates):
-            queue_id = item.queue_id
-            existing = state["items"].get(queue_id, {})
-            repair_strategy = repair_policy.strategy_for(queue_id)
-            repair_document = _failure_repair_document(
-                repair_policy, queue_id, item.text, existing=existing
-            )
-            if existing.get("status") == "live_fallback":
-                if regenerate_existing:
-                    raise BulkGenerationError(
-                        "Regeneration cannot overwrite a terminal live fallback "
-                        f"decision for {queue_id!r}"
-                    )
-                skipped_existing += 1
-                continue
-            if existing.get("status") in {"generated", "approved"}:
-                _validate_success_item(
-                    queue_id,
-                    existing,
-                    output_directory,
-                    item,
-                    state_schema=state["schema"],
-                )
-                if not regenerate_existing:
-                    skipped_existing += 1
-                    continue
-                if existing.get("review_status") != "pending_review":
-                    raise BulkGenerationError(
-                        "Regeneration cannot overwrite an approved or rejected "
-                        f"decision for {queue_id!r}"
-                    )
-
-            requested_voice = _required_text(
-                synthesis_character_for_line(item.speaker, item.voice_character),
-                f"Queue item {queue_id!r} voice",
-            )
-            voice = queue_voice_overrides.get(
-                queue_id,
-                character_overrides.get(
-                    normalize_character_name(requested_voice), requested_voice
-                ),
-            )
-            synthesis_fallback = (
-                None
-                if queue_id in queue_voice_overrides
-                else _synthesis_fallback_document(
-                    requested_voice,
-                    voice,
-                    policy=policy,
-                    narrator_character=narrator_character,
-                )
-            )
-            source_reference_binding = (
-                {
-                    "schema_version": 1,
-                    "queue_id": queue_id,
-                    "source_voice_character": requested_voice,
-                    "synthesis_voice_character": voice,
-                    "queue_voice_overrides_sha256": synthesis_configuration[
-                        "queue_voice_overrides_sha256"
-                    ],
-                }
-                if queue_id in queue_voice_overrides
-                else None
-            )
-            queue_annotations_sha256 = _canonical_sha256(
-                item.document.get("prompt_adapters") or {}
-            )
-            prompt_sha256 = NO_PROMPT_SHA256
-            synthesis_text = (
-                item.text if text_transform is None else text_transform(item.text)
-            )
-            if not isinstance(synthesis_text, str) or not synthesis_text.strip():
-                raise BulkGenerationError(
-                    f"Text transform returned no speech for queue item {queue_id!r}"
-                )
-            if repair_strategy == INLINE_PAUSE_MARKER:
-                if synthesis_text != item.text:
-                    raise BulkGenerationError(
-                        "Inline pause comparison requires unchanged source text before "
-                        f"marker insertion for {queue_id!r}"
-                    )
-                synthesis_text, marker_count = inline_sentence_pause_prompt(
-                    synthesis_text, pause_ms=repair_policy.inline_pause_ms
-                )
-                if (
-                    repair_document.get("marker_count") != marker_count
-                    or repair_document.get("derived_prompt_sha256")
-                    != hashlib.sha256(synthesis_text.encode("utf-8")).hexdigest()
-                ):
-                    raise BulkGenerationError(
-                        f"Inline pause provenance changed for {queue_id!r}"
-                    )
-            synthesis_text_sha256 = hashlib.sha256(
-                synthesis_text.encode("utf-8")
-            ).hexdigest()
-            relative = _audio_relative_path(voice, queue_id)
-            if workspace_output_identity is not None:
-                _assert_workspace_output_identity(
-                    output_argument, workspace_output_identity
-                )
-            destination = _within(output_directory, relative, "Generated WAV")
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                _archive_interrupted_artifact(output_directory, destination)
-            attempts = _nonnegative_int(existing.get("attempts", 0), "Attempts")
-            default_attempt_provider = provider
-            if (
-                regenerate_existing
-                and existing.get("status") == "failed"
-                and not existing.get("provider")
-                and not existing.get("synthesis_provenance_sha256")
-            ):
-                default_attempt_provider = "legacy-unbound"
-            attempts_by_provider = _provider_attempts(
-                existing, attempts, default_provider=default_attempt_provider
-            )
-            provider_attempts = attempts_by_provider.get(provider, 0)
-            run_attempts = 0
-            attempt_limit = retries + 1
-            if repair_strategy in {BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}:
-                attempt_limit = min(
-                    attempt_limit,
-                    MAX_BOUNDED_TOTAL_ATTEMPTS - provider_attempts,
-                )
-            last_error = str(existing.get("last_error") or "") or None
-            while run_attempts < attempt_limit:
-                attempts += 1
-                provider_attempts += 1
-                attempts_by_provider[provider] = provider_attempts
-                run_attempts += 1
-                attempt_seed = seed + provider_attempts - 1
-                request_seed = None if provider == "pocket-tts" else attempt_seed
-                attempt_repair = None
-                if repair_document is not None:
-                    attempt_repair = copy.deepcopy(repair_document)
-                    if repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
-                        attempt_repair["planned_segment_seeds"] = [
-                            attempt_seed + index
-                            for index in range(len(attempt_repair["segments"]))
-                        ]
-                started_at = _now()
-                partial = destination.with_suffix(".partial.wav")
-                if partial.exists():
-                    _archive_interrupted_artifact(output_directory, partial)
-                _write_active(
-                    state_path,
-                    state,
-                    item,
-                    provider=provider,
-                    model=model,
-                    generation_profile=generation_profile,
-                    prompt_sha256=prompt_sha256,
-                    queue_annotations_sha256=queue_annotations_sha256,
-                    synthesis_text_sha256=synthesis_text_sha256,
-                    text_transform_id=text_transform_id,
-                    synthesis_provenance_sha256=provenance_sha256,
-                    synthesis_configuration=synthesis_configuration,
-                    synthesis_voice_character=voice,
-                    synthesis_fallback=synthesis_fallback,
-                    source_reference_binding=source_reference_binding,
-                    failure_repair=attempt_repair,
-                    phase="generating",
-                    runtime_status=speech_runtime_label(backend),
-                    attempt=run_attempts,
-                    attempt_limit=attempt_limit,
-                    total_attempts=attempts,
-                    provider_attempt=provider_attempts,
-                    attempts_by_provider=attempts_by_provider,
-                    seed=attempt_seed,
-                    seed_applied=request_seed is not None,
-                    started_at=started_at,
-                    last_error=last_error,
-                )
-                request = SynthesisRequest(
-                    voice=voice,
-                    text=synthesis_text,
-                    seed=request_seed,
-                    generation_profile=generation_profile,
-                    cancellation=cancellation,
-                    cache_policy=synthesis_cache_policy,
-                )
-                try:
-                    if (
-                        prefetched_render is not None
-                        and prefetched_render[0] == queue_id
-                    ):
-                        prefetched_request, future = prefetched_render[1:]
-                        prefetched_render = None
-                        if prefetched_request != request:
-                            raise BulkGenerationError(
-                                "OpenMOSS prefetched request identity changed"
-                            )
-                        rendered = future.result()
-                    elif repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
-                        rendered = render_sentence_segments(
-                            render,
-                            request,
-                            safe_sentence_segments(synthesis_text),
-                            pause_ms=repair_policy.segment_pause_ms,
-                        )
-                    else:
-                        rendered = render(request).collect()
-                    _validate_render_result(rendered, request, provider)
-                    _assert_control_files_unchanged(controls)
-                    if workspace_output_identity is not None:
-                        _assert_workspace_output_identity(
-                            output_argument, workspace_output_identity
-                        )
-                    lease.assert_owned()
-                    _write_active_phase(state_path, state, "validating")
-                    if (
-                        pipeline_enabled
-                        and prefetched_render is None
-                        and item_index + 1 < len(candidates)
-                    ):
-                        try:
-                            prepared_next = next_request(candidates[item_index + 1])
-                        except Exception:
-                            prepared_next = None
-                        if prepared_next is not None:
-                            # ponytail: one speculative render may finish after the
-                            # current WAV fails validation; add per-request cancel
-                            # tokens only if that wasted work is measured in practice.
-                            prefetched_render = (
-                                candidates[item_index + 1].queue_id,
-                                prepared_next,
-                                render_prefetch.submit(
-                                    lambda request=prepared_next: render(
-                                        request
-                                    ).collect()
-                                ),
-                            )
-                    output_pcm = _generated_mono_pcm(rendered.pcm)
-                    if repair_strategy == EDGE_SILENCE_TRIM:
-                        trimmed = trim_excess_edge_silence(
-                            output_pcm, rendered.sample_rate
-                        )
-                        output_pcm = trimmed.pcm
-                        attempt_repair = {
-                            **attempt_repair,
-                            "leading_trimmed_samples": trimmed.leading_trimmed_samples,
-                            "trailing_trimmed_samples": trimmed.trailing_trimmed_samples,
-                        }
-                    write_pcm16_wav(partial, output_pcm, rendered.sample_rate)
-                    quality = inspect_generated_wav(partial)
-                    speech_quality = inspect_generated_speech(
-                        partial, text=synthesis_text
-                    )
-                    file_sha256 = sha256_file(partial)
-                    _write_active_phase(state_path, state, "publishing")
-                    if workspace_output_identity is not None:
-                        _assert_workspace_output_identity(
-                            output_argument, workspace_output_identity
-                        )
-                    os.replace(partial, destination)
-                    state["items"][queue_id] = {
-                        "status": "generated",
-                        "review_status": "pending_review",
-                        "attempts": attempts,
-                        "attempts_by_provider": dict(
-                            sorted(attempts_by_provider.items())
-                        ),
-                        "path": relative.as_posix(),
-                        "line_id": item.line_id,
-                        "text_sha256": item.text_sha256,
-                        "file_sha256": file_sha256,
-                        "provider": provider,
-                        "model": model,
-                        "prompt_sha256": prompt_sha256,
-                        "prompt_applied": False,
-                        "queue_annotations_sha256": queue_annotations_sha256,
-                        "synthesis_text_sha256": synthesis_text_sha256,
-                        "text_transform": text_transform_id,
-                        "synthesis_provenance_sha256": provenance_sha256,
-                        "synthesis_configuration": synthesis_configuration,
-                        "seed": attempt_seed,
-                        "seed_applied": request_seed is not None,
-                        "generation_profile": generation_profile,
-                        "speaker": item.speaker,
-                        "requested_voice_character": requested_voice,
-                        "voice_character": voice,
-                        "quality": asdict(quality),
-                        "speech_quality": asdict(speech_quality),
-                        "updated_at": _now(),
-                    }
-                    recorded_voice = recorded_voices.get(
-                        normalize_character_name(voice)
-                    )
-                    if recorded_voice is not None:
-                        state["items"][queue_id]["vntts.recorded_voice"] = {
-                            "schema_version": 1,
-                            **recorded_voice,
-                            "audio_sha256": file_sha256,
-                            "synthesis_provenance_sha256": provenance_sha256,
-                            "provider": provider,
-                            "model": model,
-                            "voice_character": voice,
-                        }
-                    if synthesis_fallback is not None:
-                        state["items"][queue_id]["synthesis_fallback"] = (
-                            synthesis_fallback
-                        )
-                        state["items"][queue_id]["narrator_character"] = (
-                            narrator_character
-                        )
-                    if source_reference_binding is not None:
-                        state["items"][queue_id]["source_reference_binding"] = (
-                            source_reference_binding
-                        )
-                    if attempt_repair is not None:
-                        state["items"][queue_id]["failure_repair"] = attempt_repair
-                    if (
-                        repair_strategy
-                        in {
-                            SENTENCE_BOUNDARY_SEGMENTATION,
-                            INLINE_PAUSE_MARKER,
-                            BOUNDED_SEED_RETRY,
-                        }
-                        and isinstance(existing.get("carry_forward"), dict)
-                        and existing["carry_forward"].get("mode") == "failed-outcome"
-                    ):
-                        state["items"][queue_id]["carry_forward"] = copy.deepcopy(
-                            existing["carry_forward"]
-                        )
-                    state["active"] = None
-                    atomic_write_json(state_path, state, sort_keys=True)
-                    generated += 1
-                    break
-                except (
-                    BulkGenerationSourceChangedError,
-                    BulkGenerationProvenanceError,
-                ):
-                    if partial.exists():
-                        partial.unlink()
-                    raise
-                except Exception as error:
-                    captured_partial = None
-                    if (
-                        evidence_directory is not None
-                        and isinstance(error, SpeechSilenceValidationError)
-                        and partial.is_file()
-                        and not partial.is_symlink()
-                    ):
-                        captured_partial = partial.read_bytes()
-                    if partial.exists():
-                        partial.unlink()
-                    completion = (
-                        getattr(rendered, "completion", None)
-                        if "rendered" in locals()
-                        else None
-                    )
-                    is_cancelled = (
-                        completion is SynthesisCompletion.CANCELLED
-                        or request.cancellation_requested()
-                    )
-                    last_error = str(error) or error.__class__.__name__
-                    state["items"][queue_id] = {
-                        "status": "failed",
-                        "attempts": attempts,
-                        "attempts_by_provider": dict(
-                            sorted(attempts_by_provider.items())
-                        ),
-                        "seed": attempt_seed,
-                        "seed_applied": request_seed is not None,
-                        "last_error": last_error,
-                        "failure": _failure_record(
-                            error,
-                            text=synthesis_text,
-                            completion=(
-                                SynthesisCompletion.CANCELLED
-                                if is_cancelled
-                                else completion
-                            ),
-                            attempt_binding={
-                                "provider": provider,
-                                "model": model,
-                                "generation_profile": generation_profile,
-                                "seed": attempt_seed,
-                                "synthesis_provenance_sha256": provenance_sha256,
-                            },
-                        ),
-                        "provider": provider,
-                        "model": model,
-                        "generation_profile": generation_profile,
-                        "speaker": item.speaker,
-                        "requested_voice_character": requested_voice,
-                        "voice_character": voice,
-                        "prompt_sha256": prompt_sha256,
-                        "prompt_applied": False,
-                        "queue_annotations_sha256": queue_annotations_sha256,
-                        "synthesis_text_sha256": synthesis_text_sha256,
-                        "text_transform": text_transform_id,
-                        "synthesis_provenance_sha256": provenance_sha256,
-                        "synthesis_configuration": synthesis_configuration,
-                        "updated_at": _now(),
-                    }
-                    if synthesis_fallback is not None:
-                        state["items"][queue_id]["synthesis_fallback"] = (
-                            synthesis_fallback
-                        )
-                        state["items"][queue_id]["narrator_character"] = (
-                            narrator_character
-                        )
-                    if source_reference_binding is not None:
-                        state["items"][queue_id]["source_reference_binding"] = (
-                            source_reference_binding
-                        )
-                    if attempt_repair is not None:
-                        state["items"][queue_id]["failure_repair"] = attempt_repair
-                    if (
-                        repair_strategy
-                        in {
-                            SENTENCE_BOUNDARY_SEGMENTATION,
-                            INLINE_PAUSE_MARKER,
-                            BOUNDED_SEED_RETRY,
-                        }
-                        and isinstance(existing.get("carry_forward"), dict)
-                        and existing["carry_forward"].get("mode") == "failed-outcome"
-                    ):
-                        state["items"][queue_id]["carry_forward"] = copy.deepcopy(
-                            existing["carry_forward"]
-                        )
-                    if run_attempts < attempt_limit and not is_cancelled:
-                        _write_active_phase(
-                            state_path, state, "retrying", last_error=last_error
-                        )
-                    else:
-                        state["active"] = None
-                        atomic_write_json(state_path, state, sort_keys=True)
-                    if captured_partial is not None:
-                        captured_silence_failure = {
-                            "wav_payload": captured_partial,
-                            "queue_id": queue_id,
-                            "line_id": item.line_id,
-                            "text": item.text,
-                            "text_sha256": item.text_sha256,
-                            "state_item": copy.deepcopy(state["items"][queue_id]),
-                        }
-                    if is_cancelled:
-                        cancelled = True
-                        break
-                    if run_attempts >= attempt_limit:
-                        break
-                finally:
-                    if "rendered" in locals():
-                        del rendered
-            if cancelled:
-                break
-
-        _assert_sources_unchanged(queue_path, queue_sha256, controls)
-        if workspace_output_identity is not None:
-            _assert_workspace_output_identity(
-                output_argument, workspace_output_identity
-            )
-        lease.assert_owned()
-        publish_generated_manifest(
-            state_path, manifest_path=manifest_path, _lease_held=True
         )
-        if captured_silence_failure is not None:
-            publish_silence_failure_evidence(
-                evidence_directory,
-                captured_silence_failure["wav_payload"],
-                {
-                    "queue": str(queue_path),
-                    "queue_sha256": queue_sha256,
-                    "state": str(state_path),
-                    "state_sha256": sha256_file(state_path),
-                    "queue_id": captured_silence_failure["queue_id"],
-                    "line_id": captured_silence_failure["line_id"],
-                    "text": captured_silence_failure["text"],
-                    "text_sha256": captured_silence_failure["text_sha256"],
-                    "state_item": captured_silence_failure["state_item"],
-                    "state_item_sha256": _canonical_sha256(
-                        captured_silence_failure["state_item"]
-                    ),
-                    "synthesis_controls_sha256": provenance_sha256,
-                },
-            )
-        failed = sum(
-            value.get("status") == "failed" for value in state["items"].values()
-        )
-        return BulkGenerationResult(
-            generated=generated,
-            failed=failed,
-            skipped_existing=skipped_existing,
+
+        return _finalize_generation_run(
+            queue_path=queue_path,
+            queue_sha256=queue_sha256,
+            controls=controls,
+            workspace_output_identity=workspace_output_identity,
+            output_argument=output_argument,
+            lease=lease,
+            state=state,
+            state_path=state_path,
+            manifest_path=manifest_path,
+            evidence_directory=evidence_directory,
+            provenance_sha256=provenance_sha256,
+            execution=execution,
             skipped_actions=skipped_actions,
             skipped_characters=skipped_characters,
             skipped_items=skipped_items,
-            cancelled=cancelled,
-            state=state_path,
-            manifest=manifest_path,
         )
 
 
