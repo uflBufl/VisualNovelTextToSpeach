@@ -222,6 +222,7 @@ class SettingsDialog(QDialog):
         self.original_settings = settings
         self.narrator_assignments = dict(settings.voice_assignments)
         self.character_defaults = dict(settings.character_voice_defaults)
+        self._game_pack_validation = None
         self.setWindowTitle(f"{application_name} settings")
 
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
@@ -1258,9 +1259,49 @@ class SettingsDialog(QDialog):
         if not settings.game_pack:
             return settings
         selected_new_pack = settings.game_pack != self.original_settings.game_pack
-        return apply_game_pack(
-            settings,
-            settings.game_pack if selected_new_pack else None,
+        key = (
+            settings.game_pack,
+            selected_new_pack,
+            settings.live_sequence_plan,
+            settings.live_sequence_mode,
+            settings.voice_manifest,
+            tuple(sorted(settings.voice_assignments.items())),
+            tuple(sorted(settings.character_voice_defaults.items())),
+        )
+        if self._game_pack_validation is None or self._game_pack_validation[0] != key:
+            started = perf_counter()
+            try:
+                validated = apply_game_pack(
+                    settings,
+                    settings.game_pack if selected_new_pack else None,
+                )
+            except Exception:
+                record_background_operation(
+                    "settings-game-pack-validation",
+                    (perf_counter() - started) * 1000,
+                    "failed",
+                )
+                raise
+            record_background_operation(
+                "settings-game-pack-validation",
+                (perf_counter() - started) * 1000,
+                "complete",
+            )
+            self._game_pack_validation = key, validated
+        else:
+            validated = self._game_pack_validation[1]
+        return settings.updated(
+            **{
+                name: getattr(validated, name)
+                for name in (
+                    "game_pack",
+                    "story_index",
+                    "voice_manifest",
+                    "generated_audio_manifest",
+                    "live_sequence_plan",
+                    "live_sequence_mode",
+                )
+            }
         )
 
     def settings(self):

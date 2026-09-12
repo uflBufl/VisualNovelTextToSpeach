@@ -365,7 +365,7 @@ performance_fields = ("operation", "outcome", "elapsed_ms")
 
 
 class PerformanceLog(RuntimeSupportLog):
-    """Retain slow background-stage timings without user content or paths."""
+    """Retain slow app-stage timings without user content or paths."""
 
     def __init__(self, maximum_entries=200, **kwargs):
         super().__init__(
@@ -379,7 +379,7 @@ class PerformanceLog(RuntimeSupportLog):
             return
         self.add(
             "performance",
-            f"Background operation: {operation}",
+            f"Application operation: {operation}",
             operation=operation,
             outcome=outcome,
             elapsed_ms=round(elapsed_ms, 3),

@@ -6,7 +6,6 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QDialog
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.settings import (
     is_live_sequence_audio_mode,
     restart_required_setting_changes,
@@ -156,15 +155,6 @@ class ConfigurationApplyMixin:
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         updated_settings = dialog.settings()
-        try:
-            selected_new_pack = updated_settings.game_pack != self.settings.game_pack
-            updated_settings = apply_game_pack(
-                updated_settings,
-                updated_settings.game_pack if selected_new_pack else None,
-            )
-        except GamePackError as error:
-            self.show_error(f"Unable to import game pack: {error}")
-            return
         original_settings = self.settings
         launch_changed = (
             updated_settings.launch_at_login != original_settings.launch_at_login

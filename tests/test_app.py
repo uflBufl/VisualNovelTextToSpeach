@@ -1757,11 +1757,14 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.story_index.setText("hidden-stale-story.jsonl")
             dialog.live_sequence_plan.setText("hidden-stale-sequence.json")
             dialog.generated_audio_manifest.setText("hidden-stale-generated.json")
-            with patch("vntts.app.apply_game_pack", side_effect=apply):
+            with patch("vntts.app.apply_game_pack", side_effect=apply) as apply_mock:
                 dialog.game_pack.setText(str(game_pack))
                 dialog.validate_and_accept()
+                dialog.output_volume.setValue(45)
                 saved = dialog.settings()
 
+            self.assertEqual(apply_mock.call_count, 1)
+            self.assertEqual(saved.output_volume_percent, 45)
             self.assertEqual(dialog.result(), SettingsDialog.DialogCode.Accepted)
             self.assertEqual(saved.voice_manifest, str(voice_manifest))
             self.assertEqual(saved.story_index, str(story_index))
