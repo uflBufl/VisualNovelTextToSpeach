@@ -1,0 +1,4056 @@
+{
+  "schema_version": 1,
+  "findings": [
+    {
+      "code": "C901",
+      "path": "examples/benchmark_tts_backends.py",
+      "scope": "create_backend",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "scripts/moss_native_compare.py",
+      "scope": "prepare_downloads",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "scripts/moss_native_compare.py",
+      "scope": "run",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "scripts/moss_native_pause_probe.py",
+      "scope": "_cancel_and_restart",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "scripts/moss_native_pause_probe.py",
+      "scope": "run",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "scripts/smoke_speech_runtime.py",
+      "scope": "check_runtime",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "tests/test_fresh_install_gui_journey.py",
+      "scope": "_first_process",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "tests/test_fresh_install_gui_journey.py",
+      "scope": "_second_process",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/app.py",
+      "scope": "SettingsDialog.validation_errors",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/app.py",
+      "scope": "TrayApplication.run_onboarding_test",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/app.py",
+      "scope": "TrayApplication.run_onboarding_test.run_test",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/audio_event_omission.py",
+      "scope": "create_audio_event_omission_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/audio_event_omission.py",
+      "scope": "validate_audio_event_omission_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/audio_event_projection_fallback.py",
+      "scope": "create_audio_event_projection_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/audio_event_projection_fallback.py",
+      "scope": "validate_audio_event_projection_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/audio_event_review.py",
+      "scope": "_validate_review_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/audio_event_workspace.py",
+      "scope": "validate_audio_event_composition_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/audio_events.py",
+      "scope": "validate_story_audio_cues",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_assert_missing_voice_overrides_match_manifest",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_assert_review_authorities",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_capture_live_fallback_evidence",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_generation_voice_overrides",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_load_review_snapshot",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_review_generation_item_locked",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_validate_failure_repair_selection",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_validate_live_fallback_source",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "authorize_live_fallback",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "generation_failure_repair_plan",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "review_generation_cohort",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "run_bulk_generation",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cli_generation.py",
+      "scope": "handle",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cli_generation.py",
+      "scope": "run_generation",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cli_references.py",
+      "scope": "handle",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "_load_source_sample_records",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "_reconciled_cohort_outcome",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "_validated_bundle_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "load_cohort_review_observations",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_bundle_ui.py",
+      "scope": "CohortReviewBundleDialog._update_actions",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_bundle_ui.py",
+      "scope": "CohortReviewBundleDialog.apply_decision",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "_load_bound_review_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "_normalize_sample_assessments",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "_plan_identity_and_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "_validated_decision_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "build_cohort_review_decision",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "build_cohort_review_plan",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/config_rebase.py",
+      "scope": "_copy_audio_event_composition_inputs",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/config_rebase.py",
+      "scope": "_route_reference_identity",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/config_rebase.py",
+      "scope": "rebase_workspace_config",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/config_rebase.py",
+      "scope": "validate_config_rebase_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/delivery.py",
+      "scope": "annotate_delivery",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/experimental_composite_voice.py",
+      "scope": "_load_composite_authority",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/experimental_composite_voice.py",
+      "scope": "_validate_experimental_composite_voice_input",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/explicit_fallback_merge.py",
+      "scope": "merge_explicit_live_fallbacks",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/explicit_fallback_merge.py",
+      "scope": "validate_explicit_fallback_merge_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/failed_control_carry.py",
+      "scope": "carry_failed_controls",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/failed_prompt_hypothesis.py",
+      "scope": "publish_failed_prompt_hypothesis_selection",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/failure_reference_audit.py",
+      "scope": "_validate_selection_authority",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/failure_reference_audit.py",
+      "scope": "load_failure_reference_audit",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/failure_reference_audit.py",
+      "scope": "publish_failure_reference_audit",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/failure_reference_binding.py",
+      "scope": "_load_audit_snapshots",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/failure_reference_binding.py",
+      "scope": "publish_failure_reference_binding",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/failure_reference_binding_records.py",
+      "scope": "load_failure_reference_binding",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/failure_reference_preview.py",
+      "scope": "FailureReferencePreviewService.generate",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/failure_repair.py",
+      "scope": "compress_single_sentence_boundary_silence",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/game_pack.py",
+      "scope": "_copy_portable_voice_manifest_and_references",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/game_pack.py",
+      "scope": "_validate_source_bindings",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/game_pack.py",
+      "scope": "_verify_voice_control_provenance",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/game_pack.py",
+      "scope": "publish_final_game_pack",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/generation_manifest.py",
+      "scope": "snapshot_recorded_voices",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_active_attempt",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_failure_repair_record",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_live_fallback_decision",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_reviewed_waveform_publication",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_state_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_success_item",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_synthesis_configuration",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_synthesis_controls",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_synthesis_identity",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/known_role_live_fallback.py",
+      "scope": "create_known_role_live_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/known_role_live_fallback.py",
+      "scope": "validate_known_role_live_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/known_role_reuse.py",
+      "scope": "_validate_bundle",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/known_role_reuse.py",
+      "scope": "publish_known_role_reuse_binding",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/legacy_import.py",
+      "scope": "_discover_unsupported_legacy_artifacts",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/legacy_import.py",
+      "scope": "_validate_existing_import",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/legacy_import.py",
+      "scope": "_validate_generated_manifest",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/legacy_import.py",
+      "scope": "_validate_job",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/legacy_import.py",
+      "scope": "_validate_state",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/legacy_reason_review.py",
+      "scope": "publish_reason_review_decisions",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/listening.py",
+      "scope": "_load_blind_key",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/listening.py",
+      "scope": "_load_model_report",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/listening.py",
+      "scope": "_report_fields",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/listening.py",
+      "scope": "create_listening_session_from_reports",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/listening.py",
+      "scope": "load_listening_session",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/listening_cli.py",
+      "scope": "main",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/listening_import.py",
+      "scope": "_validate_key",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/listening_import.py",
+      "scope": "_validate_session",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/listening_ui.py",
+      "scope": "ModelListeningDialog.poll_playback",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/missing_voice_live_fallback.py",
+      "scope": "authorize_missing_voice_live_fallback",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/missing_voice_reuse.py",
+      "scope": "_publish_candidate_input",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/missing_voice_reuse.py",
+      "scope": "_validate_candidate_input",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/missing_voice_reuse.py",
+      "scope": "_validate_plan",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/missing_voice_reuse.py",
+      "scope": "build_missing_voice_reuse_plan",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/missing_voice_reuse_binding.py",
+      "scope": "_validate_binding_bundle",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/missing_voice_reuse_binding.py",
+      "scope": "publish_missing_voice_reuse_binding",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/missing_voice_reuse_review.py",
+      "scope": "_validate_public_matrix",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/missing_voice_reuse_review.py",
+      "scope": "_validate_review_session",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/missing_voice_reuse_review.py",
+      "scope": "build_missing_voice_reuse_review",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/model_benchmark.py",
+      "scope": "_comparison_voice_context",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/model_benchmark.py",
+      "scope": "benchmark_model_variants",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/model_benchmark.py",
+      "scope": "build_failure_comparison_corpus",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/model_benchmark.py",
+      "scope": "load_model_variants",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/offline_fallback_authority.py",
+      "scope": "_load_authority",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/offline_fallback_authority.py",
+      "scope": "load_offline_fallback_authorities",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/offline_fallback_authority.py",
+      "scope": "validate_offline_fallback_authority_records",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/pending_resolution.py",
+      "scope": "_validated_plan_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/queue_builder.py",
+      "scope": "plan_generation_queue",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/queue_extension.py",
+      "scope": "validate_additive_generation_queue",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reconciliation_schema.py",
+      "scope": "_validated_report_actions",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reconciliation_schema.py",
+      "scope": "validate_authoring_reconciliation_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reference_composite.py",
+      "scope": "publish_composite_quality_review",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reference_composite.py",
+      "scope": "publish_exact_bank_reference_composite",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "_load_comparison_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "_selected_listening_trial",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "import_reference_render_preference",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "load_reference_render_plan",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "publish_reference_render_comparison",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reference_selection.py",
+      "scope": "validate_reference_selection_provenance",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/render_hypothesis_review.py",
+      "scope": "_validate_review_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/render_hypothesis_review.py",
+      "scope": "import_accepted_render_hypothesis",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/render_hypothesis_review.py",
+      "scope": "publish_render_hypothesis_review",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reviewed_rejection_fallback.py",
+      "scope": "create_reviewed_rejection_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reviewed_rejection_fallback.py",
+      "scope": "validate_reviewed_rejection_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/reviewed_waveform_publication.py",
+      "scope": "create_reviewed_waveform_publication_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/robustness_asr.py",
+      "scope": "build_speech_robustness_asr_report",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "_build_sources",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "_validate_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "analyze_text_timing_bytes",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "load_speech_robustness_corpus",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "publish_speech_robustness_corpus",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/silence_comparison.py",
+      "scope": "load_silence_comparison",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/silence_comparison.py",
+      "scope": "load_silence_comparison_input_plan",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/silence_comparison.py",
+      "scope": "publish_silence_comparison",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/silence_evidence.py",
+      "scope": "load_silence_failure_evidence",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/sound_effect_benchmark.py",
+      "scope": "benchmark_sound_effects",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_known_role_reuse_overrides_from_manifest",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_missing_voice_reuse_overrides_from_manifest",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_source_reference_overrides_from_manifest",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_validate_approved_reuse_authority",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_quality.py",
+      "scope": "publish_source_reference_quality_review",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_quality_records.py",
+      "scope": "_probe_png",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_quality_records.py",
+      "scope": "validate_source_reference_quality_review_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "_load_candidates",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "_load_decisions",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "import_source_reference_review",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "load_source_reference_plan",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_binding_retirement",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_binding_successor",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_bindings",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_evaluation",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_listening_reports",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/speaker_identity.py",
+      "scope": "build_labelled_pairs",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/specialist_failure_plan.py",
+      "scope": "build_specialist_failure_plan",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/speech_quality.py",
+      "scope": "analyze_generated_speech_samples",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_resolution.py",
+      "scope": "assert_terminal_conflict_resolution_source_authorities",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_resolution.py",
+      "scope": "publish_terminal_conflict_resolution",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_resolution.py",
+      "scope": "validate_terminal_conflict_resolution_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "_assert_source_authorities",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "_progress_lock",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "_validate_progress",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "publish_terminal_conflict_review",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "validate_terminal_conflict_review_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_successor.py",
+      "scope": "_validate_resolution_projection",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_successor.py",
+      "scope": "publish_terminal_conflict_successor",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_successor.py",
+      "scope": "validate_terminal_conflict_successor_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/terminal_conflict_workspace.py",
+      "scope": "merge_terminal_conflict_resolution",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/voice_quality_gate.py",
+      "scope": "_reusable_identity",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/voice_quality_gate.py",
+      "scope": "_validated_gate_document",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "_publish_candidate_input",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "_validate_candidate_input",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "_validate_item_record",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "_validate_plan",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "build_voice_repair_comparison_plan",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_inspect_generation_readiness_from_read",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_load_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_runtime_status",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_carry_forward",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_failure_reference_binding",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_input_config",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_offline_fallback_state",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_outcome_merge",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_terminal_conflict_merge",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_voice_readiness",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_workspace_generation_provenance",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "create_audio_event_composition_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "create_failure_reference_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "create_resume_workspace",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "generation_command",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "generation_control_bindings",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._apply_review_filters",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._apply_review_filters.included",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._populate_recent_choices",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._review_save_finished",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._update_review_actions",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/authoring/workspace_config.py",
+      "scope": "workspace_config_fingerprint",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/chapter_voice_preload.py",
+      "scope": "ChapterVoicePreloader.resolve_bounded_among",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/chapter_voice_preload.py",
+      "scope": "_speaker_bounded_text_match",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/configuration_apply.py",
+      "scope": "ConfigurationApplyMixin.open_settings",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/controller.py",
+      "scope": "AppController._dialog_observed",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/controller.py",
+      "scope": "AppController._get_live_sequence_status_locked",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/controller.py",
+      "scope": "AppController._observe_live_sequence_locked",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/controller.py",
+      "scope": "AppController._play_live_chunk",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/controller.py",
+      "scope": "AppController._prepare_speaker_announcement",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/controller.py",
+      "scope": "AppController._stable_live_frame_route",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/controller.py",
+      "scope": "create_dialog_read_scheduler",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/controller_components.py",
+      "scope": "RuntimeLifecycleComponent._apply_settings",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/controller_components.py",
+      "scope": "RuntimeLifecycleComponent._initialize_backend",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/dialog_capture.py",
+      "scope": "detect_standalone_ellipsis_frame",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/game_audio_decoder.py",
+      "scope": "ensure_game_decoder",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/game_content_importer.py",
+      "scope": "Reverse1999GameImporter.prepare_voice_roles",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/game_narrator.py",
+      "scope": "bind_game_narrator",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/game_narrator_ui.py",
+      "scope": "GameNarratorDialog._finished",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/game_narrator_ui.py",
+      "scope": "GameNarratorDialog._role_changed",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/game_pack.py",
+      "scope": "_source_audio_semantic_evidence",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/generated_audio.py",
+      "scope": "GeneratedAudioFallbackBackend.has_resolved_route_in_live_mode",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/generated_audio.py",
+      "scope": "GeneratedAudioFallbackBackend.prepare_route",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/generated_audio.py",
+      "scope": "_live_fallback_index",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/hotkey_ui.py",
+      "scope": "qt_sequence_from_hotkey",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live.py",
+      "scope": "IncrementalDialogTracker.observe",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live.py",
+      "scope": "LiveDialogReader._run_auto_advance",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live.py",
+      "scope": "LiveDialogReader._run_ocr",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live.py",
+      "scope": "LiveDialogReader._set_generation",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay.py",
+      "scope": "LiveReplayRunner._run_legacy",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay.py",
+      "scope": "LiveReplayRunner._run_sequence",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay.py",
+      "scope": "_live_sequence_binding",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay.py",
+      "scope": "_load_frame",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay.py",
+      "scope": "load_live_replay_corpus",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_capture.py",
+      "scope": "LiveReplayCaptureSession._validate_bound_inputs",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_capture.py",
+      "scope": "main",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_capture_recover.py",
+      "scope": "_frontier_bounded_match",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_capture_recover.py",
+      "scope": "_load_observations",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_capture_recover.py",
+      "scope": "_longest_explicit_run",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_capture_recover.py",
+      "scope": "recover_live_replay_capture",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_coverage.py",
+      "scope": "audit_live_replay_coverage",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_sequence_seal.py",
+      "scope": "_map_dialogue",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_sequence_seal.py",
+      "scope": "_snapshot_generated_audio",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_sequence_seal.py",
+      "scope": "_validate_capture_observation_ledger",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_replay_sequence_seal.py",
+      "scope": "seal_sequence_replay",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/live_speaker_corpus.py",
+      "scope": "LiveSpeakerCorpus.load",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/moss_cpp_backend.py",
+      "scope": "MossCppVoiceRouterBackend._generate",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/moss_cpp_backend.py",
+      "scope": "MossCppVoiceRouterBackend._start_server_once",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/moss_cpp_installation.py",
+      "scope": "_download",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/moss_cpp_installation.py",
+      "scope": "ensure_moss_cpp",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/moss_delay_backend.py",
+      "scope": "MossTTSDelayVoiceRouterBackend.__init__",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/moss_delay_backend.py",
+      "scope": "MossTTSDelayVoiceRouterBackend._render_chunks",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/native_resources.py",
+      "scope": "NativeResourceSampler._sample_gpu",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/ocr.py",
+      "scope": "recognize_speaker_from_data",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/ocr_corrections_ui.py",
+      "scope": "OCRCorrectionsDialog.validate_rows",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/onboarding_ui.py",
+      "scope": "ConfigurationPage.__init__",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/onboarding_ui.py",
+      "scope": "ConfigurationPage.validation_errors",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/package_self_test.py",
+      "scope": "run_package_self_test",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_activation.py",
+      "scope": "OfflinePackActivator.activate",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_audition.py",
+      "scope": "VoiceAuditionPreviewService.generate",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_generation.py",
+      "scope": "OfflineGenerationWorker._execute",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_pack.py",
+      "scope": "OfflinePackPublisher.publish",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_pack.py",
+      "scope": "inspect_story_audio",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_queue.py",
+      "scope": "_effective_voice_routes",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_queue.py",
+      "scope": "_load_existing",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_recovery.py",
+      "scope": "plan_automatic_recovery",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_ui.py",
+      "scope": "OfflineAudioPreparationDialog._refresh_story_statuses",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_ui.py",
+      "scope": "OfflineAudioPreparationDialog._selection_changed",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_voices.py",
+      "scope": "VoicePlanStore._resolve_group",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_voices.py",
+      "scope": "_candidate_inventory",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/pregeneration_voices.py",
+      "scope": "_manifest_candidate_variants",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/readiness_ui.py",
+      "scope": "ReadinessDialog._checks_finished",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/reference_quality.py",
+      "scope": "analyze_reference_bytes",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/release_matrix.py",
+      "scope": "validate_release_evidence",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/release_runtime.py",
+      "scope": "_prune_runtime_entrypoints",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/release_smoke_test.py",
+      "scope": "run_release_smoke_test",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/runtime_ownership.py",
+      "scope": "_cleanup_managed_runtimes",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/services/tts_engine.py",
+      "scope": "TTSEngine._synthesize_locked",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/settings.py",
+      "scope": "AppSettings.from_mapping",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/source_audio_semantics.py",
+      "scope": "validate_source_audio_semantic_evidence",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/speech_backend.py",
+      "scope": "MossTTSVoiceRouterBackend._play_rendered_stream",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/speech_backend.py",
+      "scope": "MossTTSVoiceRouterBackend._render_chunks",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/speech_backend.py",
+      "scope": "MossTTSVoiceRouterBackend.play_prepared",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/speech_backend.py",
+      "scope": "PocketTTSVoiceRouterBackend._render_chunks",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/speech_presentation.py",
+      "scope": "narrator_voice_label",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/speech_presentation.py",
+      "scope": "playback_labels",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/speech_worker.py",
+      "scope": "IsolatedSpeechBackend._launch_worker",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/speech_worker.py",
+      "scope": "worker_main",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/support.py",
+      "scope": "_sanitize_game_import_value",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/tts_benchmark.py",
+      "scope": "benchmark_backend",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/tts_benchmark.py",
+      "scope": "load_tts_benchmark_corpus",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/voice_default_impact.py",
+      "scope": "inspect_voice_default_impact",
+      "count": 1
+    },
+    {
+      "code": "C901",
+      "path": "vntts/voices.py",
+      "scope": "_read_owned_voice_reference",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "scripts/moss_native_compare.py",
+      "scope": "prepare_downloads",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "scripts/moss_native_compare.py",
+      "scope": "run",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "scripts/moss_native_pause_probe.py",
+      "scope": "run",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "scripts/smoke_speech_runtime.py",
+      "scope": "check_runtime",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "tests/test_fresh_install_gui_journey.py",
+      "scope": "_first_process",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "tests/test_fresh_install_gui_journey.py",
+      "scope": "_second_process",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/app.py",
+      "scope": "SettingsDialog.validation_errors",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/app.py",
+      "scope": "TrayApplication.run_onboarding_test.run_test",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/audio_event_omission.py",
+      "scope": "create_audio_event_omission_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/audio_event_projection_fallback.py",
+      "scope": "create_audio_event_projection_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/audio_events.py",
+      "scope": "validate_story_audio_cues",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_assert_review_authorities",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_capture_live_fallback_evidence",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_review_generation_item_locked",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_validate_failure_repair_selection",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "authorize_live_fallback",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "generation_failure_repair_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "review_generation_cohort",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "run_bulk_generation",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cli_generation.py",
+      "scope": "handle",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cli_generation.py",
+      "scope": "run_generation",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cli_references.py",
+      "scope": "handle",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "_load_source_sample_records",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "_reconciled_cohort_outcome",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "_validated_bundle_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "load_cohort_review_observations",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cohort_bundle_ui.py",
+      "scope": "CohortReviewBundleDialog._update_actions",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "_load_bound_review_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "_plan_identity_and_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "_validated_decision_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "build_cohort_review_decision",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "build_cohort_review_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/config_rebase.py",
+      "scope": "_copy_audio_event_composition_inputs",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/config_rebase.py",
+      "scope": "rebase_workspace_config",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/config_rebase.py",
+      "scope": "validate_config_rebase_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/experimental_composite_voice.py",
+      "scope": "_load_composite_authority",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/experimental_composite_voice.py",
+      "scope": "_validate_experimental_composite_voice_input",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/explicit_fallback_merge.py",
+      "scope": "merge_explicit_live_fallbacks",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/explicit_fallback_merge.py",
+      "scope": "validate_explicit_fallback_merge_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/failed_control_carry.py",
+      "scope": "carry_failed_controls",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/failure_reference_audit.py",
+      "scope": "load_failure_reference_audit",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/failure_reference_audit.py",
+      "scope": "publish_failure_reference_audit",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/failure_reference_binding.py",
+      "scope": "publish_failure_reference_binding",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/failure_reference_binding_records.py",
+      "scope": "load_failure_reference_binding",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/failure_reference_preview.py",
+      "scope": "FailureReferencePreviewService.generate",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/failure_repair.py",
+      "scope": "compress_single_sentence_boundary_silence",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/game_pack.py",
+      "scope": "_copy_portable_voice_manifest_and_references",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/game_pack.py",
+      "scope": "_verify_voice_control_provenance",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/game_pack.py",
+      "scope": "publish_final_game_pack",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/generation_manifest.py",
+      "scope": "snapshot_recorded_voices",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_active_attempt",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_failure_repair_record",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_live_fallback_decision",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_reviewed_waveform_publication",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_state_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_synthesis_controls",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_synthesis_identity",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/known_role_live_fallback.py",
+      "scope": "create_known_role_live_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/known_role_reuse.py",
+      "scope": "publish_known_role_reuse_binding",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/legacy_import.py",
+      "scope": "_discover_unsupported_legacy_artifacts",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/legacy_import.py",
+      "scope": "_validate_existing_import",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/legacy_import.py",
+      "scope": "_validate_generated_manifest",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/legacy_import.py",
+      "scope": "_validate_job",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/listening.py",
+      "scope": "_load_blind_key",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/listening.py",
+      "scope": "_load_model_report",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/listening.py",
+      "scope": "_report_fields",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/listening.py",
+      "scope": "load_listening_session",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/listening_import.py",
+      "scope": "_validate_key",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/listening_import.py",
+      "scope": "_validate_session",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/listening_ui.py",
+      "scope": "ModelListeningDialog.poll_playback",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/missing_voice_live_fallback.py",
+      "scope": "authorize_missing_voice_live_fallback",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/missing_voice_reuse.py",
+      "scope": "_validate_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/missing_voice_reuse.py",
+      "scope": "build_missing_voice_reuse_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/missing_voice_reuse_binding.py",
+      "scope": "_validate_binding_bundle",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/missing_voice_reuse_binding.py",
+      "scope": "publish_missing_voice_reuse_binding",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/missing_voice_reuse_review.py",
+      "scope": "_validate_public_matrix",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/missing_voice_reuse_review.py",
+      "scope": "build_missing_voice_reuse_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/model_benchmark.py",
+      "scope": "benchmark_model_variants",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/offline_fallback_authority.py",
+      "scope": "_load_authority",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/offline_fallback_authority.py",
+      "scope": "validate_offline_fallback_authority_records",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/queue_builder.py",
+      "scope": "plan_generation_queue",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/queue_extension.py",
+      "scope": "validate_additive_generation_queue",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reconciliation_schema.py",
+      "scope": "_validated_report_actions",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reference_composite.py",
+      "scope": "publish_composite_quality_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reference_composite.py",
+      "scope": "publish_exact_bank_reference_composite",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "_load_comparison_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "_selected_listening_trial",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "import_reference_render_preference",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "load_reference_render_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "publish_reference_render_comparison",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reference_selection.py",
+      "scope": "validate_reference_selection_provenance",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/render_hypothesis_review.py",
+      "scope": "import_accepted_render_hypothesis",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/render_hypothesis_review.py",
+      "scope": "publish_render_hypothesis_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reviewed_rejection_fallback.py",
+      "scope": "create_reviewed_rejection_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reviewed_rejection_fallback.py",
+      "scope": "validate_reviewed_rejection_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/reviewed_waveform_publication.py",
+      "scope": "create_reviewed_waveform_publication_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/robustness_asr.py",
+      "scope": "build_speech_robustness_asr_report",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "_build_sources",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "_validate_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "load_speech_robustness_corpus",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "publish_speech_robustness_corpus",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/silence_comparison.py",
+      "scope": "load_silence_comparison",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/silence_comparison.py",
+      "scope": "publish_silence_comparison",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_known_role_reuse_overrides_from_manifest",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_missing_voice_reuse_overrides_from_manifest",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_source_reference_overrides_from_manifest",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_validate_approved_reuse_authority",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_quality.py",
+      "scope": "publish_source_reference_quality_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_quality_records.py",
+      "scope": "_probe_png",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_quality_records.py",
+      "scope": "validate_source_reference_quality_review_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "import_source_reference_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "load_source_reference_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_binding_retirement",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_binding_successor",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_bindings",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_evaluation",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_listening_reports",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/speech_quality.py",
+      "scope": "analyze_generated_speech_samples",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_resolution.py",
+      "scope": "publish_terminal_conflict_resolution",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_resolution.py",
+      "scope": "validate_terminal_conflict_resolution_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "_progress_lock",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "_validate_progress",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "publish_terminal_conflict_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "validate_terminal_conflict_review_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_successor.py",
+      "scope": "_validate_resolution_projection",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_successor.py",
+      "scope": "publish_terminal_conflict_successor",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_successor.py",
+      "scope": "validate_terminal_conflict_successor_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/terminal_conflict_workspace.py",
+      "scope": "merge_terminal_conflict_resolution",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/voice_quality_gate.py",
+      "scope": "_reusable_identity",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/voice_quality_gate.py",
+      "scope": "_validated_gate_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "_publish_candidate_input",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "_validate_candidate_input",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "_validate_item_record",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "_validate_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_load_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_runtime_status",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_carry_forward",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_failure_reference_binding",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_input_config",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_outcome_merge",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_terminal_conflict_merge",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "create_audio_event_composition_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "create_failure_reference_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "create_resume_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "generation_command",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._populate_recent_choices",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._review_save_finished",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._update_review_actions",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/authoring/workspace_config.py",
+      "scope": "workspace_config_fingerprint",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/controller.py",
+      "scope": "AppController._dialog_observed",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/controller.py",
+      "scope": "AppController._get_live_sequence_status_locked",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/controller.py",
+      "scope": "AppController._observe_live_sequence_locked",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/controller.py",
+      "scope": "AppController._play_live_chunk",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/controller.py",
+      "scope": "AppController._prepare_speaker_announcement",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/controller.py",
+      "scope": "AppController._stable_live_frame_route",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/controller_components.py",
+      "scope": "RuntimeLifecycleComponent._initialize_backend",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/game_audio_decoder.py",
+      "scope": "ensure_game_decoder",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/game_narrator.py",
+      "scope": "bind_game_narrator",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/game_narrator_ui.py",
+      "scope": "GameNarratorDialog._finished",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/generated_audio.py",
+      "scope": "GeneratedAudioFallbackBackend.prepare_route",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/generated_audio.py",
+      "scope": "_live_fallback_index",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/hotkey_ui.py",
+      "scope": "qt_sequence_from_hotkey",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/live.py",
+      "scope": "LiveDialogReader._run_auto_advance",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/live.py",
+      "scope": "LiveDialogReader._run_ocr",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/live_replay.py",
+      "scope": "_live_sequence_binding",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/live_replay.py",
+      "scope": "load_live_replay_corpus",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/live_replay_capture_recover.py",
+      "scope": "recover_live_replay_capture",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/live_replay_coverage.py",
+      "scope": "audit_live_replay_coverage",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/live_replay_sequence_seal.py",
+      "scope": "_map_dialogue",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/live_replay_sequence_seal.py",
+      "scope": "_validate_capture_observation_ledger",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/live_replay_sequence_seal.py",
+      "scope": "seal_sequence_replay",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/moss_cpp_backend.py",
+      "scope": "MossCppVoiceRouterBackend._generate",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/moss_cpp_installation.py",
+      "scope": "_download",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/moss_cpp_installation.py",
+      "scope": "ensure_moss_cpp",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/ocr.py",
+      "scope": "recognize_speaker_from_data",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/onboarding_ui.py",
+      "scope": "ConfigurationPage.validation_errors",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/package_self_test.py",
+      "scope": "run_package_self_test",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/pregeneration_activation.py",
+      "scope": "OfflinePackActivator.activate",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/pregeneration_audition.py",
+      "scope": "VoiceAuditionPreviewService.generate",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/pregeneration_generation.py",
+      "scope": "OfflineGenerationWorker._execute",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/pregeneration_pack.py",
+      "scope": "OfflinePackPublisher.publish",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/pregeneration_pack.py",
+      "scope": "inspect_story_audio",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/pregeneration_queue.py",
+      "scope": "_effective_voice_routes",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/pregeneration_voices.py",
+      "scope": "VoicePlanStore._resolve_group",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/reference_quality.py",
+      "scope": "analyze_reference_bytes",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/release_matrix.py",
+      "scope": "validate_release_evidence",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/release_runtime.py",
+      "scope": "_prune_runtime_entrypoints",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/release_smoke_test.py",
+      "scope": "run_release_smoke_test",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/services/tts_engine.py",
+      "scope": "TTSEngine._synthesize_locked",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/settings.py",
+      "scope": "AppSettings.from_mapping",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/source_audio_semantics.py",
+      "scope": "validate_source_audio_semantic_evidence",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/speech_backend.py",
+      "scope": "MossTTSVoiceRouterBackend._render_chunks",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/speech_backend.py",
+      "scope": "PocketTTSVoiceRouterBackend._render_chunks",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/speech_worker.py",
+      "scope": "IsolatedSpeechBackend._launch_worker",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/speech_worker.py",
+      "scope": "worker_main",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/tts_benchmark.py",
+      "scope": "benchmark_backend",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/tts_benchmark.py",
+      "scope": "load_tts_benchmark_corpus",
+      "count": 1
+    },
+    {
+      "code": "PLR0912",
+      "path": "vntts/voice_default_impact.py",
+      "scope": "inspect_voice_default_impact",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "examples/benchmark_tts_backends.py",
+      "scope": "create_backend",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "scripts/moss_native_compare.py",
+      "scope": "run",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "scripts/moss_native_pause_probe.py",
+      "scope": "run",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_authoring_failure_reference_audit.py",
+      "scope": "FailureReferenceAuditTest.test_imports_exact_blind_preference_into_fresh_audit",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_authoring_failure_reference_binding.py",
+      "scope": "FailureReferenceBindingTest.test_same_backend_repair_successor_preserves_the_exact_overlay",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_authoring_source_reference_review.py",
+      "scope": "AuthoringSourceReferenceReviewTest.test_binding_successor_preserves_existing_plan_and_adds_reviewed_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_authoring_workbench.py",
+      "scope": "AuthoringWorkbenchTest.test_automatic_unresolved_authority_unlocks_exact_early_pocket_fallback",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_authoring_workbench.py",
+      "scope": "AuthoringWorkbenchTest.test_bounded_seed_repair_carries_provider_attempts_and_stops_at_three",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_authoring_workbench.py",
+      "scope": "AuthoringWorkbenchTest.test_exhausted_inline_pause_failure_moves_to_one_typed_pocket_attempt",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_authoring_workbench.py",
+      "scope": "AuthoringWorkbenchTest.test_offline_pocket_fallback_carries_exact_failure_with_fresh_seed_space",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_authoring_workbench.py",
+      "scope": "AuthoringWorkbenchTest.test_outcome_merge_copies_only_exact_reviewed_repair_and_is_idempotent",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_authoring_workbench.py",
+      "scope": "AuthoringWorkbenchTest.test_partial_voice_manifest_allows_exact_covered_failed_retry_only",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_authoring_workbench_ui.py",
+      "scope": "AuthoringWorkbenchUiTest.test_review_playback_restores_actions_and_keeps_navigation_fixed",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_fresh_install_gui_journey.py",
+      "scope": "_first_process",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_fresh_install_gui_journey.py",
+      "scope": "_second_process",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_game_content_importer.py",
+      "scope": "Reverse1999GameImporterTest.test_narrator_upgrade_reuses_previously_imported_custom_installation",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_live_replay.py",
+      "scope": "LiveReplayTest.test_serialized_media_paths_are_contained_and_not_symlinks",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_pregeneration_audition_ui.py",
+      "scope": "VoiceAuditionPanelTest.test_original_buttons_play_exact_references_without_synthesis_and_recheck_files",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_pregeneration_setup.py",
+      "scope": "OfflineAudioPreparationDialogTest.test_checked_story_readiness_updates_list_and_primary_without_preparing",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_pregeneration_setup.py",
+      "scope": "OfflineAudioPreparationDialogTest.test_default_path_selects_content_and_saves_resumable_player_choice",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_pregeneration_setup.py",
+      "scope": "OfflineAudioPreparationDialogTest.test_failed_first_pass_runs_automatic_recovery_before_accepting",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_self_service_pregeneration.py",
+      "scope": "SelfServicePregenerationJourneyTest.test_ambiguous_voice_choice_resumes_then_completes_without_line_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_self_service_pregeneration.py",
+      "scope": "SelfServicePregenerationJourneyTest.test_game_narrator_and_routes_are_confirmed_before_generation",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/app.py",
+      "scope": "SettingsDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/app.py",
+      "scope": "TrayApplication.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/app.py",
+      "scope": "TrayApplication.shutdown",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/audio_event_omission.py",
+      "scope": "create_audio_event_omission_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/audio_event_projection_fallback.py",
+      "scope": "create_audio_event_projection_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/audio_event_review.py",
+      "scope": "publish_source_audio_event_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_capture_live_fallback_evidence",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "_review_generation_item_locked",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "authorize_live_fallback",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "generation_failure_repair_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "review_generation_cohort",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/bulk_generation.py",
+      "scope": "run_bulk_generation",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cli_generation.py",
+      "scope": "configure_parsers",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cli_generation.py",
+      "scope": "run_generation",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cli_references.py",
+      "scope": "configure_parsers",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cli_references.py",
+      "scope": "handle",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "_load_source_sample_records",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "_reconciled_cohort_outcome",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cohort_bundle.py",
+      "scope": "_validated_bundle_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cohort_bundle_ui.py",
+      "scope": "CohortReviewBundleDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cohort_bundle_ui.py",
+      "scope": "CohortReviewBundleDialog._update_actions",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "_load_bound_review_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "_validated_decision_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "build_cohort_review_decision",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/cohort_review.py",
+      "scope": "build_cohort_review_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/config_rebase.py",
+      "scope": "rebase_workspace_config",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/config_rebase.py",
+      "scope": "validate_config_rebase_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/experimental_composite_voice.py",
+      "scope": "publish_experimental_composite_voice_input",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/explicit_fallback_merge.py",
+      "scope": "merge_explicit_live_fallbacks",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/failed_control_carry.py",
+      "scope": "carry_failed_controls",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/failure_reference_audit.py",
+      "scope": "load_failure_reference_audit",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/failure_reference_audit.py",
+      "scope": "publish_failure_reference_audit",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/failure_reference_audit_ui.py",
+      "scope": "FailureReferenceAuditDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/failure_reference_binding.py",
+      "scope": "publish_failure_reference_binding",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/failure_reference_binding_records.py",
+      "scope": "load_failure_reference_binding",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/failure_reference_preview.py",
+      "scope": "FailureReferencePreviewService.generate",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/failure_repair.py",
+      "scope": "compress_single_sentence_boundary_silence",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/game_pack.py",
+      "scope": "_verify_voice_control_provenance",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/game_pack.py",
+      "scope": "publish_final_game_pack",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_failure_repair_record",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/generation_state.py",
+      "scope": "_validate_state_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/known_role_live_fallback.py",
+      "scope": "create_known_role_live_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/known_role_reuse.py",
+      "scope": "publish_known_role_reuse_binding",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/legacy_reason_review_ui.py",
+      "scope": "LegacyReasonReviewDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/listening_import.py",
+      "scope": "_validate_key",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/listening_ui.py",
+      "scope": "ModelListeningDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/missing_voice_live_fallback.py",
+      "scope": "authorize_missing_voice_live_fallback",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/missing_voice_reuse.py",
+      "scope": "_publish_candidate_input",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/missing_voice_reuse.py",
+      "scope": "build_missing_voice_reuse_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/missing_voice_reuse_binding.py",
+      "scope": "publish_missing_voice_reuse_binding",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/missing_voice_reuse_review.py",
+      "scope": "build_missing_voice_reuse_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/missing_voice_reuse_review_ui.py",
+      "scope": "MissingVoiceReuseReviewDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/model_benchmark.py",
+      "scope": "benchmark_model_variants",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/model_benchmark.py",
+      "scope": "build_failure_comparison_corpus",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/offline_fallback_authority.py",
+      "scope": "_load_authority",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/queue_builder.py",
+      "scope": "plan_generation_queue",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/reconciliation_schema.py",
+      "scope": "_validated_report_actions",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/reference_composite.py",
+      "scope": "publish_composite_quality_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/reference_composite.py",
+      "scope": "publish_exact_bank_reference_composite",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "import_reference_render_preference",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "load_reference_render_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/reference_render_comparison.py",
+      "scope": "publish_reference_render_comparison",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/render_hypothesis_review.py",
+      "scope": "import_accepted_render_hypothesis",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/render_hypothesis_review.py",
+      "scope": "publish_render_hypothesis_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/reviewed_rejection_fallback.py",
+      "scope": "create_reviewed_rejection_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/reviewed_rejection_fallback.py",
+      "scope": "validate_reviewed_rejection_fallback_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/reviewed_waveform_publication.py",
+      "scope": "create_reviewed_waveform_publication_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/robustness_asr.py",
+      "scope": "build_speech_robustness_asr_report",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "_build_sources",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/robustness_corpus.py",
+      "scope": "_validate_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/silence_comparison.py",
+      "scope": "load_silence_comparison",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/silence_comparison.py",
+      "scope": "publish_silence_comparison",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_known_role_reuse_overrides_from_manifest",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_source_reference_overrides_from_manifest",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_bindings.py",
+      "scope": "_validate_approved_reuse_authority",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_quality.py",
+      "scope": "publish_source_reference_quality_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_quality_records.py",
+      "scope": "validate_source_reference_quality_review_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_quality_ui.py",
+      "scope": "SourceReferenceQualityDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_quality_ui.py",
+      "scope": "SourceReferenceQualityDialog._load_next",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "import_source_reference_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_binding_retirement",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_binding_successor",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_bindings",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_evaluation",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/source_reference_review.py",
+      "scope": "publish_source_reference_listening_reports",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/terminal_conflict_resolution.py",
+      "scope": "publish_terminal_conflict_resolution",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/terminal_conflict_resolution.py",
+      "scope": "validate_terminal_conflict_resolution_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "_progress_lock",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "publish_terminal_conflict_review",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/terminal_conflict_review.py",
+      "scope": "validate_terminal_conflict_review_document",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/terminal_conflict_review_ui.py",
+      "scope": "TerminalConflictReviewDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/terminal_conflict_successor.py",
+      "scope": "publish_terminal_conflict_successor",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/terminal_conflict_workspace.py",
+      "scope": "merge_terminal_conflict_resolution",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/voice_quality_gate.py",
+      "scope": "_reusable_identity",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "_publish_candidate_input",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "_validate_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/voice_repair_comparison.py",
+      "scope": "build_voice_repair_comparison_plan",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_load_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_carry_forward",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_outcome_merge",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "_validate_workspace_terminal_conflict_merge",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "create_audio_event_composition_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "create_failure_reference_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "create_resume_workspace",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench.py",
+      "scope": "generation_command",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._review_save_finished",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/authoring/workbench_ui.py",
+      "scope": "AuthoringWorkbenchDialog._update_review_actions",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/controller.py",
+      "scope": "AppController.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/controller.py",
+      "scope": "AppController._get_live_sequence_status_locked",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/controller.py",
+      "scope": "AppController._play_live_chunk",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/dashboard_ui.py",
+      "scope": "CompactController.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/dashboard_ui.py",
+      "scope": "ControlDashboard.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/diagnostics_ui.py",
+      "scope": "DiagnosticsDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/game_audio_decoder.py",
+      "scope": "ensure_game_decoder",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/game_narrator.py",
+      "scope": "bind_game_narrator",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/game_narrator_ui.py",
+      "scope": "GameNarratorDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/game_narrator_ui.py",
+      "scope": "GameNarratorDialog._finished",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/generated_audio.py",
+      "scope": "GeneratedAudioFallbackBackend.prepare_route",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/generated_audio.py",
+      "scope": "_live_fallback_index",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/history_ui.py",
+      "scope": "DialogueHistoryDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/live.py",
+      "scope": "LiveDialogReader.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/live.py",
+      "scope": "LiveDialogReader._run_auto_advance",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/live.py",
+      "scope": "LiveDialogReader._run_ocr",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/live_replay.py",
+      "scope": "LiveReplayRunner._run_legacy",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/live_replay.py",
+      "scope": "LiveReplayRunner._run_sequence",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/live_replay.py",
+      "scope": "load_live_replay_corpus",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/live_replay_capture_recover.py",
+      "scope": "recover_live_replay_capture",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/live_replay_coverage.py",
+      "scope": "audit_live_replay_coverage",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/live_replay_sequence_seal.py",
+      "scope": "seal_sequence_replay",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/moss_cpp_backend.py",
+      "scope": "MossCppVoiceRouterBackend._generate",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/moss_cpp_installation.py",
+      "scope": "_download",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/ocr_review_ui.py",
+      "scope": "OCRReviewDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/onboarding_ui.py",
+      "scope": "ConfigurationPage.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/onboarding_ui.py",
+      "scope": "OnboardingWizard.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/package_self_test.py",
+      "scope": "run_package_self_test",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/pregeneration_activation.py",
+      "scope": "OfflinePackActivator.activate",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/pregeneration_audition.py",
+      "scope": "VoiceAuditionPreviewService.generate",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/pregeneration_audition_ui.py",
+      "scope": "VoiceAuditionPanel.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/pregeneration_pack.py",
+      "scope": "OfflinePackPublisher.publish",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/pregeneration_ui.py",
+      "scope": "OfflineAudioPreparationDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/pregeneration_ui.py",
+      "scope": "OfflineAudioPreparationDialog._selection_changed",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/pregeneration_voices.py",
+      "scope": "VoicePlanStore._resolve_group",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/readiness_ui.py",
+      "scope": "ReadinessDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/reference_quality.py",
+      "scope": "analyze_reference_bytes",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/release_matrix.py",
+      "scope": "validate_release_evidence",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/release_smoke_test.py",
+      "scope": "run_release_smoke_test",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/runtime_installation.py",
+      "scope": "_ensure_speech_runtime",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/settings.py",
+      "scope": "AppSettings.from_mapping",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/speech_backend.py",
+      "scope": "MossTTSVoiceRouterBackend.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/speech_backend.py",
+      "scope": "MossTTSVoiceRouterBackend._play_rendered_stream",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/speech_backend.py",
+      "scope": "MossTTSVoiceRouterBackend._render_chunks",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/speech_backend.py",
+      "scope": "PocketTTSVoiceRouterBackend._render_chunks",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/speech_worker.py",
+      "scope": "IsolatedSpeechBackend._launch_worker",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/speech_worker.py",
+      "scope": "worker_main",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/support_ui.py",
+      "scope": "SupportCenterDialog.__init__",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/tts_benchmark.py",
+      "scope": "_benchmark_backend_staged",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/voice_default_impact.py",
+      "scope": "inspect_voice_default_impact",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "vntts/voice_preview_ui.py",
+      "scope": "VoicePreviewDialog.__init__",
+      "count": 1
+    }
+  ]
+}
+

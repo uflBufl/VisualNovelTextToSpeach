@@ -90,6 +90,9 @@ jobs:
           uv run --frozen python scripts/check_mypy_scope.py
           uv run --frozen mypy
 
+      - name: Check complexity ratchet
+        run: uv run --frozen python scripts/check_ruff_complexity.py
+
       - name: Run unit tests
         run: uv run --frozen python scripts/run_ci_unittests.py discover -s tests
 
