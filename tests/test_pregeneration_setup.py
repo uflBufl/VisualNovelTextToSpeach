@@ -143,6 +143,36 @@ class PregenerationSetupTest(unittest.TestCase):
             self.assertEqual(load.call_count, 1)
             self.assertEqual(len(document.records), 3)
 
+    def test_large_story_catalog_summary_survives_process_cache_reset(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = write_story_index(root / "content")
+            catalog = root / "cache" / "catalog.json"
+            _cached_story_index_document.cache_clear()
+            with (
+                patch("vntts.pregeneration_setup.story_catalog_minimum_bytes", 0),
+                patch(
+                    "vntts.pregeneration_setup._story_catalog_path",
+                    return_value=catalog,
+                ),
+            ):
+                first = inspect_story_index(path, provider_id="first")
+                _cached_story_index_document.cache_clear()
+                with patch(
+                    "vntts.pregeneration_setup._cached_story_index_document",
+                    side_effect=AssertionError("source catalog was parsed again"),
+                ):
+                    second = inspect_story_index(path, provider_id="second")
+                catalog.write_text("{}", encoding="utf-8")
+                _cached_story_index_document.cache_clear()
+                rebuilt = inspect_story_index(path, provider_id="rebuilt")
+
+            self.assertTrue(catalog.is_file())
+            self.assertNotIn("Generate me.", catalog.read_text(encoding="utf-8"))
+            self.assertEqual(first.selections, second.selections)
+            self.assertEqual(first.selections, rebuilt.selections)
+            self.assertEqual(second.provider_id, "second")
+
     def test_story_records_are_grouped_in_one_pass(self):
         class CountingRecords(tuple):
             iterations = 0

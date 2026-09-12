@@ -25,6 +25,8 @@ from vntts.settings import AppSettings
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 
 job_schema_version = 1
+story_catalog_schema_version = 1
+story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.
 ROUGH_SPEECH_CHARACTERS_PER_SECOND = 12
@@ -169,43 +171,52 @@ def inspect_story_index(path, *, provider_id="local-story-index"):
     if not path.is_file():
         raise PregenerationSetupError(f"Story content was not found: {path}")
     try:
+        size = path.stat().st_size
         checksum = sha256_file(path)
-        cache_hits = _cached_story_index_document.cache_info().hits
-        document = _cached_story_index_document(str(path), checksum)
+        persistent_cache = size >= story_catalog_minimum_bytes
+        content = (
+            _load_story_catalog(path, checksum, provider_id)
+            if persistent_cache
+            else None
+        )
+        cache_state = "disk" if content is not None else "miss"
+        if content is None:
+            cache_hits = _cached_story_index_document.cache_info().hits
+            document = _cached_story_index_document(str(path), checksum)
+            selections = _story_selections(document)
+            if not selections:
+                raise PregenerationSetupError(
+                    "Story content has no selectable dialogue"
+                )
+            metadata = document.metadata
+            version = metadata.get("game_version")
+            content = GameContent(
+                provider_id=provider_id,
+                game=document.game or "Visual novel",
+                game_version=version.strip()
+                if isinstance(version, str) and version.strip()
+                else None,
+                story_index=path,
+                story_index_sha256=checksum,
+                selections=selections,
+            )
+            cache_state = (
+                "memory"
+                if _cached_story_index_document.cache_info().hits > cache_hits
+                else "miss"
+            )
+            if persistent_cache:
+                _save_story_catalog(content)
     except (OSError, StoryIndexError, ValueError) as error:
         raise PregenerationSetupError(f"Story content is invalid: {error}") from error
-    selections = _story_selections(document)
-    if not selections:
-        raise PregenerationSetupError("Story content has no selectable dialogue")
-    metadata = document.metadata
-    version = metadata.get("game_version")
-    content = GameContent(
-        provider_id=provider_id,
-        game=document.game or "Visual novel",
-        game_version=version.strip()
-        if isinstance(version, str) and version.strip()
-        else None,
-        story_index=path,
-        story_index_sha256=checksum,
-        selections=selections,
-    )
     from vntts.support import record_background_operation
 
-    try:
-        size = path.stat().st_size
-    except OSError:
-        size = None
     details = {
         "cpu_ms": round((process_time() - cpu_started) * 1000, 3),
         "files_examined": 1,
-        "cache_state": (
-            "hit"
-            if _cached_story_index_document.cache_info().hits > cache_hits
-            else "miss"
-        ),
+        "cache_state": cache_state,
     }
-    if size is not None:
-        details["bytes_examined"] = size
+    details["bytes_examined"] = size
     record_background_operation(
         "story-index-inspection",
         (perf_counter() - started) * 1000,
@@ -213,6 +224,119 @@ def inspect_story_index(path, *, provider_id="local-story-index"):
         **details,
     )
     return content
+
+
+def _story_catalog_path(checksum):
+    return (
+        get_local_data_directory()
+        / "pregeneration"
+        / "story-catalogs"
+        / f"{checksum}.json"
+    )
+
+
+def _load_story_catalog(path, checksum, provider_id):
+    catalog = _story_catalog_path(checksum)
+    if not catalog.is_file():
+        return None
+    try:
+        document = read_versioned_json(
+            catalog,
+            schema_version=story_catalog_schema_version,
+            document_name="story catalog cache",
+        )
+        if (
+            set(document)
+            != {
+                "schema_version",
+                "source_story_index_sha256",
+                "game",
+                "game_version",
+                "selections",
+            }
+            or document["source_story_index_sha256"] != checksum
+        ):
+            raise ValueError("story catalog cache identity changed")
+        raw_selections = document["selections"]
+        if not isinstance(raw_selections, list) or not raw_selections:
+            raise ValueError("story catalog cache selections are invalid")
+        selections = tuple(_cached_story_selection(value) for value in raw_selections)
+        if len({value.selection_id for value in selections}) != len(selections):
+            raise ValueError("story catalog cache selection identities overlap")
+        return GameContent(
+            provider_id=provider_id,
+            game=_required_text(document, "game"),
+            game_version=_optional_text(document.get("game_version")),
+            story_index=path,
+            story_index_sha256=checksum,
+            selections=selections,
+        )
+    except OSError, KeyError, TypeError, ValueError, json.JSONDecodeError:
+        return None
+
+
+def _save_story_catalog(content):
+    try:
+        catalog = _story_catalog_path(content.story_index_sha256)
+        catalog.parent.mkdir(parents=True, exist_ok=True)
+        write_versioned_json(
+            catalog,
+            story_catalog_schema_version,
+            {
+                "source_story_index_sha256": content.story_index_sha256,
+                "game": content.game,
+                "game_version": content.game_version,
+                "selections": [asdict(value) for value in content.selections],
+            },
+        )
+    except OSError:
+        pass
+
+
+def _cached_story_selection(document):
+    fields = {
+        "selection_id",
+        "title",
+        "kind",
+        "order",
+        "line_ids",
+        "line_count",
+        "speakable_lines",
+        "original_audio_lines",
+        "generation_lines",
+        "speaker_count",
+        "speakers",
+        "generation_text_characters",
+    }
+    if not isinstance(document, dict) or set(document) != fields:
+        raise ValueError("story catalog cache selection is malformed")
+    line_ids = _text_tuple(document, "line_ids")
+    speakers = _text_tuple(document, "speakers", allow_empty=True)
+    selection = StorySelection(
+        selection_id=_required_text(document, "selection_id"),
+        title=_required_text(document, "title"),
+        kind=_required_text(document, "kind"),
+        order=_nonnegative_int(document, "order"),
+        line_ids=line_ids,
+        line_count=_nonnegative_int(document, "line_count"),
+        speakable_lines=_nonnegative_int(document, "speakable_lines"),
+        original_audio_lines=_nonnegative_int(document, "original_audio_lines"),
+        generation_lines=_nonnegative_int(document, "generation_lines"),
+        speaker_count=_nonnegative_int(document, "speaker_count"),
+        speakers=speakers,
+        generation_text_characters=_nonnegative_int(
+            document, "generation_text_characters"
+        ),
+    )
+    if (
+        selection.line_count != len(line_ids)
+        or selection.speakable_lines
+        != selection.original_audio_lines + selection.generation_lines
+        or selection.speakable_lines > selection.line_count
+        or selection.speaker_count != len(speakers)
+    ):
+        raise ValueError("story catalog cache selection counts changed")
+    return selection
 
 
 @lru_cache(maxsize=8)
@@ -722,10 +846,12 @@ def _sha256_text(document, name):
     return value
 
 
-def _text_tuple(document, name):
+def _text_tuple(document, name, *, allow_empty=False):
     values = document[name]
-    if not isinstance(values, list) or not values:
-        raise ValueError(f"{name} must be a non-empty list")
+    if not isinstance(values, list) or not values and not allow_empty:
+        raise ValueError(
+            f"{name} must be a{' non-empty' if not allow_empty else ''} list"
+        )
     result = tuple(values)
     if not all(isinstance(value, str) and value.strip() for value in result):
         raise ValueError(f"{name} must contain non-empty text")
