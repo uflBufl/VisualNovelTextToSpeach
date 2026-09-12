@@ -29,6 +29,7 @@ from vntts.pregeneration_generation import OfflineGenerationResult
 from vntts.pregeneration_pack import (
     OfflinePackError,
     OfflinePackPublisher,
+    _link_verified_file,
     inspect_story_audio,
 )
 from vntts.pregeneration_queue import PregenerationInput
@@ -196,6 +197,18 @@ def fixture(
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_incremental_reuse_hard_links_verified_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.wav"
+            destination = root / "pack" / "audio.wav"
+            source.write_bytes(b"verified audio")
+
+            _link_verified_file(source, destination, sha256_file(source))
+
+            self.assertTrue(source.samefile(destination))
+            self.assertEqual(destination.read_bytes(), b"verified audio")
+
     def test_original_readiness_requires_full_valid_declared_source_duration(self):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "story.jsonl"

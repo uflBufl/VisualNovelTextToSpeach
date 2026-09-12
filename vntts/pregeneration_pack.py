@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -841,6 +842,7 @@ def _write_cumulative_routes(
                         record.to_record(),
                         record.audio,
                         generated_copy,
+                        reuse=True,
                     )
                 )
         live_fallbacks.extend(
@@ -878,10 +880,14 @@ def _write_cumulative_routes(
     return records, live_fallbacks, omissions
 
 
-def _portable_generated_record(record, source, generated_copy):
+def _portable_generated_record(record, source, generated_copy, *, reuse=False):
     candidate = copy.deepcopy(record)
     portable = f"audio/{candidate['audio_sha256']}.wav"
-    _copy_file(source, generated_copy.parent / portable)
+    destination = generated_copy.parent / portable
+    if reuse:
+        _link_verified_file(source, destination, candidate["audio_sha256"])
+    else:
+        _copy_file(source, destination)
     candidate["audio"] = portable
     return candidate
 
@@ -1003,6 +1009,22 @@ def _copy_file(source, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
     if sha256_file(source) != before or sha256_file(destination) != before:
+        raise OfflinePackError(f"Offline pack source changed: {source}")
+
+
+def _link_verified_file(source, destination, expected_sha256):
+    source = Path(source).resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_file():
+        if sha256_file(destination) == expected_sha256:
+            return
+        raise OfflinePackError(f"Offline pack destination conflicts: {destination}")
+    try:
+        os.link(source, destination)
+    except OSError:
+        _copy_file(source, destination)
+        return
+    if sha256_file(destination) != expected_sha256:
         raise OfflinePackError(f"Offline pack source changed: {source}")
 
 
