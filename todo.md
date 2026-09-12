@@ -8,8 +8,9 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Record cold and warm timings for startup, reference preparation, native
       prefill/generation/decode, WAV validation and publication on the supported
       Windows OpenMOSS host. Compare repeated and changing voices.
-- [ ] Add checksum-bound encoded-reference persistence to the VNTTS OpenMOSS
-      server, qualify the rebuilt Windows runtime, then update the pinned archive.
+- [ ] On the supported Windows OpenMOSS host, qualify artifact `46454ab` with
+      the real model, require a persistent-code hit after restart, publish an
+      immutable runtime archive, then update its pinned URL, checksum and size.
 - [ ] Benchmark `VNTTS_MOSS_AUX_CPU_THREADS=2/4/6/8`, GPU layers and Local GPU
       on qualified Windows hardware. Keep only settings with measured gains and
       enough CPU/GPU headroom for the game.
