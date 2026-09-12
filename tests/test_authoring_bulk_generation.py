@@ -307,7 +307,6 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
                     provider="moss-tts",
                     model="moss-test",
                     generation_profile="stable",
-                    retries=0,
                 )
 
             state = load_generation_state(result.state, queue)

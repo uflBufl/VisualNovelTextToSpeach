@@ -1739,7 +1739,6 @@ def run_bulk_generation(
         prefetched_render = None
         pipeline_enabled = (
             provider == "moss-tts"
-            and retries == 0
             and repair_policy.is_empty
             and text_transform is None
             and not regenerate_existing
