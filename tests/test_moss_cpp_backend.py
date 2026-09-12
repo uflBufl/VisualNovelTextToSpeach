@@ -49,7 +49,7 @@ if '--help' in sys.argv:
     if (root / 'slow-help').exists():
         (root / 'help-started').touch()
         time.sleep(30)
-    print('Usage: --model PATH --n-gpu-layers N' + ('' if legacy else ' --voice-dir DIR') + (' --capabilities-json' if adaptive else ''), file=sys.stderr)
+    print('Usage: --model PATH --n-gpu-layers N' + ('' if legacy else ' --voice-dir DIR --voice-cache-key KEY') + (' --capabilities-json' if adaptive else ''), file=sys.stderr)
     sys.exit(0)
 if '--capabilities-json' in sys.argv:
     if (root / 'capabilities-stderr').exists():
@@ -60,7 +60,7 @@ if '--capabilities-json' in sys.argv:
         'vulkan_available': not (root / 'no-vulkan').exists(),
         'local_gpu': True, 'aux_cpu_threads': True,
         'aux_cpu_threads_default': 4, 'aux_cpu_threads_min': 1,
-        'aux_cpu_threads_max': 16,
+        'aux_cpu_threads_max': 16, 'persistent_voice_codes': True,
     }))
     sys.exit(0)
 if legacy and '--voice-dir' in sys.argv: sys.exit('unknown arg: --voice-dir')
@@ -75,6 +75,7 @@ if adaptive and (root / 'fail-unknown').exists():
     sys.exit(25)
 port = int(sys.argv[sys.argv.index('--port') + 1])
 voice_dir = None if '--voice-dir' not in sys.argv else Path(sys.argv[sys.argv.index('--voice-dir') + 1])
+voice_cache_key = None if '--voice-cache-key' not in sys.argv else sys.argv[sys.argv.index('--voice-cache-key') + 1]
 if voice_dir is not None: voice_dir.mkdir(parents=True, exist_ok=True)
 codes_cache = {}
 startup_log = root / 'startup.log'
@@ -88,6 +89,7 @@ class Handler(BaseHTTPRequestHandler):
             architecture='moss_tts_local', sampling_rate=48000, n_channels=2,
             n_vq=12, codec_loaded=True, version='0.2.0' if legacy else '0.3.0',
             voice_registry=voice_dir is not None and not (root / 'disable-registry').exists(),
+            persistent_voice_codes=voice_cache_key is not None,
         )
         if adaptive and '--aux-cpu-threads' in sys.argv:
             layers = int(sys.argv[sys.argv.index('--n-gpu-layers') + 1])
@@ -113,9 +115,16 @@ class Handler(BaseHTTPRequestHandler):
                 assert hashlib.sha256(wav).hexdigest() == voice_id
                 assert wav.startswith(b'RIFF')
                 assert json.loads((voice_dir / (voice_id + '.json')).read_text()) == {}
+                cache = voice_dir / (voice_id + '.codes')
+                cache_value = f'{voice_cache_key}:{hashlib.sha256(wav).hexdigest()}'
+                if voice_cache_key and cache.exists() and cache.read_text() == cache_value:
+                    (root / 'restored.json').write_text(json.dumps([voice_id]))
+                    print(f"[server] voice '{voice_id}' restored: 10 frames (persistent codes)", flush=True)
+                else:
+                    cache.write_text(cache_value)
+                    (root / 'encoded.json').write_text(json.dumps([*codes_cache, voice_id]))
+                    print(f"[server] voice '{voice_id}' encoded: 10 frames in 0.40s (now cached)", flush=True)
                 codes_cache[voice_id] = True
-                (root / 'encoded.json').write_text(json.dumps(list(codes_cache)))
-                print(f"[server] voice '{voice_id}' encoded: 10 frames in 0.40s (now cached)", flush=True)
             # Local v0.3.0 emits no cache-hit marker (the Delay pipeline does).
         if body['text'] == 'Wait.': time.sleep(30)
         if body['text'] == 'Fail.':
@@ -411,9 +420,10 @@ class MossCppBackendTest(unittest.TestCase):
             self.assertEqual(len(raw), 6)
             self.assertTrue(all(archive.read(name).startswith(b"RIFF") for name in raw))
 
-    def test_references_are_reused_by_content_and_cleaned_up_on_restart(self):
+    def test_reference_codes_survive_restart_and_changed_audio_invalidates_them(self):
         backend = self.backend()
         directory = Path(backend.server_directory.name)
+        voice_directory = backend.native_voice_directory
         with patch(
             "vntts.moss_cpp_backend._normalize_reference_audio",
             wraps=_normalize_reference_audio,
@@ -425,7 +435,8 @@ class MossCppBackendTest(unittest.TestCase):
             self.assertEqual(len(encoded), 1)
             voice = json.loads((self.root / "request.json").read_text())["voice"]
             self.assertEqual(voice, encoded[0])
-            self.assertEqual(len(list((directory / "voices").glob("*.wav"))), 1)
+            self.assertEqual(len(list(voice_directory.glob("*.wav"))), 1)
+            self.assertIn("--voice-cache-key", self.commands[-1])
             # A content change at the same reference path must get new native codes.
             original_stat = self.reference.stat()
             sf.write(self.reference, np.full(4800, 0.2), 48000)
@@ -439,6 +450,10 @@ class MossCppBackendTest(unittest.TestCase):
             )
             backend.render(SynthesisRequest("Narrator", "Changed voice.")).collect()
             self.assertEqual(normalize.call_count, 2)
+            changed_voice = json.loads((self.root / "request.json").read_text())[
+                "voice"
+            ]
+            self.assertNotEqual(changed_voice, voice)
             self.assertEqual(
                 len(json.loads((self.root / "encoded.json").read_text())), 2
             )
@@ -447,8 +462,9 @@ class MossCppBackendTest(unittest.TestCase):
             backend.render(SynthesisRequest("Narrator", "After restart.")).collect()
             self.assertEqual(normalize.call_count, 3)
             self.assertEqual(
-                len(json.loads((self.root / "encoded.json").read_text())), 1
+                json.loads((self.root / "restored.json").read_text()), [changed_voice]
             )
+            self.assertEqual(len(list(voice_directory.glob("*.codes"))), 2)
 
     def test_registered_reference_normalizes_the_hashed_snapshot(self):
         backend = self.backend()

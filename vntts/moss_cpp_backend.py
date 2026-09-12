@@ -172,7 +172,10 @@ def _native_stage_timings(path, offset, headers, maximum_seconds):
             "encoded"
             if reference_s is not None
             else "cached-codes"
-            if complete_log and "(cached codes)" in output
+            if complete_log
+            and any(
+                marker in output for marker in ("(cached codes)", "(persistent codes)")
+            )
             else "unavailable"
         ),
         "reference_encoding_s": reference_s,
@@ -341,6 +344,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self._diagnostic_salt = secrets.token_bytes(32)
         self._runtime_status = None
         self._registered_references = {}
+        prompt_cache = options.get("prompt_cache_directory")
+        self.native_voice_directory = (
+            Path(prompt_cache).expanduser() / "openmoss"
+            if prompt_cache is not None
+            else None
+        )
         self.startup_cancellation = startup_cancellation
         self.startup_progress = startup_progress or (lambda _message: None)
         self.startup_progress("Checking MOSS C++ model and audio codec...")
@@ -363,6 +372,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             )
             self.voice_registry_supported = bool(
                 re.search(rb"(?:^|\s)--voice-dir(?:\s|$)", help_output)
+            )
+            self.voice_code_cache_supported = bool(
+                re.search(rb"(?:^|\s)--voice-cache-key(?:\s|$)", help_output)
             )
             if self._managed_runtime:
                 capabilities = self._managed_capabilities(_run, help_output)
@@ -682,9 +694,11 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             str(self.context_size),
         ]
         if self.voice_registry_supported:
-            command.extend(
-                ["--voice-dir", str(Path(self.server_directory.name) / "voices")]
-            )
+            voice_directory = self._voice_directory(self.server_directory.name)
+            voice_directory.mkdir(parents=True, exist_ok=True)
+            command.extend(["--voice-dir", str(voice_directory)])
+            if self.voice_code_cache_supported:
+                command.extend(["--voice-cache-key", self._native_model_key])
         if controls["aux_cpu"]:
             command.append("--aux-cpu")
         if controls["local_gpu"]:
@@ -745,6 +759,8 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     info.get("n_channels") != 2,
                     info.get("n_vq") != 12,
                     info.get("codec_loaded") is not True,
+                    self.voice_code_cache_supported
+                    and info.get("persistent_voice_codes") is not True,
                 )
             ):
                 raise TTSConfigurationError(
@@ -796,6 +812,11 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self.startup_progress(self._runtime_status)
             return True, None, None
         raise TTSConfigurationError("MOSS C++ model startup timed out")
+
+    def _voice_directory(self, server_directory):
+        if self.voice_code_cache_supported and self.native_voice_directory is not None:
+            return self.native_voice_directory
+        return Path(server_directory) / "voices"
 
     @staticmethod
     def _valid_managed_placement(info):
@@ -928,7 +949,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                         return None
                     return (
                         cached
-                        if (server_directory / "voices" / f"{cached[0]}.wav").is_file()
+                        if self._voice_directory(server_directory)
+                        .joinpath(f"{cached[0]}.wav")
+                        .is_file()
                         else None
                     )
 
@@ -996,10 +1019,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             if registered:
                 # openmoss caches registered reference codes. Inline WAVs are
                 # encoded again on every line, even when the voice is unchanged.
-                # ponytail: codes/WAVs live until server shutdown; add eviction
-                # only if long-running sessions with many unique voices need it.
+                # ponytail: immutable content-addressed voices have no eviction;
+                # add a disk cap only if real libraries make this cache large.
                 reference_mode = "registered"
-                reference_path = server_directory / "voices" / f"{voice_id}.wav"
+                reference_path = (
+                    self._voice_directory(server_directory) / f"{voice_id}.wav"
+                )
                 if reference_wav is not None:
                     reference_path.with_suffix(".json").write_text(
                         "{}", encoding="utf-8"
