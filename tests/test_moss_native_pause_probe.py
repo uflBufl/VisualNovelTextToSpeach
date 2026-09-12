@@ -163,6 +163,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
 
             report = json.loads((options.output / "report.json").read_text())
             self.assertFalse(report["all_requests_complete"])
+            self.assertFalse(report["all_requests_terminal"])
 
     def test_required_alternate_uses_another_usable_saved_game_voice(self):
         with TemporaryDirectory() as temporary:
@@ -216,6 +217,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
                     )
                     report = json.loads((options.output / "report.json").read_text())
                     self.assertFalse(report["all_requests_complete"])
+                    self.assertTrue(report["all_requests_terminal"])
                     self.assertEqual(report["exit_code"], 0 if replacement_stops else 1)
                     receipt = report["server_shutdown"]
                     self.assertEqual(receipt["confirmed_exited"], expected)
@@ -362,14 +364,9 @@ class MossNativePauseProbeTest(unittest.TestCase):
             )
 
             report = json.loads((options.output / "report.json").read_text())
-            self.assertEqual(report["expected_attempt_count"], 8)
+            self.assertEqual(report["expected_attempt_count"], 9)
             self.assertTrue(report["all_requests_complete"])
-            self.assertFalse(
-                any(
-                    attempt["id"].endswith("stable-sentences")
-                    for attempt in report["attempts"]
-                )
-            )
+            self.assertTrue(report["all_requests_terminal"])
             self.assertEqual(
                 [
                     attempt["phase"]

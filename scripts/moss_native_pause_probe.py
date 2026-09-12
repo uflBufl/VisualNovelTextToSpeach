@@ -647,13 +647,6 @@ def run(
                     )
                 ]
                 if getattr(options, "timing_sequence", False):
-                    # The stable two-sentence diagnostic deterministically hits the
-                    # production safety cap; it measures missed EOS, not runtime speed.
-                    sequence = [
-                        item
-                        for item in sequence
-                        if item[0:2] != ("stable", "sentences")
-                    ]
                     sequence.insert(
                         1,
                         (
@@ -787,16 +780,27 @@ def run(
         elif None in confirmed:
             report["shutdown_error"] = "Owned native server shutdown status is unknown"
             exit_code = 130 if exit_code == 130 else 1
-        report["all_requests_complete"] = (
+        request_evidence_valid = (
             len(report["attempts"]) == report.get("expected_attempt_count")
             and bool(report["attempts"])
             and all(
-                attempt.get("completion") == SynthesisCompletion.COMPLETE.value
-                and attempt.get("result", {}).get("cache_source") == "fresh-generation"
+                attempt.get("result", {}).get("cache_source") == "fresh-generation"
                 and attempt.get("raw_response", {}).get("http_status") == 200
                 and "raw_quality_error" not in attempt
                 for attempt in report["attempts"]
             )
+        )
+        report["all_requests_terminal"] = request_evidence_valid and all(
+            attempt.get("completion")
+            in {
+                SynthesisCompletion.COMPLETE.value,
+                SynthesisCompletion.LIMITED.value,
+            }
+            for attempt in report["attempts"]
+        )
+        report["all_requests_complete"] = request_evidence_valid and all(
+            attempt.get("completion") == SynthesisCompletion.COMPLETE.value
+            for attempt in report["attempts"]
         )
         report["exit_code"] = exit_code
         report["archive"] = archive.name

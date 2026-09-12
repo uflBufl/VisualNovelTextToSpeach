@@ -104,12 +104,16 @@ try {
         $Invalid = @()
         foreach ($Attempt in $Attempts) {
             $Reasons = @()
-            if ($Attempt.completion -ne 'complete') { $Reasons += "completion=$($Attempt.completion)" }
+            if ($Attempt.completion -notin @('complete', 'limited')) { $Reasons += "completion=$($Attempt.completion)" }
             if ($Attempt.result.cache_source -ne 'fresh-generation') { $Reasons += "cache_source=$($Attempt.result.cache_source)" }
             if ($Attempt.raw_response.http_status -ne 200) { $Reasons += "http_status=$($Attempt.raw_response.http_status)" }
             if ([string]::IsNullOrWhiteSpace([string]$Attempt.raw_response.sha256)) { $Reasons += 'missing raw WAV SHA-256' }
             if ($Attempt.raw_quality_error) { $Reasons += "raw_quality_error=$($Attempt.raw_quality_error)" }
             if ($Attempt.native.operation -ne 'fresh-generation') { $Reasons += "native_operation=$($Attempt.native.operation)" }
+            if ($Attempt.native.outcome -ne $Attempt.completion) { $Reasons += "native_outcome=$($Attempt.native.outcome)" }
+            if ($Attempt.completion -eq 'limited' -and $Attempt.native.reason -ne 'frame-limit') {
+                $Reasons += "limited_reason=$($Attempt.native.reason)"
+            }
             foreach ($Timing in @('request_s', 'prefill_s', 'gen_s', 'decode_s')) {
                 if ($null -eq $Attempt.native.$Timing) { $Reasons += "missing native.$Timing" }
             }
@@ -118,12 +122,12 @@ try {
             if ($Reasons.Count) { $Invalid += "$($Attempt.id): $($Reasons -join ', ')" }
         }
         $RunProblems = @()
-        if ($Reports[$Run.Name].all_requests_complete -ne $true) { $RunProblems += 'all_requests_complete=false' }
+        if ($Reports[$Run.Name].all_requests_terminal -ne $true) { $RunProblems += 'all_requests_terminal=false' }
         if ($Attempts.Count -ne $Reports[$Run.Name].expected_attempt_count) {
             $RunProblems += "attempts=$($Attempts.Count)/$($Reports[$Run.Name].expected_attempt_count)"
         }
         $RunProblems += $Invalid
-        if ($Reports[$Run.Name].all_requests_complete -ne $true -or
+        if ($Reports[$Run.Name].all_requests_terminal -ne $true -or
             $Attempts.Count -ne $Reports[$Run.Name].expected_attempt_count -or
             $Invalid.Count -ne 0) {
             throw "$($Run.Name) contains incomplete or invalid render evidence: $($RunProblems -join '; '). Report: $ReportPath"
@@ -194,6 +198,8 @@ try {
                 @{
                     id = $_.id
                     phase = $_.phase
+                    completion = $_.completion
+                    timing_eligible = $_.completion -eq 'complete'
                     elapsed_seconds = $_.elapsed_seconds
                     output_wav_validation_s = $_.output_wav_validation_s
                     raw_wav_validation_s = $_.raw_wav_validation_s
