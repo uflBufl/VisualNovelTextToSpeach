@@ -3,6 +3,21 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P0 - Restore live reading without prepared story data
+
+- [ ] Let a freshly configured user start OCR-driven live TTS without a story
+      index or speaker corpus. Use the selected Narrator for unattributed text,
+      keep the existing one-time decision when a named speaker appears, and do
+      not require chapter identification until prepared/story-aware routing is
+      actually enabled. Align the README and setup copy with this behavior.
+
+## P0 - Make first-time OpenMOSS setup safe
+
+- [ ] Before downloading the two pinned Windows model files, show that OpenMOSS
+      needs about 9.1 GB plus working space, verify sufficient free disk space,
+      and require an explicit Install action. Keep the existing resumable,
+      checksum-bound download and cancellation behavior.
+
 ## P0 - Reduce OpenMOSS generation latency
 
 - [ ] Record cold and warm timings for startup, reference preparation, native
@@ -42,7 +57,15 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Complete a Developer ID signed/notarized macOS package and signed Windows
       executable. The Windows build must complete from an ordinary account
       without Developer Mode. Retain checksum-bound startup/render reports for
-      both platforms.
+      both platforms. Add a release-promotion gate that accepts only the signed
+      archive after every required Windows hardware profile passes the existing
+      matrix validator without `--allow-unsigned`.
+
+## P1 - Preserve diagnostics across crashes
+
+- [ ] Persist the bounded, sanitized OpenMOSS native event log and reload it on
+      the next launch so an exported support bundle can explain a crash or forced
+      exit. Keep audio, dialogue text, local paths and unbounded logs excluded.
 
 ## P2 - Qualify the real desktop experience
 
@@ -58,6 +81,16 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Run a 30-minute macOS and Windows soak covering CPU/GPU speech and animated
       scenes. Require no buzzing, underruns, stale speech or stale auto-advance;
       record hardware and timing evidence instead of relying on subjective status.
+- [ ] Restore reliable macOS-native global controls for pause, skip, replay and
+      emergency stop, or make the compact controls the explicit gameplay handoff
+      until those shortcuts are available.
+
+## P2 - Handle in-game choices without mode babysitting
+
+- [ ] Detect a Reverse: 1999 choice/manual boundary outside the dialogue OCR
+      region, pause auto advance without losing the story cursor, and resume
+      ordinary reading after the player chooses. Do not require the player to
+      predict a choice and toggle live reading manually.
 
 ## P2 - Optional model experiments
 
