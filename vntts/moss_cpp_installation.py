@@ -16,11 +16,11 @@ from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advis
 from vntts.runtime_installation import _check_cancelled, _run
 from vntts.services.tts_engine import TTSConfigurationError
 
-RELEASE = "v0.3.0-vntts-timing-1"
+RELEASE = "v0.3.0-vntts-timing-2"
 ARCHIVE = (
-    "https://github.com/AlexRedby/openmoss/releases/download/v0.3.0-vntts-timing-1/moss-native-timing-adaptive-windows-x64.zip",
-    "5dff99fda016bded706b7aa2e11406a5cee5372e08a8fd1656629421e06a68bc",
-    17304210,
+    "https://github.com/AlexRedby/openmoss/releases/download/v0.3.0-vntts-timing-2/moss-native-timing-adaptive-windows-x64.zip",
+    "e2abda985a00bf2883207ce70a6de436365ee9567327b287ae0a823685dd6076",
+    17390235,
 )
 MODEL_REVISION = "9bfc4d52c9b2e8ee61c12384cbe606212bc743f7"
 MODEL_NAME = "moss-tts-local-1.5-q8_0.gguf"

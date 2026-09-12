@@ -5,8 +5,6 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Reduce OpenMOSS generation latency
 
-- [ ] Publish the qualified `d029eb0` adaptive runtime as an immutable OpenMOSS
-      release, then update its pinned URL, checksum and size in VNTTS.
 - [ ] Run the qualified GPU/8 profile beside Reverse: 1999 and confirm game-time
       VRAM headroom and responsiveness before making it the accelerated default.
       Retain CPU/4 as the fallback; extra CPU workers did not improve warm renders
