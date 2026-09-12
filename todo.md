@@ -5,18 +5,12 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Reduce OpenMOSS generation latency
 
-- [ ] Publish an adaptive OpenMOSS build that reports Local in-process
-      reference-code cache hits, update the qualification build pin, and rerun
-      the Windows cold/warm changed-voice gate.
-- [ ] Record cold and warm timings for startup, reference preparation, native
-      prefill/generation/decode, WAV validation and publication on the supported
-      Windows OpenMOSS host. Compare repeated and changing voices.
-- [ ] On the supported Windows OpenMOSS host, qualify artifact `d029eb0` with
-      the real model, require a persistent-code hit after restart, publish an
-      immutable runtime archive, then update its pinned URL, checksum and size.
-- [ ] Benchmark `VNTTS_MOSS_AUX_CPU_THREADS=2/4/6/8`, GPU layers and Local GPU
-      on qualified Windows hardware. Keep only settings with measured gains and
-      enough CPU/GPU headroom for the game.
+- [ ] Publish the qualified `d029eb0` adaptive runtime as an immutable OpenMOSS
+      release, then update its pinned URL, checksum and size in VNTTS.
+- [ ] Run the qualified GPU/8 profile beside Reverse: 1999 and confirm game-time
+      VRAM headroom and responsiveness before making it the accelerated default.
+      Retain CPU/4 as the fallback; extra CPU workers did not improve warm renders
+      consistently on the qualified host.
 - [ ] Evaluate multiple native servers only on hosts with multiple GPUs or
       measured RAM/VRAM headroom. Keep one serialized server as the default.
 
