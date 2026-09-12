@@ -2562,31 +2562,26 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return None
         job = dialog.job()
         voice_plan = dialog.voice_plan()
-        generation_input = dialog.generation_input()
-        generation_result = dialog.generation_result()
         pack_result = dialog.pack_result()
         if not isinstance(pack_result, OfflinePackResult):
             pack_result = None
         self.pregeneration_dialog = None
-        if (
-            job is None
-            or voice_plan is None
-            or generation_input is None
-            or generation_result is None
-            or pack_result is None
-        ):
+        if pack_result is None:
             self.show_error(
                 "Offline preparation finished without a validated game pack"
             )
             return None
-        covered_lines = pack_result.story_lines or job.estimate.selected_lines
+        covered_lines = pack_result.story_lines
         status = (
             f"Offline audio now covers {covered_lines} dialogue lines. "
             f"{pack_result.approved} have prepared voices; "
-            f"{pack_result.live_fallbacks} will use live voice. "
-            f"Matched {len(voice_plan.groups)} voice groups; "
-            f"{voice_plan.narrator_fallback_count} will use narrator."
+            f"{pack_result.live_fallbacks} will use live voice."
         )
+        if voice_plan is not None:
+            status += (
+                f" Matched {len(voice_plan.groups)} voice groups; "
+                f"{voice_plan.narrator_fallback_count} will use narrator."
+            )
         generation_settings = getattr(dialog, "settings", None)
         if not isinstance(generation_settings, AppSettings):
             generation_settings = self.settings
@@ -2672,15 +2667,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.readiness_dialog.update_settings(self.settings)
         status = self._pregeneration_activation_status
         self._pregeneration_activation_status = None
+        self.show_dashboard()
+        self.dashboard.show_reading()
+        next_action = (
+            self.dashboard.live_button
+            if self._controller_ready
+            else self.dashboard.prepare_reading_button
+        )
         self.set_status(
             (f"{status} " if status else "")
             + "Prepared audio is active. Next: open the story in the game and "
-            "click Start reading. Saved lines play without generation; only "
+            f"click {next_action.text()}. Saved lines play without generation; only "
             "uncovered lines use TTS."
         )
-        self.show_dashboard()
-        self.dashboard.show_reading()
-        self.dashboard.live_button.setFocus()
+        next_action.setFocus()
 
         self._save_main_section("reading")
 

@@ -12,12 +12,21 @@ from pathlib import Path
 from platformdirs import user_data_path
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueError,
+)
 
 from vntts.application_directories import get_local_data_directory
+from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.settings import AppSettings
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 
 job_schema_version = 1
+# ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
+# durations and the selected backend's output format if storage estimates matter.
+ROUGH_SPEECH_CHARACTERS_PER_SECOND = 12
+PCM16_MONO_24KHZ_BYTES_PER_SECOND = 48_000
 
 
 class PregenerationSetupError(RuntimeError):
@@ -37,6 +46,7 @@ class StorySelection:
     generation_lines: int
     speaker_count: int
     speakers: tuple[str, ...]
+    generation_text_characters: int
 
 
 @dataclass(frozen=True)
@@ -68,6 +78,20 @@ class PreparationEstimate:
     speaker_count: int
     estimated_generation_minutes: int
     estimated_disk_bytes: int
+    generation_text_characters: int = 0
+    rough_audio_seconds: int = 0
+
+
+@dataclass(frozen=True)
+class GenerationResourceEstimate:
+    total_items: int
+    remaining_items: int
+    total_text_characters: int
+    remaining_text_characters: int
+    rough_audio_seconds: int
+    remaining_rough_audio_seconds: int
+    estimated_disk_bytes: int
+    remaining_disk_bytes: int
 
 
 @dataclass(frozen=True)
@@ -115,6 +139,12 @@ class PregenerationJob:
                     ),
                     estimated_disk_bytes=_nonnegative_int(
                         estimate, "estimated_disk_bytes"
+                    ),
+                    generation_text_characters=_optional_nonnegative_int(
+                        estimate, "generation_text_characters"
+                    ),
+                    rough_audio_seconds=_optional_nonnegative_int(
+                        estimate, "rough_audio_seconds"
                     ),
                 ),
             )
@@ -214,7 +244,8 @@ def estimate_preparation(content, selected_story_ids):
     for value in selected:
         if value.generation_lines:
             speakers.update(value.speakers)
-    estimated_audio_seconds = generation_lines * 6
+    text_characters = _generation_text_characters(content, selected_ids)
+    rough_audio_seconds = _rough_audio_seconds(text_characters)
     return PreparationEstimate(
         selected_lines=sum(value.line_count for value in selected),
         original_audio_lines=sum(value.original_audio_lines for value in selected),
@@ -222,8 +253,69 @@ def estimate_preparation(content, selected_story_ids):
         speaker_count=max(
             len(speakers), max((value.speaker_count for value in selected), default=0)
         ),
-        estimated_generation_minutes=(generation_lines * 15 + 59) // 60,
-        estimated_disk_bytes=estimated_audio_seconds * 24_000 * 2,
+        # Retained for saved-job compatibility. Runtime duration depends on the
+        # selected model and hardware, so callers should present text and storage only.
+        estimated_generation_minutes=0,
+        estimated_disk_bytes=rough_audio_seconds * PCM16_MONO_24KHZ_BYTES_PER_SECOND,
+        generation_text_characters=text_characters,
+        rough_audio_seconds=rough_audio_seconds,
+    )
+
+
+def estimate_generation_resources(generation_input):
+    """Estimate remaining PCM WAV storage from the exact private queue."""
+    try:
+        if sha256_file(generation_input.queue) != generation_input.queue_sha256:
+            raise PregenerationSetupError(
+                "Generation queue changed before estimating storage"
+            )
+        queue = VoiceGenerationQueue.load(generation_input.queue)
+        state_path = (
+            generation_input.directory.parent
+            / f"generation-output-{generation_input.identity[:16]}"
+            / "generation-state.json"
+        )
+        state = (
+            load_generation_state(state_path, generation_input.queue)
+            if state_path.is_file()
+            else {"items": {}}
+        )
+    except PregenerationSetupError:
+        raise
+    except (
+        BulkGenerationError,
+        OSError,
+        ValueError,
+        VoiceGenerationQueueError,
+    ) as error:
+        raise PregenerationSetupError(
+            f"Unable to estimate remaining offline audio storage: {error}"
+        ) from error
+    terminal = {"generated", "approved", "live_fallback", "omitted", "not_reproducible"}
+    omissions = set(generation_input.audio_event_omission_queue_ids)
+    items = tuple(
+        item
+        for item in queue.items
+        if item.action == "generate" and item.queue_id not in omissions
+    )
+    remaining = tuple(
+        item
+        for item in items
+        if state["items"].get(item.queue_id, {}).get("status") not in terminal
+    )
+    total_characters = sum(len(item.text) for item in items)
+    remaining_characters = sum(len(item.text) for item in remaining)
+    total_seconds = _rough_audio_seconds(total_characters)
+    remaining_seconds = _rough_audio_seconds(remaining_characters)
+    return GenerationResourceEstimate(
+        total_items=len(items),
+        remaining_items=len(remaining),
+        total_text_characters=total_characters,
+        remaining_text_characters=remaining_characters,
+        rough_audio_seconds=total_seconds,
+        remaining_rough_audio_seconds=remaining_seconds,
+        estimated_disk_bytes=total_seconds * PCM16_MONO_24KHZ_BYTES_PER_SECOND,
+        remaining_disk_bytes=remaining_seconds * PCM16_MONO_24KHZ_BYTES_PER_SECOND,
     )
 
 
@@ -513,8 +605,25 @@ def _selection_from_records(selection_id, title, kind, order, records):
         generation_lines=len(generation),
         speaker_count=len(speakers),
         speakers=tuple(sorted(speakers)),
+        generation_text_characters=sum(
+            len(getattr(record, "text", "")) for record in generation
+        ),
     )
     return selection
+
+
+def _generation_text_characters(content, selected_ids):
+    return sum(
+        selection.generation_text_characters
+        for selection in content.selections
+        if selection.selection_id in selected_ids
+    )
+
+
+def _rough_audio_seconds(text_characters):
+    return (
+        text_characters + ROUGH_SPEECH_CHARACTERS_PER_SECOND - 1
+    ) // ROUGH_SPEECH_CHARACTERS_PER_SECOND
 
 
 def _normalized_selection_ids(content, selected_story_ids):
@@ -574,15 +683,21 @@ def _nonnegative_int(document, name):
     return value
 
 
+def _optional_nonnegative_int(document, name):
+    return 0 if name not in document else _nonnegative_int(document, name)
+
+
 __all__ = [
     "ContentDiscovery",
     "GameContent",
+    "GenerationResourceEstimate",
     "PreparationEstimate",
     "PregenerationJob",
     "PregenerationJobStore",
     "PregenerationSetupError",
     "StorySelection",
     "discover_game_content",
+    "estimate_generation_resources",
     "estimate_preparation",
     "inspect_story_index",
 ]

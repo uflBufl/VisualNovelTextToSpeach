@@ -553,6 +553,108 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 ((group, group.candidates[1].source_id),)
             )
 
+    def test_choose_for_me_skips_a_candidate_with_a_failed_preview(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group = with_second_candidate(plan, group)
+            decisions = Mock()
+            service = Mock()
+            service.generate.side_effect = RuntimeError("preview failed")
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                decisions, preview_service=service, thread_pool=pool, player=Mock()
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+
+            panel.start(plan)
+            panel.a_play.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            panel.auto_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            decisions.remember_many.assert_called_once_with(
+                ((group, group.candidates[1].source_id),)
+            )
+
+    def test_choose_all_uses_the_narrator_after_all_candidates_failed(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group = with_second_candidate(plan, group)
+            narrator = VoiceCandidate(
+                "preset:alba", "alba", "alba", (), 120, "Configured narrator voice"
+            )
+            group = replace(group, narrator_candidate=narrator)
+            plan = replace(plan, groups=(group,))
+            decisions = Mock()
+            service = Mock()
+            service.generate.side_effect = RuntimeError("preview failed")
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                decisions, preview_service=service, thread_pool=pool, player=Mock()
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+
+            panel.start(plan)
+            for _candidate in group.candidates:
+                panel.a_play.click()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+                panel.neither_button.click()
+            self.assertIn("no original reference", panel.question.text())
+            self.assertIn("no recorded reference", panel.a_reason.text())
+            panel.choose_all_button.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            decisions.remember_many.assert_called_once_with(
+                ((group, default_voice_choice_id),)
+            )
+
+    def test_failed_bulk_choice_stays_atomic_and_successful_retry_restores_candidate(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            first = replace(group, group_id="first", narrator_candidate=None)
+            second = replace(
+                group,
+                group_id="second",
+                candidates=(replace(group.candidates[0], source_id="broken"),),
+                narrator_candidate=None,
+            )
+            decisions = Mock()
+            pool = ManualThreadPool()
+            service = Mock()
+            service.generate.side_effect = (
+                RuntimeError("preview failed"),
+                Mock(path=root / "preview.wav"),
+            )
+            panel = VoiceAuditionPanel(
+                decisions, preview_service=service, thread_pool=pool, player=Mock()
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+            panel.start(replace(plan, groups=(first, second)))
+            panel._failed_candidate_source_ids.add("broken")
+            for _attempt in range(2):
+                panel.choose_all_button.click()
+                self.assertEqual(panel._pending_decisions, [])
+                decisions.remember_many.assert_not_called()
+            for _attempt in range(2):
+                panel.a_play.click()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+            self.assertEqual(
+                panel._automatic_source_id(first), first.candidates[0].source_id
+            )
+
     def test_neither_previews_and_selects_configured_narrator(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

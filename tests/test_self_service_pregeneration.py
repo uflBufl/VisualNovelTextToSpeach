@@ -403,8 +403,13 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIs(dialog.settings, saved)
             self.assertIsNone(dialog.voice_plan())
             self.assertTrue(dialog.voice_confirmation.isHidden())
-            self.assertTrue(dialog.continue_button.isEnabled())
-            self.assertEqual(pool.tasks, [])
+            self.assertTrue(dialog.planning_voices)
+            self.assertFalse(dialog.continue_button.isEnabled())
+            for _ in range(2):
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertIn("Step 2", dialog.step.text())
             dialog.reject()
             dialog.deleteLater()
 
@@ -445,17 +450,21 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertFalse(dialog.stories.isEnabled())
             old_input = dialog.generation_input()
 
-            dialog.game_narrator_button.click()
+            dialog.show()
+            self.application.processEvents()
+            self.assertTrue(dialog.confirmed_narrator.isVisible())
+            self.assertTrue(dialog.edit_confirmed_narrator.isVisible())
+            dialog.edit_confirmed_narrator.click()
 
             self.assertIs(dialog.settings, selected)
             self.assertEqual(dialog.selected_story_ids(), stories)
-            self.assertTrue(dialog.stories.isEnabled())
-            self.assertTrue(dialog.continue_button.isEnabled())
+            self.assertFalse(dialog.stories.isEnabled())
+            self.assertFalse(dialog.continue_button.isEnabled())
             self.assertIsNone(dialog.generation_input())
             self.assertIsNone(dialog.voice_plan())
             self.assertFalse(dialog._awaiting_voice_confirmation)
             self.assertTrue(dialog.voice_confirmation.isHidden())
-            self.assertIn("Step 1", dialog.step.text())
+            self.assertIn("Step 2", dialog.step.text())
             self.assertIn("MOSS", plain_label_text(dialog.narrator_status))
             self.assertIn("Engine:", plain_label_text(dialog.narrator_status))
             dialog.copy_narrator_details.click()
@@ -825,6 +834,49 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             dialog.reject()
 
+    def _prepared_synthetic_live_fallback_pack(self, root):
+        content = inspect_story_index(write_story_index(root / "content"))
+        jobs = PregenerationJobStore(root / "jobs")
+        decisions = VoiceDecisionStore(root / "voice-decisions.json")
+        voices = VoicePlanStore(jobs, decisions=decisions)
+        inputs = PregenerationInputStore(jobs)
+        generator = InProcessPocketGenerator()
+        pool = ManualThreadPool()
+        dialog = OfflineAudioPreparationDialog(
+            AppSettings(),
+            discovery=lambda: ContentDiscovery((content,)),
+            job_store=jobs,
+            voice_plan_store=voices,
+            input_store=inputs,
+            generator=generator,
+            recovery=OfflineRecoveryWorker(generator),
+            acceptance=OfflineAcceptanceWorker(generator),
+            thread_pool=pool,
+        )
+        visible_text = [dialog.summary.text(), dialog.resume_status.text()]
+        dialog.select_all_button.click()
+        dialog.continue_button.click()
+        for _step in range(12):
+            if dialog.pack_result() is not None:
+                break
+            if dialog._awaiting_voice_confirmation:
+                self.assertEqual(
+                    dialog.continue_button.text(), "Generate with these voices"
+                )
+                dialog.continue_button.click()
+            self.assertTrue(pool.tasks, f"step {_step}: {dialog.resume_status.text()}")
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            visible_text.extend(
+                (
+                    dialog.summary.text(),
+                    dialog.resume_status.text(),
+                    dialog.cancel_button.text(),
+                )
+            )
+        self.assertIsNotNone(dialog.pack_result())
+        return content, jobs, dialog, generator, visible_text
+
     def test_zero_ambiguity_story_reaches_an_active_portable_pack(self):
         with (
             TemporaryDirectory() as temporary_directory,
@@ -834,51 +886,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             ),
         ):
             root = Path(temporary_directory)
-            content = inspect_story_index(write_story_index(root / "content"))
-            jobs = PregenerationJobStore(root / "jobs")
-            decisions = VoiceDecisionStore(root / "voice-decisions.json")
-            voices = VoicePlanStore(jobs, decisions=decisions)
-            inputs = PregenerationInputStore(jobs)
-            generator = InProcessPocketGenerator()
-            recovery = OfflineRecoveryWorker(generator)
-            acceptance = OfflineAcceptanceWorker(generator)
-            pool = ManualThreadPool()
-            dialog = OfflineAudioPreparationDialog(
-                AppSettings(),
-                discovery=lambda: ContentDiscovery((content,)),
-                job_store=jobs,
-                voice_plan_store=voices,
-                input_store=inputs,
-                generator=generator,
-                recovery=recovery,
-                acceptance=acceptance,
-                thread_pool=pool,
+            content, jobs, dialog, generator, visible_text = (
+                self._prepared_synthetic_live_fallback_pack(root)
             )
-            visible_text = [dialog.summary.text(), dialog.resume_status.text()]
-
-            dialog.select_all_button.click()
-            dialog.continue_button.click()
-            for _step in range(12):
-                if dialog.pack_result() is not None:
-                    break
-                if dialog._awaiting_voice_confirmation:
-                    self.assertEqual(
-                        dialog.continue_button.text(), "Generate with these voices"
-                    )
-                    dialog.continue_button.click()
-                self.assertTrue(
-                    pool.tasks,
-                    f"step {_step}: {dialog.resume_status.text()}",
-                )
-                pool.tasks.pop(0).run()
-                self.application.processEvents()
-                visible_text.extend(
-                    (
-                        dialog.summary.text(),
-                        dialog.resume_status.text(),
-                        dialog.cancel_button.text(),
-                    )
-                )
 
             self.assertEqual(
                 dialog.progress_phase.text(),
@@ -944,10 +954,115 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             self.assertTrue(saved_settings.is_file())
             self.assertIn("Prepared audio is active", tray.dashboard.status.text())
-            self.assertIn("click Start reading", tray.dashboard.status.text())
+            self.assertIn("click Set up reading", tray.dashboard.status.text())
             self.assertTrue(tray.dashboard.isVisible())
             controller.start.assert_not_called()
             tray.shutdown()
+
+    def test_saved_pack_reopens_and_activates_without_generation(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content, jobs, prepared, _generator, _visible_text = (
+                self._prepared_synthetic_live_fallback_pack(root)
+            )
+            pack = prepared.pack_result()
+            pool = ManualThreadPool()
+            planner = Mock()
+            generator = Mock()
+            reopened = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                voice_plan_store=planner,
+                generator=generator,
+                thread_pool=pool,
+            )
+
+            while pool.tasks:
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+
+            self.assertEqual(reopened.continue_button.text(), "Use prepared audio")
+            self.assertIsNone(reopened.job())
+            self.assertIsNone(reopened.voice_plan())
+            reopened.continue_button.click()
+            self.assertTrue(reopened.activating_saved)
+            self.assertEqual(len(pool.tasks), 1)
+            pool.tasks.pop().run()
+            self.application.processEvents()
+
+            self.assertEqual(reopened.result(), QDialog.DialogCode.Accepted)
+            self.assertEqual(reopened.pack_result().identity, pack.identity)
+            self.assertIsNone(reopened.job())
+            self.assertIsNone(reopened.voice_plan())
+            planner.create.assert_not_called()
+            generator.generate.assert_not_called()
+
+            active_pool = ManualThreadPool()
+            active = OfflineAudioPreparationDialog(
+                AppSettings(
+                    game_pack=str(pack.manifest),
+                    audio_source_policy="prefer-game-audio",
+                ),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                thread_pool=active_pool,
+            )
+            reading_requested = Mock()
+            active.readingRequested.connect(reading_requested)
+            while active_pool.tasks:
+                active_pool.tasks.pop(0).run()
+                self.application.processEvents()
+
+            self.assertEqual(active.continue_button.text(), "Start reading")
+            active.continue_button.click()
+            reading_requested.assert_called_once_with()
+            prepared.deleteLater()
+            reopened.deleteLater()
+            active.deleteLater()
+
+    def test_saved_pack_activation_rechecks_files_and_can_be_cancelled(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content, jobs, prepared, _generator, _visible_text = (
+                self._prepared_synthetic_live_fallback_pack(root)
+            )
+            self.addCleanup(prepared.deleteLater)
+            pack = prepared.pack_result()
+            for cancel in (True, False):
+                with self.subTest(cancel=cancel):
+                    pool = ManualThreadPool()
+                    dialog = OfflineAudioPreparationDialog(
+                        AppSettings(),
+                        discovery=lambda: ContentDiscovery((content,)),
+                        job_store=jobs,
+                        thread_pool=pool,
+                    )
+                    self.addCleanup(dialog.deleteLater)
+                    while pool.tasks:
+                        pool.tasks.pop(0).run()
+                        self.application.processEvents()
+                    self.assertEqual(
+                        dialog.continue_button.text(), "Use prepared audio"
+                    )
+                    dialog.continue_button.click()
+                    if cancel:
+                        dialog.cancel_button.click()
+                    else:
+                        audio = next(
+                            (pack.manifest.parent / "generated" / "audio").glob("*.wav")
+                        )
+                        audio.write_bytes(b"damaged after the first check")
+                    pool.tasks.pop(0).run()
+                    self.application.processEvents()
+                    self.assertIsNone(dialog.pack_result())
+                    self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                    if not cancel:
+                        self.assertFalse(dialog.activating_saved)
+                        self.assertIn("Needs attention", dialog.stories.item(0).text())
+                        self.assertIn(
+                            "Prepare this story again", plain_label_text(dialog.summary)
+                        )
 
     def test_ambiguous_voice_choice_resumes_then_completes_without_line_review(self):
         with TemporaryDirectory() as temporary_directory:

@@ -425,12 +425,12 @@ class ControlDashboard(QMainWindow):
 
         stories_page = QWidget()
         stories_layout = QVBoxLayout(stories_page)
-        stories_title = QLabel("Prepare stories for reading")
+        stories_title = QLabel("Prepare stories before opening the game")
         stories_title.setStyleSheet("font-weight: 600;")
         stories_layout.addWidget(stories_title)
         self.stories_guidance = QLabel(
             "Choose installed game content and the stories you want to hear. "
-            "The preparation window shows each story's saved audio and remaining work."
+            "No game window, OCR, or speech setup is needed yet."
         )
         self.stories_guidance.setWordWrap(True)
         stories_layout.addWidget(self.stories_guidance)

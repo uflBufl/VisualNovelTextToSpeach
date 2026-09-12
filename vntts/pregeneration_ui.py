@@ -43,11 +43,15 @@ from vntts.pregeneration_generation import (
     OfflineGenerationWorker,
 )
 from vntts.pregeneration_pack import (
+    OfflinePackError,
     OfflinePackPublisher,
+    OfflinePackResult,
     OfflinePreparationChanges,
     inspect_story_audio,
+    load_saved_pack,
 )
 from vntts.pregeneration_queue import (
+    PregenerationInput,
     PregenerationInputStore,
     PregenerationQueueCancelled,
 )
@@ -57,6 +61,7 @@ from vntts.pregeneration_setup import (
     PregenerationJobStore,
     PregenerationSetupError,
     discover_game_content,
+    estimate_generation_resources,
     estimate_preparation,
     inspect_story_index,
 )
@@ -149,6 +154,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.discovery_runner.finished.connect(self._discovery_finished)
         self.coverage_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.coverage_runner.finished.connect(self._story_audio_finished)
+        self.saved_pack_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.saved_pack_runner.finished.connect(self._saved_pack_finished)
         self.import_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.import_runner.finished.connect(self._import_finished)
         self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -187,6 +194,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.recovery_runner,
             self.acceptance_runner,
             self.publication_runner,
+            self.saved_pack_runner,
         ):
             runner.activeChanged.connect(self.activityChanged.emit)
         self._progress_baseline = None
@@ -204,6 +212,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.recovering = False
         self.accepting_audio = False
         self.publishing_pack = False
+        self.activating_saved = False
         self._close_after_voice_cancel = False
         self._content = ()
         self._story_selection_drafts = {}
@@ -336,15 +345,18 @@ class OfflineAudioPreparationDialog(QDialog):
         source_row.addWidget(QLabel("Game content"))
         source_row.addWidget(self.source, 1)
         source_row.addWidget(self.refresh_button)
-        import_row = QHBoxLayout()
-        import_row.addWidget(self.game_folder_button)
-        import_row.addWidget(self.browse_button)
         self.import_options = QWidget()
         import_options_layout = QVBoxLayout(self.import_options)
         import_options_layout.setContentsMargins(0, 0, 0, 0)
         import_options_layout.setSpacing(4)
         import_options_layout.addWidget(self.import_button)
-        import_options_layout.addLayout(import_row)
+        import_options_layout.addWidget(self.game_folder_button)
+        self.advanced_import = QPushButton("Advanced import...")
+        self.advanced_import.setCheckable(True)
+        self.advanced_import.toggled.connect(self.browse_button.setVisible)
+        import_options_layout.addWidget(self.advanced_import)
+        import_options_layout.addWidget(self.browse_button)
+        self.browse_button.hide()
         self.import_options_toggle = QPushButton("Add or import content...")
         self.import_options_toggle.setCheckable(True)
         self.import_options_toggle.toggled.connect(self._update_import_options)
@@ -498,6 +510,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_confirmation.setVisible(False)
         self.voice_configuration = QLabel()
         self.voice_configuration.setWordWrap(True)
+        self.confirmed_narrator = QLabel()
+        self.confirmed_narrator.setWordWrap(True)
+        self.confirmed_narrator.setAccessibleName("Narrator for prepared audio")
+        self.edit_confirmed_narrator = QPushButton("Edit narrator in Voices...")
+        self.edit_confirmed_narrator.clicked.connect(self._choose_game_narrator)
+        self.edit_confirmed_narrator.setVisible(game_narrator_chooser is not None)
         self.work_summary = QLabel()
         self.work_summary.setWordWrap(True)
         self.work_summary.setAccessibleName("Selected story preparation estimate")
@@ -546,6 +564,8 @@ class OfflineAudioPreparationDialog(QDialog):
         confirmation_layout = QVBoxLayout(self.voice_confirmation)
         confirmation_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         confirmation_layout.addWidget(self.work_summary)
+        confirmation_layout.addWidget(self.confirmed_narrator)
+        confirmation_layout.addWidget(self.edit_confirmed_narrator)
         confirmation_layout.addWidget(self.voice_configuration)
         confirmation_layout.addWidget(self.change_summary)
         confirmation_layout.addWidget(self.narrator_controls)
@@ -599,6 +619,7 @@ class OfflineAudioPreparationDialog(QDialog):
         selection_layout.addWidget(self.import_options)
         selection_layout.addWidget(self.source_status)
         selection_layout.addLayout(story_filters)
+        selection_layout.addWidget(self.summary)
         story_status_row = QHBoxLayout()
         story_status_row.addWidget(self.story_filter_status, 1)
         story_status_row.addWidget(self.check_story_audio)
@@ -643,6 +664,8 @@ class OfflineAudioPreparationDialog(QDialog):
             self.refresh()
 
     def refresh(self):
+        self.coverage_runner.cancel()
+        self._checking_story = None
         self._story_audio_checks.clear()
         self._story_playback_speakers.clear()
         self._story_audio_changed()
@@ -694,7 +717,12 @@ class OfflineAudioPreparationDialog(QDialog):
             self.settings = settings
             self._refresh_narrator_status()
             return
+        return_to_confirmation = (
+            self._awaiting_voice_confirmation and self._job is not None
+        )
         self.settings = settings
+        self.coverage_runner.cancel()
+        self._checking_story = None
         self._story_audio_changed()
         with (
             QSignalBlocker(self.engine_choice),
@@ -729,6 +757,9 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setText("Cancel")
         self._refresh_narrator_status()
         self._selection_changed()
+        if return_to_confirmation:
+            self.preparationRequested.emit()
+            self._save_selection()
 
     def _engine_changed(self):
         backend = self.engine_choice.currentData()
@@ -873,6 +904,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 else ""
             )
         )
+        self.confirmed_narrator.setText(self._narrator_configuration())
         self.voice_configuration.setToolTip(
             "These voices apply to generated lines in the selected stories. "
             "Matching saved work can be resumed. Other prepared stories remain unchanged."
@@ -1128,8 +1160,8 @@ class OfflineAudioPreparationDialog(QDialog):
         else:
             detail = f" {discovery.errors[0]}" if discovery.errors else ""
             self.source_status.setText(
-                "No extracted game content was found. Run the supported game "
-                "importer or choose an existing story-index file." + detail
+                "Choose Find installed Reverse: 1999, or select its game folder. "
+                "You can prepare stories while the game is closed." + detail
             )
             self.source_status.show()
             self._update_import_options()
@@ -1569,18 +1601,20 @@ class OfflineAudioPreparationDialog(QDialog):
         self.continue_button.setEnabled(True)
 
     def _source_changed(self, _index):
+        self.coverage_runner.cancel()
+        self._checking_story = None
         self.step.setText("Step 1 of 4 - Choose stories")
         self._populate_stories(self.current_content())
 
     def _story_audio_changed(self, _row=None):
-        self.coverage_runner.cancel()
-        self._checking_story = None
         self.story_audio_status.setToolTip("")
         item = self.stories.currentItem()
-        self.check_story_audio.setEnabled(item is not None)
+        self.check_story_audio.setEnabled(
+            item is not None and not self.coverage_runner.active
+        )
         self.story_audio_status.setVisible(item is not None)
         self.story_audio_status.setText(
-            "Highlight a story and check its saved audio. This does not change Reading settings."
+            "Saved audio for selected stories is checked automatically. You can also recheck this story."
         )
         if item is not None:
             checked = self._story_audio_checks.get(
@@ -1667,19 +1701,54 @@ class OfflineAudioPreparationDialog(QDialog):
             self.settings.game_pack,
         )
 
+    def _queue_story_checks(self):
+        if (
+            self.coverage_runner.active
+            or self.has_pending_work()
+            or self._awaiting_voice_confirmation
+            or self._pack_result is not None
+            or self.selection_panel.isHidden()
+        ):
+            return
+        content = self.current_content()
+        if content is None:
+            return
+        for selection_id in self.selected_story_ids():
+            key = self._story_audio_key(selection_id)
+            if key in self._story_audio_checks or not (
+                self.settings.game_pack
+                or self._story_job_statuses.get(selection_id) == "ready"
+            ):
+                continue
+            self._checking_story = key
+            self.check_story_audio.setEnabled(False)
+            self.coverage_runner.start(
+                self._inspect_story_audio,
+                content,
+                selection_id,
+                self.settings.game_pack,
+            )
+            return
+
     def _story_audio_finished(self, result, error):
         self.check_story_audio.setEnabled(
             self.stories.currentItem() is not None and not self.has_pending_work()
         )
         if self._checking_story is None:
             return
+        key = self._checking_story
         saved, active, speakers = result if error is None else (None, None, ())
-        self._story_playback_speakers[self._checking_story] = speakers
-        self._story_audio_checks[self._checking_story] = (saved, active, error)
+        self._story_playback_speakers[key] = speakers
+        self._story_audio_checks[key] = (saved, active, error)
         self._checking_story = None
         self._refresh_story_statuses()
         self._selection_changed()
-        self._render_story_audio_check(saved, active, error)
+        item = self.stories.currentItem()
+        if (
+            item is not None
+            and self._story_audio_key(item.data(Qt.ItemDataRole.UserRole)) == key
+        ):
+            self._render_story_audio_check(saved, active, error)
 
     def _render_story_audio_check(self, coverage, active, error):
         self.story_audio_status.show()
@@ -1701,7 +1770,7 @@ class OfflineAudioPreparationDialog(QDialog):
             if playback_warning
             else "Preparation needed"
             if coverage.missing
-            else "Uses live speech"
+            else "Ready with live speech for remaining lines"
             if coverage.live
             else "No live speech needed for indexed dialogue"
         )
@@ -1722,7 +1791,7 @@ class OfflineAudioPreparationDialog(QDialog):
             + (
                 "Checked the active Reading pack."
                 if active_story
-                else "Checked saved audio; it is not active in Reading. Continue preparation to activate it."
+                else "Checked saved audio; choose Use prepared audio to activate it."
                 if coverage.manifest
                 else "No saved preparation pack found for this story."
             )
@@ -1749,7 +1818,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 saved_status = self._story_job_statuses.get(selection_id)
                 status = "in_progress" if saved_status else "not_started"
                 detail = (
-                    "saved audio; check readiness"
+                    "checking saved audio"
                     if saved_status == "ready"
                     else "saved progress; continue to finish"
                     if saved_status
@@ -1765,11 +1834,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     else:
                         if active is not None and not active.missing:
                             coverage = active
-                        status = (
-                            "in_progress"
-                            if coverage.missing or coverage.live
-                            else "ready"
-                        )
+                        status = "in_progress" if coverage.missing else "ready"
                         if coverage.missing and not (
                             coverage.generated or coverage.original or saved_status
                         ):
@@ -1808,6 +1873,8 @@ class OfflineAudioPreparationDialog(QDialog):
                     "ready": "Ready",
                     "attention": "Needs attention",
                 }[status]
+                if status == "ready" and checked is not None and coverage.live:
+                    label = "Ready with live speech"
                 item.setText(
                     f"{selection.title} ({selection.line_count} line{'s' if selection.line_count != 1 else ''}) - "
                     f"{label}: {detail}"
@@ -1824,13 +1891,64 @@ class OfflineAudioPreparationDialog(QDialog):
             and checked[2] is None
             and checked[1] is not None
             and not checked[1].missing
-            and not checked[1].live
             and not self._reading_override_reason(selection_id, checked[1])
             for selection_id in selected
             for checked in (
                 self._story_audio_checks.get(self._story_audio_key(selection_id)),
             )
         )
+
+    def _saved_manifest_for_selection(self):
+        if self.change_voices.isChecked():
+            return None
+        manifests = set()
+        for selection_id in self.selected_story_ids():
+            checked = self._story_audio_checks.get(self._story_audio_key(selection_id))
+            if (
+                checked is None
+                or checked[2] is not None
+                or checked[0] is None
+                or checked[0].missing
+                or checked[0].manifest is None
+            ):
+                return None
+            manifests.add(checked[0].manifest)
+        return next(iter(manifests)) if len(manifests) == 1 else None
+
+    def _load_saved_selection(self, content, selected, manifest):
+        result = load_saved_pack(manifest)
+        for selection_id in selected:
+            coverage = inspect_story_audio(
+                content, selection_id, self.job_store, manifest=result.manifest
+            )
+            if coverage.missing:
+                raise OfflinePackError(
+                    "Saved audio no longer covers this selection. Prepare the missing stories again."
+                )
+        return result
+
+    def _saved_pack_finished(self, result, error):
+        self.activating_saved = False
+        if self._close_after_voice_cancel:
+            self.reject()
+            return
+        self._set_import_controls(True)
+        if error is not None or not isinstance(result, OfflinePackResult):
+            for selection_id in self.selected_story_ids():
+                self._story_audio_checks[self._story_audio_key(selection_id)] = (
+                    None,
+                    None,
+                    error or OfflinePackError("Invalid saved pack"),
+                )
+            self.selection_panel.show()
+            self._set_resume_error(
+                "Unable to use saved audio", error or "Invalid saved pack"
+            )
+            self._refresh_story_statuses()
+            self._selection_changed()
+            return
+        self._pack_result = result
+        self.accept()
 
     def _populate_stories(self, content):
         self._story_audio_changed()
@@ -1941,9 +2059,15 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
             self._story_selection_drafts[content.story_index_sha256] = set(selected)
         self._filter_stories()
+        self._queue_story_checks()
         can_read = self._can_start_reading()
+        saved_manifest = self._saved_manifest_for_selection()
+        checking = (
+            self._checking_story is not None and self._checking_story[1] in selected
+        )
         self.prepare_again.setVisible(
             can_read
+            or saved_manifest is not None
             or any(self._story_job_statuses.get(value) == "ready" for value in selected)
         )
         self.prepare_again.setEnabled(
@@ -1953,8 +2077,12 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         if self._pack_result is None and not self._awaiting_voice_confirmation:
             self.continue_button.setText(
-                "Start reading"
+                "Checking saved audio..."
+                if checking
+                else "Start reading"
                 if can_read
+                else "Use prepared audio"
+                if saved_manifest is not None
                 else "Continue preparation"
                 if any(
                     self.stories.item(row).checkState() == Qt.CheckState.Checked
@@ -1970,7 +2098,17 @@ class OfflineAudioPreparationDialog(QDialog):
                     else f"Prepare {len(selected)} stories"
                 )
             )
-        if not can_read and not self._generation_engine_available():
+        if checking:
+            self.summary.setText(
+                "Checking saved recordings for the selected stories. No audio will be generated."
+            )
+            self.continue_button.setEnabled(False)
+            return
+        if (
+            not can_read
+            and saved_manifest is None
+            and not self._generation_engine_available()
+        ):
             set_labeled_text(
                 self.summary,
                 (
@@ -2034,18 +2172,48 @@ class OfflineAudioPreparationDialog(QDialog):
                 f"{estimate.speaker_count} voices",
             ),
             (
-                "Estimate",
-                f"about {estimate.estimated_generation_minutes} minutes; {disk_megabytes} MB",
+                "Rough storage",
+                f"about {disk_megabytes} MB of audio for the full selection; saved recordings can be reused",
+            ),
+            (
+                "Time",
+                "Estimated after generation starts. First-time model setup and downloads take additional time.",
             ),
         ]
         if can_read:
+            live_count = sum(
+                self._story_audio_checks[self._story_audio_key(value)][1].live
+                for value in selected
+            )
             summary_rows = [
                 (
                     "Ready",
-                    "Selected stories are ready in the active Reading pack. Start "
-                    "reading to open the game reading setup.",
+                    "Selected stories are ready in the active Reading pack. "
+                    + (
+                        f"{live_count} lines use live speech; reading setup checks that voice. "
+                        if live_count
+                        else ""
+                    )
+                    + "Start reading to open the game reading setup.",
                 )
             ]
+        elif saved_manifest is not None:
+            summary_rows = [
+                (
+                    "Ready",
+                    "Use the saved recordings for these stories without generating them again. This restores the recorded voice routes for these roles. Reading setup will check any required live voice.",
+                )
+            ]
+        for selection_id in selected:
+            checked = self._story_audio_checks.get(self._story_audio_key(selection_id))
+            if checked is not None and checked[2] is not None:
+                summary_rows.append(
+                    (
+                        "Saved audio needs attention",
+                        f"{checked[2]}. Prepare this story again to repair its audio.",
+                    )
+                )
+                break
         if not self.prepare_again.isHidden():
             summary_rows.append(
                 (
@@ -2100,10 +2268,37 @@ class OfflineAudioPreparationDialog(QDialog):
     def _continue_requested(self):
         if not self._save_story_selection_drafts():
             return
+        if self.has_pending_work() or (
+            self._checking_story is not None
+            and self._checking_story[1] in self.selected_story_ids()
+        ):
+            return
         if self._pack_result is None and self._can_start_reading():
             self.readingRequested.emit()
             return
         self.preparationRequested.emit()
+        manifest = self._saved_manifest_for_selection()
+        if (
+            manifest is not None
+            and self._pack_result is None
+            and not self._awaiting_voice_confirmation
+        ):
+            self.activating_saved = True
+            self._close_after_voice_cancel = False
+            self._set_import_controls(False)
+            self._show_waiting_phase(
+                "Checking saved audio",
+                "Validating the saved pack before activation...",
+                "Cancellation leaves the saved audio and current reading setup unchanged.",
+            )
+            self.cancel_button.setEnabled(True)
+            self.saved_pack_runner.start(
+                self._load_saved_selection,
+                self.current_content(),
+                self.selected_story_ids(),
+                manifest,
+            )
+            return
         self._save_selection()
 
     def _save_story_selection_drafts(self):
@@ -2130,6 +2325,8 @@ class OfflineAudioPreparationDialog(QDialog):
         if not self._generation_engine_available():
             self._selection_changed()
             return
+        self.coverage_runner.cancel()
+        self._checking_story = None
         content = self.current_content()
         if content is None:
             return
@@ -2355,7 +2552,12 @@ class OfflineAudioPreparationDialog(QDialog):
             job, plan, cancellation=self.voice_cancel_event
         )
         changes = self.publisher.inspect_changes(job, prepared, self.voice_cancel_event)
-        return prepared, changes
+        resources = (
+            estimate_generation_resources(prepared)
+            if isinstance(prepared, PregenerationInput)
+            else None
+        )
+        return prepared, changes, resources
 
     def _generation_input_finished(self, prepared, error):
         self.preparing_inputs = False
@@ -2379,7 +2581,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 return
             self._set_resume_error("Unable to prepare generation", error)
             return
-        self._generation_input, changes = prepared
+        self._generation_input, changes, resources = prepared
         if not isinstance(changes, OfflinePreparationChanges):
             self.selection_panel.show()
             self.resume_status.setText(
@@ -2407,6 +2609,27 @@ class OfflineAudioPreparationDialog(QDialog):
                 ),
             ),
         )
+        if resources is not None:
+            set_labeled_text(
+                self.summary,
+                (
+                    ("Selected", f"{self._job.estimate.selected_lines} dialogue lines"),
+                    (
+                        "Remaining work",
+                        f"{resources.remaining_items} lines; saved results are reused",
+                    ),
+                    (
+                        "Additional WAV storage",
+                        f"roughly {max(1, (resources.remaining_disk_bytes + 999_999) // 1_000_000)} MB; final publication also needs space for a copy of the pack"
+                        if resources.remaining_items
+                        else "No new speech to generate; final publication may still need temporary space",
+                    ),
+                    (
+                        "Time",
+                        "Estimated after generation starts; first-time model setup and final checks take additional time.",
+                    ),
+                ),
+            )
         self.change_summary.setToolTip(
             "New work may hit the synthesis cache. Final fallback counts depend on generation. "
             "Replacement counts identify existing recordings not proven reusable with these choices."
@@ -2725,6 +2948,11 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _cancel_or_reject(self):
         self._stop_generation_progress()
+        if self.activating_saved:
+            self.saved_pack_runner.cancel()
+            self.activating_saved = False
+            self.reject()
+            return
         if (
             self.planning_voices
             or self.auditioning_voices
@@ -2767,6 +2995,10 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def closeEvent(self, event: QCloseEvent):
         self._stop_generation_progress()
+        if self.activating_saved:
+            self._cancel_or_reject()
+            event.ignore()
+            return
         if (
             self.planning_voices
             or self.auditioning_voices
@@ -2788,6 +3020,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self.import_runner.cancel()
         self.coverage_runner.cancel()
+        self.saved_pack_runner.cancel()
         self.discovery_runner.cancel()
         self.voice_runner.cancel()
         self.input_runner.cancel()
@@ -2812,6 +3045,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._stop_generation_progress()
         self.discovery_runner.cancel()
         self.coverage_runner.cancel()
+        self.saved_pack_runner.cancel()
         self.progress_timer.stop()
         if not self.voice_panel.active:
             self.voice_panel.shutdown()
@@ -2843,6 +3077,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.recovering,
                 self.accepting_audio,
                 self.publishing_pack,
+                self.activating_saved,
             )
         )
 

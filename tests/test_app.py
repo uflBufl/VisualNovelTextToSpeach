@@ -464,6 +464,46 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("1 will use live voice", status)
         tray_application.shutdown()
 
+    def test_valid_saved_pack_activates_without_generation_transients(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        dialog = Mock()
+        dialog.job.return_value = None
+        dialog.voice_plan.return_value = None
+        dialog.settings = tray_application.settings
+        pack_result = OfflinePackResult(
+            identity="b" * 64,
+            directory=Path("/tmp/saved-offline-pack"),
+            manifest=Path("/tmp/saved-offline-pack/game-pack.json"),
+            imported=Mock(),
+            approved=12,
+            live_fallbacks=0,
+            story_lines=12,
+        )
+        dialog.pack_result.return_value = pack_result
+        tray_application.pregeneration_dialog = dialog
+
+        with (
+            patch.object(tray_application.dashboard, "remove_preparation"),
+            patch.object(
+                tray_application, "_start_pregeneration_activation"
+            ) as start_activation,
+        ):
+            result = tray_application._pregeneration_finished(
+                QDialog.DialogCode.Accepted
+            )
+
+        self.assertIsNone(result)
+        start_activation.assert_called_once()
+        self.assertIs(start_activation.call_args.args[0], pack_result)
+        self.assertIn("covers 12 dialogue lines", start_activation.call_args.args[1])
+        dialog.generation_input.assert_not_called()
+        dialog.generation_result.assert_not_called()
+        tray_application.shutdown()
+
     def test_automatic_pack_activation_requires_unchanged_idle_context(self):
         controller = Mock(is_ready=False, is_live_running=False)
         tray = TrayApplication(
@@ -3533,6 +3573,36 @@ class TrayApplicationTest(unittest.TestCase):
                 self.assertEqual(tray.settings.last_main_section, "reading")
                 self.assertEqual(tray.settings.audio_source_policy, "prefer-generated")
                 self.assertIn('"last_main_section": "reading"', path.read_text())
+                self.assertIs(
+                    tray.dashboard.focusWidget(), tray.dashboard.prepare_reading_button
+                )
+                self.assertIn("click Set up reading", tray.status_action.text())
+                controller.toggle_live.assert_not_called()
+                tray.shutdown()
+
+    def test_pack_activation_focuses_start_reading_when_controller_is_ready(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "settings.json"
+            with patch("vntts.settings.get_settings_path", return_value=path):
+                original = AppSettings()
+                controller = Mock(is_ready=True, is_live_running=False)
+                tray = TrayApplication(
+                    self.application,
+                    original,
+                    controller_factory=Mock(return_value=controller),
+                )
+                tray._pregeneration_activation_generation = (
+                    tray._begin_controller_lifecycle()
+                )
+                candidate = original.updated(audio_source_policy="prefer-generated")
+                candidate.save(path)
+
+                tray._pregeneration_activation_finished(
+                    OfflinePackActivationResult(candidate, path, False), None
+                )
+
+                self.assertIs(tray.dashboard.focusWidget(), tray.dashboard.live_button)
+                self.assertIn("click Start reading", tray.status_action.text())
                 controller.toggle_live.assert_not_called()
                 tray.shutdown()
 

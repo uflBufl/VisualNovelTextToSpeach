@@ -301,6 +301,16 @@ class OfflinePackPublisher:
                 job, generation_input, generation_result, state_sha256
             )
         )
+        _ensure_pack_disk_space(
+            destination.parent,
+            base,
+            story,
+            state,
+            generation_result,
+            generation_input,
+            voice_document,
+            voices,
+        )
         destination.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(
             tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent)
@@ -445,6 +455,137 @@ class OfflinePackPublisher:
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
+
+
+def load_saved_pack(manifest):
+    """Load one self-service pack only after its published identity validates."""
+    try:
+        imported = import_game_pack(manifest)
+        extension = imported.pack.extensions.get("vntts.self-service")
+        identity = extension.get("identity") if isinstance(extension, dict) else None
+        if not is_lowercase_sha256(identity):
+            raise OfflinePackError("Saved offline pack identity is invalid")
+        return _load_existing(imported.pack.manifest_path.parent, identity)
+    except OfflinePackError:
+        raise
+    except (GamePackError, OSError, ValueError) as error:
+        raise OfflinePackError(f"Unable to load saved offline pack: {error}") from error
+
+
+def _ensure_pack_disk_space(
+    destination_parent,
+    base,
+    story,
+    state,
+    generation_result,
+    generation_input,
+    voice_document,
+    voices,
+):
+    try:
+        required = _pack_staging_bytes(
+            base,
+            story,
+            state,
+            generation_result,
+            generation_input,
+            voice_document,
+            voices,
+        )
+        free = shutil.disk_usage(_existing_parent(destination_parent)).free
+    except OSError as error:
+        raise OfflinePackError(
+            f"Unable to inspect files needed for offline pack publication: {error}"
+        ) from error
+    if free < required:
+        raise OfflinePackError(
+            "Not enough free disk space to publish the offline pack: "
+            f"need about {_megabytes(required)} MB for staging, have "
+            f"{_megabytes(free)} MB. Free space or choose fewer stories, then "
+            "retry; saved work stays."
+        )
+
+
+def _pack_staging_bytes(
+    base,
+    story,
+    state,
+    generation_result,
+    generation_input,
+    voice_document,
+    voices,
+):
+    copies = {}
+    for record in approved_manifest_entries(state, generation_result.output):
+        relative = _safe_relative(record["audio"], "Generated WAV")
+        copies[f"audio/{record['audio_sha256']}.wav"] = generation_result.output / Path(
+            *relative.parts
+        )
+    metadata = [generation_input.story_index, generation_input.voice_manifest]
+    if generation_input.source_audio_semantic_evidence is not None:
+        metadata.append(generation_input.source_audio_semantic_evidence)
+    _add_voice_reference_copies(
+        copies,
+        generation_input.voice_manifest,
+        voice_document,
+        voices,
+        portable=base is not None,
+    )
+    if base is not None:
+        metadata.extend((base.story_index, base.voice_manifest))
+        base_evidence = base.story_index.parent / "source-audio-semantic-evidence.json"
+        if base_evidence.is_file():
+            metadata.append(base_evidence)
+        base_document, base_voices = load_voice_manifest(
+            base.voice_manifest,
+            allow_legacy=False,
+        )
+        _add_voice_reference_copies(
+            copies,
+            base.voice_manifest,
+            base_document,
+            base_voices,
+            portable=True,
+        )
+        if base.generated_audio_manifest is not None:
+            current_line_ids = {record.line_id for record in story.records}
+            for record in load_generated_audio_document(
+                base.generated_audio_manifest
+            ).records:
+                if record.line_id not in current_line_ids:
+                    copies[f"audio/{record.audio_sha256}.wav"] = record.audio
+    return (
+        1_048_576
+        + sum(path.stat().st_size for path in copies.values())
+        + sum(path.stat().st_size for path in dict.fromkeys(metadata))
+    )
+
+
+def _add_voice_reference_copies(copies, source_manifest, document, voices, *, portable):
+    raw_voices = document.get("voices")
+    if not isinstance(raw_voices, list) or len(raw_voices) != len(voices):
+        raise OfflinePackError("Offline voice manifest changed")
+    for raw, voice in zip(raw_voices, voices, strict=True):
+        if tuple(raw.get("references") or ()) != voice.references:
+            raise OfflinePackError("Offline voice manifest changed")
+        for configured in voice.references:
+            relative = _safe_relative(configured, "Voice reference")
+            source = source_manifest.parent / Path(*relative.parts)
+            target = (
+                f"references/{sha256_file(source)}.wav" if portable else str(relative)
+            )
+            copies[target] = source
+
+
+def _megabytes(value):
+    return max(1, (value + 999_999) // 1_000_000)
+
+
+def _existing_parent(path):
+    path = Path(path)
+    while not path.exists():
+        path = path.parent
+    return path
 
 
 def _load_terminal_generation(job, generation_input, generation_result, state_sha256):
@@ -916,4 +1057,5 @@ __all__ = [
     "OfflinePackError",
     "OfflinePackPublisher",
     "OfflinePackResult",
+    "load_saved_pack",
 ]

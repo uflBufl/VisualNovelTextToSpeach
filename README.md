@@ -9,12 +9,10 @@ For a portable build, unpack the complete archive and launch VNTTS. Keep its
 runtime folders beside the executable; copying only the executable is not enough.
 For a source checkout, use the developer instructions below.
 
-1. Start the game, then launch VNTTS. First-time setup asks you to select the
-   game window, check required components, calibrate the dialogue area and test
-   recognition and speech. Finish setup to open the main controls.
-2. Choose **Prepare offline audio...** to prepare stories on this computer.
-   Select detected content, use **Find installed Reverse: 1999**, or select its
-   **Game folder...**. Check the stories you want and choose the generation engine.
+1. Launch VNTTS before opening the game. It opens **Stories** and can find
+   installed content without loading OCR or TTS. Select detected content, use
+   **Find installed Reverse: 1999**, or select its **Game folder...**.
+2. Check the stories you want and choose the generation engine.
 3. Choose any ambiguous character voices, then confirm the narrator and voice
    routes. The summary shows saved recordings reused, new work, existing failures
    and possible replacements. Changes to voices or model require updated routes
@@ -24,9 +22,10 @@ For a source checkout, use the developer instructions below.
    checks and repairs can take additional time. Cancel preserves finished work;
    reopen preparation and choose **Continue** to resume.
 5. Choose **Use prepared audio** to activate the result. Open that story in the
-   game and press **Start reading**. This same button follows game dialogue whether
-   speech comes from prepared recordings or live TTS; it is not a separate
-   generation command. Keep the game focused for automatic advancement.
+   game, then choose **Set up reading** if it is offered or **Start reading** when
+   ready. This same button follows game dialogue whether speech comes from prepared
+   recordings or live TTS; it is not a separate generation command. Keep the game
+   focused for automatic advancement.
 
 The main window shows the narrator, engine/model for new speech and the audio
 policy. The current-dialogue card identifies the recording actually playing;

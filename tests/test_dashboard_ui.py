@@ -150,6 +150,19 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertEqual(requested, ["window"])
         dashboard.deleteLater()
 
+    def test_stories_explains_that_preparation_precedes_opening_the_game(self):
+        dashboard = ControlDashboard(AppSettings())
+        self.assertTrue(
+            any(
+                label.text() == "Prepare stories before opening the game"
+                for label in dashboard.findChildren(QLabel)
+            )
+        )
+        self.assertIn(
+            "No game window, OCR, or speech setup", dashboard.stories_guidance.text()
+        )
+        dashboard.deleteLater()
+
     def test_dirty_banner_tracks_changes_separately_from_background_activity(self):
         dashboard = ControlDashboard(AppSettings())
         dashboard.set_voice_editor_busy(False)

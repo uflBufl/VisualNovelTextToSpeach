@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -11,6 +12,10 @@ from pathlib import Path
 
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.pregeneration_queue import PregenerationInput
+from vntts.pregeneration_setup import (
+    PregenerationSetupError,
+    estimate_generation_resources,
+)
 from vntts.pregeneration_voices import VoicePlan
 from vntts.subprocess_utils import last_output_line, terminate_process
 
@@ -81,6 +86,7 @@ class OfflineGenerationWorker:
         else:
             if current.total == generation_input.ready_items:
                 return current
+        _ensure_remaining_disk_space(generation_input)
         output = _generation_output(generation_input)
         arguments = self._base_arguments(generation_input, voice_plan, output)
         result = self._execute(
@@ -120,6 +126,7 @@ class OfflineGenerationWorker:
         output = _generation_output(generation_input)
         if generation_result.output.resolve() != output.resolve():
             raise OfflineGenerationError("Offline repair output identity changed")
+        _ensure_remaining_disk_space(generation_input)
         option, retries = _repair_option(action)
         queue_ids = _queue_ids(queue_ids)
         projection_ids = set(generation_input.audio_event_projection_queue_ids)
@@ -328,6 +335,29 @@ class OfflineGenerationWorker:
                 + (f": {detail}" if detail else ".")
             )
         return _load_result(output, generation_input)
+
+
+def _ensure_remaining_disk_space(generation_input):
+    try:
+        estimate = estimate_generation_resources(generation_input)
+    except PregenerationSetupError:
+        # The worker will still validate malformed legacy inputs. Without their
+        # queue text there is no honest storage estimate to enforce here.
+        return
+    if estimate.remaining_disk_bytes == 0:
+        return
+    required = estimate.remaining_disk_bytes + 1_048_576
+    free = shutil.disk_usage(generation_input.directory.parent).free
+    if free < required:
+        raise OfflineGenerationError(
+            "Not enough free disk space to generate the remaining offline audio: "
+            f"need about {_megabytes(required)} MB, have {_megabytes(free)} MB. "
+            "Free space or choose fewer stories, then retry; saved work stays."
+        )
+
+
+def _megabytes(value):
+    return max(1, (value + 999_999) // 1_000_000)
 
 
 def _generation_output(generation_input):

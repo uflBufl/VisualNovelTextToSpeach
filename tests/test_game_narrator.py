@@ -199,7 +199,9 @@ class GameNarratorTest(unittest.TestCase):
                     )
                     dialog.check_impact.click()
                     create_preparation.assert_called_once()
-                    self.run_task(pool)
+                    # Stories also validates its saved audio in the background.
+                    while pool.tasks:
+                        self.run_task(pool)
                     self.assertEqual(tray.dashboard.sections.currentIndex(), 1)
                     self.assertIn(
                         "1 prepared lines in 1 stories", dialog.impact_status.text()

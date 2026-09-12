@@ -391,6 +391,38 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_selection_estimate_and_engine_remedy_are_visible_in_the_shared_flow(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            chooser = Mock(return_value=None)
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                thread_pool=ManualThreadPool(),
+                game_narrator_chooser=chooser,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.select_all_button.click()
+            dialog.resize(620, 440)
+            dialog.show()
+            self.application.processEvents()
+            self.assertTrue(dialog.summary.isVisibleTo(dialog))
+            self.assertIs(dialog.summary.parentWidget(), dialog.selection_panel)
+            self.assertIn("3 dialogue lines", plain_label_text(dialog.summary))
+            with patch.object(
+                dialog, "_generation_engine_available", return_value=False
+            ):
+                dialog._selection_changed()
+                self.application.processEvents()
+                self.assertTrue(dialog.summary.isVisibleTo(dialog))
+                self.assertIn("Open Voices", plain_label_text(dialog.summary))
+                self.assertFalse(dialog.continue_button.isEnabled())
+                self.assertTrue(dialog.game_narrator_button.isVisibleTo(dialog))
+                dialog.game_narrator_button.click()
+                chooser.assert_called_once_with(dialog.settings, dialog)
+
     def test_default_discovery_runs_after_the_window_opens(self):
         with TemporaryDirectory() as temporary_directory:
             content = inspect_story_index(
@@ -740,7 +772,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
             self.assertIn("Partially prepared", dialog.stories.item(0).text())
-            self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            self.assertEqual(dialog.continue_button.text(), "Checking saved audio...")
+            self.assertFalse(dialog.continue_button.isEnabled())
             dialog.stories.setCurrentRow(0)
             ready = StoryAudioCoverage(
                 "Main Story 1", active_path, original=1, generated=1
@@ -755,6 +788,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 inspect.assert_called_once_with(
                     content, "main-1", jobs, manifest=str(active_path)
                 )
+                pool.tasks.pop(0).run()
+                self.application.processEvents()
+                self.assertEqual(dialog.continue_button.text(), "Start reading")
             live = replace(ready, generated=0, live=1)
             opened = Mock()
             dialog.readingRequested.connect(opened)
@@ -766,10 +802,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 dialog.check_story_audio.click()
                 pool.tasks.pop().run()
                 self.application.processEvents()
-            self.assertIn("Partially prepared", dialog.stories.item(0).text())
+            self.assertIn("Ready with live speech", dialog.stories.item(0).text())
             self.assertIn("1 live speech", dialog.stories.item(0).text())
             self.assertIn("active in Reading", dialog.stories.item(0).text())
-            self.assertEqual(dialog.continue_button.text(), "Continue preparation")
+            self.assertEqual(dialog.continue_button.text(), "Start reading")
             with (
                 patch.object(
                     dialog,
@@ -807,7 +843,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Saved audio damaged", dialog.story_audio_status.text())
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
             dialog.refresh()
-            self.assertIn("check readiness", dialog.stories.item(0).text())
+            self.assertIn("checking saved audio", dialog.stories.item(0).text())
 
     def test_active_preparation_and_shared_progress_report_saved_counts_and_failure(
         self,
@@ -987,7 +1023,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             self.addCleanup(dialog.deleteLater)
             dialog.prepare_again.click()
-            for _ in range(2):
+            for _ in range(5):
+                if dialog._awaiting_voice_confirmation:
+                    break
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
             self.assertTrue(dialog._awaiting_voice_confirmation)
@@ -1001,7 +1039,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 settings.updated(character_voice_defaults={"Rhiannon": "preset:jean"})
             )
             dialog.prepare_again.click()
-            for _ in range(2):
+            for _ in range(5):
+                if dialog._awaiting_voice_confirmation:
+                    break
                 pool.tasks.pop(0).run()
                 self.application.processEvents()
             self.assertTrue(dialog._awaiting_voice_confirmation)
@@ -1209,7 +1249,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.stories.count(), 2)
             self.assertIn("Not prepared", dialog.stories.item(0).text())
             self.assertIn(
-                "Partially prepared: saved audio; check readiness",
+                "Partially prepared: checking saved audio",
                 dialog.stories.item(1).text(),
             )
             dialog.close()
@@ -1469,7 +1509,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))
             self.assertIn("Saved offline audio found", dialog.resume_status.text())
             self.assertIn(
-                "Partially prepared: saved audio; check readiness",
+                "Partially prepared: checking saved audio",
                 dialog.stories.item(1).text(),
             )
             self.assertIn("Partially prepared", dialog.stories.item(0).text())
@@ -1549,7 +1589,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.job().status, "prepared")
             self.assertTrue(
                 all(
-                    "Partially prepared: saved audio; check readiness"
+                    "Partially prepared: checking saved audio"
                     in dialog.stories.item(row).text()
                     for row in range(dialog.stories.count())
                 )
@@ -1614,7 +1654,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             job_store=PregenerationJobStore(Path("unused")),
         )
 
-        self.assertIn("No extracted game content", dialog.source_status.text())
+        self.assertIn("Find installed Reverse: 1999", dialog.source_status.text())
+        self.assertIn("game is closed", dialog.source_status.text())
+        self.assertTrue(dialog.browse_button.isHidden())
         self.assertIn("Importer is not installed", dialog.source_status.text())
         self.assertFalse(dialog.continue_button.isEnabled())
         self.assertTrue(dialog.browse_button.isEnabled())

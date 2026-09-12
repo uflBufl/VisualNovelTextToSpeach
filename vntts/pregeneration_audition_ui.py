@@ -47,6 +47,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._candidate_offset = 0
         self._candidate_entries = ()
         self._previews = {}
+        self._failed_candidate_source_ids = set()
         self._displayed = ()
         self._sample_text = None
         self._alternate_active = False
@@ -196,6 +197,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._groups = groups
         self._group_index = 0
         self._pending_decisions = []
+        self._failed_candidate_source_ids.clear()
         self._save_succeeded = False
         self._cancel_requested = False
         self._terminal_emitted = False
@@ -240,24 +242,29 @@ class VoiceAuditionPanel(QGroupBox):
     def choose_for_me(self):
         if self.preview_runner.active or self.decision_runner.active:
             return
-        group = self.current_group()
-        source_id = (
-            group.candidates[0].source_id
-            if group.candidates
-            else default_voice_choice_id
-        )
+        source_id = self._automatic_source_id(self.current_group())
+        if source_id is None:
+            self.status.setText(
+                "No working automatic voice remains. Choose a different narrator or "
+                "voice in Voices, then continue preparation."
+            )
+            return
         self._record_choice(source_id)
 
     def choose_all_automatically(self):
         if self.decision_runner.active or self._cancel_requested:
             return
+        choices = []
         for group in self._groups[self._group_index :]:
-            source_id = (
-                group.candidates[0].source_id
-                if group.candidates
-                else default_voice_choice_id
-            )
-            self._pending_decisions.append((group, source_id))
+            source_id = self._automatic_source_id(group)
+            if source_id is None:
+                self.status.setText(
+                    "No working automatic voice remains. Choose a different narrator "
+                    "or voice in Voices, then continue preparation."
+                )
+                return
+            choices.append((group, source_id))
+        self._pending_decisions.extend(choices)
         self._group_index = len(self._groups)
         self._ignore_preview_result = self.preview_runner.active
         if self.preview_runner.active:
@@ -279,6 +286,18 @@ class VoiceAuditionPanel(QGroupBox):
             self._candidate_entries
         )
         self._show_current_candidate()
+
+    def _automatic_source_id(self, group):
+        for candidate in group.candidates:
+            if candidate.source_id not in self._failed_candidate_source_ids:
+                return candidate.source_id
+        narrator = group.narrator_candidate
+        if (
+            narrator is not None
+            and narrator.source_id not in self._failed_candidate_source_ids
+        ):
+            return default_voice_choice_id
+        return None
 
     def try_another_phrase(self):
         group = self.current_group()
@@ -341,10 +360,6 @@ class VoiceAuditionPanel(QGroupBox):
             f"This voice will be used for {count} line{'s' if count != 1 else ''} "
             "in this selection and remembered for this character variant."
         )
-        self.question.setText(
-            "Listen to the original reference and accept it if suitable for voice "
-            "generation. You can also generate a preview before deciding."
-        )
         self._sample_text = group.sample_text
         self.sample.setText(f'Generated preview says: "{self._sample_text}"')
         self.another_sample_button.setVisible(group.alternate_sample_text is not None)
@@ -362,8 +377,20 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_title.setText(
             "Narrator fallback" if narrator else f"Voice: {candidate.source_character}"
         )
+        self.question.setText(
+            "Listen to the original reference and accept it if suitable for voice "
+            "generation. You can also generate a preview before deciding."
+            if candidate.reference_sha256s
+            else "This voice has no original reference. Generate a preview before "
+            "accepting it."
+        )
         self.a_reason.setText(
-            f"Reference voice: {candidate.source_character} ({candidate.source_speaker})\n"
+            (
+                f"Reference voice: {candidate.source_character} ({candidate.source_speaker})"
+                if candidate.reference_sha256s
+                else f"Voice: {candidate.source_character} ({candidate.source_speaker}); no recorded reference"
+            )
+            + "\n"
             + candidate.recommendation
         )
         preview = self._previews.get(self._preview_key(candidate))
@@ -390,6 +417,8 @@ class VoiceAuditionPanel(QGroupBox):
         else:
             self.status.setText(
                 "Listen to the reference or generate a preview, then accept if suitable."
+                if candidate.reference_sha256s
+                else "Generate a preview before accepting this voice."
             )
 
     def _preview_finished(self, preview, error):
@@ -407,6 +436,7 @@ class VoiceAuditionPanel(QGroupBox):
             return
         candidate, choice, _narrator = self._current_entry()
         if error is not None:
+            self._failed_candidate_source_ids.add(candidate.source_id)
             self.a_play.setEnabled(True)
             self.a_original.setEnabled(bool(candidate.reference_sha256s))
             self.a_use.setEnabled(False)
@@ -421,6 +451,7 @@ class VoiceAuditionPanel(QGroupBox):
                 "Try another voice, retry this sample, or choose automatically."
             )
             return
+        self._failed_candidate_source_ids.discard(candidate.source_id)
         self._previews[self._preview_key(candidate)] = preview
         self._displayed = ((candidate, preview, choice),)
         self._set_decision_actions(True)
