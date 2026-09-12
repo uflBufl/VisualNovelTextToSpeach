@@ -10,8 +10,6 @@ measurements in agent memory and completed-work history in Git, not here.
       Windows OpenMOSS host. Compare repeated and changing voices.
 - [ ] Evaluate persisting native encoded voice codes across app restarts; require
       checksum-bound invalidation when a reference changes.
-- [ ] Overlap completed-WAV validation/publication with the next serial OpenMOSS
-      request without weakening leases, resume state or atomic output writes.
 - [ ] Prefetch one known next live line during playback; invalidate it on
       resync, skip, voice reassignment or generation-setting changes.
 - [ ] Benchmark `VNTTS_MOSS_AUX_CPU_THREADS=2/4/6/8`, GPU layers and Local GPU

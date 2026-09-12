@@ -267,6 +267,63 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
         self.assertEqual(renderer.requests[0].cache_policy, SynthesisCachePolicy.USE)
 
+    def test_openmoss_renders_next_line_while_current_wav_is_validated(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            items = [queue_item("one"), queue_item("two")]
+            queue = write_queue(root / "queue.jsonl", items)
+            output = root / "output"
+            second_started = Event()
+            active_during_second = []
+            renderer = SyntheticRenderer()
+            renderer.name = "moss-tts"
+            renderer.model_name = "moss-test"
+
+            def inspect_state(_request):
+                if len(renderer.requests) == 2:
+                    active = json.loads(
+                        (output / "generation-state.json").read_text(encoding="utf-8")
+                    )["active"]
+                    active_during_second.append(
+                        (active["queue_id"], active["phase"])
+                    )
+                    second_started.set()
+
+            renderer.inspect_state = inspect_state
+            inspect_speech = bulk_module.inspect_generated_speech
+
+            def wait_for_next_render(path, **options):
+                self.assertTrue(second_started.wait(2))
+                return inspect_speech(path, **options)
+
+            with patch(
+                "vntts.authoring.bulk_generation.inspect_generated_speech",
+                side_effect=wait_for_next_render,
+            ):
+                result = run_bulk_generation(
+                    queue,
+                    output,
+                    renderer,
+                    provider="moss-tts",
+                    model="moss-test",
+                    generation_profile="stable",
+                    retries=0,
+                )
+
+            state = load_generation_state(result.state, queue)
+            manifest_published = result.manifest.is_file()
+
+        self.assertEqual(result.generated, 2)
+        self.assertEqual(active_during_second, [(items[0]["queue_id"], "validating")])
+        self.assertEqual(
+            [request.text for request in renderer.requests],
+            [items[0]["text"], items[1]["text"]],
+        )
+        self.assertTrue(manifest_published)
+        self.assertTrue(
+            all(value["status"] == "generated" for value in state["items"].values())
+        )
+
     def test_unknown_synthesis_cache_policy_is_rejected(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import stat
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1635,11 +1636,17 @@ def run_bulk_generation(
     manifest_path = output_directory / "manifest.json"
     output_directory.mkdir(parents=True, exist_ok=True)
 
-    with _GenerationLease(
-        output_directory,
-        queue_sha256,
-        process_checker=process_checker or process_is_alive,
-    ) as lease:
+    with (
+        _GenerationLease(
+            output_directory,
+            queue_sha256,
+            process_checker=process_checker or process_is_alive,
+        ) as lease,
+        ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="moss-generation-prefetch",
+        ) as render_prefetch,
+    ):
         if workspace_output_identity is not None:
             _assert_workspace_output_identity(
                 output_argument, workspace_output_identity
@@ -1729,7 +1736,47 @@ def run_bulk_generation(
         skipped_existing = 0
         cancelled = False
         captured_silence_failure = None
-        for item in candidates:
+        prefetched_render = None
+        pipeline_enabled = (
+            provider == "moss-tts"
+            and retries == 0
+            and repair_policy.is_empty
+            and text_transform is None
+            and not regenerate_existing
+        )
+
+        def next_request(candidate):
+            existing = state["items"].get(candidate.queue_id, {})
+            if existing.get("status") in {
+                "generated",
+                "approved",
+                "live_fallback",
+            }:
+                return None
+            requested = _required_text(
+                synthesis_character_for_line(
+                    candidate.speaker, candidate.voice_character
+                ),
+                f"Queue item {candidate.queue_id!r} voice",
+            )
+            voice = queue_voice_overrides.get(
+                candidate.queue_id,
+                character_overrides.get(normalize_character_name(requested), requested),
+            )
+            attempts = _nonnegative_int(existing.get("attempts", 0), "Attempts")
+            provider_attempts = _provider_attempts(
+                existing, attempts, default_provider=provider
+            ).get(provider, 0)
+            return SynthesisRequest(
+                voice=voice,
+                text=candidate.text,
+                seed=seed + provider_attempts,
+                generation_profile=generation_profile,
+                cancellation=cancellation,
+                cache_policy=synthesis_cache_policy,
+            )
+
+        for item_index, item in enumerate(candidates):
             queue_id = item.queue_id
             existing = state["items"].get(queue_id, {})
             repair_strategy = repair_policy.strategy_for(queue_id)
@@ -1912,7 +1959,18 @@ def run_bulk_generation(
                     cache_policy=synthesis_cache_policy,
                 )
                 try:
-                    if repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+                    if (
+                        prefetched_render is not None
+                        and prefetched_render[0] == queue_id
+                    ):
+                        prefetched_request, future = prefetched_render[1:]
+                        prefetched_render = None
+                        if prefetched_request != request:
+                            raise BulkGenerationError(
+                                "OpenMOSS prefetched request identity changed"
+                            )
+                        rendered = future.result()
+                    elif repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
                         rendered = render_sentence_segments(
                             render,
                             request,
@@ -1929,6 +1987,28 @@ def run_bulk_generation(
                         )
                     lease.assert_owned()
                     _write_active_phase(state_path, state, "validating")
+                    if (
+                        pipeline_enabled
+                        and prefetched_render is None
+                        and item_index + 1 < len(candidates)
+                    ):
+                        try:
+                            prepared_next = next_request(candidates[item_index + 1])
+                        except Exception:
+                            prepared_next = None
+                        if prepared_next is not None:
+                            # ponytail: one speculative render may finish after the
+                            # current WAV fails validation; add per-request cancel
+                            # tokens only if that wasted work is measured in practice.
+                            prefetched_render = (
+                                candidates[item_index + 1].queue_id,
+                                prepared_next,
+                                render_prefetch.submit(
+                                    lambda request=prepared_next: render(
+                                        request
+                                    ).collect()
+                                ),
+                            )
                     output_pcm = _generated_mono_pcm(rendered.pcm)
                     if repair_strategy == EDGE_SILENCE_TRIM:
                         trimmed = trim_excess_edge_silence(
