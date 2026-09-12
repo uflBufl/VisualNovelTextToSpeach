@@ -50,13 +50,17 @@ try {
     Expand-Archive -LiteralPath $Inner -DestinationPath $Runtime
     $Server = Join-Path $Runtime 'moss-tts-server.exe'
     $Manifest = Get-Content (Join-Path $Runtime 'VNTTS-BUILD.json') -Raw | ConvertFrom-Json
-    $BuildCommit = [string]$Manifest.vntts
-    if ($Manifest.variant -ne 'timing-adaptive' -or
-        -not $BuildCommit.StartsWith($ExpectedBuild, [StringComparison]::OrdinalIgnoreCase) -or
-        $Manifest.ggml_native -ne $false -or
-        $Manifest.runtime_controls.persistent_voice_codes -ne $true -or
-        $Manifest.runtime_controls.local_gpu -ne $true) {
-        throw 'Adaptive build is not portable. Download the latest OpenMOSS Actions artifact.'
+    $BuildCommit = [string]$Manifest.source
+    $ManifestProblems = @()
+    if ($Manifest.variant -ne 'timing-adaptive') { $ManifestProblems += "variant='$($Manifest.variant)'" }
+    if (-not $BuildCommit.StartsWith($ExpectedBuild, [StringComparison]::OrdinalIgnoreCase)) {
+        $ManifestProblems += "source='$BuildCommit' (expected prefix '$ExpectedBuild')"
+    }
+    if ($Manifest.ggml_native -ne $false) { $ManifestProblems += "ggml_native='$($Manifest.ggml_native)'" }
+    if ($Manifest.runtime_controls.persistent_voice_codes -ne $true) { $ManifestProblems += "persistent_voice_codes='$($Manifest.runtime_controls.persistent_voice_codes)'" }
+    if ($Manifest.runtime_controls.local_gpu -ne $true) { $ManifestProblems += "local_gpu='$($Manifest.runtime_controls.local_gpu)'" }
+    if ($ManifestProblems.Count) {
+        throw "Adaptive build manifest mismatch: $($ManifestProblems -join '; ')."
     }
     $Capabilities = (& $Server --capabilities-json | Out-String) | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or

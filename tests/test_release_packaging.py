@@ -148,6 +148,7 @@ class ReleasePackagingTest(unittest.TestCase):
 
         for contract in (
             "ExpectedBuild = '46454ab'",
+            "$BuildCommit = [string]$Manifest.source",
             "--require-changing-voice",
             ".all_requests_complete -ne $true",
             "$null -eq $_.native.prefill_s",
@@ -161,6 +162,7 @@ class ReleasePackagingTest(unittest.TestCase):
             "publication_seconds",
         ):
             self.assertIn(contract, script)
+        self.assertNotIn("$Manifest.vntts", script)
         self.assertNotIn("artifact = @{ path = $Artifact", script)
 
     def test_macos_runtime_is_injected_without_pyinstaller_reclassification(self):
