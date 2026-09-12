@@ -184,13 +184,13 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
 
 @lru_cache(maxsize=8)
 def _validate_semantic_evidence(
-    story_path,
-    _story_sha256,
-    evidence_path,
-    _evidence_sha256,
-    evidence_id,
-    entry_count,
-):
+    story_path: str,
+    _story_sha256: str,
+    evidence_path: str,
+    _evidence_sha256: str,
+    evidence_id: str,
+    entry_count: int,
+) -> None:
     story = load_story_index_document(story_path)
     document = load_source_audio_semantic_evidence(evidence_path)
     validate_story_semantic_evidence(story, evidence_path, document)
