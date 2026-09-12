@@ -2,7 +2,7 @@
 param(
     [string]$Artifact = (Join-Path $HOME 'Downloads\moss-native-timing-adaptive-windows-x64.zip'),
     [string]$Output = (Join-Path $HOME ("Downloads\moss-adaptive-qualification-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))),
-    [ValidatePattern('^[0-9a-fA-F]{7,64}$')][string]$ExpectedBuild = '46454ab'
+    [ValidatePattern('^[0-9a-fA-F]{7,64}$')][string]$ExpectedBuild = 'd029eb0'
 )
 $ErrorActionPreference = 'Stop'
 $MaxArchiveBytes = 768MB

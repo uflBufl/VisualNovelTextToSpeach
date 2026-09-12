@@ -5,10 +5,13 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Reduce OpenMOSS generation latency
 
+- [ ] Publish an adaptive OpenMOSS build that reports Local in-process
+      reference-code cache hits, update the qualification build pin, and rerun
+      the Windows cold/warm changed-voice gate.
 - [ ] Record cold and warm timings for startup, reference preparation, native
       prefill/generation/decode, WAV validation and publication on the supported
       Windows OpenMOSS host. Compare repeated and changing voices.
-- [ ] On the supported Windows OpenMOSS host, qualify artifact `46454ab` with
+- [ ] On the supported Windows OpenMOSS host, qualify artifact `d029eb0` with
       the real model, require a persistent-code hit after restart, publish an
       immutable runtime archive, then update its pinned URL, checksum and size.
 - [ ] Benchmark `VNTTS_MOSS_AUX_CPU_THREADS=2/4/6/8`, GPU layers and Local GPU

@@ -147,7 +147,7 @@ class ReleasePackagingTest(unittest.TestCase):
         )
 
         for contract in (
-            "ExpectedBuild = '46454ab'",
+            "ExpectedBuild = 'd029eb0'",
             "$BuildCommit = [string]$Manifest.source",
             "--require-changing-voice",
             ".all_requests_terminal -ne $true",

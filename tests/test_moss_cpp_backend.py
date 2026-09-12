@@ -125,7 +125,7 @@ class Handler(BaseHTTPRequestHandler):
                     (root / 'encoded.json').write_text(json.dumps([*codes_cache, voice_id]))
                     print(f"[server] voice '{voice_id}' encoded: 10 frames in 0.40s (now cached)", flush=True)
                 codes_cache[voice_id] = True
-            # Local v0.3.0 emits no cache-hit marker (the Delay pipeline does).
+            print('[generate] reference: 10 frames (cached codes)', flush=True)
         if body['text'] == 'Wait.': time.sleep(30)
         if body['text'] == 'Fail.':
             self.send_response(500)
@@ -790,7 +790,7 @@ class MossCppBackendTest(unittest.TestCase):
         for field in ("gen_backbone_s", "gen_frame_decoder_s", "gen_input_embedding_s"):
             self.assertIsNone(event[field])
         self.assertIn(
-            "reference=unavailable", self.native_log.snapshot()[-1]["message"]
+            "reference=cached-codes", self.native_log.snapshot()[-1]["message"]
         )
         backend.render(first).collect()
         self.assertIn("operation=cached-wav", self.native_log.snapshot()[-1]["message"])
@@ -813,7 +813,7 @@ class MossCppBackendTest(unittest.TestCase):
         ).build(self.root / "support.zip")
         with zipfile.ZipFile(output) as archive:
             report = archive.read("native-speech.json").decode()
-        self.assertIn("reference=unavailable", report)
+        self.assertIn("reference=cached-codes", report)
         self.assertIn("operation=server-start", report)
         self.assertIn("request_key=" + request_key, report)
         self.assertIn("seed=7", report)
