@@ -12,6 +12,29 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Evaluate multiple native servers only on hosts with multiple GPUs or
       measured RAM/VRAM headroom. Keep one serialized server as the default.
 
+## P1 - Reduce structural code debt
+
+- [ ] Split the largest authoring orchestration functions along their existing
+      validation, execution, persistence and publication phases. Start with
+      `run_bulk_generation`, `_merge_workspace_outcomes`,
+      `_carry_forward_review_outcomes` and `build_authoring_reconciliation`;
+      preserve stored-format compatibility and observable failure behavior.
+- [ ] Enable Ruff complexity checks through a versioned ratchet. Fix the current
+      baseline of 657 findings (294 C901, 199 PLR0912 and 164 PLR0915), then
+      reject new violations without requiring an all-at-once rewrite of existing
+      code.
+- [ ] Expand the existing mypy scope ratchet beyond its current 14 production
+      files. Type complete ownership boundaries at a time, beginning with the
+      refactored authoring flows, and keep `Any`, casts and ignores from replacing
+      real contracts.
+- [ ] Consolidate remaining authoring publication lifecycle and value-validation
+      primitives. Reuse `workspace_foundation` and add one minimal staged-directory
+      context manager to `publication` only after inventorying error-message and
+      whitespace-normalization differences at every caller.
+- [ ] Audit external consumers of the 435-name `vntts.authoring` compatibility
+      facade, define the supported public surface, migrate repository callers to
+      owning modules, and deprecate or remove unused lazy exports and the digest
+      test that freezes the oversized inventory.
 ## P1 - Qualify remaining Python and speech runtimes
 
 - [ ] Qualify the Python 3.14 MOSS Delay candidate on Windows CUDA with its atomic
