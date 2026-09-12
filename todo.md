@@ -17,10 +17,10 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Continue splitting the largest authoring orchestration functions along
       their existing validation, execution, persistence and publication phases.
       Extract item execution and finalization from `run_bulk_generation`, then
-      split `_merge_workspace_outcomes` and `_carry_forward_review_outcomes`;
-      preserve stored-format compatibility and observable failure behavior.
+      split `_carry_forward_review_outcomes`; preserve stored-format compatibility
+      and observable failure behavior.
 - [ ] Enable Ruff complexity checks through a versioned ratchet. Fix the current
-      baseline of 657 findings (294 C901, 199 PLR0912 and 164 PLR0915), then
+      baseline of 677 findings (295 C901, 199 PLR0912 and 183 PLR0915), then
       reject new violations without requiring an all-at-once rewrite of existing
       code.
 - [ ] Expand the existing mypy scope ratchet beyond its current 14 production
