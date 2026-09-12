@@ -4,6 +4,7 @@ import argparse
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
 
@@ -126,12 +127,12 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
         if isinstance(authoring, dict)
         else None
     )
-    try:
-        story = load_story_index_document(pack.story_index.path)
-        story_metadata = story.metadata.get("source_audio_semantics")
-    except StoryIndexError as error:
-        raise GamePackError(str(error)) from error
     if extension is None:
+        try:
+            story = load_story_index_document(pack.story_index.path)
+            story_metadata = story.metadata.get("source_audio_semantics")
+        except StoryIndexError as error:
+            raise GamePackError(str(error)) from error
         if isinstance(story_metadata, dict):
             raise GamePackError(
                 "Game pack story semantic decisions have no evidence component"
@@ -160,20 +161,46 @@ def _source_audio_semantic_evidence(pack: GamePack) -> Path | None:
         evidence_path.relative_to(root)
     except ValueError as error:
         raise GamePackError("Game pack semantic evidence leaves its pack") from error
-    if not evidence_path.is_file() or sha256_file(evidence_path) != extension.get(
-        "sha256"
-    ):
+    evidence_sha256 = extension.get("sha256")
+    if not evidence_path.is_file() or sha256_file(evidence_path) != evidence_sha256:
         raise GamePackError("Game pack semantic evidence checksum changed")
+    evidence_id = extension.get("evidence_id")
+    entry_count = extension.get("entry_count")
+    if not isinstance(evidence_id, str) or not isinstance(entry_count, int):
+        raise GamePackError("Game pack semantic evidence extension changed")
     try:
-        document = load_source_audio_semantic_evidence(evidence_path)
-        validate_story_semantic_evidence(story, evidence_path, document)
+        _validate_semantic_evidence(
+            str(pack.story_index.path),
+            pack.story_index.sha256,
+            str(evidence_path),
+            evidence_sha256,
+            evidence_id,
+            entry_count,
+        )
     except SourceAudioSemanticEvidenceError as error:
         raise GamePackError(str(error)) from error
-    if document["evidence_id"] != extension.get("evidence_id") or len(
-        document["entries"]
-    ) != extension.get("entry_count"):
-        raise GamePackError("Game pack semantic evidence extension changed")
     return evidence_path
+
+
+@lru_cache(maxsize=8)
+def _validate_semantic_evidence(
+    story_path,
+    _story_sha256,
+    evidence_path,
+    _evidence_sha256,
+    evidence_id,
+    entry_count,
+):
+    story = load_story_index_document(story_path)
+    document = load_source_audio_semantic_evidence(evidence_path)
+    validate_story_semantic_evidence(story, evidence_path, document)
+    if (
+        document["evidence_id"] != evidence_id
+        or len(document["entries"]) != entry_count
+    ):
+        raise SourceAudioSemanticEvidenceError(
+            "Game pack semantic evidence extension changed"
+        )
 
 
 def apply_game_pack(

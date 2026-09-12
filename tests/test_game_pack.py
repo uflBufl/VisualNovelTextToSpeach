@@ -333,12 +333,13 @@ class GamePackImportTest(unittest.TestCase):
                 ) as redundant_story_load,
             ):
                 imported = import_game_pack(pack_path)
+                import_game_pack(pack_path)
 
         self.assertEqual(
             imported.source_audio_semantic_evidence.name,
             "source-audio-semantic-evidence.json",
         )
-        self.assertEqual(artifact_story_load.call_count, 1)
+        self.assertEqual(artifact_story_load.call_count, 2)
         self.assertEqual(vntts_story_load.call_count, 1)
         redundant_story_load.assert_not_called()
 
