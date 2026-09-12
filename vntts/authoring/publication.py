@@ -8,12 +8,20 @@ import os
 import sys
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from vntts.authoring.generation_lease import GenerationLease
 
 
 class AtomicPublicationError(RuntimeError):
     """Raised when the platform cannot provide no-replace publication."""
+
+
+@contextmanager
+def staged_directory(parent, *, prefix):
+    """Yield a temporary publication directory and always clean leftovers."""
+    with TemporaryDirectory(prefix=prefix, dir=parent) as directory:
+        yield Path(directory).resolve()
 
 
 @contextmanager
@@ -95,4 +103,5 @@ __all__ = [
     "AtomicPublicationError",
     "generation_publication_leases",
     "rename_directory_no_replace",
+    "staged_directory",
 ]

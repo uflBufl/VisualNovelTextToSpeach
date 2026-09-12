@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-import ctypes
-import errno
 import hashlib
 import io
 import json
-import os
-import shutil
-import sys
-import tempfile
 import wave
 from pathlib import Path
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 SILENCE_FAILURE_EVIDENCE_SCHEMA = "vntts.authoring-silence-failure-evidence"
@@ -40,10 +39,7 @@ def publish_silence_failure_evidence(output_directory, wav_payload, metadata):
     if not isinstance(metadata, dict):
         raise SilenceFailureEvidenceError("Silence-failure metadata is invalid")
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         wav = staging / "rejected.wav"
         wav.write_bytes(wav_payload)
         wav_sha256 = hashlib.sha256(wav_payload).hexdigest()
@@ -64,10 +60,6 @@ def publish_silence_failure_evidence(output_directory, wav_payload, metadata):
         load_silence_failure_evidence(staging)
         _rename_no_replace(staging, output)
         return output
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
 
 
 def load_silence_failure_evidence(directory):
@@ -198,47 +190,17 @@ def _new_directory(value):
 
 
 def _rename_no_replace(source, destination):
-    source_bytes = os.fsencode(source)
-    destination_bytes = os.fsencode(destination)
-    if sys.platform == "darwin":
-        function = ctypes.CDLL(None, use_errno=True).renamex_np
-        function.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-        function.restype = ctypes.c_int
-        result = function(source_bytes, destination_bytes, 0x00000004)
-    elif sys.platform.startswith("linux"):
-        function = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
-        if function is None:
-            raise SilenceFailureEvidenceError(
-                "Atomic no-replace evidence publication is unavailable"
-            )
-        function.argtypes = [
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_int,
-            ctypes.c_char_p,
-            ctypes.c_uint,
-        ]
-        function.restype = ctypes.c_int
-        result = function(-100, source_bytes, -100, destination_bytes, 1)
-    elif os.name == "nt":
-        try:
-            os.rename(source, destination)
-        except FileExistsError as error:
+    try:
+        rename_directory_no_replace(source, destination)
+    except AtomicPublicationError as error:
+        if "destination already exists" in str(error).lower():
             raise SilenceFailureEvidenceError(
                 f"Silence-failure evidence destination already exists: {destination}"
             ) from error
-        return
-    else:
         raise SilenceFailureEvidenceError(
             "Atomic no-replace evidence publication is unavailable"
-        )
-    if result == 0:
-        return
-    error_number = ctypes.get_errno()
-    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        ) from error
+    except OSError as error:
         raise SilenceFailureEvidenceError(
-            f"Silence-failure evidence destination already exists: {destination}"
-        )
-    raise SilenceFailureEvidenceError(
-        f"Unable to publish silence-failure evidence: {os.strerror(error_number)}"
-    )
+            f"Unable to publish silence-failure evidence: {error.strerror or error}"
+        ) from error
