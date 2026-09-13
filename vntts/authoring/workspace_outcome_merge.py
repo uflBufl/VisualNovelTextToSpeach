@@ -8,7 +8,7 @@ import importlib
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypeGuard, TypedDict
+from typing import TypedDict, TypeGuard
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file

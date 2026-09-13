@@ -10,7 +10,11 @@ from typing import Protocol
 
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError as VoiceManifestError,
+)
+from vntts_artifacts.voice_manifest import (
     load_voice_manifest,
+)
+from vntts_artifacts.voice_manifest import (
     normalize_character_name as normalize_character_name,
 )
 
