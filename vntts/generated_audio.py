@@ -6,13 +6,17 @@ import hashlib
 import io
 import json
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from threading import Event, Lock
 from time import monotonic
 
 import numpy as np
 from vntts_artifacts.audio import Pcm16MonoWavError
 from vntts_artifacts.generated_audio import (
+    GeneratedAudioDocument,
+    GeneratedAudioIndex,
     GeneratedAudioManifestError,
     load_generated_audio_document,
 )
@@ -273,7 +277,7 @@ class GeneratedAudioLibrary:
         self.progress_active = None
         self._apply_index(index)
 
-    def _apply_index(self, index):
+    def _apply_index(self, index: GeneratedAudioDocument | GeneratedAudioIndex) -> None:
         _validate_generated_audio_paths(index)
         self.index = index
         self.runtime_progress = index.metadata.get("vntts.runtime.progress") is True
@@ -292,7 +296,7 @@ class GeneratedAudioLibrary:
             if (role := _narrator_fallback_role(entry)) is not None
         }
 
-    def _reload_if_changed(self):
+    def _reload_if_changed(self) -> None:
         signature = _manifest_signature(self.manifest_path)
         if signature in {
             None,
@@ -399,7 +403,7 @@ class GeneratedAudioLibrary:
         self._reload_if_changed()
         return self.audio_event_omissions.get((line_id, text_sha256))
 
-    def progress_description(self, line_id, text_sha256):
+    def progress_description(self, line_id: str, text_sha256: str) -> str | None:
         if not self.runtime_progress:
             return None
         state_path = self.manifest_path.parent / "generation-state.json"
@@ -407,10 +411,12 @@ class GeneratedAudioLibrary:
         if signature != self.progress_state_signature:
             try:
                 state = json.loads(state_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
+            except OSError, UnicodeError, json.JSONDecodeError:
                 return None
             self.progress_state_signature = signature
-            self.progress_active = state.get("active") if isinstance(state, dict) else None
+            self.progress_active = (
+                state.get("active") if isinstance(state, dict) else None
+            )
         active = self.progress_active
         if not isinstance(active, dict):
             return "Preparing this line - choosing the next safe attempt."
@@ -432,7 +438,7 @@ class GeneratedAudioLibrary:
         self.warn(message)
 
 
-def _manifest_signature(path):
+def _manifest_signature(path: Path) -> tuple[int, int, int] | None:
     try:
         stat = path.stat()
     except OSError:
@@ -965,7 +971,11 @@ class GeneratedAudioFallbackBackend:
             return _route_outcome(route, status, 0.0)
         raise TypeError(f"Unsupported audio route: {type(route).__name__}")
 
-    def _play_pending_generated_route(self, route, playback_guard):
+    def _play_pending_generated_route(
+        self,
+        route: PendingGeneratedAudioRoute,
+        playback_guard: Callable[[], bool] | None,
+    ) -> PlaybackOutcome:
         self.progress_wait_stop.clear()
         self.progress_wait_request(route.line_id, route.text_sha256)
         last_status = (

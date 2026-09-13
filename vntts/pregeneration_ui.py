@@ -60,6 +60,7 @@ from vntts.pregeneration_setup import (
     ContentDiscovery,
     PregenerationJobStore,
     PregenerationSetupError,
+    StorySelection,
     discover_game_content,
     estimate_generation_resources,
     estimate_preparation,
@@ -74,6 +75,7 @@ from vntts.pregeneration_voices import (
 )
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
+from vntts.settings import AppSettings
 from vntts.speech_presentation import (
     speech_configuration_label,
     speech_configuration_rows,
@@ -1332,7 +1334,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def generation_input(self):
         return self._generation_input
 
-    def runtime_playback_settings(self):
+    def runtime_playback_settings(self) -> AppSettings | None:
         generation_input = self._generation_input
         if generation_input is None:
             return None
@@ -1353,10 +1355,10 @@ class OfflineAudioPreparationDialog(QDialog):
             force_live_narrator=False,
         )
 
-    def prioritize_line(self, line_id, text_sha256):
+    def prioritize_line(self, line_id: str, text_sha256: str) -> bool:
         return self.recovery.prioritize_line(line_id, text_sha256)
 
-    def _reading_line_observed(self, line_id, _text_sha256):
+    def _reading_line_observed(self, line_id: str, _text_sha256: str) -> None:
         if line_id == self._reading_line_id:
             return
         self._reading_line_id = line_id
@@ -1897,6 +1899,33 @@ class OfflineAudioPreparationDialog(QDialog):
         self.story_audio_status.setToolTip(str(coverage.manifest or ""))
         self.content_scroll.ensureWidgetVisible(self.story_audio_status)
 
+    def _preparation_story_status(self, selection: StorySelection) -> tuple[str, str]:
+        ready = set(getattr(self._progress_snapshot, "ready_line_ids", ()))
+        ready_count = sum(line_id in ready for line_id in selection.line_ids)
+        ready_prefix = 0
+        start = (
+            selection.line_ids.index(self._reading_line_id)
+            if self._reading_line_id in selection.line_ids
+            else 0
+        )
+        for line_id in selection.line_ids[start:]:
+            if line_id not in ready:
+                break
+            ready_prefix += 1
+        remaining = selection.line_count - start
+        if ready_prefix == selection.line_count:
+            return "ready", "all lines are playable while other chapters prepare"
+        if start and ready_prefix == remaining:
+            return "preparing", "all remaining lines are playable from the current line"
+        if ready_count:
+            return (
+                "preparing",
+                f"{ready_count}/{selection.line_count} lines ready; "
+                f"{ready_prefix} consecutive from "
+                f"{'current line' if start else 'chapter start'}",
+            )
+        return "preparing", self.progress_phase.text()
+
     def _refresh_story_statuses(self):
         content = self.current_content()
         if content is None:
@@ -1957,36 +1986,7 @@ class OfflineAudioPreparationDialog(QDialog):
                     and selection_id in self._job.selected_story_ids
                     and self.has_pending_work()
                 ):
-                    ready = set(getattr(self._progress_snapshot, "ready_line_ids", ()))
-                    ready_count = sum(
-                        line_id in ready for line_id in selection.line_ids
-                    )
-                    ready_prefix = 0
-                    start = (
-                        selection.line_ids.index(self._reading_line_id)
-                        if self._reading_line_id in selection.line_ids
-                        else 0
-                    )
-                    for line_id in selection.line_ids[start:]:
-                        if line_id not in ready:
-                            break
-                        ready_prefix += 1
-                    remaining = selection.line_count - start
-                    if ready_prefix == selection.line_count:
-                        status = "ready"
-                        detail = "all lines are playable while other chapters prepare"
-                    elif start and ready_prefix == remaining:
-                        status = "preparing"
-                        detail = "all remaining lines are playable from the current line"
-                    elif ready_count:
-                        status = "preparing"
-                        detail = (
-                            f"{ready_count}/{selection.line_count} lines ready; "
-                            f"{ready_prefix} consecutive from "
-                            f"{'current line' if start else 'chapter start'}"
-                        )
-                    else:
-                        status, detail = "preparing", self.progress_phase.text()
+                    status, detail = self._preparation_story_status(selection)
                 label = {
                     "not_started": "Not prepared",
                     "preparing": "Preparing",

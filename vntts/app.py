@@ -1972,7 +1972,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             finally:
                 self.dashboard.sections.setCurrentIndex(section)
 
-    def _preparation_runtime_settings(self):
+    def _preparation_runtime_settings(self) -> AppSettings | None:
         dialog = self.pregeneration_dialog
         factory = getattr(dialog, "runtime_playback_settings", None)
         if not callable(factory):
@@ -1980,7 +1980,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         candidate = factory()
         return candidate if isinstance(candidate, AppSettings) else None
 
-    def _preparation_playback_active(self):
+    def _preparation_playback_active(self) -> bool:
         candidate = self._preparation_runtime_settings()
         controller_settings = getattr(self.controller, "settings", None)
         return bool(
@@ -1990,6 +1990,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             == candidate.generated_audio_manifest
             and controller_settings.story_index == candidate.story_index
         )
+
+    def _show_preparation_reading(self, runtime_settings: AppSettings | None) -> None:
+        if runtime_settings is None:
+            self.dashboard.show_reading()
+            return
+        with QSignalBlocker(self.dashboard.sections):
+            self.dashboard.show_reading()
 
     def prepare_reading(self, *, start_live=False):
         if self._controller_busy or self._shutting_down:
@@ -2007,7 +2014,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             self.dashboard.show_stories()
             return
-        self.dashboard.show_reading()
+        self._show_preparation_reading(runtime_settings)
         if not self.settings.onboarding_completed:
             self.run_onboarding()
             return
@@ -3862,6 +3869,22 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.set_runtime_controls(state)
         self.compact_controller.set_runtime_controls(state)
 
+    def _apply_preparation_reading_state(
+        self, preparing: bool, choosing_voice: bool
+    ) -> None:
+        runtime_settings = self._preparation_runtime_settings()
+        self.dashboard.prepare_reading_button.setEnabled(
+            not (
+                self._controller_busy
+                or self._shutting_down
+                or (preparing and runtime_settings is None)
+                or choosing_voice
+            )
+        )
+        if preparing or choosing_voice:
+            for button in self.dashboard.loading_blocked_buttons:
+                button.setEnabled(False)
+
     def _apply_controller_action_state(self):
         enabled = (
             self._controller_ready
@@ -3876,21 +3899,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and self.pregeneration_dialog.has_pending_work()
         )
         choosing_voice = self.narrator_dialog is not None
-        self.dashboard.prepare_reading_button.setEnabled(
-            not (
-                self._controller_busy
-                or self._shutting_down
-                or (preparing and self._preparation_runtime_settings() is None)
-                or choosing_voice
-            )
-        )
-        if preparing or choosing_voice:
-            for button in self.dashboard.loading_blocked_buttons:
-                button.setEnabled(False)
-        if preparing and self._preparation_runtime_settings() is not None:
-            self.dashboard.prepare_reading_button.setEnabled(
-                not (self._controller_busy or self._shutting_down or choosing_voice)
-            )
+        self._apply_preparation_reading_state(preparing, choosing_voice)
         if enabled:
             resolve_voice = getattr(self.controller, "_resolve_voice_label", None)
             if callable(resolve_voice):
