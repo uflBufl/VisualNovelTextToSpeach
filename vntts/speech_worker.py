@@ -13,22 +13,24 @@ import sys
 import threading
 import uuid
 from collections import deque
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import redirect_stdout
-from dataclasses import asdict
 from io import BytesIO
 from itertools import chain
 from pathlib import Path
 from time import monotonic
+from typing import Protocol, TypeAlias, TypeGuard
 
 import numpy as np
+from numpy.typing import NDArray
 
 from vntts.audio_output import resolve_audio_output
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
 from vntts.playback import (
+    PlaybackOutcome,
     PlaybackStatus,
     PreparedPlayback,
     outcome_for_prepared,
-    synthesized_mono_pcm,
 )
 from vntts.runtime_paths import (
     RUNTIME_ENVIRONMENT_VARIABLES,
@@ -45,7 +47,16 @@ from vntts.speech_backend import (
     validate_speed,
     validate_volume,
 )
-from vntts.speech_worker_messages import RemotePreparedSpeech
+from vntts.speech_worker_messages import (
+    FrameDocument,
+    RegistryDocument,
+    RemotePreparedSpeech,
+    SynthesisDiagnosticsDocument,
+    SynthesisLimitsDocument,
+    SynthesisResultDocument,
+    SynthesisTimingDocument,
+    VoiceDocument,
+)
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisChunk,
@@ -113,8 +124,312 @@ _CAPABILITIES = {
     "moss-tts-delay": MossTTSDelayVoiceRouterBackend.capabilities,
 }
 
+WorkerFrame: TypeAlias = tuple[FrameDocument, bytes]
 
-def _write_frame(stream, document, payload=b""):
+
+class _CancellationToken(Protocol):
+    def is_set(self) -> bool: ...
+
+
+Cancellation: TypeAlias = Callable[[], bool] | _CancellationToken | None
+WorkerOptions: TypeAlias = dict[str, object]
+RuntimePaths: TypeAlias = tuple[Path, Path, Path]
+ProcessFactory: TypeAlias = Callable[..., object]
+PlaybackGuard: TypeAlias = Callable[[], bool] | None
+WarmupProgress: TypeAlias = Callable[[int, int, str], None]
+StartupProgress: TypeAlias = Callable[[str], None] | None
+
+
+class _ReadableBinaryStream(Protocol):
+    def read(self, size: int = -1) -> bytes: ...
+
+    def readline(self, size: int = -1) -> bytes: ...
+
+
+class _WritableBinaryStream(Protocol):
+    def write(self, data: bytes) -> object: ...
+
+    def flush(self) -> object: ...
+
+
+class WorkerProcess(Protocol):
+    stdin: _WritableBinaryStream | None
+    stdout: _ReadableBinaryStream | None
+    stderr: _ReadableBinaryStream | None
+
+    def poll(self) -> int | None: ...
+
+    def wait(self, timeout: float | None = None) -> int: ...
+
+    def terminate(self) -> None: ...
+
+    def kill(self) -> None: ...
+
+
+WorkerMessage: TypeAlias = tuple[WorkerProcess, FrameDocument, bytes]
+
+
+class _RuntimeUse(Protocol):
+    def begin_launch(self) -> None: ...
+
+    def launched(self, process: WorkerProcess | None) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class _RetainedBackend(Protocol):
+    process: WorkerProcess | None
+    registry: CharacterVoiceRegistry
+    narrator_reference: str | Path | None
+    startup_cancellation: Cancellation
+    startup_progress: StartupProgress
+
+    def shutdown(self) -> None: ...
+
+    def set_volume(self, volume: object) -> None: ...
+
+
+class _AudioStream(Protocol):
+    def __enter__(self) -> "_AudioStream": ...
+
+    def __exit__(
+        self, exception_type: object, exception: object, traceback: object
+    ) -> bool | None: ...
+
+    def write(self, audio: NDArray[np.float32]) -> object: ...
+
+    def abort(self) -> object: ...
+
+
+class _AudioOutput(Protocol):
+    def OutputStream(
+        self,
+        *,
+        samplerate: int,
+        channels: int,
+        dtype: str,
+        latency: str,
+    ) -> _AudioStream: ...
+
+
+class _WorkerBackend(Protocol):
+    registry: CharacterVoiceRegistry
+    narrator_reference: str | Path | None
+    sample_rate: int
+
+    def render(self, request: SynthesisRequest) -> SynthesisChunkStream: ...
+
+    def prime(self, voice: str) -> bool: ...
+
+    def set_live_mode_active(self, active: bool) -> bool: ...
+
+
+WorkerBackendFactory: TypeAlias = Callable[..., object]
+
+
+def _is_document(value: object) -> TypeGuard[FrameDocument]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _is_text(value: object) -> TypeGuard[str]:
+    return isinstance(value, str)
+
+
+def _required_document_value(document: Mapping[str, object], field: str) -> object:
+    return document[field]
+
+
+def _required_text(document: Mapping[str, object], field: str) -> str:
+    value = _required_document_value(document, field)
+    if not isinstance(value, str):
+        raise TTSConfigurationError(f"Speech worker {field} must be text")
+    return value
+
+
+def _required_integer(document: Mapping[str, object], field: str) -> int:
+    value = _required_document_value(document, field)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TTSConfigurationError(f"Speech worker {field} must be an integer")
+    return value
+
+
+def _optional_seed(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _is_cancellation(value: object) -> TypeGuard[Cancellation]:
+    return value is None or callable(value) or callable(getattr(value, "is_set", None))
+
+
+def _is_startup_progress(value: object) -> TypeGuard[StartupProgress]:
+    return value is None or callable(value)
+
+
+def _required_float(document: Mapping[str, object], field: str) -> float:
+    value = _required_document_value(document, field)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise TTSConfigurationError(f"Speech worker {field} must be a number")
+    return float(value)
+
+
+def _document_path(document: Mapping[str, object], field: str) -> Path:
+    value = document.get(field, "")
+    if not isinstance(value, (str, Path)):
+        raise TypeError("expected str, bytes or os.PathLike object")
+    return Path(value)
+
+
+def _chunk_shape(document: Mapping[str, object]) -> tuple[int, ...]:
+    value = _required_document_value(document, "shape")
+    if not isinstance(value, list) or not all(
+        isinstance(item, int) and not isinstance(item, bool) for item in value
+    ):
+        raise TTSConfigurationError("Speech worker chunk shape is malformed")
+    return tuple(value)
+
+
+def _document_value(value: object, label: str) -> FrameDocument:
+    if not _is_document(value):
+        raise TTSConfigurationError(f"Speech worker {label} is malformed")
+    return value
+
+
+def _voice_document(value: object) -> VoiceDocument:
+    document = _document_value(value, "voice registry")
+    aliases = document.get("aliases", ())
+    references = document.get("references", ())
+    reference_root = document.get("reference_root")
+    if (
+        not isinstance(aliases, list)
+        or not all(isinstance(item, str) for item in aliases)
+        or not isinstance(references, list)
+        or not all(isinstance(item, str) for item in references)
+        or reference_root is not None
+        and not isinstance(reference_root, str)
+    ):
+        raise TTSConfigurationError("Speech worker voice registry is malformed")
+    return {
+        "character": _required_text(document, "character"),
+        "speaker": _required_text(document, "speaker"),
+        "aliases": aliases,
+        "references": references,
+        "reference_root": reference_root,
+    }
+
+
+def _registry_document(value: object) -> RegistryDocument:
+    document = _document_value(value, "voice registry")
+    voices = document.get("voices", ())
+    assignments = document.get("assignments", {})
+    if not isinstance(voices, list) or not _is_document(assignments):
+        raise TTSConfigurationError("Speech worker voice registry is malformed")
+    return {
+        "voices": [_voice_document(item) for item in voices],
+        "assignments": {
+            character: None if item is None else _voice_document(item)
+            for character, item in assignments.items()
+        },
+    }
+
+
+def _worker_options(value: object) -> WorkerOptions:
+    if value is None:
+        return {}
+    document = _document_value(value, "options")
+    return dict(document)
+
+
+def _result_document_value(value: object) -> SynthesisResultDocument:
+    document = _document_value(value, "render result")
+    limits = _document_value(document.get("limits"), "render result limits")
+    timing = _document_value(document.get("timing"), "render result timing")
+    diagnostics = _document_value(
+        document.get("diagnostics"), "render result diagnostics"
+    )
+    max_tokens = limits.get("max_tokens")
+    max_audio_seconds = limits.get("max_audio_seconds")
+    first_chunk_ms = timing.get("first_chunk_ms")
+    seed = diagnostics.get("seed")
+    if (
+        not isinstance(document.get("sample_rate"), int)
+        or not isinstance(document.get("completion"), str)
+        or max_tokens is not None
+        and not isinstance(max_tokens, int)
+        or max_audio_seconds is not None
+        and not isinstance(max_audio_seconds, float)
+        or first_chunk_ms is not None
+        and not isinstance(first_chunk_ms, float)
+        or not isinstance(timing.get("total_ms"), float)
+        or not isinstance(diagnostics.get("backend"), str)
+        or not isinstance(diagnostics.get("cache_source"), str)
+        or not isinstance(diagnostics.get("generation_profile"), str)
+        or seed is not None
+        and not isinstance(seed, int)
+        or not isinstance(diagnostics.get("chunk_count"), int)
+        or not isinstance(diagnostics.get("sample_count"), int)
+    ):
+        raise TTSConfigurationError("Speech worker render result is malformed")
+    sample_rate = _required_integer(document, "sample_rate")
+    completion = _required_text(document, "completion")
+    total_ms = _required_float(timing, "total_ms")
+    backend = _required_text(diagnostics, "backend")
+    cache_source = _required_text(diagnostics, "cache_source")
+    generation_profile = _required_text(diagnostics, "generation_profile")
+    chunk_count = _required_integer(diagnostics, "chunk_count")
+    sample_count = _required_integer(diagnostics, "sample_count")
+    return {
+        "sample_rate": sample_rate,
+        "completion": completion,
+        "limits": {
+            "max_tokens": max_tokens,
+            "max_audio_seconds": max_audio_seconds,
+        },
+        "timing": {"first_chunk_ms": first_chunk_ms, "total_ms": total_ms},
+        "diagnostics": {
+            "backend": backend,
+            "cache_source": cache_source,
+            "generation_profile": generation_profile,
+            "seed": seed,
+            "chunk_count": chunk_count,
+            "sample_count": sample_count,
+        },
+    }
+
+
+def _backend_factory(value: object) -> WorkerBackendFactory:
+    if not callable(value):
+        raise TTSConfigurationError("Speech worker backend factory is malformed")
+    return value
+
+
+def _is_worker_backend(value: object) -> TypeGuard[_WorkerBackend]:
+    return (
+        hasattr(value, "registry")
+        and hasattr(value, "narrator_reference")
+        and isinstance(getattr(value, "sample_rate", None), int)
+        and callable(getattr(value, "render", None))
+        and callable(getattr(value, "prime", None))
+        and callable(getattr(value, "set_live_mode_active", None))
+    )
+
+
+def _is_worker_process(value: object) -> TypeGuard[WorkerProcess]:
+    return (
+        hasattr(value, "stdin")
+        and hasattr(value, "stdout")
+        and hasattr(value, "stderr")
+        and callable(getattr(value, "poll", None))
+        and callable(getattr(value, "wait", None))
+        and callable(getattr(value, "terminate", None))
+        and callable(getattr(value, "kill", None))
+    )
+
+
+def _write_frame(
+    stream: _WritableBinaryStream,
+    document: Mapping[str, object],
+    payload: bytes = b"",
+) -> None:
     header = json.dumps(
         {**document, "payload_bytes": len(payload)},
         ensure_ascii=False,
@@ -127,8 +442,8 @@ def _write_frame(stream, document, payload=b""):
     stream.flush()
 
 
-def _read_exact(stream, size):
-    chunks = []
+def _read_exact(stream: _ReadableBinaryStream, size: int) -> bytes | None:
+    chunks: list[bytes] = []
     remaining = size
     while remaining:
         chunk = stream.read(remaining)
@@ -139,7 +454,7 @@ def _read_exact(stream, size):
     return b"".join(chunks)
 
 
-def _read_frame(stream):
+def _read_frame(stream: _ReadableBinaryStream) -> WorkerFrame | None:
     prefix = _read_exact(stream, _FRAME_LENGTH.size)
     if prefix is None:
         return None
@@ -150,6 +465,8 @@ def _read_frame(stream):
     if header_bytes is None:
         raise EOFError("Speech worker frame header was truncated")
     document = json.loads(header_bytes.decode("utf-8"))
+    if not _is_document(document):
+        raise ValueError("Speech worker emitted an invalid frame header")
     payload_size = document.pop("payload_bytes", 0)
     if not isinstance(payload_size, int) or not 0 <= payload_size <= 512_000_000:
         raise ValueError("Speech worker emitted an invalid payload size")
@@ -159,7 +476,9 @@ def _read_frame(stream):
     return document, payload
 
 
-def _runtime_paths(backend, runtime_directory=None):
+def _runtime_paths(
+    backend: str, runtime_directory: str | Path | None = None
+) -> RuntimePaths:
     if backend not in _BACKEND_CLASSES:
         raise TTSConfigurationError(f"Unsupported isolated backend: {backend!r}")
     configured = RUNTIME_ENVIRONMENT_VARIABLES[backend]
@@ -167,14 +486,18 @@ def _runtime_paths(backend, runtime_directory=None):
     configured_root = runtime_directory or os.environ.get(configured, "")
     bundle_root = get_bundle_root() if not configured_root else None
     bundled_root = find_bundled_speech_runtime(backend) if not configured_root else None
-    default_root = (
-        None
-        if configured_root or bundled_root
-        else bundle_root / "speech-runtimes" / folder
-        if bundle_root is not None
-        else default_source_speech_runtime(backend)
-    )
-    root = Path(configured_root or bundled_root or default_root).expanduser().resolve()
+    root_value: str | Path
+    if configured_root:
+        root_value = configured_root
+    elif bundled_root is not None:
+        root_value = bundled_root
+    else:
+        root_value = (
+            bundle_root / "speech-runtimes" / folder
+            if bundle_root is not None
+            else default_source_speech_runtime(backend)
+        )
+    root = Path(root_value).expanduser().resolve()
     if sys.platform == "win32":
         interpreter = next(
             (
@@ -211,12 +534,20 @@ def _runtime_paths(backend, runtime_directory=None):
     return root, interpreter, site_packages.resolve()
 
 
-def resolve_speech_runtime_paths(backend, runtime_directory=None):
+def resolve_speech_runtime_paths(
+    backend: str, runtime_directory: str | Path | None = None
+) -> RuntimePaths:
     """Resolve one isolated backend runtime without starting its worker."""
     return _runtime_paths(backend, runtime_directory)
 
 
-def probe_speech_runtime(backend, paths, *, cancellation=None, runtime_use=None):
+def probe_speech_runtime(
+    backend: str,
+    paths: RuntimePaths,
+    *,
+    cancellation: Cancellation = None,
+    runtime_use: _RuntimeUse | None = None,
+) -> FrameDocument:
     """Use the real worker import/provenance gate without loading model weights."""
     from vntts.runtime_installation import _run
     from vntts.runtime_ownership import claim_runtime
@@ -231,7 +562,7 @@ def probe_speech_runtime(backend, paths, *, cancellation=None, runtime_use=None)
             "runtime_site": str(site),
         },
     )
-    use = runtime_use or claim_runtime(backend, root)
+    use: _RuntimeUse | None = runtime_use or claim_runtime(backend, root)
     try:
         output = _run(
             [
@@ -252,13 +583,13 @@ def probe_speech_runtime(backend, paths, *, cancellation=None, runtime_use=None)
         if runtime_use is None and use is not None:
             use.close()
     frame = _read_frame(BytesIO(output))
-    health = frame[0] if frame else {}
+    health: FrameDocument = frame[0] if frame else {}
     if (
         health.get("type") != "runtime_health"
         or health.get("backend") != backend
-        or Path(health.get("interpreter", "")).resolve() != interpreter.resolve()
-        or Path(health.get("prefix", "")).resolve() != root.resolve()
-        or Path(health.get("runtime_site", "")).resolve() != site.resolve()
+        or _document_path(health, "interpreter").resolve() != interpreter.resolve()
+        or _document_path(health, "prefix").resolve() != root.resolve()
+        or _document_path(health, "runtime_site").resolve() != site.resolve()
     ):
         raise TTSConfigurationError(
             "Speech runtime verification failed; installation was not accepted."
@@ -266,8 +597,8 @@ def probe_speech_runtime(backend, paths, *, cancellation=None, runtime_use=None)
     return health
 
 
-def _serialize_registry(registry):
-    voices = []
+def _serialize_registry(registry: CharacterVoiceRegistry) -> RegistryDocument:
+    voices: list[VoiceDocument] = []
     for voice in registry.unique_voices():
         voices.append(
             {
@@ -280,25 +611,27 @@ def _serialize_registry(registry):
                 ),
             }
         )
-    assignments = {}
-    for character, voice in registry.assignments.items():
+    assignments: dict[str, VoiceDocument | None] = {}
+    for character, assignment_voice in registry.assignments.items():
         assignments[character] = (
             None
-            if voice is None
+            if assignment_voice is None
             else {
-                "character": voice.character,
-                "speaker": voice.speaker,
-                "aliases": list(voice.aliases),
-                "references": [str(value) for value in voice.references],
+                "character": assignment_voice.character,
+                "speaker": assignment_voice.speaker,
+                "aliases": list(assignment_voice.aliases),
+                "references": [str(value) for value in assignment_voice.references],
                 "reference_root": (
-                    None if voice.reference_root is None else str(voice.reference_root)
+                    None
+                    if assignment_voice.reference_root is None
+                    else str(assignment_voice.reference_root)
                 ),
             }
         )
     return {"voices": voices, "assignments": assignments}
 
 
-def _voice_from_document(value):
+def _voice_from_document(value: VoiceDocument) -> CharacterVoice:
     references = tuple(
         Path(item).expanduser().resolve() for item in value["references"]
     )
@@ -310,14 +643,14 @@ def _voice_from_document(value):
         reference_root=(
             None
             if value.get("reference_root") is None
-            else Path(value["reference_root"]).expanduser().resolve()
+            else Path(str(value["reference_root"])).expanduser().resolve()
         ),
     )
 
 
-def _registry_from_document(document):
+def _registry_from_document(document: RegistryDocument) -> CharacterVoiceRegistry:
     registry = CharacterVoiceRegistry(
-        _voice_from_document(value) for value in document.get("voices", ())
+        [_voice_from_document(value) for value in document.get("voices", ())]
     )
     registry.assignments = {
         character: None if value is None else _voice_from_document(value)
@@ -326,17 +659,32 @@ def _registry_from_document(document):
     return registry
 
 
-def _result_document(result):
+def _result_document(result: SynthesisResult) -> SynthesisResultDocument:
     return {
         "sample_rate": result.sample_rate,
         "completion": result.completion.value,
-        "limits": asdict(result.limits),
-        "timing": asdict(result.timing),
-        "diagnostics": asdict(result.diagnostics),
+        "limits": SynthesisLimitsDocument(
+            max_tokens=result.limits.max_tokens,
+            max_audio_seconds=result.limits.max_audio_seconds,
+        ),
+        "timing": SynthesisTimingDocument(
+            first_chunk_ms=result.timing.first_chunk_ms,
+            total_ms=result.timing.total_ms,
+        ),
+        "diagnostics": SynthesisDiagnosticsDocument(
+            backend=result.diagnostics.backend,
+            cache_source=result.diagnostics.cache_source,
+            generation_profile=result.diagnostics.generation_profile,
+            seed=result.diagnostics.seed,
+            chunk_count=result.diagnostics.chunk_count,
+            sample_count=result.diagnostics.sample_count,
+        ),
     }
 
 
-def _result_from_document(document, chunks):
+def _result_from_document(
+    document: SynthesisResultDocument, chunks: Sequence[NDArray[np.float32]]
+) -> SynthesisResult:
     pcm = (
         np.concatenate(chunks, axis=0) if chunks else np.empty((0, 1), dtype=np.float32)
     )
@@ -350,12 +698,19 @@ def _result_from_document(document, chunks):
     )
 
 
-def _module_health(runtime_site, names):
+def _module_health(
+    runtime_site: str | Path, names: Sequence[str]
+) -> dict[str, dict[str, str]]:
     runtime_site = Path(runtime_site).resolve()
     modules = {}
     for name in names:
         module = importlib.import_module(name)
-        origin = Path(module.__file__).resolve()
+        module_file = getattr(module, "__file__", None)
+        if not isinstance(module_file, str):
+            raise TTSConfigurationError(
+                f"Isolated runtime loaded {name} without an import origin"
+            )
+        origin = Path(module_file).resolve()
         try:
             origin.relative_to(runtime_site)
         except ValueError as error:
@@ -369,9 +724,9 @@ def _module_health(runtime_site, names):
     return modules
 
 
-def _backend_runtime_metadata(backend):
+def _backend_runtime_metadata(backend: object) -> FrameDocument:
     device = str(getattr(backend, "device", "unknown"))
-    metadata = {
+    metadata: FrameDocument = {
         "device": device,
         "platform": platform.platform(),
         "machine": platform.machine(),
@@ -379,7 +734,7 @@ def _backend_runtime_metadata(backend):
     torch_module = getattr(backend, "torch", None)
     if device != "cuda" or torch_module is None:
         return metadata
-    accelerator = {
+    accelerator: FrameDocument = {
         "runtime": str(getattr(getattr(torch_module, "version", None), "cuda", None)),
     }
     try:
@@ -401,11 +756,11 @@ def _backend_runtime_metadata(backend):
 
 def worker_main(
     *,
-    input_stream=None,
-    output_stream=None,
-    backend_classes=None,
-    required_modules=None,
-):
+    input_stream: _ReadableBinaryStream | None = None,
+    output_stream: _WritableBinaryStream | None = None,
+    backend_classes: Mapping[str, object] | None = None,
+    required_modules: Mapping[str, Sequence[str]] | None = None,
+) -> int:
     protocol_out = output_stream or sys.stdout.buffer
     protocol_in = input_stream or sys.stdin.buffer
     backend_classes = backend_classes or _BACKEND_CLASSES
@@ -417,8 +772,8 @@ def worker_main(
         document, _payload = initialized
         if document.get("type") not in {"initialize", "runtime_probe"}:
             raise TTSConfigurationError("Speech worker expected initialization")
-        backend_name = document["backend"]
-        runtime_site = Path(document["runtime_site"]).resolve()
+        backend_name = _required_text(document, "backend")
+        runtime_site = Path(_required_text(document, "runtime_site")).resolve()
         with redirect_stdout(sys.stderr):
             modules = _module_health(runtime_site, required_modules[backend_name])
         if document["type"] == "runtime_probe":
@@ -434,13 +789,22 @@ def worker_main(
                 },
             )
             return 0
-        registry = _registry_from_document(document["registry"])
-        options = dict(document.get("options", {}))
+        registry = _registry_from_document(_registry_document(document["registry"]))
+        options = _worker_options(document.get("options"))
         for key, value in tuple(options.items()):
             if key.endswith("_directory") and value is not None:
+                if not isinstance(value, (str, Path)):
+                    raise TTSConfigurationError(
+                        f"Speech worker option {key} must be a path"
+                    )
                 options[key] = Path(value).expanduser().resolve()
         with redirect_stdout(sys.stderr):
-            backend = backend_classes[backend_name](registry, **options)
+            candidate = _backend_factory(backend_classes[backend_name])(
+                registry, **options
+            )
+        if not _is_worker_backend(candidate):
+            raise TTSConfigurationError("Speech worker backend is malformed")
+        backend = candidate
         _write_frame(
             protocol_out,
             {
@@ -464,8 +828,16 @@ def worker_main(
                 return 0
             request_id = command.get("request_id")
             try:
-                backend.registry = _registry_from_document(command["registry"])
+                backend.registry = _registry_from_document(
+                    _registry_document(command["registry"])
+                )
                 narrator_reference = command.get("narrator_reference")
+                if narrator_reference is not None and not isinstance(
+                    narrator_reference, (str, Path)
+                ):
+                    raise TTSConfigurationError(
+                        "Speech worker narrator_reference must be text or a path"
+                    )
                 if narrator_reference != backend.narrator_reference:
                     backend.narrator_reference = narrator_reference
                     for cache_name in (
@@ -478,11 +850,15 @@ def worker_main(
                             cache.pop("narrator", None)
                 if command_type == "render":
                     request = SynthesisRequest(
-                        voice=command["voice"],
-                        text=command["text"],
-                        seed=command.get("seed"),
-                        generation_profile=command["generation_profile"],
-                        cache_policy=SynthesisCachePolicy(command["cache_policy"]),
+                        voice=_required_text(command, "voice"),
+                        text=_required_text(command, "text"),
+                        seed=_optional_seed(command.get("seed")),
+                        generation_profile=_required_text(
+                            command, "generation_profile"
+                        ),
+                        cache_policy=SynthesisCachePolicy(
+                            _required_text(command, "cache_policy")
+                        ),
                     )
                     with redirect_stdout(sys.stderr):
                         rendered = backend.render(request)
@@ -510,13 +886,18 @@ def worker_main(
                     )
                 elif command_type == "prime":
                     with redirect_stdout(sys.stderr):
-                        primed = backend.prime(command["voice"])
+                        primed = backend.prime(_required_text(command, "voice"))
                     _write_frame(
                         protocol_out,
                         {"type": "primed", "request_id": request_id, "value": primed},
                     )
                 elif command_type == "set-live-mode":
-                    value = backend.set_live_mode_active(command["active"])
+                    active = command["active"]
+                    if not isinstance(active, bool):
+                        raise TTSConfigurationError(
+                            "Speech worker active must be boolean"
+                        )
+                    value = backend.set_live_mode_active(active)
                     _write_frame(
                         protocol_out,
                         {"type": "live-mode", "request_id": request_id, "value": value},
@@ -556,24 +937,24 @@ class IsolatedSpeechBackend:
 
     def __init__(
         self,
-        backend,
-        registry,
+        backend: str,
+        registry: CharacterVoiceRegistry,
         *,
-        narrator_reference=None,
-        volume=1.0,
-        audio_output=None,
-        clock=monotonic,
-        runtime_directory=None,
-        process_factory=subprocess.Popen,
-        startup_timeout=1800.0,
-        request_timeout=120.0,
-        startup_cancellation=None,
-        startup_progress=None,
-        playback_latency=None,
-        generation_profile=None,
-        allow_gated_model_access=False,
-        **worker_options,
-    ):
+        narrator_reference: str | Path | None = None,
+        volume: object = 1.0,
+        audio_output: _AudioOutput | None = None,
+        clock: Callable[[], float] = monotonic,
+        runtime_directory: str | Path | None = None,
+        process_factory: ProcessFactory = subprocess.Popen,
+        startup_timeout: float = 1800.0,
+        request_timeout: float = 120.0,
+        startup_cancellation: Cancellation = None,
+        startup_progress: StartupProgress = None,
+        playback_latency: str | None = None,
+        generation_profile: str | None = None,
+        allow_gated_model_access: bool = False,
+        **worker_options: object,
+    ) -> None:
         self.name = backend
         self.registry = registry
         self.narrator_reference = (
@@ -596,7 +977,7 @@ class IsolatedSpeechBackend:
             else "default"
         )
         self.model_name = str(worker_options.get("model_name") or backend)
-        self.audio_output = audio_output
+        self.audio_output: _AudioOutput | None = audio_output
         self.clock = clock
         self.process_factory = process_factory
         self.startup_timeout = float(startup_timeout)
@@ -606,11 +987,12 @@ class IsolatedSpeechBackend:
                 "Speech worker request timeout must be positive"
             )
         self.startup_cancellation = startup_cancellation
+        self.startup_progress = startup_progress
         self.playback_latency = playback_latency or (
             "high" if backend == "chatterbox-nano" else "low"
         )
         self.allow_gated_model_access = bool(allow_gated_model_access)
-        self.worker_options = worker_options
+        self.worker_options: WorkerOptions = worker_options
         from vntts.runtime_installation import ensure_speech_runtime
 
         self.runtime_root, self.interpreter, self.runtime_site = ensure_speech_runtime(
@@ -623,28 +1005,28 @@ class IsolatedSpeechBackend:
         self.bundle_root = get_bundle_root()
         self.worker_source_root = None if self.bundle_root else self.project_root
         self.worker_working_directory = self.bundle_root or self.project_root
-        self.process = None
-        self.health = None
-        self._messages = queue.Queue()
+        self.process: WorkerProcess | None = None
+        self.health: FrameDocument | None = None
+        self._messages: queue.Queue[WorkerMessage] = queue.Queue()
         self._send_lock = threading.Lock()
         self._request_lock = threading.Lock()
         self._playback_lock = threading.Lock()
         self._stop_requested = threading.Event()
-        self._active_stream = None
-        self._stderr = deque(maxlen=40)
-        self.last_synthesis_ms = None
-        self.last_first_audio_ms = None
-        self.last_playback_ms = None
+        self._active_stream: _AudioStream | None = None
+        self._stderr: deque[str] = deque(maxlen=40)
+        self.last_synthesis_ms: float | None = None
+        self.last_first_audio_ms: float | None = None
+        self.last_playback_ms: float | None = None
         self.last_playback_underrun = False
         self.last_generation_limited = False
-        self.last_audio_source = None
+        self.last_audio_source: str | None = None
         self._closed = False
-        self._runtime_use = None
+        self._runtime_use: _RuntimeUse | None = None
         self.set_volume(volume)
         self.set_speed(1.0)
         self._start_worker()
 
-    def _start_worker(self):
+    def _start_worker(self) -> None:
         from vntts.runtime_ownership import claim_runtime
 
         if self._runtime_use is None:
@@ -660,7 +1042,7 @@ class IsolatedSpeechBackend:
                     self._runtime_use = None
             raise
 
-    def _launch_worker(self):
+    def _launch_worker(self) -> None:
         if self._closed:
             raise TTSSynthesisError(f"{self.name} isolated worker is shut down")
         self.health = None
@@ -689,7 +1071,7 @@ class IsolatedSpeechBackend:
         if self._runtime_use is not None:
             self._runtime_use.begin_launch()
         try:
-            process = self.process_factory(
+            candidate = self.process_factory(
                 command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -702,6 +1084,9 @@ class IsolatedSpeechBackend:
             if self._runtime_use is not None:
                 self._runtime_use.launched(None)
             raise
+        if not _is_worker_process(candidate):
+            raise TTSConfigurationError("Speech worker process factory is malformed")
+        process = candidate
         self.process = process
         if self._runtime_use is not None:
             self._runtime_use.launched(process)
@@ -759,16 +1144,19 @@ class IsolatedSpeechBackend:
             raise TTSConfigurationError(
                 f"{self.name} isolated worker failed health check: {reason}"
             )
-        if Path(message["interpreter"]).resolve() != self.interpreter.resolve():
+        if (
+            Path(_required_text(message, "interpreter")).resolve()
+            != self.interpreter.resolve()
+        ):
             self._terminate_process(process)
             raise TTSConfigurationError("Speech worker used an unexpected interpreter")
-        if Path(message["prefix"]).resolve() != self.runtime_root:
+        if Path(_required_text(message, "prefix")).resolve() != self.runtime_root:
             self._terminate_process(process)
             raise TTSConfigurationError("Speech worker used an unexpected environment")
         self.health = message
-        self.sample_rate = int(message["sample_rate"])
+        self.sample_rate = _required_integer(message, "sample_rate")
 
-    def _startup_cancelled(self):
+    def _startup_cancelled(self) -> bool:
         cancellation = self.startup_cancellation
         if cancellation is None:
             return False
@@ -781,8 +1169,8 @@ class IsolatedSpeechBackend:
             "Speech worker startup cancellation must be callable or Event-like"
         )
 
-    def _json_worker_options(self):
-        values = {}
+    def _json_worker_options(self) -> WorkerOptions:
+        values: WorkerOptions = {}
         for key, value in self.worker_options.items():
             values[key] = str(value) if isinstance(value, Path) else value
         if self.name in {"moss-tts", "moss-tts-delay"}:
@@ -796,8 +1184,10 @@ class IsolatedSpeechBackend:
         )
         return values
 
-    def _read_messages(self, process):
+    def _read_messages(self, process: WorkerProcess) -> None:
         try:
+            if process.stdout is None:
+                raise TTSSynthesisError("Speech worker stdout is unavailable")
             while True:
                 frame = _read_frame(process.stdout)
                 if frame is None:
@@ -811,17 +1201,23 @@ class IsolatedSpeechBackend:
         finally:
             self._messages.put((process, {"type": "eof"}, b""))
 
-    def _read_stderr(self, process):
+    def _read_stderr(self, process: WorkerProcess) -> None:
+        if process.stderr is None:
+            return
         for line in iter(process.stderr.readline, b""):
             self._stderr.append(line.decode("utf-8", errors="replace").rstrip())
 
-    def _send(self, process, document):
+    def _send(self, process: WorkerProcess, document: Mapping[str, object]) -> None:
         if process is not self.process or process.poll() is not None:
             raise TTSSynthesisError(f"{self.name} isolated worker is not running")
+        if process.stdin is None:
+            raise TTSSynthesisError(f"{self.name} isolated worker stdin is unavailable")
         with self._send_lock:
             _write_frame(process.stdin, document)
 
-    def _next_message(self, process, *, timeout=0.1):
+    def _next_message(
+        self, process: WorkerProcess, *, timeout: float = 0.1
+    ) -> FrameDocument:
         while True:
             try:
                 owner, document, _payload = self._messages.get(timeout=timeout)
@@ -836,7 +1232,9 @@ class IsolatedSpeechBackend:
             if owner is process:
                 return document
 
-    def _next_frame(self, process, *, timeout=0.1):
+    def _next_frame(
+        self, process: WorkerProcess, *, timeout: float = 0.1
+    ) -> WorkerFrame:
         while True:
             try:
                 owner, document, payload = self._messages.get(timeout=timeout)
@@ -851,17 +1249,21 @@ class IsolatedSpeechBackend:
             if owner is process:
                 return document, payload
 
-    def _ensure_worker(self):
+    def _ensure_worker(self) -> WorkerProcess:
         if self.process is None or self.process.poll() is not None:
             self._start_worker()
+        if self.process is None:
+            raise TTSSynthesisError(f"{self.name} isolated worker is not running")
         return self.process
 
-    def render(self, request):
+    def render(self, request: SynthesisRequest) -> SynthesisChunkStream:
         if not isinstance(request, SynthesisRequest):
             raise TTSConfigurationError("Isolated backend received an invalid request")
         return SynthesisChunkStream(self._render_chunks(request))
 
-    def _render_chunks(self, request):
+    def _render_chunks(
+        self, request: SynthesisRequest
+    ) -> Generator[SynthesisChunk, None, SynthesisResult]:
         with self._request_lock:
             process = self._ensure_worker()
             request_id = uuid.uuid4().hex
@@ -883,7 +1285,7 @@ class IsolatedSpeechBackend:
                     ),
                 },
             )
-            chunks = []
+            chunks: list[NDArray[np.float32]] = []
             while True:
                 if self._stop_requested.is_set() or request.cancellation_requested():
                     self._terminate_process(process)
@@ -896,20 +1298,22 @@ class IsolatedSpeechBackend:
                     continue
                 message_type = document.get("type")
                 if message_type == "chunk":
-                    pcm = (
+                    pcm: NDArray[np.float32] = (
                         np.frombuffer(payload, dtype=np.float32)
                         .copy()
-                        .reshape(document["shape"])
+                        .reshape(_chunk_shape(document))
                     )
                     chunks.append(pcm)
                     yield SynthesisChunk(
                         pcm=pcm,
-                        sample_rate=document["sample_rate"],
-                        index=document["index"],
-                        elapsed_ms=document["elapsed_ms"],
+                        sample_rate=_required_integer(document, "sample_rate"),
+                        index=_required_integer(document, "index"),
+                        elapsed_ms=_required_float(document, "elapsed_ms"),
                     )
                 elif message_type == "result":
-                    result = _result_from_document(document["result"], chunks)
+                    result = _result_from_document(
+                        _result_document_value(document["result"]), chunks
+                    )
                     self._apply_result_metrics(result)
                     return result
                 elif message_type in {"error", "fatal", "reader-error", "eof"}:
@@ -918,7 +1322,9 @@ class IsolatedSpeechBackend:
                         or f"{self.name} isolated worker stopped during render"
                     )
 
-    def _cancelled_result(self, request, chunks):
+    def _cancelled_result(
+        self, request: SynthesisRequest, chunks: Sequence[NDArray[np.float32]]
+    ) -> SynthesisResult:
         pcm = (
             np.concatenate(chunks, axis=0)
             if chunks
@@ -940,12 +1346,12 @@ class IsolatedSpeechBackend:
             ),
         )
 
-    def _apply_result_metrics(self, result):
+    def _apply_result_metrics(self, result: SynthesisResult) -> None:
         self.last_synthesis_ms = result.timing.first_chunk_ms
         self.last_audio_source = f"{self.name}:{result.diagnostics.cache_source}"
         self.last_generation_limited = result.completion is SynthesisCompletion.LIMITED
 
-    def prepare_playback(self, character, text):
+    def prepare_playback(self, character: str, text: str) -> PreparedPlayback:
         payload = RemotePreparedSpeech(
             voice=character,
             voice_key=normalize_character_name(character) or "narrator",
@@ -955,18 +1361,27 @@ class IsolatedSpeechBackend:
         )
         return PreparedPlayback(payload, None, None, None, f"live:{self.name}")
 
-    def prepare(self, character, text):
-        return self.prepare_playback(character, text).payload
+    def prepare(self, character: str, text: str) -> RemotePreparedSpeech:
+        payload = self.prepare_playback(character, text).payload
+        if not isinstance(payload, RemotePreparedSpeech):
+            raise TTSConfigurationError("Isolated backend produced invalid playback")
+        return payload
 
-    def synthesize(self, character, text):
-        return synthesized_mono_pcm(self, character, text)
+    def synthesize(self, character: str, text: str) -> NDArray[np.float32]:
+        return np.asarray(self.render(SynthesisRequest(character, text)).collect().pcm)
 
-    def speak(self, character, text, *, playback_guard=None):
-        return self.play_prepared(
-            self.prepare_playback(character, text), playback_guard=playback_guard
-        ).successful
+    def speak(
+        self, character: str, text: str, *, playback_guard: PlaybackGuard = None
+    ) -> bool:
+        return bool(
+            self.play_prepared(
+                self.prepare_playback(character, text), playback_guard=playback_guard
+            ).successful
+        )
 
-    def play_prepared(self, prepared, *, playback_guard=None):
+    def play_prepared(
+        self, prepared: object, *, playback_guard: PlaybackGuard = None
+    ) -> PlaybackOutcome:
         if not isinstance(prepared, PreparedPlayback) or not isinstance(
             prepared.payload, RemotePreparedSpeech
         ):
@@ -989,7 +1404,7 @@ class IsolatedSpeechBackend:
                 )
             )
             underflowed = False
-            first_audio_ms = None
+            first_audio_ms: float | None = None
             interrupted = False
             try:
                 first = next(rendered)
@@ -1070,10 +1485,12 @@ class IsolatedSpeechBackend:
                 rendered.close()
                 self._active_stream = None
 
-    def prime(self, character):
-        return self._request_value("prime", voice=character)
+    def prime(self, character: str) -> bool:
+        return bool(self._request_value("prime", voice=character))
 
-    def warm_up(self, *, progress=None, text="Voice ready."):
+    def warm_up(
+        self, *, progress: WarmupProgress | None = None, text: str = "Voice ready."
+    ) -> int:
         del text
         progress = progress or (lambda _current, _total, _character: None)
         voices = sorted(
@@ -1085,7 +1502,7 @@ class IsolatedSpeechBackend:
             self.prime(character)
         return len(characters)
 
-    def _request_value(self, command_type, **values):
+    def _request_value(self, command_type: str, **values: object) -> object:
         with self._request_lock:
             self._stop_requested.clear()
             process = self._ensure_worker()
@@ -1128,16 +1545,16 @@ class IsolatedSpeechBackend:
                 if document.get("request_id") != request_id:
                     continue
                 if document.get("type") == "error":
-                    raise TTSSynthesisError(document["error"])
+                    raise TTSSynthesisError(_required_text(document, "error"))
                 return document.get("value")
 
-    def set_volume(self, volume):
+    def set_volume(self, volume: object) -> None:
         self.volume = validate_volume(volume)
 
-    def set_speed(self, speed):
+    def set_speed(self, speed: object) -> None:
         self.speed = validate_speed(speed)
 
-    def set_generation_profile(self, profile):
+    def set_generation_profile(self, profile: object) -> bool:
         profile = (
             str(profile).strip().casefold()
             if self.name in {"moss-tts", "moss-tts-delay"}
@@ -1147,12 +1564,14 @@ class IsolatedSpeechBackend:
         self.generation_profile = profile
         return changed
 
-    def set_live_mode_active(self, active):
+    def set_live_mode_active(self, active: bool) -> bool:
         if not active and (self.process is None or self.process.poll() is not None):
             return False
         return bool(self._request_value("set-live-mode", active=bool(active)))
 
-    def set_narrator_voice(self, voice, fallback=None):
+    def set_narrator_voice(
+        self, voice: CharacterVoice | None, fallback: str | Path | None = None
+    ) -> None:
         self.narrator_reference = (
             voice.references[0]
             if voice is not None and voice.references
@@ -1163,10 +1582,10 @@ class IsolatedSpeechBackend:
             else fallback
         )
 
-    def clear_runtime_cache(self):
+    def clear_runtime_cache(self) -> None:
         self._terminate_process(self.process)
 
-    def stop(self):
+    def stop(self) -> bool:
         was_active = self._active_stream is not None or self._request_lock.locked()
         self._stop_requested.set()
         stream = self._active_stream
@@ -1179,7 +1598,7 @@ class IsolatedSpeechBackend:
             self._terminate_process(self.process)
         return was_active
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         self._closed = True
         self._stop_requested.set()
         process = self.process
@@ -1200,7 +1619,7 @@ class IsolatedSpeechBackend:
                 self._runtime_use.close()
                 self._runtime_use = None
 
-    def _terminate_process(self, process):
+    def _terminate_process(self, process: WorkerProcess | None) -> None:
         if process is None:
             return
         if self.process is process:
@@ -1213,11 +1632,11 @@ class IsolatedSpeechBackend:
                 process.kill()
                 process.wait(timeout=2.0)
 
-    def _resolve_audio_output(self):
+    def _resolve_audio_output(self) -> _AudioOutput:
         self.audio_output = resolve_audio_output(self.audio_output)
         return self.audio_output
 
-    def _prepare_audio(self, audio):
+    def _prepare_audio(self, audio: object) -> NDArray[np.float32]:
         prepared = np.asarray(audio, dtype=np.float32).copy()
         np.nan_to_num(prepared, copy=False)
         prepared *= self.volume
@@ -1226,14 +1645,28 @@ class IsolatedSpeechBackend:
 
 
 class _RetainedWorkerLease:
-    def __init__(self, backend):
+    def __init__(self, backend: _RetainedBackend) -> None:
         self._backend = backend
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         return None
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> object:
         return getattr(self._backend, name)
+
+
+_isolated_backend_constructor: Callable[..., IsolatedSpeechBackend] = (
+    IsolatedSpeechBackend
+)
+
+
+def _retained_isolated_factory(
+    backend: str,
+) -> Callable[..., _RetainedBackend]:
+    def create(registry: CharacterVoiceRegistry, **options: object) -> _RetainedBackend:
+        return _isolated_backend_constructor(backend, registry, **options)
+
+    return create
 
 
 class RetainedWorkerRuntime:
@@ -1242,23 +1675,28 @@ class RetainedWorkerRuntime:
     supports_startup_cancellation = True
     supports_startup_progress = True
 
-    def __init__(self, backend, *, backend_factory=None):
+    def __init__(
+        self,
+        backend: str,
+        *,
+        backend_factory: Callable[..., _RetainedBackend] | None = None,
+    ) -> None:
         self.backend = backend
-        self.backend_factory = backend_factory or (
-            lambda registry, **options: IsolatedSpeechBackend(
-                backend, registry, **options
-            )
+        self.backend_factory: Callable[..., _RetainedBackend] = (
+            backend_factory or _retained_isolated_factory(backend)
         )
         self._lock = threading.Lock()
-        self._instance = None
-        self._identity = None
+        self._instance: _RetainedBackend | None = None
+        self._identity: str | None = None
 
-    def __call__(self, registry, **options):
+    def __call__(
+        self, registry: CharacterVoiceRegistry, **options: object
+    ) -> _RetainedWorkerLease:
         identity = self._configuration_identity(registry, options)
         with self._lock:
             instance = self._instance
-            process = getattr(instance, "process", None)
-            dead = instance is not None and hasattr(instance, "process") and (
+            process = None if instance is None else instance.process
+            dead = instance is not None and (
                 process is None or process.poll() is not None
             )
             if instance is not None and (identity != self._identity or dead):
@@ -1270,16 +1708,33 @@ class RetainedWorkerRuntime:
                 self._identity = identity
             else:
                 instance.registry = registry
-                instance.narrator_reference = options.get(
+                narrator_reference = options.get(
                     "narrator_reference", instance.narrator_reference
                 )
-                instance.startup_cancellation = options.get("startup_cancellation")
-                instance.startup_progress = options.get("startup_progress")
+                if narrator_reference is not None and not isinstance(
+                    narrator_reference, (str, Path)
+                ):
+                    raise TTSConfigurationError(
+                        "Speech worker narrator_reference must be text or a path"
+                    )
+                instance.narrator_reference = narrator_reference
+                startup_cancellation = options.get("startup_cancellation")
+                if not _is_cancellation(startup_cancellation):
+                    raise TTSConfigurationError(
+                        "Speech worker startup cancellation must be callable or Event-like"
+                    )
+                instance.startup_cancellation = startup_cancellation
+                startup_progress = options.get("startup_progress")
+                if not _is_startup_progress(startup_progress):
+                    raise TTSConfigurationError(
+                        "Speech worker startup progress is invalid"
+                    )
+                instance.startup_progress = startup_progress
                 if "volume" in options:
                     instance.set_volume(options["volume"])
         return _RetainedWorkerLease(instance)
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         with self._lock:
             instance, self._instance = self._instance, None
             self._identity = None
@@ -1287,7 +1742,9 @@ class RetainedWorkerRuntime:
             instance.shutdown()
 
     @staticmethod
-    def _configuration_identity(registry, options):
+    def _configuration_identity(
+        registry: CharacterVoiceRegistry, options: Mapping[str, object]
+    ) -> str:
         stable_options = {
             key: _worker_option_identity(value)
             for key, value in options.items()
@@ -1300,7 +1757,7 @@ class RetainedWorkerRuntime:
         )
 
 
-def _worker_option_identity(value):
+def _worker_option_identity(value: object) -> object:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, Path):
@@ -1308,25 +1765,33 @@ def _worker_option_identity(value):
     return {"object_id": id(value)}
 
 
-def create_pocket_worker_backend(registry, **options):
-    return IsolatedSpeechBackend("pocket-tts", registry, **options)
+def create_pocket_worker_backend(
+    registry: CharacterVoiceRegistry, **options: object
+) -> IsolatedSpeechBackend:
+    return _isolated_backend_constructor("pocket-tts", registry, **options)
 
 
-def create_chatterbox_worker_backend(registry, **options):
-    return IsolatedSpeechBackend("chatterbox-nano", registry, **options)
+def create_chatterbox_worker_backend(
+    registry: CharacterVoiceRegistry, **options: object
+) -> IsolatedSpeechBackend:
+    return _isolated_backend_constructor("chatterbox-nano", registry, **options)
 
 
-def create_moss_worker_backend(registry, **options):
+def create_moss_worker_backend(
+    registry: CharacterVoiceRegistry, **options: object
+) -> object:
     from vntts.moss_cpp_backend import MossCppVoiceRouterBackend, moss_cpp_requested
 
     if moss_cpp_requested(options.get("model_name")):
         options.pop("allow_gated_model_access", None)
         return MossCppVoiceRouterBackend(registry, **options)
-    return IsolatedSpeechBackend("moss-tts", registry, **options)
+    return _isolated_backend_constructor("moss-tts", registry, **options)
 
 
-def create_moss_delay_worker_backend(registry, **options):
-    return IsolatedSpeechBackend("moss-tts-delay", registry, **options)
+def create_moss_delay_worker_backend(
+    registry: CharacterVoiceRegistry, **options: object
+) -> IsolatedSpeechBackend:
+    return _isolated_backend_constructor("moss-tts-delay", registry, **options)
 
 
 for _factory in (
@@ -1335,5 +1800,5 @@ for _factory in (
     create_moss_worker_backend,
     create_moss_delay_worker_backend,
 ):
-    _factory.supports_startup_cancellation = True
-    _factory.supports_startup_progress = True
+    setattr(_factory, "supports_startup_cancellation", True)
+    setattr(_factory, "supports_startup_progress", True)

@@ -163,6 +163,7 @@ files = [
     "vntts/runtime_installation.py",
     "vntts/runtime_paths.py",
     "vntts/speech_backend_runtime.py",
+    "vntts/speech_worker.py",
     "vntts/speech_worker_messages.py",
     "vntts/settings.py",
     "vntts/subprocess_utils.py",
