@@ -18,6 +18,7 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 from vntts_artifacts.voice_manifest import VoiceManifestError, write_voice_manifest
 
 import vntts.authoring.workbench as workbench_module
+import vntts.authoring.workspace_inspection as workspace_inspection_module
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.bulk_generation import ReviewCommit, process_started_at
@@ -1556,19 +1557,19 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                     wraps=workbench_module._load_workspace,
                 ) as workspace_load,
                 patch.object(
-                    workbench_module.VoiceGenerationQueue,
+                    workspace_inspection_module.VoiceGenerationQueue,
                     "load",
-                    wraps=workbench_module.VoiceGenerationQueue.load,
+                    wraps=workspace_inspection_module.VoiceGenerationQueue.load,
                 ) as queue_load,
                 patch.object(
-                    workbench_module,
+                    workspace_inspection_module,
                     "load_generation_state",
-                    wraps=workbench_module.load_generation_state,
+                    wraps=workspace_inspection_module.load_generation_state,
                 ) as state_load,
                 patch.object(
-                    workbench_module,
+                    workspace_inspection_module,
                     "load_story_index_document",
-                    wraps=workbench_module.load_story_index_document,
+                    wraps=workspace_inspection_module.load_story_index_document,
                 ) as story_load,
             ):
                 projection = _load_workbench_projection(
