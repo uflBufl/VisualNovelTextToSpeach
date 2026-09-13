@@ -13,10 +13,11 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QToolButton,
     QVBoxLayout,
+    QWidget,
 )
 
 
-def review_form_layout(parent=None):
+def review_form_layout(parent: QWidget | None = None) -> QFormLayout:
     """Keep paired controls side by side only while their full labels fit."""
     layout = QFormLayout(parent)
     layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -24,12 +25,17 @@ def review_form_layout(parent=None):
     return layout
 
 
-def review_model_label(model):
+def review_model_label(model: str) -> str:
     """Shorten paths from either host without changing the recorded identity."""
     return PureWindowsPath(model).name or model
 
 
-def review_scroll_area(content, accessible_name, *, minimum_height=None):
+def review_scroll_area(
+    content: QWidget,
+    accessible_name: str,
+    *,
+    minimum_height: int | None = None,
+) -> QScrollArea:
     """Keep review content vertically scrollable at every display scale."""
     scroll = QScrollArea()
     scroll.setAccessibleName(accessible_name)
@@ -56,10 +62,10 @@ class ReviewDecisionContext(QGroupBox):
         ("effect", "Your decision will"),
     )
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Decision context", parent)
         self.setAccessibleName("Authoring decision context")
-        self.values = {}
+        self.values: dict[str, QLabel] = {}
         for key, label in self.FIELD_ORDER:
             value = QLabel("Unknown")
             value.setAccessibleName(label)
@@ -95,14 +101,16 @@ class ReviewDecisionContext(QGroupBox):
         layout.addWidget(self.technical)
 
     @staticmethod
-    def _summary_label(accessible_name):
+    def _summary_label(accessible_name: str) -> QLabel:
         label = QLabel()
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         label.setAccessibleName(accessible_name)
         return label
 
-    def set_context(self, values: Mapping[str, object], *, technical=""):
+    def set_context(
+        self, values: Mapping[str, object], *, technical: str = ""
+    ) -> None:
         """Update every canonical field; absent values stay explicit."""
         for key, _label in self.FIELD_ORDER:
             value = values.get(key, "Unknown")
