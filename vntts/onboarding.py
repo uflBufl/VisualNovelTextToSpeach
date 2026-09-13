@@ -169,7 +169,7 @@ class OnboardingDiagnostics:
                 "settings",
             )
         description = (
-            settings.game_window_title
+            settings.game_window_title or ""
             if settings.capture_mode == "window"
             else "Calibrated screen region"
         )
