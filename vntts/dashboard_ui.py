@@ -112,6 +112,21 @@ class ControlDashboard(QMainWindow):
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)
+        self._initialize_state(settings)
+        self._build_status_widgets()
+        self._build_detail_widgets()
+        reading_actions = self._build_action_buttons()
+        self._build_sequence_widgets()
+        transport_group = self._build_transport_group()
+        setup_group = self._build_setup_group()
+        card = self._build_dialogue_card()
+        reading_page = self._build_reading_page(card, reading_actions, transport_group)
+        stories_page = self._build_stories_page()
+        voices_page = self._build_voices_page()
+        self._build_shell(reading_page, stories_page, voices_page, setup_group)
+        self._finish_setup(settings)
+
+    def _initialize_state(self, settings):
         self.keep_running_on_close = settings.keep_running_on_close
         self._quitting = False
         self._live = False
@@ -125,6 +140,7 @@ class ControlDashboard(QMainWindow):
         self.setMinimumHeight(340)
         self.resize(860, 660)
 
+    def _build_status_widgets(self):
         self.status = QLabel("Starting...")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
@@ -194,6 +210,7 @@ class ControlDashboard(QMainWindow):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
+    def _build_detail_widgets(self):
         details = QFormLayout()
         details.addRow("Mode", self.mode)
         details.addRow("OCR confidence", self.confidence)
@@ -219,6 +236,7 @@ class ControlDashboard(QMainWindow):
         )
         self.details_toggle.toggled.connect(self._set_details_expanded)
 
+    def _build_action_buttons(self):
         self.read_button = QPushButton("Read current dialogue")
         self.live_button = QPushButton("Start reading")
         self.sequence_resync_button = QPushButton("Set story position / resync")
@@ -267,7 +285,9 @@ class ControlDashboard(QMainWindow):
         )
         self.prepare_audio_button.clicked.connect(self.pregeneration_requested.emit)
         self.loading_blocked_buttons = [self.prepare_audio_button]
+        return reading_actions
 
+    def _build_sequence_widgets(self):
         self.sequence_state = QLabel("Unavailable")
         self.story_title = QLabel("No story position yet")
         self.story_title.setWordWrap(True)
@@ -306,6 +326,7 @@ class ControlDashboard(QMainWindow):
         recovery_layout.addLayout(recovery_actions)
         self.details_layout.addWidget(self.sequence_group)
 
+    def _build_transport_group(self):
         transport_group = QGroupBox("Playback")
         transport = QHBoxLayout(transport_group)
         transport.addWidget(self.pause_button)
@@ -313,7 +334,9 @@ class ControlDashboard(QMainWindow):
         transport.addWidget(self.repeat_button)
         transport.addStretch()
         transport.addWidget(self.stop_button)
+        return transport_group
 
+    def _build_setup_group(self):
         setup_group = QWidget()
         setup = QVBoxLayout(setup_group)
         setup.setContentsMargins(0, 0, 0, 0)
@@ -357,7 +380,9 @@ class ControlDashboard(QMainWindow):
         self.setup_buttons.append(self.quit_button)
         setup.addWidget(self.setup_secondary_content)
         self.setup_more_button.toggled.connect(self._set_setup_expanded)
+        return setup_group
 
+    def _build_dialogue_card(self):
         card = QGroupBox("Current dialogue")
         card_layout = QVBoxLayout(card)
         story_context = QFormLayout()
@@ -371,7 +396,9 @@ class ControlDashboard(QMainWindow):
         current_audio.addRow("Voice", self.voice)
         current_audio.addRow("Audio", self.audio_source)
         card_layout.addLayout(current_audio)
+        return card
 
+    def _build_reading_page(self, card, reading_actions, transport_group):
         reading_content = QWidget()
         layout = QVBoxLayout(reading_content)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -422,7 +449,9 @@ class ControlDashboard(QMainWindow):
         reading_layout.addWidget(self.prepare_reading_button)
         reading_layout.addLayout(reading_actions)
         reading_layout.addWidget(transport_group)
+        return reading_page
 
+    def _build_stories_page(self):
         stories_page = QWidget()
         stories_layout = QVBoxLayout(stories_page)
         stories_title = QLabel("Prepare stories before opening the game")
@@ -446,7 +475,9 @@ class ControlDashboard(QMainWindow):
         stories_layout.addStretch()
         self.open_reading_button = QPushButton("Open reading controls")
         stories_layout.addWidget(self.open_reading_button)
+        return stories_page
 
+    def _build_voices_page(self):
         voices_page = QWidget()
         voices_layout = QVBoxLayout(voices_page)
         voices_title = QLabel("Narrator and character voices")
@@ -469,7 +500,9 @@ class ControlDashboard(QMainWindow):
         self.voice_availability.setWordWrap(True)
         voices_layout.addWidget(self.voice_availability)
         voices_layout.addStretch()
+        return voices_page
 
+    def _build_shell(self, reading_page, stories_page, voices_page, setup_group):
         self.sections = QTabWidget()
         self.sections.setAccessibleName("Main application sections")
         self.stories_stack = QStackedWidget()
@@ -502,6 +535,8 @@ class ControlDashboard(QMainWindow):
         shell_layout.addWidget(self.sections, 1)
         shell_layout.addWidget(setup_group)
         self.setCentralWidget(shell)
+
+    def _finish_setup(self, settings):
         self._set_details_expanded(False)
         self._set_setup_expanded(False)
         self.set_loading(False)
