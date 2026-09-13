@@ -5,8 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import shutil
-import tempfile
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +30,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.reconciliation_schema import (
     AuthoringReconciliationSchemaError,
@@ -420,9 +419,6 @@ def merge_terminal_conflict_resolution(
     destination = contained_workspace_path(
         root, Path(workspace_id), "Conflict merge destination"
     )
-    staging = Path(
-        tempfile.mkdtemp(prefix=".conflict-merge-staging-", dir=root)
-    ).resolve()
     base_snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
         (
@@ -431,199 +427,207 @@ def merge_terminal_conflict_resolution(
         ),
     ]
     try:
-        for tree_name in ("provenance", "inputs"):
-            copy_workspace_tree_snapshot(
-                base_directory / tree_name,
-                staging / tree_name,
-                base_snapshots,
-                error_type=AuthoringWorkbenchError,
-            )
-        queue_payload = read_workspace_file_bytes(
-            base_directory / "queue.jsonl", "terminal conflict base queue"
-        )
-        (staging / "queue.jsonl").write_bytes(queue_payload)
-        base_snapshots.append((base_directory / "queue.jsonl", base_queue_sha256))
-        output = staging / "generated-audio"
-        output.mkdir()
-        target_state = copy.deepcopy(base_state)
-        path_owners: dict[str, str] = {}
-        for queue_id, result in _generation_state_items(base_state).items():
-            if not isinstance(result, dict) or not isinstance(result.get("path"), str):
-                continue
-            relative = safe_workspace_relative_path(
-                result["path"], f"Base generation item {queue_id!r} path"
-            )
-            owner = path_owners.setdefault(relative.as_posix(), queue_id)
-            if owner != queue_id:
-                raise AuthoringWorkbenchError(
-                    f"Base generation WAV path collides with {owner!r}"
+        with staged_directory(root, prefix=".conflict-merge-staging-") as staging:
+            for tree_name in ("provenance", "inputs"):
+                copy_workspace_tree_snapshot(
+                    base_directory / tree_name,
+                    staging / tree_name,
+                    base_snapshots,
+                    error_type=AuthoringWorkbenchError,
                 )
-            source_audio_path = contained_workspace_path(
-                base_directory / "generated-audio",
-                relative,
-                "Base generation WAV",
+            queue_payload = read_workspace_file_bytes(
+                base_directory / "queue.jsonl", "terminal conflict base queue"
             )
-            payload = read_workspace_file_bytes(
-                source_audio_path, "base generation WAV"
-            )
-            digest = hashlib.sha256(payload).hexdigest()
-            if digest != require_workspace_sha256(
-                result.get("file_sha256"),
-                f"Base item {queue_id!r} WAV SHA-256",
-            ):
-                raise AuthoringWorkbenchError(
-                    f"Base generation WAV changed for {queue_id!r}"
+            (staging / "queue.jsonl").write_bytes(queue_payload)
+            base_snapshots.append((base_directory / "queue.jsonl", base_queue_sha256))
+            output = staging / "generated-audio"
+            output.mkdir()
+            target_state = copy.deepcopy(base_state)
+            path_owners: dict[str, str] = {}
+            for queue_id, result in _generation_state_items(base_state).items():
+                if not isinstance(result, dict) or not isinstance(
+                    result.get("path"), str
+                ):
+                    continue
+                relative = safe_workspace_relative_path(
+                    result["path"], f"Base generation item {queue_id!r} path"
                 )
-            target = contained_workspace_path(
-                output, relative, "Conflict merge base WAV"
-            )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(payload)
-            base_snapshots.append((source_audio_path, digest))
-        for merge_ledger in ledgers:
-            queue_id = merge_ledger["queue_id"]
-            source_item = selected_items[queue_id]
-            relative = safe_workspace_relative_path(
-                source_item["path"], f"Conflict result {queue_id!r} path"
-            )
-            previous = _generation_state_items(target_state).get(queue_id)
-            previous_path = previous.get("path") if isinstance(previous, dict) else None
-            if previous_path and previous_path != relative.as_posix():
-                previous_target = contained_workspace_path(
-                    output,
-                    safe_workspace_relative_path(
-                        previous_path, "Replaced conflict WAV"
-                    ),
-                    "Replaced conflict WAV",
-                )
-                if previous_target.is_file():
-                    previous_target.unlink()
-            conflict_owner = path_owners.get(relative.as_posix())
-            if conflict_owner not in {None, queue_id}:
-                raise AuthoringWorkbenchError(
-                    f"Terminal conflict WAV path collides with {conflict_owner!r}"
-                )
-            target = contained_workspace_path(
-                output, relative, "Resolved terminal conflict WAV"
-            )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(selected_audio[queue_id].payload)
-            copied = copy.deepcopy(source_item)
-            copied["terminal_conflict_resolution"] = {
-                key: value for key, value in merge_ledger.items() if key != "queue_id"
-            }
-            _generation_state_items(target_state)[queue_id] = copied
-        atomic_write_json(
-            output / "generation-state.json", target_state, sort_keys=True
-        )
-        workspace = copy.deepcopy(base_document)
-        workspace.update(
-            {
-                "workspace_id": workspace_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "terminal_conflict_merge": merge,
-                "config_fingerprint": config_fingerprint,
-            }
-        )
-        atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-        try:
-            write_generated_manifest_from_state(
-                target_state,
-                output,
-                output / "manifest.json",
-            )
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
-        import_snapshot = load_workspace_json(
-            staging / "provenance/import.json", "conflict merge import snapshot"
-        )
-        validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
-        try:
-            source_lease_context = generation_publication_leases(
-                (
-                    (source_directory / "generated-audio", base_queue_sha256)
-                    for source_directory in source_directories
-                ),
-                process_checker=process_is_alive,
-            )
-            with source_lease_context as held_leases:
-                for source_directory in sorted(source_directories):
-                    source_output = source_directory / "generated-audio"
-                    if any(source_output.rglob("*.partial.wav")):
-                        raise AuthoringWorkbenchError(
-                            "Terminal conflict source became active before publication"
-                        )
-                for path, digest in base_snapshots:
-                    if not path.is_file() or sha256_file(path) != digest:
-                        raise AuthoringWorkbenchError(
-                            "Terminal conflict base changed before workspace publication"
-                        )
-                for snapshot in selected_snapshots:
-                    if isinstance(snapshot, AuthoritySnapshot):
-                        assert_authority_snapshot(snapshot, "terminal conflict source")
-                    else:
-                        path, digest = snapshot
-                        if not path.is_file() or sha256_file(path) != digest:
-                            raise AuthoringWorkbenchError(
-                                "Terminal conflict source changed before workspace publication"
-                            )
-                assert_authority_snapshot(
-                    successor_snapshot, "terminal conflict successor"
-                )
-                assert_authority_snapshot(
-                    resolution_snapshot, "terminal conflict resolution"
-                )
-                assert_authority_snapshot(
-                    report_snapshot, "terminal conflict source reconciliation"
-                )
-                assert_authority_snapshot(
-                    review_snapshot, "terminal conflict source review"
-                )
-                if (
-                    assert_terminal_conflict_resolution_source_authorities(
-                        resolution_root
+                owner = path_owners.setdefault(relative.as_posix(), queue_id)
+                if owner != queue_id:
+                    raise AuthoringWorkbenchError(
+                        f"Base generation WAV path collides with {owner!r}"
                     )
-                    != resolution
+                source_audio_path = contained_workspace_path(
+                    base_directory / "generated-audio",
+                    relative,
+                    "Base generation WAV",
+                )
+                payload = read_workspace_file_bytes(
+                    source_audio_path, "base generation WAV"
+                )
+                digest = hashlib.sha256(payload).hexdigest()
+                if digest != require_workspace_sha256(
+                    result.get("file_sha256"),
+                    f"Base item {queue_id!r} WAV SHA-256",
                 ):
                     raise AuthoringWorkbenchError(
-                        "Terminal conflict sources changed before workspace publication"
+                        f"Base generation WAV changed for {queue_id!r}"
                     )
-                for lease in held_leases:
-                    lease.assert_owned()
-                if destination.exists():
-                    _directory, existing, _workspace_sha256 = load_workspace_authority(
-                        destination
+                target = contained_workspace_path(
+                    output, relative, "Conflict merge base WAV"
+                )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(payload)
+                base_snapshots.append((source_audio_path, digest))
+            for merge_ledger in ledgers:
+                queue_id = merge_ledger["queue_id"]
+                source_item = selected_items[queue_id]
+                relative = safe_workspace_relative_path(
+                    source_item["path"], f"Conflict result {queue_id!r} path"
+                )
+                previous = _generation_state_items(target_state).get(queue_id)
+                previous_path = (
+                    previous.get("path") if isinstance(previous, dict) else None
+                )
+                if previous_path and previous_path != relative.as_posix():
+                    previous_target = contained_workspace_path(
+                        output,
+                        safe_workspace_relative_path(
+                            previous_path, "Replaced conflict WAV"
+                        ),
+                        "Replaced conflict WAV",
                     )
-                    if existing.get("terminal_conflict_merge") != merge:
-                        raise AuthoringWorkbenchError(
-                            "Terminal conflict workspace conflicts with another resolution"
+                    if previous_target.is_file():
+                        previous_target.unlink()
+                conflict_owner = path_owners.get(relative.as_posix())
+                if conflict_owner not in {None, queue_id}:
+                    raise AuthoringWorkbenchError(
+                        f"Terminal conflict WAV path collides with {conflict_owner!r}"
+                    )
+                target = contained_workspace_path(
+                    output, relative, "Resolved terminal conflict WAV"
+                )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(selected_audio[queue_id].payload)
+                copied = copy.deepcopy(source_item)
+                copied["terminal_conflict_resolution"] = {
+                    key: value
+                    for key, value in merge_ledger.items()
+                    if key != "queue_id"
+                }
+                _generation_state_items(target_state)[queue_id] = copied
+            atomic_write_json(
+                output / "generation-state.json", target_state, sort_keys=True
+            )
+            workspace = copy.deepcopy(base_document)
+            workspace.update(
+                {
+                    "workspace_id": workspace_id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "terminal_conflict_merge": merge,
+                    "config_fingerprint": config_fingerprint,
+                }
+            )
+            atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+            try:
+                write_generated_manifest_from_state(
+                    target_state,
+                    output,
+                    output / "manifest.json",
+                )
+            except BulkGenerationError as error:
+                raise AuthoringWorkbenchError(str(error)) from error
+            import_snapshot = load_workspace_json(
+                staging / "provenance/import.json", "conflict merge import snapshot"
+            )
+            validate_workspace_provenance_extensions(
+                staging, workspace, import_snapshot
+            )
+            try:
+                source_lease_context = generation_publication_leases(
+                    (
+                        (source_directory / "generated-audio", base_queue_sha256)
+                        for source_directory in source_directories
+                    ),
+                    process_checker=process_is_alive,
+                )
+                with source_lease_context as held_leases:
+                    for source_directory in sorted(source_directories):
+                        source_output = source_directory / "generated-audio"
+                        if any(source_output.rglob("*.partial.wav")):
+                            raise AuthoringWorkbenchError(
+                                "Terminal conflict source became active before publication"
+                            )
+                    for path, digest in base_snapshots:
+                        if not path.is_file() or sha256_file(path) != digest:
+                            raise AuthoringWorkbenchError(
+                                "Terminal conflict base changed before workspace publication"
+                            )
+                    for snapshot in selected_snapshots:
+                        if isinstance(snapshot, AuthoritySnapshot):
+                            assert_authority_snapshot(
+                                snapshot, "terminal conflict source"
+                            )
+                        else:
+                            path, digest = snapshot
+                            if not path.is_file() or sha256_file(path) != digest:
+                                raise AuthoringWorkbenchError(
+                                    "Terminal conflict source changed before workspace publication"
+                                )
+                    assert_authority_snapshot(
+                        successor_snapshot, "terminal conflict successor"
+                    )
+                    assert_authority_snapshot(
+                        resolution_snapshot, "terminal conflict resolution"
+                    )
+                    assert_authority_snapshot(
+                        report_snapshot, "terminal conflict source reconciliation"
+                    )
+                    assert_authority_snapshot(
+                        review_snapshot, "terminal conflict source review"
+                    )
+                    if (
+                        assert_terminal_conflict_resolution_source_authorities(
+                            resolution_root
                         )
-                    return WorkspaceCreationResult(destination, False)
-                try:
-                    rename_directory_no_replace(staging, destination)
-                except (AtomicPublicationError, OSError) as error:
+                        != resolution
+                    ):
+                        raise AuthoringWorkbenchError(
+                            "Terminal conflict sources changed before workspace publication"
+                        )
+                    for lease in held_leases:
+                        lease.assert_owned()
                     if destination.exists():
                         _directory, existing, _workspace_sha256 = (
                             load_workspace_authority(destination)
                         )
-                        if existing.get("terminal_conflict_merge") == merge:
-                            for lease in held_leases:
-                                lease.mark_committed()
-                            return WorkspaceCreationResult(destination, False)
-                    raise AuthoringWorkbenchError(
-                        f"Unable to publish terminal conflict workspace: {error}"
-                    ) from error
-                for lease in held_leases:
-                    lease.mark_committed()
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(
-                f"Terminal conflict source became active before publication: {error}"
-            ) from error
+                        if existing.get("terminal_conflict_merge") != merge:
+                            raise AuthoringWorkbenchError(
+                                "Terminal conflict workspace conflicts with another resolution"
+                            )
+                        return WorkspaceCreationResult(destination, False)
+                    try:
+                        rename_directory_no_replace(staging, destination)
+                    except (AtomicPublicationError, OSError) as error:
+                        if destination.exists():
+                            _directory, existing, _workspace_sha256 = (
+                                load_workspace_authority(destination)
+                            )
+                            if existing.get("terminal_conflict_merge") == merge:
+                                for lease in held_leases:
+                                    lease.mark_committed()
+                                return WorkspaceCreationResult(destination, False)
+                        raise AuthoringWorkbenchError(
+                            f"Unable to publish terminal conflict workspace: {error}"
+                        ) from error
+                    for lease in held_leases:
+                        lease.mark_committed()
+            except BulkGenerationError as error:
+                raise AuthoringWorkbenchError(
+                    f"Terminal conflict source became active before publication: {error}"
+                ) from error
     except (AuthoringAuthorityError, OSError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
     return WorkspaceCreationResult(destination, True)
 
 

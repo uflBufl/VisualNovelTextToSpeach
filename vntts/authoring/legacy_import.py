@@ -27,6 +27,11 @@ from vntts_artifacts.voice_generation_queue import (
 
 from vntts.authoring.generation_lease import inspect_process_status
 from vntts.authoring.import_paths import default_import_root
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.workspace_foundation import load_json_object
 
 LEGACY_JOB_SCHEMA = "r1999.pregeneration-job"
@@ -183,8 +188,7 @@ def import_legacy_job(job_directory, destination_root=None):
         return _validate_existing_import(destination, plan)
     _validate_import_root_collisions(destination_root, plan)
 
-    staging = Path(tempfile.mkdtemp(prefix=f".{import_id}-", dir=destination_root))
-    try:
+    with staged_directory(destination_root, prefix=f".{import_id}-") as staging:
         for artifact in plan.artifacts:
             target = staging / artifact.destination
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -197,15 +201,11 @@ def import_legacy_job(job_directory, destination_root=None):
         atomic_write_json(staging / "import.json", manifest, sort_keys=True)
         _verify_source_controls_unchanged(plan)
         try:
-            staging.rename(destination)
-        except OSError:
+            rename_directory_no_replace(staging, destination)
+        except AtomicPublicationError, OSError:
             if destination.exists():
                 return _validate_existing_import(destination, plan)
             raise
-        staging = None
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
     return LegacyImportResult(destination, manifest, True)
 
 
@@ -238,8 +238,7 @@ def import_standalone_generation(queue_path, output_directory, destination_root=
         return _validate_existing_import(destination, plan)
     _validate_import_root_collisions(destination_root, plan)
 
-    staging = Path(tempfile.mkdtemp(prefix=f".{import_id}-", dir=destination_root))
-    try:
+    with staged_directory(destination_root, prefix=f".{import_id}-") as staging:
         for artifact in plan.artifacts:
             target = staging / artifact.destination
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -252,15 +251,11 @@ def import_standalone_generation(queue_path, output_directory, destination_root=
         atomic_write_json(staging / "import.json", manifest, sort_keys=True)
         _verify_source_controls_unchanged(plan)
         try:
-            staging.rename(destination)
-        except OSError:
+            rename_directory_no_replace(staging, destination)
+        except AtomicPublicationError, OSError:
             if destination.exists():
                 return _validate_existing_import(destination, plan)
             raise
-        staging = None
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
     return LegacyImportResult(destination, manifest, True)
 
 
