@@ -12,6 +12,9 @@ dependencies = [
 
 [tool.uv]
 package = false
+# Upstream bundles Gradio only for its demo; the isolated inference runtime
+# imports none of it.
+exclude-dependencies = ["gradio"]
 # Upstream pins NumPy 1.26.4, which has no Python 3.14 wheel. Remove this
 # override when MOSS SoundEffect publishes compatible metadata.
 override-dependencies = [
