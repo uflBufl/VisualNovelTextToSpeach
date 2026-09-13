@@ -2,17 +2,93 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from collections.abc import Callable
+from pathlib import Path
+from typing import Protocol, TypeAlias
+
+from PySide6.QtCore import Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import (
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.pregeneration_audition import VoiceAuditionError, VoiceAuditionPreviewService
-from vntts.pregeneration_voices import VoicePlan
+from vntts.pregeneration_audition import (
+    VoiceAuditionError,
+    VoiceAuditionPreviewService,
+)
+from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.speech_presentation import engine_model_label, speech_runtime_label
 from vntts.voices import default_voice_choice_id
+
+
+class _PreviewAudio(Protocol):
+    path: Path
+
+
+CandidateEntry: TypeAlias = tuple[VoiceCandidate, str, bool]
+DisplayedEntry: TypeAlias = tuple[VoiceCandidate, _PreviewAudio | None, str]
+PreviewKey: TypeAlias = tuple[str, str | None]
+PendingDecision: TypeAlias = tuple[VoiceGroup, str]
+
+
+class _VoiceDecisionRecorder(Protocol):
+    def remember_many(self, selections: tuple[PendingDecision, ...]) -> None: ...
+
+
+class _VoiceAuditionPreviewer(Protocol):
+    @property
+    def backend(self) -> object | None: ...
+
+    def generate(
+        self,
+        plan: VoicePlan,
+        group: VoiceGroup,
+        candidate_source_id: str,
+        *,
+        text: str | None = None,
+    ) -> _PreviewAudio: ...
+
+    def reference_audio(
+        self, plan: VoicePlan, group: VoiceGroup, candidate_source_id: str
+    ) -> Path | None: ...
+
+    def cancel(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class _PreviewPlayer(Protocol):
+    def stop(self) -> None: ...
+
+    def setSource(self, source: QUrl) -> None: ...
+
+    def play(self) -> None: ...
+
+
+class _EngineModelLabel(Protocol):
+    def __call__(
+        self,
+        backend: str,
+        model: str | None = None,
+        *,
+        pocket_cloning: bool = False,
+        compact: bool = False,
+    ) -> str: ...
+
+
+_preview_service_factory: Callable[[], _VoiceAuditionPreviewer] = (
+    VoiceAuditionPreviewService
+)
+_engine_model_label: _EngineModelLabel = engine_model_label
+_speech_runtime_label: Callable[[object | None], str] = speech_runtime_label
 
 
 class VoiceAuditionUIError(RuntimeError):
@@ -25,33 +101,35 @@ class VoiceAuditionPanel(QGroupBox):
 
     def __init__(
         self,
-        decisions,
+        decisions: _VoiceDecisionRecorder,
         *,
-        preview_service=None,
-        thread_pool=None,
-        player=None,
-        parent=None,
-    ):
+        preview_service: _VoiceAuditionPreviewer | None = None,
+        thread_pool: QThreadPool | None = None,
+        player: _PreviewPlayer | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__("Verify character voices", parent)
         self.decisions = decisions
         self._owns_preview_service = preview_service is None
-        self.preview_service = preview_service or VoiceAuditionPreviewService()
+        self.preview_service: _VoiceAuditionPreviewer = (
+            preview_service or _preview_service_factory()
+        )
         self.preview_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.preview_runner.finished.connect(self._preview_finished)
         self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.decision_runner.finished.connect(self._decision_finished)
-        self.player = player
-        self._plan = None
-        self._groups = ()
+        self.player: _PreviewPlayer | None = player
+        self._plan: VoicePlan | None = None
+        self._groups: tuple[VoiceGroup, ...] = ()
         self._group_index = 0
         self._candidate_offset = 0
-        self._candidate_entries = ()
-        self._previews = {}
-        self._failed_candidate_source_ids = set()
-        self._displayed = ()
-        self._sample_text = None
+        self._candidate_entries: tuple[CandidateEntry, ...] = ()
+        self._previews: dict[PreviewKey, _PreviewAudio] = {}
+        self._failed_candidate_source_ids: set[str] = set()
+        self._displayed: tuple[DisplayedEntry, ...] = ()
+        self._sample_text: str | None = None
         self._alternate_active = False
-        self._pending_decisions = []
+        self._pending_decisions: list[PendingDecision] = []
         self._save_succeeded = False
         self._cancel_requested = False
         self._terminal_emitted = False
@@ -159,22 +237,22 @@ class VoiceAuditionPanel(QGroupBox):
         self._refresh_runtime()
         self.setVisible(False)
 
-    def _refresh_runtime(self):
+    def _refresh_runtime(self) -> None:
         if self.preview_runner.active and self._shutdown_requested:
             message = "Stopping voice preview preparation..."
         elif self.preview_runner.active:
-            message = "Preparing this voice preview. " + speech_runtime_label(
-                getattr(self.preview_service, "backend", None)
+            message = "Preparing this voice preview. " + _speech_runtime_label(
+                self.preview_service.backend
             )
         else:
             message = "No preview generation. Saved previews play without TTS."
         self.runtime.setText(message)
 
     @property
-    def active(self):
-        return self.preview_runner.active or self.decision_runner.active
+    def active(self) -> bool:
+        return bool(self.preview_runner.active or self.decision_runner.active)
 
-    def start(self, plan):
+    def start(self, plan: VoicePlan) -> None:
         if not isinstance(plan, VoicePlan):
             raise VoiceAuditionUIError("Voice audition plan is invalid")
         groups = tuple(
@@ -185,10 +263,10 @@ class VoiceAuditionPanel(QGroupBox):
         if any(not group.candidates for group in groups):
             raise VoiceAuditionUIError("An unresolved voice must have a candidate")
         if self._shutdown_requested and self._owns_preview_service:
-            self.preview_service = VoiceAuditionPreviewService()
+            self.preview_service = _preview_service_factory()
         self._plan = plan
         self.engine.setText(
-            engine_model_label(
+            _engine_model_label(
                 plan.synthesis_backend,
                 plan.synthesis_model,
                 pocket_cloning=plan.pocket_voice_cloning,
@@ -208,10 +286,10 @@ class VoiceAuditionPanel(QGroupBox):
         self.setVisible(True)
         self._show_group()
 
-    def current_group(self):
+    def current_group(self) -> VoiceGroup:
         return self._groups[self._group_index]
 
-    def play_a(self):
+    def play_a(self) -> None:
         if self.preview_runner.active or self.decision_runner.active:
             return
         candidate, _choice, _narrator = self._current_entry()
@@ -227,19 +305,19 @@ class VoiceAuditionPanel(QGroupBox):
         self.status.setText("Preparing this generated preview...")
         self.preview_runner.start(
             self.preview_service.generate,
-            self._plan,
+            self._require_plan(),
             self.current_group(),
             candidate.source_id,
             text=self._sample_text,
         )
 
-    def use_a(self):
+    def use_a(self) -> None:
         if not self._displayed:
             return
         _candidate, _preview, choice = self._displayed[0]
         self._record_choice(choice)
 
-    def choose_for_me(self):
+    def choose_for_me(self) -> None:
         if self.preview_runner.active or self.decision_runner.active:
             return
         source_id = self._automatic_source_id(self.current_group())
@@ -251,10 +329,10 @@ class VoiceAuditionPanel(QGroupBox):
             return
         self._record_choice(source_id)
 
-    def choose_all_automatically(self):
+    def choose_all_automatically(self) -> None:
         if self.decision_runner.active or self._cancel_requested:
             return
-        choices = []
+        choices: list[PendingDecision] = []
         for group in self._groups[self._group_index :]:
             source_id = self._automatic_source_id(group)
             if source_id is None:
@@ -274,7 +352,7 @@ class VoiceAuditionPanel(QGroupBox):
             "VNTTS selected the recommended voice for every remaining character."
         )
 
-    def neither(self):
+    def neither(self) -> None:
         if self.preview_runner.active or self.decision_runner.active:
             return
         if len(self._candidate_entries) <= 1:
@@ -287,19 +365,25 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self._show_current_candidate()
 
-    def _automatic_source_id(self, group):
+    def _automatic_source_id(self, group: VoiceGroup) -> str | None:
         for candidate in group.candidates:
             if candidate.source_id not in self._failed_candidate_source_ids:
-                return candidate.source_id
+                source_id = candidate.source_id
+                if isinstance(source_id, str):
+                    return source_id
         narrator = group.narrator_candidate
         if (
             narrator is not None
             and narrator.source_id not in self._failed_candidate_source_ids
         ):
-            return default_voice_choice_id
+            return (
+                default_voice_choice_id
+                if isinstance(default_voice_choice_id, str)
+                else None
+            )
         return None
 
-    def try_another_phrase(self):
+    def try_another_phrase(self) -> None:
         group = self.current_group()
         if (
             self.preview_runner.active
@@ -314,7 +398,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.another_sample_button.setEnabled(False)
         self._show_current_candidate()
 
-    def cancel(self):
+    def cancel(self) -> None:
         if self._terminal_emitted:
             return
         self._cancel_requested = True
@@ -326,7 +410,7 @@ class VoiceAuditionPanel(QGroupBox):
         if not self.active:
             self._emit_cancelled()
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         self._stop_player()
         self._shutdown_requested = True
         self.runtime_timer.stop()
@@ -337,13 +421,13 @@ class VoiceAuditionPanel(QGroupBox):
         if not self.active:
             self.preview_service.close()
 
-    def _show_group(self):
+    def _show_group(self) -> None:
         self._candidate_offset = 0
         self._previews = {}
         self._displayed = ()
         self._alternate_active = False
         group = self.current_group()
-        entries = [
+        entries: list[CandidateEntry] = [
             (candidate, candidate.source_id, False) for candidate in group.candidates
         ]
         if group.narrator_candidate is not None:
@@ -367,10 +451,10 @@ class VoiceAuditionPanel(QGroupBox):
         self.choose_all_button.setEnabled(True)
         self._show_current_candidate()
 
-    def _current_entry(self):
+    def _current_entry(self) -> CandidateEntry:
         return self._candidate_entries[self._candidate_offset]
 
-    def _show_current_candidate(self):
+    def _show_current_candidate(self) -> None:
         self._stop_player()
         self._displayed = ()
         candidate, _choice, narrator = self._current_entry()
@@ -421,7 +505,9 @@ class VoiceAuditionPanel(QGroupBox):
                 else "Generate a preview before accepting this voice."
             )
 
-    def _preview_finished(self, preview, error):
+    def _preview_finished(
+        self, preview: _PreviewAudio, error: Exception | None
+    ) -> None:
         if self._shutdown_requested:
             if not self.active:
                 self.preview_service.close()
@@ -460,16 +546,16 @@ class VoiceAuditionPanel(QGroupBox):
             "Playing the generated preview. Accept this voice only if the sample is suitable."
         )
 
-    def _play_preview(self, preview):
+    def _play_preview(self, preview: _PreviewAudio) -> None:
         player = self._ensure_player()
         player.stop()
         player.setSource(QUrl.fromLocalFile(str(preview.path)))
         player.play()
 
-    def _preview_key(self, candidate):
+    def _preview_key(self, candidate: VoiceCandidate) -> PreviewKey:
         return candidate.source_id, self._sample_text
 
-    def _play_original(self):
+    def _play_original(self) -> None:
         if self._cancel_requested or self._shutdown_requested or self.active:
             return
         candidate, _choice, _narrator = self._current_entry()
@@ -478,7 +564,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_use.setEnabled(False)
         try:
             reference = self.preview_service.reference_audio(
-                self._plan, self.current_group(), candidate.source_id
+                self._require_plan(), self.current_group(), candidate.source_id
             )
         except (OSError, ValueError, VoiceAuditionError) as error:
             self.status.setText(f"Unable to play original reference: {error}")
@@ -495,7 +581,7 @@ class VoiceAuditionPanel(QGroupBox):
             f"Playing the original reference for {candidate.source_character}."
         )
 
-    def _record_choice(self, source_id, status_message=None):
+    def _record_choice(self, source_id: str, status_message: str | None = None) -> None:
         if self._group_index >= len(self._groups) or self.decision_runner.active:
             return
         self._stop_player()
@@ -506,7 +592,7 @@ class VoiceAuditionPanel(QGroupBox):
             return
         self._start_save(status_message)
 
-    def _start_save(self, status_message=None):
+    def _start_save(self, status_message: str | None = None) -> None:
         if self.decision_runner.active or not self._pending_decisions:
             return
         self.retry_save_button.setVisible(False)
@@ -523,7 +609,7 @@ class VoiceAuditionPanel(QGroupBox):
             tuple(self._pending_decisions),
         )
 
-    def _decision_finished(self, _result, error):
+    def _decision_finished(self, _result: object, error: Exception | None) -> None:
         if self._cancel_requested:
             if not self.active:
                 self._emit_cancelled()
@@ -539,7 +625,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._save_succeeded = True
         self._maybe_complete()
 
-    def _maybe_complete(self):
+    def _maybe_complete(self) -> None:
         if self._cancel_requested:
             if not self.active:
                 self._emit_cancelled()
@@ -551,7 +637,7 @@ class VoiceAuditionPanel(QGroupBox):
         self.setVisible(False)
         self.completed.emit()
 
-    def _set_decision_actions(self, enabled):
+    def _set_decision_actions(self, enabled: bool) -> None:
         enabled = bool(enabled) and not self._cancel_requested
         candidate = self._current_entry()[0] if self._candidate_entries else None
         self.a_play.setEnabled(enabled and self.a_box.isVisible())
@@ -572,7 +658,7 @@ class VoiceAuditionPanel(QGroupBox):
             and not self._alternate_active
         )
 
-    def _show_portrait(self, group):
+    def _show_portrait(self, group: VoiceGroup) -> None:
         self.portrait_image.clear()
         self.portrait_image.setVisible(False)
         if not group.portrait_image or not group.portrait_image_sha256:
@@ -595,7 +681,7 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.portrait_image.setVisible(True)
 
-    def _emit_cancelled(self):
+    def _emit_cancelled(self) -> None:
         if self._terminal_emitted:
             return
         self._terminal_emitted = True
@@ -606,14 +692,18 @@ class VoiceAuditionPanel(QGroupBox):
         self.preview_service.close()
         self.cancelled.emit()
 
-    def _ensure_player(self):
+    def _ensure_player(self) -> _PreviewPlayer:
         if self.player is None:
             self.player = QMediaPlayer(self)
         return self.player
 
-    def _stop_player(self):
+    def _stop_player(self) -> None:
         if self.player is not None:
             self.player.stop()
+
+    def _require_plan(self) -> VoicePlan:
+        assert self._plan is not None
+        return self._plan
 
 
 __all__ = ["VoiceAuditionPanel", "VoiceAuditionUIError"]
