@@ -1546,12 +1546,6 @@
     {
       "code": "C901",
       "path": "vntts/onboarding_ui.py",
-      "scope": "ConfigurationPage.__init__",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/onboarding_ui.py",
       "scope": "ConfigurationPage.validation_errors",
       "count": 1
     },
@@ -3863,12 +3857,6 @@
       "code": "PLR0915",
       "path": "vntts/ocr_review_ui.py",
       "scope": "OCRReviewDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/onboarding_ui.py",
-      "scope": "ConfigurationPage.__init__",
       "count": 1
     },
     {

@@ -67,6 +67,19 @@ def _add_composite_form_row(form, label_text, field, field_layout):
 class ConfigurationPage(QWizardPage):
     def __init__(self, settings, *, window_loader=list_windows, reading_setup=False):
         super().__init__()
+        self._initialize_state(settings, window_loader, reading_setup)
+        self._build_capture_widgets(settings)
+        self._build_speech_widgets(settings)
+        self._build_voice_manifest_widgets(settings)
+        self._build_licensing_widgets(settings)
+        recommended_form = self._build_recommended_form()
+        advanced_form = self._build_advanced_form(reading_setup, recommended_form)
+        self._build_layout(recommended_form, advanced_form)
+        self._connect_controls()
+        if reading_setup:
+            self._configure_reading_setup(settings, recommended_form, advanced_form)
+
+    def _initialize_state(self, settings, window_loader, reading_setup):
         self.reading_setup = reading_setup
         self.original_settings = settings
         self.narrator_assignments = dict(settings.voice_assignments)
@@ -82,6 +95,7 @@ class ConfigurationPage(QWizardPage):
             "Select your game and speech engine. You can prepare story voices after setup."
         )
 
+    def _build_capture_widgets(self, settings):
         self.capture_mode = QComboBox()
         self.capture_mode.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -160,6 +174,7 @@ class ConfigurationPage(QWizardPage):
         self.auto_advance_reason.setWordWrap(True)
         self.auto_advance_reason.setAccessibleName("Auto advance availability")
 
+    def _build_speech_widgets(self, settings):
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
         self.macos_hotkey_notice = QLabel(macos_hotkey_limitation)
@@ -199,6 +214,8 @@ class ConfigurationPage(QWizardPage):
         self.narrator_reference_layout.setContentsMargins(0, 0, 0, 0)
         self.narrator_reference_layout.addWidget(self.narrator_reference, 1)
         self.narrator_reference_layout.addWidget(self.narrator_reference_button)
+
+    def _build_voice_manifest_widgets(self, settings):
         self.ocr_language = QLineEdit(settings.ocr_language)
         default_voice_manifest = find_default_voice_manifest()
         self.voice_manifest = QLineEdit(
@@ -223,6 +240,8 @@ class ConfigurationPage(QWizardPage):
         self.narrator_speaker = QLineEdit(
             settings.narrator_speaker or "Claribel Dervla"
         )
+
+    def _build_licensing_widgets(self, settings):
         self.terms = QCheckBox("I agree to the non-commercial CPML terms used by XTTS")
         self.terms.setChecked(settings.xtts_terms_accepted)
         self.license_label = QLabel(
@@ -260,6 +279,8 @@ class ConfigurationPage(QWizardPage):
         self.validation_summary.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
+
+    def _build_recommended_form(self):
         recommended_form = QFormLayout()
         self.recommended_form = recommended_form
         recommended_form.setFieldGrowthPolicy(
@@ -285,7 +306,9 @@ class ConfigurationPage(QWizardPage):
         )
         self.choose_narrator_button.clicked.connect(self.choose_narrator)
         recommended_form.addRow(self.choose_narrator_button)
+        return recommended_form
 
+    def _build_advanced_form(self, reading_setup, recommended_form):
         advanced_form = QFormLayout()
         self.advanced_form = advanced_form
         advanced_form.addRow("Speech model override", self.tts_model)
@@ -333,7 +356,9 @@ class ConfigurationPage(QWizardPage):
             if sys.platform == "darwin":
                 advanced_form.removeWidget(self.macos_permissions_button)
                 recommended_form.addRow(self.macos_permissions_button)
+        return advanced_form
 
+    def _build_layout(self, recommended_form, advanced_form):
         self.advanced_content = QWidget()
         self.advanced_content.setLayout(advanced_form)
         self.advanced_toggle = QPushButton("Show advanced options")
@@ -360,6 +385,7 @@ class ConfigurationPage(QWizardPage):
         layout.addWidget(self.validation_summary)
         layout.addWidget(self.configuration_scroll, 1)
 
+    def _connect_controls(self):
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
         self.tts_model.textChanged.connect(self.update_terms_control)
         self.speech_backend.currentIndexChanged.connect(self.update_backend_controls)
@@ -370,27 +396,27 @@ class ConfigurationPage(QWizardPage):
         self._set_advanced_expanded(False)
         self.update_validation_summary()
         make_text_copyable(self)
-        if reading_setup:
-            self.setTitle("Choose the game window")
-            self.setSubTitle(
-                "Select the running game. Reading uses your selected story and voices."
-            )
-            recommended_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-            self.auto_advance.setText("Advance after speech")
-            recommended_form.setRowVisible(self.speech_backend, False)
-            advanced_form.setRowVisible(self.tts_model, False)
-            self.choose_narrator_button.setText("Change voices...")
-            self.choose_narrator_button.setAccessibleName("Change voices in Voices")
-            self.choose_narrator_button.setAccessibleDescription(
-                "Return to the shared Voices editor before setting up Reading"
-            )
-            self._set_advanced_expanded(False)
-            self.advanced_toggle.hide()
-            self.terms.setVisible(
-                settings.speech_backend == "coqui-xtts"
-                and not settings.xtts_terms_accepted
-            )
-            self.license_label.setVisible(self.terms.isVisibleTo(self))
+
+    def _configure_reading_setup(self, settings, recommended_form, advanced_form):
+        self.setTitle("Choose the game window")
+        self.setSubTitle(
+            "Select the running game. Reading uses your selected story and voices."
+        )
+        recommended_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.auto_advance.setText("Advance after speech")
+        recommended_form.setRowVisible(self.speech_backend, False)
+        advanced_form.setRowVisible(self.tts_model, False)
+        self.choose_narrator_button.setText("Change voices...")
+        self.choose_narrator_button.setAccessibleName("Change voices in Voices")
+        self.choose_narrator_button.setAccessibleDescription(
+            "Return to the shared Voices editor before setting up Reading"
+        )
+        self._set_advanced_expanded(False)
+        self.advanced_toggle.hide()
+        self.terms.setVisible(
+            settings.speech_backend == "coqui-xtts" and not settings.xtts_terms_accepted
+        )
+        self.license_label.setVisible(self.terms.isVisibleTo(self))
 
     def initializePage(self):
         if self.windows_refreshed:
