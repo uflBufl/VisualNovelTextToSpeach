@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Protocol
 
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QUrl, SignalInstance
+from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -18,10 +20,13 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.authoring.legacy_reason_review import (
+    LegacyReasonReview,
     LegacyReasonReviewError,
+    LegacyReasonReviewItem,
     build_legacy_reason_review,
     load_reason_review_progress,
     publish_reason_review_decisions,
@@ -39,25 +44,43 @@ _REASON_LABELS = {
     "other_or_unclear": "Other or unclear defect",
 }
 
+ReasonSelections = dict[str, tuple[str, ...]]
+
+
+class _AudioPlayer(Protocol):
+    errorOccurred: SignalInstance
+
+    def setSource(self, source: QUrl) -> None: ...
+
+    def play(self) -> None: ...
+
+    def stop(self) -> None: ...
+
 
 class LegacyReasonReviewDialog(QDialog):
     def __init__(
         self,
-        review,
-        progress_path,
+        review: LegacyReasonReview,
+        progress_path: str | Path,
         *,
-        player=None,
-        progress_writer=write_reason_review_progress,
-        publisher=publish_reason_review_decisions,
-        parent=None,
-    ):
+        player: _AudioPlayer | None = None,
+        progress_writer: Callable[
+            [LegacyReasonReview, str | Path, Mapping[str, tuple[str, ...]]], object
+        ] = write_reason_review_progress,
+        publisher: Callable[
+            [LegacyReasonReview, Mapping[str, tuple[str, ...]]], tuple[Path, ...]
+        ] = publish_reason_review_decisions,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.review = review
         self.progress_path = Path(progress_path)
         self.player = player or QtPcmPlayer(self)
         self.progress_writer = progress_writer
         self.publisher = publisher
-        self.selections = load_reason_review_progress(review, self.progress_path)
+        self.selections: ReasonSelections = load_reason_review_progress(
+            review, self.progress_path
+        )
         self.index = next(
             (
                 index
@@ -95,7 +118,7 @@ class LegacyReasonReviewDialog(QDialog):
         )
         self.acceptable.toggled.connect(self._acceptable_changed)
         reasons = QGridLayout()
-        self.reason_controls = {}
+        self.reason_controls: dict[str, QCheckBox] = {}
         for index, (reason, label) in enumerate(_REASON_LABELS.items()):
             control = QCheckBox(label)
             control.toggled.connect(self._reasons_changed)
@@ -125,21 +148,21 @@ class LegacyReasonReviewDialog(QDialog):
         layout.addWidget(self.status)
         layout.addLayout(actions)
 
-        QShortcut(QKeySequence("Space"), self, activated=self.play_current)
-        QShortcut(QKeySequence("Left"), self, activated=lambda: self._move(-1))
-        QShortcut(QKeySequence("Right"), self, activated=lambda: self._move(1))
+        QShortcut(QKeySequence("Space"), self, self.play_current)
+        QShortcut(QKeySequence("Left"), self, lambda: self._move(-1))
+        QShortcut(QKeySequence("Right"), self, lambda: self._move(1))
         self._show_current()
 
-    def current_item(self):
+    def current_item(self) -> LegacyReasonReviewItem:
         return self.review.items[self.index]
 
-    def play_current(self):
+    def play_current(self) -> None:
         item = self.current_item()
         self.status.setText("Playing rejected WAV...")
         self.player.setSource(QUrl.fromLocalFile(str(item.audio)))
         self.player.play()
 
-    def _reasons_changed(self, _checked=False):
+    def _reasons_changed(self, _checked: bool = False) -> None:
         if self._syncing:
             return
         reasons = tuple(
@@ -159,7 +182,7 @@ class LegacyReasonReviewDialog(QDialog):
             self.selections.pop(item.item_id, None)
         self._save_current()
 
-    def _acceptable_changed(self, checked):
+    def _acceptable_changed(self, checked: bool) -> None:
         if self._syncing:
             return
         self._syncing = True
@@ -176,7 +199,7 @@ class LegacyReasonReviewDialog(QDialog):
             self.selections.pop(item.item_id, None)
         self._save_current()
 
-    def _save_current(self):
+    def _save_current(self) -> None:
         try:
             self.progress_writer(self.review, self.progress_path, self.selections)
         except (OSError, LegacyReasonReviewError) as error:
@@ -185,12 +208,12 @@ class LegacyReasonReviewDialog(QDialog):
         self.status.setText("Saved. Choose Next or replay this WAV.")
         self._update_actions()
 
-    def _move(self, offset):
+    def _move(self, offset: int) -> None:
         self.player.stop()
         self.index = max(0, min(len(self.review.items) - 1, self.index + offset))
         self._show_current()
 
-    def _show_current(self):
+    def _show_current(self) -> None:
         item = self.current_item()
         classified = len(self.selections)
         self.progress.setText(
@@ -217,12 +240,12 @@ class LegacyReasonReviewDialog(QDialog):
         )
         self._update_actions()
 
-    def _update_actions(self):
+    def _update_actions(self) -> None:
         self.previous.setEnabled(self.index > 0)
         self.next.setEnabled(self.index + 1 < len(self.review.items))
         self.finish.setEnabled(len(self.selections) == len(self.review.items))
 
-    def publish(self):
+    def publish(self) -> None:
         try:
             paths = self.publisher(self.review, self.selections)
         except (OSError, LegacyReasonReviewError) as error:
@@ -231,17 +254,17 @@ class LegacyReasonReviewDialog(QDialog):
         self.status.setText(f"Published {len(paths)} additive cohort decisions.")
         self.accept()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.player.stop()
         super().closeEvent(event)
 
 
-def default_progress_path(corpus):
+def default_progress_path(corpus: str | Path) -> Path:
     corpus = Path(corpus).expanduser().resolve()
     return corpus.parent / f"{corpus.name}-reason-review-progress.json"
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Classify only legacy rejected WAVs that lack defect reasons"
     )
