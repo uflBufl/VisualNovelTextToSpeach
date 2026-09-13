@@ -45,6 +45,8 @@ try:
     )
 
     from vntts.authoring.workbench_ui import (
+        PROCESS_LOG_CHARACTER_LIMIT,
+        PROCESS_LOG_TRUNCATION_MARKER,
         AuthoringWorkbenchDialog,
         VoiceReferenceController,
         _load_workbench_projection,
@@ -69,6 +71,8 @@ except ModuleNotFoundError as error:
     VoiceReferenceController = None
     _load_workbench_projection = None
     _prepare_review_playback = None
+    PROCESS_LOG_CHARACTER_LIMIT = None
+    PROCESS_LOG_TRUNCATION_MARKER = None
 
 
 if AuthoringWorkbenchDialog is not None:
@@ -1982,6 +1986,34 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog._append_process_output(final=True)
 
             self.assertEqual(dialog.process_log.toPlainText(), "abcdef\n€")
+
+    def test_raw_merged_log_retains_one_bounded_utf8_tail(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            process = FakeProcess(QProcess.ProcessState.NotRunning)
+            dialog = AuthoringWorkbenchDialog(
+                workspace, settings=self.settings(root), process=process
+            )
+            process.readAllStandardOutput = Mock(
+                side_effect=[
+                    b"a" * PROCESS_LOG_CHARACTER_LIMIT,
+                    b"discarded\xe2",
+                    b"\x82\xac-tail",
+                    b"",
+                ]
+            )
+
+            for _index in range(3):
+                dialog._append_process_output()
+            dialog._append_process_output(final=True)
+
+            retained = dialog.process_log.toPlainText()
+            self.assertEqual(len(retained), PROCESS_LOG_CHARACTER_LIMIT)
+            self.assertEqual(retained.count(PROCESS_LOG_TRUNCATION_MARKER), 1)
+            self.assertTrue(retained.endswith("discarded€-tail"))
+            dialog.copy_diagnostic_text()
+            self.assertIn(retained, QApplication.clipboard().text())
 
     def test_open_and_play_revalidate_paths_at_click_time(self):
         with TemporaryDirectory() as directory:

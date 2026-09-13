@@ -85,6 +85,9 @@ from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
+PROCESS_LOG_CHARACTER_LIMIT = 64 * 1024
+PROCESS_LOG_TRUNCATION_MARKER = "... earlier process output truncated ...\n"
+
 
 class AnnouncementLabel(QLabel):
     """Visible status text that emits a native screen-reader announcement."""
@@ -2438,8 +2441,19 @@ class AuthoringWorkbenchDialog(QDialog):
         data = bytes(self.process.readAllStandardOutput())
         text = self._log_decoder.decode(data, final=final)
         if text:
-            self.process_log.moveCursor(QTextCursor.MoveOperation.End)
-            self.process_log.insertPlainText(text)
+            self._append_process_log(text)
+
+    def _append_process_log(self, text):
+        self.process_log.moveCursor(QTextCursor.MoveOperation.End)
+        self.process_log.insertPlainText(text)
+        retained = self.process_log.toPlainText()
+        if len(retained) <= PROCESS_LOG_CHARACTER_LIMIT:
+            return
+        tail_size = PROCESS_LOG_CHARACTER_LIMIT - len(PROCESS_LOG_TRUNCATION_MARKER)
+        self.process_log.setPlainText(
+            PROCESS_LOG_TRUNCATION_MARKER + retained[-tail_size:]
+        )
+        self.process_log.moveCursor(QTextCursor.MoveOperation.End)
 
     def _process_finished(self, exit_code, _exit_status):
         if self._finishing:
@@ -2485,7 +2499,7 @@ class AuthoringWorkbenchDialog(QDialog):
             if terminal
             else f"PROCESS I/O ERROR WHILE RUNNING: {error}"
         )
-        self.process_log.appendPlainText(self.process_outcome)
+        self._append_process_log(self.process_outcome + "\n")
         self.refresh()
 
     def open_output_folder(self):
