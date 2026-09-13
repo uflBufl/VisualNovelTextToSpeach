@@ -165,6 +165,7 @@ files = [
     "vntts/subprocess_utils.py",
     "vntts/synthesis.py",
     "vntts/versioned_json.py",
+    "vntts/voices.py",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true

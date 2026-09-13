@@ -35,6 +35,7 @@
     "vntts/settings.py",
     "vntts/subprocess_utils.py",
     "vntts/synthesis.py",
-    "vntts/versioned_json.py"
+    "vntts/versioned_json.py",
+    "vntts/voices.py"
   ]
 }

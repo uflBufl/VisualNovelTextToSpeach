@@ -1,10 +1,12 @@
 import os
 import stat
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
+from typing import Protocol
 
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
@@ -50,7 +52,9 @@ class VoiceChoice:
     description: str = ""
 
 
-def find_voice_assignment(assignments, character):
+def find_voice_assignment(
+    assignments: Mapping[str, str], character: str | None
+) -> str | None:
     target = normalize_character_name(synthesis_character(character))
     return next(
         (
@@ -72,7 +76,7 @@ class CharacterVoice:
     reference_root: Path | None = None
     source_character: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         references = self.references
         if not references and self.reference is not None:
             references = (self.reference,)
@@ -82,19 +86,19 @@ class CharacterVoice:
 
 
 class CharacterVoiceRegistry:
-    def __init__(self, voices=()):
-        self.voices = {}
-        self.assignments = {}
+    def __init__(self, voices: Sequence[CharacterVoice] = ()) -> None:
+        self.voices: dict[str, CharacterVoice] = {}
+        self.assignments: dict[str, CharacterVoice | None] = {}
         for voice in voices:
             self._add_name(voice.character, voice)
             for alias in voice.aliases:
                 self._add_name(alias, voice)
 
     @classmethod
-    def from_file(cls, manifest_path):
+    def from_file(cls, manifest_path: str | os.PathLike[str]) -> CharacterVoiceRegistry:
         manifest_path = Path(manifest_path).expanduser().resolve()
         manifest, entries = load_voice_manifest(manifest_path)
-        source_characters = []
+        source_characters: list[str | None] = []
         for raw in manifest["voices"]:
             source = raw.get("vntts.source_character")
             if source is not None and (
@@ -125,7 +129,7 @@ class CharacterVoiceRegistry:
         ]
         return cls(voices)
 
-    def resolve(self, character):
+    def resolve(self, character: str | None) -> CharacterVoice | None:
         normalized_name = normalize_character_name(synthesis_character(character))
         if normalized_name in self.assignments:
             voice = self.assignments[normalized_name]
@@ -135,7 +139,7 @@ class CharacterVoiceRegistry:
             _validate_voice_reference_ownership(voice)
         return voice
 
-    def resolve_source(self, source_id):
+    def resolve_source(self, source_id: str) -> CharacterVoice | None:
         if source_id == default_voice_choice_id:
             return None
         source_type, separator, value = (source_id or "").partition(":")
@@ -153,7 +157,7 @@ class CharacterVoiceRegistry:
             return voice
         raise VoiceManifestError(f"Unknown voice choice: {source_id!r}")
 
-    def set_assignment(self, character, source_id):
+    def set_assignment(self, character: str, source_id: str) -> None:
         normalized_name = normalize_character_name(character)
         if not normalized_name:
             raise VoiceManifestError("Character name is required")
@@ -161,11 +165,11 @@ class CharacterVoiceRegistry:
 
     def apply_assignments(
         self,
-        assignments,
+        assignments: Mapping[str, str],
         *,
-        warn=None,
-        preset_validator=None,
-    ):
+        warn: Callable[[str], object] | None = None,
+        preset_validator: Callable[[str], bool] | None = None,
+    ) -> None:
         warn = warn or (lambda _message: None)
         for character, source_id in assignments.items():
             if (
@@ -180,10 +184,10 @@ class CharacterVoiceRegistry:
             except VoiceManifestError as error:
                 warn(str(error))
 
-    def unique_voices(self):
+    def unique_voices(self) -> tuple[CharacterVoice, ...]:
         return tuple({id(voice): voice for voice in self.voices.values()}.values())
 
-    def choices(self):
+    def choices(self) -> tuple[VoiceChoice, ...]:
         return tuple(
             VoiceChoice(
                 f"character:{normalize_character_name(voice.character)}",
@@ -198,7 +202,9 @@ class CharacterVoiceRegistry:
             )
         )
 
-    def resolve_closest(self, character, *, minimum_similarity=0.78):
+    def resolve_closest(
+        self, character: str | None, *, minimum_similarity: float = 0.78
+    ) -> CharacterVoice | None:
         normalized_name = normalize_character_name(synthesis_character(character))
         if normalized_name in self.assignments:
             voice = self.assignments[normalized_name]
@@ -227,10 +233,11 @@ class CharacterVoiceRegistry:
                 best_voice = voice
         if best_similarity < minimum_similarity:
             return None
+        assert best_voice is not None
         _validate_voice_reference_ownership(best_voice)
         return best_voice
 
-    def _add_name(self, name, voice):
+    def _add_name(self, name: str, voice: CharacterVoice) -> None:
         normalized_name = normalize_character_name(name)
         existing_voice = self.voices.get(normalized_name)
         if existing_voice is not None and existing_voice != voice:
@@ -238,7 +245,9 @@ class CharacterVoiceRegistry:
         self.voices[normalized_name] = voice
 
 
-def _contained_manifest_reference(manifest_path, reference):
+def _contained_manifest_reference(
+    manifest_path: str | os.PathLike[str], reference: object
+) -> Path:
     if not isinstance(reference, str) or not reference.strip() or "\\" in reference:
         raise VoiceManifestError("Voice reference must be a safe POSIX-relative path")
     relative = PurePosixPath(reference.strip())
@@ -263,7 +272,7 @@ def _contained_manifest_reference(manifest_path, reference):
     return resolved
 
 
-def _validate_voice_reference_ownership(voice):
+def _validate_voice_reference_ownership(voice: CharacterVoice) -> None:
     root = voice.reference_root
     if root is None:
         return
@@ -289,7 +298,9 @@ def _validate_voice_reference_ownership(voice):
             ) from error
 
 
-def find_default_voice_manifest(project_root=None):
+def find_default_voice_manifest(
+    project_root: str | os.PathLike[str] | None = None,
+) -> Path | None:
     project_root = (
         Path(__file__).resolve().parents[1]
         if project_root is None
@@ -312,23 +323,39 @@ def find_default_voice_manifest(project_root=None):
     return manifest_path.resolve()
 
 
+class _VoiceEngine(Protocol):
+    def speak(self, text: str, **kwargs: object) -> object: ...
+
+    def synthesize(self, text: str, **kwargs: object) -> object: ...
+
+    def prepare_synthesis(self, text: str, **kwargs: object) -> object: ...
+
+    def play(self, audio: object, **kwargs: object) -> object: ...
+
+    def play_prepared(self, prepared: object, **kwargs: object) -> object: ...
+
+    def has_speaker(self, speaker: str) -> bool: ...
+
+
 class CharacterVoiceRouter:
     def __init__(
         self,
-        tts,
-        registry=None,
+        tts: _VoiceEngine,
+        registry: CharacterVoiceRegistry | None = None,
         *,
-        narrator_speaker=None,
-        narrator_voice=None,
-        force_reference_audio=False,
-    ):
+        narrator_speaker: str | None = None,
+        narrator_voice: CharacterVoice | None = None,
+        force_reference_audio: bool = False,
+    ) -> None:
         self.tts = tts
         self.registry = registry or CharacterVoiceRegistry()
         self.narrator_speaker = narrator_speaker
         self.narrator_voice = narrator_voice
         self.force_reference_audio = bool(force_reference_audio)
 
-    def speak(self, character, text, *, playback_guard=None):
+    def speak(
+        self, character: str | None, text: str, *, playback_guard: object | None = None
+    ) -> object:
         with self._speech_arguments(character) as arguments:
             if playback_guard is not None:
                 arguments["playback_guard"] = playback_guard
@@ -336,13 +363,13 @@ class CharacterVoiceRouter:
 
     def synthesize(
         self,
-        character,
-        text,
+        character: str | None,
+        text: str,
         *,
-        synthesis_options=None,
-        cache_policy="use",
-        cancellation=None,
-    ):
+        synthesis_options: object | None = None,
+        cache_policy: str = "use",
+        cancellation: object | None = None,
+    ) -> object:
         with self._speech_arguments(character) as arguments:
             return self.tts.synthesize(
                 text,
@@ -354,13 +381,13 @@ class CharacterVoiceRouter:
 
     def prepare_playback(
         self,
-        character,
-        text,
+        character: str | None,
+        text: str,
         *,
-        synthesis_options=None,
-        cache_policy="use",
-        cancellation=None,
-    ):
+        synthesis_options: object | None = None,
+        cache_policy: str = "use",
+        cancellation: object | None = None,
+    ) -> object:
         with self._speech_arguments(character) as arguments:
             return self.tts.prepare_synthesis(
                 text,
@@ -370,13 +397,20 @@ class CharacterVoiceRouter:
                 **arguments,
             )
 
-    def play(self, audio, *, playback_guard=None):
+    def play(self, audio: object, *, playback_guard: object | None = None) -> object:
         return self.tts.play(audio, playback_guard=playback_guard)
 
-    def play_prepared(self, prepared, *, playback_guard=None):
+    def play_prepared(
+        self, prepared: object, *, playback_guard: object | None = None
+    ) -> object:
         return self.tts.play_prepared(prepared, playback_guard=playback_guard)
 
-    def warm_up(self, *, progress=None, text="Voice ready."):
+    def warm_up(
+        self,
+        *,
+        progress: Callable[[int, int, str], object] | None = None,
+        text: str = "Voice ready.",
+    ) -> int:
         progress = progress or (lambda _current, _total, _character: None)
         voices = sorted(
             {id(voice): voice for voice in self.registry.voices.values()}.values(),
@@ -390,7 +424,7 @@ class CharacterVoiceRouter:
         return len(characters)
 
     @contextmanager
-    def _speech_arguments(self, character):
+    def _speech_arguments(self, character: str | None) -> Iterator[dict[str, object]]:
         voice = self.registry.resolve(character)
         if is_narrator(character) or voice is None:
             voice = self.narrator_voice
@@ -417,7 +451,9 @@ class CharacterVoiceRouter:
 
 
 @contextmanager
-def _immutable_voice_reference_snapshots(voice):
+def _immutable_voice_reference_snapshots(
+    voice: CharacterVoice,
+) -> Iterator[tuple[Path, ...]]:
     """Give a backend private bytes instead of a mutable manifest pathname."""
     if voice.reference_root is None:
         missing = [
@@ -433,7 +469,7 @@ def _immutable_voice_reference_snapshots(voice):
         for reference in voice.references
     ]
     with TemporaryDirectory(prefix="vntts-voice-reference-") as directory:
-        snapshots = []
+        snapshots: list[Path] = []
         for index, (reference, payload) in enumerate(zip(voice.references, payloads)):
             suffix = reference.suffix if reference.suffix else ".wav"
             destination = Path(directory) / f"reference-{index + 1}{suffix}"
@@ -442,7 +478,9 @@ def _immutable_voice_reference_snapshots(voice):
         yield tuple(snapshots)
 
 
-def _read_owned_voice_reference(root, reference):
+def _read_owned_voice_reference(
+    root: str | os.PathLike[str], reference: str | os.PathLike[str]
+) -> bytes:
     root = Path(root).resolve()
     reference = Path(reference)
     try:
@@ -483,7 +521,7 @@ def _read_owned_voice_reference(root, reference):
             ) from error
         if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
             raise VoiceManifestError("Voice reference changed while it was opened")
-        chunks = []
+        chunks: list[bytes] = []
         while True:
             try:
                 chunk = os.read(descriptor, 1024 * 1024)
@@ -515,10 +553,12 @@ def _read_owned_voice_reference(root, reference):
         os.close(descriptor)
 
 
-def read_voice_reference_bytes(voice, reference):
+def read_voice_reference_bytes(
+    voice: CharacterVoice, reference: str | os.PathLike[str]
+) -> bytes:
     """Read one declared reference without following or racing path links."""
 
-    def canonical_parent_path(value):
+    def canonical_parent_path(value: str | os.PathLike[str]) -> Path:
         value = Path(value).expanduser().absolute()
         return value.parent.resolve() / value.name
 
@@ -532,36 +572,38 @@ def read_voice_reference_bytes(voice, reference):
     return _read_owned_voice_reference(root, reference)
 
 
-def synthesis_character(character):
+def synthesis_character(character: str | None) -> str:
     """Return the voice identity used for live and authoring synthesis."""
     original = str(character or "Narrator").strip() or "Narrator"
     return "Narrator" if is_unattributed_speaker(original) else original
 
 
-def is_unattributed_speaker(character):
+def is_unattributed_speaker(character: str | None) -> bool:
     return str(character or "").strip() == "???"
 
 
-def synthesis_character_for_line(speaker, voice_character=None):
+def synthesis_character_for_line(
+    speaker: str | None, voice_character: str | None = None
+) -> str:
     """Resolve a line voice while giving the exact `???` speaker priority."""
     if is_unattributed_speaker(speaker):
         return "Narrator"
     return synthesis_character(voice_character or speaker)
 
 
-def is_narrator(character):
-    return normalize_character_name(synthesis_character(character)) == "narrator"
+def is_narrator(character: str | None) -> bool:
+    return str(normalize_character_name(synthesis_character(character))) == "narrator"
 
 
 def resolve_required_voice_reference(
-    registry,
-    character,
-    narrator_reference,
+    registry: CharacterVoiceRegistry,
+    character: str | None,
+    narrator_reference: str | os.PathLike[str] | None,
     *,
-    backend_name,
-    missing_message,
-    error_type=ValueError,
-):
+    backend_name: str,
+    missing_message: str,
+    error_type: type[Exception] = ValueError,
+) -> tuple[str, Path]:
     """Resolve one narrator/character reference required by a cloning backend."""
     voice = registry.resolve(character)
     if is_narrator(character) or voice is None:
