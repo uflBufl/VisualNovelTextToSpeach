@@ -88,6 +88,7 @@ from vntts.authoring.workbench_contracts import (
     _WorkbenchProjectionRead,
 )
 from vntts.authoring.workspace_authority import (
+    WorkspaceDocument,
     _load_bound_workspace_queue,
     _load_json,
     _load_json_snapshot,
@@ -1167,7 +1168,9 @@ def _immutable_history_timestamps_from_read(
     if not isinstance(source, Mapping):
         raise AuthoringWorkbenchError("Workspace source is malformed")
     snapshot_name = _required_text(source.get("snapshot"), "Workspace import snapshot")
-    import_sha256 = _required_text(source.get("import_sha256"), "Workspace import SHA-256")
+    import_sha256 = _required_text(
+        source.get("import_sha256"), "Workspace import SHA-256"
+    )
     snapshot, snapshot_sha256, _payload = _load_json_snapshot(
         directory / snapshot_name,
         "workspace import snapshot",
@@ -1614,7 +1617,7 @@ def generation_control_bindings(
 ) -> dict[Path, str]:
     directory, workspace = _load_workspace(workspace_directory)
     selected_manifest = _selected_voice_manifest(directory, workspace)
-    _validate_generation_paths(
+    selected_manifest = _validate_generation_paths(
         directory,
         queue=queue,
         output=output,
@@ -1650,7 +1653,7 @@ def _validate_generation_paths(
     output: str | Path,
     voice_manifest: str | Path,
     selected_manifest: Path | None,
-) -> None:
+) -> Path:
     if Path(queue).expanduser().resolve() != (directory / "queue.jsonl").resolve():
         raise AuthoringWorkbenchError("Generation queue differs from workspace config")
     if Path(output).expanduser().resolve() != (directory / "generated-audio").resolve():
@@ -1661,6 +1664,7 @@ def _validate_generation_paths(
         raise AuthoringWorkbenchError(
             "Generation voice manifest differs from workspace config"
         )
+    return selected_manifest
 
 
 def _missing_voice_policy(value: object) -> MissingVoicePolicy:
@@ -1732,9 +1736,7 @@ def generation_output_identity(workspace_directory: str | Path) -> dict[str, str
     }
 
 
-def _active_attempt(
-    value: object, eligible_ids: set[str]
-) -> ActiveAttempt | None:
+def _active_attempt(value: object, eligible_ids: set[str]) -> ActiveAttempt | None:
     if not isinstance(value, dict) or value.get("queue_id") not in eligible_ids:
         return None
     return ActiveAttempt(
@@ -1855,7 +1857,7 @@ def _unleased_runtime_status(
 
 
 def _voice_readiness(
-    workspace: Mapping[str, object],
+    workspace: WorkspaceDocument,
     spoken: Iterable[VoiceGenerationQueueItem],
     completed_ids: set[str],
     manifest_path: str | Path | None,
@@ -1913,7 +1915,7 @@ def _load_voice_routing(
 
 def _extend_voice_routing(
     directory: Path,
-    workspace: Mapping[str, object],
+    workspace: WorkspaceDocument,
     registry: CharacterVoiceRegistry,
     queue_overrides: dict[str, str],
 ) -> tuple[CharacterVoiceRegistry, dict[str, str]]:
@@ -1950,7 +1952,7 @@ def inspect_voice_readiness(
 ) -> tuple[set[str], tuple[str, ...]]:
     """Project exact missing-voice IDs through the workbench policy."""
     return _voice_readiness(
-        workspace,
+        dict(workspace),
         spoken,
         completed_ids,
         manifest_path,
