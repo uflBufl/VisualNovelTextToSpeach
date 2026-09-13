@@ -257,7 +257,7 @@ class GenerationLease:
         _error: BaseException | None,
         _traceback: TracebackType | None,
     ) -> None:
-        ownership_error: BulkGenerationError | None = None
+        ownership_error: BulkGenerationError | AdvisoryLockBusyError | None = None
         try:
             with exclusive_advisory_lock(
                 self.path.with_suffix(".guard"), blocking=True
