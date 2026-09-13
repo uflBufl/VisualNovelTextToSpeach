@@ -1,13 +1,17 @@
 """Guided game narrator discovery, reference listening and synthesis preview."""
 
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 from traceback import format_exception
+from typing import Protocol, TypeGuard, runtime_checkable
 
-from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QSignalBlocker, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtGui import QCloseEvent, QPixmap
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -31,17 +35,23 @@ from vntts.async_ui import LatestTaskRunner
 from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
 from vntts.game_narrator import (
+    OriginalReference,
     bind_game_narrator,
     load_original_reference,
     narrator_preview_plan,
 )
-from vntts.pregeneration_audition import VoiceAuditionPreviewService
+from vntts.pregeneration_audition import (
+    VoiceAuditionPreview,
+    VoiceAuditionPreviewService,
+)
 from vntts.pregeneration_voices import (
+    VoicePlan,
     pregeneration_narrator_source_id,
     resolve_pregeneration_settings,
 )
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
+from vntts.settings import AppSettings
 from vntts.speech_presentation import (
     compact_runtime_label,
     engine_model_label,
@@ -50,7 +60,7 @@ from vntts.speech_presentation import (
 )
 from vntts.tts_benchmark import create_backend
 from vntts.ui_text import copy_text_button, make_text_copyable
-from vntts.voice_default_impact import inspect_voice_default_impact
+from vntts.voice_default_impact import StoryVoiceImpact, inspect_voice_default_impact
 from vntts.voices import (
     CharacterVoiceRegistry,
     find_default_voice_manifest,
@@ -60,6 +70,36 @@ from vntts.voices import (
     pocket_tts_preset_voices,
 )
 
+Binder = Callable[..., AppSettings]
+ImpactContext = tuple[object, object, object]
+
+
+def _is_story_voice_impact(
+    result: object,
+) -> TypeGuard[tuple[StoryVoiceImpact, ...]]:
+    return isinstance(result, tuple) and all(
+        isinstance(value, StoryVoiceImpact) for value in result
+    )
+
+
+@runtime_checkable
+class _NarratorReference(Protocol):
+    collection_title: str | None
+    line_id: str
+    text: str
+
+
+def _is_string_tuple(value: object) -> TypeGuard[tuple[str, ...]]:
+    return isinstance(value, tuple) and all(isinstance(item, str) for item in value)
+
+
+def _is_narrator_references(
+    value: object,
+) -> TypeGuard[tuple[_NarratorReference, ...]]:
+    return isinstance(value, tuple) and all(
+        isinstance(item, _NarratorReference) for item in value
+    )
+
 
 class GameNarratorDialog(QDialog):
     impactContextRequested = Signal()
@@ -68,15 +108,15 @@ class GameNarratorDialog(QDialog):
 
     def __init__(
         self,
-        settings,
-        parent=None,
+        settings: AppSettings,
+        parent: QWidget | None = None,
         *,
-        importer=None,
-        preview_service=None,
-        thread_pool=None,
-        player=None,
-        binder=bind_game_narrator,
-    ):
+        importer: Reverse1999GameImporter | None = None,
+        preview_service: VoiceAuditionPreviewService | None = None,
+        thread_pool: QThreadPool | None = None,
+        player: QtPcmPlayer | None = None,
+        binder: Binder = bind_game_narrator,
+    ) -> None:
         super().__init__(parent)
         self._initialize_state(
             settings, importer, preview_service, binder, player, thread_pool
@@ -92,14 +132,20 @@ class GameNarratorDialog(QDialog):
         self._finish_setup()
 
     def _initialize_state(
-        self, settings, importer, preview_service, binder, player, thread_pool
-    ):
+        self,
+        settings: AppSettings,
+        importer: Reverse1999GameImporter | None,
+        preview_service: VoiceAuditionPreviewService | None,
+        binder: Binder,
+        player: QtPcmPlayer | None,
+        thread_pool: QThreadPool | None,
+    ) -> None:
         self.setWindowTitle("Narrator and character voices")
         self.resize(640, 560)
         self.settings_value = resolve_pregeneration_settings(settings)
         self._initial_settings_value = self.settings_value
         self._settings_dirty = False
-        self.result_settings = None
+        self.result_settings: AppSettings | None = None
         self.importer = importer or Reverse1999GameImporter()
         self.previews = preview_service or VoiceAuditionPreviewService(
             backend_factory=partial(
@@ -112,11 +158,11 @@ class GameNarratorDialog(QDialog):
         self.runner.finished.connect(self._finished)
         self.cancellation = Event()
         self.decoderProgress.connect(self._decoder_progress)
-        self._prepared = {}
-        self._character = None
-        self._operation = None
-        self._warming_reference = None
-        self._queued_action = None
+        self._prepared: dict[str, Path] = {}
+        self._character: str | None = None
+        self._operation: str | None = None
+        self._warming_reference: str | None = None
+        self._queued_action: str | None = None
         self._playback_requested = False
         self._closing = False
         self._closed = False
@@ -125,17 +171,17 @@ class GameNarratorDialog(QDialog):
             settings.voice_manifest or find_default_voice_manifest()
         )
         self._catalog_registry = CharacterVoiceRegistry()
-        self._voice_context = None
-        self._story_titles = ()
+        self._voice_context: VoicePlan | None = None
+        self._story_titles: tuple[str, ...] = ()
         self._saving_role = "Narrator"
-        self._impact_context = None
+        self._impact_context: ImpactContext | None = None
         self._loading_impact_context = False
-        self._impact_results = None
+        self._impact_results: tuple[StoryVoiceImpact, ...] | None = None
         self._impact_details = ""
         self._game_reference_dirty = False
         self.select_affected_after_save = False
 
-    def _build_status_and_engine_controls(self, settings):
+    def _build_status_and_engine_controls(self, settings: AppSettings) -> QHBoxLayout:
         self.status = QLabel("Choose a candidate. Nothing changes until you save.")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
@@ -195,7 +241,7 @@ class GameNarratorDialog(QDialog):
         form.addRow("Current voice", self.role_summary)
         return model_summary
 
-    def _build_voice_source_controls(self, settings):
+    def _build_voice_source_controls(self, settings: AppSettings) -> None:
         form = self.form
         self.portrait = QLabel()
         self.portrait.setAccessibleName("Selected character portrait")
@@ -225,7 +271,7 @@ class GameNarratorDialog(QDialog):
         self.catalog_choice.currentIndexChanged.connect(lambda: self._stop_audio())
         form.addRow("Candidate", self.catalog_choice)
 
-    def _build_game_reference_controls(self, settings):
+    def _build_game_reference_controls(self, settings: AppSettings) -> None:
         form = self.form
         self.game_controls = QWidget()
         game_form = QFormLayout(self.game_controls)
@@ -275,7 +321,7 @@ class GameNarratorDialog(QDialog):
         separator.setFrameShape(QFrame.Shape.HLine)
         form.addRow(separator)
 
-    def _build_preview_controls(self, model_summary):
+    def _build_preview_controls(self, model_summary: QHBoxLayout) -> None:
         form = self.form
         self.text = QLineEdit("The storm has passed. We can continue our journey.")
         form.addRow("Preview text", self.text)
@@ -296,7 +342,7 @@ class GameNarratorDialog(QDialog):
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.reject)
 
-    def _build_dialog_layout(self):
+    def _build_dialog_layout(self) -> QVBoxLayout:
         layout = QVBoxLayout(self)
         status_layout = QHBoxLayout()
         status_layout.addWidget(self.status)
@@ -324,7 +370,7 @@ class GameNarratorDialog(QDialog):
         layout.addLayout(transport)
         return layout
 
-    def _build_impact_controls(self, settings):
+    def _build_impact_controls(self, settings: AppSettings) -> None:
         form = self.form
         note = QLabel(
             "Defaults apply to future preparation and live fallback.\n\n"
@@ -366,13 +412,13 @@ class GameNarratorDialog(QDialog):
         )
         form.addRow("Speaker names", self.announcements)
 
-    def _build_actions(self, layout):
+    def _build_actions(self, layout: QVBoxLayout) -> None:
         actions = QHBoxLayout()
         actions.addWidget(self.cancel_button)
         actions.addWidget(self.save_button)
         layout.addLayout(actions)
 
-    def _connect_controls(self):
+    def _connect_controls(self) -> None:
         self.player.errorOccurred.connect(
             lambda _code, message: self.status.setText(f"Playback failed: {message}")
         )
@@ -388,7 +434,7 @@ class GameNarratorDialog(QDialog):
         self.model_choice.textChanged.connect(self._model_changed)
         self.role.currentTextChanged.connect(self._role_changed)
 
-    def _finish_setup(self):
+    def _finish_setup(self) -> None:
         self._initializing = True
         self.set_voice_context()
         self._initializing = False
@@ -404,19 +450,19 @@ class GameNarratorDialog(QDialog):
 
     def set_voice_context(
         self,
-        plan=None,
-        character=None,
+        plan: VoicePlan | None = None,
+        character: str | None = None,
         *,
-        roles=(),
-        story_titles=(),
-        impact_context=None,
-    ):
+        roles: Sequence[str] = (),
+        story_titles: Sequence[str] = (),
+        impact_context: ImpactContext | None = None,
+    ) -> None:
         """Use imported metadata without starting the reading engine."""
         if self.runner.active:
             return
         self._voice_context = plan
         self._impact_context = impact_context
-        self._story_titles = story_titles
+        self._story_titles = tuple(story_titles)
         if plan is not None and plan.voice_manifest:
             self._catalog_manifest = plan.voice_manifest
         try:
@@ -437,7 +483,7 @@ class GameNarratorDialog(QDialog):
                 voice.source_character or voice.character,
                 f"character:{normalize_character_name(voice.character)}",
             )
-        roles = {
+        available_roles = {
             *roles,
             *self.settings_value.voice_assignments,
             *self.settings_value.character_voice_defaults,
@@ -455,7 +501,7 @@ class GameNarratorDialog(QDialog):
                 [
                     "Narrator",
                     *sorted(
-                        (role for role in roles if not is_narrator(role)),
+                        (role for role in available_roles if not is_narrator(role)),
                         key=str.casefold,
                     ),
                 ]
@@ -463,13 +509,15 @@ class GameNarratorDialog(QDialog):
             self.role.setCurrentText(selected)
         self._role_changed()
 
-    def set_story_impact_context(self, content, jobs, decisions):
+    def set_story_impact_context(
+        self, content: object, jobs: object, decisions: object
+    ) -> None:
         self._loading_impact_context = False
         self._impact_context = (content, jobs, decisions)
         self._clear_impact()
         self._update()
 
-    def _role_changed(self):
+    def _role_changed(self) -> None:
         self._stop_audio()
         self._game_reference_dirty = False
         role = self.role.currentText().strip()
@@ -574,7 +622,7 @@ class GameNarratorDialog(QDialog):
         self._source_changed()
         self._settings_choice_changed()
 
-    def _source_label(self, source_id):
+    def _source_label(self, source_id: str | None) -> str:
         if source_id is None:
             return "automatic assignment"
         if source_id == "default":
@@ -588,19 +636,21 @@ class GameNarratorDialog(QDialog):
             else "unavailable saved voice"
         )
 
-    def _engine_details(self):
+    def _engine_details(self) -> str:
         settings = self._settings()
         return (
-            engine_model_label(
-                settings.speech_backend,
-                settings.tts_model,
-                pocket_cloning=settings.pocket_gated_model_accepted,
+            str(
+                engine_model_label(
+                    settings.speech_backend,
+                    settings.tts_model,
+                    pocket_cloning=settings.pocket_gated_model_accepted,
+                )
             )
             + f"\nBackend ID: {settings.speech_backend}"
             + f"\nConfigured model: {settings.tts_model or '(default)'}"
         )
 
-    def _voice_details(self):
+    def _voice_details(self) -> str:
         role = self.role.currentText().strip() or "Narrator"
         source_id = (
             self.presets.currentData()
@@ -616,13 +666,13 @@ class GameNarratorDialog(QDialog):
             f"Candidate source: {source_id or '(none)'}"
         )
 
-    def _reference_copy_text(self):
+    def _reference_copy_text(self) -> str:
         asset = self.references.currentText()
         source_id = self.references.currentData() or "(none)"
         transcript = self.reference_text.text() or "Transcript unavailable."
         return f"{asset}\nSource ID: {source_id}\nTranscript: {transcript}"
 
-    def _playback_copy_text(self):
+    def _playback_copy_text(self) -> str:
         return "\n".join(
             value
             for value in (
@@ -632,14 +682,14 @@ class GameNarratorDialog(QDialog):
             if value
         )
 
-    def _impact_copy_text(self):
+    def _impact_copy_text(self) -> str:
         return "\n\n".join(
             value
             for value in (self.impact_status.text(), self._impact_details)
             if value
         )
 
-    def _copy_details(self):
+    def _copy_details(self) -> str:
         return "\n\n".join(
             value
             for value in (
@@ -654,7 +704,7 @@ class GameNarratorDialog(QDialog):
             if value
         )
 
-    def _reference_choice_changed(self, *_args):
+    def _reference_choice_changed(self, *_args: object) -> None:
         if self._initializing or self._closing or self._closed:
             return
         # Initial population is signal-blocked. A later selection changes what Save
@@ -662,7 +712,7 @@ class GameNarratorDialog(QDialog):
         self._game_reference_dirty = bool(self.references.currentData())
         self._settings_choice_changed()
 
-    def _settings_choice_changed(self, *_args):
+    def _settings_choice_changed(self, *_args: object) -> None:
         if self._initializing or self._closing or self._closed:
             return
         current = self._settings()
@@ -701,11 +751,11 @@ class GameNarratorDialog(QDialog):
             self._settings_dirty = changed
             self.settingsChanged.emit(changed)
 
-    def _engine_available(self):
+    def _engine_available(self) -> bool:
         item = self.engine_choice.model().item(self.engine_choice.currentIndex())
         return item is not None and item.isEnabled()
 
-    def _engine_changed(self):
+    def _engine_changed(self) -> None:
         if (
             self.runner.active
             or self._closing
@@ -729,7 +779,7 @@ class GameNarratorDialog(QDialog):
         self._source_changed()
         self._settings_choice_changed()
 
-    def _model_changed(self, model):
+    def _model_changed(self, model: str) -> None:
         if self.runner.active or self._closing or self._closed:
             blocker = QSignalBlocker(self.model_choice)
             self.model_choice.setText(self.settings_value.tts_model or "")
@@ -743,7 +793,7 @@ class GameNarratorDialog(QDialog):
         self._update()
         self._settings_choice_changed()
 
-    def _source_changed(self):
+    def _source_changed(self) -> None:
         if self._closing or self._closed:
             return
         self._stop_audio()
@@ -778,14 +828,14 @@ class GameNarratorDialog(QDialog):
         ):
             self.discover()
 
-    def _settings(self):
+    def _settings(self) -> AppSettings:
         return self.settings_value.updated(
             pocket_gated_model_accepted=self.consent.isChecked(),
             speaker_announcement_mode=self.announcements.currentData(),
             announce_speaker_changes=False,
         )
 
-    def _update(self):
+    def _update(self) -> None:
         self._refresh_runtime()
         settings = self._settings()
         pocket = settings.speech_backend == "pocket-tts"
@@ -881,7 +931,7 @@ class GameNarratorDialog(QDialog):
         )
         self.select_affected.setEnabled(idle and self.save_button.isEnabled())
 
-    def _clear_impact(self, *_args):
+    def _clear_impact(self, *_args: object) -> None:
         self._impact_results = None
         self._impact_details = ""
         self.select_affected_after_save = False
@@ -893,7 +943,7 @@ class GameNarratorDialog(QDialog):
         )
         self.impact_status.setToolTip("")
 
-    def _check_impact(self):
+    def _check_impact(self) -> None:
         if not self.check_impact.isEnabled():
             return
         if self._impact_context is None:
@@ -930,7 +980,16 @@ class GameNarratorDialog(QDialog):
             character,
         )
 
-    def _perform_impact(self, settings, proposed, manifest, source_id, character):
+    def _perform_impact(
+        self,
+        settings: AppSettings,
+        proposed: AppSettings | None,
+        manifest: Path | str | None,
+        source_id: str | None,
+        character: str | None,
+    ) -> tuple[StoryVoiceImpact, ...]:
+        if self._impact_context is None:
+            raise RuntimeError("Prepared-story context is unavailable")
         content, jobs, decisions = self._impact_context
         with TemporaryDirectory(prefix="vntts-voice-choice-") as temporary:
             if proposed is None:
@@ -944,7 +1003,7 @@ class GameNarratorDialog(QDialog):
                 proposed = self._bind_selected_voice(
                     settings, manifest, source_id, character, root=temporary
                 )
-            return inspect_voice_default_impact(
+            results = inspect_voice_default_impact(
                 content,
                 jobs,
                 decisions,
@@ -953,8 +1012,11 @@ class GameNarratorDialog(QDialog):
                 self._saving_role,
                 cancellation=self.cancellation,
             )
+            if not _is_story_voice_impact(results):
+                raise TypeError("Voice-impact service returned an invalid result")
+            return results
 
-    def _show_impact(self, results):
+    def _show_impact(self, results: tuple[StoryVoiceImpact, ...]) -> None:
         self._impact_results = results
         affected = [value for value in results if value.changed_line_ids]
         lines = sum(len(value.changed_line_ids) for value in affected)
@@ -982,7 +1044,7 @@ class GameNarratorDialog(QDialog):
         self.impact_status.setToolTip(self._impact_details)
         self.select_affected.setVisible(bool(affected))
 
-    def _save_and_select_affected(self):
+    def _save_and_select_affected(self) -> None:
         if self._impact_results is None or not any(
             value.changed_line_ids for value in self._impact_results
         ):
@@ -990,7 +1052,7 @@ class GameNarratorDialog(QDialog):
         self.select_affected_after_save = True
         self._save()
 
-    def _refresh_runtime(self):
+    def _refresh_runtime(self) -> None:
         if self._operation == "preview":
             message = (
                 "Saved preview: no generation for this playback."
@@ -1003,7 +1065,13 @@ class GameNarratorDialog(QDialog):
         self.runtime.setToolTip(message)
         self.runtime.setVisible(self._operation == "preview")
 
-    def _start(self, operation, message, function, *arguments):
+    def _start(
+        self,
+        operation: str,
+        message: str,
+        function: Callable[..., object],
+        *arguments: object,
+    ) -> None:
         if self.runner.active:
             return
         self.player.stop()
@@ -1017,7 +1085,7 @@ class GameNarratorDialog(QDialog):
         self.runner.start(function, *arguments)
         self._update()
 
-    def discover(self, installation_root=None):
+    def discover(self, installation_root: Path | None = None) -> None:
         if self.runner.active or self._closing:
             return
         self.characters.clear()
@@ -1029,14 +1097,14 @@ class GameNarratorDialog(QDialog):
             installation_root,
         )
 
-    def _choose_folder(self):
+    def _choose_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(
             self, "Choose installed Reverse: 1999 folder"
         )
         if path:
             self.discover(Path(path))
 
-    def _character_changed(self):
+    def _character_changed(self) -> None:
         self.player.stop()
         self._prepared.clear()
         self.references.clear()
@@ -1045,7 +1113,7 @@ class GameNarratorDialog(QDialog):
         self._update()
         self._settings_choice_changed()
 
-    def _prepare(self):
+    def _prepare(self) -> None:
         self._character = self.characters.currentText()
         self._prepared.clear()
         self.references.clear()
@@ -1056,7 +1124,7 @@ class GameNarratorDialog(QDialog):
             self._character,
         )
 
-    def _reference_changed(self):
+    def _reference_changed(self) -> None:
         self._stop_audio()
         self._clear_impact()
         self.reference_text.setText(
@@ -1065,7 +1133,7 @@ class GameNarratorDialog(QDialog):
         )
         self._warm_selected()
 
-    def _stop_audio(self):
+    def _stop_audio(self) -> None:
         self.player.stop()
         self.reference_details.clear()
         self.reference_details.setToolTip("")
@@ -1074,7 +1142,7 @@ class GameNarratorDialog(QDialog):
         self._queued_action = None
         self._playback_requested = False
 
-    def _warm_selected(self):
+    def _warm_selected(self) -> None:
         reference = self.references.currentData()
         if (
             self._closing
@@ -1103,17 +1171,17 @@ class GameNarratorDialog(QDialog):
             self.text.text().strip(),
         )
 
-    def _decoder_progress(self, message):
+    def _decoder_progress(self, message: str) -> None:
         if self.runner.active and not self._closing:
             self.status.setText(message)
 
-    def _original(self):
+    def _original(self) -> None:
         self._candidate_action("audio")
 
-    def _preview(self):
+    def _preview(self) -> None:
         self._candidate_action("preview")
 
-    def _candidate_action(self, operation):
+    def _candidate_action(self, operation: str) -> None:
         if operation != "audio" and (
             not self._engine_available()
             or self.source.currentData() == "preset"
@@ -1170,8 +1238,13 @@ class GameNarratorDialog(QDialog):
         )
 
     def _perform_candidate_action(
-        self, operation, settings, character, reference, text
-    ):
+        self,
+        operation: str,
+        settings: AppSettings,
+        character: str | None,
+        reference: str,
+        text: str,
+    ) -> AppSettings | OriginalReference | Path | VoiceAuditionPreview | None:
         manifest = None
         source_id = reference
         if not reference.startswith("preset:"):
@@ -1206,8 +1279,14 @@ class GameNarratorDialog(QDialog):
         )
 
     def _bind_selected_voice(
-        self, settings, manifest, source_id, character, *, root=None
-    ):
+        self,
+        settings: AppSettings,
+        manifest: Path | str | None,
+        source_id: str,
+        character: str | None,
+        *,
+        root: Path | str | None = None,
+    ) -> AppSettings:
         role = self._saving_role
         context = (
             {"additional_manifest": self._voice_context.voice_manifest}
@@ -1233,7 +1312,9 @@ class GameNarratorDialog(QDialog):
             **context,
         )
 
-    def _perform_catalog_action(self, operation, settings, source_id, text):
+    def _perform_catalog_action(
+        self, operation: str, settings: AppSettings, source_id: str, text: str
+    ) -> AppSettings | OriginalReference | VoiceAuditionPreview:
         voice = self._catalog_registry.resolve_source(source_id)
         if operation == "save":
             return self._bind_selected_voice(
@@ -1253,7 +1334,7 @@ class GameNarratorDialog(QDialog):
             progress=self.decoderProgress.emit,
         )
 
-    def _policy_settings(self, settings):
+    def _policy_settings(self, settings: AppSettings) -> AppSettings:
         role = self.role.currentText().strip()
         narrator = normalize_character_name(role) == "narrator"
         assignments = {
@@ -1290,7 +1371,7 @@ class GameNarratorDialog(QDialog):
             )
         return result
 
-    def _save(self):
+    def _save(self) -> None:
         if not self.save_button.isEnabled():
             return
         self._saving_role = self.role.currentText().strip()
@@ -1300,7 +1381,7 @@ class GameNarratorDialog(QDialog):
             return
         self._candidate_action("save")
 
-    def _finished(self, result, error):
+    def _finished(self, result: object, error: Exception | None) -> None:
         operation = self._operation
         if operation == "close":
             self._closed = True
@@ -1355,18 +1436,23 @@ class GameNarratorDialog(QDialog):
                 self, error
             ):
                 self.importer.allow_decoder_homebrew = True
-                self._candidate_action(operation)
+                if operation is not None:
+                    self._candidate_action(operation)
                 return
             self.status.setText(
                 f"{error}\nRetry, choose a game folder, or cancel. Nothing was assigned.\n"
                 "Failure details: Support and logs > Export support report."
             )
         elif operation == "impact":
+            if not _is_story_voice_impact(result):
+                raise TypeError("Voice-impact service returned an invalid result")
             self._show_impact(result)
             self.status.setText(
                 "Voice comparison complete. Nothing has been saved or generated."
             )
         elif operation == "discover":
+            if not _is_string_tuple(result):
+                raise TypeError("Game importer returned invalid character names")
             self.characters.addItems(result)
             self.status.setText(
                 "Choose a character, then load its references."
@@ -1374,6 +1460,8 @@ class GameNarratorDialog(QDialog):
                 else "No voiced characters found. Choose the game folder to reimport."
             )
         elif operation == "prepare":
+            if not _is_narrator_references(result):
+                raise TypeError("Game importer returned invalid narrator references")
             choices = result
             self.references.blockSignals(True)
             self.references.clear()
@@ -1394,15 +1482,20 @@ class GameNarratorDialog(QDialog):
             )
             self._reference_changed()
         elif operation in {"audio", "preview"}:
+            preview_path: object | None = None
             if operation == "preview":
+                preview_path = getattr(result, "path", None)
+                if preview_path is None:
+                    raise TypeError("Preview service returned an invalid preview")
                 self._preview_reused = getattr(result, "reused", False) is True
-                result = result.path
             if not self._playback_requested:
                 self.status.setText("Audio ready. Playback stopped.")
                 self._update()
                 return
             self.status.setText("Starting playback...")
             if operation == "audio":
+                if not isinstance(result, OriginalReference):
+                    raise TypeError("Reference loader returned an invalid reference")
                 check = (
                     "Not suitable for cloning: " + ", ".join(result.rejection_reasons)
                     if result.rejection_reasons
@@ -1416,15 +1509,17 @@ class GameNarratorDialog(QDialog):
                 )
                 self.player.play_bytes(result.payload, source=str(result.path))
             else:
-                self.player.setSource(QUrl.fromLocalFile(str(result)))
+                self.player.setSource(QUrl.fromLocalFile(str(preview_path)))
                 self.player.play()
         elif operation == "save":
+            if not isinstance(result, AppSettings):
+                raise TypeError("Voice binding returned invalid settings")
             self.result_settings = result
             self._cleanup()
             return
         self._update()
 
-    def _playback_state_changed(self, state):
+    def _playback_state_changed(self, state: object) -> None:
         if (
             state == QMediaPlayer.PlaybackState.PlayingState
             and self._playback_requested
@@ -1437,14 +1532,14 @@ class GameNarratorDialog(QDialog):
                 else "Playing generated preview."
             )
 
-    def _playback_media_changed(self, status):
+    def _playback_media_changed(self, status: object) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia and self._playback_requested:
             self.status.setText("Playback finished. Press Play to listen again.")
 
-    def _cleanup(self):
+    def _cleanup(self) -> None:
         self._start("close", "Closing voice preview...", self.previews.close)
 
-    def reject(self):
+    def reject(self) -> None:
         if self._closed:
             super().reject()
             return
@@ -1459,7 +1554,7 @@ class GameNarratorDialog(QDialog):
         else:
             self._cleanup()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._closed:
             super().closeEvent(event)
         else:
