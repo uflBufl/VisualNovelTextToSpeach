@@ -55,10 +55,6 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Run a 30-minute macOS and Windows soak covering CPU/GPU speech and animated
       scenes. Require no buzzing, underruns, stale speech or stale auto-advance;
       record hardware and timing evidence instead of relying on subjective status.
-- [ ] Restore reliable macOS-native global controls for pause, skip, replay and
-      emergency stop, or make the compact controls the explicit gameplay handoff
-      until those shortcuts are available.
-
 ## P2 - Optional model experiments
 
 - [ ] On a CUDA host, compare MOSS Delay 8B with MOSS Local 4B on the existing

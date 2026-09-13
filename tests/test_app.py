@@ -3346,10 +3346,12 @@ class TrayApplicationTest(unittest.TestCase):
         controller.request_shutdown.assert_called_once_with()
 
     def test_macos_skips_unstable_native_hotkey_listener(self):
+        controller = Mock()
+        controller.get_capture_geometry.return_value = None
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
-            controller_factory=Mock(return_value=Mock()),
+            controller_factory=Mock(return_value=controller),
         )
 
         with (
@@ -3359,10 +3361,14 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application._start_hotkeys_safely()
 
         start_hotkeys.assert_not_called()
+        self.assertTrue(tray_application.compact_controller.isVisible())
+        self.assertFalse(tray_application.dashboard.isVisible())
         self.assertIn("macOS hotkeys disabled", tray_application.status_action.text())
-        self.assertIn(
-            "listener is unstable",
-            tray_application.support_log.snapshot()[-2]["message"],
+        self.assertTrue(
+            any(
+                "Compact controls were opened" in entry["message"]
+                for entry in tray_application.support_log.snapshot()
+            )
         )
         tray_application.shutdown()
 

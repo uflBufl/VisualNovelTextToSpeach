@@ -150,6 +150,7 @@ from vntts.voice_preview_ui import VoicePreviewDialog
 from vntts.voices import find_default_voice_manifest, find_voice_assignment
 from vntts.window_capture import (
     WindowCaptureError,
+    WindowGeometry,
     enable_windows_dpi_awareness,
     list_windows,
 )
@@ -2032,9 +2033,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.support_log.add(
                 "warning",
                 "Global hotkeys are disabled on macOS because the current native "
-                "listener is unstable. Use Full controls.",
+                "listener is unstable. Compact controls were opened instead.",
             )
-            self.set_status("Ready; use Full controls (macOS hotkeys disabled)")
+            self.show_compact_controls(persist=False)
+            self.set_status("Ready; use compact controls (macOS hotkeys disabled)")
             return
         try:
             self.start_hotkeys()
@@ -2743,15 +2745,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.activateWindow()
         self._save_compact_preference(False)
 
-    def show_compact_controls(self):
+    def show_compact_controls(self, *, persist=True):
         geometry = None
         try:
             geometry = self.controller.get_capture_geometry()
         except WindowCaptureError:
             pass
+        if not isinstance(geometry, WindowGeometry):
+            geometry = None
         self.dashboard.hide()
         self.compact_controller.show_for_game(geometry)
-        self._save_compact_preference(True)
+        if persist:
+            self._save_compact_preference(True)
 
     def notify_background_mode(self):
         if self._background_notification_shown:
