@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TypedDict
 
 from vntts.authoring.reconciliation import load_authoring_reconciliation
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     merge_reconciled_workspace_outcomes,
 )
+from vntts.authoring.workbench_contracts import WorkspaceCreationResult
+
+
+class _ReconciliationSelection(TypedDict):
+    report_id: str
+    base: dict[str, object]
+    sources: dict[Path, dict[str, dict[str, object]]]
 
 
 def merge_reconciled_terminal_outcomes(
-    base_workspace,
-    reconciliation,
-    workspaces_root=None,
-):
+    base_workspace: str | Path,
+    reconciliation: str | Path,
+    workspaces_root: str | Path | None = None,
+) -> WorkspaceCreationResult:
     """Create a successor from only exact terminal sources selected by a report."""
     report = load_authoring_reconciliation(reconciliation).document
     base_path = Path(base_workspace).expanduser().resolve()
@@ -29,7 +37,7 @@ def merge_reconciled_terminal_outcomes(
         raise AuthoringWorkbenchError(
             "Reconciliation primary workspace path differs from the requested base"
         )
-    selected = {}
+    selected: dict[Path, dict[str, dict[str, object]]] = {}
     for action in report["actions"]:
         if (
             action.get("action") != "terminal_merge_required"
@@ -52,7 +60,7 @@ def merge_reconciled_terminal_outcomes(
         raise AuthoringWorkbenchError(
             "Reconciliation has no exact terminal outcomes for its primary workspace"
         )
-    selection = {
+    selection: _ReconciliationSelection = {
         "report_id": report["report_id"],
         "base": base_report,
         "sources": selected,

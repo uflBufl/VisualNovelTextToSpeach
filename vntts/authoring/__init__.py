@@ -1583,7 +1583,7 @@ _EXPORTS = {
 __all__ = list(_PUBLIC_EXPORTS)
 
 
-def __getattr__(name):
+def __getattr__(name: str) -> object:
     target = _EXPORTS.get(name)
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -1600,5 +1600,5 @@ def __getattr__(name):
     return value
 
 
-def __dir__():
+def __dir__() -> list[str]:
     return sorted({*globals(), *__all__})

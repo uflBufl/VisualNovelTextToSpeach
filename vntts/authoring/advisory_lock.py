@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import errno
 import os
+import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -13,13 +15,15 @@ class AdvisoryLockBusyError(RuntimeError):
 
 
 @contextmanager
-def exclusive_advisory_lock(path, *, blocking=False):
+def exclusive_advisory_lock(
+    path: str | Path, *, blocking: bool = False
+) -> Iterator[None]:
     """Hold one persistent file guard without deleting its shared inode."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             if os.fstat(descriptor).st_size < 1:
