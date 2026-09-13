@@ -5,6 +5,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 from vntts_artifacts.audio import write_pcm16_wav
@@ -253,6 +254,41 @@ class AudioEventReviewTest(unittest.TestCase):
                     source_bank="source.bnk",
                     source_media_id=1,
                 )
+
+    def test_interrupted_publication_removes_staging_directory(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = root / "queue.jsonl"
+            queue_id = write_queue(queue)
+            story = write_source_story(root / "story-index.jsonl")
+            audio = root / "source.wav"
+            samples = np.zeros(1_200, dtype=np.float32)
+            samples[300:340] = 0.4
+            write_pcm16_wav(audio, samples, 24_000)
+
+            with (
+                patch(
+                    "vntts.authoring.audio_event_review.assert_authority_snapshot",
+                    side_effect=KeyboardInterrupt,
+                ),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                publish_source_audio_event_review(
+                    queue,
+                    queue_id,
+                    story,
+                    audio,
+                    root / "review",
+                    source_line_id="reverse1999:200308:6",
+                    source_speaker="Kanjira",
+                    source_event="play_activityvoc_hero3071_660",
+                    source_bank="activityvoc_hero3071molu1_3_part02.bnk",
+                    source_media_id=410389900,
+                    source_audio_id="610008734",
+                )
+
+            self.assertFalse((root / "review").exists())
+            self.assertEqual(list(root.glob(".review.staging-*")), [])
 
     def test_cli_publish_status_and_decide(self):
         with TemporaryDirectory() as directory:

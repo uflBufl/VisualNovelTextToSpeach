@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +23,7 @@ from vntts.authoring.authority import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
 
@@ -136,10 +135,7 @@ def publish_audio_event_composition(review_directory, output_directory):
     }
     composition_id = canonical_document_sha256(identity)
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         review_target = staging / "review"
         _copy_review_snapshot(review_root, review_target)
         audio_target = staging / "audio/final.wav"
@@ -173,9 +169,6 @@ def publish_audio_event_composition(review_directory, output_directory):
             raise AudioEventCompositionError(str(error)) from error
         result = load_audio_event_composition(output)
         return AudioEventComposition(**{**result.__dict__, "created": True})
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
 
 
 def load_audio_event_composition(directory):

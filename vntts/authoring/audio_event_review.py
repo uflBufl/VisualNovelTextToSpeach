@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,6 +24,7 @@ from vntts.authoring.authority import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
 
@@ -133,10 +133,7 @@ def publish_source_audio_event_review(
     review_id = canonical_document_sha256(review_identity)
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         queue_target = staging / "queue.jsonl"
         queue_target.write_bytes(queue_snapshot.payload)
         audio_target = staging / "audio" / "candidate.wav"
@@ -185,9 +182,6 @@ def publish_source_audio_event_review(
         except (AtomicPublicationError, OSError) as error:
             raise AudioEventReviewError(str(error)) from error
         return load_audio_event_review(output)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
 
 
 def load_audio_event_review(directory):
