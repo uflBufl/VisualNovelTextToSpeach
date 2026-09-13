@@ -24,7 +24,7 @@ from typing import Protocol, TypeAlias, TypeGuard
 import numpy as np
 from numpy.typing import NDArray
 
-from vntts.audio_output import resolve_audio_output
+from vntts.audio_output import AudioOutput, StreamingAudioStream, resolve_audio_output
 from vntts.moss_delay_backend import MossTTSDelayVoiceRouterBackend
 from vntts.playback import (
     PlaybackOutcome,
@@ -942,7 +942,7 @@ class IsolatedSpeechBackend:
         *,
         narrator_reference: str | Path | None = None,
         volume: object = 1.0,
-        audio_output: _AudioOutput | None = None,
+        audio_output: AudioOutput | None = None,
         clock: Callable[[], float] = monotonic,
         runtime_directory: str | Path | None = None,
         process_factory: ProcessFactory = subprocess.Popen,
@@ -977,7 +977,7 @@ class IsolatedSpeechBackend:
             else "default"
         )
         self.model_name = str(worker_options.get("model_name") or backend)
-        self.audio_output: _AudioOutput | None = audio_output
+        self.audio_output: AudioOutput | None = audio_output
         self.clock = clock
         self.process_factory = process_factory
         self.startup_timeout = float(startup_timeout)
@@ -1012,7 +1012,7 @@ class IsolatedSpeechBackend:
         self._request_lock = threading.Lock()
         self._playback_lock = threading.Lock()
         self._stop_requested = threading.Event()
-        self._active_stream: _AudioStream | None = None
+        self._active_stream: StreamingAudioStream | None = None
         self._stderr: deque[str] = deque(maxlen=40)
         self.last_synthesis_ms: float | None = None
         self.last_first_audio_ms: float | None = None
@@ -1632,9 +1632,10 @@ class IsolatedSpeechBackend:
                 process.kill()
                 process.wait(timeout=2.0)
 
-    def _resolve_audio_output(self) -> _AudioOutput:
-        self.audio_output = resolve_audio_output(self.audio_output)
-        return self.audio_output
+    def _resolve_audio_output(self) -> AudioOutput:
+        audio_output = resolve_audio_output(self.audio_output)
+        self.audio_output = audio_output
+        return audio_output
 
     def _prepare_audio(self, audio: object) -> NDArray[np.float32]:
         prepared = np.asarray(audio, dtype=np.float32).copy()

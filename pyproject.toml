@@ -131,6 +131,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 python_version = "3.14"
 files = [
     "vntts/application_directories.py",
+    "vntts/audio_output.py",
     "vntts/auto_advance_policy.py",
     "vntts/authoring/authority.py",
     "vntts/authoring/bulk_generation.py",
@@ -162,6 +163,8 @@ files = [
     "vntts/runtime_config.py",
     "vntts/runtime_installation.py",
     "vntts/runtime_paths.py",
+    "vntts/speech_backend.py",
+    "vntts/speech_backend_contract.py",
     "vntts/speech_backend_runtime.py",
     "vntts/speech_worker.py",
     "vntts/speech_worker_messages.py",

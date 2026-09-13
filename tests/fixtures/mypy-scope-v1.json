@@ -2,6 +2,7 @@
   "schema_version": 1,
   "minimum_files": [
     "vntts/application_directories.py",
+    "vntts/audio_output.py",
     "vntts/auto_advance_policy.py",
     "vntts/authoring/authority.py",
     "vntts/authoring/bulk_generation.py",
@@ -33,6 +34,8 @@
     "vntts/runtime_config.py",
     "vntts/runtime_installation.py",
     "vntts/runtime_paths.py",
+    "vntts/speech_backend.py",
+    "vntts/speech_backend_contract.py",
     "vntts/speech_backend_runtime.py",
     "vntts/speech_worker.py",
     "vntts/speech_worker_messages.py",

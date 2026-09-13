@@ -1,5 +1,6 @@
 """Typed runtime contract shared by concrete speech backends."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -24,7 +25,7 @@ class SpeechBackend(Protocol):
         self,
         prepared: PreparedPlayback,
         *,
-        playback_guard=None,
+        playback_guard: Callable[[], bool] | None = None,
     ) -> PlaybackOutcome: ...
 
     def stop(self) -> bool: ...

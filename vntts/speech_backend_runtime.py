@@ -119,7 +119,7 @@ def activate_backend_runtime(
     return site_packages
 
 
-def validate_volume(volume: int | float) -> float:
+def validate_volume(volume: object) -> float:
     if isinstance(volume, bool) or not isinstance(volume, (int, float)):
         raise TTSConfigurationError("Volume must be a number from 0 to 1")
     if not 0 <= volume <= 1:
@@ -127,7 +127,7 @@ def validate_volume(volume: int | float) -> float:
     return float(volume)
 
 
-def validate_speed(speed: int | float) -> float:
+def validate_speed(speed: object) -> float:
     if isinstance(speed, bool) or not isinstance(speed, (int, float)):
         raise TTSConfigurationError("Speech speed must be a number")
     if not 0.5 <= speed <= 1.5:

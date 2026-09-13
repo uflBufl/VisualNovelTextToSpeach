@@ -1,23 +1,75 @@
 """Small shared helpers for lazy audio output and playback status."""
 
-from threading import Event
+from collections.abc import Callable, Mapping
+from threading import Event, Lock
+from typing import Protocol, TypeAlias
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy.signal import resample_poly
 
-from vntts.playback import PlaybackStatus, PreparedPlayback, outcome_for_prepared
+from vntts.playback import (
+    PlaybackOutcome,
+    PlaybackStatus,
+    PreparedPlayback,
+    outcome_for_prepared,
+)
+
+AudioData: TypeAlias = NDArray[np.float32]
 
 
-def resolve_audio_output(audio_output):
+class _AudioStatus(Protocol):
+    output_underflow: object
+
+
+class _AudioStream(Protocol):
+    status: _AudioStatus
+
+
+class StreamingAudioStream(Protocol):
+    def write(self, audio: object) -> object: ...
+
+    def abort(self) -> object: ...
+
+
+class _StreamingAudioContext(Protocol):
+    def __enter__(self) -> StreamingAudioStream: ...
+
+    def __exit__(self, *args: object) -> object: ...
+
+
+class AudioOutput(Protocol):
+    def get_stream(self) -> _AudioStream: ...
+
+    def query_devices(self, *, kind: str) -> object: ...
+
+    def play(self, audio: object, sample_rate: int, *, latency: object) -> object: ...
+
+    def wait(self) -> object: ...
+
+    def stop(self) -> object: ...
+
+    def OutputStream(
+        self,
+        *,
+        samplerate: int,
+        channels: int,
+        dtype: str,
+        latency: object,
+    ) -> _StreamingAudioContext: ...
+
+
+def resolve_audio_output(audio_output: AudioOutput | None) -> AudioOutput:
     """Return an injected output module or lazily import sounddevice."""
     if audio_output is None:
         import sounddevice
 
-        return sounddevice
+        output_module: AudioOutput = sounddevice
+        return output_module
     return audio_output
 
 
-def playback_underflowed(audio_output, playback_status=None):
+def playback_underflowed(audio_output: AudioOutput | None, playback_status: object = None) -> bool:
     """Read a reliable output-underflow flag without requiring a live stream."""
     value = getattr(playback_status, "output_underflow", None)
     if isinstance(value, (bool, np.bool_)):
@@ -32,14 +84,19 @@ def playback_underflowed(audio_output, playback_status=None):
     return bool(value) if isinstance(value, (bool, np.bool_)) else False
 
 
-def match_output_sample_rate(audio_output, audio, source_sample_rate):
+def match_output_sample_rate(
+    audio_output: AudioOutput | None, audio: AudioData, source_sample_rate: int
+) -> tuple[AudioData, int]:
     """Resample once in Python instead of relying on a live device converter."""
     query_devices = getattr(audio_output, "query_devices", None)
     if not callable(query_devices):
         return audio, source_sample_rate
     try:
         device = query_devices(kind="output")
-        target_sample_rate = int(round(float(device["default_samplerate"])))
+        if not isinstance(device, Mapping):
+            return audio, source_sample_rate
+        default_samplerate = device["default_samplerate"]
+        target_sample_rate = int(round(float(default_samplerate)))
     except KeyError, TypeError, ValueError, RuntimeError:
         return audio, source_sample_rate
     if target_sample_rate <= 0 or target_sample_rate == source_sample_rate:
@@ -63,8 +120,24 @@ class SynchronousPcmPlaybackMixin:
 
     playback_configuration_error = ValueError
     invalid_playback_message = "Playback received an invalid payload"
+    audio_output: AudioOutput | None
+    playback_latency: object
+    sample_rate: int
+    playback_lock: Lock
+    playback_state_lock: Lock
+    playback_active: bool
+    active_playback_stop: Event | None
+    clock: Callable[[], float]
 
-    def play_prepared(self, prepared, *, playback_guard=None):
+    def _prepare_audio(self, payload: object) -> AudioData:
+        raise NotImplementedError
+
+    def play_prepared(
+        self,
+        prepared: object,
+        *,
+        playback_guard: Callable[[], bool] | None = None,
+    ) -> PlaybackOutcome:
         if not isinstance(prepared, PreparedPlayback):
             raise self.playback_configuration_error(self.invalid_playback_message)
         if playback_guard is not None and not playback_guard():
@@ -131,7 +204,7 @@ class SynchronousPcmPlaybackMixin:
             first_audio_ms=first_audio_ms,
         )
 
-    def stop(self):
+    def stop(self) -> bool:
         with self.playback_state_lock:
             was_playing = self.playback_active
             stop_requested = self.active_playback_stop
@@ -141,15 +214,20 @@ class SynchronousPcmPlaybackMixin:
                 self.audio_output.stop()
         return was_playing
 
-    def _resolve_audio_output(self):
-        self.audio_output = resolve_audio_output(self.audio_output)
-        return self.audio_output
+    def _resolve_audio_output(self) -> AudioOutput:
+        audio_output = resolve_audio_output(self.audio_output)
+        self.audio_output = audio_output
+        return audio_output
 
-    def _playback_underflowed(self, playback_status=None):
+    def _playback_underflowed(
+        self, playback_status: object = None
+    ) -> bool:
         return playback_underflowed(self.audio_output, playback_status)
 
 
 __all__ = [
+    "AudioOutput",
+    "StreamingAudioStream",
     "SynchronousPcmPlaybackMixin",
     "match_output_sample_rate",
     "playback_underflowed",
