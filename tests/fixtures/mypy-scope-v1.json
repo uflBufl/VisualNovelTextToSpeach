@@ -71,6 +71,7 @@
     "vntts/moss_cpp_installation.py",
     "vntts/moss_delay_backend.py",
     "vntts/moss_runtime.py",
+    "vntts/native_resources.py",
     "vntts/ocr_corrections.py",
     "vntts/ocr_corrections_ui.py",
     "vntts/ocr_review.py",

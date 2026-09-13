@@ -4,6 +4,8 @@ This module is deliberately diagnostic-only: every probe failure becomes an
 unavailable value instead of an error for the synthesis path.
 """
 
+from __future__ import annotations
+
 import math
 import os
 import re
@@ -12,11 +14,75 @@ import sys
 from tempfile import TemporaryFile
 from threading import Event, Lock, Thread, current_thread
 from time import monotonic
+from typing import Self, SupportsFloat, TypedDict, TypeVar
 
 try:
     import psutil
 except ImportError:  # pragma: no cover - dependency is declared by the app.
     psutil = None
+
+
+Number = TypeVar("Number", int, float)
+
+
+class GpuBoardSample(TypedDict):
+    logical_index: int
+    driver_version: str | None
+    utilization_percent: float | None
+    vram_used_bytes: int | None
+    vram_total_bytes: int | None
+
+
+class GpuBoardSnapshot(TypedDict):
+    logical_index: int
+    driver_version: str | None
+    utilization_percent_peak: float | None
+    utilization_percent_mean: float | None
+    utilization_sample_count: int
+    vram_used_bytes_peak: int | None
+    vram_total_bytes: int | None
+
+
+class NativeProcessSnapshot(TypedDict):
+    status: str
+    cpu_seconds_delta: float | None
+    avg_cores_used: float | None
+    rss_bytes_peak: int | None
+    thread_count_peak: int | None
+
+
+class HostAppSnapshot(TypedDict):
+    status: str
+    rss_bytes_peak: int | None
+
+
+class SystemSnapshot(TypedDict):
+    status: str
+    ram_total_bytes: int | None
+    ram_available_bytes_min: int | None
+    swap_used_bytes: int | None
+    cpu_logical_count: int | None
+
+
+class GpuSnapshot(TypedDict):
+    status: str
+    sample_count: int
+    boards: list[GpuBoardSnapshot]
+
+
+class NativeResourceSnapshot(TypedDict):
+    complete: bool
+    sample_count: int
+    interval_seconds: float
+    coverage_seconds: float | None
+    native_process: NativeProcessSnapshot
+    host_app: HostAppSnapshot
+    system: SystemSnapshot
+    gpu: GpuSnapshot
+
+
+class SubprocessOptions(TypedDict, total=False):
+    creationflags: int
 
 
 class NativeResourceSampler:
@@ -30,36 +96,36 @@ class NativeResourceSampler:
     MAX_GPU_OUTPUT_BYTES = 8192
     MAX_VRAM_BYTES = 1 << 40
 
-    def __init__(self, pid):
+    def __init__(self, pid: int) -> None:
         self.pid = int(pid)
         self._stop = Event()
         self._start_lock = Lock()
-        self._worker = None
-        self._started_at = None
-        self._first_sample_at = None
-        self._last_sample_at = None
-        self._next_gpu_at = None
-        self._process = None
-        self._host_process = None
+        self._worker: Thread | None = None
+        self._started_at: float | None = None
+        self._first_sample_at: float | None = None
+        self._last_sample_at: float | None = None
+        self._next_gpu_at: float | None = None
+        self._process: psutil.Process | None = None
+        self._host_process: psutil.Process | None = None
         self._process_status = "unavailable"
         self._host_status = "unavailable"
         self._system_status = "unavailable"
         self._sample_count = 0
-        self._cpu_start = None
-        self._cpu_end = None
-        self._native_rss_peak = None
-        self._host_rss_peak = None
-        self._ram_total = None
-        self._ram_available_min = None
-        self._swap_used = None
-        self._cpu_logical_count = None
-        self._thread_count_peak = None
+        self._cpu_start: float | None = None
+        self._cpu_end: float | None = None
+        self._native_rss_peak: int | None = None
+        self._host_rss_peak: int | None = None
+        self._ram_total: int | None = None
+        self._ram_available_min: int | None = None
+        self._swap_used: int | None = None
+        self._cpu_logical_count: int | None = None
+        self._thread_count_peak: int | None = None
         self._gpu_status = "unavailable"
         self._gpu_disabled = False
         self._gpu_sample_count = 0
-        self._gpu_boards = {}
+        self._gpu_boards: dict[int, GpuBoardSnapshot] = {}
 
-    def start(self):
+    def start(self) -> Self:
         """Start owned daemon sampling and return immediately."""
         with self._start_lock:
             if self._worker is not None:
@@ -72,7 +138,7 @@ class NativeResourceSampler:
             self._worker.start()
         return self
 
-    def finish(self):
+    def finish(self) -> NativeResourceSnapshot:
         """Stop sampling and return a JSON-safe summary without raising."""
         self._stop.set()
         worker = self._worker
@@ -80,7 +146,7 @@ class NativeResourceSampler:
             worker.join(self.FINISH_TIMEOUT_SECONDS)
         return self._summary(complete=worker is None or not worker.is_alive())
 
-    def _run(self):
+    def _run(self) -> None:
         try:
             while not self._stop.is_set():
                 self._sample(monotonic())
@@ -88,7 +154,7 @@ class NativeResourceSampler:
         except Exception:  # Diagnostics must never affect generation.
             return
 
-    def _sample(self, now):
+    def _sample(self, now: float) -> None:
         if self._stop.is_set():
             return
         self._sample_process(now)
@@ -102,7 +168,7 @@ class NativeResourceSampler:
             self._next_gpu_at = now + self.GPU_INTERVAL_SECONDS
             self._sample_gpu()
 
-    def _sample_process(self, now):
+    def _sample_process(self, now: float) -> None:
         if psutil is None:
             return
         try:
@@ -139,7 +205,7 @@ class NativeResourceSampler:
         except Exception as error:
             self._host_status = _process_status(error)
 
-    def _sample_system(self):
+    def _sample_system(self) -> None:
         if psutil is None:
             return
         available = False
@@ -170,37 +236,9 @@ class NativeResourceSampler:
         if available:
             self._system_status = "available"
 
-    def _sample_gpu(self):
-        try:
-            with TemporaryFile(mode="w+b") as output:
-                result = subprocess.run(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=index,driver_version,utilization.gpu,memory.used,memory.total",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    stdout=output,
-                    stderr=subprocess.DEVNULL,
-                    timeout=self.GPU_TIMEOUT_SECONDS,
-                    check=False,
-                    **_subprocess_options(),
-                )
-                output.seek(0)
-                raw_output = output.read(self.MAX_GPU_OUTPUT_BYTES + 1)
-        except FileNotFoundError:
-            self._disable_gpu("missing")
-            return
-        except subprocess.TimeoutExpired:
-            self._disable_gpu("timeout")
-            return
-        except OSError:
-            self._disable_gpu("unavailable")
-            return
-        if result.returncode:
-            self._disable_gpu("unsupported")
-            return
-        if len(raw_output) > self.MAX_GPU_OUTPUT_BYTES:
-            self._disable_gpu("output-limit")
+    def _sample_gpu(self) -> None:
+        raw_output = self._read_gpu_output()
+        if raw_output is None:
             return
         boards = _gpu_boards(raw_output.decode("utf-8", errors="replace"))
         if not boards:
@@ -253,11 +291,45 @@ class NativeResourceSampler:
             )
         self._gpu_status = "partial" if partial else "available"
 
-    def _disable_gpu(self, status):
+    def _read_gpu_output(self) -> bytes | None:
+        try:
+            with TemporaryFile(mode="w+b") as output:
+                result = subprocess.run(
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=index,driver_version,utilization.gpu,memory.used,memory.total",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    stdout=output,
+                    stderr=subprocess.DEVNULL,
+                    timeout=self.GPU_TIMEOUT_SECONDS,
+                    check=False,
+                    **_subprocess_options(),
+                )
+                output.seek(0)
+                raw_output = output.read(self.MAX_GPU_OUTPUT_BYTES + 1)
+        except FileNotFoundError:
+            self._disable_gpu("missing")
+            return None
+        except subprocess.TimeoutExpired:
+            self._disable_gpu("timeout")
+            return None
+        except OSError:
+            self._disable_gpu("unavailable")
+            return None
+        if result.returncode:
+            self._disable_gpu("unsupported")
+            return None
+        if len(raw_output) > self.MAX_GPU_OUTPUT_BYTES:
+            self._disable_gpu("output-limit")
+            return None
+        return raw_output
+
+    def _disable_gpu(self, status: str) -> None:
         self._gpu_status = status
         self._gpu_disabled = True
 
-    def _summary(self, *, complete=True):
+    def _summary(self, *, complete: bool = True) -> NativeResourceSnapshot:
         coverage = (
             self._last_sample_at - self._first_sample_at
             if self._first_sample_at is not None and self._last_sample_at is not None
@@ -300,16 +372,16 @@ class NativeResourceSampler:
                 "status": self._gpu_status,
                 "sample_count": self._gpu_sample_count,
                 "boards": [
-                    {key: value for key, value in board.items()}
+                    _gpu_board_snapshot(board)
                     for _, board in sorted(tuple(self._gpu_boards.items()))
                 ],
             },
         }
 
 
-def _gpu_boards(output):
-    boards = []
-    seen_indexes = set()
+def _gpu_boards(output: str) -> list[GpuBoardSample]:
+    boards: list[GpuBoardSample] = []
+    seen_indexes: set[int] = set()
     for line in output.splitlines()[: NativeResourceSampler.MAX_GPU_BOARDS]:
         fields = [field.strip() for field in line.split(",")]
         if len(fields) != 5:
@@ -333,13 +405,27 @@ def _gpu_boards(output):
     return boards
 
 
-def _subprocess_options():
+def _gpu_board_snapshot(board: GpuBoardSnapshot) -> GpuBoardSnapshot:
+    return {
+        "logical_index": board["logical_index"],
+        "driver_version": board["driver_version"],
+        "utilization_percent_peak": board["utilization_percent_peak"],
+        "utilization_percent_mean": board["utilization_percent_mean"],
+        "utilization_sample_count": board["utilization_sample_count"],
+        "vram_used_bytes_peak": board["vram_used_bytes_peak"],
+        "vram_total_bytes": board["vram_total_bytes"],
+    }
+
+
+def _subprocess_options() -> SubprocessOptions:
     if sys.platform == "win32":
         return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
     return {}
 
 
-def _finite_number(value):
+def _finite_number(value: object) -> float | None:
+    if not isinstance(value, (str, bytes, bytearray, SupportsFloat)):
+        return None
     try:
         number = float(value)
     except TypeError, ValueError:
@@ -347,12 +433,12 @@ def _finite_number(value):
     return number if math.isfinite(number) else None
 
 
-def _integer(value):
+def _integer(value: object) -> int | None:
     number = _finite_number(value)
     return int(number) if number is not None else None
 
 
-def _nonnegative_integer(value):
+def _nonnegative_integer(value: object) -> int | None:
     number = _finite_number(value)
     return (
         int(number)
@@ -361,17 +447,17 @@ def _nonnegative_integer(value):
     )
 
 
-def _percentage(value):
+def _percentage(value: object) -> float | None:
     number = _finite_number(value)
     return number if number is not None and 0 <= number <= 100 else None
 
 
-def _nonnegative(value):
+def _nonnegative(value: object) -> float | None:
     number = _finite_number(value)
     return number if number is not None and number >= 0 else None
 
 
-def _mib_to_bytes(value):
+def _mib_to_bytes(value: float | None) -> int | None:
     if value is None:
         return None
     bytes_value = _finite_number(value * 1024 * 1024)
@@ -383,11 +469,11 @@ def _mib_to_bytes(value):
     )
 
 
-def _driver_version(value):
+def _driver_version(value: str) -> str | None:
     return value if len(value) <= 32 and re.fullmatch(r"\d+(?:\.\d+)*", value) else None
 
 
-def _peak(previous, current):
+def _peak(previous: Number | None, current: Number | None) -> Number | None:
     return (
         current
         if previous is None
@@ -397,7 +483,7 @@ def _peak(previous, current):
     )
 
 
-def _minimum(previous, current):
+def _minimum(previous: Number | None, current: Number | None) -> Number | None:
     return (
         current
         if previous is None
@@ -407,7 +493,7 @@ def _minimum(previous, current):
     )
 
 
-def _process_status(error):
+def _process_status(error: BaseException) -> str:
     if psutil is not None and isinstance(error, getattr(psutil, "NoSuchProcess", ())):
         return "exited"
     if psutil is not None and isinstance(error, getattr(psutil, "AccessDenied", ())):

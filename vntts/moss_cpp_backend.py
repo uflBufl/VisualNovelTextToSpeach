@@ -30,7 +30,7 @@ import numpy as np
 import soundfile as sf
 
 from vntts.audio_output import AudioOutput
-from vntts.native_resources import NativeResourceSampler
+from vntts.native_resources import NativeResourceSampler, NativeResourceSnapshot
 from vntts.playback import PreparedPlayback
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 from vntts.speech_backend import (
@@ -1473,7 +1473,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 stages = _native_stage_timings(
                     path, offset, headers, self.request_timeout
                 )
-            resources = {"status": "not-started"}
+            resources: NativeResourceSnapshot | dict[str, str] = {
+                "status": "not-started"
+            }
             if resource_sampler is not None:
                 try:
                     resources = resource_sampler.finish()
