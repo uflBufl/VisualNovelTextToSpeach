@@ -232,9 +232,9 @@ def get_tts_configuration(settings: AppSettings | None = None) -> dict[str, obje
         for argument, environment_variable in tts_environment_variables.items()
         if (value := os.environ.get(environment_variable))
     }
-    profile_name = os.environ.get("VNTTS_TTS_PROFILE")
-    if profile_name:
-        profile_name = profile_name.strip().casefold()
+    environment_profile = os.environ.get("VNTTS_TTS_PROFILE")
+    if environment_profile:
+        profile_name = environment_profile.strip().casefold()
         try:
             configuration["synthesis_options"] = get_tts_profile(profile_name)
         except ValueError as error:
@@ -247,7 +247,7 @@ def initialize_voice_registry(
     settings: AppSettings | None = None,
     error_handler: Callable[[Exception], object] | None = None,
 ) -> CharacterVoiceRegistry | None:
-    manifest_path = (
+    manifest_path: str | os.PathLike[str] | None = (
         settings.voice_manifest
         if settings is not None
         else os.environ.get("VNTTS_VOICE_MANIFEST")
