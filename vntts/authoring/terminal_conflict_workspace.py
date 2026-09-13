@@ -168,15 +168,16 @@ def merge_terminal_conflict_resolution(
     base_directory, base_document, base_workspace_sha256 = load_workspace_authority(
         base_workspace
     )
-    if base_document["workspace_id"] != report["primary_workspace_id"]:
+    base_workspace_id = _record_text(base_document, "workspace_id")
+    if base_workspace_id != report["primary_workspace_id"]:
         raise AuthoringWorkbenchError(
             "Terminal conflict merge must use the reconciled primary workspace"
         )
     report_workspaces = {
-        item["workspace_id"]: item
+        _record_text(item, "workspace_id"): item
         for item in _object_records(report["workspaces"], "workspaces")
     }
-    base_report = report_workspaces.get(base_document["workspace_id"])
+    base_report = report_workspaces.get(base_workspace_id)
     if (
         base_report is None
         or Path(_record_text(base_report, "workspace")).resolve() != base_directory
@@ -234,9 +235,7 @@ def merge_terminal_conflict_resolution(
             candidate["source_authorities"], key=lambda item: item["workspace_id"]
         )
         base_authorities = [
-            item
-            for item in authorities
-            if item["workspace_id"] == base_document["workspace_id"]
+            item for item in authorities if item["workspace_id"] == base_workspace_id
         ]
         if base_authorities:
             source = base_authorities[0]
@@ -256,8 +255,10 @@ def merge_terminal_conflict_resolution(
                 f"Terminal conflict source workspace is unavailable: {queue_id}"
             )
         source_directory, source_document, source_workspace_sha256 = (
-            load_workspace_authority(source_record["workspace"])
+            load_workspace_authority(_record_text(source_record, "workspace"))
         )
+        source_workspace_id = _record_text(source_document, "workspace_id")
+        source_config_fingerprint = _record_text(source_document, "config_fingerprint")
         source_directories.add(source_directory)
         state_path = Path(source["state"]).resolve()
         queue_path = Path(source["queue"]).resolve()
@@ -265,8 +266,7 @@ def merge_terminal_conflict_resolution(
             source_directory / "generated-audio/generation-state.json" != state_path
             or source_directory / "queue.jsonl" != queue_path
             or source_document["source"] != base_document["source"]
-            or source_record["config_fingerprint"]
-            != source_document["config_fingerprint"]
+            or source_record["config_fingerprint"] != source_config_fingerprint
             or source_record["state_sha256"]
             != source["review_authority"]["state_sha256"]
             or source_record["queue_sha256"] != base_queue_sha256
@@ -343,7 +343,7 @@ def merge_terminal_conflict_resolution(
             )
         ledger: TerminalConflictWorkspaceLedger = {
             "queue_id": queue_id,
-            "source_workspace_id": source_document["workspace_id"],
+            "source_workspace_id": source_workspace_id,
             "source_state_sha256": state_snapshot.sha256,
             "source_item_sha256": canonical_document_sha256(source_item),
             "audio_sha256": resolution_audio_snapshot.sha256,
@@ -355,10 +355,10 @@ def merge_terminal_conflict_resolution(
         selected_items[queue_id] = copy.deepcopy(source_item)
         selected_audio[queue_id] = resolution_audio_snapshot
         ledgers.append(ledger)
-        source_counts[source_document["workspace_id"]] += 1
-        source_records[source_document["workspace_id"]] = {
-            "workspace_id": source_document["workspace_id"],
-            "config_fingerprint": source_document["config_fingerprint"],
+        source_counts[source_workspace_id] += 1
+        source_records[source_workspace_id] = {
+            "workspace_id": source_workspace_id,
+            "config_fingerprint": source_config_fingerprint,
             "state_sha256": state_snapshot.sha256,
             "terminal_item_count": 0,
         }
@@ -377,7 +377,7 @@ def merge_terminal_conflict_resolution(
     merge = {
         "schema": "vntts.authoring-terminal-conflict-workspace-merge",
         "schema_version": 1,
-        "base_workspace_id": base_document["workspace_id"],
+        "base_workspace_id": base_workspace_id,
         "base_state_sha256": base_state_sha256,
         "source_report_id": report["report_id"],
         "source_reconciliation_sha256": report_snapshot.sha256,
@@ -390,12 +390,20 @@ def merge_terminal_conflict_resolution(
         ),
         "items": ledgers,
     }
+    base_source = base_document.get("source")
+    if not isinstance(base_source, dict):
+        raise AuthoringWorkbenchError("Terminal conflict base source is malformed")
+    import_id = _record_text(base_source, "import_id")
+    narrator = _record_text(base_document, "narrator_character")
+    run_config = base_document.get("run_config")
+    if not isinstance(run_config, dict):
+        raise AuthoringWorkbenchError("Terminal conflict base run config is malformed")
     config_fingerprint = workspace_config_fingerprint(
-        base_document["source"]["import_id"],
+        import_id,
         base_document.get("story_index"),
         base_document.get("voice_manifest"),
-        base_document["narrator_character"],
-        base_document["run_config"],
+        narrator,
+        run_config,
         base_document.get("carry_forward"),
         base_document.get("outcome_merge"),
         base_document.get("failure_reference_binding"),
@@ -411,8 +419,7 @@ def merge_terminal_conflict_resolution(
         queue_extension=base_document.get("queue_extension"),
     )
     workspace_id = (
-        f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
-        f"{config_fingerprint[:16]}"
+        f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
     )
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
