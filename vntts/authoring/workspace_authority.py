@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from re import Match
-from typing import Protocol, TypeAlias
+from typing import Protocol, TypeAlias, TypeGuard
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
@@ -103,6 +103,16 @@ class _VoiceManifestEntry(Protocol):
     references: Sequence[str | Path]
 
 
+def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _json_document(value: object, message: str) -> JsonDocument:
+    if not _is_json_document(value):
+        raise AuthoringWorkbenchError(message)
+    return value
+
+
 def _load_bound_workspace_queue(
     directory: Path, workspace: WorkspaceDocument
 ) -> VoiceGenerationQueue:
@@ -167,18 +177,20 @@ def _load_workspace_identity(
     snapshot, snapshot_sha256 = _load_workspace_import_snapshot(
         directory, source, expected_import_id
     )
-    expected_seed = [
-        {"path": "provenance/import.json", "sha256": snapshot_sha256},
-        *(
-            {"path": value["path"], "sha256": value["sha256"]}
-            for value in snapshot.get("artifacts", [])
-            if isinstance(value, dict)
-            and (
-                value.get("path") == "queue.jsonl"
-                or str(value.get("path", "")).startswith("generated-audio/")
-            )
-        ),
+    artifacts = snapshot.get("artifacts")
+    artifact_values = artifacts if isinstance(artifacts, list) else []
+    expected_seed: list[JsonDocument] = [
+        {"path": "provenance/import.json", "sha256": snapshot_sha256}
     ]
+    expected_seed.extend(
+        {"path": value["path"], "sha256": value["sha256"]}
+        for value in artifact_values
+        if _is_json_document(value)
+        and (
+            value.get("path") == "queue.jsonl"
+            or str(value.get("path", "")).startswith("generated-audio/")
+        )
+    )
     if workspace.get("seed_inventory") != expected_seed:
         raise AuthoringWorkbenchError("Workspace seed inventory was modified")
     return workspace, match, snapshot, expected_import_id, expected_seed
@@ -237,13 +249,18 @@ def _load_workspace_import_snapshot(
         source.get("import_sha256"), "Workspace import SHA-256"
     ):
         raise AuthoringWorkbenchError("Workspace import snapshot was modified")
+    snapshot_source = snapshot.get("source")
+    source_fingerprint = (
+        snapshot_source.get("source_fingerprint")
+        if _is_json_document(snapshot_source)
+        else None
+    )
     if (
         snapshot.get("schema") != legacy_import.IMPORT_SCHEMA
         or snapshot.get("schema_version")
         not in legacy_import.SUPPORTED_IMPORT_SCHEMA_VERSIONS
         or snapshot.get("import_id") != expected_import_id
-        or snapshot.get("source", {}).get("source_fingerprint")
-        != source.get("source_fingerprint")
+        or source_fingerprint != source.get("source_fingerprint")
     ):
         raise AuthoringWorkbenchError("Workspace provenance identity is inconsistent")
     _validate_import_history(snapshot)
@@ -258,9 +275,14 @@ def _validate_workspace_layout(
     expected_seed: Sequence[JsonDocument],
 ) -> tuple[str, object]:
     _validate_workspace_carry_forward(directory, workspace)
-    imported_queue_digest = next(
+    imported_queue_digest_value = next(
         (value["sha256"] for value in expected_seed if value["path"] == "queue.jsonl"),
         None,
+    )
+    imported_queue_digest = (
+        imported_queue_digest_value
+        if isinstance(imported_queue_digest_value, str)
+        else None
     )
     _validate_workspace_queue_extension(
         directory, workspace, imported_queue_digest=imported_queue_digest
@@ -524,8 +546,9 @@ def _validate_import_history(manifest: ImportSnapshot) -> None:
 
 
 def _external_input(manifest: ImportSnapshot, role: str) -> JsonDocument | None:
-    for value in manifest.get("external_inputs", []):
-        if isinstance(value, dict) and value.get("role") == role:
+    external_inputs = manifest.get("external_inputs")
+    for value in external_inputs if isinstance(external_inputs, list) else ():
+        if _is_json_document(value) and value.get("role") == role:
             path = value.get("source_path")
             digest = value.get("sha256")
             if isinstance(path, str) and path.strip():
@@ -600,7 +623,14 @@ def _validate_workspace_queue_extension(
         )
     except (OSError, QueueExtensionError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    expected_ids = sorted(record["queue_id"] for record in ledger["added_items"])
+    added_items = ledger.get("added_items")
+    added_item_values = added_items if isinstance(added_items, list) else []
+    expected_ids = sorted(
+        queue_id
+        for record in added_item_values
+        if _is_json_document(record)
+        if isinstance((queue_id := record.get("queue_id")), str)
+    )
     if (
         config.get("extension_queue_sha256") != ledger["extension_queue_sha256"]
         or config.get("extension_id") != ledger["extension_id"]
@@ -706,7 +736,11 @@ def _validated_carry_forward_seed_binding(
     )
     expected_seed = _require_sha256(seed.get("sha256"), "Workspace seed state SHA-256")
     _read_bound_bytes(seed_path, expected_seed, "Workspace seed state")
-    return carry
+    return (
+        None
+        if carry is None
+        else _json_document(carry, "Workspace carry-forward provenance is malformed")
+    )
 
 
 def _carry_forward_expected_fields(version: object) -> set[str]:
@@ -733,13 +767,12 @@ def _validate_carry_forward_header(
         version
     ):
         raise AuthoringWorkbenchError("Workspace carry-forward provenance is malformed")
+    source_workspace_id = carry.get("source_workspace_id")
     if (
         carry.get("schema") != "vntts.authoring-carry-forward"
         or version not in {1, 2, 3, 4}
-        or not isinstance(carry.get("source_workspace_id"), str)
-        or not re.fullmatch(
-            r"resume-[0-9a-f]{24}-[0-9a-f]{16}", carry["source_workspace_id"]
-        )
+        or not isinstance(source_workspace_id, str)
+        or not re.fullmatch(r"resume-[0-9a-f]{24}-[0-9a-f]{16}", source_workspace_id)
     ):
         raise AuthoringWorkbenchError("Workspace carry-forward identity is invalid")
     source_state_sha256 = _require_sha256(
@@ -778,8 +811,9 @@ def _validate_carry_forward_failure_policy(
         raise AuthoringWorkbenchError(
             "Workspace carry-forward failure selection is invalid"
         )
-    source_run_config = carry.get("source_run_config")
-    _workspace_run_config_with_policy(source_run_config)
+    source_run_config = _workspace_run_config_with_policy(
+        carry.get("source_run_config")
+    )
     target_run_config = _workspace_run_config_with_policy(workspace.get("run_config"))
     if version == 2:
         _validate_offline_fallback_backend(source_run_config, target_run_config)
@@ -960,7 +994,11 @@ def _validate_failed_carry_forward_item(
             "Workspace carry-forward failure item is not selected"
         )
     _required_text(item.get("source_provider"), "Carry-forward source provider")
-    if item.get("source_provider") != carry["source_run_config"]["backend"]:
+    source_run_config = _json_document(
+        carry.get("source_run_config"),
+        "Workspace carry-forward provenance is malformed",
+    )
+    if item.get("source_provider") != source_run_config.get("backend"):
         raise AuthoringWorkbenchError(
             "Workspace carry-forward failure backend is inconsistent"
         )
@@ -1116,18 +1154,31 @@ def _validate_workspace_offline_fallback_state(
     queue_path = directory / "queue.jsonl"
     state_path = directory / "generated-audio" / "generation-state.json"
     state = _load_workspace_generation_state(state, state_path, queue_path)
-    ledger = {
-        item["queue_id"]: {
-            key: value for key, value in item.items() if key != "queue_id"
-        }
-        for item in carry["items"]
-        if item.get("mode") == "failed-outcome"
-    }
-    target_provider = workspace["run_config"]["backend"]
+    carry_items = carry.get("items")
+    if not isinstance(carry_items, list):
+        raise AuthoringWorkbenchError(
+            "Workspace carry-forward item ledger is malformed"
+        )
+    ledger: dict[str, JsonDocument] = {}
+    for item_value in carry_items:
+        if not _is_json_document(item_value):
+            continue
+        queue_id = item_value.get("queue_id")
+        if isinstance(queue_id, str) and item_value.get("mode") == "failed-outcome":
+            ledger[queue_id] = {
+                key: value for key, value in item_value.items() if key != "queue_id"
+            }
+    run_config = _json_document(
+        workspace.get("run_config"), "Workspace run configuration is malformed"
+    )
+    target_provider = _required_text(run_config.get("backend"), "Generation backend")
+    state_items = _json_document(
+        state.get("items"), "Workspace generation state items are malformed"
+    )
     repair_policy = _workspace_failure_repair_policy(workspace)
     for queue_id, expected in ledger.items():
         _validate_offline_fallback_item(
-            state["items"].get(queue_id),
+            state_items.get(queue_id),
             queue_id,
             expected,
             target_provider,
@@ -1307,9 +1358,12 @@ def _voice_control_inventory(
 def _validate_workspace_failure_reference_binding(
     directory: Path, workspace: WorkspaceDocument
 ) -> None:
-    config = workspace.get("failure_reference_binding")
-    if config is None:
+    config_value = workspace.get("failure_reference_binding")
+    if config_value is None:
         return
+    config = _json_document(
+        config_value, "Workspace failure-reference binding is malformed"
+    )
     binding_path = _validate_failure_reference_binding_config(directory, config)
     try:
         binding = load_failure_reference_binding(binding_path.parent)
@@ -1379,14 +1433,19 @@ def _validate_failure_reference_binding_config(directory: Path, config: object) 
 def _validate_failure_reference_binding_source(
     workspace: WorkspaceDocument, document: JsonDocument
 ) -> None:
-    source = document["source_authority"]
+    source = _json_document(
+        document.get("source_authority"),
+        "Failure-reference binding source authority is malformed",
+    )
     voice = workspace.get("voice_manifest")
     compatible_queue_sha256s = {
         workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError)
     }
     queue_extension = workspace.get("queue_extension")
-    if isinstance(queue_extension, dict):
-        compatible_queue_sha256s.add(queue_extension.get("base_queue_sha256"))
+    if _is_json_document(queue_extension):
+        base_queue_sha256 = queue_extension.get("base_queue_sha256")
+        if isinstance(base_queue_sha256, str):
+            compatible_queue_sha256s.add(base_queue_sha256)
     if (
         source["queue_sha256"] not in compatible_queue_sha256s
         or not isinstance(voice, dict)
@@ -1400,8 +1459,14 @@ def _validate_failure_reference_binding_source(
 def _failure_reference_control_inventory(
     directory: Path, document: JsonDocument
 ) -> list[JsonDocument]:
-    expected_controls = []
-    for group in document["groups"]:
+    expected_controls: list[JsonDocument] = []
+    groups = document.get("groups")
+    if not isinstance(groups, list):
+        raise AuthoringWorkbenchError("Failure-reference binding groups are malformed")
+    for group_value in groups:
+        group = _json_document(
+            group_value, "Failure-reference binding group is malformed"
+        )
         relative = (
             Path("inputs")
             / "failure-reference-binding"
@@ -1461,16 +1526,26 @@ def _load_workspace_snapshot(
     return directory, document, digest
 
 
-def load_workspace_authority(workspace_directory: str | Path) -> tuple[Path, WorkspaceDocument, str]:
+def load_workspace_authority(
+    workspace_directory: str | Path,
+) -> tuple[Path, WorkspaceDocument, str]:
     """Load one fully validated workspace from an exact document snapshot."""
     return _load_workspace_snapshot(workspace_directory, "authority")
 
 
-def _validate_workspace_outcome_merge(directory: Path, workspace: WorkspaceDocument, *, state: GenerationState | None = None) -> None:
-    merge = workspace.get("outcome_merge")
-    if merge is None:
+def _validate_workspace_outcome_merge(
+    directory: Path,
+    workspace: WorkspaceDocument,
+    *,
+    state: GenerationState | None = None,
+) -> None:
+    merge_value = workspace.get("outcome_merge")
+    if merge_value is None:
         return
-    _validate_outcome_merge_header(merge)
+    _validate_outcome_merge_header(merge_value)
+    merge = _json_document(
+        merge_value, "Workspace outcome merge provenance is malformed"
+    )
     source_by_id = _validate_outcome_merge_sources(merge)
     items = merge.get("items")
     if not isinstance(items, list) or not items:
@@ -1536,17 +1611,29 @@ def _validate_outcome_merge_sources(merge: JsonDocument) -> dict[str, JsonDocume
     if not isinstance(sources, list) or not sources:
         raise AuthoringWorkbenchError("Workspace outcome merge source ledger is empty")
     source_by_id: dict[str, JsonDocument] = {}
-    for source in sources:
+    validated_sources: list[JsonDocument] = []
+    for source_value in sources:
+        source = _json_document(
+            source_value, "Workspace outcome merge source is malformed"
+        )
         _validate_outcome_merge_source(source, source_by_id, merge["base_workspace_id"])
-        source_by_id[source["workspace_id"]] = source
-    if sources != sorted(sources, key=lambda value: value["workspace_id"]):
+        workspace_id = _required_text(
+            source.get("workspace_id"), "Outcome merge source workspace ID"
+        )
+        source_by_id[workspace_id] = source
+        validated_sources.append(source)
+    if validated_sources != sorted(
+        validated_sources, key=lambda value: str(value["workspace_id"])
+    ):
         raise AuthoringWorkbenchError(
             "Workspace outcome merge sources are not canonical"
         )
     return source_by_id
 
 
-def _validate_outcome_merge_source(source: object, source_by_id: Mapping[str, JsonDocument], base_workspace_id: object) -> None:
+def _validate_outcome_merge_source(
+    source: object, source_by_id: Mapping[str, JsonDocument], base_workspace_id: object
+) -> None:
     if not isinstance(source, dict) or set(source) != {
         "workspace_id",
         "config_fingerprint",
@@ -1574,7 +1661,9 @@ def _validate_outcome_merge_source(source: object, source_by_id: Mapping[str, Js
         raise AuthoringWorkbenchError("Workspace outcome merge source count is invalid")
 
 
-def _workspace_extension_queue_ids(workspace: WorkspaceDocument, field: str) -> set[str]:
+def _workspace_extension_queue_ids(
+    workspace: WorkspaceDocument, field: str
+) -> set[str]:
     extension = workspace.get(field)
     items = extension.get("items") if isinstance(extension, dict) else None
     if not isinstance(items, list):
@@ -1586,7 +1675,9 @@ def _workspace_extension_queue_ids(workspace: WorkspaceDocument, field: str) -> 
     }
 
 
-def _outcome_merge_extension_queue_ids(workspace: WorkspaceDocument) -> tuple[set[str], object, set[str]]:
+def _outcome_merge_extension_queue_ids(
+    workspace: WorkspaceDocument,
+) -> tuple[set[str], object, set[str]]:
     audio_event = workspace.get("audio_event_composition")
     audio_event_queue_id = (
         audio_event.get("queue_id") if isinstance(audio_event, dict) else None
@@ -1599,8 +1690,13 @@ def _outcome_merge_extension_queue_ids(workspace: WorkspaceDocument) -> tuple[se
 
 
 def _validate_outcome_merge_item(
-    directory: Path, item: object, source_by_id: Mapping[str, JsonDocument], state: GenerationState,
-    terminal_queue_ids: set[str], audio_event_queue_id: object, rejection_queue_ids: set[str],
+    directory: Path,
+    item: object,
+    source_by_id: Mapping[str, JsonDocument],
+    state: GenerationState,
+    terminal_queue_ids: set[str],
+    audio_event_queue_id: object,
+    rejection_queue_ids: set[str],
 ) -> tuple[str, str]:
     if not isinstance(item, dict) or set(item) != {
         "queue_id",
@@ -1613,12 +1709,10 @@ def _validate_outcome_merge_item(
     }:
         raise AuthoringWorkbenchError("Workspace outcome merge item is malformed")
     queue_id = _required_text(item.get("queue_id"), "Outcome merge queue ID")
-    source_workspace_id = item.get("source_workspace_id")
-    source = (
-        source_by_id.get(source_workspace_id)
-        if isinstance(source_workspace_id, str)
-        else None
+    source_workspace_id = _required_text(
+        item.get("source_workspace_id"), "Outcome merge source workspace ID"
     )
+    source = source_by_id.get(source_workspace_id)
     if (
         source is None
         or item.get("source_state_sha256") != source["state_sha256"]
@@ -1635,9 +1729,12 @@ def _validate_outcome_merge_item(
         item.get("audio_sha256"), "Outcome merge WAV SHA-256"
     )
     if queue_id != audio_event_queue_id:
+        state_items = _json_document(
+            state.get("items"), "Workspace generation state items are malformed"
+        )
         _validate_outcome_merge_result(
             directory,
-            state["items"].get(queue_id),
+            state_items.get(queue_id),
             item,
             queue_id,
             source_item_sha256,
@@ -1645,12 +1742,18 @@ def _validate_outcome_merge_item(
             terminal_queue_ids,
             rejection_queue_ids,
         )
-    return queue_id, item["source_workspace_id"]
+    return queue_id, source_workspace_id
 
 
 def _validate_outcome_merge_result(
-    directory: Path, result: object, item: JsonDocument, queue_id: str,
-    source_item_sha256: str, audio_sha256: str, terminal_queue_ids: set[str], rejection_queue_ids: set[str],
+    directory: Path,
+    result: object,
+    item: JsonDocument,
+    queue_id: str,
+    source_item_sha256: str,
+    audio_sha256: str,
+    terminal_queue_ids: set[str],
+    rejection_queue_ids: set[str],
 ) -> None:
     if not isinstance(result, dict) or not _terminal_review_outcome(result):
         raise AuthoringWorkbenchError(
@@ -1682,7 +1785,9 @@ def _validate_outcome_merge_result(
         )
 
 
-def _validate_merged_fallback_base(source_result: JsonDocument, queue_id: str, terminal_queue_ids: set[str]) -> None:
+def _validate_merged_fallback_base(
+    source_result: JsonDocument, queue_id: str, terminal_queue_ids: set[str]
+) -> None:
     fallback = source_result.pop("live_fallback", None)
     evidence = fallback.get("evidence") if isinstance(fallback, dict) else None
     base_result = (
@@ -1708,7 +1813,10 @@ def _validate_merged_fallback_base(source_result: JsonDocument, queue_id: str, t
 
 
 def _validate_merge_ledger_counts(
-    queue_ids: Sequence[str], counts: Counter[str], source_by_id: Mapping[str, JsonDocument], label: str
+    queue_ids: Sequence[str],
+    counts: Counter[str],
+    source_by_id: Mapping[str, JsonDocument],
+    label: str,
 ) -> None:
     if queue_ids != sorted(set(queue_ids)):
         raise AuthoringWorkbenchError(f"Workspace {label} item ledger is not canonical")
@@ -1722,12 +1830,18 @@ def _validate_merge_ledger_counts(
 
 
 def _validate_workspace_terminal_conflict_merge(
-    directory: Path, workspace: WorkspaceDocument, *, state: GenerationState | None = None
+    directory: Path,
+    workspace: WorkspaceDocument,
+    *,
+    state: GenerationState | None = None,
 ) -> None:
-    merge = workspace.get("terminal_conflict_merge")
-    if merge is None:
+    merge_value = workspace.get("terminal_conflict_merge")
+    if merge_value is None:
         return
-    _validate_terminal_conflict_merge_header(merge)
+    _validate_terminal_conflict_merge_header(merge_value)
+    merge = _json_document(
+        merge_value, "Workspace terminal conflict merge provenance is malformed"
+    )
     source_by_id = _validate_terminal_conflict_merge_sources(merge)
     items = merge.get("items")
     if not isinstance(items, list) or not items:
@@ -1796,24 +1910,35 @@ def _validate_terminal_conflict_merge_header(merge: object) -> int:
     return 1
 
 
-def _validate_terminal_conflict_merge_sources(merge: JsonDocument) -> dict[str, JsonDocument]:
+def _validate_terminal_conflict_merge_sources(
+    merge: JsonDocument,
+) -> dict[str, JsonDocument]:
     sources = merge.get("sources")
     if not isinstance(sources, list) or not sources:
         raise AuthoringWorkbenchError(
             "Workspace terminal conflict source ledger is empty"
         )
     source_by_id: dict[str, JsonDocument] = {}
-    for source in sources:
+    validated_sources: list[JsonDocument] = []
+    for source_value in sources:
+        source = _json_document(
+            source_value, "Workspace terminal conflict source is malformed"
+        )
         workspace_id = _validate_terminal_conflict_merge_source(source, source_by_id)
         source_by_id[workspace_id] = source
-    if sources != sorted(sources, key=lambda value: value["workspace_id"]):
+        validated_sources.append(source)
+    if validated_sources != sorted(
+        validated_sources, key=lambda value: str(value["workspace_id"])
+    ):
         raise AuthoringWorkbenchError(
             "Workspace terminal conflict sources are not canonical"
         )
     return source_by_id
 
 
-def _validate_terminal_conflict_merge_source(source: object, source_by_id: Mapping[str, JsonDocument]) -> str:
+def _validate_terminal_conflict_merge_source(
+    source: object, source_by_id: Mapping[str, JsonDocument]
+) -> str:
     if not isinstance(source, dict) or set(source) != {
         "workspace_id",
         "config_fingerprint",
@@ -1847,7 +1972,10 @@ def _validate_terminal_conflict_merge_source(source: object, source_by_id: Mappi
 
 
 def _validate_terminal_conflict_merge_item(
-    directory: Path, item: object, source_by_id: Mapping[str, JsonDocument], state: GenerationState
+    directory: Path,
+    item: object,
+    source_by_id: Mapping[str, JsonDocument],
+    state: GenerationState,
 ) -> tuple[str, str]:
     item_fields = {
         "queue_id",
@@ -1863,12 +1991,10 @@ def _validate_terminal_conflict_merge_item(
     if not isinstance(item, dict) or set(item) != item_fields:
         raise AuthoringWorkbenchError("Workspace terminal conflict item is malformed")
     queue_id = _required_text(item.get("queue_id"), "Terminal conflict queue ID")
-    source_workspace_id = item.get("source_workspace_id")
-    source = (
-        source_by_id.get(source_workspace_id)
-        if isinstance(source_workspace_id, str)
-        else None
+    source_workspace_id = _required_text(
+        item.get("source_workspace_id"), "Terminal conflict source workspace ID"
     )
+    source = source_by_id.get(source_workspace_id)
     if (
         source is None
         or item.get("source_state_sha256") != source["state_sha256"]
@@ -1881,10 +2007,13 @@ def _validate_terminal_conflict_merge_item(
             "Workspace terminal conflict item provenance is inconsistent"
         )
     _validate_terminal_conflict_item_identity(item)
-    _validate_terminal_conflict_result(
-        directory, state["items"].get(queue_id), item, queue_id
+    state_items = _json_document(
+        state.get("items"), "Workspace generation state items are malformed"
     )
-    return queue_id, item["source_workspace_id"]
+    _validate_terminal_conflict_result(
+        directory, state_items.get(queue_id), item, queue_id
+    )
+    return queue_id, source_workspace_id
 
 
 def _validate_terminal_conflict_item_identity(item: JsonDocument) -> None:
@@ -1958,7 +2087,9 @@ def _load_json(path: Path, description: str) -> JsonDocument:
     return value
 
 
-def _load_json_snapshot(path: Path, description: str) -> tuple[JsonDocument, str, bytes]:
+def _load_json_snapshot(
+    path: Path, description: str
+) -> tuple[JsonDocument, str, bytes]:
     value = load_json_object_snapshot(
         path, description, error_type=AuthoringWorkbenchError
     )
