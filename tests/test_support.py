@@ -180,6 +180,27 @@ class GenerationTimelineLogTest(unittest.TestCase):
         event = timelines.snapshot()[0]["events"][0]
         self.assertTrue(event["underflowed"])
 
+    def test_preserves_playback_completion_audio_metrics(self):
+        timelines = GenerationTimelineLog()
+
+        timelines.record(
+            "playback-completion",
+            1,
+            3.0,
+            source_sample_rate=24_000,
+            playback_sample_rate=48_000,
+            sample_count=960_000,
+            expected_playback_ms=20_000.0,
+            private_text="must not be retained",
+        )
+
+        event = timelines.snapshot()[0]["events"][0]
+        self.assertEqual(event["source_sample_rate"], 24_000)
+        self.assertEqual(event["playback_sample_rate"], 48_000)
+        self.assertEqual(event["sample_count"], 960_000)
+        self.assertEqual(event["expected_playback_ms"], 20_000.0)
+        self.assertNotIn("private_text", event)
+
     def test_keeps_distinct_privacy_safe_route_events_for_multiple_chunks(self):
         timelines = GenerationTimelineLog()
 

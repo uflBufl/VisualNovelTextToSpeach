@@ -144,6 +144,10 @@ generation_timeline_detail_fields = (
     "from_canonical_full_text_ms",
     "source_audio_lead_ms",
     "first_pcm_before_canonical_full_ms",
+    "source_sample_rate",
+    "playback_sample_rate",
+    "sample_count",
+    "expected_playback_ms",
 )
 
 
