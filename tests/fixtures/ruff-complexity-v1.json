@@ -1054,24 +1054,6 @@
     {
       "code": "C901",
       "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_validate_workspace_failure_reference_binding",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_validate_workspace_input_config",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_validate_workspace_offline_fallback_state",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workspace_authority.py",
       "scope": "_validate_workspace_outcome_merge",
       "count": 1
     },
@@ -2465,18 +2447,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/workbench.py",
       "scope": "_runtime_status",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_validate_workspace_failure_reference_binding",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_validate_workspace_input_config",
       "count": 1
     },
     {

@@ -1045,52 +1045,64 @@ def _validate_workspace_offline_fallback_state(directory, workspace, *, state=No
     target_provider = workspace["run_config"]["backend"]
     repair_policy = _workspace_failure_repair_policy(workspace)
     for queue_id, expected in ledger.items():
-        result = state["items"].get(queue_id)
-        if not isinstance(result, dict):
-            raise AuthoringWorkbenchError(
-                f"Workspace offline fallback state is missing {queue_id!r}"
-            )
-        observed = result.get("carry_forward")
-        repair = result.get("failure_repair")
-        if observed is None and isinstance(repair, dict):
-            observed = repair.get("source_failure")
-        strategy = repair_policy.strategy_for(queue_id)
-        if observed != expected:
-            raise AuthoringWorkbenchError(
-                f"Workspace carried failure source changed for {queue_id!r}"
-            )
-        transitioned_same_backend_repair = (
-            strategy
-            in {
-                SENTENCE_BOUNDARY_SEGMENTATION,
-                BOUNDED_SEED_RETRY,
-                INLINE_PAUSE_MARKER,
-            }
-            and isinstance(repair, dict)
-            and repair.get("strategy") == strategy
+        _validate_offline_fallback_item(
+            state["items"].get(queue_id),
+            queue_id,
+            expected,
+            target_provider,
+            repair_policy.strategy_for(queue_id),
         )
-        if transitioned_same_backend_repair:
-            if result.get("provider") != target_provider:
-                raise AuthoringWorkbenchError(
-                    f"Workspace same-backend repair provider changed for {queue_id!r}"
-                )
-        elif result.get("provider") == expected["source_provider"]:
-            source_result = copy.deepcopy(result)
-            source_result.pop("carry_forward", None)
-            parent_carry = expected.get("source_parent_carry_forward")
-            if parent_carry is not None:
-                source_result["carry_forward"] = copy.deepcopy(parent_carry)
-            if (
-                canonical_document_sha256(source_result)
-                != expected["source_item_sha256"]
-            ):
-                raise AuthoringWorkbenchError(
-                    f"Workspace carried failure changed for {queue_id!r}"
-                )
-        elif result.get("provider") != target_provider:
+
+
+def _validate_offline_fallback_item(
+    result, queue_id, expected, target_provider, strategy
+):
+    if not isinstance(result, dict):
+        raise AuthoringWorkbenchError(
+            f"Workspace offline fallback state is missing {queue_id!r}"
+        )
+    observed = result.get("carry_forward")
+    repair = result.get("failure_repair")
+    if observed is None and isinstance(repair, dict):
+        observed = repair.get("source_failure")
+    if observed != expected:
+        raise AuthoringWorkbenchError(
+            f"Workspace carried failure source changed for {queue_id!r}"
+        )
+    same_backend_repair = (
+        strategy
+        in {
+            SENTENCE_BOUNDARY_SEGMENTATION,
+            BOUNDED_SEED_RETRY,
+            INLINE_PAUSE_MARKER,
+        }
+        and isinstance(repair, dict)
+        and repair.get("strategy") == strategy
+    )
+    if same_backend_repair:
+        if result.get("provider") != target_provider:
             raise AuthoringWorkbenchError(
-                f"Workspace offline fallback provider changed for {queue_id!r}"
+                f"Workspace same-backend repair provider changed for {queue_id!r}"
             )
+        return
+    if result.get("provider") == expected["source_provider"]:
+        _validate_carried_failure_result(result, expected, queue_id)
+    elif result.get("provider") != target_provider:
+        raise AuthoringWorkbenchError(
+            f"Workspace offline fallback provider changed for {queue_id!r}"
+        )
+
+
+def _validate_carried_failure_result(result, expected, queue_id):
+    source_result = copy.deepcopy(result)
+    source_result.pop("carry_forward", None)
+    parent_carry = expected.get("source_parent_carry_forward")
+    if parent_carry is not None:
+        source_result["carry_forward"] = copy.deepcopy(parent_carry)
+    if canonical_document_sha256(source_result) != expected["source_item_sha256"]:
+        raise AuthoringWorkbenchError(
+            f"Workspace carried failure changed for {queue_id!r}"
+        )
 
 
 def _load_workspace_generation_state(state, state_path, queue_path):
@@ -1105,98 +1117,119 @@ def _load_workspace_generation_state(state, state_path, queue_path):
 def _validate_workspace_input_config(directory, workspace, import_snapshot):
     story = workspace.get("story_index")
     if story is not None:
-        if not isinstance(story, dict) or set(story) != {
-            "path",
-            "sha256",
-            "legacy_sha256_at_import",
-            "matches_legacy",
-        }:
-            raise AuthoringWorkbenchError(
-                "Workspace story snapshot binding is malformed"
-            )
-        path = _within(
-            directory,
-            _safe_relative(story["path"], "Story index snapshot"),
-            "Story index snapshot",
-        )
-        if story["path"] != "inputs/story-index.jsonl" or not path.is_file():
-            raise AuthoringWorkbenchError("Workspace story snapshot path was modified")
-        if sha256_file(path) != _require_sha256(
-            story["sha256"], "Story index snapshot SHA-256"
-        ):
-            raise AuthoringWorkbenchError("Workspace story snapshot was modified")
-        legacy_digest = _legacy_input_digest(import_snapshot, "story_index")
-        if story["legacy_sha256_at_import"] != legacy_digest or story[
-            "matches_legacy"
-        ] != (legacy_digest == story["sha256"] if legacy_digest else None):
-            raise AuthoringWorkbenchError(
-                "Workspace story provenance claim was modified"
-            )
+        _validate_story_input(directory, story, import_snapshot)
     voice = workspace.get("voice_manifest")
     if voice is not None:
-        if not isinstance(voice, dict) or set(voice) != {
-            "path",
-            "sha256",
-            "controls",
-            "legacy_sha256_at_import",
-            "matches_legacy",
-        }:
-            raise AuthoringWorkbenchError(
-                "Workspace voice snapshot binding is malformed"
-            )
-        if voice["path"] != "inputs/voice/manifest.json":
-            raise AuthoringWorkbenchError("Workspace voice snapshot path was modified")
-        controls = voice.get("controls")
-        if not isinstance(controls, list) or any(
-            not isinstance(value, dict) or set(value) != {"path", "sha256"}
-            for value in controls
-        ):
-            raise AuthoringWorkbenchError("Workspace voice controls are malformed")
-        legacy_digest = _legacy_input_digest(import_snapshot, "voice_manifest")
-        if voice["legacy_sha256_at_import"] != legacy_digest or voice[
-            "matches_legacy"
-        ] != (legacy_digest == voice["sha256"] if legacy_digest else None):
-            raise AuthoringWorkbenchError(
-                "Workspace voice provenance claim was modified"
-            )
-        manifest_path = directory / "inputs" / "voice" / "manifest.json"
-        if not manifest_path.is_file() or sha256_file(manifest_path) != _require_sha256(
-            voice["sha256"], "Voice manifest snapshot SHA-256"
-        ):
-            raise AuthoringWorkbenchError(
-                "Workspace voice manifest snapshot was modified"
-            )
-        try:
-            _document, entries = load_voice_manifest(manifest_path)
-        except VoiceManifestError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
-        expected_controls = []
-        seen = set()
-        for entry in entries:
-            for value in entry.references:
-                relative = _safe_relative(value, "Voice reference")
-                control_path = (Path("inputs") / "voice" / relative).as_posix()
-                if control_path in seen:
-                    continue
-                seen.add(control_path)
-                reference = _within(directory, Path(control_path), "Voice reference")
-                if not reference.is_file():
-                    raise AuthoringWorkbenchError(
-                        "Workspace voice reference snapshot is missing"
-                    )
-                expected_controls.append(
-                    {"path": control_path, "sha256": sha256_file(reference)}
+        _validate_voice_input(directory, voice, import_snapshot)
+
+
+def _validate_story_input(directory, story, import_snapshot):
+    if not isinstance(story, dict) or set(story) != {
+        "path",
+        "sha256",
+        "legacy_sha256_at_import",
+        "matches_legacy",
+    }:
+        raise AuthoringWorkbenchError("Workspace story snapshot binding is malformed")
+    path = _within(
+        directory,
+        _safe_relative(story["path"], "Story index snapshot"),
+        "Story index snapshot",
+    )
+    if story["path"] != "inputs/story-index.jsonl" or not path.is_file():
+        raise AuthoringWorkbenchError("Workspace story snapshot path was modified")
+    if sha256_file(path) != _require_sha256(
+        story["sha256"], "Story index snapshot SHA-256"
+    ):
+        raise AuthoringWorkbenchError("Workspace story snapshot was modified")
+    legacy_digest = _legacy_input_digest(import_snapshot, "story_index")
+    matches_legacy = legacy_digest == story["sha256"] if legacy_digest else None
+    if (
+        story["legacy_sha256_at_import"] != legacy_digest
+        or story["matches_legacy"] != matches_legacy
+    ):
+        raise AuthoringWorkbenchError("Workspace story provenance claim was modified")
+
+
+def _validate_voice_input(directory, voice, import_snapshot):
+    if not isinstance(voice, dict) or set(voice) != {
+        "path",
+        "sha256",
+        "controls",
+        "legacy_sha256_at_import",
+        "matches_legacy",
+    }:
+        raise AuthoringWorkbenchError("Workspace voice snapshot binding is malformed")
+    if voice["path"] != "inputs/voice/manifest.json":
+        raise AuthoringWorkbenchError("Workspace voice snapshot path was modified")
+    controls = voice.get("controls")
+    if not isinstance(controls, list) or any(
+        not isinstance(value, dict) or set(value) != {"path", "sha256"}
+        for value in controls
+    ):
+        raise AuthoringWorkbenchError("Workspace voice controls are malformed")
+    legacy_digest = _legacy_input_digest(import_snapshot, "voice_manifest")
+    matches_legacy = legacy_digest == voice["sha256"] if legacy_digest else None
+    if (
+        voice["legacy_sha256_at_import"] != legacy_digest
+        or voice["matches_legacy"] != matches_legacy
+    ):
+        raise AuthoringWorkbenchError("Workspace voice provenance claim was modified")
+    manifest_path = directory / "inputs" / "voice" / "manifest.json"
+    if not manifest_path.is_file() or sha256_file(manifest_path) != _require_sha256(
+        voice["sha256"], "Voice manifest snapshot SHA-256"
+    ):
+        raise AuthoringWorkbenchError("Workspace voice manifest snapshot was modified")
+    try:
+        _document, entries = load_voice_manifest(manifest_path)
+    except VoiceManifestError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    if controls != _voice_control_inventory(directory, entries):
+        raise AuthoringWorkbenchError("Workspace voice control inventory was modified")
+
+
+def _voice_control_inventory(directory, entries):
+    controls = []
+    seen = set()
+    for entry in entries:
+        for value in entry.references:
+            relative = _safe_relative(value, "Voice reference")
+            control_path = (Path("inputs") / "voice" / relative).as_posix()
+            if control_path in seen:
+                continue
+            seen.add(control_path)
+            reference = _within(directory, Path(control_path), "Voice reference")
+            if not reference.is_file():
+                raise AuthoringWorkbenchError(
+                    "Workspace voice reference snapshot is missing"
                 )
-        if controls != expected_controls:
-            raise AuthoringWorkbenchError(
-                "Workspace voice control inventory was modified"
-            )
+            controls.append({"path": control_path, "sha256": sha256_file(reference)})
+    return controls
 
 
 def _validate_workspace_failure_reference_binding(directory, workspace):
     config = workspace.get("failure_reference_binding")
     if config is None:
         return
+    binding_path = _validate_failure_reference_binding_config(directory, config)
+    try:
+        binding = load_failure_reference_binding(binding_path.parent)
+        document = load_failure_reference_binding_document(binding.directory)
+    except FailureReferenceBindingError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    if binding.binding_id != config["binding_id"]:
+        raise AuthoringWorkbenchError(
+            "Workspace failure-reference binding identity was modified"
+        )
+    _validate_failure_reference_binding_source(workspace, document)
+    expected_controls = _failure_reference_control_inventory(directory, document)
+    if config.get("controls") != expected_controls:
+        raise AuthoringWorkbenchError(
+            "Workspace failure-reference control inventory was modified"
+        )
+
+
+def _validate_failure_reference_binding_config(directory, config):
     fields = {
         "path",
         "sha256",
@@ -1241,15 +1274,10 @@ def _validate_workspace_failure_reference_binding(directory, workspace):
         raise AuthoringWorkbenchError(
             "Workspace failure-reference binding snapshot was modified"
         )
-    try:
-        binding = load_failure_reference_binding(binding_path.parent)
-        document = load_failure_reference_binding_document(binding.directory)
-    except FailureReferenceBindingError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    if binding.binding_id != config["binding_id"]:
-        raise AuthoringWorkbenchError(
-            "Workspace failure-reference binding identity was modified"
-        )
+    return binding_path
+
+
+def _validate_failure_reference_binding_source(workspace, document):
     source = document["source_authority"]
     voice = workspace.get("voice_manifest")
     compatible_queue_sha256s = {
@@ -1266,6 +1294,9 @@ def _validate_workspace_failure_reference_binding(directory, workspace):
         raise AuthoringWorkbenchError(
             "Workspace failure-reference binding controls differ from its workspace"
         )
+
+
+def _failure_reference_control_inventory(directory, document):
     expected_controls = []
     for group in document["groups"]:
         relative = (
@@ -1288,10 +1319,7 @@ def _validate_workspace_failure_reference_binding(directory, workspace):
                 "sha256": group["reference_sha256"],
             }
         )
-    if config.get("controls") != expected_controls:
-        raise AuthoringWorkbenchError(
-            "Workspace failure-reference control inventory was modified"
-        )
+    return expected_controls
 
 
 def _stable_workspace_state(directory, workspace, label):
