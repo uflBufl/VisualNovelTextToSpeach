@@ -11,6 +11,8 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import TracebackType
+from typing import Callable, Literal, SupportsInt, TypedDict
 
 from vntts_artifacts.text_utils import slugify
 
@@ -24,22 +26,32 @@ LEASE_SCHEMA = "vntts.authoring-generation-lease"
 LEASE_VERSION = 1
 
 
+class GenerationLeaseDocument(TypedDict):
+    schema: str
+    schema_version: int
+    queue_sha256: str
+    pid: int
+    hostname: str
+    process_started_at: str | None
+    lease_id: str
+    started_at: str
+
+
 class BulkGenerationError(RuntimeError):
     """A queue cannot be generated or resumed safely."""
 
 
-def inspect_process_status(pid):
+def inspect_process_status(pid: object) -> Literal["live", "dead", "unknown"]:
     """Return ``live``, ``dead`` or ``unknown`` without changing the process."""
-    try:
-        pid = int(pid)
-    except TypeError, ValueError:
+    process_id = _process_id(pid)
+    if process_id is None:
         return "unknown"
-    if pid <= 0:
+    if process_id <= 0:
         return "unknown"
     if sys.platform == "win32":
-        return _inspect_windows_process(pid)
+        return _inspect_windows_process(process_id)
     try:
-        os.kill(pid, 0)
+        os.kill(process_id, 0)
     except ProcessLookupError:
         return "dead"
     except PermissionError, OSError:
@@ -47,12 +59,12 @@ def inspect_process_status(pid):
     return "live"
 
 
-def process_is_alive(pid):
+def process_is_alive(pid: object) -> bool:
     """Fail closed for ownership checks when liveness cannot be inspected."""
     return inspect_process_status(pid) != "dead"
 
 
-def _inspect_windows_process(pid):
+def _inspect_windows_process(pid: int) -> Literal["live", "dead", "unknown"]:
     # Windows implements os.kill(pid, 0) with TerminateProcess. A read-only
     # process handle is required for a genuinely non-destructive liveness probe.
     import ctypes
@@ -62,7 +74,7 @@ def _inspect_windows_process(pid):
     still_active = 259
     error_access_denied = 5
     error_invalid_parameter = 87
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
     kernel32.OpenProcess.restype = wintypes.HANDLE
     kernel32.GetExitCodeProcess.argtypes = (
@@ -75,7 +87,7 @@ def _inspect_windows_process(pid):
 
     handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
     if not handle:
-        error = ctypes.get_last_error()
+        error = getattr(ctypes, "get_last_error")()
         if error == error_invalid_parameter:
             return "dead"
         if error == error_access_denied:
@@ -90,27 +102,29 @@ def _inspect_windows_process(pid):
         kernel32.CloseHandle(handle)
 
 
-def process_started_at(pid):
+def process_started_at(pid: object) -> str | None:
     """Return the operating-system process start identity when inspectable."""
+    process_id = _process_id(pid)
+    if process_id is None:
+        return None
     try:
-        pid = int(pid)
         completed = subprocess.run(
-            ("ps", "-o", "lstart=", "-p", str(pid)),
+            ("ps", "-o", "lstart=", "-p", str(process_id)),
             check=True,
             capture_output=True,
             text=True,
         )
-    except TypeError, ValueError, OSError, subprocess.CalledProcessError:
+    except OSError, subprocess.CalledProcessError:
         return None
     return completed.stdout.strip() or None
 
 
 def archive_interrupted_artifact(
-    output_directory,
-    source,
+    output_directory: str | Path,
+    source: str | Path,
     *,
-    expected_payload=None,
-):
+    expected_payload: bytes | None = None,
+) -> Path:
     """Move one abandoned output artifact into its contained recovery archive."""
     output_directory = Path(output_directory).resolve()
     source = Path(source)
@@ -152,35 +166,42 @@ def archive_interrupted_artifact(
 class GenerationLease:
     """Exclusive, crash-recoverable ownership of one generated-audio directory."""
 
-    def __init__(self, output_directory, queue_sha256, *, process_checker):
+    def __init__(
+        self,
+        output_directory: str | Path,
+        queue_sha256: str,
+        *,
+        process_checker: Callable[[object], bool],
+    ) -> None:
         self.output_directory = Path(output_directory)
         self.path = self.output_directory / ".generation-lease.json"
         self.queue_sha256 = queue_sha256
         self.process_checker = process_checker
         self.lease_id = secrets.token_hex(16)
         self.committed = False
-        self.document = None
+        self.document: GenerationLeaseDocument | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> GenerationLease:
         try:
             with exclusive_advisory_lock(self.path.with_suffix(".guard")):
                 if self.path.exists():
                     try:
                         lease_payload = self.path.read_bytes()
-                        existing = json.loads(lease_payload.decode("utf-8"))
+                        parsed: object = json.loads(lease_payload.decode("utf-8"))
                     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                         raise BulkGenerationError(
                             f"Unable to read generation lease {self.path}: {error}"
                         ) from error
                     if (
-                        not isinstance(existing, dict)
-                        or existing.get("schema") != LEASE_SCHEMA
-                        or existing.get("schema_version") != LEASE_VERSION
-                        or not isinstance(existing.get("queue_sha256"), str)
+                        not isinstance(parsed, dict)
+                        or parsed.get("schema") != LEASE_SCHEMA
+                        or parsed.get("schema_version") != LEASE_VERSION
+                        or not isinstance(parsed.get("queue_sha256"), str)
                     ):
                         raise BulkGenerationError(
                             f"Unrecognized generation lease blocks output: {self.path}"
                         )
+                    existing: dict[str, object] = parsed
                     same_host = existing.get("hostname") in {
                         None,
                         socket.gethostname(),
@@ -201,7 +222,7 @@ class GenerationLease:
                         self.path,
                         expected_payload=lease_payload,
                     )
-                lease = {
+                lease: GenerationLeaseDocument = {
                     "schema": LEASE_SCHEMA,
                     "schema_version": LEASE_VERSION,
                     "queue_sha256": self.queue_sha256,
@@ -230,8 +251,13 @@ class GenerationLease:
             ) from error
         return self
 
-    def __exit__(self, error_type, _error, _traceback):
-        ownership_error = None
+    def __exit__(
+        self,
+        error_type: type[BaseException] | None,
+        _error: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        ownership_error: BulkGenerationError | None = None
         try:
             with exclusive_advisory_lock(
                 self.path.with_suffix(".guard"), blocking=True
@@ -248,31 +274,42 @@ class GenerationLease:
         if ownership_error is not None and error_type is None and not self.committed:
             raise BulkGenerationError(str(ownership_error)) from ownership_error
 
-    def assert_owned(self):
+    def assert_owned(self) -> None:
         current = _load_json(self.path)
         if current != self.document:
             raise BulkGenerationError(
                 "Generation lease ownership changed during the run"
             )
 
-    def mark_committed(self):
+    def mark_committed(self) -> None:
         """Do not report cleanup ambiguity as failure after an external commit."""
         self.committed = True
 
 
-def _load_json(path):
-    return load_json_object(
+def _load_json(path: str | Path) -> dict[str, object]:
+    document = load_json_object(
         path,
         "generation lease",
         error_type=BulkGenerationError,
         object_label="Generation lease",
     )
+    return dict(document)
+
+
+def _process_id(value: object) -> int | None:
+    if not isinstance(value, (str, bytes, bytearray, SupportsInt)):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 __all__ = [
     "LEASE_SCHEMA",
     "LEASE_VERSION",
     "BulkGenerationError",
+    "GenerationLeaseDocument",
     "GenerationLease",
     "archive_interrupted_artifact",
     "inspect_process_status",

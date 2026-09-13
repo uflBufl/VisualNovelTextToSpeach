@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from typing import TypeGuard
 
 import numpy as np
 
 from vntts.synthesis import (
+    SynthesisChunkStream,
     SynthesisCompletion,
     SynthesisDiagnostics,
     SynthesisLimits,
@@ -78,7 +81,7 @@ class FailureRepairPolicy:
     inline_pause_queue_ids: tuple[str, ...] = ()
     inline_pause_ms: int = DEFAULT_INLINE_PAUSE_MS
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         sentence = _canonical_queue_ids(
             self.sentence_segment_queue_ids, "Sentence-segment queue IDs"
         )
@@ -146,7 +149,7 @@ class FailureRepairPolicy:
         object.__setattr__(self, "inline_pause_queue_ids", inline)
 
     @property
-    def queue_ids(self):
+    def queue_ids(self) -> tuple[str, ...]:
         return tuple(
             sorted(
                 self.sentence_segment_queue_ids
@@ -158,10 +161,10 @@ class FailureRepairPolicy:
         )
 
     @property
-    def is_empty(self):
+    def is_empty(self) -> bool:
         return not self.queue_ids
 
-    def strategy_for(self, queue_id):
+    def strategy_for(self, queue_id: str) -> str | None:
         if queue_id in self.sentence_segment_queue_ids:
             return SENTENCE_BOUNDARY_SEGMENTATION
         if queue_id in self.edge_silence_queue_ids:
@@ -174,8 +177,8 @@ class FailureRepairPolicy:
             return INLINE_PAUSE_MARKER
         return None
 
-    def to_document(self):
-        document = {
+    def to_document(self) -> dict[str, object]:
+        document: dict[str, object] = {
             "schema_version": LEGACY_FAILURE_REPAIR_POLICY_VERSION,
             "sentence_segment_queue_ids": list(self.sentence_segment_queue_ids),
             "edge_silence_queue_ids": list(self.edge_silence_queue_ids),
@@ -207,7 +210,7 @@ class FailureRepairPolicy:
         return document
 
     @classmethod
-    def from_document(cls, document):
+    def from_document(cls, document: object) -> FailureRepairPolicy:
         if document is None:
             return cls()
         if not isinstance(document, dict):
@@ -253,14 +256,14 @@ class FailureRepairPolicy:
             raise FailureRepairPolicyError("Unsupported failure-repair policy version")
         sentence = document.get("sentence_segment_queue_ids")
         edge = document.get("edge_silence_queue_ids")
-        if not isinstance(sentence, list) or not isinstance(edge, list):
+        if not _queue_id_list(sentence) or not _queue_id_list(edge):
             raise FailureRepairPolicyError(
                 "Failure-repair queue IDs must be JSON lists"
             )
         return cls(
             tuple(sentence),
             tuple(edge),
-            document.get("segment_pause_ms"),
+            _policy_pause(document.get("segment_pause_ms")),
             tuple(document.get("bounded_seed_retry_queue_ids") or ()),
             tuple(document.get("offline_fallback_queue_ids") or ()),
             tuple(document.get("inline_pause_queue_ids") or ()),
@@ -289,7 +292,7 @@ class InternalSilenceCompression:
     repaired_pause_seconds: float
 
 
-def _canonical_queue_ids(values, label):
+def _canonical_queue_ids(values: Sequence[str], label: str) -> tuple[str, ...]:
     if not isinstance(values, (tuple, list)):
         raise FailureRepairPolicyError(f"{label} must be a list")
     canonical = []
@@ -302,7 +305,9 @@ def _canonical_queue_ids(values, label):
     return tuple(sorted(canonical))
 
 
-def safe_sentence_segments(text, *, minimum_words=DEFAULT_MIN_SEGMENT_WORDS):
+def safe_sentence_segments(
+    text: object, *, minimum_words: object = DEFAULT_MIN_SEGMENT_WORDS
+) -> tuple[str, ...]:
     """Split only between complete, substantial sentences; otherwise do nothing."""
     if not isinstance(text, str) or not text.strip():
         raise ValueError("Repair text must be non-empty text")
@@ -320,7 +325,9 @@ def safe_sentence_segments(text, *, minimum_words=DEFAULT_MIN_SEGMENT_WORDS):
     return segments
 
 
-def inline_sentence_pause_prompt(text, *, pause_ms=DEFAULT_INLINE_PAUSE_MS):
+def inline_sentence_pause_prompt(
+    text: object, *, pause_ms: object = DEFAULT_INLINE_PAUSE_MS
+) -> tuple[str, int]:
     """Insert canonical MOSS pause markers only at exact sentence boundaries."""
     if not isinstance(text, str) or not text.strip():
         raise ValueError("Repair text must be non-empty text")
@@ -346,7 +353,7 @@ def inline_sentence_pause_prompt(text, *, pause_ms=DEFAULT_INLINE_PAUSE_MS):
     return "".join(pieces), len(boundaries)
 
 
-def _safe_sentence_boundaries(text):
+def _safe_sentence_boundaries(text: str) -> tuple[re.Match[str], ...]:
     return tuple(
         boundary
         for boundary in SENTENCE_BOUNDARY_PATTERN.finditer(text)
@@ -354,7 +361,7 @@ def _safe_sentence_boundaries(text):
     )
 
 
-def _ends_with_nonterminal_abbreviation(prefix):
+def _ends_with_nonterminal_abbreviation(prefix: str) -> bool:
     stripped = prefix.rstrip()
     word = re.search(r"([A-Za-z]+)\.$", stripped)
     if word and word.group(1).casefold() in NONTERMINAL_ENGLISH_ABBREVIATIONS:
@@ -364,7 +371,9 @@ def _ends_with_nonterminal_abbreviation(prefix):
     return re.search(r"\b[A-Z]\.$", stripped) is not None
 
 
-def _split_sentence_boundaries(text, boundaries):
+def _split_sentence_boundaries(
+    text: str, boundaries: Sequence[re.Match[str]]
+) -> tuple[str, ...]:
     segments = []
     start = 0
     for boundary in boundaries:
@@ -379,13 +388,13 @@ def _split_sentence_boundaries(text, boundaries):
 
 
 def trim_excess_edge_silence(
-    pcm,
-    sample_rate,
+    pcm: object,
+    sample_rate: object,
     *,
-    trigger_seconds=DEFAULT_EDGE_TRIGGER_SECONDS,
-    padding_seconds=DEFAULT_EDGE_PADDING_SECONDS,
-    silence_dbfs=DEFAULT_SILENCE_DBFS,
-):
+    trigger_seconds: float = DEFAULT_EDGE_TRIGGER_SECONDS,
+    padding_seconds: float = DEFAULT_EDGE_PADDING_SECONDS,
+    silence_dbfs: float = DEFAULT_SILENCE_DBFS,
+) -> EdgeSilenceTrim:
     """Trim only long leading/trailing silence while retaining boundary padding."""
     samples = np.asarray(pcm, dtype=np.float32)
     if samples.ndim != 1 or not samples.size or not np.isfinite(samples).all():
@@ -418,16 +427,16 @@ def trim_excess_edge_silence(
 
 
 def compress_single_sentence_boundary_silence(
-    pcm,
-    sample_rate,
-    text,
+    pcm: object,
+    sample_rate: object,
+    text: object,
     *,
-    trigger_seconds=DEFAULT_INTERNAL_SILENCE_TRIGGER_SECONDS,
-    target_seconds=DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
-    frame_ms=DEFAULT_INTERNAL_SILENCE_FRAME_MS,
-    silence_dbfs=DEFAULT_SILENCE_DBFS,
-    removal_dbfs=DEFAULT_INTERNAL_SILENCE_REMOVAL_DBFS,
-):
+    trigger_seconds: float = DEFAULT_INTERNAL_SILENCE_TRIGGER_SECONDS,
+    target_seconds: float = DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
+    frame_ms: object = DEFAULT_INTERNAL_SILENCE_FRAME_MS,
+    silence_dbfs: float = DEFAULT_SILENCE_DBFS,
+    removal_dbfs: float = DEFAULT_INTERNAL_SILENCE_REMOVAL_DBFS,
+) -> InternalSilenceCompression:
     """Remove only the center of one uniquely matched sentence-boundary silence.
 
     This is an experimental comparison primitive, not a production repair policy.
@@ -531,18 +540,16 @@ def compress_single_sentence_boundary_silence(
 
 
 def render_sentence_segments(
-    render,
-    request,
-    segments,
+    render: Callable[[SynthesisRequest], SynthesisChunkStream],
+    request: SynthesisRequest,
+    segments: Iterable[object],
     *,
-    pause_ms,
-    max_audio_seconds=DEFAULT_MAX_REPAIRED_AUDIO_SECONDS,
-):
+    pause_ms: object,
+    max_audio_seconds: object = DEFAULT_MAX_REPAIRED_AUDIO_SECONDS,
+) -> SynthesisResult:
     """Render exact safe segments and combine only typed COMPLETE results."""
     segments = tuple(segments)
-    if len(segments) < 2 or any(
-        not isinstance(value, str) or not value for value in segments
-    ):
+    if not _text_segments(segments):
         raise ValueError("Sentence repair requires at least two exact text segments")
     if (
         not isinstance(pause_ms, int)
@@ -592,7 +599,13 @@ def render_sentence_segments(
     )
 
 
-def _combined_segment_result(results, request, *, pause_ms, max_audio_seconds):
+def _combined_segment_result(
+    results: Sequence[SynthesisResult],
+    request: SynthesisRequest,
+    *,
+    pause_ms: int,
+    max_audio_seconds: float,
+) -> SynthesisResult:
     sample_rates = {value.sample_rate for value in results}
     backends = {value.diagnostics.backend for value in results}
     profiles = {value.diagnostics.generation_profile for value in results}
@@ -648,6 +661,26 @@ def _combined_segment_result(results, request, *, pause_ms, max_audio_seconds):
     )
 
 
-def _sum_optional(values):
+def _sum_optional(values: Iterable[int | None]) -> int | None:
     values = tuple(values)
-    return None if any(value is None for value in values) else sum(values)
+    return (
+        None
+        if any(value is None for value in values)
+        else sum(value for value in values if value is not None)
+    )
+
+
+def _queue_id_list(value: object) -> TypeGuard[list[str]]:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _text_segments(value: tuple[object, ...]) -> TypeGuard[tuple[str, ...]]:
+    return len(value) >= 2 and all(isinstance(item, str) and item for item in value)
+
+
+def _policy_pause(value: object) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    raise FailureRepairPolicyError(
+        "Sentence-segment pause must be an integer from 0 to 1000 ms"
+    )
