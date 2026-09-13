@@ -1,5 +1,6 @@
 """Latest-result-wins Qt workers for blocking diagnostic probes."""
 
+from collections.abc import Callable
 from functools import partial
 from time import perf_counter
 
@@ -13,14 +14,20 @@ class _TaskSignals(QObject):
 
 
 class _Task(QRunnable):
-    def __init__(self, serial, function, arguments, signals):
+    def __init__(
+        self,
+        serial: int,
+        function: Callable[..., object],
+        arguments: tuple[object, ...],
+        signals: _TaskSignals,
+    ) -> None:
         super().__init__()
         self.serial = serial
         self.function = function
         self.arguments = arguments
         self.signals = signals
 
-    def run(self):
+    def run(self) -> None:
         started = perf_counter()
         try:
             result = self.function(*self.arguments)
@@ -40,7 +47,7 @@ class _Task(QRunnable):
             self.signals.finished.emit(self.serial, result, None)
 
 
-def _operation_name(function):
+def _operation_name(function: Callable[..., object]) -> str:
     while isinstance(function, partial):
         function = function.func
     owner = getattr(function, "__self__", None)
@@ -54,7 +61,12 @@ class LatestTaskRunner(QObject):
     finished = Signal(object, object)
     activeChanged = Signal(bool)
 
-    def __init__(self, parent=None, *, thread_pool=None):
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        *,
+        thread_pool: QThreadPool | None = None,
+    ) -> None:
         super().__init__(parent)
         self.thread_pool = thread_pool or QThreadPool.globalInstance()
         self._serial = 0
@@ -65,10 +77,15 @@ class LatestTaskRunner(QObject):
         self._signals.finished.connect(self._task_finished)
 
     @property
-    def active(self):
+    def active(self) -> bool:
         return self._active
 
-    def start(self, function, *arguments, **keyword_arguments):
+    def start(
+        self,
+        function: Callable[..., object],
+        *arguments: object,
+        **keyword_arguments: object,
+    ) -> int:
         self._serial += 1
         self._set_active(True)
         if keyword_arguments:
@@ -76,20 +93,22 @@ class LatestTaskRunner(QObject):
         self.thread_pool.start(_Task(self._serial, function, arguments, self._signals))
         return self._serial
 
-    def cancel(self):
+    def cancel(self) -> bool:
         if not self._active:
             return False
         self._serial += 1
         self._set_active(False)
         return True
 
-    def _task_finished(self, serial, result, error):
+    def _task_finished(
+        self, serial: int, result: object, error: Exception | None
+    ) -> None:
         if serial != self._serial or not self._active:
             return
         self._set_active(False)
         self.finished.emit(result, error)
 
-    def _set_active(self, active):
+    def _set_active(self, active: bool) -> None:
         active = bool(active)
         if self._active == active:
             return
