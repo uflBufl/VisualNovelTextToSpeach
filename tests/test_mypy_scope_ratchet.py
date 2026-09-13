@@ -12,7 +12,7 @@ class MypyScopeRatchetTest(unittest.TestCase):
         path.write_text(value, encoding="utf-8")
         return path
 
-    def test_configured_scope_must_be_a_superset_of_versioned_minimum(self):
+    def test_configured_scope_must_match_versioned_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             baseline = self._write(
@@ -35,10 +35,13 @@ class MypyScopeRatchetTest(unittest.TestCase):
 
         self.assertEqual(
             failures,
-            ["mypy scope removed required file: vntts/b.py"],
+            [
+                "mypy scope removed required file: vntts/b.py",
+                "mypy scope baseline is missing configured file: vntts/extra.py",
+            ],
         )
 
-    def test_scope_may_expand_without_baseline_churn(self):
+    def test_scope_expansion_must_be_recorded(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             baseline = self._write(
@@ -52,7 +55,10 @@ class MypyScopeRatchetTest(unittest.TestCase):
                 '[tool.mypy]\nfiles = ["vntts/a.py", "vntts/b.py"]\n',
             )
 
-            self.assertEqual(check_mypy_scope(config, baseline), [])
+            self.assertEqual(
+                check_mypy_scope(config, baseline),
+                ["mypy scope baseline is missing configured file: vntts/b.py"],
+            )
 
     def test_malformed_or_duplicate_baseline_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when the configured mypy scope drops below its versioned minimum."""
+"""Keep the configured mypy scope identical to its versioned inventory."""
 
 from __future__ import annotations
 
@@ -26,12 +26,21 @@ def check_mypy_scope(config_path: Path, baseline_path: Path) -> list[str]:
         return ["Mypy scope baseline inventory is malformed"]
     config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     configured = config.get("tool", {}).get("mypy", {}).get("files")
-    if not isinstance(configured, list) or any(
-        not isinstance(value, str) or not value for value in configured
+    if (
+        not isinstance(configured, list)
+        or any(not isinstance(value, str) or not value for value in configured)
+        or len(configured) != len(set(configured))
     ):
         return ["tool.mypy.files is missing or malformed"]
     missing = sorted(set(minimum) - set(configured))
-    return [f"mypy scope removed required file: {value}" for value in missing]
+    unrecorded = sorted(set(configured) - set(minimum))
+    return [
+        *(f"mypy scope removed required file: {value}" for value in missing),
+        *(
+            f"mypy scope baseline is missing configured file: {value}"
+            for value in unrecorded
+        ),
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
