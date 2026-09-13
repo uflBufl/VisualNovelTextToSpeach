@@ -200,7 +200,9 @@ class GameProfilesDialog(QDialog):
 
     def update_summary(self) -> None:
         profile = self.current_profile()
-        active = self.store.get(self.active_profile_id)
+        active = (
+            self.store.get(self.active_profile_id) if self.active_profile_id else None
+        )
         self.active_status.setText(
             active.name if active is not None else "No stored profile is active"
         )
