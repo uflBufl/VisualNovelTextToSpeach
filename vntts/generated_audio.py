@@ -795,12 +795,18 @@ class GeneratedAudioFallbackBackend:
             elif self.speed != 1.0:
                 artifact_preflight_state = "generated-audio-skipped-nondefault-speed"
             fallback_reasons.append(artifact_preflight_state)
+        live_fallback = (
+            None
+            if line is None or self.library is None
+            else self.library.find_live_fallback(line.line_id, line.text_sha256)
+        )
         if (
             line is not None
             and line.line_id
             and self.library is not None
             and self.library.runtime_progress
             and not voice_overridden
+            and live_fallback is None
         ):
             return PendingGeneratedAudioRoute(
                 line.line_id,
@@ -815,11 +821,6 @@ class GeneratedAudioFallbackBackend:
                     "generation-in-progress",
                 ),
             )
-        live_fallback = (
-            None
-            if line is None or self.library is None
-            else self.library.find_live_fallback(line.line_id, line.text_sha256)
-        )
         if live_fallback is not None:
             _validate_live_fallback_backend(self.live_backend, live_fallback)
         prepared = self.live_backend.prepare_playback(

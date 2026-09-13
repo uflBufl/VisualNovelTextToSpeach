@@ -3,6 +3,30 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P0 - Play while offline audio is still preparing
+
+- [ ] While Reading uses the partial progress manifest, publish terminal live
+      fallbacks too and switch to the completed pack without an application
+      restart. A line must never wait forever after recovery is exhausted.
+- [ ] Keep one retained OpenMOSS runtime. Prepared WAV playback may overlap
+      generation, but foreground dialogue must take priority at render
+      boundaries and no second native server may be started for live reading.
+- [ ] Finish each dialogue before moving on: retain all configured quality
+      retries, then apply its eligible safe recovery actions immediately rather
+      than waiting for the first pass over the whole story. Publish only the
+      successful terminal result.
+- [ ] Extend the existing per-chapter ready and ready-prefix counts from chapter
+      start to the current reading position when a sequence cursor is available.
+- [ ] If reading reaches an unfinished line, prioritize that exact
+      `(line_id, text_sha256)` after the active render and show its current
+      attempt. Waiting and automatic resume already work; use live fallback only
+      after offline generation and safe recovery are exhausted.
+- [ ] Verify with one selected multi-chapter story: start after a partial chapter,
+      continue generation while prepared WAVs play, cross a newly published
+      boundary without duplicate speech, wait safely when catching the worker,
+      resume after success, survive cancellation/restart, and finish with the
+      same validated pack as uninterrupted offline preparation.
+
 ## P0 - Reduce OpenMOSS generation latency
 
 - [ ] Run the qualified GPU/8 profile beside Reverse: 1999 and confirm game-time

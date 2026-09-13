@@ -505,7 +505,9 @@ class GeneratedAudioTest(unittest.TestCase):
         backend.stop.return_value = False
         return backend
 
-    def create_live_fallback_library(self, root, *, model="pocket-tts"):
+    def create_live_fallback_library(
+        self, root, *, model="pocket-tts", runtime_progress=False
+    ):
         text = "Hello."
         manifest = root / "generated-audio.json"
         decision = {
@@ -534,6 +536,7 @@ class GeneratedAudioTest(unittest.TestCase):
         write_generated_audio_manifest(
             manifest,
             {
+                **({"vntts.runtime.progress": True} if runtime_progress else {}),
                 "vntts.authoring.live_fallback": {
                     "schema_version": 1,
                     "mode": "explicit",
@@ -543,6 +546,27 @@ class GeneratedAudioTest(unittest.TestCase):
             [],
         )
         return GeneratedAudioLibrary.load_optional(manifest)
+
+    def test_runtime_progress_uses_terminal_live_fallback_instead_of_waiting(self):
+        with TemporaryDirectory() as directory:
+            library = self.create_live_fallback_library(
+                Path(directory), runtime_progress=True
+            )
+            live = self.create_live_backend()
+            live.name = "pocket-tts"
+            live.model_identity = None
+            live.model_name = "pocket-tts"
+            live.generation_profile = "default"
+            backend = GeneratedAudioFallbackBackend(
+                live,
+                library,
+                self.create_resolver(),
+                audio_output=FakeAudioOutput(),
+            )
+
+            route = backend.prepare_route("Ada", "Hello.")
+
+        self.assertIsInstance(route, LiveFallbackRoute)
 
     def test_explicit_live_fallback_uses_only_bound_pocket_backend(self):
         with TemporaryDirectory() as directory:

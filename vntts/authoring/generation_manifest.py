@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from collections.abc import Sequence
@@ -30,6 +31,7 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.generation_lease import BulkGenerationError
+from vntts.document_identity import canonical_document_sha256
 from vntts.voices import pocket_tts_preset_voices
 
 
@@ -232,6 +234,25 @@ def runtime_progress_manifest_entries(
     )
 
 
+def runtime_progress_live_fallback_entries(
+    state: _GenerationState,
+) -> list[dict[str, object]]:
+    """Project terminal fallback decisions needed by partial playback."""
+    entries = []
+    for result in _generation_items(state).values():
+        decision = result.get("live_fallback")
+        if not isinstance(decision, dict):
+            continue
+        entries.append(
+            {
+                **copy.deepcopy(decision),
+                "decision_sha256": canonical_document_sha256(decision),
+            }
+        )
+    entries.sort(key=lambda entry: (entry["line_id"], entry["text_sha256"]))
+    return entries
+
+
 def _manifest_entries(
     state: _GenerationState,
     output_directory: Path | str,
@@ -351,12 +372,20 @@ def write_runtime_progress_manifest_from_state(
         output_directory,
         validate_files=validate_files,
     )
+    live_fallbacks = runtime_progress_live_fallback_entries(state)
     _write_generated_manifest(
         state,
         manifest_path,
         entries,
         validate_files=validate_files,
-        metadata={"vntts.runtime.progress": True},
+        metadata={
+            "vntts.runtime.progress": True,
+            "vntts.authoring.live_fallback": {
+                "schema_version": 1,
+                "mode": "explicit",
+                "entries": live_fallbacks,
+            },
+        },
     )
 
 
@@ -474,6 +503,7 @@ __all__ = [
     "contained_generation_path",
     "inspect_generated_wav",
     "runtime_progress_manifest_entries",
+    "runtime_progress_live_fallback_entries",
     "safe_generation_relative_path",
     "validate_success_file",
     "write_generated_manifest_from_state",

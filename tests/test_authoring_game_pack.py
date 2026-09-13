@@ -37,6 +37,10 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.game_pack import FinalGamePackError, publish_final_game_pack
+from vntts.authoring.generation_manifest import (
+    RUNTIME_PROGRESS_MANIFEST_NAME,
+    write_runtime_progress_manifest_from_state,
+)
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.render_hypothesis_review import (
     publish_render_hypothesis_review,
@@ -833,6 +837,14 @@ class AuthoringGamePackTest(unittest.TestCase):
             review_generation_item(
                 fixture["state"], fixture["items"][1]["queue_id"], "rejected"
             )
+            progress_manifest = (
+                fixture["state"].parent / RUNTIME_PROGRESS_MANIFEST_NAME
+            )
+            write_runtime_progress_manifest_from_state(
+                json.loads(fixture["state"].read_text(encoding="utf-8")),
+                fixture["state"].parent,
+                progress_manifest,
+            )
             stdout = io.StringIO()
             with redirect_stdout(stdout):
                 exit_code = authoring_main(
@@ -850,6 +862,11 @@ class AuthoringGamePackTest(unittest.TestCase):
                     ]
                 )
             decision = json.loads(stdout.getvalue())
+            progress_library = GeneratedAudioLibrary.load_optional(progress_manifest)
+            progress_fallback = progress_library.find_live_fallback(
+                fixture["items"][1]["line_id"],
+                fixture["items"][1]["text_sha256"],
+            )
             result = publish(fixture, root / "pack")
             pack = load_game_pack(result.manifest)
             generated = GeneratedAudioIndex.load(pack.generated_audio.path)
@@ -870,6 +887,7 @@ class AuthoringGamePackTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(status_exit, 0)
         self.assertEqual(status["live_fallback"], 1)
+        self.assertEqual(progress_fallback.reason, "generated_audio_rejected")
         self.assertEqual(status["generated"], 1)
         self.assertEqual(result.approved_count, 1)
         self.assertEqual(result.rejected_count, 1)

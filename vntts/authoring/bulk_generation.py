@@ -3947,6 +3947,14 @@ def authorize_live_fallback(
             lease,
             entries,
         )
+        progress_manifest = state_path.parent / RUNTIME_PROGRESS_MANIFEST_NAME
+        if progress_manifest.is_file():
+            write_runtime_progress_manifest_from_state(
+                proposed,
+                state_path.parent,
+                progress_manifest,
+                validate_files=False,
+            )
     return decision
 
 
