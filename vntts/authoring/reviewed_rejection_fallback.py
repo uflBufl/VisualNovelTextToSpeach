@@ -6,7 +6,6 @@ import copy
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -28,6 +27,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
@@ -207,131 +207,133 @@ def create_reviewed_rejection_fallback_workspace(
             )
         return WorkspaceCreationResult(destination, False)
 
-    staging_owner = TemporaryDirectory(prefix=".reviewed-rejection-", dir=root)
-    staging = Path(staging_owner.name).resolve()
     snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
         (base_directory / "generated-audio/generation-state.json", state_sha256),
         (queue_path, queue_sha256),
     ]
     try:
-        for tree_name in ("provenance", "inputs"):
-            copy_workspace_tree_snapshot(
-                base_directory / tree_name,
-                staging / tree_name,
-                snapshots,
-                error_type=AuthoringWorkbenchError,
+        with staged_directory(root, prefix=".reviewed-rejection-") as staging:
+            for tree_name in ("provenance", "inputs"):
+                copy_workspace_tree_snapshot(
+                    base_directory / tree_name,
+                    staging / tree_name,
+                    snapshots,
+                    error_type=AuthoringWorkbenchError,
+                )
+            inputs = staging / "inputs/reviewed-rejection"
+            inputs.mkdir(parents=True)
+            (inputs / "base-workspace.json").write_bytes(
+                read_workspace_file_bytes(
+                    base_directory / "workspace.json",
+                    "reviewed-rejection base workspace",
+                )
             )
-        inputs = staging / "inputs/reviewed-rejection"
-        inputs.mkdir(parents=True)
-        (inputs / "base-workspace.json").write_bytes(
-            read_workspace_file_bytes(
-                base_directory / "workspace.json", "reviewed-rejection base workspace"
+            (inputs / "base-generation-state.json").write_bytes(
+                read_workspace_file_bytes(
+                    base_directory / "generated-audio/generation-state.json",
+                    "reviewed-rejection base state",
+                )
             )
-        )
-        (inputs / "base-generation-state.json").write_bytes(
-            read_workspace_file_bytes(
-                base_directory / "generated-audio/generation-state.json",
-                "reviewed-rejection base state",
+            (staging / "queue.jsonl").write_bytes(
+                read_workspace_file_bytes(queue_path, "reviewed-rejection queue")
             )
-        )
-        (staging / "queue.jsonl").write_bytes(
-            read_workspace_file_bytes(queue_path, "reviewed-rejection queue")
-        )
-        output = staging / "generated-audio"
-        output.mkdir()
-        target_state = copy.deepcopy(state)
-        _copy_base_wavs(base_directory, output, state, snapshots)
-        decided_at = datetime.now(timezone.utc).isoformat()
-        for ledger in ledgers:
-            queue_id = ledger["queue_id"]
-            base_result = state["items"][queue_id]
-            evidence = {
-                "schema": REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,
-                "schema_version": 1,
-                "batch_id": batch["batch_id"],
-                "base_workspace_id": base_document["workspace_id"],
-                "base_workspace_sha256": base_workspace_sha256,
-                "base_state_sha256": state_sha256,
-                "queue_sha256": queue_sha256,
-                "voice_manifest_sha256": voice_sha256,
-                "queue_id": queue_id,
-                "base_result_sha256": ledger["base_result_sha256"],
-                "base_result": copy.deepcopy(base_result),
-                "source_character": ledger["speaker"],
-                "synthesis_character": ledger["synthesis_character"],
-                "route_source": ledger["route_source"],
-                "route_reference_sha256s": ledger["route_reference_sha256s"],
-            }
-            decision = {
-                "schema": LIVE_FALLBACK_SCHEMA,
-                "schema_version": LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
-                "reason": REASON,
-                "provider": "pocket-tts",
-                "model": "pocket-tts",
-                "generation_profile": "default",
-                "queue_id": queue_id,
-                "line_id": ledger["line_id"],
-                "text_sha256": ledger["text_sha256"],
-                "speaker": ledger["speaker"],
-                "requested_voice_character": ledger["synthesis_character"],
-                "previous_result_sha256": ledger["base_result_sha256"],
-                "decided_at": decided_at,
-                "evidence": evidence,
-            }
-            projected = copy.deepcopy(base_result)
-            projected["live_fallback"] = decision
-            projected["updated_at"] = decided_at
-            target_state["items"][queue_id] = projected
-        target_state["active"] = None
-        atomic_write_json(
-            output / "generation-state.json", target_state, sort_keys=True
-        )
-        write_generated_manifest_from_state(
-            target_state, output, output / "manifest.json"
-        )
-        workspace = copy.deepcopy(base_document)
-        workspace.update(
-            {
-                "workspace_id": workspace_id,
-                "reviewed_rejection_live_fallback": copy.deepcopy(batch),
-                "config_fingerprint": config_fingerprint,
-            }
-        )
-        atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-        import_snapshot = load_workspace_json(
-            staging / "provenance/import.json", "reviewed-rejection import"
-        )
-        validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
-        load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
-        try:
-            with generation_publication_leases(
-                ((base_directory / "generated-audio", queue_sha256),),
-                process_checker=process_is_alive,
-            ) as leases:
-                if any((base_directory / "generated-audio").rglob("*.partial.wav")):
-                    raise AuthoringWorkbenchError(
-                        "Reviewed-rejection fallback base became active"
-                    )
-                for path, digest in snapshots:
-                    if not path.is_file() or sha256_file(path) != digest:
+            output = staging / "generated-audio"
+            output.mkdir()
+            target_state = copy.deepcopy(state)
+            _copy_base_wavs(base_directory, output, state, snapshots)
+            decided_at = datetime.now(timezone.utc).isoformat()
+            for ledger in ledgers:
+                queue_id = ledger["queue_id"]
+                base_result = state["items"][queue_id]
+                evidence = {
+                    "schema": REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,
+                    "schema_version": 1,
+                    "batch_id": batch["batch_id"],
+                    "base_workspace_id": base_document["workspace_id"],
+                    "base_workspace_sha256": base_workspace_sha256,
+                    "base_state_sha256": state_sha256,
+                    "queue_sha256": queue_sha256,
+                    "voice_manifest_sha256": voice_sha256,
+                    "queue_id": queue_id,
+                    "base_result_sha256": ledger["base_result_sha256"],
+                    "base_result": copy.deepcopy(base_result),
+                    "source_character": ledger["speaker"],
+                    "synthesis_character": ledger["synthesis_character"],
+                    "route_source": ledger["route_source"],
+                    "route_reference_sha256s": ledger["route_reference_sha256s"],
+                }
+                decision = {
+                    "schema": LIVE_FALLBACK_SCHEMA,
+                    "schema_version": LIVE_FALLBACK_REVIEWED_REJECTION_VERSION,
+                    "reason": REASON,
+                    "provider": "pocket-tts",
+                    "model": "pocket-tts",
+                    "generation_profile": "default",
+                    "queue_id": queue_id,
+                    "line_id": ledger["line_id"],
+                    "text_sha256": ledger["text_sha256"],
+                    "speaker": ledger["speaker"],
+                    "requested_voice_character": ledger["synthesis_character"],
+                    "previous_result_sha256": ledger["base_result_sha256"],
+                    "decided_at": decided_at,
+                    "evidence": evidence,
+                }
+                projected = copy.deepcopy(base_result)
+                projected["live_fallback"] = decision
+                projected["updated_at"] = decided_at
+                target_state["items"][queue_id] = projected
+            target_state["active"] = None
+            atomic_write_json(
+                output / "generation-state.json", target_state, sort_keys=True
+            )
+            write_generated_manifest_from_state(
+                target_state, output, output / "manifest.json"
+            )
+            workspace = copy.deepcopy(base_document)
+            workspace.update(
+                {
+                    "workspace_id": workspace_id,
+                    "reviewed_rejection_live_fallback": copy.deepcopy(batch),
+                    "config_fingerprint": config_fingerprint,
+                }
+            )
+            atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+            import_snapshot = load_workspace_json(
+                staging / "provenance/import.json", "reviewed-rejection import"
+            )
+            validate_workspace_provenance_extensions(
+                staging, workspace, import_snapshot
+            )
+            load_generation_state(
+                output / "generation-state.json", staging / "queue.jsonl"
+            )
+            try:
+                with generation_publication_leases(
+                    ((base_directory / "generated-audio", queue_sha256),),
+                    process_checker=process_is_alive,
+                ) as leases:
+                    if any((base_directory / "generated-audio").rglob("*.partial.wav")):
                         raise AuthoringWorkbenchError(
-                            "Reviewed-rejection authority changed before publication"
+                            "Reviewed-rejection fallback base became active"
                         )
-                leases[0].assert_owned()
-                try:
-                    rename_directory_no_replace(staging, destination)
-                except (AtomicPublicationError, OSError) as error:
-                    raise AuthoringWorkbenchError(
-                        f"Unable to publish reviewed-rejection workspace: {error}"
-                    ) from error
-                leases[0].mark_committed()
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
+                    for path, digest in snapshots:
+                        if not path.is_file() or sha256_file(path) != digest:
+                            raise AuthoringWorkbenchError(
+                                "Reviewed-rejection authority changed before publication"
+                            )
+                    leases[0].assert_owned()
+                    try:
+                        rename_directory_no_replace(staging, destination)
+                    except (AtomicPublicationError, OSError) as error:
+                        raise AuthoringWorkbenchError(
+                            f"Unable to publish reviewed-rejection workspace: {error}"
+                        ) from error
+                    leases[0].mark_committed()
+            except BulkGenerationError as error:
+                raise AuthoringWorkbenchError(str(error)) from error
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    finally:
-        staging_owner.cleanup()
     return WorkspaceCreationResult(destination, True)
 
 

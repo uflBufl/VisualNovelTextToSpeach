@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -27,6 +26,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -228,92 +228,93 @@ def create_reviewed_waveform_publication_workspace(
             )
         return WorkspaceCreationResult(destination, False)
 
-    staging_owner = TemporaryDirectory(prefix=".reviewed-waveform-", dir=root)
-    staging = Path(staging_owner.name).resolve()
     snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
         (base_directory / "generated-audio/generation-state.json", state_sha256),
         (queue_path, queue_sha256),
     ]
     try:
-        for tree_name in ("provenance", "inputs"):
-            copy_workspace_tree_snapshot(
-                base_directory / tree_name,
-                staging / tree_name,
-                snapshots,
-                error_type=AuthoringWorkbenchError,
+        with staged_directory(root, prefix=".reviewed-waveform-") as staging:
+            for tree_name in ("provenance", "inputs"):
+                copy_workspace_tree_snapshot(
+                    base_directory / tree_name,
+                    staging / tree_name,
+                    snapshots,
+                    error_type=AuthoringWorkbenchError,
+                )
+            publication_inputs = staging / "inputs/reviewed-waveform"
+            publication_inputs.mkdir(parents=True)
+            (publication_inputs / "base-workspace.json").write_bytes(
+                read_workspace_file_bytes(
+                    base_directory / "workspace.json",
+                    "reviewed-waveform base workspace",
+                )
             )
-        publication_inputs = staging / "inputs/reviewed-waveform"
-        publication_inputs.mkdir(parents=True)
-        (publication_inputs / "base-workspace.json").write_bytes(
-            read_workspace_file_bytes(
-                base_directory / "workspace.json",
-                "reviewed-waveform base workspace",
+            (publication_inputs / "base-generation-state.json").write_bytes(
+                read_workspace_file_bytes(
+                    base_directory / "generated-audio/generation-state.json",
+                    "reviewed-waveform base state",
+                )
             )
-        )
-        (publication_inputs / "base-generation-state.json").write_bytes(
-            read_workspace_file_bytes(
-                base_directory / "generated-audio/generation-state.json",
-                "reviewed-waveform base state",
+            (staging / "queue.jsonl").write_bytes(
+                read_workspace_file_bytes(queue_path, "reviewed-waveform queue")
             )
-        )
-        (staging / "queue.jsonl").write_bytes(
-            read_workspace_file_bytes(queue_path, "reviewed-waveform queue")
-        )
-        output = staging / "generated-audio"
-        output.mkdir()
-        target_state = copy.deepcopy(state)
-        target_state["reviewed_waveform_publication"] = copy.deepcopy(batch)
-        target_state["active"] = None
-        _copy_base_wavs(base_directory, output, state, snapshots)
-        atomic_write_json(
-            output / "generation-state.json", target_state, sort_keys=True
-        )
-        write_generated_manifest_from_state(
-            target_state, output, output / "manifest.json"
-        )
-        workspace = copy.deepcopy(base_document)
-        workspace.update(
-            {
-                "workspace_id": workspace_id,
-                "reviewed_waveform_publication": copy.deepcopy(batch),
-                "config_fingerprint": config_fingerprint,
-            }
-        )
-        atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-        import_snapshot = load_workspace_json(
-            staging / "provenance/import.json", "reviewed-waveform import"
-        )
-        validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
-        load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
-        try:
-            with generation_publication_leases(
-                ((base_directory / "generated-audio", queue_sha256),),
-                process_checker=process_is_alive,
-            ) as leases:
-                if any((base_directory / "generated-audio").rglob("*.partial.wav")):
-                    raise AuthoringWorkbenchError(
-                        "Reviewed-waveform publication base became active"
-                    )
-                for path, digest in snapshots:
-                    if not path.is_file() or sha256_file(path) != digest:
+            output = staging / "generated-audio"
+            output.mkdir()
+            target_state = copy.deepcopy(state)
+            target_state["reviewed_waveform_publication"] = copy.deepcopy(batch)
+            target_state["active"] = None
+            _copy_base_wavs(base_directory, output, state, snapshots)
+            atomic_write_json(
+                output / "generation-state.json", target_state, sort_keys=True
+            )
+            write_generated_manifest_from_state(
+                target_state, output, output / "manifest.json"
+            )
+            workspace = copy.deepcopy(base_document)
+            workspace.update(
+                {
+                    "workspace_id": workspace_id,
+                    "reviewed_waveform_publication": copy.deepcopy(batch),
+                    "config_fingerprint": config_fingerprint,
+                }
+            )
+            atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+            import_snapshot = load_workspace_json(
+                staging / "provenance/import.json", "reviewed-waveform import"
+            )
+            validate_workspace_provenance_extensions(
+                staging, workspace, import_snapshot
+            )
+            load_generation_state(
+                output / "generation-state.json", staging / "queue.jsonl"
+            )
+            try:
+                with generation_publication_leases(
+                    ((base_directory / "generated-audio", queue_sha256),),
+                    process_checker=process_is_alive,
+                ) as leases:
+                    if any((base_directory / "generated-audio").rglob("*.partial.wav")):
                         raise AuthoringWorkbenchError(
-                            "Reviewed-waveform authority changed before publication"
+                            "Reviewed-waveform publication base became active"
                         )
-                leases[0].assert_owned()
-                try:
-                    rename_directory_no_replace(staging, destination)
-                except (AtomicPublicationError, OSError) as error:
-                    raise AuthoringWorkbenchError(
-                        f"Unable to publish reviewed-waveform workspace: {error}"
-                    ) from error
-                leases[0].mark_committed()
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
+                    for path, digest in snapshots:
+                        if not path.is_file() or sha256_file(path) != digest:
+                            raise AuthoringWorkbenchError(
+                                "Reviewed-waveform authority changed before publication"
+                            )
+                    leases[0].assert_owned()
+                    try:
+                        rename_directory_no_replace(staging, destination)
+                    except (AtomicPublicationError, OSError) as error:
+                        raise AuthoringWorkbenchError(
+                            f"Unable to publish reviewed-waveform workspace: {error}"
+                        ) from error
+                    leases[0].mark_committed()
+            except BulkGenerationError as error:
+                raise AuthoringWorkbenchError(str(error)) from error
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    finally:
-        staging_owner.cleanup()
     return WorkspaceCreationResult(destination, True)
 
 

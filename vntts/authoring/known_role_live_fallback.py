@@ -6,7 +6,6 @@ import copy
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -31,6 +30,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.source_reference_bindings import (
     KNOWN_ROLE_REUSE_BINDING_FIELD,
@@ -252,8 +252,6 @@ def create_known_role_live_fallback_workspace(
     destination = contained_workspace_path(
         root, Path(workspace_id), "Known-role fallback destination"
     )
-    staging_owner = TemporaryDirectory(prefix=".known-role-fallback-", dir=root)
-    staging = Path(staging_owner.name).resolve()
     base_snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
         (base_directory / "generated-audio/generation-state.json", base_state_sha256),
@@ -270,157 +268,160 @@ def create_known_role_live_fallback_workspace(
             )
         )
     try:
-        for tree_name in ("provenance", "inputs"):
-            copy_workspace_tree_snapshot(
-                base_directory / tree_name,
-                staging / tree_name,
-                base_snapshots,
-                error_type=AuthoringWorkbenchError,
+        with staged_directory(root, prefix=".known-role-fallback-") as staging:
+            for tree_name in ("provenance", "inputs"):
+                copy_workspace_tree_snapshot(
+                    base_directory / tree_name,
+                    staging / tree_name,
+                    base_snapshots,
+                    error_type=AuthoringWorkbenchError,
+                )
+            (staging / "queue.jsonl").write_bytes(
+                read_workspace_file_bytes(base_queue_path, "known-role fallback queue")
             )
-        (staging / "queue.jsonl").write_bytes(
-            read_workspace_file_bytes(base_queue_path, "known-role fallback queue")
-        )
-        output = staging / "generated-audio"
-        output.mkdir()
-        target_state = copy.deepcopy(base_state)
-        _copy_base_wavs(base_directory, output, base_state, base_snapshots)
-        decided_at = datetime.now(timezone.utc).isoformat()
-        synthesis_configuration = _synthesis_configuration(
-            base_document["run_config"], combined_override_sha256
-        )
-        for ledger in ledgers:
-            queue_id = ledger["queue_id"]
-            queue_item = queue_by_id[queue_id]
-            evidence = {
-                "schema": KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
-                "schema_version": 1,
-                "batch_id": batch_id,
-                "queue_id": queue_id,
-                "voice_manifest_sha256": manifest_sha256,
-                "route_binding_sha256": route_sha256,
-                "queue_voice_overrides_sha256": combined_override_sha256,
-                "source_character": source_character,
-                "synthesis_character": synthesis_character,
-                **{
-                    key: value
-                    for key, value in ledger.items()
-                    if key != "queue_id" and key != "evidence_config_fingerprint"
-                },
-            }
-            decision = {
-                "schema": LIVE_FALLBACK_SCHEMA,
-                "schema_version": LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
-                "reason": LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
-                "provider": "pocket-tts",
-                "model": "pocket-tts",
-                "generation_profile": "default",
-                "queue_id": queue_id,
-                "line_id": queue_item.line_id,
-                "text_sha256": queue_item.text_sha256,
-                "speaker": queue_item.speaker,
-                "requested_voice_character": synthesis_character,
-                "previous_result_sha256": None,
-                "decided_at": decided_at,
-                "evidence": evidence,
-            }
-            target_state["items"][queue_id] = {
-                "status": "live_fallback",
-                "review_status": "live_fallback",
-                "attempts": 0,
-                "line_id": queue_item.line_id,
-                "text_sha256": queue_item.text_sha256,
-                "speaker": queue_item.speaker,
-                "requested_voice_character": source_character,
-                "voice_character": synthesis_character,
-                "synthesis_configuration": copy.deepcopy(synthesis_configuration),
-                "source_reference_binding": {
+            output = staging / "generated-audio"
+            output.mkdir()
+            target_state = copy.deepcopy(base_state)
+            _copy_base_wavs(base_directory, output, base_state, base_snapshots)
+            decided_at = datetime.now(timezone.utc).isoformat()
+            synthesis_configuration = _synthesis_configuration(
+                base_document["run_config"], combined_override_sha256
+            )
+            for ledger in ledgers:
+                queue_id = ledger["queue_id"]
+                queue_item = queue_by_id[queue_id]
+                evidence = {
+                    "schema": KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
                     "schema_version": 1,
+                    "batch_id": batch_id,
                     "queue_id": queue_id,
-                    "source_voice_character": source_character,
-                    "synthesis_voice_character": synthesis_character,
+                    "voice_manifest_sha256": manifest_sha256,
+                    "route_binding_sha256": route_sha256,
                     "queue_voice_overrides_sha256": combined_override_sha256,
-                },
-                "live_fallback": decision,
-                "updated_at": decided_at,
-            }
-        target_state["active"] = None
-        atomic_write_json(
-            output / "generation-state.json", target_state, sort_keys=True
-        )
-        write_generated_manifest_from_state(
-            target_state, output, output / "manifest.json"
-        )
-        workspace = copy.deepcopy(base_document)
-        workspace.update(
-            {
-                "workspace_id": workspace_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "known_role_live_fallback": batch,
-                "config_fingerprint": config_fingerprint,
-            }
-        )
-        atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-        import_snapshot = load_workspace_json(
-            staging / "provenance/import.json", "known-role fallback import"
-        )
-        validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
-        load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
-        lease_directories = [
-            (base_directory / "generated-audio", queue_sha256),
-            *(
-                (directory / "generated-audio", queue_sha256)
-                for directory in evidence_sources
-            ),
-        ]
-        try:
-            with generation_publication_leases(
-                lease_directories, process_checker=process_is_alive
-            ) as held_leases:
-                if any(
-                    any((directory / "generated-audio").rglob("*.partial.wav"))
-                    for directory in (base_directory, *evidence_sources)
-                ):
-                    raise AuthoringWorkbenchError(
-                        "Known-role fallback authority became active"
-                    )
-                for path, digest in (*base_snapshots, *evidence_snapshots):
-                    if not path.is_file() or sha256_file(path) != digest:
+                    "source_character": source_character,
+                    "synthesis_character": synthesis_character,
+                    **{
+                        key: value
+                        for key, value in ledger.items()
+                        if key != "queue_id" and key != "evidence_config_fingerprint"
+                    },
+                }
+                decision = {
+                    "schema": LIVE_FALLBACK_SCHEMA,
+                    "schema_version": LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION,
+                    "reason": LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
+                    "provider": "pocket-tts",
+                    "model": "pocket-tts",
+                    "generation_profile": "default",
+                    "queue_id": queue_id,
+                    "line_id": queue_item.line_id,
+                    "text_sha256": queue_item.text_sha256,
+                    "speaker": queue_item.speaker,
+                    "requested_voice_character": synthesis_character,
+                    "previous_result_sha256": None,
+                    "decided_at": decided_at,
+                    "evidence": evidence,
+                }
+                target_state["items"][queue_id] = {
+                    "status": "live_fallback",
+                    "review_status": "live_fallback",
+                    "attempts": 0,
+                    "line_id": queue_item.line_id,
+                    "text_sha256": queue_item.text_sha256,
+                    "speaker": queue_item.speaker,
+                    "requested_voice_character": source_character,
+                    "voice_character": synthesis_character,
+                    "synthesis_configuration": copy.deepcopy(synthesis_configuration),
+                    "source_reference_binding": {
+                        "schema_version": 1,
+                        "queue_id": queue_id,
+                        "source_voice_character": source_character,
+                        "synthesis_voice_character": synthesis_character,
+                        "queue_voice_overrides_sha256": combined_override_sha256,
+                    },
+                    "live_fallback": decision,
+                    "updated_at": decided_at,
+                }
+            target_state["active"] = None
+            atomic_write_json(
+                output / "generation-state.json", target_state, sort_keys=True
+            )
+            write_generated_manifest_from_state(
+                target_state, output, output / "manifest.json"
+            )
+            workspace = copy.deepcopy(base_document)
+            workspace.update(
+                {
+                    "workspace_id": workspace_id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "known_role_live_fallback": batch,
+                    "config_fingerprint": config_fingerprint,
+                }
+            )
+            atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+            import_snapshot = load_workspace_json(
+                staging / "provenance/import.json", "known-role fallback import"
+            )
+            validate_workspace_provenance_extensions(
+                staging, workspace, import_snapshot
+            )
+            load_generation_state(
+                output / "generation-state.json", staging / "queue.jsonl"
+            )
+            lease_directories = [
+                (base_directory / "generated-audio", queue_sha256),
+                *(
+                    (directory / "generated-audio", queue_sha256)
+                    for directory in evidence_sources
+                ),
+            ]
+            try:
+                with generation_publication_leases(
+                    lease_directories, process_checker=process_is_alive
+                ) as held_leases:
+                    if any(
+                        any((directory / "generated-audio").rglob("*.partial.wav"))
+                        for directory in (base_directory, *evidence_sources)
+                    ):
                         raise AuthoringWorkbenchError(
-                            "Known-role fallback authority changed before publication"
+                            "Known-role fallback authority became active"
                         )
-                for lease in held_leases:
-                    lease.assert_owned()
-                if destination.exists():
-                    _directory, existing, _sha256 = load_workspace_authority(
-                        destination
-                    )
-                    if existing.get("known_role_live_fallback") != batch:
-                        raise AuthoringWorkbenchError(
-                            "Known-role fallback destination conflicts"
-                        )
-                    return WorkspaceCreationResult(destination, False)
-                try:
-                    rename_directory_no_replace(staging, destination)
-                except (AtomicPublicationError, OSError) as error:
+                    for path, digest in (*base_snapshots, *evidence_snapshots):
+                        if not path.is_file() or sha256_file(path) != digest:
+                            raise AuthoringWorkbenchError(
+                                "Known-role fallback authority changed before publication"
+                            )
+                    for lease in held_leases:
+                        lease.assert_owned()
                     if destination.exists():
                         _directory, existing, _sha256 = load_workspace_authority(
                             destination
                         )
-                        if existing.get("known_role_live_fallback") == batch:
-                            for lease in held_leases:
-                                lease.mark_committed()
-                            return WorkspaceCreationResult(destination, False)
-                    raise AuthoringWorkbenchError(
-                        f"Unable to publish known-role fallback workspace: {error}"
-                    ) from error
-                for lease in held_leases:
-                    lease.mark_committed()
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
+                        if existing.get("known_role_live_fallback") != batch:
+                            raise AuthoringWorkbenchError(
+                                "Known-role fallback destination conflicts"
+                            )
+                        return WorkspaceCreationResult(destination, False)
+                    try:
+                        rename_directory_no_replace(staging, destination)
+                    except (AtomicPublicationError, OSError) as error:
+                        if destination.exists():
+                            _directory, existing, _sha256 = load_workspace_authority(
+                                destination
+                            )
+                            if existing.get("known_role_live_fallback") == batch:
+                                for lease in held_leases:
+                                    lease.mark_committed()
+                                return WorkspaceCreationResult(destination, False)
+                        raise AuthoringWorkbenchError(
+                            f"Unable to publish known-role fallback workspace: {error}"
+                        ) from error
+                    for lease in held_leases:
+                        lease.mark_committed()
+            except BulkGenerationError as error:
+                raise AuthoringWorkbenchError(str(error)) from error
     except (BulkGenerationError, OSError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    finally:
-        staging_owner.cleanup()
     return WorkspaceCreationResult(destination, True)
 
 
