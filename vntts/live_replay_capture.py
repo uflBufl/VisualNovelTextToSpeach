@@ -9,8 +9,10 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import NotRequired, Protocol, TypedDict, runtime_checkable
 
 from PIL import Image
 
@@ -30,6 +32,81 @@ from vntts.settings import load_app_settings
 from vntts.window_capture import WindowCaptureTarget
 
 LIVE_REPLAY_CAPTURE_VERSION = 1
+
+PathInput = str | os.PathLike[str]
+
+
+class StoryLine(Protocol):
+    line_id: str | None
+    chapter: str
+    speaker: str
+    text: str
+    source_audio_status: str
+    source_audio_id: str | None
+    source_audio_duration_seconds: float | None
+
+
+class StoryResolver(Protocol):
+    @property
+    def dialogue(self) -> Sequence[StoryLine]: ...
+
+    @property
+    def by_chapter(self) -> Mapping[str, Sequence[StoryLine]]: ...
+
+    def resolve_exact_with_result(
+        self, character: str, text: str
+    ) -> tuple[StoryLine | None, str]: ...
+
+
+@runtime_checkable
+class ChapterBoundStoryResolver(Protocol):
+    def resolve_exact_among(
+        self, character: str, text: str, line_ids: Sequence[str]
+    ) -> tuple[StoryLine | None, str]: ...
+
+
+@runtime_checkable
+class CapturedImageFrame(Protocol):
+    image: Image.Image
+
+
+class FrameSpecification(TypedDict):
+    path: str
+    sha256: str
+
+
+class DialogueItem(TypedDict):
+    observed_character: str
+    observed_text: str
+    frames: list[FrameSpecification]
+    group_identity: NotRequired[str]
+    story_line: NotRequired[StoryLine | None]
+    story_match: NotRequired[str]
+    boundary_reason: NotRequired[str]
+
+
+class ObservationRecord(TypedDict):
+    observation_index: int
+    frame: FrameSpecification
+    status: str
+    observed_character: str | None
+    observed_text: str | None
+    story_line_id: str | None
+    story_match: str
+
+
+class CorpusRecord(TypedDict):
+    frames: list[FrameSpecification]
+    character: str
+    text: str
+    line_id: str | None
+    source_audio_status: str
+    source_audio_id: NotRequired[str | None]
+    source_audio_duration_seconds: NotRequired[float | None]
+    source_audio_completeness: NotRequired[str]
+    expected_source: str | None
+    capture_boundary: str
+    story_match: str
 
 
 @dataclass(frozen=True)
@@ -52,14 +129,14 @@ class LiveReplayCaptureSession:
 
     def __init__(
         self,
-        output_directory,
+        output_directory: PathInput,
         *,
-        name="Captured live replay",
-        story_resolver=None,
-        story_index_path=None,
-        story_index_sha256=None,
-    ):
-        selected_story = None
+        name: object = "Captured live replay",
+        story_resolver: StoryResolver | None = None,
+        story_index_path: PathInput | None = None,
+        story_index_sha256: str | None = None,
+    ) -> None:
+        selected_story: Path | None = None
         if story_index_path is not None:
             selected_story = Path(story_index_path).expanduser()
             if selected_story.is_symlink():
@@ -85,23 +162,25 @@ class LiveReplayCaptureSession:
             selected_story.resolve() if selected_story is not None else None
         )
         self.story_index_sha256 = story_index_sha256
-        self.story_chapter = None
-        self.story_chapter_line_ids = ()
-        self.dialogue = []
-        self.active = None
-        self.frame_count = 0
-        self.recognized_observation_count = 0
-        self.duplicate_fingerprints = 0
-        self.uncertain_observations = 0
-        self.unresolved_observations = 0
-        self.observations = []
-        self.boundaries = []
-        self.finished = False
+        self.story_chapter: str | None = None
+        self.story_chapter_line_ids: tuple[str, ...] = ()
+        self.dialogue: list[DialogueItem] = []
+        self.active: DialogueItem | None = None
+        self.frame_count: int = 0
+        self.recognized_observation_count: int = 0
+        self.duplicate_fingerprints: int = 0
+        self.uncertain_observations: int = 0
+        self.unresolved_observations: int = 0
+        self.observations: list[ObservationRecord] = []
+        self.boundaries: list[dict[str, object]] = []
+        self.finished: bool = False
 
-    def note_duplicate_fingerprint(self):
+    def note_duplicate_fingerprint(self) -> None:
         self.duplicate_fingerprints += 1
 
-    def note_uncertain_observation(self, frame=None):
+    def note_uncertain_observation(
+        self, frame: Image.Image | CapturedImageFrame | None = None
+    ) -> None:
         self.uncertain_observations += 1
         if frame is not None:
             frame_spec = self._write_frame(frame)
@@ -114,7 +193,12 @@ class LiveReplayCaptureSession:
                 story_match="ocr-uncertain",
             )
 
-    def observe(self, frame, character, text):
+    def observe(
+        self,
+        frame: Image.Image | CapturedImageFrame,
+        character: object,
+        text: object,
+    ) -> bool:
         """Record one accepted OCR observation and its exact cropped pixels."""
         if self.finished:
             raise LiveReplayCaptureError("Replay capture is already finished")
@@ -206,9 +290,12 @@ class LiveReplayCaptureSession:
         self.active = self._new_dialogue(character, text, frame_spec)
         return True
 
-    def _resolve_story_line(self, character, text):
-        if self.story_chapter_line_ids and hasattr(
-            self.story_resolver, "resolve_exact_among"
+    def _resolve_story_line(
+        self, character: str, text: str
+    ) -> tuple[StoryLine | None, str]:
+        assert self.story_resolver is not None
+        if self.story_chapter_line_ids and isinstance(
+            self.story_resolver, ChapterBoundStoryResolver
         ):
             line, match_result = self.story_resolver.resolve_exact_among(
                 character,
@@ -226,21 +313,21 @@ class LiveReplayCaptureSession:
             return None, "outside-capture-chapter"
         if self.story_chapter is None and chapter is not None:
             self.story_chapter = chapter
-            rows = getattr(self.story_resolver, "by_chapter", {}).get(chapter, ())
+            rows = self.story_resolver.by_chapter.get(chapter, ())
             self.story_chapter_line_ids = tuple(
-                row.line_id for row in rows if getattr(row, "line_id", None)
+                row.line_id for row in rows if row.line_id is not None
             )
         return line, match_result
 
     def _observe_resolved_group(
         self,
-        character,
-        text,
-        frame_spec,
+        character: str,
+        text: str,
+        frame_spec: FrameSpecification,
         *,
-        story_line,
-        story_match,
-    ):
+        story_line: StoryLine | None,
+        story_match: str,
+    ) -> None:
         identity = (
             f"line:{story_line.line_id}"
             if story_line is not None
@@ -259,14 +346,14 @@ class LiveReplayCaptureSession:
 
     def _record_observation(
         self,
-        frame_spec,
+        frame_spec: FrameSpecification,
         *,
-        status,
-        character,
-        text,
-        story_line,
-        story_match,
-    ):
+        status: str,
+        character: str | None,
+        text: str | None,
+        story_line: StoryLine | None,
+        story_match: str,
+    ) -> None:
         self.observations.append(
             {
                 "observation_index": len(self.observations) + 1,
@@ -279,7 +366,7 @@ class LiveReplayCaptureSession:
             }
         )
 
-    def finish(self):
+    def finish(self) -> CapturedReplayResult:
         """Validate captured bytes and publish a replay corpus plus review report."""
         if self.finished:
             raise LiveReplayCaptureError("Replay capture is already finished")
@@ -371,19 +458,20 @@ class LiveReplayCaptureSession:
             len(self.boundaries),
         )
 
-    def _new_dialogue(self, character, text, frame_spec):
+    def _new_dialogue(
+        self, character: str, text: str, frame_spec: FrameSpecification
+    ) -> DialogueItem:
         return {
             "observed_character": character,
             "observed_text": text,
             "frames": [frame_spec],
         }
 
-    def _finalize_active(self, reason):
+    def _finalize_active(self, reason: str) -> None:
         if self.active is None:
             return
-        item = {
-            key: value for key, value in self.active.items() if key != "group_identity"
-        }
+        item = self.active.copy()
+        item.pop("group_identity", None)
         item["boundary_reason"] = reason
         line = item.get("story_line")
         match_result = item.get("story_match", "story-index-unavailable")
@@ -404,8 +492,10 @@ class LiveReplayCaptureSession:
             )
         self.active = None
 
-    def _write_frame(self, frame):
-        image = frame.image if hasattr(frame, "image") else frame
+    def _write_frame(
+        self, frame: Image.Image | CapturedImageFrame
+    ) -> FrameSpecification:
+        image = frame if isinstance(frame, Image.Image) else frame.image
         if not isinstance(image, Image.Image):
             raise LiveReplayCaptureError("Replay capture frame must be a PIL image")
         payload = io.BytesIO()
@@ -425,7 +515,7 @@ class LiveReplayCaptureSession:
             ) from error
         return {"path": relative.as_posix(), "sha256": digest}
 
-    def _corpus_record(self, index, item):
+    def _corpus_record(self, index: int, item: DialogueItem) -> CorpusRecord:
         line = item["story_line"]
         if line is None:
             return {
@@ -457,7 +547,7 @@ class LiveReplayCaptureSession:
             "story_match": item["story_match"],
         }
 
-    def _validate_bound_inputs(self):
+    def _validate_bound_inputs(self) -> None:
         if (
             self.directory.is_symlink()
             or self.frames_directory.is_symlink()
@@ -494,18 +584,20 @@ class LiveReplayCaptureSession:
 
 
 def capture_replay_session(
-    session,
+    session: LiveReplayCaptureSession,
     *,
-    capture_frame,
-    recognize_frame,
-    interval_seconds,
-    maximum_frames=None,
-    duration_seconds=None,
-    fingerprint_frame=fingerprint_dialog_frame,
-    sleep=time.sleep,
-    clock=time.monotonic,
-    focused=lambda: True,
-):
+    capture_frame: Callable[[], CapturedImageFrame],
+    recognize_frame: Callable[[CapturedImageFrame], tuple[object, object] | None],
+    interval_seconds: float,
+    maximum_frames: int | None = None,
+    duration_seconds: float | None = None,
+    fingerprint_frame: Callable[
+        [CapturedImageFrame], object
+    ] = fingerprint_dialog_frame,
+    sleep: Callable[[float], object] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    focused: Callable[[], bool] = lambda: True,
+) -> CapturedReplayResult:
     """Capture distinct accepted observations until a bound software limit."""
     started = clock()
     last_fingerprint = object()
@@ -535,14 +627,14 @@ def capture_replay_session(
     return session.finish()
 
 
-def _json_payload(document):
+def _json_payload(document: object) -> bytes:
     return (
         json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
 
 
-def _write_payload_no_replace(path, payload):
-    temporary = None
+def _write_payload_no_replace(path: Path, payload: bytes) -> None:
+    temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
             prefix=f".{path.name}.",
@@ -568,11 +660,11 @@ def _write_payload_no_replace(path, payload):
             temporary.unlink(missing_ok=True)
 
 
-def _write_json_no_replace(path, document):
+def _write_json_no_replace(path: Path, document: object) -> None:
     _write_payload_no_replace(path, _json_payload(document))
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Capture exact real-game OCR frames for vntts-replay-live"
     )
@@ -585,19 +677,19 @@ def build_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     if arguments.interval_ms is not None and arguments.interval_ms < 1:
-        return cli_error("interval-ms must be positive")
+        return int(cli_error("interval-ms must be positive"))
     if arguments.duration_seconds is not None and arguments.duration_seconds <= 0:
-        return cli_error("duration-seconds must be positive")
+        return int(cli_error("duration-seconds must be positive"))
     if arguments.max_accepted_frames is not None and arguments.max_accepted_frames < 1:
-        return cli_error("max-accepted-frames must be positive")
+        return int(cli_error("max-accepted-frames must be positive"))
     settings = load_app_settings()
     story_index = arguments.story_index or settings.story_index
-    resolver = None
-    story_path = None
-    story_sha256 = None
+    resolver: StoryResolver | None = None
+    story_path: Path | None = None
+    story_sha256: str | None = None
     if story_index:
         selected_story = Path(story_index).expanduser()
         try:
@@ -607,13 +699,16 @@ def main(argv=None):
             if not story_path.is_file():
                 raise LiveReplayCaptureError("Story index is unavailable or unsafe")
             story_sha256 = hashlib.sha256(story_path.read_bytes()).hexdigest()
-            resolver = ChapterVoicePreloader.load_optional(story_path)
+            loaded_resolver: StoryResolver = ChapterVoicePreloader.load_optional(
+                story_path
+            )
+            resolver = loaded_resolver
             if not resolver.dialogue:
                 raise LiveReplayCaptureError("Story index has no usable dialogue")
             if hashlib.sha256(story_path.read_bytes()).hexdigest() != story_sha256:
                 raise LiveReplayCaptureError("Story index changed while loading")
         except (OSError, RuntimeError, ValueError) as error:
-            return cli_error(error)
+            return int(cli_error(error))
     try:
         session = LiveReplayCaptureSession(
             arguments.output,
@@ -630,7 +725,7 @@ def main(argv=None):
             else None
         )
 
-        def recognize(frame):
+        def recognize(frame: CapturedImageFrame) -> tuple[str, str]:
             result = recognize_screenshot_result(
                 frame.image,
                 minimum_confidence=settings.ocr_minimum_confidence,
@@ -670,14 +765,16 @@ def main(argv=None):
         except KeyboardInterrupt:
             result = session.finish()
     except (OSError, RuntimeError, ValueError) as error:
-        return cli_error(error)
-    return cli_messages(
-        (
-            f"Captured {result.dialogue_count} dialogue groups and "
-            f"{result.frame_count} exact frames",
-            f"Boundary decisions requiring review: {result.boundary_review_count}",
-            result.corpus,
-            result.report,
+        return int(cli_error(error))
+    return int(
+        cli_messages(
+            (
+                f"Captured {result.dialogue_count} dialogue groups and "
+                f"{result.frame_count} exact frames",
+                f"Boundary decisions requiring review: {result.boundary_review_count}",
+                result.corpus,
+                result.report,
+            )
         )
     )
 
