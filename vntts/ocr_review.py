@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,18 @@ from vntts.versioned_json import (
 )
 
 OCR_REVIEW_SCHEMA_VERSION = 1
+
+
+def _float_field(value: object) -> float:
+    if isinstance(value, (str, int, float)):
+        return float(value)
+    raise TypeError("OCR review number must be numeric")
+
+
+def _int_field(value: object) -> int:
+    if isinstance(value, (str, int, float)):
+        return int(value)
+    raise TypeError("OCR review count must be numeric")
 
 
 @dataclass(frozen=True)
@@ -24,13 +37,13 @@ class OCRReviewSample:
 
 
 class OCRReviewStore:
-    def __init__(self, directory):
+    def __init__(self, directory: str | Path) -> None:
         self.directory = Path(directory).expanduser()
 
-    def pending_samples(self):
+    def pending_samples(self) -> list[OCRReviewSample]:
         if not self.directory.is_dir():
             return []
-        samples = []
+        samples: list[OCRReviewSample] = []
         for metadata_path in sorted(
             self.directory.glob("uncertain-*.json"),
             reverse=True,
@@ -40,7 +53,13 @@ class OCRReviewStore:
                 samples.append(sample)
         return samples
 
-    def mark_resolved(self, sample, *, scope=None, corrections=None):
+    def mark_resolved(
+        self,
+        sample: OCRReviewSample,
+        *,
+        scope: str | None = None,
+        corrections: Mapping[str, str] | None = None,
+    ) -> None:
         payload = read_versioned_json(
             sample.metadata_path,
             schema_version=OCR_REVIEW_SCHEMA_VERSION,
@@ -59,11 +78,14 @@ class OCRReviewStore:
             payload,
         )
 
-    def _load_sample(self, metadata_path):
-        def decode(payload):
+    def _load_sample(self, metadata_path: Path) -> OCRReviewSample | None:
+        def decode(payload: dict[str, object]) -> OCRReviewSample | None:
             if payload.get("resolved") is True:
                 return None
-            image_path = metadata_path.parent / payload["image"]
+            image = payload["image"]
+            if not isinstance(image, str):
+                raise TypeError("OCR review image must be a path string")
+            image_path = metadata_path.parent / image
             if not image_path.is_file():
                 return None
             return OCRReviewSample(
@@ -71,19 +93,27 @@ class OCRReviewStore:
                 image_path=image_path,
                 character=str(payload.get("character") or "Narrator"),
                 text=str(payload.get("text") or ""),
-                confidence=float(payload.get("confidence", 0)),
-                minimum_confidence=float(payload.get("minimum_confidence", 0)),
+                confidence=_float_field(payload.get("confidence", 0)),
+                minimum_confidence=_float_field(
+                    payload.get("minimum_confidence", 0)
+                ),
                 preprocessing_profile=str(
                     payload.get("preprocessing_profile") or "unknown"
                 ),
-                attempts=int(payload.get("attempts", 0)),
+                attempts=_int_field(payload.get("attempts", 0)),
             )
 
-        return load_versioned_json(
+        def fallback() -> None:
+            return None
+
+        sample = load_versioned_json(
             metadata_path,
             schema_version=OCR_REVIEW_SCHEMA_VERSION,
             document_name="OCR review metadata",
             decode=decode,
-            fallback=lambda: None,
+            fallback=fallback,
             allow_unversioned=True,
         )
+        if sample is not None and not isinstance(sample, OCRReviewSample):
+            raise TypeError("OCR review loader returned an invalid sample")
+        return sample
