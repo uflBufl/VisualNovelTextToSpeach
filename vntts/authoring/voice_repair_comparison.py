@@ -39,11 +39,11 @@ from vntts.authoring.workbench import (
     contained_workspace_path,
     create_resume_workspace,
     generation_command,
-    generation_failure_category,
     list_review_items,
     load_workspace_authority,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import is_lowercase_sha256
 from vntts.speech_backend import get_moss_tts_generation_profile

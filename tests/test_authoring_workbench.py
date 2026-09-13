@@ -29,6 +29,7 @@ import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_authority as workspace_authority_module
 import vntts.authoring.workspace_creation as workspace_creation_module
+import vntts.authoring.workspace_inspection as workspace_inspection_module
 import vntts.authoring.workspace_outcome_merge as workspace_outcome_merge_module
 import vntts.authoring.workspace_state as workspace_state_module
 from tests.symlink_support import symlink_or_skip
@@ -477,9 +478,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 carry_forward_from=source_directory,
                 carry_forward_characters=("Rhiannon",),
             )
-            load_state = workbench_module.load_generation_state
+            load_state = workspace_inspection_module.load_generation_state
             with patch.object(
-                workbench_module,
+                workspace_inspection_module,
                 "load_generation_state",
                 wraps=load_state,
             ) as loading:
@@ -566,7 +567,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 voice_character="Selone",
             )
 
-            missing, reasons = workbench_module._voice_readiness(
+            missing, reasons = workspace_inspection_module._voice_readiness(
                 workspace,
                 (unknown_label, named_unknown),
                 set(),
@@ -2412,7 +2413,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
             live_lease.unlink()
 
-            original_rename = workspace_outcome_merge_module._rename_directory_no_replace
+            original_rename = (
+                workspace_outcome_merge_module._rename_directory_no_replace
+            )
 
             def rename_while_source_is_locked(staging, destination):
                 with self.assertRaisesRegex(
@@ -3019,7 +3022,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         }
 
         duration, words_per_minute, peak, flags = (
-            workbench_module._review_technical_metrics(
+            workspace_inspection_module._review_technical_metrics(
                 result, "Five deliberate words arrive slowly"
             )
         )
@@ -3045,7 +3048,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertIn("pace report only:", summary)
         self.assertNotIn("notable silence", summary)
         self.assertEqual(
-            workbench_module._review_technical_metrics({}, "No WAV"),
+            workspace_inspection_module._review_technical_metrics({}, "No WAV"),
             (None, None, None, ()),
         )
         self.assertEqual(
@@ -3109,7 +3112,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
         annotated = {
             item.queue_id: item
-            for item in workbench_module._annotate_pace_advisories(records)
+            for item in workspace_inspection_module._annotate_pace_advisories(records)
         }
 
         self.assertEqual(annotated["slow"].pace_baseline_wpm, 150.0)
@@ -3183,7 +3186,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             "3.00s | technical pass | repaired pause 0.72s",
         )
         self.assertEqual(
-            workbench_module._review_voice_character(
+            workspace_inspection_module._review_voice_character(
                 SimpleNamespace(speaker="???", voice_character="Hero"), {}
             ),
             "Narrator",
@@ -3198,7 +3201,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     "longest_internal_silence_seconds": internal_pause,
                 },
             }
-            return workbench_module._review_technical_metrics(
+            return workspace_inspection_module._review_technical_metrics(
                 result, "Three deliberate words"
             )[3]
 
@@ -3236,13 +3239,15 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 sample_rate,
             )
 
-            quality = workbench_module._corrected_legacy_speech_quality(
+            quality = workspace_inspection_module._corrected_legacy_speech_quality(
                 str(wav), sha256_file(wav)
             )
-            _duration, _wpm, _peak, flags = workbench_module._review_technical_metrics(
-                {"quality": {"duration_seconds": 3.0, "peak": 0.2}},
-                "A measured phrase after another phrase",
-                projected_speech_quality=quality,
+            _duration, _wpm, _peak, flags = (
+                workspace_inspection_module._review_technical_metrics(
+                    {"quality": {"duration_seconds": 3.0, "peak": 0.2}},
+                    "A measured phrase after another phrase",
+                    projected_speech_quality=quality,
+                )
             )
 
         self.assertEqual(quality["analysis_version"], 2)
@@ -3257,7 +3262,9 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 AuthoringWorkbenchError, "Generated WAV changed"
             ):
-                workbench_module._corrected_legacy_speech_quality(str(wav), "0" * 64)
+                workspace_inspection_module._corrected_legacy_speech_quality(
+                    str(wav), "0" * 64
+                )
 
     def test_review_decision_is_compare_and_swap_bound_to_displayed_state_and_wav(self):
         with TemporaryDirectory() as directory:
@@ -3940,9 +3947,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
                 + "\n"
             ).encode("utf-8")
-            import vntts.authoring.workbench as workbench_module
-
-            original_load = workbench_module._load_workspace
+            original_load = workspace_inspection_module._load_workspace
             changed = False
 
             def swap_after_workspace_validation(path):
@@ -3956,7 +3961,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             try:
                 with (
                     patch(
-                        "vntts.authoring.workbench._load_workspace",
+                        "vntts.authoring.workspace_inspection._load_workspace",
                         side_effect=swap_after_workspace_validation,
                     ),
                     self.assertRaisesRegex(
@@ -4072,7 +4077,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     side_effect=swap_on_history_read,
                 ),
                 patch(
-                    "vntts.authoring.workbench._load_json_snapshot",
+                    "vntts.authoring.workspace_inspection._load_json_snapshot",
                     side_effect=swap_on_history_read,
                 ),
                 self.assertRaisesRegex(

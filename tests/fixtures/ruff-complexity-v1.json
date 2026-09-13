@@ -1041,24 +1041,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/workbench.py",
-      "scope": "_inspect_generation_readiness_from_read",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workbench.py",
-      "scope": "_runtime_status",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workbench.py",
-      "scope": "_voice_readiness",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/workspace_creation.py",
       "scope": "_workspace_generation_provenance",
       "count": 1
@@ -1079,18 +1061,6 @@
       "code": "C901",
       "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_resume_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workbench.py",
-      "scope": "generation_command",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workbench.py",
-      "scope": "generation_control_bindings",
       "count": 1
     },
     {
@@ -2433,12 +2403,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/workbench.py",
-      "scope": "_runtime_status",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_audio_event_composition_workspace",
       "count": 1
@@ -2453,12 +2417,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_resume_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/workbench.py",
-      "scope": "generation_command",
       "count": 1
     },
     {
@@ -3461,12 +3419,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_resume_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/workbench.py",
-      "scope": "generation_command",
       "count": 1
     },
     {

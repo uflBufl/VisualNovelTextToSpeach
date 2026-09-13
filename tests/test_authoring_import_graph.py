@@ -53,17 +53,14 @@ from vntts.authoring.source_reference_quality import (
     SourceReferenceQualityResult,
 )
 from vntts.authoring.speech_quality import SpeechQuality
-from vntts.authoring.terminal_conflict_records import is_terminal_review_outcome
+from vntts.authoring.terminal_conflict_records import (
+    is_terminal_review_outcome,
+)
+from vntts.authoring.terminal_conflict_records import (
+    is_terminal_review_outcome as _terminal_review_outcome,
+)
 from vntts.authoring.terminal_conflict_workspace import (
     merge_terminal_conflict_resolution,
-)
-from vntts.authoring.workbench import (
-    _rename_directory_no_replace as workbench_rename_directory_no_replace,
-)
-from vntts.authoring.workbench import (
-    _selected_voice_manifest,
-    _terminal_review_outcome,
-    _workspace_config_fingerprint,
 )
 from vntts.authoring.workbench import (
     merge_terminal_conflict_resolution as compatibility_merge_terminal_conflict_resolution,
@@ -72,6 +69,15 @@ from vntts.authoring.workspace_config import (
     normalize_workspace_run_config,
     selected_voice_manifest_path,
     workspace_config_fingerprint,
+)
+from vntts.authoring.workspace_config import (
+    workspace_config_fingerprint as _workspace_config_fingerprint,
+)
+from vntts.authoring.workspace_creation import (
+    _rename_directory_no_replace as workspace_creation_rename_directory_no_replace,
+)
+from vntts.authoring.workspace_creation import (
+    _selected_voice_manifest,
 )
 from vntts.authoring.workspace_voice_runtime import load_workspace_voice_registry
 
@@ -442,7 +448,7 @@ print(json.dumps({
             rename_directory_no_replace,
         )
         self.assertIs(
-            workbench_rename_directory_no_replace,
+            workspace_creation_rename_directory_no_replace,
             rename_directory_no_replace,
         )
 
