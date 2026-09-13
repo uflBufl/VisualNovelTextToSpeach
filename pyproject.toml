@@ -136,6 +136,7 @@ files = [
     "vntts/authoring/cli_dispatch.py",
     "vntts/authoring/import_paths.py",
     "vntts/authoring/private_files.py",
+    "vntts/authoring/queue_extension.py",
     "vntts/authoring/workspace_config.py",
     "vntts/authoring/workspace_foundation.py",
     "vntts/controller_components.py",

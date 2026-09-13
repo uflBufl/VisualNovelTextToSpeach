@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from os import PathLike
 from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
@@ -25,7 +26,11 @@ class QueueExtensionError(ValueError):
     """Raised when an additive queue successor is unsafe or inconsistent."""
 
 
-def publish_additive_generation_queue(base_queue, extension_queue, output):
+def publish_additive_generation_queue(
+    base_queue: str | PathLike[str],
+    extension_queue: str | PathLike[str],
+    output: str | PathLike[str],
+) -> Path:
     """Publish a strict queue superset while preserving exact item documents."""
     base_path = Path(base_queue).expanduser().resolve()
     extension_path = Path(extension_queue).expanduser().resolve()
@@ -88,17 +93,21 @@ def publish_additive_generation_queue(base_queue, extension_queue, output):
         key=_story_order_key,
     )
     try:
-        published = write_voice_generation_queue(output_path, metadata, ordered)
-        result = VoiceGenerationQueue.load(published)
+        write_voice_generation_queue(output_path, metadata, ordered)
+        result = VoiceGenerationQueue.load(output_path)
     except VoiceGenerationQueueError as error:
         raise QueueExtensionError(str(error)) from error
     observed = {item.queue_id: item.document for item in result.items}
     if observed != {**base_by_id, **extension_by_id}:
         raise QueueExtensionError("Published queue extension changed item documents")
-    return published
+    return output_path
 
 
-def validate_additive_generation_queue(queue_path, *, base_queue=None):
+def validate_additive_generation_queue(
+    queue_path: str | PathLike[str],
+    *,
+    base_queue: str | PathLike[str] | None = None,
+) -> tuple[VoiceGenerationQueue, dict[str, object]]:
     """Validate the embedded extension ledger and optional exact base queue."""
     path = Path(queue_path).expanduser().resolve()
     try:
@@ -133,7 +142,7 @@ def validate_additive_generation_queue(queue_path, *, base_queue=None):
     added = ledger.get("added_items")
     if not isinstance(added, list) or not added:
         raise QueueExtensionError("Generation queue extension adds no items")
-    added_by_id = {}
+    added_by_id: dict[str, str] = {}
     for record in added:
         if not isinstance(record, dict) or set(record) != {"queue_id", "item_sha256"}:
             raise QueueExtensionError("Generation queue added-item ledger is malformed")
@@ -168,11 +177,21 @@ def validate_additive_generation_queue(queue_path, *, base_queue=None):
     return queue, ledger
 
 
-def workspace_queue_extension(queue_path, *, base_queue):
+def workspace_queue_extension(
+    queue_path: str | PathLike[str], *, base_queue: str | PathLike[str]
+) -> dict[str, object]:
     """Build the compact workspace binding for one validated target queue."""
     _queue, ledger = validate_additive_generation_queue(
         queue_path, base_queue=base_queue
     )
+    added_items = ledger["added_items"]
+    assert isinstance(added_items, list)
+    added_queue_ids = []
+    for record in added_items:
+        assert isinstance(record, dict)
+        queue_id = record["queue_id"]
+        assert isinstance(queue_id, str)
+        added_queue_ids.append(queue_id)
     return {
         "schema": WORKSPACE_SCHEMA,
         "schema_version": WORKSPACE_VERSION,
@@ -183,13 +202,11 @@ def workspace_queue_extension(queue_path, *, base_queue):
         "extension_queue_sha256": ledger["extension_queue_sha256"],
         "extension_id": ledger["extension_id"],
         "added_item_count": ledger["added_item_count"],
-        "added_queue_ids": sorted(
-            record["queue_id"] for record in ledger["added_items"]
-        ),
+        "added_queue_ids": sorted(added_queue_ids),
     }
 
 
-def _story_order_key(document):
+def _story_order_key(document: dict[str, object]) -> tuple[int, int, int, str, str]:
     return (
         _integer_order(document.get("collection_order")),
         _integer_order(document.get("story_order")),
@@ -199,15 +216,16 @@ def _story_order_key(document):
     )
 
 
-def _integer_order(value):
+def _integer_order(value: object) -> int:
     if isinstance(value, int) and not isinstance(value, bool):
         return value
     return 2**63 - 1
 
 
-def _sha256(value, label):
+def _sha256(value: object, label: str) -> str:
     if not is_lowercase_sha256(value):
         raise QueueExtensionError(f"{label} is invalid")
+    assert isinstance(value, str)
     return value
 
 
