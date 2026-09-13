@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Literal, NotRequired, TypedDict
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QPixmap
+from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtGui import QCloseEvent, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -37,22 +39,101 @@ from vntts.authoring.source_reference_quality_records import (
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
+QualityDecision = Literal["accept", "reject", "needs_sample"]
+PlaybackPayload = tuple[str, str, str, bytes]
+
+
+class _AudioRecord(TypedDict):
+    audio: str
+    audio_sha256: str
+    sample_rate: int
+    sample_count: int
+    duration_seconds: float
+
+
+class _GeneratedSample(_AudioRecord):
+    queue_id: str
+    evaluation_kind: str
+    text: str
+    text_sha256: str
+
+
+class _ExcludedSample(TypedDict):
+    queue_id: str
+    evaluation_kind: str
+    text: str
+    text_sha256: str
+    status: str
+    attempts: int
+    failure_kind: NotRequired[str]
+    completion: NotRequired[str]
+    error: NotRequired[str]
+
+
+class _PortraitRecord(TypedDict):
+    image: str
+    image_sha256: str
+    width: int
+    height: int
+
+
+class _DecisionContext(TypedDict):
+    backend: str
+    model: str
+    generation_profile: str
+    seed: str | int
+
+
+class _QualityVariant(TypedDict):
+    variant_id: str
+    cluster_id: str
+    character: str
+    source_bank: str
+    affected_queue_item_count: int
+    reference: _AudioRecord
+    generated_samples: list[_GeneratedSample]
+    excluded_results: list[_ExcludedSample]
+    reference_kind: NotRequired[str]
+    media_id: NotRequired[int]
+    media_ids: NotRequired[list[int]]
+    portrait_image: NotRequired[_PortraitRecord | None]
+    decision_context: NotRequired[_DecisionContext | None]
+
+
+class _QualitySession(TypedDict):
+    variants: list[_QualityVariant]
+
+
+ReviewLoader = Callable[[Path], _QualitySession]
+ReviewProgress = Callable[[_QualitySession], tuple[int, int]]
+PendingVariant = Callable[[_QualitySession], _QualityVariant | None]
+DecisionRecorder = Callable[[Path, str, QualityDecision], _QualitySession]
+DecisionConfirmer = Callable[[QualityDecision], bool]
+
+_load_review: ReviewLoader = load_source_reference_quality_review
+_quality_progress: ReviewProgress = quality_review_progress
+_next_pending_variant: PendingVariant = next_pending_quality_variant
+_record_decision: DecisionRecorder = record_source_reference_quality_decision
+
 
 class SourceReferenceQualityDialog(QDialog):
     """Present exact original and generated evidence without cross-character A/B."""
 
+    accept: QPushButton
+    stop: QPushButton
+
     def __init__(
         self,
-        session_path,
-        parent=None,
+        session_path: str | Path,
+        parent: QWidget | None = None,
         *,
-        decision_recorder=record_source_reference_quality_decision,
-        thread_pool=None,
-        confirmer=None,
-    ):
+        decision_recorder: DecisionRecorder = _record_decision,
+        thread_pool: QThreadPool | None = None,
+        confirmer: DecisionConfirmer | None = None,
+    ) -> None:
         super().__init__(parent)
         self.session_path = Path(session_path).expanduser().resolve()
-        self.session = load_source_reference_quality_review(self.session_path)
+        self.session: _QualitySession = _load_review(self.session_path)
         self.decision_recorder = decision_recorder
         self.confirmer = confirmer or self._confirm_decision
         self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -66,10 +147,10 @@ class SourceReferenceQualityDialog(QDialog):
         )
         self._decision_active = False
         self._close_pending = False
-        self.current = None
-        self.completed_audio = set()
-        self._audio_buffer = None
-        self._playing_token = None
+        self.current: _QualityVariant | None = None
+        self.completed_audio: set[str] = set()
+        self._audio_buffer: object | None = None
+        self._playing_token: str | None = None
 
         self.setWindowTitle("Source-reference quality review")
         self.setMinimumSize(700, 500)
@@ -197,20 +278,19 @@ class SourceReferenceQualityDialog(QDialog):
         self.setTabOrder(self.reject_reference, self.needs_sample)
         self.setTabOrder(self.needs_sample, self.close_button)
 
-        self.player = QMediaPlayer(self)
-        self.player.playbackStateChanged.connect(self._playback_state_changed)
-        self.player.mediaStatusChanged.connect(self._media_status_changed)
-        self.player.errorOccurred.connect(self._playback_error)
+        player = QMediaPlayer(self)
+        player.playbackStateChanged.connect(self._playback_state_changed)
+        player.mediaStatusChanged.connect(self._media_status_changed)
+        player.errorOccurred.connect(self._playback_error)
+        self.player: QMediaPlayer = player
         self._load_next()
 
-    def _load_next(self, session=None):
+    def _load_next(self, session: _QualitySession | None = None) -> None:
         self._stop()
-        self.session = session or load_source_reference_quality_review(
-            self.session_path
-        )
-        completed, total = quality_review_progress(self.session)
+        self.session = session or _load_review(self.session_path)
+        completed, total = _quality_progress(self.session)
         self.progress.setText(f"Progress: {completed}/{total}")
-        self.current = next_pending_quality_variant(self.session)
+        self.current = _next_pending_variant(self.session)
         self.completed_audio.clear()
         self.generated.clear()
         if self.current is None:
@@ -249,19 +329,26 @@ class SourceReferenceQualityDialog(QDialog):
             f"Character: {self.current['character']} | {media} | "
             f"Affected story lines: {self.current['affected_queue_item_count']}"
         )
-        synthesis = self.current.get("decision_context") or {}
-        model = str(synthesis.get("model") or "Unknown (legacy review format)")
-        seed = synthesis.get("seed", "Unknown")
+        synthesis = self.current.get("decision_context")
+        if synthesis is None:
+            model = "Unknown (legacy review format)"
+            seed: str | int = "Unknown"
+            backend = "Unknown (legacy review format)"
+            generation_profile = "Unknown (legacy review format)"
+        else:
+            model = synthesis["model"]
+            seed = synthesis["seed"]
+            backend = synthesis["backend"]
+            generation_profile = synthesis["generation_profile"]
         self.decision_context.set_context(
             {
                 "purpose": "Accept, reject, or replace a voice-cloning reference",
                 "game_speaker": self.current["character"],
                 "synthesis_voice": self.current["character"],
                 "reference": media,
-                "backend": synthesis.get("backend") or "Unknown (legacy review format)",
+                "backend": backend,
                 "model": review_model_label(model),
-                "generation_profile": synthesis.get("generation_profile")
-                or "Unknown (legacy review format)",
+                "generation_profile": generation_profile,
                 "controls": (
                     f"Original plus published generated evidence | Seed: {seed}"
                 ),
@@ -297,11 +384,15 @@ class SourceReferenceQualityDialog(QDialog):
                 "No published generated sample is available for this reference."
             )
         failure_lines = []
-        for sample in self.current["excluded_results"]:
-            reason = sample.get("failure_kind") or sample.get("completion") or "failed"
+        for excluded_sample in self.current["excluded_results"]:
+            reason = (
+                excluded_sample.get("failure_kind")
+                or excluded_sample.get("completion")
+                or "failed"
+            )
             failure_lines.append(
-                f"Excluded {sample['evaluation_kind']}: {reason}; "
-                f"{sample.get('error') or 'no WAV was published'}"
+                f"Excluded {excluded_sample['evaluation_kind']}: {reason}; "
+                f"{excluded_sample.get('error') or 'no WAV was published'}"
             )
         self.failures.setText(
             "\n".join(failure_lines)
@@ -326,7 +417,8 @@ class SourceReferenceQualityDialog(QDialog):
         self._update_play_enabled()
         self._update_decision_enabled()
 
-    def _load_portrait(self):
+    def _load_portrait(self) -> None:
+        assert self.current is not None
         record = self.current.get("portrait_image")
         if record is None:
             self._set_portrait_message("Exact game portrait is not installed")
@@ -342,7 +434,7 @@ class SourceReferenceQualityDialog(QDialog):
             self._set_portrait_message("Portrait blocked: checksum changed")
             return
         pixmap = QPixmap()
-        if not pixmap.loadFromData(payload, "PNG"):
+        if not pixmap.loadFromData(payload):
             self._set_portrait_message("Portrait blocked: invalid PNG")
             return
         self.portrait_image.setMinimumHeight(150)
@@ -357,13 +449,13 @@ class SourceReferenceQualityDialog(QDialog):
             )
         )
 
-    def _set_portrait_message(self, message):
+    def _set_portrait_message(self, message: str) -> None:
         self.portrait_image.setPixmap(QPixmap())
         self.portrait_image.setText(message)
         self.portrait_image.setMinimumHeight(36)
         self.portrait_image.setMaximumHeight(48)
 
-    def _generated_selection_changed(self, row):
+    def _generated_selection_changed(self, row: int) -> None:
         self._update_play_enabled()
         if self.current is None or not 0 <= row < len(
             self.current["generated_samples"]
@@ -377,14 +469,14 @@ class SourceReferenceQualityDialog(QDialog):
             f"Text: {sample['text']}"
         )
 
-    def _update_play_enabled(self):
+    def _update_play_enabled(self) -> None:
         self.play_generated.setEnabled(
             self.current is not None
             and self.generated.currentRow() >= 0
             and bool(self.current["generated_samples"])
         )
 
-    def _set_actions_enabled(self, enabled, reason=None):
+    def _set_actions_enabled(self, enabled: bool, reason: str | None = None) -> None:
         self.accept.setEnabled(enabled)
         self.reject_reference.setEnabled(enabled)
         self.needs_sample.setEnabled(enabled)
@@ -401,7 +493,7 @@ class SourceReferenceQualityDialog(QDialog):
                 else f"Unavailable: {self.evidence_progress.text()}"
             )
 
-    def _update_decision_enabled(self):
+    def _update_decision_enabled(self) -> None:
         if self.current is None:
             self._set_actions_enabled(False, "Review complete.")
             return
@@ -434,11 +526,11 @@ class SourceReferenceQualityDialog(QDialog):
                 else f"Unavailable: {self.evidence_progress.text()}"
             )
 
-    def _play_reference(self):
+    def _play_reference(self) -> None:
         if self.current is not None:
             self._play_record(self.current["reference"], "reference")
 
-    def _play_generated(self):
+    def _play_generated(self) -> None:
         if self.current is None:
             return
         row = self.generated.currentRow()
@@ -447,7 +539,10 @@ class SourceReferenceQualityDialog(QDialog):
         sample = self.current["generated_samples"][row]
         self._play_record(sample, sample["queue_id"])
 
-    def _play_record(self, record, token):
+    def _play_record(self, record: _AudioRecord, token: str) -> None:
+        current = self.current
+        if current is None:
+            return
         self._stop()
         self.status.setText("Preparing checksum-verified audio in background...")
         self.playback_runner.start(
@@ -455,11 +550,13 @@ class SourceReferenceQualityDialog(QDialog):
             self.session_path.parent,
             dict(record),
             token,
-            self.current["variant_id"],
+            current["variant_id"],
         )
 
     @staticmethod
-    def _load_audio_payload(root, record, token, variant_id):
+    def _load_audio_payload(
+        root: Path, record: _AudioRecord, token: str, variant_id: str
+    ) -> PlaybackPayload:
         root = Path(root).resolve()
         path = root / record["audio"]
         if path.is_symlink():
@@ -471,7 +568,9 @@ class SourceReferenceQualityDialog(QDialog):
             raise ValueError("audio checksum changed")
         return variant_id, token, record["audio_sha256"], payload
 
-    def _playback_prepared(self, result, error):
+    def _playback_prepared(
+        self, result: PlaybackPayload, error: Exception | None
+    ) -> None:
         if error is not None:
             self.status.setText(f"Playback blocked: {error}")
             self.stop.setEnabled(False)
@@ -480,19 +579,24 @@ class SourceReferenceQualityDialog(QDialog):
         if self.current is None or self.current["variant_id"] != variant_id:
             self.status.setText("Playback cancelled: review card changed")
             return
+        selected: _AudioRecord | None
+        selected_queue_id: str | None = None
         if token == "reference":
             selected = self.current["reference"]
         else:
             row = self.generated.currentRow()
-            selected = (
+            generated_sample = (
                 self.current["generated_samples"][row]
                 if 0 <= row < len(self.current["generated_samples"])
                 else None
             )
+            selected = generated_sample
+            if generated_sample is not None:
+                selected_queue_id = generated_sample["queue_id"]
         if (
             selected is None
             or selected.get("audio_sha256") != digest
-            or (token != "reference" and selected.get("queue_id") != token)
+            or (token != "reference" and selected_queue_id != token)
         ):
             self.status.setText("Playback cancelled: audio selection changed")
             return
@@ -506,17 +610,18 @@ class SourceReferenceQualityDialog(QDialog):
         self.stop.setEnabled(True)
         self.status.setText("Starting checksum-verified audio.")
 
-    def _playback_state_changed(self, state):
+    def _playback_state_changed(self, state: object) -> None:
         if (
             state == QMediaPlayer.PlaybackState.PlayingState
             and self._playing_token is not None
         ):
             self.status.setText("Playing checksum-verified audio.")
 
-    def _media_status_changed(self, status):
+    def _media_status_changed(self, status: object) -> None:
         if (
             status == QMediaPlayer.MediaStatus.EndOfMedia
             and self._playing_token is not None
+            and self.current is not None
         ):
             self.completed_audio.add(self._playing_token)
             generated_tokens = {
@@ -532,12 +637,12 @@ class SourceReferenceQualityDialog(QDialog):
             self.stop.setEnabled(False)
             self._update_decision_enabled()
 
-    def _playback_error(self, _error, message):
+    def _playback_error(self, _error: object, message: str) -> None:
         self._playing_token = None
         self.stop.setEnabled(False)
         self.status.setText(f"Playback failed: {message or self.player.errorString()}")
 
-    def _stop(self):
+    def _stop(self) -> None:
         if hasattr(self, "playback_runner"):
             self.playback_runner.cancel()
         if hasattr(self, "player"):
@@ -547,8 +652,9 @@ class SourceReferenceQualityDialog(QDialog):
         self.stop.setEnabled(False)
         self._audio_buffer = None
 
-    def _decide(self, decision):
-        if self.current is None:
+    def _decide(self, decision: QualityDecision) -> None:
+        current = self.current
+        if current is None:
             return
         if self._decision_active:
             self.status.setText("Wait for the current decision to finish saving.")
@@ -574,12 +680,12 @@ class SourceReferenceQualityDialog(QDialog):
         self.decision_runner.start(
             self.decision_recorder,
             self.session_path,
-            self.current["variant_id"],
+            current["variant_id"],
             decision,
         )
 
-    def _confirm_decision(self, decision):
-        return (
+    def _confirm_decision(self, decision: QualityDecision) -> bool:
+        return bool(
             QMessageBox.question(
                 self,
                 "Save irreversible reference decision?",
@@ -591,7 +697,9 @@ class SourceReferenceQualityDialog(QDialog):
             == QMessageBox.StandardButton.Yes
         )
 
-    def _decision_finished(self, result, error):
+    def _decision_finished(
+        self, result: _QualitySession, error: Exception | None
+    ) -> None:
         if error is None:
             self._load_next(result)
         else:
@@ -604,7 +712,7 @@ class SourceReferenceQualityDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._decision_active:
             self._close_pending = True
             self.status.setText(
@@ -617,7 +725,7 @@ class SourceReferenceQualityDialog(QDialog):
         super().closeEvent(event)
 
 
-def launch_source_reference_quality_review(session_path):
+def launch_source_reference_quality_review(session_path: str | Path) -> int:
     _application = QApplication.instance() or QApplication(sys.argv)
     try:
         dialog = SourceReferenceQualityDialog(session_path)
