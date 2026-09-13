@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Literal, NotRequired, Protocol, TypedDict
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence
+from PySide6.QtCore import Qt, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QKeySequence, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyleOptionSlider,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.async_ui import LatestTaskRunner
@@ -33,14 +36,83 @@ from vntts.authoring.listening import (
     next_pending_trial,
     record_trial_preference,
 )
-from vntts.authoring.pcm_playback import PersistentPcmPlayer
+from vntts.authoring.pcm_playback import (
+    PcmClip,
+    PersistentPcmPlayer,
+    PlaybackSnapshot,
+)
 from vntts.authoring.review_context_ui import ReviewDecisionContext
+
+Side = Literal["a", "b"]
+Preference = Literal["a", "b", "tie", "neither"]
+PlaybackState = Literal[
+    "ready", "loading", "playing", "finished", "stopped", "complete"
+]
+
+
+class _TrialAudio(TypedDict):
+    a: str
+    b: str
+
+
+class _ListeningTrial(TypedDict):
+    trial_id: str
+    queue_id: str
+    audio: _TrialAudio
+    line_id: NotRequired[str]
+    text: NotRequired[str]
+
+
+class _ListeningSession(TypedDict):
+    trials: list[_ListeningTrial]
+
+
+class _ReportModel(TypedDict):
+    model_id: str
+
+
+class _ListeningReport(TypedDict):
+    models: list[_ReportModel]
+
+
+class _Playback(Protocol):
+    def load(self, path: Path) -> PcmClip: ...
+
+    def play(self, clip: PcmClip) -> int: ...
+
+    def snapshot(self) -> PlaybackSnapshot: ...
+
+    def pause(self) -> None: ...
+
+    def resume(self) -> int: ...
+
+    def seek(self, position_frames: int) -> int: ...
+
+    def stop(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+SessionLoader = Callable[[Path], _ListeningSession]
+ProgressReader = Callable[[_ListeningSession], tuple[int, int]]
+PendingTrialReader = Callable[[_ListeningSession], _ListeningTrial | None]
+PreferenceRecorder = Callable[[Path, str, Preference], _ListeningSession]
+ReportBuilder = Callable[[Path, Path], _ListeningReport]
+PreferenceConfirmer = Callable[[Preference], bool]
+PlaybackFactory = Callable[[], _Playback]
+
+_load_session: SessionLoader = load_listening_session
+_listening_progress: ProgressReader = listening_progress
+_next_pending_trial: PendingTrialReader = next_pending_trial
+_record_preference: PreferenceRecorder = record_trial_preference
+_ensure_report: ReportBuilder = ensure_listening_report
+_playback_factory: PlaybackFactory = PersistentPcmPlayer
 
 
 class SeekSlider(QSlider):
     seek_requested = Signal(int)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
             super().mousePressEvent(event)
             return
@@ -66,39 +138,40 @@ class SeekSlider(QSlider):
 
 
 class ModelListeningDialog(QDialog):
-    side_colors = {
+    side_colors: dict[Side, dict[str, str]] = {
         "a": {"normal": "#2563eb", "disabled": "#1e3a5f", "border": "#bfdbfe"},
         "b": {"normal": "#ea580c", "disabled": "#5f301f", "border": "#fed7aa"},
     }
+    stop: QPushButton
 
     def __init__(
         self,
-        session_path,
-        parent=None,
+        session_path: str | Path,
+        parent: QWidget | None = None,
         *,
-        auto_play=True,
-        preference_recorder=record_trial_preference,
-        playback_factory=PersistentPcmPlayer,
-        thread_pool=None,
-        confirmer=None,
-    ):
+        auto_play: bool = True,
+        preference_recorder: PreferenceRecorder = _record_preference,
+        playback_factory: PlaybackFactory = _playback_factory,
+        thread_pool: QThreadPool | None = None,
+        confirmer: PreferenceConfirmer | None = None,
+    ) -> None:
         super().__init__(parent)
         self.session_path = Path(session_path).expanduser().resolve()
-        self.session = load_listening_session(self.session_path)
+        self.session: _ListeningSession = _load_session(self.session_path)
         self.preference_recorder = preference_recorder
         self.confirmer = confirmer or self._confirm_preference
         self.preference_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.preference_runner.finished.connect(self._preference_finished)
         self._preference_active = False
         self._close_pending = False
-        self.current_trial = None
+        self.current_trial: _ListeningTrial | None = None
         self.auto_play = auto_play
         self.auto_play_pending_b = False
-        self.active_side = None
-        self.active_token = None
+        self.active_side: Side | None = None
+        self.active_token: int | None = None
         self.active_started = False
         self.active_initial_natural = False
-        self.completed_sides = set()
+        self.completed_sides: set[Side] = set()
         self.setWindowTitle("Blind voice-model listening workbench")
         self.setMinimumSize(640, 400)
         self.resize(900, 520)
@@ -249,15 +322,17 @@ class ModelListeningDialog(QDialog):
         self.setTabOrder(self.tie, self.neither)
         self.setTabOrder(self.neither, self.prefer_b)
 
-        self.playback = playback_factory()
-        self.audio_clips = {}
+        self.playback: _Playback = playback_factory()
+        self.audio_clips: dict[Side, PcmClip] = {}
         self.playback_timer = QTimer(self)
         self.playback_timer.setInterval(20)
         self.playback_timer.timeout.connect(self.poll_playback)
         self.playback_timer.start()
         self.load_next_trial()
 
-    def set_preference_buttons_enabled(self, enabled, reason=None):
+    def set_preference_buttons_enabled(
+        self, enabled: bool, reason: str | None = None
+    ) -> None:
         decisions = (
             (self.prefer_a, "Record anonymous sample A as better"),
             (self.tie, "Record both samples as acceptable with no preference"),
@@ -280,8 +355,8 @@ class ModelListeningDialog(QDialog):
                 description if enabled else f"Unavailable. {reason}"
             )
 
-    def update_trial_context(self):
-        completed, total = listening_progress(self.session)
+    def update_trial_context(self) -> None:
+        completed, total = _listening_progress(self.session)
         remaining = total - completed
         self.progress.setText(
             f"Completed {completed} of {total} | Remaining {remaining}"
@@ -327,7 +402,9 @@ class ModelListeningDialog(QDialog):
             ),
         )
 
-    def apply_side_button_style(self, button, side, *, active=False):
+    def apply_side_button_style(
+        self, button: QPushButton, side: Side, *, active: bool = False
+    ) -> None:
         colors = self.side_colors[side]
         border = colors["border"] if active else colors["normal"]
         button.setStyleSheet(
@@ -341,7 +418,9 @@ class ModelListeningDialog(QDialog):
             "}"
         )
 
-    def set_playback_indicator(self, state, side=None):
+    def set_playback_indicator(
+        self, state: PlaybackState, side: Side | None = None
+    ) -> None:
         self.playback_control_state = state
         label = side.upper() if side else None
         self.play_a.setText("Play A")
@@ -356,7 +435,7 @@ class ModelListeningDialog(QDialog):
             "stopped": f"PAUSED: {label}" if label else "PAUSED",
             "complete": "SESSION COMPLETE",
         }
-        background = self.side_colors.get(side, {}).get("normal", "#3f3f46")
+        background = self.side_colors[side]["normal"] if side is not None else "#3f3f46"
         self.now_playing.setText(labels[state])
         self.now_playing.setStyleSheet(
             f"QLabel {{ background-color: {background}; color: white;"
@@ -371,9 +450,9 @@ class ModelListeningDialog(QDialog):
             button.setText(f"{'LOADING' if state == 'loading' else 'PLAYING'} {label}")
             self.apply_side_button_style(button, side, active=True)
 
-    def load_next_trial(self):
-        self.session = load_listening_session(self.session_path)
-        self.current_trial = next_pending_trial(self.session)
+    def load_next_trial(self) -> None:
+        self.session = _load_session(self.session_path)
+        self.current_trial = _next_pending_trial(self.session)
         self.update_trial_context()
         self.auto_play_pending_b = False
         self.active_side = None
@@ -393,7 +472,7 @@ class ModelListeningDialog(QDialog):
             self.set_playback_indicator("complete")
             self.set_preference_buttons_enabled(False, "Session complete.")
             report_path = self.session_path.with_name("report.json")
-            report = ensure_listening_report(self.session_path, report_path)
+            report = _ensure_report(self.session_path, report_path)
             leader = report["models"][0]["model_id"] if report["models"] else "none"
             self.dialogue.setPlainText("Listening session complete.")
             self.status.setText(
@@ -431,12 +510,12 @@ class ModelListeningDialog(QDialog):
         if self.auto_play:
             QTimer.singleShot(0, self.start_auto_playback)
 
-    def start_auto_playback(self):
+    def start_auto_playback(self) -> None:
         if self.current_trial is not None:
             self.auto_play_pending_b = True
             self.play("a", automatic=True)
 
-    def play(self, side, *, automatic=False):
+    def play(self, side: Side, *, automatic: bool = False) -> None:
         if self.current_trial is None:
             return
         if side == "b":
@@ -453,7 +532,7 @@ class ModelListeningDialog(QDialog):
         mode = " automatically" if automatic else ""
         self.status.setText(f"Playing anonymous sample {side.upper()}{mode}.")
 
-    def poll_playback(self):
+    def poll_playback(self) -> None:
         side = self.active_side
         token = self.active_token
         if side is None or token is None:
@@ -526,16 +605,16 @@ class ModelListeningDialog(QDialog):
             )
 
     @staticmethod
-    def format_time(milliseconds):
+    def format_time(milliseconds: int) -> str:
         seconds = max(0, int(milliseconds)) // 1000
         return f"{seconds // 60}:{seconds % 60:02d}"
 
-    def update_time_label(self, position, duration):
+    def update_time_label(self, position: int, duration: int) -> None:
         self.time.setText(
             f"{self.format_time(position)} / {self.format_time(duration)}"
         )
 
-    def seek_to(self, position):
+    def seek_to(self, position: int) -> None:
         if self.active_side is None:
             return
         self.active_initial_natural = False
@@ -545,21 +624,21 @@ class ModelListeningDialog(QDialog):
         self.seek.setValue(position)
         self.update_time_label(position, clip.duration_ms)
 
-    def skip_by(self, delta):
+    def skip_by(self, delta: int) -> None:
         if self.active_side is None:
             return
         clip = self.audio_clips[self.active_side]
         position = max(0, min(clip.duration_ms, self.seek.value() + delta))
         self.seek_to(position)
 
-    def stop_audio(self):
+    def stop_audio(self) -> None:
         self.auto_play_pending_b = False
         self.active_token = None
         self.active_initial_natural = False
         self.playback.stop()
         self.set_playback_indicator("stopped", self.active_side)
 
-    def toggle_playback(self):
+    def toggle_playback(self) -> None:
         if self.current_trial is None or self.active_side is None:
             return
         if self.playback_control_state == "stopped":
@@ -583,7 +662,7 @@ class ModelListeningDialog(QDialog):
             self.playback.pause()
             self.set_playback_indicator("stopped", self.active_side)
 
-    def save_preference(self, preference):
+    def save_preference(self, preference: Preference) -> None:
         if self.current_trial is None:
             return
         if self._preference_active:
@@ -615,14 +694,14 @@ class ModelListeningDialog(QDialog):
             report_path=self.session_path.with_name("report.json"),
         )
 
-    def _confirm_preference(self, preference):
+    def _confirm_preference(self, preference: Preference) -> bool:
         labels = {
             "a": "A is better",
             "b": "B is better",
             "tie": "both are acceptable",
             "neither": "neither is acceptable",
         }
-        return (
+        return bool(
             QMessageBox.question(
                 self,
                 "Save irreversible blind preference?",
@@ -634,7 +713,7 @@ class ModelListeningDialog(QDialog):
             == QMessageBox.StandardButton.Yes
         )
 
-    def _preference_finished(self, _result, error):
+    def _preference_finished(self, _result: object, error: Exception | None) -> None:
         self._preference_active = False
         if error is None:
             self.stop_audio()
@@ -653,10 +732,10 @@ class ModelListeningDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def _show_persisted_score_with_report_error(self, message):
+    def _show_persisted_score_with_report_error(self, message: str) -> None:
         self.stop_audio()
-        self.session = load_listening_session(self.session_path)
-        self.current_trial = next_pending_trial(self.session)
+        self.session = _load_session(self.session_path)
+        self.current_trial = _next_pending_trial(self.session)
         self.update_trial_context()
         if self.current_trial is not None:
             self.load_next_trial()
@@ -674,7 +753,7 @@ class ModelListeningDialog(QDialog):
                 widget.setEnabled(False)
         self.status.setText(message)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._preference_active:
             self._close_pending = True
             self.status.setText(
@@ -688,7 +767,7 @@ class ModelListeningDialog(QDialog):
         super().closeEvent(event)
 
 
-def launch_listening_workbench(session_path):
+def launch_listening_workbench(session_path: str | Path) -> int:
     _application = QApplication.instance() or QApplication(sys.argv)
     try:
         dialog = ModelListeningDialog(session_path)
