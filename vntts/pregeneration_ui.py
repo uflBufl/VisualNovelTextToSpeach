@@ -40,6 +40,7 @@ from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationProgress,
     OfflineGenerationWorker,
+    runtime_progress_manifest_path,
 )
 from vntts.pregeneration_pack import (
     OfflinePackError,
@@ -525,6 +526,12 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_coverage = QLabel()
         self.progress_coverage.setAccessibleName("Final offline audio coverage")
         self.progress_coverage.setWordWrap(True)
+        self.play_ready_button = QPushButton("Start reading ready dialogue")
+        self.play_ready_button.setAccessibleDescription(
+            "Start the selected story while preparation continues in the background"
+        )
+        self.play_ready_button.clicked.connect(self.readingRequested.emit)
+        self.play_ready_button.hide()
         self._layout_progress_panel()
 
     def _layout_progress_panel(self):
@@ -545,6 +552,7 @@ class OfflineAudioPreparationDialog(QDialog):
         progress_layout.addWidget(self.progress_failures)
         progress_layout.addWidget(self.progress_cancel_consequence)
         progress_layout.addWidget(self.progress_coverage)
+        progress_layout.addWidget(self.play_ready_button)
         self.progress_panel.hide()
 
     def _build_voice_confirmation(self, game_narrator_chooser):
@@ -1321,6 +1329,27 @@ class OfflineAudioPreparationDialog(QDialog):
     def generation_input(self):
         return self._generation_input
 
+    def runtime_playback_settings(self):
+        generation_input = self._generation_input
+        if generation_input is None:
+            return None
+        manifest = runtime_progress_manifest_path(generation_input)
+        if not manifest.is_file():
+            return None
+        return self.settings.updated(
+            game_pack=None,
+            story_index=str(generation_input.story_index),
+            voice_manifest=str(generation_input.voice_manifest),
+            live_sequence_plan=None,
+            live_sequence_mode="off",
+            live_speaker_corpus=None,
+            generated_audio_manifest=str(manifest),
+            audio_source_policy="prefer-game-audio",
+            speech_rate_percent=100,
+            voice_assignments={},
+            force_live_narrator=False,
+        )
+
     def generation_result(self):
         return self._generation_result
 
@@ -1454,6 +1483,9 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.progress_failures.clear()
         self.progress_coverage.clear()
+        self.play_ready_button.show()
+        self.play_ready_button.setEnabled(False)
+        self.play_ready_button.setText("Waiting for the first ready dialogue...")
         self._poll_generation_progress()
         self.progress_timer.start()
 
@@ -1552,6 +1584,12 @@ class OfflineAudioPreparationDialog(QDialog):
             progress.failed,
             progress.other_terminal,
         )
+        self.play_ready_button.setEnabled(progress.generated > 0)
+        self.play_ready_button.setText(
+            f"Start reading ({progress.generated} ready)"
+            if progress.generated
+            else "Waiting for the first ready dialogue..."
+        )
         if self.recovering:
             self.progress_failures.setText(
                 f"Automatic recovery is working on {progress.failed} failed "
@@ -1588,6 +1626,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(1)
         self.progress_bar.setFormat("Audio saved")
+        self.play_ready_button.hide()
         original = self._job.estimate.original_audio_lines
         prepared = getattr(result, "approved", 0)
         live = getattr(result, "live_fallbacks", 0)

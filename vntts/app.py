@@ -1579,6 +1579,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._lifecycle_generation = 0
         self._controller_ready = False
         self._controller_busy = False
+        self._start_live_after_initial_start = False
         self._shutting_down = False
         self._quit_requested = False
         self._reported_live = False
@@ -1971,18 +1972,38 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             finally:
                 self.dashboard.sections.setCurrentIndex(section)
 
-    def prepare_reading(self):
+    def _preparation_runtime_settings(self):
+        dialog = self.pregeneration_dialog
+        factory = getattr(dialog, "runtime_playback_settings", None)
+        if not callable(factory):
+            return None
+        candidate = factory()
+        return candidate if isinstance(candidate, AppSettings) else None
+
+    def _preparation_playback_active(self):
+        candidate = self._preparation_runtime_settings()
+        controller_settings = getattr(self.controller, "settings", None)
+        return bool(
+            candidate is not None
+            and isinstance(controller_settings, AppSettings)
+            and controller_settings.generated_audio_manifest
+            == candidate.generated_audio_manifest
+            and controller_settings.story_index == candidate.story_index
+        )
+
+    def prepare_reading(self, *, start_live=False):
         if self._controller_busy or self._shutting_down:
             return
         if self.narrator_dialog is not None:
             self.dashboard.show_voices()
             return
-        if (
-            self.pregeneration_dialog is not None
-            and self.pregeneration_dialog.has_pending_work()
+        runtime_settings = self._preparation_runtime_settings()
+        if self.pregeneration_dialog is not None and (
+            self.pregeneration_dialog.has_pending_work() and runtime_settings is None
         ):
             self.set_status(
-                "Finish or cancel story preparation before loading reading."
+                "Preparation is still working on its first dialogue. Start reading "
+                "when the ready-dialogue button appears."
             )
             self.dashboard.show_stories()
             return
@@ -1990,7 +2011,24 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if not self.settings.onboarding_completed:
             self.run_onboarding()
             return
+        if runtime_settings is not None:
+            applied = self.controller.apply_settings(runtime_settings)
+            if applied is False:
+                self.show_error("Unable to connect in-progress prepared audio")
+                return
+            if self.controller.is_ready:
+                self._controller_ready = True
+                self._apply_controller_action_state()
+                self.set_status(
+                    "Reading uses finished recordings while preparation continues. "
+                    "If you catch up, it waits for that dialogue instead of starting "
+                    "a second TTS generation."
+                )
+                if start_live and not self.controller.is_live_running:
+                    self.toggle_live()
+                return
         generation = self._begin_controller_lifecycle()
+        self._start_live_after_initial_start = bool(start_live)
         self.set_status(
             "Loading the speech model and voices; controls will unlock "
             "automatically when ready"
@@ -2022,6 +2060,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.ready_changed.emit(ready)
         if ready:
             self.signals.hotkeys_requested.emit()
+            if self._start_live_after_initial_start:
+                self.toggle_live()
+        self._start_live_after_initial_start = False
 
     def schedule_hotkeys(self):
         QTimer.singleShot(250, self._start_hotkeys_safely)
@@ -2824,12 +2865,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return dialog
 
     def _read_prepared_story(self):
-        self.dashboard.show_reading()
-        if self._controller_ready:
+        if self._controller_ready and self._preparation_runtime_settings() is None:
+            self.dashboard.show_reading()
             if not self.controller.is_live_running:
                 self.toggle_live()
-        else:
-            self.prepare_reading()
+            return
+        self.prepare_reading(start_live=True)
 
     def _remember_preparation_context(self):
         self._preparation_activation_settings = self.settings
@@ -2868,6 +2909,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog = self.pregeneration_dialog
         if dialog is None:
             return
+        used_runtime_progress = self._preparation_playback_active()
         self.pregeneration_dialog = None
         self._preparation_activation_settings = None
         self.dashboard.remove_preparation(dialog)
@@ -2877,6 +2919,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.application.quit()
             return
         if result != QDialog.DialogCode.Accepted:
+            if used_runtime_progress:
+                self._start_configuration_apply(
+                    self.settings,
+                    progress_status="Restoring the saved Reading setup...",
+                    success_status="Saved Reading setup restored.",
+                    restart=self._controller_ready,
+                )
             return None
         job = dialog.job()
         voice_plan = dialog.voice_plan()
@@ -3752,10 +3801,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.pregeneration_dialog is not None
             and self.pregeneration_dialog.has_pending_work()
         )
-        if preparing:
+        if preparing and not self._preparation_playback_active():
             enabled = False
             unavailable_reason = (
-                "Story preparation is running. Finish or cancel it before reading."
+                "Story preparation has not finished its first playable dialogue yet."
             )
         if self.narrator_dialog is not None:
             enabled = False
@@ -3826,13 +3875,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             not (
                 self._controller_busy
                 or self._shutting_down
-                or preparing
+                or (preparing and self._preparation_runtime_settings() is None)
                 or choosing_voice
             )
         )
         if preparing or choosing_voice:
             for button in self.dashboard.loading_blocked_buttons:
                 button.setEnabled(False)
+        if preparing and self._preparation_runtime_settings() is not None:
+            self.dashboard.prepare_reading_button.setEnabled(
+                not (self._controller_busy or self._shutting_down or choosing_voice)
+            )
         if enabled:
             resolve_voice = getattr(self.controller, "_resolve_voice_label", None)
             if callable(resolve_voice):

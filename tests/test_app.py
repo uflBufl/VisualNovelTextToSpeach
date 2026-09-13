@@ -638,6 +638,34 @@ class TrayApplicationTest(unittest.TestCase):
         controller.start.assert_not_called()
         tray.shutdown()
 
+    def test_ready_dialogue_starts_with_runtime_progress_settings(self):
+        saved = AppSettings(onboarding_completed=True)
+        progress = saved.updated(
+            story_index="selected-story.jsonl",
+            generated_audio_manifest="live-progress-manifest.json",
+            audio_source_policy="prefer-game-audio",
+        )
+        controller = Mock(is_ready=True, is_live_running=False, settings=saved)
+        controller.apply_settings.return_value = True
+        tray = TrayApplication(
+            self.application,
+            saved,
+            controller_factory=Mock(return_value=controller),
+        )
+        preparation = Mock()
+        preparation.runtime_playback_settings.return_value = progress
+        preparation.has_pending_work.return_value = True
+        tray.pregeneration_dialog = preparation
+
+        with patch.object(tray, "toggle_live") as start_reading:
+            tray._read_prepared_story()
+
+        controller.apply_settings.assert_called_once_with(progress)
+        start_reading.assert_called_once_with()
+        self.assertEqual(tray.settings, saved)
+        tray.pregeneration_dialog = None
+        tray.shutdown()
+
     def test_navigation_preserves_pending_preparation_without_global_progress(self):
         tray = TrayApplication(
             self.application,

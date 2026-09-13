@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
+from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import (
     PregenerationSetupError,
@@ -381,6 +382,11 @@ def _generation_output(generation_input):
     )
 
 
+def runtime_progress_manifest_path(generation_input):
+    """Return the temporary manifest published while this input is generating."""
+    return _generation_output(generation_input) / RUNTIME_PROGRESS_MANIFEST_NAME
+
+
 def validate_offline_generation_result(
     generation_input, generation_result, action, *, error_type=OfflineGenerationError
 ):
@@ -484,5 +490,6 @@ __all__ = [
     "OfflineGenerationProgress",
     "OfflineGenerationResult",
     "OfflineGenerationWorker",
+    "runtime_progress_manifest_path",
     "validate_offline_generation_result",
 ]
