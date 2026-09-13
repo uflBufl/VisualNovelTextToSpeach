@@ -305,19 +305,12 @@ def _is_typed_playback_backend(value: object) -> TypeGuard[TypedPlaybackBackend]
     )
 
 
-def _is_live_reader(value: object) -> TypeGuard[_LiveReader]:
-    return isinstance(value, _LiveReader)
-
-
 def _is_story_cursor(value: object) -> TypeGuard[_StoryCursor]:
     return isinstance(value, _StoryCursor)
 
 
 def _create_live_reader(*args: object, **kwargs: object) -> _LiveReader:
-    reader = LiveDialogReader(*args, **kwargs)
-    if not _is_live_reader(reader):
-        raise TypeError("Live reader factory returned an invalid reader")
-    return reader
+    return LiveDialogReader(*args, **kwargs)
 
 
 def _diagnostic_route_metrics(value: object) -> _DiagnosticRouteMetrics | None:
@@ -401,7 +394,7 @@ def create_dialog_read_scheduler(
     speech_handler: Callable[..., object] | None = None,
     minimum_confidence: float = default_minimum_ocr_confidence,
     uncertain_frame_recorder: object | None = None,
-    diagnostic_handler: Callable[[object], object] | None = None,
+    diagnostic_handler: Callable[[DiagnosticSnapshot], object] | None = None,
     voice_resolver: Callable[[str], str] | None = None,
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
@@ -917,10 +910,6 @@ class AppController:
             self.chapter_voice_preloader,
             **backend_options,
         )
-        if not isinstance(generated_backend, GeneratedAudioFallbackBackend):
-            raise TypeError(
-                "Generated audio backend factory returned an invalid backend"
-            )
         generated_backend.voice_override = self._has_manual_voice_override
         self.speech_backend = generated_backend
         if policy == "prefer-game-audio":
@@ -2946,11 +2935,6 @@ class AppController:
             self.last_diagnostic = snapshot
         if notify:
             self.diagnostic_handler(snapshot)
-        return snapshot
-
-    def _publish_unknown_diagnostic(self, snapshot: object) -> object:
-        if isinstance(snapshot, DiagnosticSnapshot):
-            return self._publish_diagnostic(snapshot)
         return snapshot
 
     def _prepare_live_chunk(self, chunk: SpeechChunk) -> object:

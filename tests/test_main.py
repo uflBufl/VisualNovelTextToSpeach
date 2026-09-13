@@ -1005,7 +1005,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(character, "Hotelier")
 
     def test_controller_passes_initialized_tts_to_dialog_scheduler(self):
-        tts = object()
+        tts = Mock()
         tts_factory = Mock(return_value=tts)
         schedule_dialog_read = Mock()
         capture_executor = Mock()
@@ -4240,6 +4240,8 @@ class MainTest(unittest.TestCase):
                 status_handler=statuses.append,
             )
             controller.live_reader = Mock(is_running=True)
+            controller.capture_executor = Mock()
+            controller.voice_router = Mock()
             controller.live_reader.stop.side_effect = lambda: setattr(
                 controller.live_reader, "is_running", False
             )

@@ -134,6 +134,27 @@ def _is_voice_engine(value: object) -> TypeGuard[VoiceEngine]:
     )
 
 
+def _is_live_voice_router(value: object) -> TypeGuard[_LiveVoiceRouter]:
+    return value is not None and all(
+        callable(getattr(value, name, None))
+        for name in (
+            "prepare_playback",
+            "play_prepared",
+            "stop",
+            "warm_up",
+            "set_volume",
+            "set_speed",
+        )
+    )
+
+
+def _is_xtts_voice_router(value: object) -> TypeGuard[_XTTSVoiceRouter]:
+    return value is not None and all(
+        callable(getattr(value, name, None))
+        for name in ("prepare_playback", "play_prepared", "warm_up")
+    )
+
+
 def create_live_toggle(live_reader: _LiveToggle) -> Callable[[], None]:
     def toggle_live_reading() -> None:
         if live_reader.toggle():
@@ -315,7 +336,7 @@ class RuntimeLifecycleComponent:
                     generation_profile=controller.settings.tts_profile,
                 )
             backend = backend_factory(registry, **backend_options)
-            if not isinstance(backend, _LiveVoiceRouter):
+            if not _is_live_voice_router(backend):
                 raise TypeError("Speech backend does not implement typed voice routing")
             controller.tts = backend
             return True
@@ -337,12 +358,12 @@ class RuntimeLifecycleComponent:
             if voice_router is None:
                 controller._stop_tts()
                 return False
-            if not isinstance(voice_router, _XTTSVoiceRouter):
+            if not _is_xtts_voice_router(voice_router):
                 raise TypeError("XTTS voice router does not implement typed playback")
             controller.voice_router = voice_router
             controller.speech_backend = XTTSVoiceRouterBackend(voice_router)
         else:
-            if not isinstance(controller.tts, _LiveVoiceRouter):
+            if not _is_live_voice_router(controller.tts):
                 raise TypeError("Speech backend does not implement typed voice routing")
             controller.voice_router = controller.tts
             controller.speech_backend = controller.tts
@@ -447,7 +468,7 @@ class RuntimeLifecycleComponent:
             speech_handler=controller._enqueue_dialog,
             minimum_confidence=controller.settings.ocr_minimum_confidence,
             uncertain_frame_recorder=controller.uncertain_frame_recorder,
-            diagnostic_handler=controller._publish_unknown_diagnostic,
+            diagnostic_handler=controller._publish_diagnostic,
             voice_resolver=controller._resolve_voice_label,
             ocr_language=controller.settings.ocr_language,
             correction_dictionary=controller.correction_dictionary,
@@ -524,9 +545,13 @@ class RuntimeLifecycleComponent:
 
     def _apply_runtime_audio_settings(self) -> None:
         controller = self.controller
-        if isinstance(controller.tts, _LiveVoiceRouter):
-            controller.tts.set_volume(controller.settings.output_volume_percent / 100)
-            controller.tts.set_speed(controller.settings.speech_rate_percent / 100)
+        tts = controller.tts
+        set_tts_volume = getattr(tts, "set_volume", None)
+        set_tts_speed = getattr(tts, "set_speed", None)
+        if callable(set_tts_volume):
+            set_tts_volume(controller.settings.output_volume_percent / 100)
+        if callable(set_tts_speed):
+            set_tts_speed(controller.settings.speech_rate_percent / 100)
         backend = controller.speech_backend
         if backend is None:
             return
@@ -571,7 +596,7 @@ class RuntimeLifecycleComponent:
             speech_handler=controller._enqueue_dialog,
             minimum_confidence=controller.settings.ocr_minimum_confidence,
             uncertain_frame_recorder=controller.uncertain_frame_recorder,
-            diagnostic_handler=controller._publish_unknown_diagnostic,
+            diagnostic_handler=controller._publish_diagnostic,
             voice_resolver=controller._resolve_voice_label,
             ocr_language=controller.settings.ocr_language,
             correction_dictionary=controller.correction_dictionary,
