@@ -909,60 +909,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "_load_candidates",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "_load_decisions",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "import_source_reference_review",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "load_source_reference_plan",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_binding_retirement",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_binding_successor",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_bindings",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_evaluation",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_listening_reports",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/speaker_identity.py",
       "scope": "build_labelled_pairs",
       "count": 1
@@ -2427,48 +2373,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "import_source_reference_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "load_source_reference_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_binding_retirement",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_binding_successor",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_bindings",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_evaluation",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_listening_reports",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/speech_quality.py",
       "scope": "analyze_generated_speech_samples",
       "count": 1
@@ -3545,42 +3449,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/source_reference_quality_ui.py",
       "scope": "SourceReferenceQualityDialog._load_next",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "import_source_reference_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_binding_retirement",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_binding_successor",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_bindings",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_evaluation",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_review.py",
-      "scope": "publish_source_reference_listening_reports",
       "count": 1
     },
     {

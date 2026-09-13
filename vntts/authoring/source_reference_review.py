@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,8 @@ REFERENCE_PLAN_VERSION = 1
 REFERENCE_EVALUATION_SCHEMA = "vntts.authoring-source-reference-evaluation"
 REFERENCE_EVALUATION_VERSION = 1
 REFERENCE_DECISIONS = frozenset({"accept", "reject", "uncertain"})
+JsonObject = dict[str, object]
+CandidateMap = dict[str, JsonObject]
 FIXED_EVALUATION_CORPUS = (
     "I knew this path would be difficult, but I chose it anyway.",
     "Wait. Did you hear that behind us?",
@@ -78,7 +81,7 @@ class SourceReferencePlanResult:
     mapped_queue_items: int
     pending_candidates: int
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "directory": str(self.directory),
             "accepted_clusters": self.accepted_clusters,
@@ -94,7 +97,7 @@ class SourceReferenceEvaluationResult:
     variants: int
     queue_items: int
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "directory": str(self.directory),
             "variants": self.variants,
@@ -109,7 +112,7 @@ class SourceReferenceListeningReportsResult:
     samples: int
     blind_trials: int
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "directory": str(self.directory),
             "reports": self.reports,
@@ -124,7 +127,7 @@ class SourceReferenceBindingsResult:
     selected_variants: int
     bound_queue_items: int
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "directory": str(self.directory),
             "manifest": str(self.directory / "voice-manifest.json"),
@@ -373,8 +376,12 @@ def load_source_reference_plan(directory):
 
 
 def _validate_plan_cluster(
-    directory, cluster, cluster_index, seen_clusters, seen_queue_ids
-):
+    directory: Path,
+    cluster: object,
+    cluster_index: int,
+    seen_clusters: set[str],
+    seen_queue_ids: set[str],
+) -> None:
     if not isinstance(cluster, dict):
         raise SourceReferenceReviewError(
             f"Plan cluster {cluster_index} must be an object"
@@ -397,7 +404,9 @@ def _validate_plan_cluster(
     )
 
 
-def _validate_plan_reference(directory, reference, cluster_index, reference_index):
+def _validate_plan_reference(
+    directory: Path, reference: object, cluster_index: int, reference_index: int
+) -> None:
     if not isinstance(reference, dict):
         raise SourceReferenceReviewError(
             f"Plan reference {cluster_index}:{reference_index} must be an object"
@@ -414,7 +423,9 @@ def _validate_plan_reference(directory, reference, cluster_index, reference_inde
         raise SourceReferenceReviewError(f"Plan reference changed: {relative}")
 
 
-def _validate_plan_queue_items(queue_items, cluster_index, seen_queue_ids):
+def _validate_plan_queue_items(
+    queue_items: object, cluster_index: int, seen_queue_ids: set[str]
+) -> None:
     if not isinstance(queue_items, list):
         raise SourceReferenceReviewError(
             f"Plan cluster {cluster_index} queue_items must be a list"
@@ -769,8 +780,11 @@ def _load_bound_manifest(path):
 
 
 def _validate_successor_sources(
-    base_document, addition_document, base_overrides, addition_overrides
-):
+    base_document: Mapping[str, object],
+    addition_document: Mapping[str, object],
+    base_overrides: Mapping[str, str],
+    addition_overrides: Mapping[str, str],
+) -> None:
     conflicts = sorted(set(base_overrides) & set(addition_overrides))
     if conflicts:
         raise SourceReferenceReviewError(
@@ -945,7 +959,9 @@ def publish_source_reference_binding_successor(
             )
 
 
-def _retirement_request(variant_ids, reason):
+def _retirement_request(
+    variant_ids: Iterable[str] | None, reason: str
+) -> tuple[str, ...]:
     if reason not in SOURCE_REFERENCE_RETIREMENT_REASONS:
         raise SourceReferenceReviewError(
             f"Unsupported source-reference retirement reason: {reason}"
@@ -1463,8 +1479,10 @@ def _load_evaluation_generation(evaluation_directory, state_path):
     )
 
 
-def _variant_evaluation_queue_ids(variant, variant_id):
-    queue_ids = []
+def _variant_evaluation_queue_ids(
+    variant: Mapping[str, object], variant_id: str
+) -> list[tuple[str, str]]:
+    queue_ids: list[tuple[str, str]] = []
     source_match_queue_id = variant.get("source_match_queue_id")
     if source_match_queue_id is not None:
         queue_ids.append(
@@ -1804,17 +1822,17 @@ def publish_source_reference_listening_reports(
 
 
 def _model_report(
-    model_id,
-    backend,
-    model,
-    samples,
+    model_id: str,
+    backend: str,
+    model: str,
+    samples: list[JsonObject],
     *,
-    comparison_path,
-    comparison_sha256,
-    state_path,
-    state_sha256,
-    affected_queue_item_count=None,
-):
+    comparison_path: Path,
+    comparison_sha256: str,
+    state_path: Path,
+    state_sha256: str,
+    affected_queue_item_count: object = None,
+) -> JsonObject:
     return {
         "schema": "vntts.voice-model-report",
         "schema_version": 1,
@@ -1831,15 +1849,18 @@ def _model_report(
     }
 
 
-def _load_candidates(report_path, report):
+def _load_candidates(report_path: Path, report: JsonObject) -> CandidateMap:
     values = report.get("candidates")
     if not isinstance(values, list) or not values:
         raise SourceReferenceReviewError("Candidate report contains no candidates")
     root = report_path.parent.resolve()
-    candidates = {}
+    report_version = report.get("schema_version")
+    if not isinstance(report_version, int):
+        raise SourceReferenceReviewError("Candidate report version is invalid")
+    candidates: CandidateMap = {}
     for index, value in enumerate(values):
-        candidate = _load_candidate(root, report["schema_version"], value, index)
-        candidate_key = candidate["candidate_key"]
+        candidate = _load_candidate(root, report_version, value, index)
+        candidate_key = _text(candidate.get("candidate_key"), "Candidate key")
         if candidate_key in candidates:
             raise SourceReferenceReviewError(
                 f"Duplicate candidate identity: {candidate_key}"
@@ -1848,7 +1869,9 @@ def _load_candidates(report_path, report):
     return candidates
 
 
-def _load_candidate(root, report_version, value, index):
+def _load_candidate(
+    root: Path, report_version: int, value: object, index: int
+) -> JsonObject:
     if not isinstance(value, dict):
         raise SourceReferenceReviewError(f"Candidate {index} must be an object")
     character = _text(value.get("character"), f"candidate {index} character")
@@ -1916,12 +1939,14 @@ def _load_candidate(root, report_version, value, index):
     }
 
 
-def _load_decisions(review, candidates):
+def _load_decisions(
+    review: JsonObject, candidates: CandidateMap
+) -> tuple[dict[str, JsonObject], list[JsonObject]]:
     values = review.get("decisions")
     if not isinstance(values, list):
         raise SourceReferenceReviewError("Candidate review decisions must be a list")
-    decisions = {}
-    invalidated = []
+    decisions: dict[str, JsonObject] = {}
+    invalidated: list[JsonObject] = []
     version = review["schema_version"]
     for index, value in enumerate(values):
         _record_review_decision(
@@ -1936,7 +1961,14 @@ def _load_decisions(review, candidates):
     return decisions, invalidated
 
 
-def _record_review_decision(value, index, version, candidates, decisions, invalidated):
+def _record_review_decision(
+    value: object,
+    index: int,
+    version: object,
+    candidates: CandidateMap,
+    decisions: dict[str, JsonObject],
+    invalidated: list[JsonObject],
+) -> None:
     if not isinstance(value, dict):
         raise SourceReferenceReviewError(f"Review decision {index} must be an object")
     key = _text(value.get("candidate_key"), f"decision {index} key")
@@ -1992,7 +2024,13 @@ def _queue_items_by_character(story):
     return values
 
 
-def _candidate_key(character, portrait, bank, media_id, reference_sha256):
+def _candidate_key(
+    character: str,
+    portrait: str | None,
+    bank: str,
+    media_id: int,
+    reference_sha256: str,
+) -> str:
     identity = json.dumps(
         [character, portrait, bank, media_id, reference_sha256],
         ensure_ascii=False,
@@ -2001,7 +2039,9 @@ def _candidate_key(character, portrait, bank, media_id, reference_sha256):
     return hashlib.sha256(identity.encode()).hexdigest()
 
 
-def _candidate_transcripts(value, index, *, allow_empty=False):
+def _candidate_transcripts(
+    value: Mapping[str, object], index: int, *, allow_empty: bool = False
+) -> tuple[str, ...]:
     source_lines = value.get("source_lines")
     if not isinstance(source_lines, list) or (not source_lines and not allow_empty):
         raise SourceReferenceReviewError(f"Candidate {index} source lines are missing")
@@ -2009,7 +2049,7 @@ def _candidate_transcripts(value, index, *, allow_empty=False):
         raise SourceReferenceReviewError(
             f"Candidate {index} unrouted media must not invent source lines"
         )
-    transcripts = []
+    transcripts: list[str] = []
     for line_index, line in enumerate(source_lines):
         if not isinstance(line, dict):
             raise SourceReferenceReviewError(
@@ -2021,14 +2061,14 @@ def _candidate_transcripts(value, index, *, allow_empty=False):
     return tuple(transcripts)
 
 
-def _cluster_id(character, portrait, bank):
+def _cluster_id(character: str, portrait: str | None, bank: str) -> str:
     identity = json.dumps(
         [character, portrait, bank], ensure_ascii=False, separators=(",", ":")
     )
     return f"cluster-{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
 
 
-def _read_json(path, label):
+def _read_json(path: str | Path, label: str) -> tuple[Path, bytes, JsonObject]:
     path = Path(path).expanduser().resolve()
     try:
         payload = path.read_bytes()
@@ -2042,27 +2082,27 @@ def _read_json(path, label):
     return path, payload, document
 
 
-def _text(value, label):
+def _text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SourceReferenceReviewError(f"{label} must be non-empty text")
     return value.strip()
 
 
-def _sha256(value, label):
+def _sha256(value: object, label: str) -> str:
     value = _text(value, label)
     if not is_lowercase_sha256(value):
         raise SourceReferenceReviewError(f"{label} must be lowercase SHA-256")
     return value
 
 
-def _contained_file(root, relative):
+def _contained_file(root: Path, relative: str) -> Path:
     relative = _text(relative, "Reference path")
     return contained_regular_file(
         root, relative, "reference path", error_type=SourceReferenceReviewError
     )
 
 
-def _assert_source_unchanged(path, expected_sha256, label):
+def _assert_source_unchanged(path: Path, expected_sha256: str, label: str) -> None:
     try:
         current = sha256_file(path)
     except OSError as error:
