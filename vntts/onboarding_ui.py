@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from threading import Event
+from typing import Protocol, TypeGuard
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -32,7 +36,7 @@ from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
 )
-from vntts.calibration import show_calibration_overlay
+from vntts.calibration import DialogRegionOverlay, show_calibration_overlay
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import GamePackError, apply_game_pack
 from vntts.hotkey_ui import HotkeyRecorder
@@ -42,7 +46,7 @@ from vntts.hotkeys import (
     validate_hotkey_assignments,
 )
 from vntts.macos_ui import MacOSPermissionsDialog
-from vntts.onboarding import OnboardingDiagnostics
+from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics
 from vntts.release_backends import (
     packaged_speech_backend_available,
     speech_backend_options,
@@ -52,12 +56,42 @@ from vntts.speech_backend import default_moss_tts_model
 from vntts.speech_presentation import speech_configuration_rows
 from vntts.ui_text import make_text_copyable, set_labeled_text
 from vntts.voices import find_default_voice_manifest, find_voice_assignment
-from vntts.window_capture import WindowCaptureError, WindowCaptureTarget, list_windows
+from vntts.window_capture import (
+    WindowCaptureError,
+    WindowCaptureTarget,
+    WindowGeometry,
+    WindowInfo,
+    list_windows,
+)
 
 default_onboarding_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 
 
-def _add_composite_form_row(form, label_text, field, field_layout):
+class _CaptureTarget(Protocol):
+    def get_geometry(self) -> WindowGeometry: ...
+
+
+class _DiagnosticsService(Protocol):
+    def run(self, settings: AppSettings) -> tuple[DiagnosticResult, ...]: ...
+
+
+WindowLoader = Callable[[], Sequence[WindowInfo]]
+CaptureTargetFactory = Callable[[str | None], _CaptureTarget]
+ValidationError = tuple[QWidget, str]
+
+
+def _is_diagnostic_results(value: object) -> TypeGuard[tuple[DiagnosticResult, ...]]:
+    return isinstance(value, tuple) and all(
+        isinstance(result, DiagnosticResult) for result in value
+    )
+
+
+def _add_composite_form_row(
+    form: QFormLayout,
+    label_text: str,
+    field: QWidget,
+    field_layout: QHBoxLayout,
+) -> QLabel:
     label = QLabel(label_text)
     label.setBuddy(field)
     form.addRow(label, field_layout)
@@ -65,7 +99,13 @@ def _add_composite_form_row(form, label_text, field, field_layout):
 
 
 class ConfigurationPage(QWizardPage):
-    def __init__(self, settings, *, window_loader=list_windows, reading_setup=False):
+    def __init__(
+        self,
+        settings: AppSettings,
+        *,
+        window_loader: WindowLoader = list_windows,
+        reading_setup: bool = False,
+    ) -> None:
         super().__init__()
         self._initialize_state(settings, window_loader, reading_setup)
         self._build_capture_widgets(settings)
@@ -79,7 +119,12 @@ class ConfigurationPage(QWizardPage):
         if reading_setup:
             self._configure_reading_setup(settings, recommended_form, advanced_form)
 
-    def _initialize_state(self, settings, window_loader, reading_setup):
+    def _initialize_state(
+        self,
+        settings: AppSettings,
+        window_loader: WindowLoader,
+        reading_setup: bool,
+    ) -> None:
         self.reading_setup = reading_setup
         self.original_settings = settings
         self.narrator_assignments = dict(settings.voice_assignments)
@@ -87,7 +132,7 @@ class ConfigurationPage(QWizardPage):
         self.speaker_announcement_mode = settings.speaker_announcement_mode
         self.announce_speaker_changes = settings.announce_speaker_changes
         self.tts_profile = settings.tts_profile
-        self.flow = None
+        self.flow: OnboardingWizard
         self.window_loader = window_loader
         self.windows_refreshed = False
         self.setTitle("Game and voice")
@@ -95,7 +140,7 @@ class ConfigurationPage(QWizardPage):
             "Select your game and speech engine. You can prepare story voices after setup."
         )
 
-    def _build_capture_widgets(self, settings):
+    def _build_capture_widgets(self, settings: AppSettings) -> None:
         self.capture_mode = QComboBox()
         self.capture_mode.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -174,7 +219,7 @@ class ConfigurationPage(QWizardPage):
         self.auto_advance_reason.setWordWrap(True)
         self.auto_advance_reason.setAccessibleName("Auto advance availability")
 
-    def _build_speech_widgets(self, settings):
+    def _build_speech_widgets(self, settings: AppSettings) -> None:
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
         self.macos_hotkey_notice = QLabel(macos_hotkey_limitation)
@@ -215,7 +260,7 @@ class ConfigurationPage(QWizardPage):
         self.narrator_reference_layout.addWidget(self.narrator_reference, 1)
         self.narrator_reference_layout.addWidget(self.narrator_reference_button)
 
-    def _build_voice_manifest_widgets(self, settings):
+    def _build_voice_manifest_widgets(self, settings: AppSettings) -> None:
         self.ocr_language = QLineEdit(settings.ocr_language)
         default_voice_manifest = find_default_voice_manifest()
         self.voice_manifest = QLineEdit(
@@ -241,7 +286,7 @@ class ConfigurationPage(QWizardPage):
             settings.narrator_speaker or "Claribel Dervla"
         )
 
-    def _build_licensing_widgets(self, settings):
+    def _build_licensing_widgets(self, settings: AppSettings) -> None:
         self.terms = QCheckBox("I agree to the non-commercial CPML terms used by XTTS")
         self.terms.setChecked(settings.xtts_terms_accepted)
         self.license_label = QLabel(
@@ -280,7 +325,7 @@ class ConfigurationPage(QWizardPage):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
-    def _build_recommended_form(self):
+    def _build_recommended_form(self) -> QFormLayout:
         recommended_form = QFormLayout()
         self.recommended_form = recommended_form
         recommended_form.setFieldGrowthPolicy(
@@ -308,7 +353,9 @@ class ConfigurationPage(QWizardPage):
         recommended_form.addRow(self.choose_narrator_button)
         return recommended_form
 
-    def _build_advanced_form(self, reading_setup, recommended_form):
+    def _build_advanced_form(
+        self, reading_setup: bool, recommended_form: QFormLayout
+    ) -> QFormLayout:
         advanced_form = QFormLayout()
         self.advanced_form = advanced_form
         advanced_form.addRow("Speech model override", self.tts_model)
@@ -358,7 +405,9 @@ class ConfigurationPage(QWizardPage):
                 recommended_form.addRow(self.macos_permissions_button)
         return advanced_form
 
-    def _build_layout(self, recommended_form, advanced_form):
+    def _build_layout(
+        self, recommended_form: QFormLayout, advanced_form: QFormLayout
+    ) -> None:
         self.advanced_content = QWidget()
         self.advanced_content.setLayout(advanced_form)
         self.advanced_toggle = QPushButton("Show advanced options")
@@ -385,7 +434,7 @@ class ConfigurationPage(QWizardPage):
         layout.addWidget(self.validation_summary)
         layout.addWidget(self.configuration_scroll, 1)
 
-    def _connect_controls(self):
+    def _connect_controls(self) -> None:
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
         self.tts_model.textChanged.connect(self.update_terms_control)
         self.speech_backend.currentIndexChanged.connect(self.update_backend_controls)
@@ -397,7 +446,12 @@ class ConfigurationPage(QWizardPage):
         self.update_validation_summary()
         make_text_copyable(self)
 
-    def _configure_reading_setup(self, settings, recommended_form, advanced_form):
+    def _configure_reading_setup(
+        self,
+        settings: AppSettings,
+        recommended_form: QFormLayout,
+        advanced_form: QFormLayout,
+    ) -> None:
         self.setTitle("Choose the game window")
         self.setSubTitle(
             "Select the running game. Reading uses your selected story and voices."
@@ -418,13 +472,15 @@ class ConfigurationPage(QWizardPage):
         )
         self.license_label.setVisible(self.terms.isVisibleTo(self))
 
-    def initializePage(self):
+    def initializePage(self) -> None:
         if self.windows_refreshed:
             return
         self.windows_refreshed = True
         self.refresh_windows(show_error=False)
 
-    def refresh_windows(self, _checked=False, *, show_error=True):
+    def refresh_windows(
+        self, _checked: bool = False, *, show_error: bool = True
+    ) -> None:
         selected = self.game_window.currentText().strip()
         try:
             windows = self.window_loader()
@@ -453,7 +509,7 @@ class ConfigurationPage(QWizardPage):
         )
         self.update_validation_summary()
 
-    def browse_game_pack(self):
+    def browse_game_pack(self) -> None:
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Choose optional game pack",
@@ -463,7 +519,7 @@ class ConfigurationPage(QWizardPage):
         if path:
             self.game_pack.setText(path)
 
-    def _set_advanced_expanded(self, expanded):
+    def _set_advanced_expanded(self, expanded: bool) -> None:
         expanded = bool(expanded)
         self.advanced_toggle.blockSignals(True)
         self.advanced_toggle.setChecked(expanded)
@@ -473,7 +529,7 @@ class ConfigurationPage(QWizardPage):
         self.advanced_toggle.blockSignals(False)
         self.advanced_content.setVisible(expanded)
 
-    def browse_voice_manifest(self):
+    def browse_voice_manifest(self) -> None:
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Choose character voice manifest",
@@ -483,7 +539,7 @@ class ConfigurationPage(QWizardPage):
         if path:
             self.voice_manifest.setText(path)
 
-    def choose_narrator(self):
+    def choose_narrator(self) -> None:
         if self.reading_setup:
             self.flow.request_voices()
             return
@@ -506,7 +562,7 @@ class ConfigurationPage(QWizardPage):
             self.narrator_reference.setText(candidate.tts_speaker_wav or "")
         self.update_validation_summary()
 
-    def _use_narrator_file(self, path):
+    def _use_narrator_file(self, path: str) -> None:
         if path.strip():
             self.narrator_assignments = {
                 name: source
@@ -515,7 +571,7 @@ class ConfigurationPage(QWizardPage):
             }
             self.update_validation_summary()
 
-    def browse_narrator_reference(self):
+    def browse_narrator_reference(self) -> None:
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Choose narrator voice reference",
@@ -526,7 +582,7 @@ class ConfigurationPage(QWizardPage):
             self.narrator_reference.setText(path)
             self._use_narrator_file(path)
 
-    def manage_assets(self):
+    def manage_assets(self) -> None:
         dialog = AssetManagerDialog(self.settings(), parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -534,10 +590,10 @@ class ConfigurationPage(QWizardPage):
         self.tts_model.setText(settings.tts_model or "")
         self.voice_manifest.setText(settings.voice_manifest or "")
 
-    def open_macos_permissions(self):
+    def open_macos_permissions(self) -> None:
         MacOSPermissionsDialog(self).exec()
 
-    def update_capture_controls(self):
+    def update_capture_controls(self) -> None:
         self.game_window.setEnabled(self.capture_mode.currentData() == "window")
         allowed, enabled, reason = auto_advance_control_state(
             self.capture_mode.currentData(),
@@ -553,7 +609,7 @@ class ConfigurationPage(QWizardPage):
         self.auto_advance_reason.setText(reason)
         self.auto_advance_reason.setVisible(not allowed)
 
-    def update_terms_control(self):
+    def update_terms_control(self) -> None:
         backend = self.speech_backend.currentData()
         uses_xtts = backend == "coqui-xtts"
         uses_pocket = backend == "pocket-tts"
@@ -564,7 +620,7 @@ class ConfigurationPage(QWizardPage):
         self.pocket_gated_model.setVisible(uses_pocket)
         self.pocket_terms_label.setVisible(uses_pocket)
 
-    def update_backend_controls(self):
+    def update_backend_controls(self) -> None:
         backend = self.speech_backend.currentData()
         uses_xtts = backend == "coqui-xtts"
         uses_moss = backend == "moss-tts"
@@ -593,7 +649,7 @@ class ConfigurationPage(QWizardPage):
         )
         self.update_terms_control()
 
-    def _connect_validation_updates(self):
+    def _connect_validation_updates(self) -> None:
         self.narrator_reference.textEdited.connect(self._use_narrator_file)
         for recorder in (self.read_hotkey, self.live_hotkey):
             recorder.keySequenceChanged.connect(self.update_validation_summary)
@@ -613,10 +669,10 @@ class ConfigurationPage(QWizardPage):
         self.terms.toggled.connect(self.update_validation_summary)
         self.pocket_gated_model.toggled.connect(self.update_validation_summary)
 
-    def validation_errors(self):
-        errors = []
+    def validation_errors(self) -> tuple[ValidationError, ...]:
+        errors: list[ValidationError] = []
 
-        def add(widget, message):
+        def add(widget: QWidget, message: str) -> None:
             if message:
                 errors.append((widget, message))
 
@@ -704,7 +760,7 @@ class ConfigurationPage(QWizardPage):
                 add(self.game_pack, f"Game pack: {error}.")
         return tuple(errors)
 
-    def update_validation_summary(self, *_args):
+    def update_validation_summary(self, *_args: object) -> tuple[ValidationError, ...]:
         set_labeled_text(
             self.speech_summary,
             speech_configuration_rows(
@@ -738,7 +794,7 @@ class ConfigurationPage(QWizardPage):
             self.validation_summary.setStyleSheet("")
         return errors
 
-    def validatePage(self):
+    def validatePage(self) -> bool:
         errors = self.update_validation_summary()
         if errors:
             widget, _message = errors[0]
@@ -751,7 +807,7 @@ class ConfigurationPage(QWizardPage):
         self.flow.draft_settings = self.settings()
         return True
 
-    def _base_settings(self):
+    def _base_settings(self) -> AppSettings:
         if self.reading_setup:
             return self.original_settings.updated(
                 capture_mode=self.capture_mode.currentData(),
@@ -760,7 +816,7 @@ class ConfigurationPage(QWizardPage):
                 xtts_terms_accepted=self.terms.isChecked(),
             )
 
-        def optional_text(widget):
+        def optional_text(widget: QLineEdit) -> str | None:
             return widget.text().strip() or None
 
         hotkeys = self.hotkey_assignments()
@@ -790,13 +846,13 @@ class ConfigurationPage(QWizardPage):
             }
         )
 
-    def settings(self):
+    def settings(self) -> AppSettings:
         settings = self._base_settings()
         if settings.game_pack and not self.reading_setup:
             settings = apply_game_pack(settings)
         return guard_auto_advance_settings(settings)
 
-    def hotkey_assignments(self):
+    def hotkey_assignments(self) -> dict[str, str]:
         return {
             "Read once": self.read_hotkey.hotkey(),
             "Live reading": self.live_hotkey.hotkey(),
@@ -806,13 +862,13 @@ class ConfigurationPage(QWizardPage):
 class DiagnosticsPage(QWizardPage):
     runtime_progress = Signal(object, str)
 
-    def __init__(self, diagnostics):
+    def __init__(self, diagnostics: _DiagnosticsService) -> None:
         super().__init__()
         self.diagnostics = diagnostics
-        self.flow = None
+        self.flow: OnboardingWizard
         self.complete = False
         self.moss_download_allowed = False
-        self.diagnostic_results = ()
+        self.diagnostic_results: tuple[DiagnosticResult, ...] = ()
         self.cancellation = Event()
         self.runtime_progress.connect(self._runtime_progress)
         self.runner = LatestTaskRunner(self)
@@ -862,11 +918,13 @@ class DiagnosticsPage(QWizardPage):
         layout.addLayout(remediation)
         layout.addLayout(actions)
 
-    def initializePage(self):
+    def initializePage(self) -> None:
         self.moss_download_allowed = False
         self.start_checks()
 
-    def _request_moss_installation(self, remaining, required, free):
+    def _request_moss_installation(
+        self, remaining: int, required: int, free: int
+    ) -> None:
         self.runner.cancel()
         self.results.clear()
         self.diagnostic_results = ()
@@ -891,11 +949,11 @@ class DiagnosticsPage(QWizardPage):
         self._update_remediation()
         self.completeChanged.emit()
 
-    def install_moss(self):
+    def install_moss(self) -> None:
         self.moss_download_allowed = True
         self.start_checks()
 
-    def start_checks(self):
+    def start_checks(self) -> None:
         if not self.moss_download_allowed and isinstance(
             self.diagnostics, OnboardingDiagnostics
         ):
@@ -933,7 +991,7 @@ class DiagnosticsPage(QWizardPage):
         else:
             self.runner.start(self.diagnostics.run, self.flow.draft_settings)
 
-    def _runtime_progress(self, cancellation, message):
+    def _runtime_progress(self, cancellation: object, message: str) -> None:
         if (
             cancellation is self.cancellation
             and self.runner.active
@@ -941,7 +999,7 @@ class DiagnosticsPage(QWizardPage):
         ):
             self.status.setText(message)
 
-    def cancel_checks(self):
+    def cancel_checks(self) -> None:
         self.cancellation.set()
         if not self.runner.cancel():
             return
@@ -954,10 +1012,10 @@ class DiagnosticsPage(QWizardPage):
         self._update_remediation()
         self.completeChanged.emit()
 
-    def cleanupPage(self):
+    def cleanupPage(self) -> None:
         self.cancel_checks()
 
-    def _checks_finished(self, diagnostics, error):
+    def _checks_finished(self, diagnostics: object, error: Exception | None) -> None:
         self.progress.hide()
         self.retry_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
@@ -978,7 +1036,18 @@ class DiagnosticsPage(QWizardPage):
             self._update_remediation()
             self.completeChanged.emit()
             return
-        self.diagnostic_results = tuple(diagnostics)
+        if not _is_diagnostic_results(diagnostics):
+            self.complete = False
+            self.diagnostic_results = ()
+            self.results.clear()
+            self.results.addItem("[ERROR] Diagnostics returned an invalid result.")
+            self.status.setText(
+                "Setup could not finish: diagnostics returned an invalid result."
+            )
+            self._update_remediation()
+            self.completeChanged.emit()
+            return
+        self.diagnostic_results = diagnostics
         self.complete = all(result.passed for result in self.diagnostic_results)
         for result in self.diagnostic_results:
             prefix = {
@@ -1012,13 +1081,13 @@ class DiagnosticsPage(QWizardPage):
         self._update_remediation()
         self.completeChanged.emit()
 
-    def _selected_result(self):
+    def _selected_result(self) -> DiagnosticResult | None:
         row = self.results.currentRow()
         if row < 0 or row >= len(self.diagnostic_results):
             return None
         return self.diagnostic_results[row]
 
-    def _update_remediation(self):
+    def _update_remediation(self) -> None:
         result = self._selected_result()
         if result is None or result.status == "ok":
             self.remediation_reason.setText(
@@ -1044,7 +1113,7 @@ class DiagnosticsPage(QWizardPage):
         )
         self.remediation_button.setEnabled(True)
 
-    def _run_remediation(self):
+    def _run_remediation(self) -> None:
         result = self._selected_result()
         if result is None or result.status == "ok":
             return
@@ -1071,17 +1140,17 @@ class DiagnosticsPage(QWizardPage):
         )
         self.remediation_button.setEnabled(False)
 
-    def isComplete(self):
+    def isComplete(self) -> bool:
         return self.complete
 
 
 class CalibrationPage(QWizardPage):
-    def __init__(self, capture_target_factory):
+    def __init__(self, capture_target_factory: CaptureTargetFactory) -> None:
         super().__init__()
         self.capture_target_factory = capture_target_factory
-        self.flow = None
+        self.flow: OnboardingWizard
         self.calibrated = False
-        self.overlay = None
+        self.overlay: DialogRegionOverlay | None = None
         self.setTitle("Calibrate the dialogue area")
         self.instructions = QLabel(
             "Open a scene with dialogue, click Calibrate, then drag over the "
@@ -1100,12 +1169,12 @@ class CalibrationPage(QWizardPage):
         layout.addWidget(self.status)
         layout.addStretch()
 
-    def initializePage(self):
+    def initializePage(self) -> None:
         self.calibrated = False
         self.status.setText("Calibration has not been completed.")
         self.completeChanged.emit()
 
-    def calibrate(self):
+    def calibrate(self) -> None:
         settings = self.flow.draft_settings
         geometry = None
         if settings.capture_mode == "window":
@@ -1120,7 +1189,7 @@ class CalibrationPage(QWizardPage):
         self.flow.hide()
         QTimer.singleShot(200, self.open_overlay)
 
-    def open_overlay(self):
+    def open_overlay(self) -> None:
         try:
             self.overlay = show_calibration_overlay(self.pending_geometry)
         except Exception as error:
@@ -1133,17 +1202,17 @@ class CalibrationPage(QWizardPage):
         self.overlay.selected.connect(self.finish_calibration)
         self.overlay.closed.connect(self.restore_wizard)
 
-    def finish_calibration(self, _region):
+    def finish_calibration(self, _region: object) -> None:
         self.calibrated = True
         self.status.setText("Dialogue area saved.")
         self.completeChanged.emit()
 
-    def restore_wizard(self):
+    def restore_wizard(self) -> None:
         self.flow.show()
         self.flow.raise_()
         self.flow.activateWindow()
 
-    def isComplete(self):
+    def isComplete(self) -> bool:
         return self.calibrated
 
 
@@ -1151,9 +1220,9 @@ class EndToEndTestPage(QWizardPage):
     test_requested = Signal(object)
     cancel_requested = Signal()
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        self.flow = None
+        self.flow: OnboardingWizard
         self.successful = False
         self.running = False
         self.setTitle("Test OCR and speech")
@@ -1180,7 +1249,7 @@ class EndToEndTestPage(QWizardPage):
         layout.addWidget(self.status)
         layout.addStretch()
 
-    def initializePage(self):
+    def initializePage(self) -> None:
         self.successful = False
         self.running = False
         self.button.setEnabled(True)
@@ -1191,7 +1260,7 @@ class EndToEndTestPage(QWizardPage):
         self.status.setText("The test has not run.")
         self.completeChanged.emit()
 
-    def run_test(self):
+    def run_test(self) -> None:
         self.successful = False
         self.running = True
         self.button.setEnabled(False)
@@ -1200,7 +1269,7 @@ class EndToEndTestPage(QWizardPage):
         self.completeChanged.emit()
         self.test_requested.emit(self.flow.draft_settings)
 
-    def request_cancel(self):
+    def request_cancel(self) -> None:
         if not self.running:
             return
         self.cancel_button.setEnabled(False)
@@ -1209,7 +1278,7 @@ class EndToEndTestPage(QWizardPage):
         self.completeChanged.emit()
         self.cancel_requested.emit()
 
-    def set_progress(self, percent, message):
+    def set_progress(self, percent: int | None, message: str) -> None:
         if percent is None:
             self.progress.setRange(0, 0)
         else:
@@ -1217,7 +1286,7 @@ class EndToEndTestPage(QWizardPage):
             self.progress.setValue(percent)
         self.status.setText(message)
 
-    def set_result(self, successful, message):
+    def set_result(self, successful: bool, message: str) -> None:
         self.successful = successful
         self.running = False
         self.button.setEnabled(True)
@@ -1244,7 +1313,7 @@ class EndToEndTestPage(QWizardPage):
         )
         self.completeChanged.emit()
 
-    def isComplete(self):
+    def isComplete(self) -> bool:
         return self.successful
 
 
@@ -1256,15 +1325,15 @@ class OnboardingWizard(QDialog):
 
     def __init__(
         self,
-        settings,
+        settings: AppSettings,
         *,
-        diagnostics=None,
-        capture_target_factory=WindowCaptureTarget,
-        window_loader=list_windows,
-        auto_discover_windows=None,
-        reading_setup=False,
-        parent=None,
-    ):
+        diagnostics: _DiagnosticsService | None = None,
+        capture_target_factory: CaptureTargetFactory = WindowCaptureTarget,
+        window_loader: WindowLoader = list_windows,
+        auto_discover_windows: bool | None = None,
+        reading_setup: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._initialize_state(settings, auto_discover_windows, reading_setup)
         self._build_pages(
@@ -1278,7 +1347,12 @@ class OnboardingWizard(QDialog):
         self._build_layout(navigation)
         self.show_page(0)
 
-    def _initialize_state(self, settings, auto_discover_windows, reading_setup):
+    def _initialize_state(
+        self,
+        settings: AppSettings,
+        auto_discover_windows: bool | None,
+        reading_setup: bool,
+    ) -> None:
         self.reading_setup = reading_setup
         self.setWindowTitle(
             "Set up Reading" if reading_setup else "Visual Novel Text to Speech setup"
@@ -1286,8 +1360,8 @@ class OnboardingWizard(QDialog):
         self.setMinimumSize(520, 420)
         self.resize(820, 620)
         self.draft_settings = settings
-        self.completed_settings = None
-        self.pages = []
+        self.completed_settings: AppSettings | None = None
+        self.pages: list[QWizardPage] = []
         self.current_page_index = 0
         self.auto_discover_windows = (
             QApplication.platformName() != "offscreen"
@@ -1297,12 +1371,12 @@ class OnboardingWizard(QDialog):
 
     def _build_pages(
         self,
-        settings,
-        diagnostics,
-        capture_target_factory,
-        window_loader,
-        reading_setup,
-    ):
+        settings: AppSettings,
+        diagnostics: _DiagnosticsService | None,
+        capture_target_factory: CaptureTargetFactory,
+        window_loader: WindowLoader,
+        reading_setup: bool,
+    ) -> None:
         welcome = QWizardPage()
         welcome.setTitle("Set up Visual Novel Text to Speech")
         welcome_text = QLabel(
@@ -1338,6 +1412,10 @@ class OnboardingWizard(QDialog):
             self.test_page.button.setText("Read the visible line")
 
         self.stack = QStackedWidget()
+        self.configuration_page.flow = self
+        self.diagnostics_page.flow = self
+        self.calibration_page.flow = self
+        self.test_page.flow = self
         for page in (
             *((welcome,) if not reading_setup else ()),
             self.configuration_page,
@@ -1345,7 +1423,6 @@ class OnboardingWizard(QDialog):
             self.calibration_page,
             self.test_page,
         ):
-            page.flow = self
             self.pages.append(page)
             if reading_setup and page is not self.configuration_page:
                 scroll = QScrollArea()
@@ -1359,7 +1436,7 @@ class OnboardingWizard(QDialog):
                 self.stack.addWidget(page)
             page.completeChanged.connect(self.update_navigation)
 
-    def _build_navigation(self, reading_setup):
+    def _build_navigation(self, reading_setup: bool) -> QHBoxLayout:
         self.step_label = QLabel()
         self.step_label.setAccessibleName("Onboarding progress")
         self.step_label.setStyleSheet("font-weight: 600;")
@@ -1389,7 +1466,7 @@ class OnboardingWizard(QDialog):
         navigation.addWidget(self.finish_button)
         return navigation
 
-    def _build_layout(self, navigation):
+    def _build_layout(self, navigation: QHBoxLayout) -> None:
         layout = QVBoxLayout(self)
         layout.addWidget(self.step_label)
         layout.addWidget(self.page_title)
@@ -1397,7 +1474,7 @@ class OnboardingWizard(QDialog):
         layout.addWidget(self.stack, 1)
         layout.addLayout(navigation)
 
-    def show_page(self, index):
+    def show_page(self, index: int) -> None:
         previous = self.pages[self.current_page_index]
         if previous is not self.pages[max(0, min(index, len(self.pages) - 1))]:
             cleanup = getattr(previous, "cleanupPage", None)
@@ -1418,11 +1495,11 @@ class OnboardingWizard(QDialog):
             initializer()
         self.update_navigation()
 
-    def previous_page(self):
+    def previous_page(self) -> None:
         if self.current_page_index:
             self.show_page(self.current_page_index - 1)
 
-    def next_page(self):
+    def next_page(self) -> None:
         page = self.pages[self.current_page_index]
         validator = getattr(page, "validatePage", None)
         if callable(validator) and validator() is False:
@@ -1430,7 +1507,7 @@ class OnboardingWizard(QDialog):
         if self.current_page_index < len(self.pages) - 1:
             self.show_page(self.current_page_index + 1)
 
-    def update_navigation(self):
+    def update_navigation(self) -> None:
         final = self.current_page_index == len(self.pages) - 1
         page = self.pages[self.current_page_index]
         complete = getattr(page, "isComplete", lambda: True)()
@@ -1442,26 +1519,26 @@ class OnboardingWizard(QDialog):
         self.finish_button.setVisible(final)
         self.finish_button.setEnabled(bool(complete))
 
-    def accept(self):
+    def accept(self) -> None:
         if not self.test_page.successful:
             return
         self.completed_settings = self.draft_settings.updated(onboarding_completed=True)
         super().accept()
 
-    def reject(self):
+    def reject(self) -> None:
         if self.test_page.running:
             self.test_page.request_cancel()
             return
         self.diagnostics_page.cancel_checks()
         super().reject()
 
-    def settings(self):
+    def settings(self) -> AppSettings:
         return self.completed_settings or self.draft_settings
 
-    def request_voices(self):
+    def request_voices(self) -> None:
         self.reject()
         self.voices_requested.emit()
 
-    def request_settings(self):
+    def request_settings(self) -> None:
         self.reject()
         self.settings_requested.emit()
