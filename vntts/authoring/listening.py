@@ -13,8 +13,10 @@ import shutil
 import struct
 import unicodedata
 from collections import defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from typing import Literal, NotRequired, Protocol, TypedDict, TypeGuard
 
 from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -37,30 +39,203 @@ SCHEMA_VERSION = 1
 LEGACY_DIMENSIONS = ("timbre", "accent", "naturalness", "pronunciation")
 default_session_directory = get_local_data_directory() / "authoring" / "model-listening"
 
+PathInput = str | Path
+Preference = Literal["a", "b", "tie", "neither"]
+RecordedPreference = Literal["a", "b", "tie"]
+
+
+class TrialAudio(TypedDict):
+    a: str
+    b: str
+
+
+class TrialRating(TypedDict):
+    preference: RecordedPreference
+
+
+class StoredTrialRating(TrialRating, total=False):
+    acceptability: Literal["neither"]
+    reviewed_at: str
+
+
+class _ValidatedListeningTrial(TypedDict):
+    trial_id: str
+    queue_id: str
+    line_id: str | None
+    text_sha256: str | None
+    text: str | None
+    audio: TrialAudio
+    rating: StoredTrialRating | None
+    audio_sha256: NotRequired[TrialAudio]
+
+
+class _ValidatedListeningSession(TypedDict):
+    schema: str
+    schema_version: int
+    source_kind: str
+    source_sha256: str
+    blind_key_sha256: str
+    decision_mode: str
+    trial_count: int
+    completed_count: int
+    trials: list[_ValidatedListeningTrial]
+    updated_at: str
+    dimensions: NotRequired[list[str]]
+
+
+class ListeningModel(TypedDict):
+    model_id: str
+    provider: str
+    model: str
+    reports: NotRequired[list[str]]
+
+
+class AudioRecord(TypedDict):
+    path: Path
+    sha256: str
+
+
+class CorpusItem(TypedDict):
+    queue_id: str
+    line_id: str
+    text_sha256: str
+    text: str
+
+
+class SourceRecord(TypedDict):
+    path: str
+    sha256: str
+
+
+class AssignmentArm(TypedDict):
+    model_id: str
+    source: str
+    audio_sha256: NotRequired[str]
+
+
+class BlindAssignment(TypedDict):
+    trial_id: str
+    a: AssignmentArm
+    b: AssignmentArm
+
+
+class ListeningKey(TypedDict):
+    source_kind: str
+    source_sha256: str
+    models: list[ListeningModel]
+    assignments: list[BlindAssignment]
+
+
+class ModelReport(TypedDict):
+    backend: str
+    model_id: str
+    provider: NotRequired[object]
+    model: NotRequired[object]
+
+
+class ModelReportSample(TypedDict):
+    id: str
+    line_id: str
+    text: str
+    text_sha256: str
+    audio_sha256: str
+    resolved_audio: Path
+
+
+class ModelStats(TypedDict):
+    model_id: str
+    provider: str
+    model: str
+    wins: int
+    losses: int
+    ties: int
+    rejections: int
+    reviewed_trials: int
+
+
+class PreferenceStats(TypedDict):
+    wins: int
+    losses: int
+    ties: int
+    rate: float | None
+    rejections: NotRequired[int]
+
+
+class ReportModel(TypedDict):
+    model_id: str
+    provider: str
+    model: str
+    reviewed_trials: int
+    preference: PreferenceStats
+    rank: NotRequired[int]
+
+
+class PairwiseStats(TypedDict):
+    trials: int
+    left_wins: int
+    right_wins: int
+    ties: int
+    neither_acceptable: int
+
+
+class ReportFields(TypedDict):
+    complete: bool
+    completed_trials: int
+    pending_trials: int
+    manual_selection_required: bool
+    models: list[ReportModel]
+    pairwise: list[dict[str, object]]
+
+
+class ListeningTrial(TypedDict):
+    trial_id: str
+    queue_id: str
+    audio: TrialAudio
+    line_id: NotRequired[str]
+    text: NotRequired[str]
+
+
+class ListeningSession(TypedDict):
+    trials: list[ListeningTrial]
+
+
+class ListeningReportModel(TypedDict):
+    model_id: str
+
+
+class ListeningReport(TypedDict):
+    models: list[ListeningReportModel]
+
+
+class _ListeningCli(Protocol):
+    def main(self, argv: Sequence[str] | None = None) -> int: ...
+
 
 class ModelListeningError(RuntimeError):
     """A listening session is invalid or cannot be updated safely."""
 
 
-def _utc_now():
+def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _normalized_text(text):
+def _normalized_text(text: object) -> str:
     normalized = unicodedata.normalize("NFKC", str(text)).replace("…", "...")
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def _source_digest(paths):
-    sources = [
-        {"path": str(Path(path).expanduser().resolve()), "sha256": sha256_file(path)}
-        for path in paths
-    ]
+def _source_digest(paths: Iterable[PathInput]) -> tuple[list[SourceRecord], str]:
+    sources: list[SourceRecord] = []
+    for path in paths:
+        resolved = Path(path).expanduser().resolve()
+        sources.append({"path": str(resolved), "sha256": sha256_file(resolved)})
     payload = json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return sources, hashlib.sha256(payload).hexdigest()
 
 
-def _link_blind_audio(source, destination):
+def _link_blind_audio(source: PathInput, destination: PathInput) -> None:
+    source = Path(source)
+    destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.link(source, destination)
@@ -69,31 +244,32 @@ def _link_blind_audio(source, destination):
 
 
 def create_listening_session_from_reports(
-    report_paths,
-    output_directory,
+    report_paths: Iterable[PathInput],
+    output_directory: PathInput,
     *,
-    seed=0,
-    sample_ids=None,
-):
+    seed: int = 0,
+    sample_ids: Iterable[str] | None = None,
+) -> Path:
     """Create blind trials from two or more generic per-model reports."""
     resolved_paths = [Path(path).expanduser().resolve() for path in report_paths]
     if len(resolved_paths) < 2:
         raise ModelListeningError("At least two model reports are required")
-    selected_ids = None
+    selected_ids: frozenset[str] | None = None
     if sample_ids is not None:
-        selected_ids = tuple(sample_ids)
-        if not selected_ids or any(
-            not isinstance(value, str) or not value.strip() for value in selected_ids
+        raw_selected_ids = tuple(sample_ids)
+        if not raw_selected_ids or any(
+            not isinstance(value, str) or not value.strip()
+            for value in raw_selected_ids
         ):
             raise ModelListeningError(
                 "Selected model-report sample IDs must be non-empty text"
             )
-        if len(selected_ids) != len(set(selected_ids)):
+        if len(raw_selected_ids) != len(set(raw_selected_ids)):
             raise ModelListeningError("Selected model-report sample IDs are duplicated")
-        selected_ids = frozenset(selected_ids)
-    model_metadata = {}
-    audio_by_model = defaultdict(dict)
-    corpus_items = {}
+        selected_ids = frozenset(raw_selected_ids)
+    model_metadata: dict[str, ListeningModel] = {}
+    audio_by_model: defaultdict[str, dict[str, AudioRecord]] = defaultdict(dict)
+    corpus_items: dict[str, CorpusItem] = {}
     for report_path in resolved_paths:
         report, samples = _load_model_report(report_path)
         backend = report["backend"]
@@ -121,14 +297,17 @@ def create_listening_session_from_reports(
             identity = sample_id
             queue_id = f"corpus:{identity}:{text_hash[:16]}"
             existing = audio_by_model[model_id].get(queue_id)
-            audio_record = {"path": audio, "sha256": sample["audio_sha256"]}
+            audio_record: AudioRecord = {
+                "path": audio,
+                "sha256": sample["audio_sha256"],
+            }
             if existing is not None and existing != audio_record:
                 raise ModelListeningError(
                     f"Model {model_id} has multiple outputs for sample {identity!r}"
                 )
             audio_by_model[model_id][queue_id] = audio_record
             current = corpus_items.get(queue_id)
-            item = {
+            item: CorpusItem = {
                 "queue_id": queue_id,
                 "line_id": sample["line_id"],
                 "text_sha256": text_hash,
@@ -170,7 +349,9 @@ def create_listening_session_from_reports(
     )
 
 
-def create_listening_session(benchmark_path, output_directory, *, seed=0):
+def create_listening_session(
+    benchmark_path: PathInput, output_directory: PathInput, *, seed: int = 0
+) -> Path:
     """Create a session from a VNTTS multi-model benchmark aggregate."""
     benchmark_path = Path(benchmark_path).expanduser().resolve()
     benchmark = _load_schema(
@@ -181,7 +362,7 @@ def create_listening_session(benchmark_path, output_directory, *, seed=0):
     reports = benchmark.get("reports")
     if not isinstance(reports, list) or len(reports) < 2:
         raise ModelListeningError("Model benchmark must reference at least two reports")
-    resolved = []
+    resolved: list[Path] = []
     for value in reports:
         if not isinstance(value, str) or not value.strip():
             raise ModelListeningError("Model benchmark report paths are invalid")
@@ -193,15 +374,15 @@ def create_listening_session(benchmark_path, output_directory, *, seed=0):
 
 
 def _write_listening_session(
-    output_directory,
-    models,
-    audio_by_model,
-    corpus_items,
+    output_directory: PathInput,
+    models: Sequence[ListeningModel],
+    audio_by_model: dict[str, dict[str, AudioRecord]],
+    corpus_items: Sequence[CorpusItem],
     *,
-    sources,
-    source_sha256,
-    seed,
-):
+    sources: list[SourceRecord],
+    source_sha256: str,
+    seed: int,
+) -> Path:
     output_directory = Path(output_directory).expanduser().resolve()
     session_path = output_directory / "session.json"
     if session_path.exists() or (
@@ -213,7 +394,7 @@ def _write_listening_session(
     model_ids = [model["model_id"] for model in models]
     if len(model_ids) != len(set(model_ids)):
         raise ModelListeningError("Model reports contain duplicate model IDs")
-    pairs = []
+    pairs: list[tuple[CorpusItem, str, str]] = []
     for item in corpus_items:
         queue_id = item["queue_id"]
         available = [
@@ -226,8 +407,8 @@ def _write_listening_session(
     generator = random.Random(seed)
     generator.shuffle(pairs)
     output_directory.mkdir(parents=True, exist_ok=True)
-    trials = []
-    assignments = []
+    trials: list[_ValidatedListeningTrial] = []
+    assignments: list[BlindAssignment] = []
     for index, (item, left, right) in enumerate(pairs, start=1):
         sides = [left, right]
         generator.shuffle(sides)
@@ -245,18 +426,20 @@ def _write_listening_session(
                 audio_by_model[model_id][item["queue_id"]]["sha256"],
                 "blind audio alias",
             )
-        trials.append(
-            {
-                "trial_id": trial_id,
-                **item,
-                "audio": {side: path.as_posix() for side, path in aliases.items()},
-                "audio_sha256": {
-                    side: audio_by_model[model_id][item["queue_id"]]["sha256"]
-                    for side, model_id in zip(("a", "b"), sides, strict=True)
-                },
-                "rating": None,
-            }
-        )
+        trial: _ValidatedListeningTrial = {
+            "trial_id": trial_id,
+            **item,
+            "audio": {
+                "a": aliases["a"].as_posix(),
+                "b": aliases["b"].as_posix(),
+            },
+            "audio_sha256": {
+                "a": audio_by_model[sides[0]][item["queue_id"]]["sha256"],
+                "b": audio_by_model[sides[1]][item["queue_id"]]["sha256"],
+            },
+            "rating": None,
+        }
+        trials.append(trial)
         assignments.append(
             {
                 "trial_id": trial_id,
@@ -277,7 +460,7 @@ def _write_listening_session(
             }
         )
     key_path = output_directory / ".blind-key.json"
-    key = {
+    key: dict[str, object] = {
         "schema": KEY_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "created_at": _utc_now(),
@@ -288,7 +471,7 @@ def _write_listening_session(
         "assignments": assignments,
     }
     _atomic_write_private_json(key_path, key)
-    session = {
+    session: dict[str, object] = {
         "schema": SESSION_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "created_at": _utc_now(),
@@ -306,15 +489,15 @@ def _write_listening_session(
     return session_path
 
 
-def load_listening_session(path):
+def load_listening_session(path: PathInput) -> ListeningSession:
     path = Path(path).expanduser().resolve()
     session = _load_schema(
         path,
         {SESSION_SCHEMA, LEGACY_SESSION_SCHEMA},
         "listening session",
     )
-    trials = session.get("trials")
-    if not isinstance(trials, list) or session.get("trial_count") != len(trials):
+    trials = _object_list(session.get("trials"))
+    if trials is None or session.get("trial_count") != len(trials):
         raise ModelListeningError("Listening session trial count is invalid")
     if session.get("decision_mode") != "preference-only" and session.get(
         "dimensions"
@@ -324,13 +507,18 @@ def load_listening_session(path):
     legacy_audio_hashes = (
         {} if current_schema else _legacy_import_audio_hashes(path.parent)
     )
-    trial_ids = [trial.get("trial_id") for trial in trials if isinstance(trial, dict)]
+    typed_trials: list[_ValidatedListeningTrial] = []
+    for raw_trial in trials:
+        if not _is_listening_trial(raw_trial):
+            raise ModelListeningError("Listening session trial is invalid")
+        typed_trials.append(raw_trial)
+    trial_ids = [trial["trial_id"] for trial in typed_trials]
     if len(trial_ids) != len(trials) or len(set(trial_ids)) != len(trials):
         raise ModelListeningError("Listening session trial IDs are invalid")
-    completed, _total = listening_progress(session)
+    completed = sum(trial["rating"] is not None for trial in typed_trials)
     if session.get("completed_count") != completed:
         raise ModelListeningError("Listening session progress is inconsistent")
-    for trial in trials:
+    for trial in typed_trials:
         if current_schema:
             line_id = trial.get("line_id")
             text = trial.get("text")
@@ -368,34 +556,41 @@ def load_listening_session(path):
                 f"Listening trial rating is invalid: {trial['trial_id']}"
             )
         audio = trial.get("audio")
-        if not isinstance(audio, dict) or set(audio) != {"a", "b"}:
+        if not _is_trial_audio(audio):
             raise ModelListeningError(
                 f"Listening trial audio is invalid: {trial['trial_id']}"
             )
         expected_hashes = trial.get("audio_sha256")
-        if current_schema and (
-            not isinstance(expected_hashes, dict) or set(expected_hashes) != {"a", "b"}
-        ):
+        if current_schema and (not _is_trial_audio(expected_hashes)):
             raise ModelListeningError(
                 f"Listening trial audio hashes are invalid: {trial['trial_id']}"
             )
-        for side, relative in audio.items():
+        audio_hashes = expected_hashes if _is_trial_audio(expected_hashes) else None
+        audio_pairs: tuple[tuple[Literal["a"], str], tuple[Literal["b"], str]] = (
+            ("a", audio["a"]),
+            ("b", audio["b"]),
+        )
+        for side, relative in audio_pairs:
             candidate = _within(path.parent, relative, "listening trial audio")
             if not candidate.is_file():
                 raise ModelListeningError(
                     f"Listening trial audio is missing: {candidate}"
                 )
             expected_hash = (
-                expected_hashes.get(side)
-                if isinstance(expected_hashes, dict)
+                audio_hashes[side]
+                if audio_hashes is not None
                 else legacy_audio_hashes.get(relative)
             )
             _verify_pcm_audio(candidate, expected_hash, "listening trial audio")
+    if not _is_listening_session(session):
+        raise ModelListeningError("Listening session is invalid")
     _load_blind_key(path, session)
-    return session
+    return _public_session(session)
 
 
-def _load_blind_key(session_path, session):
+def _load_blind_key(
+    session_path: PathInput, session: _ValidatedListeningSession
+) -> ListeningKey:
     key_path = Path(session_path).expanduser().resolve().with_name(".blind-key.json")
     if key_path.is_file() and not private_file_is_restricted(key_path):
         raise ModelListeningError("Listening session blind key mode must be 0600")
@@ -413,12 +608,12 @@ def _load_blind_key(session_path, session):
         "source_sha256"
     ) != session.get("source_sha256"):
         raise ModelListeningError("Listening session source identity changed")
-    models = key.get("models")
-    assignments = key.get("assignments")
-    if not isinstance(models, list) or not isinstance(assignments, list):
+    if not _is_listening_key(key):
         raise ModelListeningError("Listening session blind key is invalid")
-    model_ids = [model.get("model_id") for model in models if isinstance(model, dict)]
-    if len(model_ids) != len(models) or len(model_ids) != len(set(model_ids)):
+    models = key["models"]
+    assignments = key["assignments"]
+    model_ids = [model["model_id"] for model in models]
+    if len(model_ids) != len(set(model_ids)):
         raise ModelListeningError("Listening session blind key models are invalid")
     assignment_ids = [
         item.get("trial_id") for item in assignments if isinstance(item, dict)
@@ -475,31 +670,41 @@ def _load_blind_key(session_path, session):
     return key
 
 
-def next_pending_trial(session):
-    return next(
-        (trial for trial in session["trials"] if trial.get("rating") is None), None
-    )
+def next_pending_trial(session: Mapping[str, object]) -> ListeningTrial | None:
+    trials = _object_list(session.get("trials"))
+    if trials is None:
+        raise ModelListeningError("Listening session trial count is invalid")
+    for trial in trials:
+        if _is_listening_trial(trial) and trial["rating"] is None:
+            return _public_trial(trial)
+    return None
 
 
-def listening_progress(session):
-    completed = sum(trial.get("rating") is not None for trial in session["trials"])
-    return completed, len(session["trials"])
+def listening_progress(session: Mapping[str, object]) -> tuple[int, int]:
+    trials = _object_list(session.get("trials"))
+    if trials is None:
+        raise ModelListeningError("Listening session trial count is invalid")
+    return sum(
+        _is_listening_trial(trial) and trial["rating"] is not None for trial in trials
+    ), len(trials)
 
 
 def record_trial_preference(
-    session_path,
-    trial_id,
-    preference,
+    session_path: PathInput,
+    trial_id: str,
+    preference: Preference,
     *,
-    overwrite=False,
-    report_path=None,
-):
+    overwrite: bool = False,
+    report_path: PathInput | None = None,
+) -> ListeningSession:
     if preference not in {"a", "b", "tie", "neither"}:
         raise ModelListeningError("Preference must be a, b, tie, or neither")
     session_path = Path(session_path).expanduser().resolve()
     guard_path = session_path.with_name(f".{session_path.name}.guard")
     with exclusive_advisory_lock(guard_path, blocking=True):
         session = load_listening_session(session_path)
+        if not _is_listening_session(session):
+            raise ModelListeningError("Listening session is invalid")
         _load_blind_key(session_path, session)
         trial = next(
             (item for item in session["trials"] if item.get("trial_id") == trial_id),
@@ -509,12 +714,13 @@ def record_trial_preference(
             raise ModelListeningError(f"Unknown listening trial: {trial_id}")
         if trial.get("rating") is not None and not overwrite:
             raise ModelListeningError(f"Listening trial is already rated: {trial_id}")
-        trial["rating"] = {
+        rating: StoredTrialRating = {
             "preference": "tie" if preference == "neither" else preference,
             "reviewed_at": _utc_now(),
         }
         if preference == "neither":
-            trial["rating"]["acceptability"] = "neither"
+            rating["acceptability"] = "neither"
+        trial["rating"] = rating
         session["completed_count"] = listening_progress(session)[0]
         session["updated_at"] = _utc_now()
         atomic_write_json(session_path, session, sort_keys=True)
@@ -526,12 +732,16 @@ def record_trial_preference(
                     "Preference was saved, but the listening report could not be "
                     "updated; run `vntts-listen report` to recover it"
                 ) from error
-    return session
+    return _public_session(session)
 
 
-def aggregate_listening_report(session_path, output_path=None):
+def aggregate_listening_report(
+    session_path: PathInput, output_path: PathInput | None = None
+) -> dict[str, object]:
     session_path = Path(session_path).expanduser().resolve()
     session = load_listening_session(session_path)
+    if not _is_listening_session(session):
+        raise ModelListeningError("Listening session is invalid")
     key = _load_blind_key(session_path, session)
     fields = _report_fields(session, key)
     report = {
@@ -550,11 +760,15 @@ def aggregate_listening_report(session_path, output_path=None):
     return report
 
 
-def ensure_listening_report(session_path, output_path=None):
+def ensure_listening_report(
+    session_path: PathInput, output_path: PathInput | None = None
+) -> ListeningReport:
     """Return a current report without rewriting an equivalent legacy snapshot."""
     session_path = Path(session_path).expanduser().resolve()
     output_path = Path(output_path or session_path.with_name("report.json")).resolve()
     session = load_listening_session(session_path)
+    if not _is_listening_session(session):
+        raise ModelListeningError("Listening session is invalid")
     key = _load_blind_key(session_path, session)
     expected = _report_fields(session, key)
     expected_schema = (
@@ -577,14 +791,16 @@ def ensure_listening_report(session_path, output_path=None):
             if session.get("schema") == LEGACY_SESSION_SCHEMA or current.get(
                 "session"
             ) == str(session_path):
-                return current
-    return aggregate_listening_report(session_path, output_path)
+                return _public_report(current)
+    return _public_report(aggregate_listening_report(session_path, output_path))
 
 
-def _report_fields(session, key):
+def _report_fields(
+    session: _ValidatedListeningSession, key: ListeningKey
+) -> ReportFields:
     supports_acceptability = session.get("schema") == SESSION_SCHEMA
     assignments = {item["trial_id"]: item for item in key["assignments"]}
-    stats = {
+    stats: dict[str, ModelStats] = {
         model["model_id"]: {
             "model_id": model["model_id"],
             "provider": model["provider"],
@@ -597,7 +813,7 @@ def _report_fields(session, key):
         }
         for model in key["models"]
     }
-    pairwise = defaultdict(
+    pairwise: defaultdict[tuple[str, str], PairwiseStats] = defaultdict(
         lambda: {
             "trials": 0,
             "left_wins": 0,
@@ -642,10 +858,10 @@ def _report_fields(session, key):
             comparison["left_wins"] += 1
         else:
             comparison["right_wins"] += 1
-    models = []
+    models: list[ReportModel] = []
     for value in stats.values():
         total = value["wins"] + value["losses"] + value["ties"]
-        preference = {
+        preference: PreferenceStats = {
             "wins": value["wins"],
             "losses": value["losses"],
             "ties": value["ties"],
@@ -703,7 +919,7 @@ def _report_fields(session, key):
     }
 
 
-def _load_model_report(path):
+def _load_model_report(path: PathInput) -> tuple[ModelReport, list[ModelReportSample]]:
     report = _load_schema(
         path, {MODEL_REPORT_SCHEMA, TTS_MODEL_REPORT_SCHEMA}, "model report"
     )
@@ -716,11 +932,11 @@ def _load_model_report(path):
         raise ModelListeningError(f"Model report model_id is invalid: {path}")
     if not isinstance(samples, list) or not samples:
         raise ModelListeningError(f"Model report samples are invalid: {path}")
-    parsed = []
-    seen_ids = set()
+    parsed: list[ModelReportSample] = []
+    seen_ids: set[str] = set()
     report_root = Path(path).expanduser().resolve().parent
     for index, sample in enumerate(samples, start=1):
-        if not isinstance(sample, dict):
+        if not _is_json_object(sample):
             raise ModelListeningError(f"Model report sample {index} must be an object")
         sample_id = sample.get("id")
         line_id = sample.get("line_id")
@@ -750,7 +966,7 @@ def _load_model_report(path):
             raise ModelListeningError(f"Model report sample {index} outcome is invalid")
         if outcome != "complete":
             continue
-        if not is_lowercase_sha256(audio_hash):
+        if not isinstance(audio_hash, str) or not is_lowercase_sha256(audio_hash):
             raise ModelListeningError(
                 f"Model report sample {index} audio_sha256 is invalid"
             )
@@ -764,7 +980,6 @@ def _load_model_report(path):
         _verify_pcm_audio(audio, audio_hash, "model report audio")
         parsed.append(
             {
-                **sample,
                 "id": sample_id.strip(),
                 "line_id": line_id.strip(),
                 "text": text,
@@ -773,14 +988,14 @@ def _load_model_report(path):
                 "resolved_audio": audio,
             }
         )
-    return {
-        **report,
+    parsed_report: ModelReport = {
         "backend": backend.strip(),
         "model_id": model_id.strip(),
-    }, parsed
+    }
+    return parsed_report, parsed
 
 
-def _verify_pcm_audio(path, expected_hash, label):
+def _verify_pcm_audio(path: PathInput, expected_hash: object, label: str) -> None:
     path = Path(path)
     if not path.is_file():
         raise ModelListeningError(f"{label.title()} is missing: {path}")
@@ -796,7 +1011,7 @@ def _verify_pcm_audio(path, expected_hash, label):
         raise ModelListeningError(f"{label.title()} checksum changed: {path}")
 
 
-def _probe_supported_wav(path):
+def _probe_supported_wav(path: PathInput) -> None:
     """Validate the PCM16 or legacy float32 WAV envelope without decoding."""
     with Path(path).open("rb") as stream:
         header = stream.read(12)
@@ -838,7 +1053,7 @@ def _probe_supported_wav(path):
             raise ValueError("unsupported WAV encoding")
 
 
-def _legacy_import_audio_hashes(root):
+def _legacy_import_audio_hashes(root: PathInput) -> dict[str, str]:
     manifest_path = Path(root) / "import.json"
     if not manifest_path.is_file():
         return {}
@@ -846,23 +1061,33 @@ def _legacy_import_audio_hashes(root):
     if (
         manifest.get("schema") != "vntts.authoring-listening-import"
         or manifest.get("schema_version") != 1
-        or not isinstance(manifest.get("artifacts"), list)
+        or _object_list(manifest.get("artifacts")) is None
     ):
         raise ModelListeningError("Unsupported listening import manifest schema")
-    result = {}
-    for artifact in manifest["artifacts"]:
-        if not isinstance(artifact, dict) or artifact.get("role") != "blind_audio":
+    result: dict[str, str] = {}
+    artifacts = _object_list(manifest.get("artifacts"))
+    if artifacts is None:
+        raise ModelListeningError("Unsupported listening import manifest schema")
+    for raw_artifact in artifacts:
+        if (
+            not _is_json_object(raw_artifact)
+            or raw_artifact.get("role") != "blind_audio"
+        ):
             continue
-        relative = artifact.get("path")
-        digest = artifact.get("sha256")
+        relative = raw_artifact.get("path")
+        digest = raw_artifact.get("sha256")
         _within(root, relative, "imported blind audio")
-        if not is_lowercase_sha256(digest):
+        if (
+            not isinstance(relative, str)
+            or not isinstance(digest, str)
+            or not is_lowercase_sha256(digest)
+        ):
             raise ModelListeningError("Imported blind audio hash is invalid")
         result[relative] = digest
     return result
 
 
-def _atomic_write_private_json(path, value):
+def _atomic_write_private_json(path: PathInput, value: object) -> Path:
     path = Path(path).expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     rendered = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -875,7 +1100,7 @@ def _atomic_write_private_json(path, value):
     return path
 
 
-def _within(root, value, label):
+def _within(root: PathInput, value: object, label: str) -> Path:
     if not isinstance(value, str) or not value.strip() or "\\" in value:
         raise ModelListeningError(f"{label} must be a POSIX-relative path")
     pure = PurePosixPath(value)
@@ -890,7 +1115,9 @@ def _within(root, value, label):
     return candidate
 
 
-def _load_schema(path, schemas, description):
+def _load_schema(
+    path: PathInput, schemas: set[str], description: str
+) -> dict[str, object]:
     value = _load_json(path, description)
     if (
         value.get("schema") not in schemas
@@ -900,13 +1127,169 @@ def _load_schema(path, schemas, description):
     return value
 
 
-def _load_json(path, description):
-    return load_json_object(path, description, error_type=ModelListeningError)
+def _load_json(path: PathInput, description: str) -> dict[str, object]:
+    value: object = load_json_object(path, description, error_type=ModelListeningError)
+    if not _is_json_object(value):
+        raise ModelListeningError(f"{description.title()} must be a JSON object")
+    return value
 
 
-def main(argv=None):
+def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _object_list(value: object) -> list[object] | None:
+    return value if isinstance(value, list) else None
+
+
+def _is_trial_audio(value: object) -> TypeGuard[TrialAudio]:
+    return _is_json_object(value) and all(
+        isinstance(value.get(side), str) for side in ("a", "b")
+    )
+
+
+def _is_trial_rating(value: object) -> TypeGuard[StoredTrialRating]:
+    return _is_json_object(value) and value.get("preference") in {"a", "b", "tie"}
+
+
+def _is_listening_trial(value: object) -> TypeGuard[_ValidatedListeningTrial]:
+    if not _is_json_object(value):
+        return False
+    return (
+        (
+            isinstance(value.get("trial_id"), str)
+            and isinstance(value.get("queue_id"), str)
+            and value.get("line_id") is None
+            or isinstance(value.get("line_id"), str)
+        )
+        and (value.get("text") is None or isinstance(value.get("text"), str))
+        and (
+            value.get("text_sha256") is None
+            or isinstance(value.get("text_sha256"), str)
+        )
+        and _is_trial_audio(value.get("audio"))
+        and (value.get("rating") is None or _is_trial_rating(value.get("rating")))
+        and ("audio_sha256" not in value or _is_trial_audio(value["audio_sha256"]))
+    )
+
+
+def _is_listening_session(
+    value: Mapping[str, object],
+) -> TypeGuard[_ValidatedListeningSession]:
+    trials = _object_list(value.get("trials"))
+    return (
+        isinstance(value.get("schema"), str)
+        and isinstance(value.get("schema_version"), int)
+        and isinstance(value.get("source_kind"), str)
+        and isinstance(value.get("source_sha256"), str)
+        and isinstance(value.get("blind_key_sha256"), str)
+        and isinstance(value.get("decision_mode"), str)
+        and isinstance(value.get("trial_count"), int)
+        and isinstance(value.get("completed_count"), int)
+        and isinstance(value.get("updated_at"), str)
+        and trials is not None
+        and all(_is_listening_trial(trial) for trial in trials)
+        and (
+            "dimensions" not in value
+            or all(
+                isinstance(item, str)
+                for item in _object_list(value["dimensions"]) or []
+            )
+        )
+    )
+
+
+def _is_assignment_arm(value: object) -> TypeGuard[AssignmentArm]:
+    return (
+        _is_json_object(value)
+        and isinstance(value.get("model_id"), str)
+        and isinstance(value.get("source"), str)
+        and ("audio_sha256" not in value or isinstance(value["audio_sha256"], str))
+    )
+
+
+def _is_listening_key(value: dict[str, object]) -> TypeGuard[ListeningKey]:
+    models = _object_list(value.get("models"))
+    assignments = _object_list(value.get("assignments"))
+    return (
+        isinstance(value.get("source_kind"), str)
+        and isinstance(value.get("source_sha256"), str)
+        and models is not None
+        and assignments is not None
+        and all(
+            _is_json_object(model)
+            and isinstance(model.get("model_id"), str)
+            and isinstance(model.get("provider"), str)
+            and isinstance(model.get("model"), str)
+            for model in models
+        )
+        and all(
+            _is_json_object(assignment)
+            and isinstance(assignment.get("trial_id"), str)
+            and _is_assignment_arm(assignment.get("a"))
+            and _is_assignment_arm(assignment.get("b"))
+            for assignment in assignments
+        )
+    )
+
+
+def _is_listening_cli(value: object) -> TypeGuard[_ListeningCli]:
+    return callable(getattr(value, "main", None))
+
+
+def _is_public_trial(value: object) -> TypeGuard[ListeningTrial]:
+    return (
+        _is_json_object(value)
+        and isinstance(value.get("trial_id"), str)
+        and isinstance(value.get("queue_id"), str)
+        and _is_trial_audio(value.get("audio"))
+    )
+
+
+def _public_trial(value: object) -> ListeningTrial:
+    if not _is_public_trial(value):
+        raise ModelListeningError("Listening trial is invalid")
+    return value
+
+
+def _is_public_session(value: object) -> TypeGuard[ListeningSession]:
+    trials = _object_list(value.get("trials")) if _is_json_object(value) else None
+    return (
+        _is_json_object(value)
+        and trials is not None
+        and all(_is_public_trial(trial) for trial in trials)
+    )
+
+
+def _public_session(value: object) -> ListeningSession:
+    if not _is_public_session(value):
+        raise ModelListeningError("Listening session is invalid")
+    return value
+
+
+def _is_public_report(value: object) -> TypeGuard[ListeningReport]:
+    models = _object_list(value.get("models")) if _is_json_object(value) else None
+    return (
+        _is_json_object(value)
+        and models is not None
+        and all(
+            _is_json_object(model) and isinstance(model.get("model_id"), str)
+            for model in models
+        )
+    )
+
+
+def _public_report(value: object) -> ListeningReport:
+    if not _is_public_report(value):
+        raise ModelListeningError("Listening report is invalid")
+    return value
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     """Compatibility bridge for already-installed legacy entry points."""
-    cli = importlib.import_module("vntts.authoring.listening_cli")
+    cli: object = importlib.import_module("vntts.authoring.listening_cli")
+    if not _is_listening_cli(cli):
+        raise ModelListeningError("Listening CLI is unavailable")
     return cli.main(argv)
 
 

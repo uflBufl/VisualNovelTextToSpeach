@@ -7,9 +7,11 @@ import json
 import shutil
 import sys
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from typing import TypedDict, TypeGuard
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -26,6 +28,28 @@ SCHEMA_VERSION = 1
 IMPORT_SCHEMA = "vntts.authoring-listening-import"
 IMPORT_SCHEMA_VERSION = 1
 LEGACY_DIMENSIONS = ("timbre", "accent", "naturalness", "pronunciation")
+
+PathInput = str | Path
+JsonObject = dict[str, object]
+Artifact = tuple[str, Path, Path, str]
+SourceControl = tuple[Path, str]
+
+
+class _ReportStats(TypedDict):
+    model_id: str
+    provider: str
+    model: str
+    wins: int
+    losses: int
+    ties: int
+    reviewed_trials: int
+
+
+class _PairwiseStats(TypedDict):
+    trials: int
+    left_wins: int
+    right_wins: int
+    ties: int
 
 
 class ListeningImportError(RuntimeError):
@@ -53,7 +77,9 @@ class ListeningImportResult:
     created: bool
 
 
-def inspect_listening_session(session_directory):
+def inspect_listening_session(
+    session_directory: PathInput,
+) -> ListeningImportInspection:
     """Validate a complete legacy listening session without copying it."""
     root = Path(session_directory).expanduser().resolve()
     if not root.is_dir():
@@ -80,7 +106,7 @@ def inspect_listening_session(session_directory):
         )
         _validate_report(session_path, session, key, report)
 
-    artifacts = [
+    artifacts: list[Artifact] = [
         (
             "listening_session",
             session_path,
@@ -95,6 +121,8 @@ def inspect_listening_session(session_directory):
         ),
     ]
     if report_path.is_file():
+        if report_sha256 is None:
+            raise ListeningImportError("Listening report checksum is unavailable")
         artifacts.append(
             (
                 "listening_report",
@@ -129,7 +157,7 @@ def inspect_listening_session(session_directory):
         logical_identity=logical_identity,
         source_fingerprint=fingerprint,
         trial_count=len(trials),
-        completed_count=int(session["completed_count"]),
+        completed_count=_int_field(session, "completed_count"),
         audio_count=len(audio),
         report_present=report_path.is_file(),
         artifacts=tuple(artifacts),
@@ -140,7 +168,9 @@ def inspect_listening_session(session_directory):
     return inspection
 
 
-def import_listening_session(session_directory, destination_root=None):
+def import_listening_session(
+    session_directory: PathInput, destination_root: PathInput | None = None
+) -> ListeningImportResult:
     """Stage and atomically preserve one explicitly selected listening session."""
     inspection = inspect_listening_session(session_directory)
     destination_root = (
@@ -181,7 +211,9 @@ def import_listening_session(session_directory, destination_root=None):
     return ListeningImportResult(destination, manifest, True)
 
 
-def _validate_session(root, session):
+def _validate_session(
+    root: Path, session: JsonObject
+) -> tuple[list[JsonObject], dict[Path, Path]]:
     source_kind = session.get("source_kind")
     if not isinstance(source_kind, str) or not source_kind.strip():
         raise ListeningImportError(
@@ -196,16 +228,18 @@ def _validate_session(root, session):
         "dimensions"
     ) != list(LEGACY_DIMENSIONS):
         raise ListeningImportError("Listening session decision mode is unsupported")
-    trial_ids = set()
-    audio = {}
+    trial_ids: set[str] = set()
+    audio: dict[Path, Path] = {}
+    validated_trials: list[JsonObject] = []
     completed = 0
     for index, trial in enumerate(trials):
-        if not isinstance(trial, dict):
+        if not _is_json_object(trial):
             raise ListeningImportError(f"Listening trial {index} must be an object")
         trial_id = trial.get("trial_id")
         if not isinstance(trial_id, str) or not trial_id or trial_id in trial_ids:
             raise ListeningImportError("Listening session trial IDs are invalid")
         trial_ids.add(trial_id)
+        validated_trials.append(trial)
         rating = trial.get("rating")
         if rating is not None:
             if not isinstance(rating, dict) or rating.get("preference") not in {
@@ -236,10 +270,17 @@ def _validate_session(root, session):
             audio[relative] = source
     if session.get("completed_count") != completed:
         raise ListeningImportError("Listening session completed_count is inconsistent")
-    return trials, audio
+    return validated_trials, audio
 
 
-def _validate_key(session, key, key_path, key_sha256, trials, audio_sha256):
+def _validate_key(
+    session: JsonObject,
+    key: JsonObject,
+    key_path: Path,
+    key_sha256: str,
+    trials: Sequence[JsonObject],
+    audio_sha256: dict[Path, str],
+) -> tuple[SourceControl, ...]:
     if key_sha256 != session.get("blind_key_sha256"):
         raise ListeningImportError(
             "Blind-listening key is missing, changed, or mismatched"
@@ -252,19 +293,21 @@ def _validate_key(session, key, key_path, key_sha256, trials, audio_sha256):
     sources = key.get("sources")
     if not isinstance(sources, list) or not sources:
         raise ListeningImportError("Blind-listening key source inventory is invalid")
-    source_controls = {}
+    source_controls: dict[Path, str] = {}
     for source in sources:
-        if not isinstance(source, dict) or not isinstance(source.get("path"), str):
+        if not _is_json_object(source) or not isinstance(source.get("path"), str):
             raise ListeningImportError(
                 "Blind-listening key source inventory is invalid"
             )
-        _require_sha256(source.get("sha256"), "blind-key source SHA-256")
-        source_path = Path(source["path"]).expanduser().resolve()
-        if not source_path.is_file() or sha256_file(source_path) != source["sha256"]:
+        source_path = Path(_text_field(source, "path")).expanduser().resolve()
+        source_sha256 = _require_sha256(
+            source.get("sha256"), "blind-key source SHA-256"
+        )
+        if not source_path.is_file() or sha256_file(source_path) != source_sha256:
             raise ListeningImportError(
                 f"Blind-listening source report is missing or changed: {source_path}"
             )
-        source_controls[source_path] = source["sha256"]
+        source_controls[source_path] = source_sha256
     source_digest = hashlib.sha256(
         json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -280,21 +323,31 @@ def _validate_key(session, key, key_path, key_sha256, trials, audio_sha256):
         or not isinstance(assignments, list)
     ):
         raise ListeningImportError("Blind-listening key models/assignments are invalid")
-    model_ids = []
+    model_ids: list[str] = []
     for model in models:
-        if not isinstance(model, dict) or not all(
-            isinstance(model.get(field), str) and model[field].strip()
-            for field in ("model_id", "provider", "model")
-        ):
+        if not _is_json_object(model):
             raise ListeningImportError("Blind-listening key contains an invalid model")
-        model_ids.append(model["model_id"])
+        values = [
+            _text_field(model, field) for field in ("model_id", "provider", "model")
+        ]
+        if not all(value.strip() for value in values):
+            raise ListeningImportError("Blind-listening key contains an invalid model")
+        model_ids.append(values[0])
     if len(model_ids) != len(set(model_ids)):
         raise ListeningImportError("Blind-listening key contains duplicate models")
-    expected_ids = {trial["trial_id"] for trial in trials}
-    trial_by_id = {trial["trial_id"]: trial for trial in trials}
-    seen = set()
+    expected_ids = {
+        trial_id
+        for trial in trials
+        if isinstance(trial_id := trial.get("trial_id"), str)
+    }
+    trial_by_id = {
+        trial_id: trial
+        for trial in trials
+        if isinstance(trial_id := trial.get("trial_id"), str)
+    }
+    seen: set[str] = set()
     for assignment in assignments:
-        if not isinstance(assignment, dict) or set(assignment) != {
+        if not _is_json_object(assignment) or set(assignment) != {
             "trial_id",
             "a",
             "b",
@@ -320,8 +373,9 @@ def _validate_key(session, key, key_path, key_sha256, trials, audio_sha256):
                     f"Blind assignment {trial_id!r} side {side} has no source provenance"
                 )
             provenance_audio = Path(value["source"]).expanduser().resolve()
+            audio = _object_field(trial_by_id[trial_id], "audio")
             relative = _safe_relative(
-                trial_by_id[trial_id]["audio"][side],
+                audio.get(side),
                 f"trial {trial_id!r} side {side}",
             )
             _within(
@@ -349,7 +403,9 @@ def _validate_key(session, key, key_path, key_sha256, trials, audio_sha256):
     return tuple(sorted(source_controls.items(), key=lambda item: str(item[0])))
 
 
-def _validate_report(session_path, session, key, report):
+def _validate_report(
+    session_path: Path, session: JsonObject, key: JsonObject, report: JsonObject
+) -> None:
     configured_session = report.get("session")
     if (
         not isinstance(configured_session, str)
@@ -364,32 +420,43 @@ def _validate_report(session_path, session, key, report):
             )
 
 
-def _expected_report(session, key):
-    assignments = {item["trial_id"]: item for item in key["assignments"]}
-    stats = {
-        item["model_id"]: {
-            "model_id": item["model_id"],
-            "provider": item["provider"],
-            "model": item["model"],
+def _expected_report(session: JsonObject, key: JsonObject) -> JsonObject:
+    assignments = {
+        _text_field(item, "trial_id"): item
+        for item in _object_list(key.get("assignments"), "blind assignments")
+    }
+    stats: dict[str, _ReportStats] = {
+        _text_field(item, "model_id"): {
+            "model_id": _text_field(item, "model_id"),
+            "provider": _text_field(item, "provider"),
+            "model": _text_field(item, "model"),
             "wins": 0,
             "losses": 0,
             "ties": 0,
             "reviewed_trials": 0,
         }
-        for item in key["models"]
+        for item in _object_list(key.get("models"), "blind models")
     }
-    pairwise = defaultdict(
+    pairwise: defaultdict[tuple[str, str], _PairwiseStats] = defaultdict(
         lambda: {"trials": 0, "left_wins": 0, "right_wins": 0, "ties": 0}
     )
-    for trial in session["trials"]:
+    for trial in _object_list(session.get("trials"), "listening trials"):
         rating = trial.get("rating")
         if rating is None:
             continue
-        assignment = assignments[trial["trial_id"]]
-        side_models = {side: assignment[side]["model_id"] for side in ("a", "b")}
+        if not _is_json_object(rating):
+            raise ListeningImportError("Listening trial rating is invalid")
+        trial_id = _text_field(trial, "trial_id")
+        assignment = assignments[trial_id]
+        left_arm = _object_field(assignment, "a")
+        right_arm = _object_field(assignment, "b")
+        side_models = {
+            "a": _text_field(left_arm, "model_id"),
+            "b": _text_field(right_arm, "model_id"),
+        }
         for model_id in side_models.values():
             stats[model_id]["reviewed_trials"] += 1
-        preferred = rating["preference"]
+        preferred = _text_field(rating, "preference")
         if preferred == "tie":
             stats[side_models["a"]]["ties"] += 1
             stats[side_models["b"]]["ties"] += 1
@@ -407,7 +474,7 @@ def _expected_report(session, key):
             comparison["left_wins"] += 1
         else:
             comparison["right_wins"] += 1
-    models = []
+    models: list[JsonObject] = []
     for value in stats.values():
         preference_trials = value["wins"] + value["losses"] + value["ties"]
         models.append(
@@ -430,21 +497,11 @@ def _expected_report(session, key):
                 },
             }
         )
-    models.sort(
-        key=lambda item: (
-            -(
-                item["preference"]["rate"]
-                if item["preference"]["rate"] is not None
-                else -1
-            ),
-            -item["preference"]["wins"],
-            item["model_id"],
-        )
-    )
+    models.sort(key=_model_sort_key)
     for rank, model in enumerate(models, start=1):
         model["rank"] = rank
-    completed = int(session["completed_count"])
-    total = int(session["trial_count"])
+    completed = _int_field(session, "completed_count")
+    total = _int_field(session, "trial_count")
     return {
         "complete": completed == total,
         "completed_trials": completed,
@@ -458,7 +515,7 @@ def _expected_report(session, key):
     }
 
 
-def _manifest(inspection, import_id):
+def _manifest(inspection: ListeningImportInspection, import_id: str) -> JsonObject:
     return {
         "schema": IMPORT_SCHEMA,
         "schema_version": IMPORT_SCHEMA_VERSION,
@@ -493,7 +550,9 @@ def _manifest(inspection, import_id):
     }
 
 
-def _validate_existing(destination, inspection):
+def _validate_existing(
+    destination: Path, inspection: ListeningImportInspection
+) -> ListeningImportResult:
     manifest_path = destination / "import.json"
     manifest = _load_json(manifest_path, "existing listening import")
     source = manifest.get("source")
@@ -516,8 +575,8 @@ def _validate_existing(destination, inspection):
         raise ListeningImportError(
             f"Existing listening import manifest was modified: {manifest_path}"
         )
-    for artifact in manifest["artifacts"]:
-        if not isinstance(artifact, dict):
+    for artifact in _object_list(manifest.get("artifacts"), "imported artifacts"):
+        if not _is_json_object(artifact):
             raise ListeningImportError(f"Malformed listening import: {manifest_path}")
         relative = _safe_relative(artifact.get("path"), "imported listening artifact")
         path = _within(destination, relative, "imported listening artifact")
@@ -531,7 +590,7 @@ def _validate_existing(destination, inspection):
     return ListeningImportResult(destination, manifest, False)
 
 
-def _verify_controls_unchanged(inspection):
+def _verify_controls_unchanged(inspection: ListeningImportInspection) -> None:
     for role, source, _relative, digest in inspection.artifacts:
         if not source.is_file() or sha256_file(source) != digest:
             raise ListeningImportError(
@@ -555,7 +614,9 @@ def _verify_controls_unchanged(inspection):
             )
 
 
-def _load_schema_snapshot(path, schema, description):
+def _load_schema_snapshot(
+    path: PathInput, schema: str, description: str
+) -> tuple[JsonObject, str]:
     path = Path(path)
     try:
         payload = path.read_bytes()
@@ -570,7 +631,7 @@ def _load_schema_snapshot(path, schema, description):
         raise ListeningImportError(
             f"Unable to read {description} {path}: {error}"
         ) from error
-    if not isinstance(value, dict):
+    if not _is_json_object(value):
         raise ListeningImportError(f"{description.title()} must be a JSON object")
     if value.get("schema") != schema or value.get("schema_version") != SCHEMA_VERSION:
         raise ListeningImportError(
@@ -579,11 +640,14 @@ def _load_schema_snapshot(path, schema, description):
     return value, digest
 
 
-def _load_json(path, description):
-    return load_json_object(path, description, error_type=ListeningImportError)
+def _load_json(path: PathInput, description: str) -> JsonObject:
+    value: object = load_json_object(path, description, error_type=ListeningImportError)
+    if not _is_json_object(value):
+        raise ListeningImportError(f"{description.title()} must be a JSON object")
+    return value
 
 
-def _safe_relative(value, label):
+def _safe_relative(value: object, label: str) -> Path:
     if not isinstance(value, str) or not value.strip() or "\\" in value:
         raise ListeningImportError(f"{label} must be a non-empty POSIX-relative path")
     pure = PurePosixPath(value)
@@ -592,7 +656,7 @@ def _safe_relative(value, label):
     return Path(*pure.parts)
 
 
-def _within(root, relative, label):
+def _within(root: PathInput, relative: Path, label: str) -> Path:
     root = Path(root).resolve()
     candidate = (root / relative).resolve()
     try:
@@ -602,11 +666,56 @@ def _within(root, relative, label):
     return candidate
 
 
-def _require_sha256(value, label):
-    require_sha256(value, label, error_type=ListeningImportError)
+def _require_sha256(value: object, label: str) -> str:
+    result: object = require_sha256(value, label, error_type=ListeningImportError)
+    if not isinstance(result, str):
+        raise ListeningImportError(f"{label} must be a full SHA-256")
+    return result
 
 
-def _canonical(value):
+def _canonical(value: object) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     ).encode("utf-8")
+
+
+def _is_json_object(value: object) -> TypeGuard[JsonObject]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _object_list(value: object, label: str) -> list[JsonObject]:
+    if not isinstance(value, list) or not all(_is_json_object(item) for item in value):
+        raise ListeningImportError(f"{label.title()} must be objects")
+    return value
+
+
+def _object_field(document: JsonObject, field: str) -> JsonObject:
+    value = document.get(field)
+    if not _is_json_object(value):
+        raise ListeningImportError(f"Listening {field} is invalid")
+    return value
+
+
+def _text_field(document: JsonObject, field: str) -> str:
+    value = document.get(field)
+    if not isinstance(value, str):
+        raise ListeningImportError(f"Listening {field} is invalid")
+    return value
+
+
+def _int_field(document: JsonObject, field: str) -> int:
+    value = document.get(field)
+    if not isinstance(value, int):
+        raise ListeningImportError(f"Listening {field} is invalid")
+    return value
+
+
+def _model_sort_key(model: JsonObject) -> tuple[float, int, str]:
+    preference = _object_field(model, "preference")
+    rate = preference.get("rate")
+    wins = _int_field(preference, "wins")
+    return (
+        -(float(rate) if isinstance(rate, int | float) else -1),
+        -wins,
+        _text_field(model, "model_id"),
+    )

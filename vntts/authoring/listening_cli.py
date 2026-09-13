@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from vntts.authoring.listening import (
@@ -20,7 +21,7 @@ from vntts.authoring.listening import (
 from vntts.cli import cli_error, cli_success
 
 
-def create_parser():
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run blind, resumable model listening")
     subparsers = parser.add_subparsers(dest="command", required=True)
     start = subparsers.add_parser("start")
@@ -56,14 +57,14 @@ def create_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     options = create_parser().parse_args(argv)
     try:
         if options.command == "start":
             path = create_listening_session(
                 options.benchmark, options.output, seed=options.seed
             )
-            return cli_success(f"Created blind listening session: {path}")
+            return int(cli_success(f"Created blind listening session: {path}"))
         if options.command == "start-reports":
             path = create_listening_session_from_reports(
                 options.reports,
@@ -71,19 +72,19 @@ def main(argv=None):
                 seed=options.seed,
                 sample_ids=options.sample_ids,
             )
-            return cli_success(f"Created blind listening session: {path}")
+            return int(cli_success(f"Created blind listening session: {path}"))
         if options.command == "ui":
             from vntts.authoring.listening_ui import launch_listening_workbench
 
-            return launch_listening_workbench(options.session)
+            return int(launch_listening_workbench(options.session))
         session = load_listening_session(options.session)
         if options.command == "status":
             completed, total = listening_progress(session)
-            return cli_success(f"Listening progress: {completed}/{total} trials")
+            return int(cli_success(f"Listening progress: {completed}/{total} trials"))
         if options.command == "next":
             trial = next_pending_trial(session)
             if trial is None:
-                return cli_success("Listening session is complete")
+                return int(cli_success("Listening session is complete"))
             print(json.dumps(trial, ensure_ascii=False, indent=2))
             return 0
         if options.command == "score":
@@ -95,23 +96,27 @@ def main(argv=None):
                 report_path=Path(options.session).resolve().with_name("report.json"),
             )
             completed, total = listening_progress(updated)
-            return cli_success(
-                f"Saved {options.trial_id}; progress: {completed}/{total} trials"
+            return int(
+                cli_success(
+                    f"Saved {options.trial_id}; progress: {completed}/{total} trials"
+                )
             )
         output = options.output or Path(options.session).resolve().with_name(
             "report.json"
         )
         report = aggregate_listening_report(options.session, output)
-        return cli_success(
-            f"Listening report: {output} ({report['completed_trials']} completed, "
-            f"{report['pending_trials']} pending)"
+        return int(
+            cli_success(
+                f"Listening report: {output} ({report['completed_trials']} completed, "
+                f"{report['pending_trials']} pending)"
+            )
         )
     except ModuleNotFoundError as error:
         if error.name and error.name.startswith("PySide6"):
-            return cli_error("Qt UI is not installed")
+            return int(cli_error("Qt UI is not installed"))
         raise
     except (ModelListeningError, OSError, json.JSONDecodeError) as error:
-        return cli_error(error)
+        return int(cli_error(error))
 
 
 if __name__ == "__main__":
