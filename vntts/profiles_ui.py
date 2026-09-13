@@ -12,21 +12,30 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 from vntts_artifacts.game_pack import GamePackError
 
 from vntts.ocr import get_dialog_region, get_dialog_region_file, save_dialog_region
-from vntts.profiles import GameProfileStore
+from vntts.ocr_corrections import OCRCorrectionStore
+from vntts.profiles import GameProfile, GameProfileStore
+from vntts.settings import AppSettings
 
 
 class GameProfilesDialog(QDialog):
-    def __init__(self, settings, store=None, correction_store=None, parent=None):
+    def __init__(
+        self,
+        settings: AppSettings,
+        store: GameProfileStore | None = None,
+        correction_store: OCRCorrectionStore | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.original_settings = settings
         self.active_profile_id = settings.active_profile_id
         self.store = store or GameProfileStore.load()
         self.correction_store = correction_store
-        self.selected_settings = None
+        self.selected_settings: AppSettings | None = None
         self.setWindowTitle("Game profiles")
         self.setMinimumWidth(500)
 
@@ -65,10 +74,13 @@ class GameProfilesDialog(QDialog):
         form.addRow("Stored settings", self.summary)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        self.use_button = buttons.addButton(
+        use_button = buttons.addButton(
             "Use selected profile",
             QDialogButtonBox.ButtonRole.AcceptRole,
         )
+        if not isinstance(use_button, QPushButton):
+            raise RuntimeError("Profile activation button was not created")
+        self.use_button: QPushButton = use_button
         self.use_button.setAccessibleName("Activate selected game profile")
         buttons.accepted.connect(self.use_profile)
         buttons.rejected.connect(self.reject)
@@ -79,7 +91,7 @@ class GameProfilesDialog(QDialog):
         layout.addWidget(buttons)
         self.refresh_profiles(settings.active_profile_id)
 
-    def refresh_profiles(self, selected_id=None):
+    def refresh_profiles(self, selected_id: str | None = None) -> None:
         self.profiles.clear()
         for profile in sorted(
             self.store.profiles, key=lambda item: item.name.casefold()
@@ -91,10 +103,11 @@ class GameProfilesDialog(QDialog):
                 self.profiles.setCurrentIndex(index)
         self.update_summary()
 
-    def current_profile(self):
-        return self.store.get(self.profiles.currentData())
+    def current_profile(self) -> GameProfile | None:
+        profile_id = self.profiles.currentData()
+        return self.store.get(profile_id) if isinstance(profile_id, str) else None
 
-    def create_profile(self):
+    def create_profile(self) -> None:
         name = self._ask_name("Save current setup as profile", "Profile name")
         if name is None:
             return
@@ -109,7 +122,7 @@ class GameProfilesDialog(QDialog):
             return
         self.refresh_profiles(profile.id)
 
-    def duplicate_profile(self):
+    def duplicate_profile(self) -> None:
         profile = self.current_profile()
         if profile is None:
             return
@@ -129,7 +142,7 @@ class GameProfilesDialog(QDialog):
             self.correction_store.copy_profile(profile.id, duplicate.id)
         self.refresh_profiles(duplicate.id)
 
-    def rename_profile(self):
+    def rename_profile(self) -> None:
         profile = self.current_profile()
         if profile is None:
             return
@@ -147,7 +160,7 @@ class GameProfilesDialog(QDialog):
             return
         self.refresh_profiles(renamed.id)
 
-    def remove_profile(self):
+    def remove_profile(self) -> None:
         profile = self.current_profile()
         if profile is None:
             return
@@ -187,7 +200,7 @@ class GameProfilesDialog(QDialog):
             self.correction_store.remove_profile(profile.id)
         self.refresh_profiles()
 
-    def update_summary(self):
+    def update_summary(self) -> None:
         profile = self.current_profile()
         active = self.store.get(self.active_profile_id)
         self.active_status.setText(
@@ -250,7 +263,7 @@ class GameProfilesDialog(QDialog):
             f"OCR language: {profile.ocr_language}\n"
         )
 
-    def use_profile(self):
+    def use_profile(self) -> None:
         profile = self.current_profile()
         if profile is None:
             return
@@ -264,9 +277,9 @@ class GameProfilesDialog(QDialog):
         self.active_profile_id = profile.id
         self.accept()
 
-    def settings(self):
+    def settings(self) -> AppSettings:
         return self.selected_settings or self.original_settings
 
-    def _ask_name(self, title, label, value=""):
+    def _ask_name(self, title: str, label: str, value: str = "") -> str | None:
         name, accepted = QInputDialog.getText(self, title, label, text=value)
         return name.strip() if accepted else None
