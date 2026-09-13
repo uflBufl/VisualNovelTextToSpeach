@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable, Protocol, TypeGuard, runtime_checkable
 
 if TYPE_CHECKING:
     from vntts.controller import AppController
@@ -14,6 +16,7 @@ from vntts.auto_advance_policy import auto_advance_control_state
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.dialog import is_empty, speak_dialog
 from vntts.dialog_capture import (
+    DiagnosticSnapshot,
     OCRError,
     OCRUncertainError,
     ScreenCaptureError,
@@ -29,11 +32,17 @@ from vntts.generated_audio import GeneratedAudioFallbackBackend
 from vntts.live import IncrementalDialogTracker
 from vntts.live_snapshot import read_live_snapshot
 from vntts.live_speech import play_typed_text
+from vntts.playback import PlaybackOutcome, PreparedPlayback
 from vntts.runtime_config import get_tts_configuration
-from vntts.settings import preserve_loaded_runtime_settings
+from vntts.settings import AppSettings, preserve_loaded_runtime_settings
 from vntts.speech_backend import XTTSVoiceRouterBackend
+from vntts.speech_backend_contract import SpeechBackendCapabilities
+from vntts.synthesis import SynthesisCachePolicy
 from vntts.voices import (
+    CharacterVoice,
+    CharacterVoiceRegistry,
     VoiceChoice,
+    VoiceEngine,
     default_voice_choice_id,
     find_voice_assignment,
     is_narrator,
@@ -42,7 +51,89 @@ from vntts.voices import (
 )
 
 
-def create_live_toggle(live_reader: Any) -> Callable[[], None]:
+class _LiveToggle(Protocol):
+    def toggle(self) -> bool: ...
+
+
+class _SpeechChunk(Protocol):
+    character: str
+    text: str
+
+
+class _Cancellation(Protocol):
+    def is_set(self) -> bool: ...
+    def set(self) -> None: ...
+
+
+@runtime_checkable
+class _TypedPlaybackBackend(Protocol):
+    def prepare_playback(self, character: str, text: str) -> PreparedPlayback: ...
+
+    def play_prepared(
+        self,
+        prepared: PreparedPlayback,
+        *,
+        playback_guard: Callable[[], bool] | None = None,
+    ) -> PlaybackOutcome: ...
+
+
+@runtime_checkable
+class _LiveVoiceRouter(_TypedPlaybackBackend, Protocol):
+    registry: CharacterVoiceRegistry
+    narrator_voice: CharacterVoice | None
+    name: str
+    capabilities: SpeechBackendCapabilities
+
+    def stop(self) -> bool: ...
+
+    def warm_up(self, *, progress: Callable[[int, int, str], None]) -> int: ...
+
+    def set_volume(self, volume: float) -> None: ...
+
+    def set_speed(self, speed: float) -> None: ...
+
+
+@runtime_checkable
+class _XTTSVoiceRouter(Protocol):
+    tts: object
+    registry: CharacterVoiceRegistry
+    narrator_voice: CharacterVoice | None
+
+    def prepare_playback(
+        self,
+        character: str,
+        text: str,
+        *,
+        synthesis_options: Mapping[str, object] | None,
+        cache_policy: SynthesisCachePolicy,
+        cancellation: Callable[[], bool],
+    ) -> PreparedPlayback: ...
+
+    def play_prepared(
+        self,
+        prepared: PreparedPlayback,
+        *,
+        playback_guard: Callable[[], bool] | None,
+    ) -> PlaybackOutcome: ...
+
+    def warm_up(self, *, progress: Callable[[int, int, str], None]) -> int: ...
+
+
+def _is_voice_engine(value: object) -> TypeGuard[VoiceEngine]:
+    return all(
+        callable(getattr(value, name, None))
+        for name in (
+            "speak",
+            "synthesize",
+            "prepare_synthesis",
+            "play",
+            "play_prepared",
+            "has_speaker",
+        )
+    )
+
+
+def create_live_toggle(live_reader: _LiveToggle) -> Callable[[], None]:
     def toggle_live_reading() -> None:
         if live_reader.toggle():
             print("Live reading started")
@@ -53,10 +144,10 @@ def create_live_toggle(live_reader: Any) -> Callable[[], None]:
 
 
 def speak_live_chunk(
-    voice_router: Any,
-    chunk: Any,
-    playback_guard: Any = None,
-) -> Any:
+    voice_router: _TypedPlaybackBackend,
+    chunk: _SpeechChunk,
+    playback_guard: Callable[[], bool] | None = None,
+) -> object:
     print(f"{chunk.character} is speaking now (live)")
     print(chunk.text)
     if is_empty(chunk.text):
@@ -67,10 +158,10 @@ def speak_live_chunk(
 class _RuntimeSettingsApplyGuard:
     def __init__(self) -> None:
         self.lock = Lock()
-        self.cancellation: Any = None
+        self.cancellation: _Cancellation | None = None
         self.committed = False
 
-    def begin(self, cancellation: Any) -> None:
+    def begin(self, cancellation: _Cancellation | None) -> None:
         if cancellation is None:
             return
         with self.lock:
@@ -79,7 +170,7 @@ class _RuntimeSettingsApplyGuard:
             self.cancellation = cancellation
             self.committed = False
 
-    def finish(self, cancellation: Any) -> None:
+    def finish(self, cancellation: _Cancellation | None) -> None:
         if cancellation is None:
             return
         with self.lock:
@@ -87,7 +178,7 @@ class _RuntimeSettingsApplyGuard:
                 self.cancellation = None
                 self.committed = False
 
-    def commit(self, cancellation: Any) -> bool:
+    def commit(self, cancellation: _Cancellation | None) -> bool:
         if cancellation is None:
             return True
         with self.lock:
@@ -98,8 +189,8 @@ class _RuntimeSettingsApplyGuard:
 
     def cancel(
         self,
-        cancellation: Any,
-        release_waiters: Callable[[], Any],
+        cancellation: _Cancellation,
+        release_waiters: Callable[[], object],
     ) -> bool:
         with self.lock:
             if self.cancellation is not cancellation or self.committed:
@@ -118,7 +209,7 @@ class RuntimeLifecycleComponent:
         repr=False,
     )
 
-    def start(self) -> Any:
+    def start(self) -> bool:
         controller = self.controller
         if controller.is_ready:
             return True
@@ -162,9 +253,12 @@ class RuntimeLifecycleComponent:
                 controller.model_assets.configure_environment()
                 if controller.settings.xtts_terms_accepted:
                     os.environ["COQUI_TOS_AGREED"] = "1"
-                controller.tts = controller.tts_factory(
+                tts = controller.tts_factory(
                     **get_tts_configuration(controller.settings)
                 )
+                if not _is_voice_engine(tts):
+                    raise TypeError("XTTS engine does not implement voice routing")
+                controller.tts = tts
                 return True
             if controller.settings.speech_backend in {
                 "chatterbox-nano",
@@ -183,7 +277,7 @@ class RuntimeLifecycleComponent:
                 "moss-tts": controller.moss_backend_factory,
                 "pocket-tts": controller.pocket_backend_factory,
             }[controller.settings.speech_backend]
-            narrator_reference = controller.settings.tts_speaker_wav
+            narrator_reference: str | Path | None = controller.settings.tts_speaker_wav
             narrator_source_id = find_voice_assignment(
                 controller.settings.voice_assignments,
                 "Narrator",
@@ -201,7 +295,7 @@ class RuntimeLifecycleComponent:
                 references = getattr(narrator_voice, "references", ())
                 if isinstance(references, (tuple, list)) and references:
                     narrator_reference = references[0]
-            backend_options = {
+            backend_options: dict[str, object] = {
                 "narrator_reference": narrator_reference,
                 "volume": controller.settings.output_volume_percent / 100,
             }
@@ -219,7 +313,10 @@ class RuntimeLifecycleComponent:
                     language=controller.settings.tts_language or "English",
                     generation_profile=controller.settings.tts_profile,
                 )
-            controller.tts = backend_factory(registry, **backend_options)
+            backend = backend_factory(registry, **backend_options)
+            if not isinstance(backend, _LiveVoiceRouter):
+                raise TypeError("Speech backend does not implement typed voice routing")
+            controller.tts = backend
             return True
         except Exception as error:
             controller.error_handler(TTSInitializationError(str(error)))
@@ -228,23 +325,34 @@ class RuntimeLifecycleComponent:
     def _initialize_voice_routing(self, use_xtts: bool) -> bool:
         controller = self.controller
         if use_xtts:
-            controller.voice_router = controller.voice_router_initializer(
-                controller.tts,
+            tts = controller.tts
+            if not _is_voice_engine(tts):
+                raise TypeError("XTTS engine does not implement voice routing")
+            voice_router = controller.voice_router_initializer(
+                tts,
                 controller.settings,
                 controller.error_handler,
             )
-            if controller.voice_router is None:
+            if voice_router is None:
                 controller._stop_tts()
                 return False
-            controller.speech_backend = XTTSVoiceRouterBackend(controller.voice_router)
+            if not isinstance(voice_router, _XTTSVoiceRouter):
+                raise TypeError("XTTS voice router does not implement typed playback")
+            controller.voice_router = voice_router
+            controller.speech_backend = XTTSVoiceRouterBackend(voice_router)
         else:
+            if not isinstance(controller.tts, _LiveVoiceRouter):
+                raise TypeError("Speech backend does not implement typed voice routing")
             controller.voice_router = controller.tts
             controller.speech_backend = controller.tts
         controller._configure_generated_audio_backend()
         if controller.settings.warm_up_voices:
+            warmup_router = controller.voice_router
+            if warmup_router is None:
+                return False
             controller.status_handler("Warming speech model and voices...")
             try:
-                warmed = controller.voice_router.warm_up(
+                warmed = warmup_router.warm_up(
                     progress=controller._warmup_progress
                 )
             except Exception as error:
@@ -256,7 +364,7 @@ class RuntimeLifecycleComponent:
                 controller.status_handler(f"Speech model and {warmed} voices ready")
         return True
 
-    def _construct_live_runtime(self) -> Any:
+    def _construct_live_runtime(self) -> object:
         controller = self.controller
         executor_specs = (
             ("capture_executor", "dialog-capture"),
@@ -282,7 +390,7 @@ class RuntimeLifecycleComponent:
             normal_jobs=max_speech_jobs,
         )
         screenshot_directory = get_screenshot_directory(controller.settings)
-        controller.live_reader = controller.live_reader_factory(
+        live_reader = controller.live_reader_factory(
             capture_executor=controller.capture_executor,
             ocr_executor=controller.ocr_executor,
             speech_executor=controller.speech_executor,
@@ -325,9 +433,14 @@ class RuntimeLifecycleComponent:
             first_pcm_on_prepare=False,
             **controller._get_live_configuration(),
         )
+        controller.live_reader = live_reader
+        capture_executor = controller.capture_executor
+        voice_router = controller.voice_router
+        if capture_executor is None or voice_router is None:
+            return screenshot_directory
         controller.schedule_dialog_read = controller.dialog_read_scheduler_factory(
-            controller.capture_executor,
-            controller.voice_router,
+            capture_executor,
+            voice_router,
             screenshot_directory,
             live_reader=controller.live_reader,
             error_handler=controller.error_handler,
@@ -335,14 +448,16 @@ class RuntimeLifecycleComponent:
             speech_handler=controller._enqueue_dialog,
             minimum_confidence=controller.settings.ocr_minimum_confidence,
             uncertain_frame_recorder=controller.uncertain_frame_recorder,
-            diagnostic_handler=controller._publish_diagnostic,
+            diagnostic_handler=controller._publish_unknown_diagnostic,
             voice_resolver=controller._resolve_voice_label,
             ocr_language=controller.settings.ocr_language,
             correction_dictionary=controller.correction_dictionary,
         )
         return screenshot_directory
 
-    def apply_settings(self, settings: Any, *, cancellation: Any = None) -> Any:
+    def apply_settings(
+        self, settings: AppSettings, *, cancellation: _Cancellation | None = None
+    ) -> object:
         self.settings_apply_guard.begin(cancellation)
         try:
             return self._apply_settings(
@@ -354,96 +469,118 @@ class RuntimeLifecycleComponent:
 
     def _apply_settings(
         self,
-        settings: Any,
+        settings: AppSettings,
         *,
         commit: Callable[[], bool],
-    ) -> Any:
+    ) -> object:
         controller = self.controller
         if controller.tts is not None or controller.speech_backend is not None:
             settings = preserve_loaded_runtime_settings(controller.settings, settings)
-        was_live = controller.is_live_running
-        if was_live:
-            controller._set_backend_live_mode(False)
-            controller.live_reader.stop()
-            controller.live_reader.wait()
+        was_live = self._stop_live_for_settings()
+        if was_live is None:
+            return False
 
         if not commit():
             if was_live:
                 controller.live_session.toggle()
             return False
 
+        self._refresh_runtime_settings(settings)
+        reader_update = self._refresh_live_reader_settings()
+        if reader_update is not True:
+            return reader_update
+        if was_live:
+            controller.live_session.toggle()
+        return True
+
+    def _stop_live_for_settings(self) -> bool | None:
+        controller = self.controller
+        if not controller.is_live_running:
+            return False
+        reader = controller.live_reader
+        if reader is None:
+            return None
+        controller._set_backend_live_mode(False)
+        reader.stop()
+        reader.wait()
+        return True
+
+    def _refresh_runtime_settings(self, settings: AppSettings) -> None:
+        controller = self.controller
         controller.settings = settings
         with controller.speaker_announcement_lock:
             controller.last_visible_speaker_key = None
         controller.chapter_voice_preloader = ChapterVoicePreloader.load_optional(
-            controller.settings.story_index
+            settings.story_index
         )
         controller._load_live_sequence_plan()
         controller._load_live_speaker_corpus()
         controller._configure_generated_audio_backend()
         controller.refresh_corrections()
         controller.capture_target = controller._create_capture_target()
-        controller.uncertain_frame_recorder = (
-            controller._create_uncertain_frame_recorder()
-        )
-        if controller.tts is not None:
+        controller.uncertain_frame_recorder = controller._create_uncertain_frame_recorder()
+        self._apply_runtime_audio_settings()
+
+    def _apply_runtime_audio_settings(self) -> None:
+        controller = self.controller
+        if isinstance(controller.tts, _LiveVoiceRouter):
             controller.tts.set_volume(controller.settings.output_volume_percent / 100)
             controller.tts.set_speed(controller.settings.speech_rate_percent / 100)
-        if controller.speech_backend is not None:
-            set_volume = getattr(controller.speech_backend, "set_volume", None)
-            set_speed = getattr(controller.speech_backend, "set_speed", None)
-            set_generation_profile = getattr(
-                controller.speech_backend,
-                "set_generation_profile",
-                None,
-            )
-            if callable(set_volume):
-                set_volume(controller.settings.output_volume_percent / 100)
-            if callable(set_speed):
-                set_speed(controller.settings.speech_rate_percent / 100)
-            if callable(set_generation_profile):
-                set_generation_profile(controller.settings.tts_profile)
-        if controller.live_reader is None:
-            return None
+        backend = controller.speech_backend
+        if backend is None:
+            return
+        set_volume = getattr(backend, "set_volume", None)
+        set_speed = getattr(backend, "set_speed", None)
+        set_generation_profile = getattr(backend, "set_generation_profile", None)
+        if callable(set_volume):
+            set_volume(controller.settings.output_volume_percent / 100)
+        if callable(set_speed):
+            set_speed(controller.settings.speech_rate_percent / 100)
+        if callable(set_generation_profile):
+            set_generation_profile(controller.settings.tts_profile)
 
+    def _refresh_live_reader_settings(self) -> bool | None:
+        controller = self.controller
+        reader = controller.live_reader
+        if reader is None:
+            return None
         screenshot_directory = get_screenshot_directory(controller.settings)
         live_configuration = controller._get_live_configuration()
-        controller.live_reader.interval_seconds = live_configuration["interval_seconds"]
-        controller.live_reader.tracker_options = live_configuration["tracker_options"]
-        controller.live_reader.require_visible_auto_advance = (
-            controller._live_sequence_audio_active()
-        )
-        controller.live_reader.set_auto_advance(
-            controller._live_auto_advance_callback()
-        )
-        controller.live_reader.auto_advance_delay_seconds = (
-            controller.settings.auto_advance_delay_ms / 1000
-        )
+        interval_seconds = live_configuration["interval_seconds"]
+        if not isinstance(interval_seconds, (int, float)):
+            return None
+        reader.interval_seconds = float(interval_seconds)
+        reader.tracker_options = live_configuration["tracker_options"]
+        reader.require_visible_auto_advance = controller._live_sequence_audio_active()
+        reader.set_auto_advance(controller._live_auto_advance_callback())
+        reader.auto_advance_delay_seconds = controller.settings.auto_advance_delay_ms / 1000
+        capture_executor = controller.capture_executor
+        voice_router = controller.voice_router
+        if capture_executor is None or voice_router is None:
+            return None
         controller.schedule_dialog_read = controller.dialog_read_scheduler_factory(
-            controller.capture_executor,
-            controller.voice_router,
+            capture_executor,
+            voice_router,
             screenshot_directory,
-            live_reader=controller.live_reader,
+            live_reader=reader,
             error_handler=controller.error_handler,
             capture_target=controller.capture_target,
             speech_handler=controller._enqueue_dialog,
             minimum_confidence=controller.settings.ocr_minimum_confidence,
             uncertain_frame_recorder=controller.uncertain_frame_recorder,
-            diagnostic_handler=controller._publish_diagnostic,
+            diagnostic_handler=controller._publish_unknown_diagnostic,
             voice_resolver=controller._resolve_voice_label,
             ocr_language=controller.settings.ocr_language,
             correction_dictionary=controller.correction_dictionary,
         )
-        if was_live:
-            controller.live_session.toggle()
         return True
 
-    def cancel_settings_apply(self, cancellation: Any) -> bool:
+    def cancel_settings_apply(self, cancellation: _Cancellation) -> bool:
         reader = self.controller.live_reader
         release_waiters = reader.release_waiters if reader is not None else lambda: None
         return self.settings_apply_guard.cancel(cancellation, release_waiters)
 
-    def shutdown(self) -> Any:
+    def shutdown(self) -> None:
         controller = self.controller
         controller.shutdown_requested.set()
         with controller.voice_prime_lock:
@@ -478,26 +615,31 @@ class RuntimeLifecycleComponent:
 class LiveSessionComponent:
     controller: AppController
 
-    def read_once(self) -> Any:
+    def read_once(self) -> bool:
         controller = self.controller
-        if not controller.is_ready:
+        reader = controller.live_reader
+        schedule = controller.schedule_dialog_read
+        if reader is None or schedule is None:
             return False
-        controller.live_reader.resume_after_emergency()
-        accepted = controller.schedule_dialog_read()
+        reader.resume_after_emergency()
+        accepted = schedule()
         if accepted:
             controller.status_handler("Reading current dialog")
-        return accepted
+        return bool(accepted)
 
-    def identify_scope(self) -> Any:
+    def identify_scope(self) -> bool:
         controller = self.controller
         if not controller.is_ready or controller.is_live_running:
+            return False
+        voice_router = controller.voice_router
+        if voice_router is None:
             return False
         controller.live_scope_identification_failure = None
         controller.live_scope_identification_match_result = None
         controller.live_scope_identification_diagnostics = {}
         character, text = read_live_snapshot(
             get_screenshot_directory(controller.settings),
-            controller.voice_router.registry,
+            voice_router.registry,
             controller.capture_target,
             controller.settings.ocr_minimum_confidence,
             controller._ocr_uncertain,
@@ -511,7 +653,7 @@ class LiveSessionComponent:
             controller.live_scope_identification_failure = "no-dialog-text"
             return False
         observed_character = character
-        character = controller._canonical_observed_character(character, text)
+        character = controller._canonical_observed_character(character or "Narrator", text)
         line, match_result = controller._resolve_initial_live_sequence_line(
             character,
             text,
@@ -539,11 +681,12 @@ class LiveSessionComponent:
         controller.dialog_handler(line.speaker, line.text)
         return True
 
-    def toggle(self) -> Any:
+    def toggle(self) -> bool:
         controller = self.controller
-        if not controller.is_ready:
+        reader = controller.live_reader
+        if reader is None:
             return False
-        starting = not controller.live_reader.is_running
+        starting = not reader.is_running
         if starting and not self._voice_preflight_allows_start():
             return False
         if starting and controller.capture_target is not None:
@@ -575,10 +718,10 @@ class LiveSessionComponent:
                     else:
                         controller.story_cursor.reset("live-session-started")
                     controller._publish_live_sequence_status()
-        running = controller.live_reader.toggle()
+        running = reader.toggle()
         if running:
             controller.next_live_narrator_fallback_names.clear()
-            controller.live_reader.max_speech_jobs = (
+            reader.max_speech_jobs = (
                 controller.live_speech_backpressure.reset()
             )
         elif not starting:
@@ -589,7 +732,7 @@ class LiveSessionComponent:
         controller.status_handler(
             "Live reading started" if running else "Live reading stopping"
         )
-        return running
+        return bool(running)
 
     def _voice_preflight_allows_start(self) -> bool:
         controller = self.controller
@@ -636,53 +779,58 @@ class LiveSessionComponent:
         )
         return False
 
-    def toggle_speech_pause(self) -> Any:
+    def toggle_speech_pause(self) -> bool:
         controller = self.controller
-        if not controller.is_ready:
+        reader = controller.live_reader
+        if reader is None:
             return False
-        paused = controller.live_reader.toggle_pause()
+        paused = reader.toggle_pause()
         controller.status_handler("Speech paused" if paused else "Speech resumed")
-        return paused
+        return bool(paused)
 
-    def skip_current_speech(self) -> Any:
+    def skip_current_speech(self) -> bool:
         controller = self.controller
-        if not controller.is_ready:
+        reader = controller.live_reader
+        if reader is None:
             return False
-        skipped = controller.live_reader.skip_current()
+        skipped = reader.skip_current()
         controller.status_handler(
             "Skipped current speech" if skipped else "Nothing is currently speaking"
         )
-        return skipped
+        return bool(skipped)
 
-    def repeat_last_speech(self) -> Any:
+    def repeat_last_speech(self) -> bool:
         controller = self.controller
-        if not controller.is_ready:
+        reader = controller.live_reader
+        if reader is None:
             return False
-        repeated = controller.live_reader.repeat_last()
+        repeated = reader.repeat_last()
         controller.status_handler(
             "Repeating last speech" if repeated else "No previous speech to repeat"
         )
-        return repeated
+        return bool(repeated)
 
-    def clear_speech_queue(self) -> Any:
+    def clear_speech_queue(self) -> bool:
         controller = self.controller
-        if not controller.is_ready:
+        reader = controller.live_reader
+        if reader is None:
             return False
-        cleared = controller.live_reader.clear_queue()
+        cleared = reader.clear_queue()
         controller.status_handler("Speech queue cleared")
-        return cleared
+        return bool(cleared)
 
-    def emergency_stop(self) -> Any:
+    def emergency_stop(self) -> bool:
         controller = self.controller
-        if not controller.is_ready:
+        reader = controller.live_reader
+        if reader is None:
             return False
-        stopped = controller.live_reader.emergency_stop()
+        stopped = reader.emergency_stop()
         controller.allow_unscoped_live_reading = False
         controller._set_backend_live_mode(False)
         controller.status_handler("Emergency stop: live reading and speech stopped")
-        return stopped
+        return bool(stopped)
 
-    def set_auto_advance_enabled(self, enabled: bool) -> Any:
+    def set_auto_advance_enabled(self, enabled: bool) -> bool:
         controller = self.controller
         allowed, effective, reason = auto_advance_control_state(
             controller.settings.capture_mode,
@@ -708,14 +856,14 @@ class LiveSessionComponent:
             if effective
             else "Auto advance disabled"
         )
-        return effective
+        return bool(effective)
 
 
 @dataclass(frozen=True)
 class VoiceAssignmentComponent:
     controller: AppController
 
-    def available_characters(self) -> Any:
+    def available_characters(self) -> list[str]:
         router = self.controller.voice_router
         if router is None:
             return ["Narrator"]
@@ -730,7 +878,7 @@ class VoiceAssignmentComponent:
             ),
         ]
 
-    def available_choices(self) -> Any:
+    def available_choices(self) -> list[VoiceChoice]:
         controller = self.controller
         if controller.voice_router is None:
             return []
@@ -770,20 +918,23 @@ class VoiceAssignmentComponent:
             unique_choices.append(choice)
         return unique_choices
 
-    def assignment_for(self, character: str) -> Any:
+    def assignment_for(self, character: str) -> str:
         controller = self.controller
         configured = find_voice_assignment(
             controller.settings.voice_assignments,
             character,
         )
         if configured is not None:
-            return configured
-        voice = controller.voice_router.registry.resolve(character)
+            return str(configured)
+        voice_router = controller.voice_router
+        if voice_router is None:
+            return str(default_voice_choice_id)
+        voice = voice_router.registry.resolve(character)
         if voice is None:
-            return default_voice_choice_id
+            return str(default_voice_choice_id)
         return f"character:{normalize_character_name(voice.character)}"
 
-    def preview_choice(self, source_id: str, text: str) -> Any:
+    def preview_choice(self, source_id: str, text: str) -> object:
         controller = self.controller
         if not controller.is_ready:
             raise RuntimeError("The speech engine is not ready")
@@ -798,13 +949,16 @@ class VoiceAssignmentComponent:
         if choice is None:
             raise ValueError("The selected voice is no longer available")
         controller.status_handler(f"Previewing {choice.label} voice")
-        return controller.speech_executor.submit(
+        executor = controller.speech_executor
+        if executor is None:
+            raise RuntimeError("The speech engine is not ready")
+        return executor.submit(
             controller._preview_voice_choice,
             choice,
             text.strip(),
         )
 
-    def stop_preview(self) -> Any:
+    def stop_preview(self) -> bool:
         controller = self.controller
         if controller.is_live_running:
             raise RuntimeError("Stop live reading before stopping a voice preview")
@@ -822,14 +976,17 @@ class VoiceAssignmentComponent:
         character: str,
         source_id: str,
         *,
-        commit_settings: Callable[[Any], Any] | None = None,
-    ) -> Any:
+        commit_settings: Callable[[object], object] | None = None,
+    ) -> object:
         character = (character or "").strip()
         if not character:
             raise ValueError("Enter a narrator or character name")
         controller = self.controller
         if controller.is_live_running:
             raise RuntimeError("Stop live reading before changing a voice")
+        voice_router = controller.voice_router
+        if voice_router is None:
+            raise RuntimeError("The speech engine is not ready")
         choice = next(
             (item for item in self.available_choices() if item.id == source_id),
             None,
@@ -848,11 +1005,11 @@ class VoiceAssignmentComponent:
         updated_settings = controller.settings.updated(voice_assignments=assignments)
         if commit_settings is not None:
             commit_settings(updated_settings)
-        controller.voice_router.registry.set_assignment(character, source_id)
+        voice_router.registry.set_assignment(character, source_id)
         controller.settings = updated_settings
         if character_key == "narrator":
             controller._apply_narrator_voice(
-                controller.voice_router.registry.resolve_source(source_id)
+                voice_router.registry.resolve_source(source_id)
             )
         controller._clear_voice_runtime_cache()
         controller.reported_unknown_speakers.discard(character_key)
@@ -865,14 +1022,17 @@ class VoiceAssignmentComponent:
         self,
         character: str,
         *,
-        commit_settings: Callable[[Any], Any] | None = None,
-    ) -> Any:
+        commit_settings: Callable[[object], object] | None = None,
+    ) -> object:
         character = (character or "").strip()
         if not character:
             raise ValueError("Enter a narrator or character name")
         controller = self.controller
         if controller.is_live_running:
             raise RuntimeError("Stop live reading before changing a voice")
+        voice_router = controller.voice_router
+        if voice_router is None:
+            raise RuntimeError("The speech engine is not ready")
         character_key = normalize_character_name(character)
         assignments = {
             configured_character: configured_source
@@ -881,13 +1041,16 @@ class VoiceAssignmentComponent:
             ).items()
             if normalize_character_name(configured_character) != character_key
         }
-        update: dict[str, Any] = {"voice_assignments": assignments}
         if character_key == "narrator":
-            update["force_live_narrator"] = False
-        updated_settings = controller.settings.updated(**update)
+            updated_settings = controller.settings.updated(
+                voice_assignments=assignments,
+                force_live_narrator=False,
+            )
+        else:
+            updated_settings = controller.settings.updated(voice_assignments=assignments)
         if commit_settings is not None:
             commit_settings(updated_settings)
-        controller.voice_router.registry.assignments.pop(character_key, None)
+        voice_router.registry.assignments.pop(character_key, None)
         controller.settings = updated_settings
         if character_key == "narrator":
             controller._apply_narrator_voice(None)
@@ -903,8 +1066,8 @@ class VoiceAssignmentComponent:
         self,
         enabled: bool,
         *,
-        commit_settings: Callable[[Any], Any] | None = None,
-    ) -> Any:
+        commit_settings: Callable[[object], object] | None = None,
+    ) -> object:
         controller = self.controller
         if controller.is_live_running:
             raise RuntimeError("Stop live reading before changing Narrator routing")
@@ -922,7 +1085,7 @@ class VoiceAssignmentComponent:
         )
         return controller.settings
 
-    def allow_narrator_fallback(self, character: str) -> Any:
+    def allow_narrator_fallback(self, character: str) -> bool:
         controller = self.controller
         character = (character or "").strip()
         key = normalize_character_name(character)
@@ -934,7 +1097,7 @@ class VoiceAssignmentComponent:
         controller.status_handler(f"Using narrator voice for {character}")
         return True
 
-    def unresolved_live_speakers(self) -> Any:
+    def unresolved_live_speakers(self) -> tuple[str, ...] | None:
         controller = self.controller
         if (
             (
@@ -969,7 +1132,7 @@ class VoiceAssignmentComponent:
             unresolved.append(character)
         return tuple(unresolved)
 
-    def approve_narrator_fallbacks(self, characters: Any) -> Any:
+    def approve_narrator_fallbacks(self, characters: Iterable[object]) -> tuple[str, ...]:
         controller = self.controller
         if controller.is_live_running:
             raise RuntimeError("Stop live reading before approving narrator fallbacks")
@@ -983,7 +1146,7 @@ class VoiceAssignmentComponent:
         controller.next_live_narrator_fallback_names = approved
         return tuple(approved.values())
 
-    def preview(self, character: str, text: str) -> Any:
+    def preview(self, character: str, text: str) -> object:
         controller = self.controller
         if not controller.is_ready:
             raise RuntimeError("The speech engine is not ready")
@@ -992,13 +1155,16 @@ class VoiceAssignmentComponent:
         if not text or not text.strip():
             raise ValueError("Enter preview text")
         controller.status_handler(f"Previewing {character or 'Narrator'} voice")
-        return controller.speech_executor.submit(
+        executor = controller.speech_executor
+        if executor is None:
+            raise RuntimeError("The speech engine is not ready")
+        return executor.submit(
             controller._preview_voice,
             character or "Narrator",
             text.strip(),
         )
 
-    def replay(self, character: str, text: str) -> Any:
+    def replay(self, character: str, text: str) -> object:
         return self.preview(character, text)
 
 
@@ -1006,26 +1172,26 @@ class VoiceAssignmentComponent:
 class DiagnosticsComponent:
     controller: AppController
 
-    def capture_geometry(self) -> Any:
+    def capture_geometry(self) -> object:
         target = self.controller.capture_target
         return None if target is None else target.get_geometry()
 
-    def latest(self) -> Any:
+    def latest(self) -> object:
         with self.controller.diagnostic_lock:
             return self.controller.last_diagnostic
 
-    def pipeline_metrics(self) -> Any:
+    def pipeline_metrics(self) -> object:
         reader = self.controller.live_reader
         return None if reader is None else reader.get_pipeline_metrics()
 
-    def inspect_current_dialog(self, *, notify: bool = True) -> Any:
+    def inspect_current_dialog(self, *, notify: bool = True) -> object:
         controller = self.controller
         registry = (
             controller.voice_router.registry
             if controller.voice_router is not None
             else None
         )
-        snapshots: list[Any] = []
+        snapshots: list[DiagnosticSnapshot] = []
         analyze_dialog_snapshot(
             get_screenshot_directory(controller.settings),
             registry,
@@ -1038,13 +1204,16 @@ class DiagnosticsComponent:
         )
         return controller._publish_diagnostic(snapshots[-1], notify=notify)
 
-    def test_current_dialog(self) -> Any:
+    def test_current_dialog(self) -> tuple[str, str]:
         controller = self.controller
         if not controller.is_ready:
             raise RuntimeError("The speech engine is not ready")
+        voice_router = controller.voice_router
+        if voice_router is None:
+            raise RuntimeError("The speech engine is not ready")
         image, _output, result = analyze_dialog_snapshot(
             get_screenshot_directory(controller.settings),
-            controller.voice_router.registry,
+            voice_router.registry,
             capture_target=controller.capture_target,
             minimum_confidence=controller.settings.ocr_minimum_confidence,
             diagnostic_handler=controller._publish_diagnostic,
