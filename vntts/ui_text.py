@@ -1,5 +1,6 @@
 """Small shared text and clipboard helpers for player windows."""
 
+from collections.abc import Callable, Iterable
 from html import escape
 
 from PySide6.QtCore import Qt
@@ -10,10 +11,11 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSizePolicy,
+    QWidget,
 )
 
 
-def make_text_copyable(root):
+def make_text_copyable(root: QWidget) -> None:
     captions = {
         item.widget()
         for form in root.findChildren(QFormLayout)
@@ -37,7 +39,9 @@ def make_text_copyable(root):
             )
 
 
-def set_labeled_text(label, rows):
+def set_labeled_text(
+    label: QLabel, rows: Iterable[tuple[object, object]]
+) -> None:
     """Render semantic rows without treating names, paths or dialogue as markup."""
     label.setTextFormat(Qt.TextFormat.RichText)
     label.setWordWrap(True)
@@ -49,7 +53,7 @@ def set_labeled_text(label, rows):
     )
 
 
-def plain_label_text(label):
+def plain_label_text(label: QLabel) -> str:
     if label.textFormat() != Qt.TextFormat.RichText:
         return label.text()
     document = QTextDocument()
@@ -57,7 +61,11 @@ def plain_label_text(label):
     return document.toPlainText()
 
 
-def copy_text_button(label, text_provider, parent=None):
+def copy_text_button(
+    label: str,
+    text_provider: Callable[[], str],
+    parent: QWidget | None = None,
+) -> QPushButton:
     button = QPushButton(label, parent)
     button.clicked.connect(lambda: QApplication.clipboard().setText(text_provider()))
     button.setToolTip(
