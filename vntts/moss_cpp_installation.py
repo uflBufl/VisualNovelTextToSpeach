@@ -6,8 +6,10 @@ import platform
 import shutil
 import stat
 import sys
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from time import monotonic
+from typing import Protocol, TypeAlias
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
@@ -38,9 +40,21 @@ MODELS = (
 )
 DOWNLOAD_HEADROOM_BYTES = 128 * 1024 * 1024
 
+PathInput: TypeAlias = str | Path
+ProgressCallback: TypeAlias = Callable[[str], object]
+
+
+class CancellationSignal(Protocol):
+    def is_set(self) -> bool: ...
+
+
+Cancellation: TypeAlias = Callable[[], bool] | CancellationSignal | None
+
 
 class MossCppInstallRequired(TTSConfigurationError):
-    def __init__(self, download_bytes, required_bytes, free_bytes):
+    def __init__(
+        self, download_bytes: int, required_bytes: int, free_bytes: int
+    ) -> None:
         self.download_space = (download_bytes, required_bytes, free_bytes)
         super().__init__(
             "OpenMOSS files are not installed. Return to setup and choose "
@@ -48,11 +62,13 @@ class MossCppInstallRequired(TTSConfigurationError):
         )
 
 
-def installation_root():
-    return get_local_data_directory() / "models" / "moss-cpp"
+def installation_root() -> Path:
+    return Path(get_local_data_directory()) / "models" / "moss-cpp"
 
 
-def configured_paths(model_name=None, *, root=None):
+def configured_paths(
+    model_name: PathInput | None = None, *, root: PathInput | None = None
+) -> tuple[Path, Path, Path]:
     root = Path(root or installation_root())
     server = Path(
         os.environ.get("VNTTS_MOSS_CPP_EXECUTABLE")
@@ -67,7 +83,7 @@ def configured_paths(model_name=None, *, root=None):
     return server, model, model.with_suffix(".extras.gguf")
 
 
-def _remaining_download_bytes(output, size):
+def _remaining_download_bytes(output: Path, size: int) -> int:
     if not output.is_symlink() and output.is_file() and output.stat().st_size == size:
         return 0
     partial = output.with_suffix(output.suffix + ".part")
@@ -77,7 +93,9 @@ def _remaining_download_bytes(output, size):
     return size - received if 0 <= received <= size else size
 
 
-def managed_download_space(model_name=None, *, root=None):
+def managed_download_space(
+    model_name: PathInput | None = None, *, root: PathInput | None = None
+) -> tuple[int, int, int]:
     """Return remaining download, required free, and available bytes."""
     root = Path(root or installation_root())
     paths = configured_paths(model_name, root=root)
@@ -100,7 +118,7 @@ def managed_download_space(model_name=None, *, root=None):
     return remaining, required, shutil.disk_usage(parent).free
 
 
-def _hash(path, cancellation):
+def _hash(path: Path, cancellation: Cancellation) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
         while chunk := source.read(1024 * 1024):
@@ -110,15 +128,15 @@ def _hash(path, cancellation):
 
 
 def _download(
-    url,
-    expected,
-    size,
-    output,
-    progress,
-    cancellation,
+    url: str,
+    expected: str,
+    size: int,
+    output: Path,
+    progress: ProgressCallback,
+    cancellation: Cancellation,
     *,
-    allow_download=False,
-):
+    allow_download: bool = False,
+) -> None:
     _check_cancelled(cancellation)
     if output.is_symlink():
         raise TTSConfigurationError(f"Unsafe MOSS download path: {output}")
@@ -196,7 +214,9 @@ def _download(
     partial.replace(output)
 
 
-def _extract_runtime(archive, destination, cancellation):
+def _extract_runtime(
+    archive: Path, destination: Path, cancellation: Cancellation
+) -> None:
     with ZipFile(archive) as source:
         entries = source.infolist()
         for entry in entries:
@@ -233,14 +253,14 @@ def _extract_runtime(archive, destination, cancellation):
 
 
 def ensure_moss_cpp(
-    model_name=None,
+    model_name: PathInput | None = None,
     *,
-    cancellation=None,
-    progress=None,
-    root=None,
-    allow_download=False,
-):
-    progress = progress or (lambda _message: None)
+    cancellation: Cancellation = None,
+    progress: ProgressCallback | None = None,
+    root: PathInput | None = None,
+    allow_download: bool = False,
+) -> tuple[Path, Path, Path]:
+    report = progress or (lambda _message: None)
     root = Path(root or installation_root())
     paths = configured_paths(model_name, root=root)
     explicit_server = bool(os.environ.get("VNTTS_MOSS_CPP_EXECUTABLE"))
@@ -275,12 +295,12 @@ def ensure_moss_cpp(
                 _download(
                     *ARCHIVE,
                     archive,
-                    progress,
+                    report,
                     cancellation,
                     allow_download=allow_download,
                 )
                 _extract_runtime(archive, paths[0].parent, cancellation)
-            progress("Checking MOSS native runtime...")
+            report("Checking MOSS native runtime...")
             try:
                 _run([str(paths[0]), "--help"], cancellation=cancellation, timeout=30)
             except TTSConfigurationError as error:
@@ -297,7 +317,7 @@ def ensure_moss_cpp(
                     _download(
                         *ARCHIVE,
                         archive,
-                        progress,
+                        report,
                         cancellation,
                         allow_download=True,
                     )
@@ -324,11 +344,11 @@ def ensure_moss_cpp(
                         digest,
                         size,
                         paths[1].parent / name,
-                        progress,
+                        report,
                         cancellation,
                         allow_download=allow_download,
                     )
-            progress("MOSS C++ runtime and model files are ready.")
+            report("MOSS C++ runtime and model files are ready.")
             return paths
     except AdvisoryLockBusyError as error:
         raise TTSConfigurationError(

@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import wave
+from collections.abc import Callable, Generator, Mapping
 from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
@@ -23,10 +24,12 @@ from tempfile import SpooledTemporaryFile, TemporaryDirectory
 from threading import Event, Lock, Thread
 from time import monotonic
 from types import SimpleNamespace
+from typing import BinaryIO, Protocol, TypeAlias, TypedDict, TypeGuard
 
 import numpy as np
 import soundfile as sf
 
+from vntts.audio_output import AudioOutput
 from vntts.native_resources import NativeResourceSampler
 from vntts.playback import PreparedPlayback
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
@@ -38,29 +41,291 @@ from vntts.speech_backend import (
 )
 from vntts.speech_backend_runtime import _source_identity
 from vntts.support import native_speech_context, record_native_speech
-from vntts.synthesis import SynthesisCompletion, SynthesisRequest
+from vntts.synthesis import (
+    SynthesisChunk,
+    SynthesisCompletion,
+    SynthesisRequest,
+    SynthesisResult,
+)
+from vntts.voices import CharacterVoiceRegistry
 
 NATIVE_GENERATION_CONTRACT = "nonzero-seed-stable-1.7-v2"
 _MANAGED_STARTUP_FAILURE_PREFIX = "VNTTS_STARTUP_FAILURE_JSON="
 
 
-def _aux_cpu_workers(logical_count=None):
+class _CancellationSignal(Protocol):
+    def is_set(self) -> bool: ...
+
+
+Cancellation: TypeAlias = Callable[[], bool] | _CancellationSignal
+ProgressCallback: TypeAlias = Callable[[str], object]
+
+
+class NativeControls(TypedDict):
+    gpu_layers: int
+    aux_cpu: int
+    local_gpu: bool
+    aux_cpu_threads: int | None
+
+
+class MossCppBaseOptions(TypedDict):
+    narrator_reference: str | Path | None
+    language: object
+    volume: int | float
+    audio_output: AudioOutput | None
+    clock: Callable[[], float]
+    audio_cache_size: int
+    playback_latency: object
+    runtime_directory: str | Path | None
+    prompt_cache_directory: str | Path | None
+    persistent_audio_cache_directory: str | Path | None
+    persistent_audio_cache_max_entries: int | None
+    prompt_code_loader: Callable[[Path], object] | None
+    prompt_code_saver: Callable[[object, Path], object] | None
+    array_evaluator: Callable[[object], object] | None
+    cached_stream_chunk_seconds: float
+    streaming_first_chunk_frames: int
+    streaming_interval: float
+    generation_profile: object
+    playback_consumer_join_timeout: float
+
+
+NativeHeaders: TypeAlias = dict[str, str]
+MossCppStartupOptions: TypeAlias = tuple[
+    str | Path | None,
+    Cancellation | None,
+    ProgressCallback | None,
+    float,
+    float,
+    bool,
+]
+
+
+def _cancelled(cancellation: Cancellation | None) -> bool:
+    if cancellation is None:
+        return False
+    return bool(cancellation() if callable(cancellation) else cancellation.is_set())
+
+
+def _path_option(value: object) -> Path:
+    if not isinstance(value, (str, os.PathLike)):
+        raise TypeError("expected str or os.PathLike object")
+    return Path(value)
+
+
+def _reference_audio_path(value: object) -> Path:
+    try:
+        path = _path_option(value)
+    except TypeError as error:
+        raise TTSConfigurationError(
+            "MOSS C++ reference audio path is invalid"
+        ) from error
+    if not path.is_file():
+        raise TTSConfigurationError(f"MOSS C++ reference audio is missing: {path}")
+    return path
+
+
+def _option_path(value: object, name: str) -> str | Path | None:
+    if value is None or isinstance(value, (str, Path)):
+        return value
+    raise TTSConfigurationError(f"MOSS C++ {name} must be text or a path")
+
+
+def _option_number(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TTSConfigurationError(f"MOSS C++ {name} must be numeric")
+    return float(value)
+
+
+def _option_integer(value: object, name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TTSConfigurationError(f"MOSS C++ {name} must be an integer")
+    return value
+
+
+def _is_callback(value: object) -> TypeGuard[Callable[..., object]]:
+    return callable(value)
+
+
+def _is_cancellation(value: object) -> TypeGuard[Cancellation]:
+    return callable(value) or callable(getattr(value, "is_set", None))
+
+
+def _option_cancellation(value: object) -> Cancellation | None:
+    if value is None:
+        return None
+    if not _is_cancellation(value):
+        raise TTSConfigurationError(
+            "MOSS C++ startup cancellation must be callable or Event-like"
+        )
+    return value
+
+
+def _is_progress(value: object) -> TypeGuard[ProgressCallback]:
+    return callable(value)
+
+
+def _option_progress(value: object) -> ProgressCallback | None:
+    if value is None:
+        return None
+    if not _is_progress(value):
+        raise TTSConfigurationError("MOSS C++ startup progress must be callable")
+    return value
+
+
+def _startup_options(
+    model_name: object,
+    startup_cancellation: object,
+    startup_progress: object,
+    startup_timeout: object,
+    request_timeout: object,
+    allow_download: object,
+) -> MossCppStartupOptions:
+    checked_model_name = _option_path(model_name, "model_name")
+    checked_cancellation = _option_cancellation(startup_cancellation)
+    checked_progress = _option_progress(startup_progress)
+    checked_startup_timeout = _option_number(startup_timeout, "startup_timeout")
+    checked_request_timeout = _option_number(request_timeout, "request_timeout")
+    if not isinstance(allow_download, bool):
+        raise TTSConfigurationError("MOSS C++ allow_download must be boolean")
+    return (
+        checked_model_name,
+        checked_cancellation,
+        checked_progress,
+        checked_startup_timeout,
+        checked_request_timeout,
+        allow_download,
+    )
+
+
+def _option_callback(value: object, name: str) -> Callable[..., object] | None:
+    if value is None:
+        return None
+    if not _is_callback(value):
+        raise TTSConfigurationError(f"MOSS C++ {name} must be callable")
+    return value
+
+
+def _is_audio_output(value: object) -> TypeGuard[AudioOutput]:
+    return all(
+        callable(getattr(value, name, None))
+        for name in (
+            "get_stream",
+            "query_devices",
+            "play",
+            "wait",
+            "stop",
+            "OutputStream",
+        )
+    )
+
+
+def _option_audio_output(value: object) -> AudioOutput | None:
+    if value is None:
+        return None
+    if not _is_audio_output(value):
+        raise TTSConfigurationError("MOSS C++ audio_output is invalid")
+    return value
+
+
+def _is_clock(value: object) -> TypeGuard[Callable[[], float]]:
+    return callable(value)
+
+
+def _required_option_integer(value: object, name: str) -> int:
+    result = _option_integer(value, name)
+    if result is None:
+        raise TTSConfigurationError(f"MOSS C++ {name} must be an integer")
+    return result
+
+
+def _base_options(options: dict[str, object]) -> MossCppBaseOptions:
+    if "model_factory" in options:
+        raise TypeError("MOSS C++ owns its native model factory")
+    clock = options.pop("clock", monotonic)
+    if not _is_clock(clock):
+        raise TTSConfigurationError("MOSS C++ clock must be callable")
+    prompt_loader = _option_callback(
+        options.pop("prompt_code_loader", None), "prompt_code_loader"
+    )
+    prompt_saver = _option_callback(
+        options.pop("prompt_code_saver", None), "prompt_code_saver"
+    )
+    array_evaluator = _option_callback(
+        options.pop("array_evaluator", None), "array_evaluator"
+    )
+    result: MossCppBaseOptions = {
+        "narrator_reference": _option_path(
+            options.pop("narrator_reference", None), "narrator_reference"
+        ),
+        "language": options.pop("language", "English"),
+        "volume": _option_number(options.pop("volume", 1.0), "volume"),
+        "audio_output": _option_audio_output(options.pop("audio_output", None)),
+        "clock": clock,
+        "audio_cache_size": _required_option_integer(
+            options.pop("audio_cache_size", 32), "audio_cache_size"
+        ),
+        "playback_latency": options.pop("playback_latency", "low"),
+        "runtime_directory": _option_path(
+            options.pop("runtime_directory", None), "runtime_directory"
+        ),
+        "prompt_cache_directory": _option_path(
+            options.pop("prompt_cache_directory", None), "prompt_cache_directory"
+        ),
+        "persistent_audio_cache_directory": _option_path(
+            options.pop("persistent_audio_cache_directory", None),
+            "persistent_audio_cache_directory",
+        ),
+        "persistent_audio_cache_max_entries": _option_integer(
+            options.pop("persistent_audio_cache_max_entries", None),
+            "persistent_audio_cache_max_entries",
+        ),
+        "prompt_code_loader": prompt_loader,
+        "prompt_code_saver": prompt_saver,
+        "array_evaluator": array_evaluator,
+        "cached_stream_chunk_seconds": _option_number(
+            options.pop("cached_stream_chunk_seconds", 0.2),
+            "cached_stream_chunk_seconds",
+        ),
+        "streaming_first_chunk_frames": _required_option_integer(
+            options.pop("streaming_first_chunk_frames", 4),
+            "streaming_first_chunk_frames",
+        ),
+        "streaming_interval": _option_number(
+            options.pop("streaming_interval", 0.25), "streaming_interval"
+        ),
+        "generation_profile": options.pop("generation_profile", "stable"),
+        "playback_consumer_join_timeout": _option_number(
+            options.pop("playback_consumer_join_timeout", 5.0),
+            "playback_consumer_join_timeout",
+        ),
+    }
+    if options:
+        raise TypeError(f"Unexpected MOSS C++ option: {next(iter(options))}")
+    return result
+
+
+def _aux_cpu_workers(logical_count: object | None = None) -> int:
     """Keep the native auxiliary work small enough to leave the game a core."""
     try:
-        logical_count = os.cpu_count() if logical_count is None else logical_count
-        logical_count = int(logical_count)
+        raw_count = os.cpu_count() if logical_count is None else logical_count
+        if not isinstance(raw_count, (str, bytes, bytearray, int, float)):
+            raise TypeError
+        count = int(raw_count)
     except TypeError, ValueError:
-        logical_count = 1
-    if logical_count < 4:
+        count = 1
+    if count < 4:
         return 1
-    if logical_count < 8:
+    if count < 8:
         return 2
-    if logical_count < 16:
+    if count < 16:
         return 4
     return 8
 
 
-def _managed_runtime(model_name):
+def _managed_runtime(model_name: object | None) -> bool:
     """Explicit server/model paths are advanced integrations, never guessed."""
     if os.environ.get("VNTTS_MOSS_QUALIFY_ADAPTIVE") == "1":
         return True
@@ -71,7 +336,7 @@ def _managed_runtime(model_name):
     )
 
 
-def _startup_failure_category(path):
+def _startup_failure_category(path: str | Path | None) -> str | None:
     """Read the native machine-readable startup category, never free-form logs."""
     if path is None:
         return None
@@ -95,14 +360,16 @@ def _startup_failure_category(path):
     return None
 
 
-def _diagnostic_file_size(path):
+def _diagnostic_file_size(path: Path) -> int | None:
     try:
         return path.stat().st_size
     except OSError:
         return None
 
 
-def _normalize_reference_audio(path):
+def _normalize_reference_audio(
+    path: str | Path | BinaryIO | SpooledTemporaryFile[bytes],
+) -> tuple[bytes, float, int, int]:
     with sf.SoundFile(path) as reference:
         duration = round(reference.frames / reference.samplerate, 6)
         sample_rate = reference.samplerate
@@ -123,7 +390,12 @@ def _normalize_reference_audio(path):
     return wav.getvalue(), duration, sample_rate, channels
 
 
-def _native_stage_timings(path, offset, headers, maximum_seconds):
+def _native_stage_timings(
+    path: str | Path | None,
+    offset: int,
+    headers: Mapping[str, str],
+    maximum_seconds: float,
+) -> dict[str, str | float | None]:
     """Read only this request's bounded log tail; never export native log text."""
     output = ""
     complete_log = False
@@ -137,11 +409,13 @@ def _native_stage_timings(path, offset, headers, maximum_seconds):
         except OSError:
             pass
 
-    def seconds(pattern=None, header=None):
+    def seconds(pattern: str | None = None, header: str | None = None) -> float | None:
         match = re.search(pattern, output) if pattern else None
         raw = headers.get(header) if header else None
         if raw is None and match:
             raw = match[1]
+        if raw is None:
+            return None
         try:
             value = float(raw)
         except TypeError, ValueError:
@@ -193,7 +467,7 @@ def _native_stage_timings(path, offset, headers, maximum_seconds):
     }
 
 
-def moss_cpp_requested(model_name=None):
+def moss_cpp_requested(model_name: object | None = None) -> bool:
     return bool(
         sys.platform != "darwin"
         or platform.machine().casefold() != "arm64"
@@ -203,7 +477,7 @@ def moss_cpp_requested(model_name=None):
     )
 
 
-def moss_cpp_paths(model_name=None):
+def moss_cpp_paths(model_name: str | Path | None = None) -> tuple[Path, Path, Path]:
     from vntts.moss_cpp_installation import configured_paths
 
     executable, model, sidecar = configured_paths(model_name)
@@ -227,7 +501,7 @@ def moss_cpp_paths(model_name=None):
     return executable.resolve(), model.resolve(), sidecar.resolve()
 
 
-def _integer_setting(name, default, minimum, maximum):
+def _integer_setting(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
         value = int(os.environ.get(name, str(default)))
         if minimum <= value <= maximum:
@@ -259,7 +533,12 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         interrupt_on_dialog_replacement=True,
     )
 
-    def materialize_prepared(self, prepared, *, cancellation=None):
+    def materialize_prepared(
+        self,
+        prepared: PreparedPlayback,
+        *,
+        cancellation: Cancellation | None = None,
+    ) -> PreparedPlayback:
         """Generate native PCM now so playback can overlap the next request."""
         if not isinstance(prepared, PreparedPlayback) or not isinstance(
             prepared.payload, MossTTSPreparedSpeech
@@ -268,7 +547,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         payload = prepared.payload
         if payload.cached_audio is not None:
             return prepared
-        if cancellation is not None and cancellation():
+        if _cancelled(cancellation):
             return replace(prepared, generation_completed=False)
         if not self.playback_active:
             self.playback_stop.clear()
@@ -298,37 +577,59 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
 
     def __init__(
         self,
-        registry,
+        registry: CharacterVoiceRegistry,
         *,
-        model_name=None,
-        startup_cancellation=None,
-        startup_progress=None,
-        startup_timeout=1800.0,
-        request_timeout=600.0,
-        allow_download=False,
-        **options,
-    ):
+        model_name: object = None,
+        startup_cancellation: object = None,
+        startup_progress: object = None,
+        startup_timeout: object = 1800.0,
+        request_timeout: object = 600.0,
+        allow_download: object = False,
+        **options: object,
+    ) -> None:
         from vntts.moss_cpp_installation import ensure_moss_cpp
 
+        (
+            model_name,
+            startup_cancellation,
+            startup_progress,
+            startup_timeout,
+            request_timeout,
+            allow_download,
+        ) = _startup_options(
+            model_name,
+            startup_cancellation,
+            startup_progress,
+            startup_timeout,
+            request_timeout,
+            allow_download,
+        )
         ensure_moss_cpp(
             model_name,
             cancellation=startup_cancellation,
             progress=startup_progress,
             allow_download=allow_download,
         )
-        self.executable, self.gguf, self.sidecar = moss_cpp_paths(model_name)
-        self._managed_runtime = _managed_runtime(model_name)
+        (
+            base_options,
+            (self.executable, self.gguf, self.sidecar),
+            self._managed_runtime,
+        ) = (
+            _base_options(options),
+            moss_cpp_paths(model_name),
+            _managed_runtime(model_name),
+        )
         self.gpu_layers = _integer_setting("VNTTS_MOSS_GPU_LAYERS", -1, -1, 1000)
         self.aux_cpu = _integer_setting("VNTTS_MOSS_AUX_CPU", 1, 0, 1)
         self.context_size = _integer_setting("VNTTS_MOSS_CONTEXT", 4096, 512, 131072)
         self.local_gpu = False
-        self.aux_cpu_threads = None
+        self.aux_cpu_threads: int | None = None
         self._managed_local_gpu = False
         self._native_capabilities = None
         self._adaptive_managed_runtime = False
-        self._fallback_category = None
+        self._fallback_category: str | None = None
         self._fallback_used = False
-        self._effective_controls = None
+        self._effective_controls: NativeControls | None = None
         self.startup_timeout = float(startup_timeout)
         self.request_timeout = float(request_timeout)
         if not all(
@@ -340,17 +641,17 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         ):
             raise TTSConfigurationError("MOSS C++ timeouts must be positive and finite")
         self.server_lock = Lock()
-        self.server = None
-        self.server_log = None
-        self.server_directory = None
-        self.port = None
-        self.server_info = None
+        self.server: subprocess.Popen[bytes] | None = None
+        self.server_log: BinaryIO | None = None
+        self.server_directory: TemporaryDirectory[str] | None = None
+        self.port: int | None = None
+        self.server_info: dict[str, object] | None = None
         self._diagnostic_salt = secrets.token_bytes(32)
-        self._runtime_status = None
-        self._registered_references = {}
-        prompt_cache = options.get("prompt_cache_directory")
+        self._runtime_status: str | None = None
+        self._registered_references: dict[str, tuple[str, float, int, int]] = {}
+        prompt_cache = base_options["prompt_cache_directory"]
         self.native_voice_directory = (
-            Path(prompt_cache).expanduser() / "openmoss"
+            _path_option(prompt_cache).expanduser() / "openmoss"
             if prompt_cache is not None
             else None
         )
@@ -396,23 +697,23 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 model_factory=lambda *_args, **_kwargs: SimpleNamespace(
                     sample_rate=48000
                 ),
-                **options,
+                **base_options,
             )
         except BaseException:
             self._stop_server()
             raise
 
-    def _startup_cancelled(self):
+    def _startup_cancelled(self) -> bool:
         value = self.startup_cancellation
-        return bool(
-            value.is_set()
-            if hasattr(value, "is_set")
-            else value()
-            if callable(value)
-            else False
-        )
+        if value is None:
+            return False
+        if callable(value):
+            return bool(value())
+        return bool(value.is_set())
 
-    def _managed_capabilities(self, run, help_output):
+    def _managed_capabilities(
+        self, run: Callable[..., bytes], help_output: bytes
+    ) -> dict[str, object] | None:
         """Require the managed archive's small, versioned adaptation contract."""
         if not re.search(rb"(?:^|\s)--capabilities-json(?:\s|$)", help_output):
             return None  # Legacy custom v0.3.0 runtime: retain existing behavior.
@@ -453,7 +754,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             )
         return payload
 
-    def _controls_for_start(self):
+    def _controls_for_start(self) -> NativeControls:
         workers = _integer_setting(
             "VNTTS_MOSS_AUX_CPU_THREADS", _aux_cpu_workers(), 1, 16
         )
@@ -492,7 +793,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             "aux_cpu_threads": workers,
         }
 
-    def _native_identity(self, controls=None):
+    def _native_identity(self, controls: NativeControls | None = None) -> str:
         controls = controls or self._effective_controls or self._controls_for_start()
         return (
             self._source_identity
@@ -502,8 +803,8 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             + f":{NATIVE_GENERATION_CONTRACT}"
         )
 
-    def _set_effective_controls(self, controls):
-        self._effective_controls = dict(controls)
+    def _set_effective_controls(self, controls: NativeControls) -> None:
+        self._effective_controls = controls.copy()
         self.gpu_layers = controls["gpu_layers"]
         self.aux_cpu = controls["aux_cpu"]
         self.local_gpu = controls["local_gpu"]
@@ -517,25 +818,25 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             self.persistent_cache_keys.model = identity
             self.audio_cache.clear()
 
-    def _diagnostic_key(self, value):
+    def _diagnostic_key(self, value: object) -> str:
         payload = json.dumps(value, sort_keys=True).encode("utf-8")
         return hashlib.sha256(self._diagnostic_salt + payload).hexdigest()[:24]
 
     @property
-    def runtime_status(self):
+    def runtime_status(self) -> str | None:
         # The UI polls this property; never wait behind process shutdown.
         server, status = self.server, self._runtime_status
         if server is None or server.poll() is not None or self.server is not server:
             return None
         return status
 
-    def load(self):
+    def load(self) -> str | None:
         """Ensure the owned native model is ready without synthesizing audio."""
         self.playback_stop.clear()
         self._start_server(self._startup_cancelled)
         return self.runtime_status
 
-    def _confirmed_runtime_status(self):
+    def _confirmed_runtime_status(self) -> str:
         placement = (
             self.server_info.get("placement")
             if isinstance(self.server_info, dict)
@@ -574,10 +875,10 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 else ""
             )
             return (
-                f"MOSS C++: backbone {backbone.strip()}{device_label} "
+                f"MOSS C++: backbone {str(backbone).strip()}{device_label} "
                 f"({layers} GPU layers); "
-                f"audio frame model: {local.strip()}; audio model/codec: "
-                f"{auxiliary.strip()}; auxiliary CPU workers: {workers}{fallback}"
+                f"audio frame model: {str(local).strip()}; audio model/codec: "
+                f"{str(auxiliary).strip()}; auxiliary CPU workers: {workers}{fallback}"
                 f"{cpu_warning}"
             )
         # Read through a separate handle: seeking the child's shared log handle
@@ -618,7 +919,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             )
         return f"MOSS C++: {backbone}; audio model/codec: {auxiliary}"
 
-    def _start_server(self, cancelled):
+    def _start_server(self, cancelled: Callable[[], bool]) -> None:
         if cancelled():
             raise TTSSynthesisError("MOSS C++ startup cancelled")
         with self.server_lock:
@@ -659,7 +960,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 )
             controls = fallback
 
-    def _startup_fallback(self, category):
+    def _startup_fallback(self, category: str | None) -> NativeControls | None:
         if not self._adaptive_managed_runtime or self._fallback_used:
             return None
         if category == "local_gpu" and self.local_gpu:
@@ -674,7 +975,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         )
         return self._controls_for_start()
 
-    def _start_server_once(self, cancelled, controls):
+    def _start_server_once(
+        self, cancelled: Callable[[], bool], controls: NativeControls
+    ) -> tuple[bool, str | None, int | None]:
         self._stop_server()
         self.server_directory = TemporaryDirectory(
             prefix="vntts-moss-", ignore_cleanup_errors=True
@@ -817,13 +1120,13 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             return True, None, None
         raise TTSConfigurationError("MOSS C++ model startup timed out")
 
-    def _voice_directory(self, server_directory):
+    def _voice_directory(self, server_directory: str | Path) -> Path:
         if self.voice_code_cache_supported and self.native_voice_directory is not None:
             return self.native_voice_directory
         return Path(server_directory) / "voices"
 
     @staticmethod
-    def _valid_managed_placement(info):
+    def _valid_managed_placement(info: Mapping[str, object]) -> bool:
         placement = info.get("placement")
         return (
             isinstance(placement, dict)
@@ -847,7 +1150,14 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             and placement["aux_cpu_threads"] >= 1
         )
 
-    def _http(self, method, path, body=None, *, timeout=None):
+    def _http(
+        self,
+        method: str,
+        path: str,
+        body: Mapping[str, object] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> tuple[int, NativeHeaders, bytes]:
         connection = http.client.HTTPConnection(
             "127.0.0.1",
             self.port,
@@ -870,16 +1180,18 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         finally:
             connection.close()
 
-    def _resolve_prompt_codes(self, character):
+    def _resolve_prompt_codes(self, character: str) -> tuple[str, str]:
         # Keep reference resolution/content checking in the existing voice route.
         voice_key, source = self._resolve_voice_source(character)
         return voice_key, str(source)
 
-    def prime(self, character):
+    def prime(self, character: str) -> bool:
         self._resolve_prompt_codes(character)
         return False
 
-    def _render_chunks(self, prepared, request):
+    def _render_chunks(
+        self, prepared: MossTTSPreparedSpeech, request: SynthesisRequest
+    ) -> Generator[SynthesisChunk, None, SynthesisResult]:
         if prepared.cached_audio is None:
             return (yield from super()._render_chunks(prepared, request))
         outcome = "failed"
@@ -900,12 +1212,17 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 decode_s=None,
             )
 
-    def _generate(self, prepared, request):
-        def cancelled():
-            return self.playback_stop.is_set() or request.cancellation_requested()
+    def _generate(
+        self, prepared: MossTTSPreparedSpeech, request: SynthesisRequest
+    ) -> Generator[SimpleNamespace, None, None]:
+        def cancelled() -> bool:
+            return bool(self.playback_stop.is_set()) or request.cancellation_requested()
 
         started = monotonic()
-        path, offset, headers, worker = None, 0, {}, None
+        path: str | None = None
+        offset = 0
+        headers: NativeHeaders = {}
+        worker: Thread | None = None
         server_pid = None
         request_s = None
         reference_prepare_s = http_round_trip_s = response_pcm_decode_s = None
@@ -917,9 +1234,15 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         http_status = None
         stage, reason = "startup", None
         outcome = "failed"
-        attempt_id = (native_speech_context.get() or {}).get(
-            "attempt_id"
-        ) or secrets.token_hex(12)
+        context = native_speech_context.get()
+        context_attempt_id = (
+            context.get("attempt_id") if isinstance(context, dict) else None
+        )
+        attempt_id = (
+            context_attempt_id
+            if isinstance(context_attempt_id, str) and context_attempt_id
+            else secrets.token_hex(12)
+        )
         try:
             if cancelled():
                 return
@@ -930,7 +1253,10 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 server_pid = self.server.pid
                 path = self.server_log.name
                 server_info = self.server_info
-                server_directory = Path(self.server_directory.name)
+                directory = self.server_directory
+                if server_info is None or directory is None:
+                    raise TTSSynthesisError("MOSS C++ stopped before generation")
+                server_directory = Path(directory.name)
             try:
                 resource_sampler = NativeResourceSampler(server_pid)
                 resource_sampler.start()
@@ -945,9 +1271,16 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             )
             with ExitStack() as reference_stack:
                 reference_identity = None
-                reference = prepared.prompt_audio_codes
+                prompt_audio_path = _reference_audio_path(prepared.prompt_audio_codes)
+                reference: Path | BinaryIO | SpooledTemporaryFile[bytes] = (
+                    prompt_audio_path
+                )
 
-                def registered_reference(identity):
+                def registered_reference(
+                    identity: str | None,
+                ) -> tuple[str, float, int, int] | None:
+                    if identity is None:
+                        return None
                     cached = self._registered_references.get(identity)
                     if cached is None:
                         return None
@@ -961,25 +1294,24 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
 
                 if registered:
                     digest = hashlib.sha256()
-                    with open(prepared.prompt_audio_codes, "rb") as source:
+                    with prompt_audio_path.open("rb") as source:
                         while chunk := source.read(1024 * 1024):
                             digest.update(chunk)
                     reference_identity = digest.hexdigest()
                 cached_reference = registered_reference(reference_identity)
                 if registered and cached_reference is None:
-                    source = reference_stack.enter_context(
-                        open(prepared.prompt_audio_codes, "rb")
-                    )
+                    source = reference_stack.enter_context(prompt_audio_path.open("rb"))
                     # Keep a cache miss's identity and decoded audio on one
                     # immutable snapshot in case the source changes mid-read.
-                    reference = reference_stack.enter_context(
+                    snapshot = reference_stack.enter_context(
                         SpooledTemporaryFile(max_size=8 * 1024 * 1024)
                     )
                     digest = hashlib.sha256()
                     while chunk := source.read(1024 * 1024):
                         digest.update(chunk)
-                        reference.write(chunk)
-                    reference.seek(0)
+                        snapshot.write(chunk)
+                    snapshot.seek(0)
+                    reference = snapshot
                     reference_identity = digest.hexdigest()
                     cached_reference = registered_reference(reference_identity)
                 if cached_reference is None:
@@ -1026,6 +1358,10 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 # ponytail: immutable content-addressed voices have no eviction;
                 # add a disk cap only if real libraries make this cache large.
                 reference_mode = "registered"
+                if reference_identity is None:
+                    raise TTSSynthesisError(
+                        "MOSS C++ reference identity is unavailable"
+                    )
                 reference_path = (
                     self._voice_directory(server_directory) / f"{voice_id}.wav"
                 )
@@ -1043,14 +1379,16 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 body["voice"] = voice_id
             else:
                 reference_mode = "inline"
+                if reference_wav is None:
+                    raise TTSSynthesisError("MOSS C++ reference WAV is unavailable")
                 body["reference_wav_b64"] = base64.b64encode(reference_wav).decode(
                     "ascii"
                 )
             reference_prepare_s = round(monotonic() - reference_started, 6)
             done = Event()
-            result = []
+            result: list[tuple[int, NativeHeaders, bytes] | BaseException] = []
 
-            def fetch():
+            def fetch() -> None:
                 try:
                     result.append(self._http("POST", "/tts", body))
                 except Exception as error:
@@ -1079,7 +1417,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     return
             if cancelled():
                 return
-            if isinstance(result[0], Exception):
+            if isinstance(result[0], BaseException):
                 raise result[0]
             status, headers, data = result[0]
             http_round_trip_s = round(monotonic() - http_started, 6)
@@ -1182,7 +1520,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 if worker is not None:
                     worker.join(timeout=2)
 
-    def _stop_server(self):
+    def _stop_server(self) -> None:
         with self.server_lock:
             server, self.server = self.server, None
             log, self.server_log = self.server_log, None
@@ -1207,7 +1545,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                     # closed log. Temporary cleanup must not replace speech.
                     directory.cleanup()
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         try:
             self.stop()
         finally:

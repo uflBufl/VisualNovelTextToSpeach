@@ -4,14 +4,25 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections.abc import Callable
+from types import ModuleType
+from typing import Protocol
+
+
+class _Tokenizer(Protocol):
+    def load_weights(self, weights: object, *, strict: bool) -> object: ...
+
+    def parameters(self) -> object: ...
+
+    def eval(self) -> object: ...
 
 
 def install_moss_quantized_codec_compat(
     *,
-    codec_module=None,
-    mx_module=None,
-    quantization_applier=None,
-):
+    codec_module: ModuleType | None = None,
+    mx_module: ModuleType | None = None,
+    quantization_applier: Callable[[object, object, object], object] | None = None,
+) -> bool:
     """Teach mlx-audio 0.4.6 to rebuild quantized codec layers before load.
 
     Upstream's loader applies checkpoint weights strictly to floating-point
@@ -21,12 +32,22 @@ def install_moss_quantized_codec_compat(
     """
     if codec_module is None:
         from mlx_audio.codec.models.moss_audio_tokenizer import (
-            moss_audio_tokenizer as codec_module,
+            moss_audio_tokenizer as loaded_codec_module,
         )
+
+        codec_module = loaded_codec_module
     if mx_module is None:
-        import mlx.core as mx_module
+        import mlx.core as loaded_mx_module
+
+        mx_module = loaded_mx_module
     if quantization_applier is None:
-        from mlx_audio.utils import apply_quantization as quantization_applier
+        from mlx_audio.utils import apply_quantization as loaded_quantization_applier
+
+        quantization_applier = loaded_quantization_applier
+
+    assert codec_module is not None
+    assert mx_module is not None
+    assert quantization_applier is not None
 
     tokenizer_class = codec_module.MossAudioTokenizer
     if getattr(tokenizer_class, "_vntts_quantized_load_compat", False):
@@ -38,8 +59,7 @@ def install_moss_quantized_codec_compat(
     if "apply_quantization" in upstream_source:
         return False
 
-    @classmethod
-    def from_pretrained(cls, source):
+    def from_pretrained(cls: Callable[..., _Tokenizer], source: object) -> _Tokenizer:
         model_dir = codec_module._resolve_audio_tokenizer_dir(source)
         config = codec_module.AudioTokenizerConfig.from_file(model_dir / "config.json")
         weights = codec_module._sanitize_audio_tokenizer_weights(
@@ -59,6 +79,6 @@ def install_moss_quantized_codec_compat(
         model.eval()
         return model
 
-    tokenizer_class.from_pretrained = from_pretrained
+    tokenizer_class.from_pretrained = classmethod(from_pretrained)
     tokenizer_class._vntts_quantized_load_compat = True
     return True

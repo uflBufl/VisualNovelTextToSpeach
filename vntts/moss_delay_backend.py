@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+from collections.abc import Callable, Generator, Mapping, Sequence
+from pathlib import Path
 from threading import Event, Lock
 from time import monotonic
+from typing import Protocol, TypeAlias
 
 import numpy as np
+from numpy.typing import NDArray
 
 from vntts.speech_backend import (
     SpeechBackendCapabilities,
@@ -27,7 +31,95 @@ from vntts.synthesis import (
     SynthesisResult,
     SynthesisTiming,
 )
-from vntts.voices import resolve_required_voice_reference
+from vntts.voices import CharacterVoiceRegistry, resolve_required_voice_reference
+
+AudioArray: TypeAlias = NDArray[np.float32]
+Clock: TypeAlias = Callable[[], float]
+
+
+class _Tensor(Protocol):
+    shape: tuple[int, ...]
+
+    def to(self, device: str) -> _Tensor: ...
+
+
+class _AudioTokenizer(Protocol):
+    def to(self, device: str) -> object: ...
+
+
+class _ModelConfig(Protocol):
+    sampling_rate: int | str
+
+
+class _DecodedItem(Protocol):
+    audio_codes_list: Sequence[object]
+
+
+class _DelayProcessor(Protocol):
+    audio_tokenizer: _AudioTokenizer
+    model_config: _ModelConfig
+
+    def build_user_message(
+        self, *, text: str, reference: list[str], language: str
+    ) -> object: ...
+
+    def __call__(
+        self, messages: list[list[object]], *, mode: str
+    ) -> Mapping[str, _Tensor]: ...
+
+    def decode(self, outputs: _Tensor) -> Sequence[_DecodedItem]: ...
+
+
+class _DelayModel(Protocol):
+    def to(self, device: str) -> _DelayModel: ...
+
+    def eval(self) -> object: ...
+
+    def generate(
+        self,
+        *,
+        input_ids: _Tensor,
+        attention_mask: _Tensor,
+        max_new_tokens: int,
+        **options: object,
+    ) -> _Tensor: ...
+
+
+class _NoGrad(Protocol):
+    def __enter__(self) -> object: ...
+
+    def __exit__(self, *args: object) -> None: ...
+
+
+class _Cuda(Protocol):
+    def is_available(self) -> bool: ...
+
+    def is_bf16_supported(self) -> bool: ...
+
+    def get_device_capability(self) -> tuple[int, int]: ...
+
+    def manual_seed_all(self, seed: int) -> object: ...
+
+
+class _Torch(Protocol):
+    cuda: _Cuda
+    bfloat16: object
+    float32: object
+
+    def manual_seed(self, seed: int) -> object: ...
+
+    def no_grad(self) -> _NoGrad: ...
+
+
+class _AutoModel(Protocol):
+    def from_pretrained(self, model_name: str, **options: object) -> _DelayModel: ...
+
+
+class _AutoProcessor(Protocol):
+    def from_pretrained(
+        self, model_name: str, **options: object
+    ) -> _DelayProcessor: ...
+
 
 default_moss_tts_delay_model = "OpenMOSS-Team/MOSS-TTS-v1.5"
 delay_audio_tokens_per_second = 12.5
@@ -46,21 +138,21 @@ class MossTTSDelayVoiceRouterBackend:
 
     def __init__(
         self,
-        registry,
+        registry: CharacterVoiceRegistry,
         *,
-        narrator_reference=None,
-        language="English",
-        model_name=None,
-        generation_profile="expressive",
-        require_cuda=False,
-        model_revision=None,
-        model=None,
-        processor=None,
-        torch_module=None,
-        auto_model=None,
-        auto_processor=None,
-        clock=monotonic,
-    ):
+        narrator_reference: str | Path | None = None,
+        language: str = "English",
+        model_name: str | None = None,
+        generation_profile: str = "expressive",
+        require_cuda: bool = False,
+        model_revision: str | None = None,
+        model: _DelayModel | None = None,
+        processor: _DelayProcessor | None = None,
+        torch_module: _Torch | None = None,
+        auto_model: _AutoModel | None = None,
+        auto_processor: _AutoProcessor | None = None,
+        clock: Clock = monotonic,
+    ) -> None:
         self.registry = registry
         self.narrator_reference = narrator_reference
         self.narrator_speaker = "MOSS Delay reference voice"
@@ -152,14 +244,14 @@ class MossTTSDelayVoiceRouterBackend:
             )
 
     @staticmethod
-    def _select_device(torch_module):
+    def _select_device(torch_module: _Torch) -> str:
         cuda = getattr(torch_module, "cuda", None)
         if cuda is not None and callable(getattr(cuda, "is_available", None)):
             if cuda.is_available():
                 return "cuda"
         return "cpu"
 
-    def _attention_implementation(self):
+    def _attention_implementation(self) -> str:
         if self.device != "cuda":
             return "eager"
         if importlib.util.find_spec("flash_attn") is not None:
@@ -171,12 +263,14 @@ class MossTTSDelayVoiceRouterBackend:
                 return "flash_attention_2"
         return "sdpa"
 
-    def render(self, request):
+    def render(self, request: SynthesisRequest) -> SynthesisChunkStream:
         if not isinstance(request, SynthesisRequest):
             raise TTSConfigurationError("MOSS Delay received an invalid request")
         return SynthesisChunkStream(self._render_chunks(request))
 
-    def _render_chunks(self, request):
+    def _render_chunks(
+        self, request: SynthesisRequest
+    ) -> Generator[SynthesisChunk, None, SynthesisResult]:
         started = self.clock()
         text = " ".join((request.text or "").split())
         if not text:
@@ -270,8 +364,8 @@ class MossTTSDelayVoiceRouterBackend:
             first_chunk_ms,
         )
 
-    def _resolve_voice_source(self, character):
-        return resolve_required_voice_reference(
+    def _resolve_voice_source(self, character: str) -> tuple[str, Path]:
+        voice_key, source = resolve_required_voice_reference(
             self.registry,
             character,
             self.narrator_reference,
@@ -282,9 +376,10 @@ class MossTTSDelayVoiceRouterBackend:
             ),
             error_type=TTSConfigurationError,
         )
+        return str(voice_key), Path(source)
 
     @staticmethod
-    def _generated_token_count(outputs, input_ids):
+    def _generated_token_count(outputs: _Tensor, input_ids: _Tensor) -> int:
         try:
             return max(0, int(outputs.shape[-1]) - int(input_ids.shape[-1]))
         except (AttributeError, TypeError, ValueError) as error:
@@ -293,7 +388,7 @@ class MossTTSDelayVoiceRouterBackend:
             ) from error
 
     @staticmethod
-    def _to_numpy(value):
+    def _to_numpy(value: object) -> AudioArray:
         detach = getattr(value, "detach", None)
         if callable(detach):
             value = detach()
@@ -316,15 +411,15 @@ class MossTTSDelayVoiceRouterBackend:
 
     def _result(
         self,
-        pcm,
-        completion,
-        profile,
-        seed,
-        max_new_tokens,
-        max_audio_seconds,
-        started,
-        first_chunk_ms,
-    ):
+        pcm: AudioArray,
+        completion: SynthesisCompletion,
+        profile: str,
+        seed: int | None,
+        max_new_tokens: int,
+        max_audio_seconds: float,
+        started: float,
+        first_chunk_ms: float | None,
+    ) -> SynthesisResult:
         return SynthesisResult(
             pcm=pcm,
             sample_rate=self.sample_rate,
@@ -341,14 +436,14 @@ class MossTTSDelayVoiceRouterBackend:
             ),
         )
 
-    def prime(self, character):
+    def prime(self, character: str) -> bool:
         self._resolve_voice_source(character)
         return False
 
-    def stop(self):
+    def stop(self) -> bool:
         was_requested = self.stop_requested.is_set()
         self.stop_requested.set()
         return not was_requested
 
-    def set_live_mode_active(self, _active):
+    def set_live_mode_active(self, _active: bool) -> bool:
         return False
