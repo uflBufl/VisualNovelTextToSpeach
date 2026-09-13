@@ -1102,7 +1102,7 @@
     {
       "code": "C901",
       "path": "vntts/authoring/workbench.py",
-      "scope": "_load_workspace",
+      "scope": "_load_workspace_scoped",
       "count": 1
     },
     {
@@ -2578,7 +2578,7 @@
     {
       "code": "PLR0912",
       "path": "vntts/authoring/workbench.py",
-      "scope": "_load_workspace",
+      "scope": "_load_workspace_scoped",
       "count": 1
     },
     {
@@ -3682,7 +3682,7 @@
     {
       "code": "PLR0915",
       "path": "vntts/authoring/workbench.py",
-      "scope": "_load_workspace",
+      "scope": "_load_workspace_scoped",
       "count": 1
     },
     {
@@ -4053,4 +4053,3 @@
     }
   ]
 }
-

@@ -56,10 +56,17 @@ def load_stable_workspace_generation_state(
 ):
     """Capture one inactive queue-bound state and its exact payload identity."""
     directory = Path(directory).expanduser().resolve()
-    cache = _SHARED_STATE_READS.get()
-    cache_key = _state_cache_key(directory, workspace)
-    if cache is not None and cache_key in cache:
-        return cache[cache_key]
+    cached = cached_workspace_generation_state(directory, workspace)
+    if cached is not None:
+        return cached
+    result = _load_stable_workspace_generation_state(
+        directory, workspace, label, error_type
+    )
+    share_workspace_generation_state(directory, workspace, result)
+    return result
+
+
+def _load_stable_workspace_generation_state(directory, workspace, label, error_type):
     expected_queue_sha256 = workspace_queue_sha256(workspace, error_type=error_type)
     queue_path = directory / "queue.jsonl"
     if queue_path.is_symlink() or not queue_path.is_file():
@@ -97,10 +104,7 @@ def load_stable_workspace_generation_state(
         raise error_type(f"Outcome merge {label} has a generation lease")
     if any(output.rglob("*.partial.wav")):
         raise error_type(f"Outcome merge {label} has a partial generation artifact")
-    result = queue, parsed, payload, digest
-    if cache is not None:
-        cache[cache_key] = result
-    return result
+    return queue, parsed, payload, digest
 
 
 def _state_cache_key(directory, workspace):

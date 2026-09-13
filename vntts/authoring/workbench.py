@@ -5305,11 +5305,7 @@ def _validate_workspace_offline_fallback_state(directory, workspace, *, state=No
         return
     queue_path = directory / "queue.jsonl"
     state_path = directory / "generated-audio" / "generation-state.json"
-    if state is None:
-        try:
-            state = load_generation_state(state_path, queue_path)
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
+    state = _load_workspace_generation_state(state, state_path, queue_path)
     ledger = {
         item["queue_id"]: {
             key: value for key, value in item.items() if key != "queue_id"
@@ -5366,6 +5362,15 @@ def _validate_workspace_offline_fallback_state(directory, workspace, *, state=No
             raise AuthoringWorkbenchError(
                 f"Workspace offline fallback provider changed for {queue_id!r}"
             )
+
+
+def _load_workspace_generation_state(state, state_path, queue_path):
+    if state is not None:
+        return state
+    try:
+        return load_generation_state(state_path, queue_path)
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
 
 
 def _validate_workspace_input_config(directory, workspace, import_snapshot):

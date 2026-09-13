@@ -164,6 +164,11 @@ def _add_composite_form_row(form, label_text, field, field_layout):
     return label
 
 
+def _onboarding_preview(text):
+    preview = " ".join(text.split())
+    return f"{preview[:157]}..." if len(preview) > 160 else preview
+
+
 def create_application_icon(style, *, platform=None):
     platform = sys.platform if platform is None else platform
     if platform != "darwin":
@@ -2532,9 +2537,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     return
                 if cancelled():
                     return
-                preview = " ".join(text.split())
-                if len(preview) > 160:
-                    preview = f"{preview[:157]}..."
+                preview = _onboarding_preview(text)
                 self.signals.onboarding_test_finished.emit(
                     True,
                     f"Success. Recognized {character}: {preview}",
