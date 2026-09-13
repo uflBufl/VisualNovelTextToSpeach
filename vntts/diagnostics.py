@@ -1,9 +1,10 @@
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from PIL import Image
 
-from vntts.voices import is_narrator
+from vntts.voices import CharacterVoiceRouter, is_narrator
 
 
 @dataclass(frozen=True)
@@ -28,7 +29,9 @@ class DiagnosticSnapshot:
     audio_source: str = "Not selected"
 
 
-def resolve_voice_label(voice_router, character):
+def resolve_voice_label(
+    voice_router: CharacterVoiceRouter | None, character: str | None
+) -> str:
     if voice_router is None:
         return "Not loaded"
 
@@ -45,10 +48,10 @@ def resolve_voice_label(voice_router, character):
 
 def macos_permission_warnings(
     *,
-    platform=None,
-    screen_capture_trusted=None,
-    accessibility_trusted=None,
-):
+    platform: str | None = None,
+    screen_capture_trusted: Callable[[], bool] | None = None,
+    accessibility_trusted: Callable[[], bool] | None = None,
+) -> list[str]:
     if (platform or sys.platform) != "darwin":
         return []
 
@@ -67,7 +70,7 @@ def macos_permission_warnings(
         except ImportError, AttributeError:
             accessibility_trusted = None
 
-    warnings = []
+    warnings: list[str] = []
     if screen_capture_trusted is not None and not screen_capture_trusted():
         warnings.append(
             "Screen capture permission is missing. Open System Settings -> "
@@ -83,7 +86,9 @@ def macos_permission_warnings(
     return warnings
 
 
-def diagnostic_error_guidance(error, *, platform=None):
+def diagnostic_error_guidance(
+    error: BaseException, *, platform: str | None = None
+) -> str:
     message = str(error).strip() or error.__class__.__name__
     normalized = message.casefold()
     if "window" in normalized and any(
@@ -107,7 +112,9 @@ def diagnostic_error_guidance(error, *, platform=None):
     return message
 
 
-def diagnostic_remediation(message, *, platform=None):
+def diagnostic_remediation(
+    message: object, *, platform: str | None = None
+) -> tuple[str, str] | None:
     """Return the one recovery action appropriate for a diagnostics warning."""
     normalized = str(message).casefold()
     if (platform or sys.platform) == "darwin" and any(
