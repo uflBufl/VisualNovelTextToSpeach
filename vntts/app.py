@@ -213,12 +213,9 @@ class AppSignals(QObject):
     onboarding_test_finished = Signal(bool, str)
     onboarding_test_progress = Signal(object, str)
     diagnostics_changed = Signal(object)
-    diagnostics_refresh_finished = Signal(int, object)
-    diagnostics_refresh_failed = Signal(int, str)
     sequence_status_changed = Signal(object)
     diagnostics_failed = Signal(str)
     hotkeys_requested = Signal()
-    support_export_finished = Signal(bool, str)
     unknown_speaker = Signal(str)
 
 
@@ -1406,6 +1403,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
         self._live_scope_generation = None
+        self.diagnostics_refresh_runner = LatestTaskRunner(self)
+        self.diagnostics_refresh_runner.finished.connect(
+            self._diagnostics_refresh_finished
+        )
         self.moss_runtime_runner = LatestTaskRunner(self)
         self.moss_runtime_runner.finished.connect(self._moss_runtime_finished)
         self.pregeneration_activator = pregeneration_activator or OfflinePackActivator()
@@ -1413,6 +1414,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.pregeneration_activation_runner.finished.connect(
             self._pregeneration_activation_finished
         )
+        self.support_export_runner = LatestTaskRunner(self)
+        self.support_export_runner.finished.connect(self._support_export_finished)
         self._pregeneration_activation_generation = None
         self._pregeneration_activation_cancellation = None
         self._pregeneration_activation_restore_runtime = Event()
@@ -1599,16 +1602,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.speech_paused_changed.connect(self.set_speech_paused)
         self.signals.error_reported.connect(self.show_error)
         self.signals.diagnostics_changed.connect(self.update_diagnostics_snapshot)
-        self.signals.diagnostics_refresh_finished.connect(
-            self._diagnostics_refresh_finished
-        )
-        self.signals.diagnostics_refresh_failed.connect(
-            self._diagnostics_refresh_failed
-        )
         self.signals.sequence_status_changed.connect(self.set_sequence_status)
         self.signals.diagnostics_failed.connect(self.set_diagnostics_error)
         self.signals.hotkeys_requested.connect(self.schedule_hotkeys)
-        self.signals.support_export_finished.connect(self.support_export_finished)
         self.signals.unknown_speaker.connect(self.offer_speaker_mapping)
         self.application.aboutToQuit.connect(self.shutdown)
         current_sequence_status = getattr(
@@ -2352,6 +2348,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.diagnostics_dialog.remediation_requested.connect(
                 self._run_diagnostics_remediation
             )
+            self.diagnostics_dialog.finished.connect(
+                lambda _result, dialog=self.diagnostics_dialog: (
+                    self._diagnostics_closed(dialog)
+                )
+            )
         warnings = macos_permission_warnings()
         self.diagnostics_dialog.set_permission_warnings(
             warnings,
@@ -2387,18 +2388,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _capture_diagnostic_snapshot(self, generation):
-        def inspect():
-            try:
-                snapshot = self.controller.inspect_current_dialog(notify=False)
-            except Exception as error:
-                self.signals.diagnostics_refresh_failed.emit(
-                    generation,
-                    diagnostic_error_guidance(error),
-                )
-            else:
-                self.signals.diagnostics_refresh_finished.emit(generation, snapshot)
+        if generation != self.diagnostics_refresh_generation:
+            return
+        self.diagnostics_refresh_runner.start(
+            self.controller.inspect_current_dialog,
+            notify=False,
+        )
 
-        Thread(target=inspect, daemon=True).start()
+    def _diagnostics_closed(self, dialog):
+        if self.diagnostics_dialog is dialog:
+            self.diagnostics_refresh_runner.cancel()
 
     def _diagnostics_refresh_is_current(self, generation):
         return bool(
@@ -2407,15 +2406,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             and self.diagnostics_dialog.refresh_in_flight
         )
 
-    def _diagnostics_refresh_finished(self, generation, snapshot):
-        if not self._diagnostics_refresh_is_current(generation):
+    def _diagnostics_refresh_finished(self, snapshot, error):
+        if not self._diagnostics_refresh_is_current(
+            self.diagnostics_refresh_generation
+        ):
             return
-        self.update_diagnostics_snapshot(snapshot)
-
-    def _diagnostics_refresh_failed(self, generation, message):
-        if not self._diagnostics_refresh_is_current(generation):
-            return
-        self.set_diagnostics_error(message)
+        if error is not None:
+            self.set_diagnostics_error(diagnostic_error_guidance(error))
+        else:
+            self.update_diagnostics_snapshot(snapshot)
 
     def update_diagnostics_snapshot(self, snapshot):
         self.dashboard.set_diagnostic(snapshot)
@@ -3448,21 +3447,25 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 )
             return
         self.set_status("Creating support bundle...")
+        diagnostic = self.controller.get_latest_diagnostic()
+        self.support_export_runner.start(self._build_support_bundle, path, diagnostic)
 
-        def export():
-            try:
-                output = SupportBundleBuilder(
-                    self.settings,
-                    self.support_log,
-                    diagnostic=self.controller.get_latest_diagnostic(),
-                    generation_timelines=self.generation_timelines,
-                ).build(path)
-            except Exception as error:
-                self.signals.support_export_finished.emit(False, str(error))
-            else:
-                self.signals.support_export_finished.emit(True, str(output))
+    def _build_support_bundle(self, path, diagnostic):
+        return str(
+            SupportBundleBuilder(
+                self.settings,
+                self.support_log,
+                diagnostic=diagnostic,
+                generation_timelines=self.generation_timelines,
+            ).build(path)
+        )
 
-        Thread(target=export, daemon=True).start()
+    def _support_export_finished(self, output, error):
+        if self._shutting_down:
+            return
+        self.support_export_finished(
+            error is None, output if error is None else str(error)
+        )
 
     def support_export_finished(self, successful, message):
         if self.support_dialog is not None:
@@ -3705,6 +3708,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _begin_controller_lifecycle(self):
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
+        self.diagnostics_refresh_runner.cancel()
         self._lifecycle_generation += 1
         self._controller_busy = True
         self._apply_controller_action_state()
@@ -3773,6 +3777,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_stop_runner.cancel()
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
+        self.diagnostics_refresh_runner.cancel()
         initial_shutdown_owned = self.initial_start_runner.active
         self.initial_start_runner.cancel()
         profile_shutdown_owned = self.profile_restart_runner.active

@@ -19,6 +19,7 @@ from vntts.app import (  # noqa: E402
     create_application_icon,
     main,
 )
+from vntts.async_ui import LatestTaskRunner  # noqa: E402
 from vntts.cli import CLIReportResult  # noqa: E402
 from vntts.controller import LiveSequenceStatus  # noqa: E402
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
@@ -2619,13 +2620,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_support_bundle_export_runs_with_sanitized_runtime_inputs(self):
-        class ImmediateThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-
-            def start(self):
-                self.target()
-
         controller = Mock()
         diagnostic = DiagnosticSnapshot(None, confidence=88)
         controller.get_latest_diagnostic.return_value = diagnostic
@@ -2644,9 +2638,9 @@ class TrayApplicationTest(unittest.TestCase):
                 return_value=("support.zip", "ZIP archives (*.zip)"),
             ),
             patch("vntts.app.SupportBundleBuilder", return_value=builder) as factory,
-            patch("vntts.app.Thread", ImmediateThread),
         ):
             tray_application.export_support_bundle()
+            self.wait_until(lambda: not tray_application.support_export_runner.active)
 
         factory.assert_called_once_with(
             tray_application.settings,
@@ -2681,6 +2675,71 @@ class TrayApplicationTest(unittest.TestCase):
             "Support report export cancelled.",
         )
         tray_application.shutdown()
+
+    def test_support_export_reports_worker_failure(self):
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        tray_application.support_dialog = Mock()
+        builder = Mock()
+        builder.build.side_effect = OSError("disk full")
+
+        with (
+            patch(
+                "vntts.app.QFileDialog.getSaveFileName",
+                return_value=("support.zip", "ZIP archives (*.zip)"),
+            ),
+            patch("vntts.app.SupportBundleBuilder", return_value=builder),
+        ):
+            tray_application.export_support_bundle()
+            self.wait_until(lambda: not tray_application.support_export_runner.active)
+
+        tray_application.support_dialog.set_export_result.assert_called_once_with(
+            False, "disk full"
+        )
+        tray_application.shutdown()
+
+    def test_support_export_finishes_in_background_after_shutdown(self):
+        class ManualThreadPool:
+            def __init__(self):
+                self.tasks = []
+
+            def start(self, task):
+                self.tasks.append(task)
+
+        pool = ManualThreadPool()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=Mock()),
+        )
+        tray_application.support_dialog = Mock()
+        tray_application.support_export_runner = LatestTaskRunner(
+            tray_application,
+            thread_pool=pool,
+        )
+        tray_application.support_export_runner.finished.connect(
+            tray_application._support_export_finished
+        )
+        builder = Mock()
+        builder.build.return_value = Path("support.zip")
+
+        with (
+            patch(
+                "vntts.app.QFileDialog.getSaveFileName",
+                return_value=("support.zip", "ZIP archives (*.zip)"),
+            ),
+            patch("vntts.app.SupportBundleBuilder", return_value=builder),
+        ):
+            tray_application.export_support_bundle()
+            tray_application.shutdown()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+
+        builder.build.assert_called_once_with("support.zip")
+        tray_application.support_dialog.set_export_result.assert_not_called()
 
     def test_support_launch_results_return_to_the_support_dialog(self):
         tray_application = TrayApplication(
@@ -2964,13 +3023,6 @@ class TrayApplicationTest(unittest.TestCase):
                 tray_application.shutdown()
 
     def test_live_diagnostics_refresh_captures_a_fresh_snapshot(self):
-        class ImmediateThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-
-            def start(self):
-                self.target()
-
         stale = DiagnosticSnapshot(None, text="Already captured")
         fresh = DiagnosticSnapshot(None, text="Fresh capture")
         controller = Mock()
@@ -2993,9 +3045,11 @@ class TrayApplicationTest(unittest.TestCase):
             patch(
                 "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
             ),
-            patch("vntts.app.Thread", ImmediateThread),
         ):
             tray_application.refresh_diagnostics()
+            self.wait_until(
+                lambda: not tray_application.diagnostics_refresh_runner.active
+            )
 
         controller.inspect_current_dialog.assert_called_once_with(notify=False)
         diagnostics_dialog.set_snapshot.assert_called_once_with(fresh)
@@ -3003,13 +3057,6 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_manual_diagnostics_hides_window_before_capture(self):
-        class ImmediateThread:
-            def __init__(self, *, target, daemon):
-                self.target = target
-
-            def start(self):
-                self.target()
-
         controller = Mock()
         controller.is_live_running = False
         controller.inspect_current_dialog.return_value = DiagnosticSnapshot(
@@ -3032,15 +3079,25 @@ class TrayApplicationTest(unittest.TestCase):
             patch(
                 "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
             ),
-            patch("vntts.app.Thread", ImmediateThread),
         ):
             tray_application.refresh_diagnostics()
+            self.wait_until(
+                lambda: not tray_application.diagnostics_refresh_runner.active
+            )
 
         diagnostics_dialog.conceal_for_capture.assert_called_once_with()
         controller.inspect_current_dialog.assert_called_once_with(notify=False)
         tray_application.shutdown()
 
-    def test_late_diagnostic_refresh_result_is_ignored(self):
+    def test_diagnostic_refresh_keeps_latest_result_and_drops_after_close(self):
+        class ManualThreadPool:
+            def __init__(self):
+                self.tasks = []
+
+            def start(self, task):
+                self.tasks.append(task)
+
+        pool = ManualThreadPool()
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -3048,19 +3105,88 @@ class TrayApplicationTest(unittest.TestCase):
         )
         diagnostics_dialog = Mock(refresh_in_flight=True)
         tray_application.diagnostics_dialog = diagnostics_dialog
+        tray_application.diagnostics_refresh_runner = LatestTaskRunner(
+            tray_application,
+            thread_pool=pool,
+        )
+        tray_application.diagnostics_refresh_runner.finished.connect(
+            tray_application._diagnostics_refresh_finished
+        )
+        tray_application.diagnostics_refresh_generation = 1
+        tray_application.diagnostics_refresh_runner.start(
+            lambda: DiagnosticSnapshot(None, text="Stale capture")
+        )
         tray_application.diagnostics_refresh_generation = 2
+        tray_application.diagnostics_refresh_runner.start(
+            lambda: DiagnosticSnapshot(None, text="Latest capture")
+        )
 
-        tray_application._diagnostics_refresh_finished(
-            1,
-            DiagnosticSnapshot(None, text="Stale capture"),
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
+        diagnostics_dialog.set_snapshot.assert_not_called()
+
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
+        diagnostics_dialog.set_snapshot.assert_called_once()
+
+        diagnostics_dialog.reset_mock()
+        tray_application.diagnostics_refresh_generation = 3
+        tray_application.diagnostics_refresh_runner.start(
+            lambda: DiagnosticSnapshot(None, text="Closed capture")
         )
-        diagnostics_dialog.refresh_in_flight = False
-        tray_application._diagnostics_refresh_finished(
-            2,
-            DiagnosticSnapshot(None, text="Timed-out capture"),
-        )
+        tray_application._diagnostics_closed(diagnostics_dialog)
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
 
         diagnostics_dialog.set_snapshot.assert_not_called()
+        tray_application.shutdown()
+
+    def test_closed_diagnostics_dialog_drops_its_pending_result(self):
+        class ManualThreadPool:
+            def __init__(self):
+                self.tasks = []
+
+            def start(self, task):
+                self.tasks.append(task)
+
+        pool = ManualThreadPool()
+        controller = Mock()
+        controller.get_latest_diagnostic.return_value = None
+        controller.inspect_current_dialog.return_value = DiagnosticSnapshot(
+            None, text="Closed capture"
+        )
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.diagnostics_refresh_runner = LatestTaskRunner(
+            tray_application,
+            thread_pool=pool,
+        )
+        tray_application.diagnostics_refresh_runner.finished.connect(
+            tray_application._diagnostics_refresh_finished
+        )
+        tray_application.open_diagnostics()
+        dialog = tray_application.diagnostics_dialog
+
+        with (
+            patch(
+                "vntts.app.get_macos_permission_status",
+                return_value={"screen_capture": True, "accessibility": True},
+            ),
+            patch(
+                "vntts.app.QTimer.singleShot", side_effect=lambda _delay, call: call()
+            ),
+            patch.object(dialog, "set_snapshot") as set_snapshot,
+        ):
+            dialog.request_refresh()
+            dialog.close()
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+
+        self.assertFalse(tray_application.diagnostics_refresh_runner.active)
+        set_snapshot.assert_not_called()
         tray_application.shutdown()
 
     def test_diagnostic_result_restores_concealed_window(self):
