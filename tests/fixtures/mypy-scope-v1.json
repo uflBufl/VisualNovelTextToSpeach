@@ -7,6 +7,7 @@
     "vntts/authoring/cli_dispatch.py",
     "vntts/authoring/failure_repair.py",
     "vntts/authoring/generation_lease.py",
+    "vntts/authoring/generation_manifest.py",
     "vntts/authoring/generation_state.py",
     "vntts/authoring/import_paths.py",
     "vntts/authoring/private_files.py",

@@ -7,6 +7,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol, TypeAlias, TypedDict, TypeGuard
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import (
@@ -39,7 +40,48 @@ class AudioQuality:
     peak: float
 
 
-def snapshot_recorded_voices(controls, *, narrator_character=None):
+class _ControlSnapshot(TypedDict):
+    role: str
+    kind: str
+    path: Path
+    sha256: str
+
+
+class _RecordedVoice(TypedDict):
+    source_character: str
+    speaker: str
+    reference_sha256s: list[str]
+
+
+_JsonObject: TypeAlias = dict[str, object]
+_GenerationResult: TypeAlias = _JsonObject
+_GenerationState: TypeAlias = _JsonObject
+
+
+class _Pcm16MonoWavInfo(Protocol):
+    duration_seconds: float
+    peak: float
+    sample_count: int
+    sample_rate: int
+
+
+def _is_generation_items(value: object) -> TypeGuard[dict[str, _GenerationResult]]:
+    return isinstance(value, dict) and all(
+        isinstance(queue_id, str) and isinstance(result, dict)
+        for queue_id, result in value.items()
+    )
+
+
+def _generation_items(state: _GenerationState) -> dict[str, _GenerationResult]:
+    items = state["items"]
+    if not _is_generation_items(items):
+        raise BulkGenerationError("Generation state items are malformed")
+    return items
+
+
+def snapshot_recorded_voices(
+    controls: list[_ControlSnapshot], *, narrator_character: str | None = None
+) -> dict[str, _RecordedVoice]:
     """Keep display identities from the same immutable inputs used for synthesis."""
     manifest = next(
         (control for control in controls if control["role"] == "voice_manifest"), None
@@ -58,16 +100,16 @@ def snapshot_recorded_voices(controls, *, narrator_character=None):
             if control["kind"] == "file"
             and control["role"].startswith(("voice_reference:", "narrator_selection:"))
         }
-        result = {}
-        reference_paths = {}
+        result: dict[str, _RecordedVoice] = {}
+        reference_paths: dict[str, tuple[Path, ...]] = {}
         for raw, voice in zip(document["voices"], voices, strict=True):
             # All current cloning backends use the first reference, not the pool.
-            paths = tuple(
+            paths: tuple[Path, ...] = tuple(
                 (manifest["path"].parent / value).resolve()
                 for value in voice.references
             )
-            reference = paths[0] if paths else None
-            digest = references.get(reference)
+            reference: Path | None = paths[0] if paths else None
+            digest = references.get(reference) if reference is not None else None
             if reference is not None and digest is None:
                 continue
             if reference is None and voice.speaker not in pocket_tts_preset_voices:
@@ -75,7 +117,7 @@ def snapshot_recorded_voices(controls, *, narrator_character=None):
             source = raw.get("vntts.source_character", voice.character)
             if not isinstance(source, str) or not source.strip():
                 continue
-            identity = {
+            identity: _RecordedVoice = {
                 "source_character": source.strip(),
                 "speaker": voice.speaker,
                 "reference_sha256s": [digest] if digest else [],
@@ -96,11 +138,15 @@ def snapshot_recorded_voices(controls, *, narrator_character=None):
         if selected is not None and len(narrator_controls) == 1:
             control = narrator_controls[0]
             if control["path"] not in reference_paths.get(
-                normalize_character_name(narrator_character), ()
+                normalize_character_name(narrator_character or ""), ()
             ):
                 selected = None
             else:
-                selected = {**selected, "reference_sha256s": [control["sha256"]]}
+                selected = {
+                    "source_character": selected["source_character"],
+                    "speaker": selected["speaker"],
+                    "reference_sha256s": [control["sha256"]],
+                }
         # Without an explicit narrator selection, the backend may use another default.
         result.pop("narrator", None)
         if selected is not None:
@@ -111,7 +157,9 @@ def snapshot_recorded_voices(controls, *, narrator_character=None):
         return {}
 
 
-def inspect_generated_wav(path, *, allow_short_audio_event=False):
+def inspect_generated_wav(
+    path: Path | str, *, allow_short_audio_event: bool = False
+) -> AudioQuality:
     """Validate the normalized generated-audio WAV contract."""
     try:
         _samples, info = read_pcm16_mono_wav(path)
@@ -122,7 +170,9 @@ def inspect_generated_wav(path, *, allow_short_audio_event=False):
     return _audio_quality(info, allow_short_audio_event=allow_short_audio_event)
 
 
-def _audio_quality(info, *, allow_short_audio_event=False):
+def _audio_quality(
+    info: _Pcm16MonoWavInfo, *, allow_short_audio_event: bool = False
+) -> AudioQuality:
     if info.sample_rate < 16_000:
         raise BulkGenerationError("Generated WAV sample rate must be at least 16 kHz")
     minimum_duration = 0.02 if allow_short_audio_event else 0.1
@@ -143,10 +193,15 @@ def _audio_quality(info, *, allow_short_audio_event=False):
     )
 
 
-def approved_manifest_entries(state, output_directory, *, validate_files=True):
+def approved_manifest_entries(
+    state: _GenerationState,
+    output_directory: Path | str,
+    *,
+    validate_files: bool = True,
+) -> list[dict[str, object]]:
     """Project approved state items into stable generated-audio entries."""
     entries = []
-    for queue_id, result in state["items"].items():
+    for queue_id, result in _generation_items(state).items():
         if (
             result.get("status") != "approved"
             or result.get("review_status") != "approved"
@@ -163,17 +218,17 @@ def approved_manifest_entries(state, output_directory, *, validate_files=True):
             sample_rate = quality.sample_rate
             sample_count = quality.sample_count
         else:
-            quality = result.get("quality")
-            if not isinstance(quality, dict):
+            stored_quality = result.get("quality")
+            if not isinstance(stored_quality, dict):
                 raise BulkGenerationError(
                     f"Generated WAV quality is missing for {queue_id!r}"
                 )
             sample_rate = _nonnegative_int(
-                quality.get("sample_rate"),
+                stored_quality.get("sample_rate"),
                 f"State item {queue_id!r} sample_rate",
             )
             sample_count = _nonnegative_int(
-                quality.get("sample_count"),
+                stored_quality.get("sample_count"),
                 f"State item {queue_id!r} sample_count",
             )
         entry = {
@@ -218,20 +273,20 @@ def approved_manifest_entries(state, output_directory, *, validate_files=True):
             "vntts.recorded_voice",
         ):
             if field in result:
-                entry[field] = result[field]
+                entry[field] = result.get(field)
         entries.append(entry)
     entries.sort(key=lambda entry: (entry["line_id"], entry["text_sha256"]))
     return entries
 
 
 def write_generated_manifest_from_state(
-    state,
-    output_directory,
-    manifest_path,
+    state: _GenerationState,
+    output_directory: Path | str,
+    manifest_path: Path | str,
     *,
-    entries=None,
-    validate_files=True,
-):
+    entries: list[dict[str, object]] | None = None,
+    validate_files: bool = True,
+) -> None:
     """Atomically publish the approved-only projection of one generation state."""
     entries = (
         approved_manifest_entries(state, output_directory)
@@ -262,13 +317,17 @@ def write_generated_manifest_from_state(
         raise BulkGenerationError(str(error)) from error
 
 
-def validate_success_file(queue_id, result, audio):
+def validate_success_file(
+    queue_id: str, result: _GenerationResult, audio: Path
+) -> AudioQuality:
     """Validate one generated WAV against its authoritative state record."""
     quality, _samples = validate_success_file_with_samples(queue_id, result, audio)
     return quality
 
 
-def validate_success_file_with_samples(queue_id, result, audio):
+def validate_success_file_with_samples(
+    queue_id: str, result: _GenerationResult, audio: Path
+) -> tuple[AudioQuality, object]:
     """Validate one WAV and retain its already-read samples for deeper checks."""
     if not audio.is_file():
         raise BulkGenerationError(f"Generated WAV is missing for {queue_id!r}: {audio}")
@@ -296,7 +355,7 @@ def validate_success_file_with_samples(queue_id, result, audio):
     return quality, samples
 
 
-def safe_generation_relative_path(value, label):
+def safe_generation_relative_path(value: object, label: str) -> Path:
     if not isinstance(value, str) or not value:
         raise BulkGenerationError(f"{label} must be a relative POSIX path")
     if "\\" in value:
@@ -307,7 +366,7 @@ def safe_generation_relative_path(value, label):
     return path
 
 
-def contained_generation_path(root, relative, label):
+def contained_generation_path(root: Path | str, relative: Path, label: str) -> Path:
     root = Path(root).resolve()
     candidate = (root / relative).resolve()
     try:
@@ -319,13 +378,13 @@ def contained_generation_path(root, relative, label):
     return candidate
 
 
-def _integer(value, label):
+def _integer(value: object, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise BulkGenerationError(f"{label} must be an integer")
     return value
 
 
-def _nonnegative_int(value, label):
+def _nonnegative_int(value: object, label: str) -> int:
     value = _integer(value, label)
     if value < 0:
         raise BulkGenerationError(f"{label} must be nonnegative")
