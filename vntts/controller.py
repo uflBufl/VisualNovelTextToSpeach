@@ -2524,7 +2524,7 @@ class AppController:
             canonical = registry.resolve_closest_character(
                 original, minimum_similarity=0.86
             )
-            if canonical is not None:
+            if isinstance(canonical, str):
                 return canonical
 
         normalized = normalize_character_name(original)
