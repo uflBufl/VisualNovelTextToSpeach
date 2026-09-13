@@ -1612,6 +1612,30 @@ def _validate_workspace_terminal_conflict_merge(directory, workspace, *, state=N
     merge = workspace.get("terminal_conflict_merge")
     if merge is None:
         return
+    _validate_terminal_conflict_merge_header(merge)
+    source_by_id = _validate_terminal_conflict_merge_sources(merge)
+    items = merge.get("items")
+    if not isinstance(items, list) or not items:
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict item ledger is empty"
+        )
+    state = _load_workspace_generation_state(
+        state,
+        directory / "generated-audio/generation-state.json",
+        directory / "queue.jsonl",
+    )
+    queue_ids = []
+    counts = Counter()
+    for item in items:
+        queue_id, source_workspace_id = _validate_terminal_conflict_merge_item(
+            directory, item, source_by_id, state
+        )
+        queue_ids.append(queue_id)
+        counts[source_workspace_id] += 1
+    _validate_merge_ledger_counts(queue_ids, counts, source_by_id, "terminal conflict")
+
+
+def _validate_terminal_conflict_merge_header(merge):
     fields = {
         "schema",
         "schema_version",
@@ -1652,9 +1676,11 @@ def _validate_workspace_terminal_conflict_merge(directory, workspace, *, state=N
         "terminal_successor_sha256",
     ):
         _require_sha256(
-            merge.get(field),
-            f"Terminal conflict {field.replace('_', ' ')}",
+            merge.get(field), f"Terminal conflict {field.replace('_', ' ')}"
         )
+
+
+def _validate_terminal_conflict_merge_sources(merge):
     sources = merge.get("sources")
     if not isinstance(sources, list) or not sources:
         raise AuthoringWorkbenchError(
@@ -1662,146 +1688,125 @@ def _validate_workspace_terminal_conflict_merge(directory, workspace, *, state=N
         )
     source_by_id = {}
     for source in sources:
-        if not isinstance(source, dict) or set(source) != {
-            "workspace_id",
-            "config_fingerprint",
-            "state_sha256",
-            "terminal_item_count",
-        }:
-            raise AuthoringWorkbenchError(
-                "Workspace terminal conflict source is malformed"
-            )
-        workspace_id = _required_text(
-            source.get("workspace_id"), "Terminal conflict source workspace ID"
-        )
-        if (
-            not re.fullmatch(r"resume-[0-9a-f]{24}-[0-9a-f]{16}", workspace_id)
-            or workspace_id in source_by_id
-        ):
-            raise AuthoringWorkbenchError(
-                "Workspace terminal conflict source identity is invalid"
-            )
-        _require_sha256(
-            source.get("config_fingerprint"),
-            "Terminal conflict source configuration fingerprint",
-        )
-        _require_sha256(
-            source.get("state_sha256"),
-            "Terminal conflict source state SHA-256",
-        )
-        count = source.get("terminal_item_count")
-        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-            raise AuthoringWorkbenchError(
-                "Workspace terminal conflict source count is invalid"
-            )
+        workspace_id = _validate_terminal_conflict_merge_source(source, source_by_id)
         source_by_id[workspace_id] = source
     if sources != sorted(sources, key=lambda value: value["workspace_id"]):
         raise AuthoringWorkbenchError(
             "Workspace terminal conflict sources are not canonical"
         )
-    items = merge.get("items")
-    if not isinstance(items, list) or not items:
-        raise AuthoringWorkbenchError(
-            "Workspace terminal conflict item ledger is empty"
-        )
-    if state is None:
-        try:
-            state = load_generation_state(
-                directory / "generated-audio/generation-state.json",
-                directory / "queue.jsonl",
-            )
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
-    queue_ids = []
-    counts = Counter()
-    for item in items:
-        item_fields = {
-            "queue_id",
-            "source_workspace_id",
-            "source_state_sha256",
-            "source_item_sha256",
-            "audio_sha256",
-            "status",
-            "review_status",
-            "selected_candidate_id",
-            "next_action",
-        }
-        if not isinstance(item, dict) or set(item) != item_fields:
-            raise AuthoringWorkbenchError(
-                "Workspace terminal conflict item is malformed"
-            )
-        queue_id = _required_text(item.get("queue_id"), "Terminal conflict queue ID")
-        source = source_by_id.get(item.get("source_workspace_id"))
-        if (
-            source is None
-            or item.get("source_state_sha256") != source["state_sha256"]
-            or (item.get("status"), item.get("review_status"))
-            not in {("approved", "approved"), ("generated", "rejected")}
-            or item.get("next_action")
-            not in {
-                "apply_selected_approved_outcome",
-                "retain_explicit_rejection",
-            }
-        ):
-            raise AuthoringWorkbenchError(
-                "Workspace terminal conflict item provenance is inconsistent"
-            )
-        _require_sha256(
-            item.get("source_item_sha256"),
-            "Terminal conflict source item SHA-256",
-        )
-        _require_sha256(item.get("audio_sha256"), "Terminal conflict WAV SHA-256")
-        _require_sha256(
-            item.get("selected_candidate_id"),
-            "Terminal conflict selected candidate ID",
-        )
-        expected_action = (
-            "apply_selected_approved_outcome"
-            if item["review_status"] == "approved"
-            else "retain_explicit_rejection"
-        )
-        if item["next_action"] != expected_action:
-            raise AuthoringWorkbenchError(
-                "Workspace terminal conflict action is inconsistent"
-            )
-        result = state["items"].get(queue_id)
-        if not isinstance(result, dict) or not _terminal_review_outcome(result):
-            raise AuthoringWorkbenchError(
-                f"Workspace terminal conflict result is not terminal for {queue_id!r}"
-            )
-        observed = result.get("terminal_conflict_resolution")
-        expected = {key: value for key, value in item.items() if key != "queue_id"}
-        if observed != expected:
-            raise AuthoringWorkbenchError(
-                f"Workspace terminal conflict result changed for {queue_id!r}"
-            )
-        source_result = copy.deepcopy(result)
-        source_result.pop("terminal_conflict_resolution", None)
-        if canonical_document_sha256(source_result) != item["source_item_sha256"]:
-            raise AuthoringWorkbenchError(
-                f"Workspace terminal conflict source item changed for {queue_id!r}"
-            )
-        audio_path = _within(
-            directory / "generated-audio",
-            _safe_relative(result.get("path"), "Terminal conflict WAV path"),
-            "Terminal conflict WAV",
-        )
-        if not audio_path.is_file() or sha256_file(audio_path) != item["audio_sha256"]:
-            raise AuthoringWorkbenchError(
-                f"Workspace terminal conflict WAV changed for {queue_id!r}"
-            )
-        queue_ids.append(queue_id)
-        counts[item["source_workspace_id"]] += 1
-    if queue_ids != sorted(set(queue_ids)):
-        raise AuthoringWorkbenchError(
-            "Workspace terminal conflict item ledger is not canonical"
-        )
-    if any(
-        counts[workspace_id] != source["terminal_item_count"]
-        for workspace_id, source in source_by_id.items()
+    return source_by_id
+
+
+def _validate_terminal_conflict_merge_source(source, source_by_id):
+    if not isinstance(source, dict) or set(source) != {
+        "workspace_id",
+        "config_fingerprint",
+        "state_sha256",
+        "terminal_item_count",
+    }:
+        raise AuthoringWorkbenchError("Workspace terminal conflict source is malformed")
+    workspace_id = _required_text(
+        source.get("workspace_id"), "Terminal conflict source workspace ID"
+    )
+    if (
+        not re.fullmatch(r"resume-[0-9a-f]{24}-[0-9a-f]{16}", workspace_id)
+        or workspace_id in source_by_id
     ):
         raise AuthoringWorkbenchError(
-            "Workspace terminal conflict source counts are inconsistent"
+            "Workspace terminal conflict source identity is invalid"
+        )
+    _require_sha256(
+        source.get("config_fingerprint"),
+        "Terminal conflict source configuration fingerprint",
+    )
+    _require_sha256(
+        source.get("state_sha256"), "Terminal conflict source state SHA-256"
+    )
+    count = source.get("terminal_item_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict source count is invalid"
+        )
+    return workspace_id
+
+
+def _validate_terminal_conflict_merge_item(directory, item, source_by_id, state):
+    item_fields = {
+        "queue_id",
+        "source_workspace_id",
+        "source_state_sha256",
+        "source_item_sha256",
+        "audio_sha256",
+        "status",
+        "review_status",
+        "selected_candidate_id",
+        "next_action",
+    }
+    if not isinstance(item, dict) or set(item) != item_fields:
+        raise AuthoringWorkbenchError("Workspace terminal conflict item is malformed")
+    queue_id = _required_text(item.get("queue_id"), "Terminal conflict queue ID")
+    source = source_by_id.get(item.get("source_workspace_id"))
+    if (
+        source is None
+        or item.get("source_state_sha256") != source["state_sha256"]
+        or (item.get("status"), item.get("review_status"))
+        not in {("approved", "approved"), ("generated", "rejected")}
+        or item.get("next_action")
+        not in {"apply_selected_approved_outcome", "retain_explicit_rejection"}
+    ):
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict item provenance is inconsistent"
+        )
+    _validate_terminal_conflict_item_identity(item)
+    _validate_terminal_conflict_result(
+        directory, state["items"].get(queue_id), item, queue_id
+    )
+    return queue_id, item["source_workspace_id"]
+
+
+def _validate_terminal_conflict_item_identity(item):
+    _require_sha256(
+        item.get("source_item_sha256"), "Terminal conflict source item SHA-256"
+    )
+    _require_sha256(item.get("audio_sha256"), "Terminal conflict WAV SHA-256")
+    _require_sha256(
+        item.get("selected_candidate_id"), "Terminal conflict selected candidate ID"
+    )
+    expected_action = (
+        "apply_selected_approved_outcome"
+        if item["review_status"] == "approved"
+        else "retain_explicit_rejection"
+    )
+    if item["next_action"] != expected_action:
+        raise AuthoringWorkbenchError(
+            "Workspace terminal conflict action is inconsistent"
+        )
+
+
+def _validate_terminal_conflict_result(directory, result, item, queue_id):
+    if not isinstance(result, dict) or not _terminal_review_outcome(result):
+        raise AuthoringWorkbenchError(
+            f"Workspace terminal conflict result is not terminal for {queue_id!r}"
+        )
+    expected = {key: value for key, value in item.items() if key != "queue_id"}
+    if result.get("terminal_conflict_resolution") != expected:
+        raise AuthoringWorkbenchError(
+            f"Workspace terminal conflict result changed for {queue_id!r}"
+        )
+    source_result = copy.deepcopy(result)
+    source_result.pop("terminal_conflict_resolution", None)
+    if canonical_document_sha256(source_result) != item["source_item_sha256"]:
+        raise AuthoringWorkbenchError(
+            f"Workspace terminal conflict source item changed for {queue_id!r}"
+        )
+    audio_path = _within(
+        directory / "generated-audio",
+        _safe_relative(result.get("path"), "Terminal conflict WAV path"),
+        "Terminal conflict WAV",
+    )
+    if not audio_path.is_file() or sha256_file(audio_path) != item["audio_sha256"]:
+        raise AuthoringWorkbenchError(
+            f"Workspace terminal conflict WAV changed for {queue_id!r}"
         )
 
 
