@@ -202,7 +202,8 @@ class CharacterVoiceRegistry:
         normalized_name = normalize_character_name(synthesis_character(character))
         if normalized_name in self.assignments:
             voice = self.assignments[normalized_name]
-            _validate_voice_reference_ownership(voice)
+            if voice is not None:
+                _validate_voice_reference_ownership(voice)
             return voice
         exact_voice = self.voices.get(normalized_name)
         if exact_voice is not None:

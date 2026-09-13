@@ -282,6 +282,15 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
 
         self.assertIsNone(registry.resolve("Marcus"))
 
+    def test_default_assignment_disables_closest_manifest_voice(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Marcus", "local-marcus", Path("marcus.wav"))]
+        )
+
+        registry.set_assignment("Marcus", "default")
+
+        self.assertIsNone(registry.resolve_closest("Marcus"))
+
     def test_incompatible_preset_assignment_can_be_ignored(self):
         warnings = []
         registry = CharacterVoiceRegistry()
