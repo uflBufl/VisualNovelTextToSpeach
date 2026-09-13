@@ -11,10 +11,6 @@ measurements in agent memory and completed-work history in Git, not here.
 - [ ] Keep one retained OpenMOSS runtime. Prepared WAV playback may overlap
       generation, but foreground dialogue must take priority at render
       boundaries and no second native server may be started for live reading.
-- [ ] Finish each dialogue before moving on: retain all configured quality
-      retries, then apply its eligible safe recovery actions immediately rather
-      than waiting for the first pass over the whole story. Publish only the
-      successful terminal result.
 - [ ] Extend the existing per-chapter ready and ready-prefix counts from chapter
       start to the current reading position when a sequence cursor is available.
 - [ ] If reading reaches an unfinished line, prioritize that exact

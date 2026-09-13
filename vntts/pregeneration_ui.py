@@ -55,7 +55,7 @@ from vntts.pregeneration_queue import (
     PregenerationInputStore,
     PregenerationQueueCancelled,
 )
-from vntts.pregeneration_recovery import OfflineRecoveryWorker
+from vntts.pregeneration_recovery import OfflineRecoveryResult, OfflineRecoveryWorker
 from vntts.pregeneration_setup import (
     ContentDiscovery,
     PregenerationJobStore,
@@ -1598,7 +1598,7 @@ class OfflineAudioPreparationDialog(QDialog):
         elif progress.failed:
             self.progress_failures.setText(
                 f"{progress.failed} failure{'s' if progress.failed != 1 else ''} "
-                "found so far; safe automatic recovery starts after generation."
+                "found so far; each dialogue is repaired before the next starts."
             )
         else:
             self.progress_failures.clear()
@@ -2748,7 +2748,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.cancel_button.setEnabled(True)
         self._start_generation_progress()
         self.generation_runner.start(
-            self.generator.generate,
+            self.recovery.generate_and_recover,
             self._generation_input,
             self._voice_plan,
             self.voice_cancel_event,
@@ -2780,6 +2780,9 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
                 return
             self._set_resume_error("Unable to generate offline audio", error)
+            return
+        if isinstance(result, OfflineRecoveryResult):
+            self._recovery_finished(result, None)
             return
         self._generation_result = result
         self._render_generation_result(result)

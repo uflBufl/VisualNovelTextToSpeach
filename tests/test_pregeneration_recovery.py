@@ -4,11 +4,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
-from vntts.pregeneration_generation import OfflineGenerationResult
+from vntts.pregeneration_generation import (
+    OfflineGenerationError,
+    OfflineGenerationResult,
+)
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_recovery import (
     OfflineRecoveryBatch,
     OfflineRecoveryPlan,
+    OfflineRecoveryResult,
     OfflineRecoveryWorker,
     plan_automatic_recovery,
 )
@@ -170,6 +174,148 @@ class OfflineRecoveryPlanTest(unittest.TestCase):
 
 
 class OfflineRecoveryWorkerTest(unittest.TestCase):
+    def test_scoped_recovery_finishes_one_dialogue_without_touching_the_next(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, first, voice_plan = inputs(Path(temporary_directory))
+            repaired = replace(first, generated=2, failed=1)
+            plans = iter(
+                (
+                    OfflineRecoveryPlan(
+                        "1" * 64,
+                        "2" * 64,
+                        2,
+                        (OfflineRecoveryBatch("edge_silence_trim", ("a", "b")),),
+                        (),
+                    ),
+                    OfflineRecoveryPlan(
+                        "3" * 64,
+                        "2" * 64,
+                        1,
+                        (),
+                        (("reference_comparison", 1),),
+                        (OfflineRecoveryBatch("reference_comparison", ("b",)),),
+                    ),
+                )
+            )
+            generator = Mock()
+            generator.repair.return_value = repaired
+
+            result = OfflineRecoveryWorker(
+                generator, planner=lambda *_arguments: next(plans)
+            ).recover(
+                generation_input,
+                voice_plan,
+                first,
+                queue_id="a",
+            )
+
+        self.assertEqual(
+            generator.repair.call_args.kwargs["queue_ids"],
+            ("a",),
+        )
+        self.assertEqual(result.recovered, 1)
+        self.assertEqual(result.remaining_failed, 0)
+
+    def test_generation_and_recovery_alternate_in_queue_order(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, first, voice_plan = inputs(Path(temporary_directory))
+            second = replace(first, generated=2, failed=1)
+            final = replace(first, generated=3, failed=0)
+            generator = Mock()
+            generator.inspect.side_effect = OfflineGenerationError
+            generator.generate.side_effect = (first, second)
+            worker = OfflineRecoveryWorker(generator)
+            events = []
+
+            def recover(_input, _plan, current, _cancel=None, *, queue_id=None):
+                events.append(("recover", queue_id))
+                result = second if queue_id == "a" else final
+                return OfflineRecoveryResult(result, 1, 1, 0, ())
+
+            def generate(*_arguments, **options):
+                queue_id = options["queue_ids"][0]
+                events.append(("generate", queue_id))
+                return first if queue_id == "a" else second
+
+            generator.generate.side_effect = generate
+            with (
+                patch(
+                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
+                    return_value=("a", "b"),
+                ),
+                patch.object(worker, "recover", side_effect=recover),
+            ):
+                result = worker.generate_and_recover(
+                    generation_input,
+                    voice_plan,
+                )
+
+        self.assertEqual(
+            events,
+            [
+                ("generate", "a"),
+                ("recover", "a"),
+                ("generate", "b"),
+                ("recover", "b"),
+            ],
+        )
+        self.assertIs(result.generation, final)
+        self.assertEqual(result.attempted_actions, 2)
+        self.assertEqual(result.recovered, 2)
+
+    def test_generation_and_recovery_skip_completed_dialogues_on_resume(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, current, voice_plan = inputs(Path(temporary_directory))
+            current = replace(current, generated=2, failed=0)
+            generator = Mock()
+            generator.inspect.return_value = current
+            generator.generate.return_value = current
+            worker = OfflineRecoveryWorker(generator)
+            recovered = OfflineRecoveryResult(current, 0, 0, 0, ())
+
+            with (
+                patch(
+                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
+                    return_value=("a", "b"),
+                ),
+                patch(
+                    "vntts.pregeneration_recovery._generation_queue_statuses",
+                    return_value={"a": "generated"},
+                ),
+                patch.object(worker, "recover", return_value=recovered),
+            ):
+                worker.generate_and_recover(generation_input, voice_plan)
+
+        self.assertEqual(
+            generator.generate.call_args.kwargs["queue_ids"],
+            ("b",),
+        )
+        self.assertEqual(generator.generate.call_count, 1)
+
+    def test_generation_resume_repairs_existing_failure_before_new_generation(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, current, voice_plan = inputs(Path(temporary_directory))
+            generator = Mock()
+            generator.inspect.return_value = current
+            worker = OfflineRecoveryWorker(generator)
+            recovered = OfflineRecoveryResult(current, 1, 1, 0, ())
+
+            with (
+                patch(
+                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
+                    return_value=("a",),
+                ),
+                patch(
+                    "vntts.pregeneration_recovery._generation_queue_statuses",
+                    return_value={"a": "failed"},
+                ),
+                patch.object(worker, "recover", return_value=recovered) as repair,
+            ):
+                worker.generate_and_recover(generation_input, voice_plan)
+
+        generator.generate.assert_not_called()
+        repair.assert_called_once()
+
     def test_terminal_generation_skips_failure_planning(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first, voice_plan = inputs(Path(temporary_directory))

@@ -77,6 +77,7 @@ class OfflineGenerationWorker:
         self._process = None
         self._in_process_active = False
         self._startup_status = None
+        self._disk_checked_inputs = set()
 
     def command(self):
         if self._configured_command:
@@ -85,7 +86,9 @@ class OfflineGenerationWorker:
             return (sys.executable, "--offline-generation-worker")
         return (sys.executable, "-m", "vntts.authoring.cli")
 
-    def generate(self, generation_input, voice_plan, cancel_event=None):
+    def generate(
+        self, generation_input, voice_plan, cancel_event=None, *, queue_ids=None
+    ):
         try:
             current = self.inspect(generation_input)
         except OfflineGenerationError:
@@ -93,29 +96,47 @@ class OfflineGenerationWorker:
         else:
             if current.total == generation_input.ready_items:
                 return current
-        _ensure_remaining_disk_space(generation_input)
+        if generation_input.identity not in self._disk_checked_inputs:
+            _ensure_remaining_disk_space(generation_input)
+            self._disk_checked_inputs.add(generation_input.identity)
         output = _generation_output(generation_input)
-        arguments = self._base_arguments(generation_input, voice_plan, output)
-        result = self._execute(
-            arguments,
-            generation_input,
-            output,
-            cancel_event=cancel_event,
+        selected = None if queue_ids is None else _queue_ids(queue_ids)
+        projection_ids = set(generation_input.audio_event_projection_queue_ids)
+        ordinary = (
+            None
+            if selected is None
+            else tuple(queue_id for queue_id in selected if queue_id not in projection_ids)
         )
-        if not generation_input.audio_event_projection_queue_ids:
-            return result
-        projection_arguments = self._base_arguments(
-            generation_input, voice_plan, output
+        result = None
+        if ordinary is None or ordinary:
+            arguments = self._base_arguments(generation_input, voice_plan, output)
+            for queue_id in ordinary or ():
+                arguments.extend(("--queue-id", queue_id))
+            result = self._execute(
+                arguments,
+                generation_input,
+                output,
+                cancel_event=cancel_event,
+            )
+        projections = (
+            generation_input.audio_event_projection_queue_ids
+            if selected is None
+            else tuple(queue_id for queue_id in selected if queue_id in projection_ids)
         )
-        for queue_id in generation_input.audio_event_projection_queue_ids:
-            projection_arguments.extend(("--queue-id", queue_id))
-            projection_arguments.extend(("--audio-event-spoken-projection", queue_id))
-        return self._execute(
-            projection_arguments,
-            generation_input,
-            output,
-            cancel_event=cancel_event,
-        )
+        if projections:
+            arguments = self._base_arguments(generation_input, voice_plan, output)
+            for queue_id in projections:
+                arguments.extend(("--queue-id", queue_id))
+                arguments.extend(("--audio-event-spoken-projection", queue_id))
+            result = self._execute(
+                arguments,
+                generation_input,
+                output,
+                cancel_event=cancel_event,
+            )
+        if result is None:
+            return self.inspect(generation_input)
+        return result
 
     def repair(
         self,

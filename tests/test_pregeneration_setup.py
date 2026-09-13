@@ -28,6 +28,7 @@ from vntts.pregeneration_pack import (  # noqa: E402
     StoryAudioCoverage,
 )
 from vntts.pregeneration_queue import PregenerationQueueCancelled  # noqa: E402
+from vntts.pregeneration_recovery import OfflineRecoveryResult  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
     PregenerationJobStore,
@@ -1336,6 +1337,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generation_result = Mock(generated=2, failed=0)
             generator = Mock()
             generator.generate.return_value = generation_result
+            recovery = Mock()
+            recovery.generate_and_recover.return_value = OfflineRecoveryResult(
+                generation_result,
+                attempted_actions=0,
+                recovered=0,
+                remaining_failed=0,
+                remaining_action_counts=(),
+            )
             acceptance_result = Mock(generation=generation_result, approved=2)
             acceptance = Mock()
             acceptance.accept.return_value = acceptance_result
@@ -1347,6 +1356,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=store,
                 generator=generator,
+                recovery=recovery,
                 acceptance=acceptance,
                 publisher=publisher,
                 thread_pool=pool,
@@ -1497,7 +1507,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("confirm CPU/GPU", dialog.progress_runtime.text())
             self.assertIn("Prepared: 2", plain_label_text(dialog.progress_counts))
             self.assertIn("Failed: 1", plain_label_text(dialog.progress_counts))
-            self.assertIn("automatic recovery", dialog.progress_failures.text())
+            self.assertIn("repaired before the next", dialog.progress_failures.text())
             self.assertIn(
                 "only unfinished lines", dialog.progress_cancel_consequence.text()
             )
@@ -1587,23 +1597,23 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Partially prepared", dialog.stories.item(0).text())
             dialog.deleteLater()
 
-    def test_failed_first_pass_runs_automatic_recovery_before_accepting(self):
+    def test_each_dialogue_is_recovered_before_final_acceptance(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             pool = ManualThreadPool()
-            first = Mock(generated=1, failed=2, other_terminal=0)
             final = Mock(generated=2, failed=0, other_terminal=1)
-            recovery_result = Mock(
-                generation=final,
+            recovery_result = OfflineRecoveryResult(
+                final,
+                attempted_actions=2,
                 recovered=1,
-                live_fallbacks=1,
                 remaining_failed=0,
+                remaining_action_counts=(),
+                live_fallbacks=1,
             )
             generator = Mock()
-            generator.generate.return_value = first
             recovery = Mock()
-            recovery.recover.return_value = recovery_result
+            recovery.generate_and_recover.return_value = recovery_result
             acceptance_result = Mock(generation=final, approved=2)
             acceptance = Mock()
             acceptance.accept.return_value = acceptance_result
@@ -1636,16 +1646,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
 
-            self.assertTrue(dialog.recovering)
-            self.assertEqual(dialog.cancel_button.text(), "Cancel automatic recovery")
-            self.assertIn("2 unfinished lines", dialog.resume_status.text())
-            self.assertEqual(dialog.progress_phase.text(), "Recovering failed lines")
-            self.assertIn("2 failed items", dialog.progress_failures.text())
-            pool.tasks.pop().run()
-            self.application.processEvents()
-
             self.assertFalse(dialog.recovering)
             self.assertTrue(dialog.accepting_audio)
+            recovery.generate_and_recover.assert_called_once()
             pool.tasks.pop().run()
             self.application.processEvents()
 

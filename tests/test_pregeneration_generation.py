@@ -87,6 +87,35 @@ def generation_inputs(root, *, backend="pocket-tts", model=None):
 
 
 class OfflineGenerationWorkerTest(unittest.TestCase):
+    def test_exact_scope_keeps_projection_flags_on_the_selected_dialogue(self):
+        with TemporaryDirectory() as directory:
+            generation_input, plan = generation_inputs(
+                Path(directory), backend="moss-tts", model="model-id"
+            )
+            generation_input = replace(
+                generation_input,
+                audio_event_projection_queue_ids=("mixed-event",),
+            )
+            worker = OfflineGenerationWorker(command=("worker",))
+            expected = Mock()
+
+            with (
+                patch.object(worker, "inspect", side_effect=OfflineGenerationError),
+                patch.object(worker, "_execute", return_value=expected) as execute,
+            ):
+                result = worker.generate(
+                    generation_input,
+                    plan,
+                    queue_ids=("mixed-event",),
+                )
+
+        arguments = execute.call_args.args[0]
+        self.assertIs(result, expected)
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(arguments.count("--queue-id"), 1)
+        self.assertIn("mixed-event", arguments)
+        self.assertIn("--audio-event-spoken-projection", arguments)
+
     def test_progress_reports_generated_and_already_playable_story_lines(self):
         with TemporaryDirectory() as directory:
             inputs, _plan = generation_inputs(Path(directory))

@@ -63,14 +63,22 @@ class InProcessPocketGenerator(OfflineGenerationWorker):
     def __init__(self):
         super().__init__()
         self.rendered = False
+        self.calls = 0
 
-    def generate(self, generation_input, voice_plan, cancel_event=None):
+    def generate(
+        self, generation_input, voice_plan, cancel_event=None, *, queue_ids=None
+    ):
         output = generation_input.directory.parent / (
             f"generation-output-{generation_input.identity[:16]}"
         )
         renderer = SyntheticRenderer(
-            [SynthesisCompletion.COMPLETE, SynthesisCompletion.LIMITED]
+            [
+                SynthesisCompletion.COMPLETE
+                if self.calls == 0
+                else SynthesisCompletion.LIMITED
+            ]
         )
+        self.calls += 1
         renderer.name = "pocket-tts"
         renderer.model_name = "pocket-tts"
         run_bulk_generation(
@@ -87,6 +95,7 @@ class InProcessPocketGenerator(OfflineGenerationWorker):
                 generation_input.narrator_fallback_roles,
             ),
             narrator_character="Narrator",
+            include_queue_ids=queue_ids,
         )
         self.rendered = True
         return self.inspect(generation_input)
@@ -98,16 +107,19 @@ class InterruptingPocketGenerator(InProcessPocketGenerator):
         self.interrupt = interrupt
         self.rendered_texts = []
 
-    def generate(self, generation_input, voice_plan, cancel_event=None):
+    def generate(
+        self, generation_input, voice_plan, cancel_event=None, *, queue_ids=None
+    ):
         output = generation_input.directory.parent / (
             f"generation-output-{generation_input.identity[:16]}"
         )
+        cancel_now = self.interrupt and bool(self.rendered_texts)
         renderer = SyntheticRenderer(
-            (
-                [SynthesisCompletion.COMPLETE, SynthesisCompletion.CANCELLED]
-                if self.interrupt
-                else [SynthesisCompletion.COMPLETE]
-            )
+            [
+                SynthesisCompletion.CANCELLED
+                if cancel_now
+                else SynthesisCompletion.COMPLETE
+            ]
         )
         renderer.name = "pocket-tts"
         renderer.model_name = "pocket-tts"
@@ -125,12 +137,32 @@ class InterruptingPocketGenerator(InProcessPocketGenerator):
                 generation_input.narrator_fallback_roles,
             ),
             narrator_character="Narrator",
+            include_queue_ids=queue_ids,
         )
         self.rendered_texts.extend(request.text for request in renderer.requests)
-        if self.interrupt:
+        if cancel_now:
             raise OfflineGenerationCancelled("Synthetic generation interrupted")
         self.rendered = True
         return self.inspect(generation_input)
+
+    def repair(
+        self,
+        generation_input,
+        voice_plan,
+        _generation_result,
+        *,
+        action,
+        queue_ids,
+        cancel_event=None,
+    ):
+        if action != "safe_resume":
+            raise AssertionError(f"Unexpected test repair: {action}")
+        return self.generate(
+            generation_input,
+            voice_plan,
+            cancel_event,
+            queue_ids=queue_ids,
+        )
 
 
 class SelfServicePregenerationJourneyTest(unittest.TestCase):

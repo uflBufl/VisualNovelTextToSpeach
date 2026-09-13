@@ -5,11 +5,20 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, replace
 
+from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueError,
+)
+from vntts_artifacts.voice_manifest import VoiceManifestError
+
 from vntts.authoring.bulk_generation import (
     AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS,
     BulkGenerationError,
     authorize_live_fallback,
     generation_failure_repair_plan,
+    is_spoken_queue_item,
+    load_generation_state,
 )
 from vntts.authoring.generation_state import (
     LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
@@ -23,6 +32,11 @@ from vntts.pregeneration_generation import (
     validate_offline_generation_result,
 )
 from vntts.pregeneration_voices import VoicePlan
+from vntts.voices import (
+    CharacterVoiceRegistry,
+    pocket_tts_preset_voices,
+    synthesis_character_for_line,
+)
 
 AUTOMATIC_ACTION_ORDER = (
     "safe_resume",
@@ -175,6 +189,8 @@ class OfflineRecoveryWorker:
         voice_plan,
         generation_result,
         cancel_event=None,
+        *,
+        queue_id=None,
     ):
         validate_offline_generation_result(
             generation_input,
@@ -191,20 +207,30 @@ class OfflineRecoveryWorker:
         applied = set()
         terminalized = 0
         terminalization_attempted = False
+        scoped_initial_failures = None
         while True:
             plan = self.planner(generation_input, voice_plan, current)
+            if queue_id is not None and scoped_initial_failures is None:
+                scoped_initial_failures = int(_plan_contains(plan, queue_id))
+                if not scoped_initial_failures:
+                    return OfflineRecoveryResult(current, 0, 0, 0, ())
             next_batch = None
             for batch in plan.automatic_batches:
                 fresh = tuple(
-                    queue_id
-                    for queue_id in batch.queue_ids
-                    if (queue_id, batch.action) not in applied
+                    candidate
+                    for candidate in batch.queue_ids
+                    if (queue_id is None or candidate == queue_id)
+                    and (candidate, batch.action) not in applied
                 )
                 if fresh:
                     next_batch = OfflineRecoveryBatch(batch.action, fresh)
                     break
             if next_batch is None:
-                terminal_queue_ids = plan.live_fallback_queue_ids
+                terminal_queue_ids = tuple(
+                    candidate
+                    for candidate in plan.live_fallback_queue_ids
+                    if queue_id is None or candidate == queue_id
+                )
                 if terminal_queue_ids and not terminalization_attempted:
                     current = self.terminalizer(
                         generation_input,
@@ -216,17 +242,39 @@ class OfflineRecoveryWorker:
                     terminalized = len(terminal_queue_ids)
                     terminalization_attempted = True
                     continue
-                remaining = Counter(dict(plan.deferred_action_counts))
+                remaining = (
+                    Counter(dict(plan.deferred_action_counts))
+                    if queue_id is None
+                    else Counter(
+                        batch.action
+                        for batch in plan.deferred_batches
+                        if queue_id in batch.queue_ids
+                    )
+                )
                 for batch in plan.automatic_batches:
-                    remaining[batch.action] += len(batch.queue_ids)
+                    remaining[batch.action] += sum(
+                        queue_id is None or candidate == queue_id
+                        for candidate in batch.queue_ids
+                    )
+                remaining_failed = (
+                    current.failed
+                    if queue_id is None
+                    else int(_plan_contains(plan, queue_id))
+                )
                 return OfflineRecoveryResult(
                     generation=current,
                     attempted_actions=len(applied),
                     recovered=max(
                         0,
-                        initial_failures - current.failed - terminalized,
+                        (
+                            initial_failures
+                            if queue_id is None
+                            else scoped_initial_failures or 0
+                        )
+                        - remaining_failed
+                        - terminalized,
                     ),
-                    remaining_failed=current.failed,
+                    remaining_failed=remaining_failed,
                     remaining_action_counts=tuple(sorted(remaining.items())),
                     live_fallbacks=terminalized,
                 )
@@ -251,6 +299,140 @@ class OfflineRecoveryWorker:
             applied.update(
                 (queue_id, next_batch.action) for queue_id in next_batch.queue_ids
             )
+
+    def generate_and_recover(
+        self,
+        generation_input,
+        voice_plan,
+        cancel_event=None,
+    ):
+        """Finish safe recovery for each dialogue before starting the next one."""
+        queue_ids = _ordered_generation_queue_ids(generation_input, voice_plan)
+        if not queue_ids:
+            generation = self.generator.generate(
+                generation_input, voice_plan, cancel_event
+            )
+            return OfflineRecoveryResult(generation, 0, 0, generation.failed, ())
+        try:
+            current = self.generator.inspect(generation_input)
+        except OfflineGenerationError:
+            current = None
+        statuses = (
+            _generation_queue_statuses(current, generation_input)
+            if current is not None
+            else {}
+        )
+        attempted = recovered = live_fallbacks = 0
+        remaining = Counter()
+        for queue_id in queue_ids:
+            if statuses.get(queue_id) in {
+                "generated",
+                "approved",
+                "live_fallback",
+                "omitted",
+                "not_reproducible",
+            }:
+                continue
+            if statuses.get(queue_id) != "failed":
+                current = self.generator.generate(
+                    generation_input,
+                    voice_plan,
+                    cancel_event,
+                    queue_ids=(queue_id,),
+                )
+            result = self.recover(
+                generation_input,
+                voice_plan,
+                current,
+                cancel_event,
+                queue_id=queue_id,
+            )
+            current = result.generation
+            attempted += result.attempted_actions
+            recovered += result.recovered
+            live_fallbacks += result.live_fallbacks
+            remaining.update(dict(result.remaining_action_counts))
+            statuses[queue_id] = (
+                "failed" if result.remaining_failed else "generated"
+            )
+        if current is None:
+            raise OfflineRecoveryError("Offline generation produced no result")
+        return OfflineRecoveryResult(
+            current,
+            attempted,
+            recovered,
+            current.failed,
+            tuple(sorted(remaining.items())),
+            live_fallbacks,
+        )
+
+
+def _plan_contains(plan, queue_id):
+    return queue_id in plan.live_fallback_queue_ids or any(
+        queue_id in batch.queue_ids
+        for batch in (*plan.automatic_batches, *plan.deferred_batches)
+    )
+
+
+def _ordered_generation_queue_ids(generation_input, voice_plan):
+    try:
+        if sha256_file(generation_input.queue) != generation_input.queue_sha256:
+            raise OfflineRecoveryError("Offline generation queue changed")
+        queue = VoiceGenerationQueue.load(generation_input.queue)
+        voices = CharacterVoiceRegistry.from_file(generation_input.voice_manifest)
+        projections = set(generation_input.audio_event_projection_queue_ids)
+        omissions = set(generation_input.audio_event_omission_queue_ids)
+        narrator_roles = set(generation_input.narrator_fallback_roles)
+
+        def has_voice(item):
+            requested = synthesis_character_for_line(
+                item.speaker, item.voice_character
+            )
+            voice = voices.resolve(requested)
+            return requested in narrator_roles or voice is not None and (
+                bool(voice.references)
+                or voice_plan.synthesis_backend == "pocket-tts"
+                and voice.speaker in pocket_tts_preset_voices
+            )
+
+        queue_ids = tuple(
+            item.queue_id
+            for item in queue.items
+            if item.action == "generate"
+            and item.queue_id not in omissions
+            and (item.queue_id in projections or is_spoken_queue_item(item))
+            and has_voice(item)
+        )
+    except (
+        BulkGenerationError,
+        OSError,
+        VoiceGenerationQueueError,
+        VoiceManifestError,
+        ValueError,
+    ) as error:
+        raise OfflineRecoveryError(
+            f"Unable to sequence offline generation: {error}"
+        ) from error
+    if len(queue_ids) != generation_input.ready_items:
+        raise OfflineRecoveryError("Offline generation queue readiness changed")
+    return queue_ids
+
+
+def _generation_queue_statuses(generation_result, generation_input):
+    try:
+        state = load_generation_state(
+            generation_result.state,
+            generation_input.queue,
+        )
+    except (BulkGenerationError, OSError, ValueError) as error:
+        raise OfflineRecoveryError(
+            f"Unable to resume offline generation: {error}"
+        ) from error
+    return {
+        queue_id: item.get("status")
+        for queue_id, item in state.get("items", {}).items()
+        if isinstance(item, dict) and isinstance(item.get("status"), str)
+    }
 
 
 def _terminalize_pocket_failures(
