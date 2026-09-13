@@ -28,6 +28,7 @@
     "vntts/playback.py",
     "vntts/path_safety.py",
     "vntts/profiles.py",
+    "vntts/runtime_config.py",
     "vntts/runtime_installation.py",
     "vntts/runtime_paths.py",
     "vntts/speech_backend_runtime.py",

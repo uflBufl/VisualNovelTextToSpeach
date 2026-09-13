@@ -9,9 +9,9 @@ from tempfile import TemporaryDirectory
 from typing import Protocol
 
 from vntts_artifacts.voice_manifest import (
-    VoiceManifestError,
+    VoiceManifestError as VoiceManifestError,
     load_voice_manifest,
-    normalize_character_name,
+    normalize_character_name as normalize_character_name,
 )
 
 default_voice_choice_id = "default"
@@ -323,7 +323,7 @@ def find_default_voice_manifest(
     return manifest_path.resolve()
 
 
-class _VoiceEngine(Protocol):
+class VoiceEngine(Protocol):
     def speak(self, text: str, **kwargs: object) -> object: ...
 
     def synthesize(self, text: str, **kwargs: object) -> object: ...
@@ -340,7 +340,7 @@ class _VoiceEngine(Protocol):
 class CharacterVoiceRouter:
     def __init__(
         self,
-        tts: _VoiceEngine,
+        tts: VoiceEngine,
         registry: CharacterVoiceRegistry | None = None,
         *,
         narrator_speaker: str | None = None,

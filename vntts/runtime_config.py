@@ -2,6 +2,8 @@
 
 import os
 import sys
+from collections.abc import Callable
+from typing import TypedDict, TypeVar
 
 from pynput import keyboard
 
@@ -11,15 +13,31 @@ from vntts.services.tts_engine import (
     default_tts_profile,
     get_tts_profile,
 )
+from vntts.settings import AppSettings
 from vntts.voices import (
     CharacterVoiceRegistry,
     CharacterVoiceRouter,
+    VoiceEngine,
     VoiceManifestError,
     find_default_voice_manifest,
     is_narrator,
     normalize_character_name,
     pocket_tts_preset_voices,
 )
+
+EngineT = TypeVar("EngineT")
+
+
+class LiveTrackerOptions(TypedDict):
+    stability_frames: int
+    idle_flush_seconds: float
+    min_chunk_characters: int
+
+
+class LiveConfiguration(TypedDict):
+    interval_seconds: float
+    tracker_options: LiveTrackerOptions
+
 
 default_hotkey = default_hotkey_for_key("h")
 default_live_hotkey = default_hotkey_for_key("l")
@@ -28,7 +46,7 @@ default_skip_hotkey = default_hotkey_for_key("s")
 default_repeat_hotkey = default_hotkey_for_key("r")
 default_clear_queue_hotkey = default_hotkey_for_key("x")
 default_emergency_stop_hotkey = default_hotkey_for_key("e")
-hotkey_settings = {
+hotkey_settings: dict[str, tuple[str, str, str]] = {
     "read": ("VNTTS_HOTKEY", "read_hotkey", default_hotkey),
     "live": ("VNTTS_LIVE_HOTKEY", "live_hotkey", default_live_hotkey),
     "pause": ("VNTTS_PAUSE_HOTKEY", "pause_hotkey", default_pause_hotkey),
@@ -49,7 +67,7 @@ default_live_interval_ms = 200
 default_live_stability_frames = 2
 default_live_idle_flush_ms = 400
 default_live_min_chunk_characters = 20
-tts_environment_variables = {
+tts_environment_variables: dict[str, str] = {
     "model_name": "VNTTS_TTS_MODEL",
     "speaker": "VNTTS_TTS_SPEAKER",
     "language": "VNTTS_TTS_LANGUAGE",
@@ -57,7 +75,7 @@ tts_environment_variables = {
 }
 
 
-def get_validated_hotkey(environment_variable, default):
+def get_validated_hotkey(environment_variable: str, default: str) -> str:
     hotkey = os.environ.get(environment_variable, default)
     try:
         keyboard.HotKey.parse(hotkey)
@@ -71,42 +89,42 @@ def get_validated_hotkey(environment_variable, default):
     return hotkey
 
 
-def get_configured_hotkey(name, settings=None):
+def get_configured_hotkey(name: str, settings: AppSettings | None = None) -> str:
     environment_variable, attribute, default = hotkey_settings[name]
     if settings is None:
         return get_validated_hotkey(environment_variable, default)
     return validate_hotkey(getattr(settings, attribute), default, f"{name} hotkey")
 
 
-def get_hotkey(settings=None):
+def get_hotkey(settings: AppSettings | None = None) -> str:
     return get_configured_hotkey("read", settings)
 
 
-def get_live_hotkey(settings=None):
+def get_live_hotkey(settings: AppSettings | None = None) -> str:
     return get_configured_hotkey("live", settings)
 
 
-def get_pause_hotkey(settings=None):
+def get_pause_hotkey(settings: AppSettings | None = None) -> str:
     return get_configured_hotkey("pause", settings)
 
 
-def get_skip_hotkey(settings=None):
+def get_skip_hotkey(settings: AppSettings | None = None) -> str:
     return get_configured_hotkey("skip", settings)
 
 
-def get_repeat_hotkey(settings=None):
+def get_repeat_hotkey(settings: AppSettings | None = None) -> str:
     return get_configured_hotkey("repeat", settings)
 
 
-def get_clear_queue_hotkey(settings=None):
+def get_clear_queue_hotkey(settings: AppSettings | None = None) -> str:
     return get_configured_hotkey("clear queue", settings)
 
 
-def get_emergency_stop_hotkey(settings=None):
+def get_emergency_stop_hotkey(settings: AppSettings | None = None) -> str:
     return get_configured_hotkey("emergency stop", settings)
 
 
-def validate_hotkey(hotkey, default, label):
+def validate_hotkey(hotkey: str, default: str, label: str) -> str:
     try:
         keyboard.HotKey.parse(hotkey)
     except (TypeError, ValueError) as error:
@@ -115,7 +133,9 @@ def validate_hotkey(hotkey, default, label):
     return hotkey
 
 
-def get_numeric_environment_variable(environment_variable, default, *, minimum):
+def get_numeric_environment_variable(
+    environment_variable: str, default: int, *, minimum: int
+) -> int:
     configured_value = os.environ.get(environment_variable)
     if not configured_value:
         return default
@@ -134,7 +154,9 @@ def get_numeric_environment_variable(environment_variable, default, *, minimum):
     return value
 
 
-def get_live_configuration(settings=None):
+def get_live_configuration(
+    settings: AppSettings | None = None,
+) -> LiveConfiguration:
     if settings is not None:
         return {
             "interval_seconds": settings.live_interval_ms / 1000,
@@ -175,9 +197,9 @@ def get_live_configuration(settings=None):
     }
 
 
-def get_tts_configuration(settings=None):
+def get_tts_configuration(settings: AppSettings | None = None) -> dict[str, object]:
     if settings is not None:
-        configuration = {
+        configuration: dict[str, object] = {
             name: value
             for name, value in {
                 "model_name": settings.tts_model,
@@ -198,9 +220,11 @@ def get_tts_configuration(settings=None):
                 configuration["synthesis_options"] = get_tts_profile(
                     default_tts_profile
                 )
-        configuration.setdefault("synthesis_options", {})["speed"] = (
-            settings.speech_rate_percent / 100
-        )
+        synthesis_options = configuration.get("synthesis_options")
+        if not isinstance(synthesis_options, dict):
+            synthesis_options = {}
+            configuration["synthesis_options"] = synthesis_options
+        synthesis_options["speed"] = settings.speech_rate_percent / 100
         return configuration
 
     configuration = {
@@ -219,7 +243,10 @@ def get_tts_configuration(settings=None):
     return configuration
 
 
-def initialize_voice_registry(settings=None, error_handler=None):
+def initialize_voice_registry(
+    settings: AppSettings | None = None,
+    error_handler: Callable[[Exception], object] | None = None,
+) -> CharacterVoiceRegistry | None:
     manifest_path = (
         settings.voice_manifest
         if settings is not None
@@ -266,7 +293,11 @@ def initialize_voice_registry(settings=None, error_handler=None):
     return registry
 
 
-def initialize_voice_router(tts, settings=None, error_handler=None):
+def initialize_voice_router(
+    tts: VoiceEngine,
+    settings: AppSettings | None = None,
+    error_handler: Callable[[Exception], object] | None = None,
+) -> CharacterVoiceRouter | None:
     registry = initialize_voice_registry(settings, error_handler)
     if registry is None:
         return None
@@ -305,7 +336,9 @@ def initialize_voice_router(tts, settings=None, error_handler=None):
     )
 
 
-def initialize_tts(tts_factory=TTSEngine):
+def initialize_tts(
+    tts_factory: Callable[..., EngineT] = TTSEngine,
+) -> EngineT | None:
     print("Loading TTS model...")
     try:
         tts = tts_factory(**get_tts_configuration())
