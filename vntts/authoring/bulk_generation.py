@@ -460,7 +460,7 @@ class _GenerationExecutionContext:
     provenance_sha256: str
     backend: object
     render: GenerationRenderer
-    controls: list[_GenerationControl]
+    controls: Sequence[_GenerationControl]
     lease: GenerationLease
     render_prefetch: ThreadPoolExecutor
     seed: int
@@ -642,6 +642,8 @@ def _assert_review_authorities(
     queue_path: str | Path,
 ) -> tuple[JsonDocument, dict[str, tuple[JsonDocument, bytes]]]:
     """Validate one cohort against one shared state and queue snapshot."""
+    if not _is_review_authorities(authorities):
+        raise BulkGenerationError("Cohort review authorities must be a non-empty map")
     state_sha256, queue_sha256 = _cohort_review_snapshot(authorities)
     state_path = Path(state_path).expanduser().resolve()
     queue_path = Path(queue_path).expanduser().resolve()
@@ -707,7 +709,7 @@ def _review_state_document(
 
 
 def _cohort_review_audio_snapshots(
-    state: JsonDocument, state_path: Path, authorities: Mapping[object, ReviewAuthority]
+    state: JsonDocument, state_path: Path, authorities: Mapping[str, ReviewAuthority]
 ) -> tuple[dict[str, tuple[JsonDocument, bytes]], dict[str, Path]]:
     snapshots: dict[str, tuple[JsonDocument, bytes]] = {}
     paths: dict[str, Path] = {}
@@ -758,7 +760,7 @@ def _assert_cohort_review_snapshot_stable(
     queue_path: Path,
     state_sha256: str,
     queue_sha256: str,
-    authorities: Mapping[object, ReviewAuthority],
+    authorities: Mapping[str, ReviewAuthority],
     audio_paths: Mapping[str, Path],
 ) -> None:
     if (
@@ -1540,7 +1542,9 @@ def _validate_failure_repair_selection(
     queue_by_id = {item.queue_id: item for item in queue.items}
     for queue_id in policy.queue_ids:
         _validate_failure_repair_item(
-            policy.strategy_for(queue_id),
+            _generation_text(
+                policy.strategy_for(queue_id), "Failure-repair strategy"
+            ),
             queue_id,
             _failed_repair_result(state, queue_id),
             queue_by_id[queue_id],
@@ -1645,11 +1649,12 @@ def _provider_repair_attempts(
     attempts = _nonnegative_int(
         result.get("attempts", 0), f"State item {queue_id!r} attempts"
     )
+    provider_key = _generation_text(provider, f"State item {queue_id!r} provider")
     return _provider_attempts(
         result,
         attempts,
         default_provider=provider if default_provider is None else default_provider,
-    ).get(provider, 0)
+    ).get(provider_key, 0)
 
 
 def _validate_bounded_seed_repair(
@@ -3138,7 +3143,7 @@ def _run_generation_execution(
     retries: int,
     cancellation: object,
     synthesis_cache_policy: SynthesisCachePolicy,
-    recorded_voices: Mapping[str, str],
+    recorded_voices: dict[str, RecordedVoice],
     evidence_directory: Path | None,
     manifest_path: Path,
 ) -> BulkGenerationResult:
@@ -3432,6 +3437,8 @@ def review_generation_cohort(
     provenance: object,
 ) -> tuple[ReviewCommit, ...]:
     """Commit one exact cohort decision in a single state transaction."""
+    if not _is_review_authorities(authorities):
+        raise BulkGenerationError("Cohort review authorities must be a non-empty map")
     decisions = _cohort_review_decisions(authorities, decision)
     provenance = _cohort_review_provenance(provenance)
     state_path = Path(state_path).expanduser().resolve()
@@ -3637,7 +3644,7 @@ def _assert_cohort_commit_authority(
     authorities: Mapping[str, ReviewAuthority],
     authority_values: Sequence[ReviewAuthority],
     proposed: JsonDocument,
-    entries: object,
+    entries: list[dict[str, object]],
 ) -> None:
     _assert_review_authorities(state_path, authorities, queue_path)
     if (
@@ -4066,7 +4073,7 @@ def _commit_live_fallback(
     proposed: JsonDocument,
     queue: VoiceGenerationQueue,
     lease: GenerationLease,
-    entries: object,
+    entries: list[dict[str, object]],
 ) -> None:
     try:
         atomic_write_json(staged_state, proposed, sort_keys=True)
@@ -4620,7 +4627,7 @@ def _commit_review_item_decision(
     state: JsonDocument,
     queue_id: str,
     decision: str,
-    expected_authority: object,
+    expected_authority: ReviewAuthority | None,
     queue_path: str | Path | None,
     lease: GenerationLease | None,
 ) -> ReviewCommit | JsonDocument:
@@ -4663,9 +4670,9 @@ def _write_review_item_transaction(
     state_path: Path,
     manifest_path: Path,
     proposed: JsonDocument,
-    entries: object,
+    entries: list[dict[str, object]],
     queue_id: str,
-    authority: object,
+    authority: ReviewAuthority | None,
     queue_path: str | Path | None,
     lease: GenerationLease | None,
 ) -> None:
@@ -4719,7 +4726,10 @@ def _replace_review_manifest(
 
 
 def _review_commit_result(
-    proposed: JsonDocument, state_path: Path, queue_id: str, authority: object
+    proposed: JsonDocument,
+    state_path: Path,
+    queue_id: str,
+    authority: ReviewAuthority | None,
 ) -> ReviewCommit | JsonDocument:
     if authority is None:
         return proposed
