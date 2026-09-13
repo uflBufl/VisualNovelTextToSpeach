@@ -2894,6 +2894,19 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertEqual(workspaces, ())
         self.assertTrue(fixture["queue"].name)
 
+    def test_workspace_discovery_does_not_validate_generated_audio(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _fixture, _imported, created = self.create_workspace(root)
+
+            with patch(
+                "vntts.authoring.workspace_inspection._load_workspace",
+                side_effect=AssertionError("deep validation is deferred"),
+            ):
+                workspaces = discover_workspaces(root / "workspaces")
+
+        self.assertEqual(workspaces, (created.directory,))
+
     def test_immutable_queue_and_core_paths_are_anchored_to_import_snapshot(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -93,6 +93,7 @@ from vntts.authoring.workspace_authority import (
     _load_json,
     _load_json_snapshot,
     _load_workspace,
+    _load_workspace_identity,
     _parse_history_timestamp,
     _require_sha256,
     _required_text,
@@ -240,7 +241,7 @@ def discover_workspaces(workspaces_root: str | Path | None = None) -> tuple[Path
             key = directory.name.casefold()
             if key in seen:
                 continue
-            _load_workspace(directory)
+            _load_workspace_identity(directory)
             results.append(directory)
             seen.add(key)
         except AuthoringWorkbenchError, ValueError:
