@@ -108,6 +108,19 @@ class GeneratedAudioTest(unittest.TestCase):
             write_generated_audio_manifest(
                 manifest, {"vntts.runtime.progress": True}, []
             )
+            (root / "generation-state.json").write_text(
+                json.dumps(
+                    {
+                        "active": {
+                            "line_id": "game:1",
+                            "text_sha256": text_sha256("Hello."),
+                            "attempt": 2,
+                            "attempt_limit": 3,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
             library = GeneratedAudioLibrary.load_optional(manifest)
             output = FakeAudioOutput()
             backend = GeneratedAudioFallbackBackend(
@@ -118,6 +131,8 @@ class GeneratedAudioTest(unittest.TestCase):
             )
             route = backend.prepare_route("Ada", "Hello.")
             statuses = []
+            requests = []
+            backend.progress_wait_request = lambda *identity: requests.append(identity)
 
             def publish_on_wait(message):
                 statuses.append(message)
@@ -145,6 +160,8 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertTrue(outcome.successful)
         self.assertEqual(outcome.audio_source, "generated")
         self.assertEqual(len(output.plays), 1)
+        self.assertEqual(requests, [("game:1", text_sha256("Hello."))])
+        self.assertEqual(statuses[0], "Preparing this line - attempt 2 of 3.")
         self.assertEqual(statuses[-1], "Prepared audio is ready; continuing reading.")
 
     def test_library_reloads_an_atomically_replaced_manifest(self):

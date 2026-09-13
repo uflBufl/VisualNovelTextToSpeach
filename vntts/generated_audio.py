@@ -269,6 +269,8 @@ class GeneratedAudioLibrary:
             getattr(index, "manifest_path", None) or getattr(index, "path")
         ).resolve()
         self.manifest_signature = _manifest_signature(self.manifest_path)
+        self.progress_state_signature = None
+        self.progress_active = None
         self._apply_index(index)
 
     def _apply_index(self, index):
@@ -397,6 +399,31 @@ class GeneratedAudioLibrary:
         self._reload_if_changed()
         return self.audio_event_omissions.get((line_id, text_sha256))
 
+    def progress_description(self, line_id, text_sha256):
+        if not self.runtime_progress:
+            return None
+        state_path = self.manifest_path.parent / "generation-state.json"
+        signature = _manifest_signature(state_path)
+        if signature != self.progress_state_signature:
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                return None
+            self.progress_state_signature = signature
+            self.progress_active = state.get("active") if isinstance(state, dict) else None
+        active = self.progress_active
+        if not isinstance(active, dict):
+            return "Preparing this line - choosing the next safe attempt."
+        if (active.get("line_id"), active.get("text_sha256")) != (
+            line_id,
+            text_sha256,
+        ):
+            return "Preparing this line next; finishing the active dialogue first."
+        attempt, limit = active.get("attempt"), active.get("attempt_limit")
+        if all(type(value) is int and value > 0 for value in (attempt, limit)):
+            return f"Preparing this line - attempt {attempt} of {limit}."
+        return "Preparing this line now."
+
     def _warn_once(self, entry, message):
         identity = entry.line_id, entry.text_sha256
         if identity in self.warned_entries:
@@ -511,6 +538,7 @@ class GeneratedAudioFallbackBackend:
         self.live_mode_active = False
         self.voice_override = None
         self.progress_wait_status = lambda _message: None
+        self.progress_wait_request = lambda _line_id, _text_sha256: None
         self.set_volume(volume, delegate=False)
         self.set_speed(speed, delegate=False)
 
@@ -930,9 +958,12 @@ class GeneratedAudioFallbackBackend:
 
     def _play_pending_generated_route(self, route, playback_guard):
         self.progress_wait_stop.clear()
-        self.progress_wait_status(
-            "Waiting for offline preparation to finish the current dialogue..."
+        self.progress_wait_request(route.line_id, route.text_sha256)
+        last_status = (
+            self.library.progress_description(route.line_id, route.text_sha256)
+            or "Waiting for offline preparation to finish the current dialogue..."
         )
+        self.progress_wait_status(last_status)
         started = self.clock()
         self.playback_active = True
         self.active_playback_source = "preparing"
@@ -958,6 +989,12 @@ class GeneratedAudioFallbackBackend:
                         ),
                         playback_guard,
                     )
+                status = self.library.progress_description(
+                    route.line_id, route.text_sha256
+                )
+                if status is not None and status != last_status:
+                    last_status = status
+                    self.progress_wait_status(status)
                 if self.progress_wait_stop.wait(0.25):
                     break
             return _route_outcome(

@@ -672,7 +672,13 @@ class TrayApplicationTest(unittest.TestCase):
             generated_audio_manifest="live-progress-manifest.json",
             audio_source_policy="prefer-game-audio",
         )
-        controller = Mock(is_ready=True, is_live_running=False, settings=saved)
+        backend = Mock()
+        controller = Mock(
+            is_ready=True,
+            is_live_running=False,
+            settings=saved,
+            speech_backend=backend,
+        )
         controller.apply_settings.return_value = True
         tray = TrayApplication(
             self.application,
@@ -688,6 +694,10 @@ class TrayApplicationTest(unittest.TestCase):
             tray._read_prepared_story()
 
         controller.apply_settings.assert_called_once_with(progress)
+        self.assertIs(
+            backend.progress_wait_request,
+            preparation.prioritize_line,
+        )
         start_reading.assert_called_once_with()
         self.assertEqual(tray.settings, saved)
         tray.pregeneration_dialog = None

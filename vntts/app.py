@@ -2018,6 +2018,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 return
             if self.controller.is_ready:
                 self._controller_ready = True
+                backend = getattr(self.controller, "speech_backend", None)
+                dialog = self.pregeneration_dialog
+                if backend is not None and dialog is not None:
+                    backend.progress_wait_request = dialog.prioritize_line
                 self._apply_controller_action_state()
                 self.set_status(
                     "Reading uses finished recordings while preparation continues. "

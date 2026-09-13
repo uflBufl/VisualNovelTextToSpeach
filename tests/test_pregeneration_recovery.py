@@ -241,7 +241,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             with (
                 patch(
                     "vntts.pregeneration_recovery._ordered_generation_queue_ids",
-                    return_value=("a", "b"),
+                    return_value=(("a", "b"), {}),
                 ),
                 patch.object(worker, "recover", side_effect=recover),
             ):
@@ -276,7 +276,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             with (
                 patch(
                     "vntts.pregeneration_recovery._ordered_generation_queue_ids",
-                    return_value=("a", "b"),
+                    return_value=(("a", "b"), {}),
                 ),
                 patch(
                     "vntts.pregeneration_recovery._generation_queue_statuses",
@@ -292,6 +292,33 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
         )
         self.assertEqual(generator.generate.call_count, 1)
 
+    def test_waiting_dialogue_moves_to_the_next_render_boundary(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, current, voice_plan = inputs(Path(temporary_directory))
+            generator = Mock()
+            generator.inspect.side_effect = OfflineGenerationError
+            generator.generate.return_value = current
+            worker = OfflineRecoveryWorker(generator)
+            worker.prioritize_line("line:b", "b" * 64)
+            recovered = OfflineRecoveryResult(current, 0, 0, 0, ())
+
+            with (
+                patch(
+                    "vntts.pregeneration_recovery._ordered_generation_queue_ids",
+                    return_value=(
+                        ("a", "b"),
+                        {("line:b", "b" * 64): "b"},
+                    ),
+                ),
+                patch.object(worker, "recover", return_value=recovered),
+            ):
+                worker.generate_and_recover(generation_input, voice_plan)
+
+        self.assertEqual(
+            [call.kwargs["queue_ids"] for call in generator.generate.call_args_list],
+            [("b",), ("a",)],
+        )
+
     def test_generation_resume_repairs_existing_failure_before_new_generation(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, current, voice_plan = inputs(Path(temporary_directory))
@@ -303,7 +330,7 @@ class OfflineRecoveryWorkerTest(unittest.TestCase):
             with (
                 patch(
                     "vntts.pregeneration_recovery._ordered_generation_queue_ids",
-                    return_value=("a",),
+                    return_value=(("a",), {}),
                 ),
                 patch(
                     "vntts.pregeneration_recovery._generation_queue_statuses",

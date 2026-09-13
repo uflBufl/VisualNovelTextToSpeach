@@ -1350,6 +1350,9 @@ class OfflineAudioPreparationDialog(QDialog):
             force_live_narrator=False,
         )
 
+    def prioritize_line(self, line_id, text_sha256):
+        return self.recovery.prioritize_line(line_id, text_sha256)
+
     def generation_result(self):
         return self._generation_result
 

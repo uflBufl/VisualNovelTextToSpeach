@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, replace
+from threading import Lock
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
@@ -182,6 +183,15 @@ class OfflineRecoveryWorker:
         self.generator = generator or OfflineGenerationWorker()
         self.planner = planner
         self.terminalizer = terminalizer or _terminalize_pocket_failures
+        self._priority_lock = Lock()
+        self._priority_line = None
+
+    def prioritize_line(self, line_id, text_sha256):
+        if not all(isinstance(value, str) and value for value in (line_id, text_sha256)):
+            return False
+        with self._priority_lock:
+            self._priority_line = line_id, text_sha256
+        return True
 
     def recover(
         self,
@@ -307,7 +317,9 @@ class OfflineRecoveryWorker:
         cancel_event=None,
     ):
         """Finish safe recovery for each dialogue before starting the next one."""
-        queue_ids = _ordered_generation_queue_ids(generation_input, voice_plan)
+        queue_ids, line_queue_ids = _ordered_generation_queue_ids(
+            generation_input, voice_plan
+        )
         if not queue_ids:
             generation = self.generator.generate(
                 generation_input, voice_plan, cancel_event
@@ -324,7 +336,10 @@ class OfflineRecoveryWorker:
         )
         attempted = recovered = live_fallbacks = 0
         remaining = Counter()
-        for queue_id in queue_ids:
+        pending = list(queue_ids)
+        while pending:
+            queue_id = self._take_priority(line_queue_ids, pending) or pending[0]
+            pending.remove(queue_id)
             if statuses.get(queue_id) in {
                 "generated",
                 "approved",
@@ -365,6 +380,12 @@ class OfflineRecoveryWorker:
             tuple(sorted(remaining.items())),
             live_fallbacks,
         )
+
+    def _take_priority(self, line_queue_ids, pending):
+        with self._priority_lock:
+            identity, self._priority_line = self._priority_line, None
+        queue_id = line_queue_ids.get(identity)
+        return queue_id if queue_id in pending else None
 
 
 def _plan_contains(plan, queue_id):
@@ -415,7 +436,11 @@ def _ordered_generation_queue_ids(generation_input, voice_plan):
         ) from error
     if len(queue_ids) != generation_input.ready_items:
         raise OfflineRecoveryError("Offline generation queue readiness changed")
-    return queue_ids
+    return queue_ids, {
+        (item.line_id, item.text_sha256): item.queue_id
+        for item in queue.items
+        if item.queue_id in queue_ids
+    }
 
 
 def _generation_queue_statuses(generation_result, generation_input):
