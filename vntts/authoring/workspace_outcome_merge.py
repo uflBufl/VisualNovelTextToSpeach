@@ -8,6 +8,7 @@ import importlib
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypeGuard, TypedDict
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -69,6 +70,12 @@ _terminal_review_outcome = is_terminal_review_outcome
 _workspace_config_fingerprint = workspace_config_fingerprint
 
 
+class _ReconciliationSelection(TypedDict):
+    report_id: str
+    base: JsonDocument
+    sources: dict[Path, dict[str, JsonDocument]]
+
+
 def merge_workspace_outcomes(
     base_workspace: str | Path,
     outcome_workspaces: Iterable[str | Path],
@@ -86,7 +93,7 @@ def merge_workspace_outcomes(
 def merge_reconciled_workspace_outcomes(
     base_workspace: str | Path,
     outcome_workspaces: Iterable[str | Path],
-    reconciliation_selection: JsonDocument,
+    reconciliation_selection: _ReconciliationSelection,
     workspaces_root: str | Path | None = None,
 ) -> WorkspaceCreationResult:
     """Merge only terminal outcomes selected by an immutable reconciliation."""
@@ -101,7 +108,7 @@ def merge_reconciled_workspace_outcomes(
 def _load_outcome_merge_base(
     base_workspace: str | Path,
     outcome_workspaces: Iterable[str | Path],
-    reconciliation_selection: JsonDocument | None,
+    reconciliation_selection: _ReconciliationSelection | None,
 ) -> tuple[_OutcomeMergeBase, tuple[Path, ...]]:
     base_directory, base_document, base_workspace_sha256 = _load_workspace_snapshot(
         base_workspace, "base"
@@ -151,7 +158,7 @@ def _load_outcome_merge_base(
 def _load_outcome_merge_source(
     source_value: Path,
     base: _OutcomeMergeBase,
-    reconciliation_selection: JsonDocument | None,
+    reconciliation_selection: _ReconciliationSelection | None,
 ) -> _OutcomeMergeSource:
     source_directory, source_document, source_workspace_sha256 = (
         _load_workspace_snapshot(source_value, "source")
@@ -191,10 +198,19 @@ def _load_outcome_merge_source(
             raise AuthoringWorkbenchError(
                 "Reconciliation source has no exact terminal selection"
             )
-        source_report = next(iter(selected_records.values()))["workspace"]
+        source_report = _outcome_json_object(
+            next(iter(selected_records.values())).get("workspace"),
+            "reconciliation source workspace",
+        )
         if (
             source_report["workspace_id"] != source_document["workspace_id"]
-            or Path(source_report["workspace"]).resolve() != source_directory
+            or Path(
+                _required_text(
+                    source_report.get("workspace"),
+                    "Reconciliation source workspace path",
+                )
+            ).resolve()
+            != source_directory
             or source_report["config_fingerprint"]
             != source_document["config_fingerprint"]
             or source_report["queue_sha256"] != base.queue_sha256
@@ -317,7 +333,7 @@ def _collect_outcome_merge_item(
 def _collect_outcome_merge_sources(
     base: _OutcomeMergeBase,
     source_values: Sequence[Path],
-    reconciliation_selection: JsonDocument | None,
+    reconciliation_selection: _ReconciliationSelection | None,
 ) -> _OutcomeMergeSources:
     collected = _OutcomeMergeSources({}, [], [], {})
     for source_value in source_values:
@@ -340,7 +356,14 @@ def _collect_outcome_merge_sources(
             result, ledger, audio = item
             collected.items[queue_id] = (result, ledger)
             collected.audio[queue_id] = audio
-            collected.snapshots.append((audio[0], ledger["audio_sha256"]))
+            collected.snapshots.append(
+                (
+                    audio[0],
+                    _required_text(
+                        ledger.get("audio_sha256"), "Outcome merge audio SHA-256"
+                    ),
+                )
+            )
             terminal_count += 1
         if terminal_count == 0:
             raise AuthoringWorkbenchError(
@@ -374,7 +397,7 @@ def _collect_outcome_merge_sources(
 def _outcome_merge_identity(
     base: _OutcomeMergeBase,
     sources: _OutcomeMergeSources,
-    reconciliation_selection: JsonDocument | None,
+    reconciliation_selection: _ReconciliationSelection | None,
 ) -> tuple[JsonDocument, str, str]:
     ledger_items = [sources.items[key][1] for key in sorted(sources.items)]
     outcome_merge = {
@@ -395,7 +418,9 @@ def _outcome_merge_identity(
         import_id,
         base.document.get("story_index"),
         base.document.get("voice_manifest"),
-        base.document["narrator_character"],
+        _required_text(
+            base.document.get("narrator_character"), "Base narrator character"
+        ),
         base.document["run_config"],
         base.document.get("carry_forward"),
         outcome_merge,
@@ -479,13 +504,17 @@ def _outcome_json_object(value: object, label: str) -> JsonDocument:
 
 
 def _outcome_state_items(state: JsonDocument) -> dict[str, JsonDocument]:
-    raw_items = _outcome_json_object(state.get("items"), "generation state items")
-    items: dict[str, JsonDocument] = {}
-    for queue_id, value in raw_items.items():
-        if not isinstance(queue_id, str) or not isinstance(value, dict):
-            raise AuthoringWorkbenchError("Generation state items are malformed")
-        items[queue_id] = value
+    items = state.get("items")
+    if not _is_outcome_state_items(items):
+        raise AuthoringWorkbenchError("Generation state items are malformed")
     return items
+
+
+def _is_outcome_state_items(value: object) -> TypeGuard[dict[str, JsonDocument]]:
+    return isinstance(value, dict) and all(
+        isinstance(queue_id, str) and isinstance(item, dict)
+        for queue_id, item in value.items()
+    )
 
 
 def _overlay_outcome_merge_items(
@@ -494,8 +523,9 @@ def _overlay_outcome_merge_items(
     path_owners: dict[str, str],
     sources: _OutcomeMergeSources,
 ) -> None:
+    target_items = _outcome_state_items(target_state)
     for queue_id, (result, ledger) in sources.items.items():
-        previous = target_state["items"].get(queue_id)
+        previous = target_items.get(queue_id)
         previous_path = previous.get("path") if isinstance(previous, dict) else None
         relative = sources.audio[queue_id][2]
         if previous_path and previous_path != relative.as_posix():
@@ -518,7 +548,7 @@ def _overlay_outcome_merge_items(
         copied["outcome_merge"] = {
             key: value for key, value in ledger.items() if key != "queue_id"
         }
-        target_state["items"][queue_id] = copied
+        target_items[queue_id] = copied
 
 
 def _write_outcome_merge_workspace(
@@ -638,7 +668,7 @@ def _merge_workspace_outcomes(
     outcome_workspaces: Iterable[str | Path],
     workspaces_root: str | Path | None,
     *,
-    reconciliation_selection: JsonDocument | None,
+    reconciliation_selection: _ReconciliationSelection | None,
 ) -> WorkspaceCreationResult:
     """Assemble one exact terminal-outcome successor."""
     base, source_values = _load_outcome_merge_base(
