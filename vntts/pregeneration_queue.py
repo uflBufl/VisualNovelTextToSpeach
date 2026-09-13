@@ -351,7 +351,9 @@ def _write_effective_voices(staging, effective):
         effective["routes"].items(), key=lambda item: item[0].casefold()
     ):
         relative_references = []
-        for source, expected in zip(voice.references if voice else (), expected_hashes):
+        for source, expected in zip(
+            voice.references if voice else (), expected_hashes, strict=True
+        ):
             payload = read_voice_reference_bytes(voice, source)
             if hashlib.sha256(payload).hexdigest() != expected:
                 raise PregenerationQueueError(

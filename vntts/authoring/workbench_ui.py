@@ -8,6 +8,7 @@ import json
 import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from itertools import pairwise
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -2717,7 +2718,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.reset_layout,
             self.copy_diagnostics,
         )
-        for first, second in zip(widgets, widgets[1:]):
+        for first, second in pairwise(widgets):
             QWidget.setTabOrder(first, second)
 
     def closeEvent(self, event: QCloseEvent):

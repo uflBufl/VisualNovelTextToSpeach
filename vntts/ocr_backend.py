@@ -94,7 +94,7 @@ class RapidOCRBackend:
         scores = getattr(output, "scores", None)
         if boxes is None or texts is None or scores is None:
             return []
-        lines = list(zip(boxes, texts, scores))
+        lines = list(zip(boxes, texts, scores, strict=True))
         lines.sort(
             key=lambda item: (
                 min(float(point[1]) for point in item[0]),

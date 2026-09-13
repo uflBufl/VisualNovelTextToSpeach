@@ -101,6 +101,7 @@ class SpeakerIdentityTest(unittest.TestCase):
                         (0.97, 0.24),
                         (0.2, 0.98),
                     ),
+                    strict=True,
                 )
             }
 

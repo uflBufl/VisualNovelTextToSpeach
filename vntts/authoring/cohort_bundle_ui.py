@@ -9,6 +9,7 @@ import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -726,7 +727,7 @@ class CohortReviewBundleDialog(QDialog):
             self.accept_button,
             self.reject_button,
         ]
-        for current, following in zip(focus_order, focus_order[1:]):
+        for current, following in pairwise(focus_order):
             self.setTabOrder(current, following)
 
         previous_shortcut = QShortcut(

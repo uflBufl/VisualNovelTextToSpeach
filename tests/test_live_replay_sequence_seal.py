@@ -111,7 +111,7 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
         )
         markers = ((255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0))
         recognition = {}
-        for marker, observation in zip(markers, observations):
+        for marker, observation in zip(markers, observations, strict=False):
             session.observe(self.frame(marker), *observation)
             recognition[marker] = observation
         result = session.finish()

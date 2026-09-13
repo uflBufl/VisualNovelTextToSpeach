@@ -49,6 +49,14 @@ class RapidOCRBackendTest(unittest.TestCase):
         self.assertEqual(result.text, "")
         self.assertEqual(result.confidence, 0.0)
 
+    def test_rejects_inconsistent_output_vectors(self):
+        output = SimpleNamespace(boxes=([0],), txts=(), scores=(0.98,))
+
+        with self.assertRaises(ValueError):
+            RapidOCRBackend(lambda image, **options: output).recognize(
+                Image.new("RGB", (10, 10))
+            )
+
     def test_rejects_language_without_a_configured_model(self):
         backend = RapidOCRBackend(lambda image, **options: None)
 

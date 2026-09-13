@@ -351,6 +351,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                     dialog.review_collection,
                     dialog.review_search,
                 ),
+                strict=True,
             ):
                 self.assertIs(label.buddy(), control)
             self.assertIs(

@@ -161,6 +161,7 @@ def benchmark_ocr(
                 for cpu_ms, wall_ms in zip(
                     sample["cpu_ms"]["runs"],
                     sample["latency_ms"]["runs"],
+                    strict=True,
                 )
                 if wall_ms > 0
             ),

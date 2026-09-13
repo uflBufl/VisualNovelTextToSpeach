@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from itertools import pairwise
 from pathlib import Path
 
 from vntts.cli import cli_error, cli_messages
@@ -170,7 +171,7 @@ def audit_live_replay_coverage(
 
 
 def _validate_visible_path(plan, visible):
-    for current, following in zip(visible, visible[1:]):
+    for current, following in pairwise(visible):
         frontier = _next_visible_events(plan, current)
         if len(frontier) != 1 or frontier[0].event_id != following.event_id:
             raise LiveReplayCoverageError(
