@@ -3094,12 +3094,6 @@
     {
       "code": "PLR0915",
       "path": "vntts/app.py",
-      "scope": "TrayApplication.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/app.py",
       "scope": "TrayApplication.shutdown",
       "count": 1
     },

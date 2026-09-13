@@ -1456,6 +1456,31 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         pocket_runtime=None,
     ):
         super().__init__()
+        self._initialize_runtime(
+            application,
+            settings,
+            controller_factory,
+            moss_runtime,
+            pocket_runtime,
+        )
+        self._initialize_runners(pregeneration_activator)
+        self._initialize_session_state(profile_store, correction_store)
+        self._build_actions()
+        self._build_main_menu()
+        self._build_setup_and_support_menus()
+        self._connect_actions()
+        self._connect_application_signals()
+        self._connect_dashboard()
+        self._start_runtime_timer()
+
+    def _initialize_runtime(
+        self,
+        application,
+        settings,
+        controller_factory,
+        moss_runtime,
+        pocket_runtime,
+    ):
         self.application = application
         uses_saved_settings = settings is None
         if uses_saved_settings:
@@ -1510,6 +1535,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if isinstance(self.controller, AppController):
             self.controller.moss_backend_factory = self.moss_runtime
             self.controller.pocket_backend_factory = self.pocket_runtime
+
+    def _initialize_runners(self, pregeneration_activator):
         self.live_stop_runner = LatestTaskRunner(self)
         self.live_stop_runner.finished.connect(self._live_stop_finished)
         self._live_stop_continuation = None
@@ -1540,6 +1567,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._pregeneration_activation_restore_runtime = Event()
         self._pregeneration_activation_status = None
         self._pending_profile_name = self._profile_restart_generation = None
+
+    def _initialize_session_state(self, profile_store, correction_store):
         self._lifecycle_generation = 0
         self._controller_ready = False
         self._controller_busy = False
@@ -1577,6 +1606,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard = ControlDashboard(self.settings)
         self.compact_controller = CompactController()
 
+    def _build_actions(self):
         self.tray = QSystemTrayIcon(self._application_icon(), self)
         self.menu = QMenu()
         self.status_action = QAction("Starting...")
@@ -1619,6 +1649,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.settings_folder_action = QAction("Open settings folder")
         self.quit_action = QAction("Quit")
 
+    def _build_main_menu(self):
         self.read_action.setEnabled(False)
         self.live_action.setEnabled(False)
         self.sequence_resync_action.setEnabled(False)
@@ -1655,6 +1686,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.playback_menu.addAction(self.auto_advance_action)
         self.playback_menu.addAction(self.auto_advance_reason_action)
         self.playback_menu.addAction(self.history_action)
+
+    def _build_setup_and_support_menus(self):
         self.setup_menu = self.menu.addMenu("Setup")
         self.setup_menu.addAction(self.readiness_action)
         self.setup_menu.addAction(self.setup_action)
@@ -1680,6 +1713,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.tray.setContextMenu(self.menu)
         self.tray.setToolTip(application_name)
 
+    def _connect_actions(self):
         self.read_action.triggered.connect(self.read_once)
         self.show_dashboard_action.triggered.connect(self.show_dashboard)
         self.show_compact_action.triggered.connect(self.show_compact_controls)
@@ -1714,6 +1748,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.quit_action.triggered.connect(self.request_quit)
         self.tray.messageClicked.connect(self._activate_notification_recovery)
         self._update_auto_advance_action()
+
+    def _connect_application_signals(self):
         self.signals.status_changed.connect(self.set_status)
         self.signals.dialog_changed.connect(self.set_dialog)
         self.signals.ready_changed.connect(self.set_ready)
@@ -1738,6 +1774,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "audio-auto",
             }:
                 self.set_sequence_status(sequence_status)
+
+    def _connect_dashboard(self):
         self.dashboard.main_section_changed.connect(self._save_main_section)
         self.dashboard.read_requested.connect(self.read_once)
         self.dashboard.live_requested.connect(self.toggle_live)
@@ -1770,6 +1808,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.choose_expected_sequence_event
         )
         self.compact_controller.full_requested.connect(self.show_dashboard)
+
+    def _start_runtime_timer(self):
         self.speech_runtime_timer = QTimer(self)
         self.speech_runtime_timer.setInterval(500)
         self.speech_runtime_timer.timeout.connect(self._refresh_speech_runtime)
