@@ -19,7 +19,7 @@ from io import BytesIO
 from itertools import chain
 from pathlib import Path
 from time import monotonic
-from typing import Protocol, TypeAlias, TypeGuard
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeGuard
 
 import numpy as np
 from numpy.typing import NDArray
@@ -73,6 +73,9 @@ from vntts.voices import (
     CharacterVoiceRegistry,
     normalize_character_name,
 )
+
+if TYPE_CHECKING:
+    from vntts.runtime_ownership import RuntimeUse
 
 _FRAME_LENGTH = struct.Struct(">I")
 _BOOTSTRAP = (
@@ -167,14 +170,6 @@ class WorkerProcess(Protocol):
 
 
 WorkerMessage: TypeAlias = tuple[WorkerProcess, FrameDocument, bytes]
-
-
-class _RuntimeUse(Protocol):
-    def begin_launch(self) -> None: ...
-
-    def launched(self, process: WorkerProcess | None) -> None: ...
-
-    def close(self) -> None: ...
 
 
 class _RetainedBackend(Protocol):
@@ -546,7 +541,7 @@ def probe_speech_runtime(
     paths: RuntimePaths,
     *,
     cancellation: Cancellation = None,
-    runtime_use: _RuntimeUse | None = None,
+    runtime_use: RuntimeUse | None = None,
 ) -> FrameDocument:
     """Use the real worker import/provenance gate without loading model weights."""
     from vntts.runtime_installation import _run
@@ -562,7 +557,7 @@ def probe_speech_runtime(
             "runtime_site": str(site),
         },
     )
-    use: _RuntimeUse | None = runtime_use or claim_runtime(backend, root)
+    use: RuntimeUse | None = runtime_use or claim_runtime(backend, root)
     try:
         output = _run(
             [
@@ -1021,7 +1016,7 @@ class IsolatedSpeechBackend:
         self.last_generation_limited = False
         self.last_audio_source: str | None = None
         self._closed = False
-        self._runtime_use: _RuntimeUse | None = None
+        self._runtime_use: RuntimeUse | None = None
         self.set_volume(volume)
         self.set_speed(1.0)
         self._start_worker()
