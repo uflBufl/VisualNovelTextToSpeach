@@ -8,6 +8,7 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 
 LIVE_SPEAKER_CORPUS_VERSION = 1
 
@@ -20,7 +21,7 @@ class LiveSpeakerCorpus:
     sha256: str
 
     @classmethod
-    def load(cls, path):
+    def load(cls, path: str | Path) -> Self:
         selected_path = Path(path).expanduser()
         if selected_path.is_symlink():
             raise ValueError(
@@ -60,8 +61,8 @@ class LiveSpeakerCorpus:
             raise ValueError(
                 "live speaker corpus must contain a non-empty speakers list"
             )
-        speakers = []
-        seen = set()
+        speakers: list[str] = []
+        seen: set[str] = set()
         for index, value in enumerate(raw_speakers, start=1):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(
@@ -81,7 +82,7 @@ class LiveSpeakerCorpus:
             hashlib.sha256(payload).hexdigest(),
         )
 
-    def revalidate(self):
+    def revalidate(self) -> Self:
         current = type(self).load(self.path)
         if current.sha256 != self.sha256:
             raise ValueError(
