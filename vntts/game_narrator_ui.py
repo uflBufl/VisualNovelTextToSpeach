@@ -1290,7 +1290,7 @@ class GameNarratorDialog(QDialog):
         root: Path | str | None = None,
     ) -> AppSettings:
         role = self._saving_role
-        context = (
+        context: dict[str, str | Path] = (
             {"additional_manifest": self._voice_context.voice_manifest}
             if self._voice_context is not None and self._voice_context.voice_manifest
             else {}
