@@ -6,8 +6,9 @@ import argparse
 import hashlib
 import sys
 from pathlib import Path
+from typing import Callable, Literal, Protocol, TypeAlias, TypedDict, TypeGuard
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, QThreadPool
 from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -38,22 +39,157 @@ from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
 
+class ReviewCandidate(TypedDict):
+    candidate_id: str
+    authority: Literal["approved", "rejected"]
+    audio_sha256: str
+
+
+class ReviewCase(TypedDict):
+    case_id: str
+    line_id: str
+    speaker: str
+    voice_character: str
+    text: str
+    candidates: list[ReviewCandidate]
+
+
+class ReviewDocument(TypedDict):
+    review_id: str
+    cases: list[ReviewCase]
+
+
+class ReviewDecision(TypedDict):
+    case_id: str
+    decision: str
+
+
+class ReviewProgress(TypedDict):
+    decisions: list[ReviewDecision]
+
+
+class _SignalConnector(Protocol):
+    def connect(self, slot: Callable[..., object]) -> object: ...
+
+
+class _AudioPlayer(Protocol):
+    errorOccurred: _SignalConnector
+    mediaStatusChanged: _SignalConnector
+
+    def stop(self) -> None: ...
+
+
+CandidateLoader: TypeAlias = Callable[[Path, str, str], bytes]
+DecisionRecorder: TypeAlias = Callable[[Path, str, str], object]
+DecisionConfirmer: TypeAlias = Callable[[str], bool]
+AudioPlayerFactory: TypeAlias = Callable[[QObject], _AudioPlayer]
+CandidatePayload: TypeAlias = tuple[str, str, str, int, bytes]
+ReviewDocumentLoader: TypeAlias = Callable[[Path], object]
+ReviewProgressLoader: TypeAlias = Callable[[Path], object]
+AudioBytesPlayer: TypeAlias = Callable[[_AudioPlayer, QObject, bytes, str], object | None]
+AudioBufferReleaser: TypeAlias = Callable[[_AudioPlayer, object | None], None]
+
+_review_document_loader: ReviewDocumentLoader = load_terminal_conflict_review_document
+_review_progress_loader: ReviewProgressLoader = load_terminal_conflict_review_progress
+_default_candidate_loader: CandidateLoader = load_terminal_conflict_candidate_audio
+_default_decision_recorder: DecisionRecorder = record_terminal_conflict_decision
+_audio_bytes_player: AudioBytesPlayer = play_audio_bytes
+_audio_buffer_releaser: AudioBufferReleaser = release_audio_buffer
+
+
+def _is_review_candidate(value: object) -> TypeGuard[ReviewCandidate]:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("candidate_id"), str)
+        and value.get("authority") in {"approved", "rejected"}
+        and isinstance(value.get("audio_sha256"), str)
+    )
+
+
+def _is_review_case(value: object) -> TypeGuard[ReviewCase]:
+    candidates = value.get("candidates") if isinstance(value, dict) else None
+    return (
+        isinstance(value, dict)
+        and all(
+            isinstance(value.get(field), str)
+            for field in (
+                "case_id",
+                "line_id",
+                "speaker",
+                "voice_character",
+                "text",
+            )
+        )
+        and isinstance(candidates, list)
+        and all(_is_review_candidate(candidate) for candidate in candidates)
+    )
+
+
+def _review_document(value: object) -> ReviewDocument:
+    cases = value.get("cases") if isinstance(value, dict) else None
+    if not (
+        isinstance(value, dict)
+        and isinstance(value.get("review_id"), str)
+        and isinstance(cases, list)
+        and all(_is_review_case(case) for case in cases)
+    ):
+        raise TerminalConflictReviewError("Terminal conflict review document is malformed")
+    return {"review_id": value["review_id"], "cases": cases}
+
+
+def _review_progress(value: object) -> ReviewProgress:
+    decisions = value.get("decisions") if isinstance(value, dict) else None
+    if not (
+        isinstance(decisions, list)
+        and all(
+            isinstance(decision, dict)
+            and isinstance(decision.get("case_id"), str)
+            and isinstance(decision.get("decision"), str)
+            for decision in decisions
+        )
+    ):
+        raise TerminalConflictReviewError("Terminal conflict review progress is malformed")
+    return {
+        "decisions": [
+            {"case_id": decision["case_id"], "decision": decision["decision"]}
+            for decision in decisions
+        ]
+    }
+
+
+def _is_candidate_payload(value: object) -> TypeGuard[CandidatePayload]:
+    return (
+        isinstance(value, tuple)
+        and len(value) == 5
+        and isinstance(value[0], str)
+        and isinstance(value[1], str)
+        and isinstance(value[2], str)
+        and isinstance(value[3], int)
+        and isinstance(value[4], bytes)
+    )
+
+
+def _create_audio_player(parent: QObject) -> _AudioPlayer:
+    factory: AudioPlayerFactory = QMediaPlayer
+    return factory(parent)
+
+
 class TerminalConflictReviewDialog(QDialog):
     """Play every distinct WAV and save one explicit winner per conflict."""
 
     def __init__(
         self,
-        directory,
-        parent=None,
+        directory: str | Path,
+        parent: QWidget | None = None,
         *,
-        thread_pool=None,
-        candidate_loader=load_terminal_conflict_candidate_audio,
-        decision_recorder=record_terminal_conflict_decision,
-        confirmer=None,
-    ):
+        thread_pool: QThreadPool | None = None,
+        candidate_loader: CandidateLoader = _default_candidate_loader,
+        decision_recorder: DecisionRecorder = _default_decision_recorder,
+        confirmer: DecisionConfirmer | None = None,
+    ) -> None:
         super().__init__(parent)
         self.directory = Path(directory).expanduser().resolve()
-        self.document = load_terminal_conflict_review_document(self.directory)
+        self.document = _review_document(_review_document_loader(self.directory))
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._decision_finished)
         self.playback_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -61,16 +197,16 @@ class TerminalConflictReviewDialog(QDialog):
         self.playback_runner.activeChanged.connect(
             lambda _active: self._set_actions(True)
         )
-        self.candidate_loader = candidate_loader
-        self.decision_recorder = decision_recorder
-        self.confirmer = confirmer or self._confirm_decision
+        self.candidate_loader: CandidateLoader = candidate_loader
+        self.decision_recorder: DecisionRecorder = decision_recorder
+        self.confirmer: DecisionConfirmer = confirmer or self._confirm_decision
         self._active = False
         self._close_pending = False
-        self._audio_buffer = None
-        self._playing_candidate = None
-        self._heard = set()
-        self._current = None
-        self._display_candidates = []
+        self._audio_buffer: object | None = None
+        self._playing_candidate: str | None = None
+        self._heard: set[str] = set()
+        self._current: ReviewCase | None = None
+        self._display_candidates: list[ReviewCandidate] = []
 
         self.setWindowTitle("Terminal audio conflict review")
         self.setMinimumSize(760, 420)
@@ -94,7 +230,7 @@ class TerminalConflictReviewDialog(QDialog):
         self.status.setWordWrap(True)
         self.status.setAccessibleName("Terminal conflict review status")
 
-        self.play_buttons = []
+        self.play_buttons: list[QPushButton] = []
         playback = review_form_layout()
         for index in range(2):
             button = QPushButton(f"Play candidate {chr(65 + index)}")
@@ -116,7 +252,7 @@ class TerminalConflictReviewDialog(QDialog):
         self.stop.setEnabled(False)
         playback.addRow(self.stop)
 
-        self.choose_buttons = []
+        self.choose_buttons: list[QPushButton] = []
         decisions = review_form_layout()
         for index in range(2):
             button = QPushButton(f"Choose candidate {chr(65 + index)}")
@@ -173,21 +309,21 @@ class TerminalConflictReviewDialog(QDialog):
         self.setTabOrder(self.choose_buttons[1], self.neither)
         self.setTabOrder(self.neither, self.close_button)
 
-        self.player = QMediaPlayer(self)
+        self.player = _create_audio_player(self)
         self.player.errorOccurred.connect(self._playback_error)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self._load_next()
 
-    def _decisions(self):
+    def _decisions(self) -> dict[str, str]:
         progress = self.directory / "progress.json"
         if not progress.is_file():
             return {}
-        document = load_terminal_conflict_review_progress(self.directory)
+        document = _review_progress(_review_progress_loader(self.directory))
         return {value["case_id"]: value["decision"] for value in document["decisions"]}
 
-    def _load_next(self):
+    def _load_next(self) -> None:
         self._stop()
-        self.document = load_terminal_conflict_review_document(self.directory)
+        self.document = _review_document(_review_document_loader(self.directory))
         decisions = self._decisions()
         total = len(self.document["cases"])
         self.progress.setText(f"Progress: {len(decisions)}/{total}")
@@ -199,8 +335,9 @@ class TerminalConflictReviewDialog(QDialog):
             ),
             None,
         )
+        current = self._current
         self._heard.clear()
-        if self._current is None:
+        if current is None:
             self.decision_context.set_context(
                 {
                     "purpose": "Resolve contradictory terminal WAV authorities",
@@ -215,7 +352,7 @@ class TerminalConflictReviewDialog(QDialog):
             )
             self._set_actions(False)
             return
-        candidates = self._current["candidates"]
+        candidates = current["candidates"]
         if len(candidates) != 2:
             raise TerminalConflictReviewError(
                 "The current UI supports exactly two distinct candidates per conflict"
@@ -226,7 +363,7 @@ class TerminalConflictReviewDialog(QDialog):
                 (
                     self.document["review_id"]
                     + ":"
-                    + self._current["case_id"]
+                    + current["case_id"]
                     + ":"
                     + candidate["candidate_id"]
                 ).encode("utf-8")
@@ -236,14 +373,14 @@ class TerminalConflictReviewDialog(QDialog):
             button.setText(f"Choose candidate {chr(65 + index)}")
             button.setAccessibleName(f"Choose terminal conflict candidate {index + 1}")
         self.identity.setText(
-            f"Line: {self._current['line_id']} | Speaker: {self._current['speaker']} | "
-            f"Voice: {self._current['voice_character']}"
+            f"Line: {current['line_id']} | Speaker: {current['speaker']} | "
+            f"Voice: {current['voice_character']}"
         )
         self.decision_context.set_context(
             {
                 "purpose": "Resolve two contradictory historical WAV decisions",
-                "game_speaker": self._current["speaker"],
-                "synthesis_voice": self._current["voice_character"],
+                "game_speaker": current["speaker"],
+                "synthesis_voice": current["voice_character"],
                 "reference": "Hidden because the two candidates are compared blind",
                 "backend": "Hidden with candidate authority until both are heard",
                 "model": "Hidden with candidate authority until both are heard",
@@ -258,16 +395,16 @@ class TerminalConflictReviewDialog(QDialog):
             },
             technical=(
                 f"Review: {self.document['review_id']}\n"
-                f"Conflict: {self._current['case_id']}\n"
-                f"Line: {self._current['line_id']}"
+                f"Conflict: {current['case_id']}\n"
+                f"Line: {current['line_id']}"
             ),
         )
-        self.text.setText(self._current["text"])
+        self.text.setText(current["text"])
         self.evidence.setText("Listen to both blind candidates before choosing.")
         self.status.setText("No source workspace will be changed by this decision.")
         self._set_actions(True)
 
-    def _play(self, index):
+    def _play(self, index: int) -> None:
         if self._active or self._current is None:
             return
         candidate = self._display_candidates[index]
@@ -287,16 +424,25 @@ class TerminalConflictReviewDialog(QDialog):
 
     @staticmethod
     def _load_candidate_payload(
-        loader, directory, case_id, candidate_id, expected_sha256, index
-    ):
+        loader: CandidateLoader,
+        directory: Path,
+        case_id: str,
+        candidate_id: str,
+        expected_sha256: str,
+        index: int,
+    ) -> CandidatePayload:
         payload = loader(directory, case_id, candidate_id)
         if hashlib.sha256(payload).hexdigest() != expected_sha256:
             raise TerminalConflictReviewError("Terminal conflict candidate WAV changed")
         return case_id, candidate_id, expected_sha256, index, payload
 
-    def _playback_prepared(self, result, error):
+    def _playback_prepared(self, result: object, error: Exception | None) -> None:
         if error is not None:
             self.status.setText(f"PLAYBACK BLOCKED: {error}")
+            self._set_actions(True)
+            return
+        if not _is_candidate_payload(result):
+            self.status.setText("PLAYBACK BLOCKED: candidate payload is malformed")
             self._set_actions(True)
             return
         case_id, candidate_id, expected_sha256, index, payload = result
@@ -312,7 +458,7 @@ class TerminalConflictReviewDialog(QDialog):
             self.status.setText("PLAYBACK CANCELLED: candidate selection changed")
             self._set_actions(True)
             return
-        self._audio_buffer = play_audio_bytes(
+        self._audio_buffer = _audio_bytes_player(
             self.player,
             self,
             payload,
@@ -328,24 +474,24 @@ class TerminalConflictReviewDialog(QDialog):
             f"Playing candidate {chr(65 + index)}. It counts only after audio ends."
         )
 
-    def _stop(self):
+    def _stop(self) -> None:
         if hasattr(self, "playback_runner"):
             self.playback_runner.cancel()
         self.player.stop()
-        release_audio_buffer(self.player, self._audio_buffer)
+        _audio_buffer_releaser(self.player, self._audio_buffer)
         self._audio_buffer = None
         self._playing_candidate = None
         self.stop.setEnabled(False)
 
-    def _choose(self, index):
+    def _choose(self, index: int) -> None:
         if self._current is None:
             return
         self._save(self._display_candidates[index]["candidate_id"])
 
-    def _choose_neither(self):
+    def _choose_neither(self) -> None:
         self._save(NEITHER_ACCEPTABLE)
 
-    def _save(self, decision):
+    def _save(self, decision: str) -> None:
         if self._active or self._current is None or len(self._heard) != 2:
             return
         if not self.confirmer(decision):
@@ -364,20 +510,18 @@ class TerminalConflictReviewDialog(QDialog):
             decision,
         )
 
-    def _confirm_decision(self, _decision):
-        return (
-            QMessageBox.question(
-                self,
-                "Save irreversible conflict decision?",
-                "Save this terminal conflict decision? This review window cannot "
-                "revise it afterward.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
+    def _confirm_decision(self, _decision: str) -> bool:
+        answer = QMessageBox.question(
+            self,
+            "Save irreversible conflict decision?",
+            "Save this terminal conflict decision? This review window cannot "
+            "revise it afterward.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
+        return bool(answer == QMessageBox.StandardButton.Yes)
 
-    def _decision_finished(self, _result, error):
+    def _decision_finished(self, _result: object, error: Exception | None) -> None:
         self._active = False
         if error is not None:
             self.status.setText(
@@ -394,7 +538,7 @@ class TerminalConflictReviewDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def _set_actions(self, enabled):
+    def _set_actions(self, enabled: bool) -> None:
         enabled = bool(
             enabled
             and self._current is not None
@@ -410,7 +554,7 @@ class TerminalConflictReviewDialog(QDialog):
         )
         self._update_decision_buttons()
 
-    def _update_decision_buttons(self):
+    def _update_decision_buttons(self) -> None:
         enabled = (
             self._current is not None
             and not self._active
@@ -442,7 +586,7 @@ class TerminalConflictReviewDialog(QDialog):
                 "Both candidates finished. " + "; ".join(consequences) + "."
             )
 
-    def _media_status_changed(self, status):
+    def _media_status_changed(self, status: object) -> None:
         if (
             status != QMediaPlayer.MediaStatus.EndOfMedia
             or self._playing_candidate is None
@@ -456,13 +600,13 @@ class TerminalConflictReviewDialog(QDialog):
         )
         self._update_decision_buttons()
 
-    def _playback_error(self, _error, error_string):
+    def _playback_error(self, _error: object, error_string: str) -> None:
         self._playing_candidate = None
         self.stop.setEnabled(False)
         self.status.setText(f"PLAYBACK FAILED: {error_string}")
         self._update_decision_buttons()
 
-    def closeEvent(self, event: QCloseEvent):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._active:
             self._close_pending = True
             self.status.setText(
@@ -474,14 +618,14 @@ class TerminalConflictReviewDialog(QDialog):
         super().closeEvent(event)
 
 
-def launch_terminal_conflict_review(directory):
+def launch_terminal_conflict_review(directory: str | Path) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     dialog = TerminalConflictReviewDialog(directory)
     dialog.show()
     return app.exec()
 
 
-def create_parser():
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Review exact competing terminal authoring WAVs"
     )
@@ -489,7 +633,7 @@ def create_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     options = create_parser().parse_args(argv)
     try:
         return launch_terminal_conflict_review(options.directory)
