@@ -1016,6 +1016,55 @@ def collect_active_content_identity(settings):
     return {"available": False}
 
 
+def correlate_active_preparation(active, preparation):
+    """Explain whether the saved pack came from the preparation that failed."""
+    job = preparation.get("job") if isinstance(preparation, dict) else None
+    generation_input = (
+        preparation.get("input") if isinstance(preparation, dict) else None
+    )
+    if not active.get("available") or not isinstance(job, dict):
+        return {"classification": "insufficient-evidence"}
+    comparisons = {
+        "selected_stories_present": (
+            set(job.get("selected_story_ids", ())).issubset(
+                active.get("active_story_ids", ())
+            )
+            if job.get("selected_story_ids") and active.get("active_story_ids")
+            else None
+        ),
+        "same_job": (
+            active.get("active_pregeneration_job_id") == job.get("job_id")
+            if active.get("active_pregeneration_job_id") and job.get("job_id")
+            else None
+        ),
+        "same_source_queue": (
+            active.get("active_source_queue_sha256")
+            == generation_input.get("queue_sha256")
+            if isinstance(generation_input, dict)
+            and active.get("active_source_queue_sha256")
+            and generation_input.get("queue_sha256")
+            else None
+        ),
+        "same_source_state": (
+            active.get("active_source_state_sha256")
+            == preparation.get("generation_state", {}).get("state_sha256")
+            if isinstance(preparation.get("generation_state"), dict)
+            and active.get("active_source_state_sha256")
+            and preparation["generation_state"].get("state_sha256")
+            else None
+        ),
+    }
+    known = tuple(value for value in comparisons.values() if value is not None)
+    classification = (
+        "same-preparation"
+        if known and all(known)
+        else "different-preparation"
+        if False in known
+        else "insufficient-evidence"
+    )
+    return {"classification": classification, **comparisons}
+
+
 @lru_cache(maxsize=16)
 def _active_pack_identity(path, _modified_ns, size):
     if size > 64 * 1024 * 1024:
@@ -1030,6 +1079,7 @@ def _active_pack_identity(path, _modified_ns, size):
     components = components if isinstance(components, dict) else {}
     story = components.get("story_index")
     story = story if isinstance(story, dict) else {}
+    story_ids = _active_story_ids(Path(path).resolve().parent, story)
     return {
         "available": True,
         "active_pack_identity": _sha256_support_value(extension.get("identity")),
@@ -1044,12 +1094,39 @@ def _active_pack_identity(path, _modified_ns, size):
         "active_story_line_count": _nonnegative_support_int(
             extension.get("story_line_count")
         ),
+        **story_ids,
         "active_approved_count": _nonnegative_support_int(
             extension.get("approved_count")
         ),
         "active_live_fallback_count": _nonnegative_support_int(
             extension.get("live_fallback_count")
         ),
+    }
+
+
+def _active_story_ids(root, component):
+    relative = component.get("path")
+    if not isinstance(relative, str) or not relative:
+        return {"active_story_ids_available": False}
+    try:
+        path = (root / relative).resolve()
+        path.relative_to(root)
+        if path.stat().st_size > 64 * 1024 * 1024:
+            raise ValueError("story index exceeds support read limit")
+        story_ids = {
+            record["collection_id"]
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if (record := json.loads(line)).get("record_type") != "metadata"
+            and isinstance(record.get("collection_id"), str)
+            and record["collection_id"]
+        }
+    except OSError, UnicodeError, json.JSONDecodeError, ValueError:
+        return {"active_story_ids_available": False}
+    values = sorted(story_ids)
+    return {
+        "active_story_ids_available": True,
+        "active_story_ids": values[:256],
+        "active_story_ids_truncated": max(0, len(values) - 256),
     }
 
 
@@ -1086,6 +1163,8 @@ class SupportBundleBuilder:
         if path.suffix.casefold() != ".zip":
             path = path.with_suffix(".zip")
         path.parent.mkdir(parents=True, exist_ok=True)
+        active_content = collect_active_content_identity(self.settings)
+        preparation = pregeneration_support.report()
         files = {
             "manifest.json": {
                 "version": 1,
@@ -1096,8 +1175,13 @@ class SupportBundleBuilder:
                 ),
             },
             "sanitized-settings.json": sanitize_settings(self.settings),
-            "active-content.json": collect_active_content_identity(self.settings),
-            "pregeneration.json": pregeneration_support.report(),
+            "active-content.json": active_content,
+            "pregeneration.json": {
+                **preparation,
+                "active_content_correlation": correlate_active_preparation(
+                    active_content, preparation
+                ),
+            },
             "runtime-events.json": {
                 "events": [sanitize_event(entry) for entry in self.event_log.snapshot()]
             },

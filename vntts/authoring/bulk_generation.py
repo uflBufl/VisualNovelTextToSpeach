@@ -187,6 +187,7 @@ from vntts.authoring.speech_quality import (
     MAX_INTERNAL_SILENCE_SECONDS,
     MAX_LEADING_SILENCE_SECONDS,
     MAX_TRAILING_SILENCE_SECONDS,
+    NOTABLE_SILENCE_SPAN_SECONDS,
     SpeechSilenceValidationError,
     inspect_generated_speech,
 )
@@ -1485,6 +1486,12 @@ def _edge_silence_only(failure: JsonDocument) -> bool:
         and (
             quality.get("leading_silence_seconds", 0) > MAX_LEADING_SILENCE_SECONDS
             or quality.get("trailing_silence_seconds", 0) > MAX_TRAILING_SILENCE_SECONDS
+            or quality.get("silence_ratio", 0) > MAX_SILENCE_RATIO
+            and max(
+                quality.get("leading_silence_seconds", 0),
+                quality.get("trailing_silence_seconds", 0),
+            )
+            >= NOTABLE_SILENCE_SPAN_SECONDS
         )
         and quality.get("longest_internal_silence_seconds", 0)
         <= MAX_INTERNAL_SILENCE_SECONDS
@@ -2451,7 +2458,11 @@ def _render_and_publish_generation_attempt(
         )
     output_pcm = _generated_mono_pcm(attempt.rendered.pcm)
     if plan.repair_strategy == EDGE_SILENCE_TRIM:
-        trimmed = trim_excess_edge_silence(output_pcm, attempt.rendered.sample_rate)
+        trimmed = trim_excess_edge_silence(
+            output_pcm,
+            attempt.rendered.sample_rate,
+            trigger_seconds=NOTABLE_SILENCE_SPAN_SECONDS,
+        )
         output_pcm = trimmed.pcm
         attempt.attempt_repair = {
             **(attempt.attempt_repair or {}),
@@ -4165,17 +4176,23 @@ def _validate_live_fallback_source(
 def _validate_automatic_recovery_fallback_source(
     existing: JsonDocument | None, failure: object
 ) -> None:
+    provider = existing.get("provider") if isinstance(existing, dict) else None
     if (
         not isinstance(existing, dict)
         or existing.get("status") != "failed"
-        or existing.get("provider") != "pocket-tts"
-        or existing.get("model") != "pocket-tts"
-        or existing.get("generation_profile") != "default"
         or not _is_json_document(failure)
         or failure.get("kind") in {"cancelled", "interrupted"}
+        or provider == "pocket-tts"
+        and (
+            existing.get("model") != "pocket-tts"
+            or existing.get("generation_profile") != "default"
+        )
+        or provider == "moss-tts"
+        and failure.get("kind") not in {"missed_eos_audio_limit", "speech_silence"}
+        or provider not in {"moss-tts", "pocket-tts"}
     ):
         raise BulkGenerationError(
-            "Automatic-recovery fallback requires an exact terminal Pocket failure"
+            "Automatic-recovery fallback requires an exact terminal speech failure"
         )
 
 
@@ -4275,7 +4292,7 @@ def _automatic_recovery_fallback_evidence(
     existing_failure = existing.get("failure")
     if not _is_json_document(existing_failure):
         raise BulkGenerationError(
-            "Automatic-recovery fallback requires an exact terminal Pocket failure"
+            "Automatic-recovery fallback requires an exact terminal speech failure"
         )
     return {
         "schema": AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA,

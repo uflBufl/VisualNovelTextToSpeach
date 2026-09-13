@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from threading import Event, Lock
 
 from vntts_artifacts.file_integrity import sha256_file
@@ -47,7 +47,6 @@ AUTOMATIC_ACTION_ORDER = (
     "sentence_boundary_segmentation",
     "edge_silence_trim",
     "bounded_seed_retry",
-    "offline_fallback_backend",
 )
 
 
@@ -133,17 +132,17 @@ def plan_automatic_recovery(generation_input, voice_plan, generation_result):
             raise OfflineRecoveryError("Offline recovery record is malformed")
         seen_queue_ids.add(queue_id)
         provider = record.get("provider")
-        if (
+        if action in grouped and not (
             provider == "pocket-tts"
             and action in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS
+        ):
+            grouped[action].append(queue_id)
+        elif (
+            provider is not None and action in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS
         ):
             deferred[action] += 1
             deferred_queue_ids.setdefault(action, []).append(queue_id)
             live_fallback_queue_ids.append(queue_id)
-        elif action in grouped:
-            grouped[action].append(queue_id)
-        elif provider is not None and action != "provenance_recovery_or_regeneration":
-            grouped["offline_fallback_backend"].append(queue_id)
         else:
             deferred[action] += 1
             deferred_queue_ids.setdefault(action, []).append(queue_id)
@@ -185,7 +184,7 @@ class OfflineRecoveryWorker:
     ):
         self.generator = generator or OfflineGenerationWorker()
         self.planner = planner
-        self.terminalizer = terminalizer or _terminalize_pocket_failures
+        self.terminalizer = terminalizer or _terminalize_exhausted_failures
         self._priority_lock = Lock()
         self._priority_line = None
 
@@ -283,19 +282,9 @@ class OfflineRecoveryWorker:
                     remaining_action_counts=tuple(sorted(remaining.items())),
                     live_fallbacks=terminalized,
                 )
-            repair_voice_plan = (
-                replace(
-                    voice_plan,
-                    synthesis_backend="pocket-tts",
-                    synthesis_model=None,
-                    synthesis_profile="default",
-                )
-                if next_batch.action == "offline_fallback_backend"
-                else voice_plan
-            )
             current = self.generator.repair(
                 generation_input,
-                repair_voice_plan,
+                voice_plan,
                 current,
                 action=next_batch.action,
                 queue_ids=next_batch.queue_ids,
@@ -488,7 +477,7 @@ def _generation_queue_statuses(
     return statuses
 
 
-def _terminalize_pocket_failures(
+def _terminalize_exhausted_failures(
     generation_input,
     generation_result,
     queue_ids,

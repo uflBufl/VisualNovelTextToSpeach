@@ -388,6 +388,41 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             stored["live_fallback"]["evidence"]["base_result_sha256"],
         )
 
+    def test_exhausted_moss_failure_becomes_evidenced_live_fallback(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            renderer = SyntheticRenderer([SynthesisCompletion.LIMITED] * 3)
+            renderer.name = "moss-tts"
+            renderer.model_name = "moss-local"
+            failed = run_bulk_generation(
+                queue,
+                root / "output",
+                renderer,
+                provider="moss-tts",
+                model="moss-local",
+                generation_profile="stable",
+                retries=2,
+            )
+
+            decision = authorize_live_fallback(
+                failed.state,
+                queue,
+                item["queue_id"],
+                reason="automatic_recovery_exhausted",
+                model="pocket-tts",
+            )
+            stored = load_generation_state(failed.state, queue)["items"][
+                item["queue_id"]
+            ]
+
+        self.assertEqual(
+            decision["evidence"]["recovery_action"], "offline_fallback_backend"
+        )
+        self.assertEqual(decision["evidence"]["base_result"]["provider"], "moss-tts")
+        self.assertEqual(stored["status"], "live_fallback")
+
     def test_batch_review_authorities_share_one_state_snapshot(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2724,6 +2759,20 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertEqual(plan["records"][0]["action"], "reference_comparison")
         self.assertIn("earlier sentence-boundary repair", plan["records"][0]["reason"])
+
+    def test_short_ratio_failure_with_only_trailing_silence_is_edge_repairable(self):
+        self.assertTrue(
+            bulk_module._edge_silence_only(
+                {
+                    "speech_quality": {
+                        "silence_ratio": 0.5714,
+                        "leading_silence_seconds": 0.0,
+                        "trailing_silence_seconds": 0.64,
+                        "longest_internal_silence_seconds": 0.0,
+                    }
+                }
+            )
+        )
 
     def test_internal_silence_failure_repairs_only_at_safe_sentence_boundaries(self):
         with TemporaryDirectory() as directory:

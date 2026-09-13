@@ -279,6 +279,12 @@ class AuthoringFailureRepairTest(unittest.TestCase):
         self.assertTrue(np.array_equal(untouched.pcm, short))
         self.assertTrue(np.array_equal(silent_result.pcm, silent))
 
+        notable = np.concatenate(
+            (np.ones(480, dtype=np.float32) * 0.2, np.zeros(640, dtype=np.float32))
+        )
+        repaired = trim_excess_edge_silence(notable, 1_000, trigger_seconds=0.5)
+        self.assertEqual(repaired.trailing_trimmed_samples, 560)
+
     def test_internal_compression_removes_only_unique_silent_center(self):
         speech = np.full(800, 0.2, dtype=np.float32)
         samples = np.concatenate((speech, np.zeros(1_600), speech))

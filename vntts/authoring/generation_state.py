@@ -1283,9 +1283,7 @@ def _validate_automatic_recovery_live_fallback_evidence(
         or evidence.get("base_result_sha256") != previous_result_sha256
         or not isinstance(base_result, dict)
         or base_result.get("status") != "failed"
-        or base_result.get("provider") != "pocket-tts"
-        or base_result.get("model") != "pocket-tts"
-        or base_result.get("generation_profile") != "default"
+        or not _automatic_recovery_source_backend(base_result, failure)
         or isinstance(base_result.get("live_fallback"), dict)
         or canonical_document_sha256(base_result) != evidence.get("base_result_sha256")
         or evidence.get("recovery_action") not in allowed_actions
@@ -1307,6 +1305,18 @@ def _validate_automatic_recovery_live_fallback_evidence(
     _validate_failure_record(failure, queue_id, result=base_result)
     _validate_synthesis_identity(base_result, queue_id)
     _validate_seed_application(base_result, queue_id)
+
+
+def _automatic_recovery_source_backend(result: StateObject, failure: object) -> bool:
+    provider = result.get("provider")
+    return bool(
+        provider == "pocket-tts"
+        and result.get("model") == "pocket-tts"
+        and result.get("generation_profile") == "default"
+        or provider == "moss-tts"
+        and isinstance(failure, dict)
+        and failure.get("kind") in {"missed_eos_audio_limit", "speech_silence"}
+    )
 
 
 def _validate_synthesis_identity(

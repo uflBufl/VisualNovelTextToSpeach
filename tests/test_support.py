@@ -23,6 +23,7 @@ from vntts.support import (
     collect_active_content_identity,
     collect_build_identity,
     collect_ocr_metrics,
+    correlate_active_preparation,
     native_speech_context,
     record_game_import,
     record_native_speech,
@@ -738,11 +739,25 @@ class SupportBundleBuilderTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
             pack = directory / "game-pack.json"
+            story = directory / "story-index.jsonl"
+            story.write_text(
+                json.dumps(
+                    {
+                        "record_type": "story_line",
+                        "collection_id": "story-one",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             pack.write_text(
                 json.dumps(
                     {
                         "components": {
-                            "story_index": {"sha256": "a" * 64},
+                            "story_index": {
+                                "path": "story-index.jsonl",
+                                "sha256": "a" * 64,
+                            },
                         },
                         "vntts.self-service": {
                             "identity": "b" * 64,
@@ -823,6 +838,9 @@ class SupportBundleBuilderTest(unittest.TestCase):
 
         self.assertEqual(active["active_pregeneration_job_id"], "c" * 24)
         self.assertEqual(active["active_story_line_count"], 493)
+        correlation = correlate_active_preparation(active, report)
+        self.assertTrue(correlation["selected_stories_present"])
+        self.assertEqual(correlation["classification"], "different-preparation")
         self.assertEqual(report["job"]["selected_story_ids"], ["story-one"])
         failure = report["generation_state"]["failed_items"][0]
         self.assertEqual(

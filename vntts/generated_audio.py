@@ -1448,9 +1448,14 @@ def _validate_automatic_recovery_fallback_evidence(
         or not is_lowercase_sha256(evidence.get("base_result_sha256"))
         or not isinstance(base_result, dict)
         or base_result.get("status") != "failed"
-        or base_result.get("provider") != "pocket-tts"
-        or base_result.get("model") != "pocket-tts"
-        or base_result.get("generation_profile") != "default"
+        or not (
+            base_result.get("provider") == "pocket-tts"
+            and base_result.get("model") == "pocket-tts"
+            and base_result.get("generation_profile") == "default"
+            or base_result.get("provider") == "moss-tts"
+            and isinstance(failure, dict)
+            and failure.get("kind") in {"missed_eos_audio_limit", "speech_silence"}
+        )
         or not isinstance(failure, dict)
         or failure.get("kind") != evidence.get("failure_kind")
         or failure.get("kind") in {"cancelled", "interrupted"}

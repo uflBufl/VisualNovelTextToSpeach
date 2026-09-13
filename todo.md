@@ -5,6 +5,9 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Play while offline audio is still preparing
 
+- [ ] On Windows, resume the supplied 682-line story with the recovery fix and
+      confirm that the two short `I ...` lines are repaired while the two exhausted
+      MOSS lines become live fallbacks without aborting pack publication.
 - [ ] Verify with one selected multi-chapter story: start after a partial chapter,
       continue generation while prepared WAVs play, cross a newly published
       boundary without duplicate speech, wait safely when catching the worker,
