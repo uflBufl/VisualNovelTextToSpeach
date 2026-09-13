@@ -90,6 +90,9 @@ jobs:
           uv run --frozen python scripts/check_mypy_scope.py
           uv run --frozen mypy
 
+      - name: Check whole-production type debt
+        run: uv run --frozen python scripts/check_mypy_inventory.py
+
       - name: Check complexity ratchet
         run: uv run --frozen python scripts/check_ruff_complexity.py
 
