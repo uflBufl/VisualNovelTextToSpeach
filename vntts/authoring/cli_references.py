@@ -81,7 +81,9 @@ COMMANDS = frozenset(
 )
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     reference_audit = subparsers.add_parser(
         "failure-reference-audit",
         help="Publish a blinded exact-reference audit for speech-quality failures",

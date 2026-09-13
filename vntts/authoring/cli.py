@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 
 from vntts.authoring.cli_audio_events import (
     COMMANDS as AUDIO_EVENT_COMMANDS,
@@ -156,7 +157,7 @@ COMMAND_FAMILIES = (
 )
 
 
-def main(argv=None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = create_parser()
     arguments = parser.parse_args(argv)
     try:

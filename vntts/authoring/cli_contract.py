@@ -111,7 +111,9 @@ AUTHORING_COMMAND_ORDER = (
 )
 
 
-def preserve_command_order(subparsers: argparse._SubParsersAction) -> None:
+def preserve_command_order(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     """Restore the captured public help order after family composition."""
 
     observed = set(subparsers.choices)
@@ -133,7 +135,7 @@ def preserve_command_order(subparsers: argparse._SubParsersAction) -> None:
     ]
 
 
-def _normalized(value):
+def _normalized(value: object) -> object:
     if isinstance(value, Path):
         if value.is_absolute():
             return {"kind": "absolute-path", "name": value.name}
@@ -141,18 +143,18 @@ def _normalized(value):
     if isinstance(value, (list, tuple)):
         return [_normalized(item) for item in value]
     if isinstance(value, set):
-        return sorted(_normalized(item) for item in value)
+        return sorted((_normalized(item) for item in value), key=repr)
     return value
 
 
-def parser_contract(parser: argparse.ArgumentParser) -> dict:
+def parser_contract(parser: argparse.ArgumentParser) -> dict[str, object]:
     subparsers = next(
         action
         for action in parser._actions
         if isinstance(action, argparse._SubParsersAction)
     )
     helps = {action.dest: action.help for action in subparsers._choices_actions}
-    commands = {}
+    commands: dict[str, object] = {}
     for name, command_parser in subparsers.choices.items():
         commands[name] = {
             "help": helps.get(name),

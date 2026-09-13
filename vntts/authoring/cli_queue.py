@@ -16,7 +16,9 @@ from vntts.authoring.queue_extension import publish_additive_generation_queue
 COMMANDS = frozenset({"preflight-queue", "build-queue", "extend-queue"})
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     extension = subparsers.add_parser(
         "extend-queue", help="Publish a strict additive generation-queue successor"
     )

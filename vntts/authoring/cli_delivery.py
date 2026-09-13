@@ -10,7 +10,9 @@ from vntts.authoring.delivery import LEGACY_ENGLISH_POLICY, apply_delivery_polic
 COMMANDS = frozenset({"annotate-delivery"})
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     annotate = subparsers.add_parser(
         "annotate-delivery",
         help="Print one provenance-marked legacy English delivery annotation",
