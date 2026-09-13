@@ -3730,12 +3730,6 @@
     {
       "code": "PLR0915",
       "path": "vntts/authoring/workbench_ui.py",
-      "scope": "AuthoringWorkbenchDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._review_save_finished",
       "count": 1
     },

@@ -377,6 +377,42 @@ class AuthoringWorkbenchDialog(QDialog):
         specialist_reviewer_factory=None,
     ):
         super().__init__(parent)
+        self._initialize_state(
+            workspace_directory,
+            settings,
+            process,
+            stop_timeout_ms,
+            clock,
+            playback_preparer,
+        )
+        self._initialize_task_runners(
+            projection_loader,
+            synchronous_projection,
+            projection_thread_pool,
+            reviewer,
+            review_thread_pool,
+            cohort_bundle_builder,
+            specialist_reviewer_factory,
+        )
+        self._build_overview()
+        self._build_voice_widgets()
+        self._layout_voice_section()
+        review_filters = self._build_review_table()
+        review_actions, generation_actions = self._build_action_controls()
+        self._build_technical_section()
+        self._build_workbench_layout(review_filters, review_actions, generation_actions)
+        self._connect_signals()
+        self._start_ui()
+
+    def _initialize_state(
+        self,
+        workspace_directory,
+        settings,
+        process,
+        stop_timeout_ms,
+        clock,
+        playback_preparer,
+    ):
         self.workspace_directory = Path(workspace_directory).expanduser().resolve()
         self.settings = settings or QSettings()
         self.process = process or QProcess(self)
@@ -411,6 +447,17 @@ class AuthoringWorkbenchDialog(QDialog):
         self._history = ()
         self._projection_active = self._projection_pending = False
         self._projection_selection_version = 0
+
+    def _initialize_task_runners(
+        self,
+        projection_loader,
+        synchronous_projection,
+        projection_thread_pool,
+        reviewer,
+        review_thread_pool,
+        cohort_bundle_builder,
+        specialist_reviewer_factory,
+    ):
         self._projection_loader = projection_loader or _load_workbench_projection
         self._synchronous_projection = bool(synchronous_projection)
         self._projection_runner = LatestTaskRunner(
@@ -436,6 +483,7 @@ class AuthoringWorkbenchDialog(QDialog):
             specialist_reviewer_factory or CohortReviewBundleDialog
         )
 
+    def _build_overview(self):
         self.setWindowTitle("VNTTS authoring workbench")
         self.setMinimumSize(900, 640)
         self.resize(1_080, 720)
@@ -472,6 +520,7 @@ class AuthoringWorkbenchDialog(QDialog):
         readiness_layout = self.readiness_details.content_layout
         readiness_layout.addWidget(self.readiness_text)
 
+    def _build_voice_widgets(self):
         self.collection_tree = QTreeWidget()
         self.collection_tree.setHeaderLabels(["Story collection", "Kind", "Lines"])
         self.collection_tree.setAccessibleName("Story collections in this workspace")
@@ -533,6 +582,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.player.errorOccurred.connect(self._media_error)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
 
+    def _layout_voice_section(self):
         voice_header = QHBoxLayout()
         self.voice_search_label = QLabel("Find voice")
         self.voice_search_label.setBuddy(self.voice_search)
@@ -565,6 +615,7 @@ class AuthoringWorkbenchDialog(QDialog):
         voice_layout.addLayout(voice_controls)
         self.voice_box.content_layout.addWidget(self.voice_content)
 
+    def _build_review_table(self):
         self.review_character = QComboBox()
         self.review_character.setAccessibleName("Filter review by source speaker")
         self.review_status = QComboBox()
@@ -656,6 +707,9 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self.review_table.setColumnHidden(6, True)
         self.review_table.setColumnHidden(8, True)
+        return review_filters
+
+    def _build_action_controls(self):
         self.previous_pending = QPushButton("Previous pending")
         self.next_pending = QPushButton("Next pending")
         self.approve = QPushButton("Approve")
@@ -763,7 +817,9 @@ class AuthoringWorkbenchDialog(QDialog):
             self.open_output,
         ):
             generation_actions.addWidget(widget)
+        return review_actions, generation_actions
 
+    def _build_technical_section(self):
         self.technical = DisclosureSection("Technical details")
         self.technical.setAccessibleName("Technical process details")
         self.show_technical_columns = QCheckBox("Show technical review columns")
@@ -791,6 +847,9 @@ class AuthoringWorkbenchDialog(QDialog):
         technical_layout.addWidget(self.process_log)
         technical_layout.addWidget(self.copy_diagnostics)
 
+    def _build_workbench_layout(
+        self, review_filters, review_actions, generation_actions
+    ):
         review_panel = QGroupBox("Generated-audio review")
         review_panel.setAccessibleName("Independent generated-audio review scope")
         review_panel.setMinimumHeight(320)
@@ -848,6 +907,7 @@ class AuthoringWorkbenchDialog(QDialog):
         layout.addWidget(self.counts)
         layout.addWidget(self.splitter, 1)
 
+    def _connect_signals(self):
         self.voice_search.textChanged.connect(self._populate_voice_choices)
         self.voice_character.currentTextChanged.connect(self._show_reference)
         self.voice_character.activated.connect(self._record_current_reference)
@@ -899,6 +959,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.process.finished.connect(self._process_finished)
         self.process.errorOccurred.connect(self._process_error)
 
+    def _start_ui(self):
         self.elapsed_timer = QTimer(self)
         self.elapsed_timer.setInterval(1_000)
         self.elapsed_timer.timeout.connect(self.update_elapsed)
