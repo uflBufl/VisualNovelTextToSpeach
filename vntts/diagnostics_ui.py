@@ -1,5 +1,6 @@
+from PIL import Image
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QCloseEvent, QImage, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -9,8 +10,10 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 
+from vntts.diagnostics import DiagnosticSnapshot
 from vntts.ui_text import copy_text_button, make_text_copyable
 
 
@@ -18,7 +21,9 @@ class DiagnosticsDialog(QDialog):
     refresh_requested = Signal()
     remediation_requested = Signal(str)
 
-    def __init__(self, parent=None, *, refresh_timeout_ms=10_000):
+    def __init__(
+        self, parent: QWidget | None = None, *, refresh_timeout_ms: int = 10_000
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Live diagnostics")
         self.resize(700, 540)
@@ -26,7 +31,7 @@ class DiagnosticsDialog(QDialog):
         self.refresh_timeout_ms = refresh_timeout_ms
         self.refresh_generation = 0
         self.concealed_for_capture = False
-        self.source_pixmap = None
+        self.source_pixmap: QPixmap | None = None
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setSingleShot(True)
         self.refresh_timer.timeout.connect(self._current_refresh_timed_out)
@@ -83,7 +88,7 @@ class DiagnosticsDialog(QDialog):
         self.warning_action.setAccessibleName("Resolve diagnostics warning")
         self.warning_action.clicked.connect(self._request_remediation)
         self.warning_action.hide()
-        self.warning_remediation = None
+        self.warning_remediation: str | None = None
 
         self.refresh_button = QPushButton("Refresh now")
         self.refresh_button.setAccessibleName("Refresh live diagnostics")
@@ -110,11 +115,11 @@ class DiagnosticsDialog(QDialog):
         layout.addWidget(buttons)
         make_text_copyable(self)
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._scale_preview()
 
-    def request_refresh(self):
+    def request_refresh(self) -> None:
         if self.refresh_in_flight:
             return
         self.refresh_in_flight = True
@@ -126,19 +131,19 @@ class DiagnosticsDialog(QDialog):
         self.refresh_timer.start(self.refresh_timeout_ms)
         self.refresh_requested.emit()
 
-    def _current_refresh_timed_out(self):
+    def _current_refresh_timed_out(self) -> None:
         generation = self.refresh_timer.property("refresh_generation")
-        if generation is not None:
-            self._refresh_timed_out(int(generation))
+        if isinstance(generation, int):
+            self._refresh_timed_out(generation)
 
-    def _refresh_timed_out(self, generation):
+    def _refresh_timed_out(self, generation: int) -> None:
         if not self.refresh_in_flight or generation != self.refresh_generation:
             return
         self._finish_refresh(
             "Refresh timed out. Restore the game window and select Refresh now to retry."
         )
 
-    def _finish_refresh(self, message):
+    def _finish_refresh(self, message: str) -> None:
         self.refresh_timer.stop()
         self.refresh_in_flight = False
         self.refresh_generation += 1
@@ -146,20 +151,20 @@ class DiagnosticsDialog(QDialog):
         self.refresh_status.setText(message)
         self.restore_after_capture()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.refresh_timer.stop()
         self.refresh_in_flight = False
         self.refresh_generation += 1
         super().closeEvent(event)
 
-    def conceal_for_capture(self):
+    def conceal_for_capture(self) -> bool:
         if not self.isVisible():
             return False
         self.concealed_for_capture = True
         self.hide()
         return True
 
-    def restore_after_capture(self):
+    def restore_after_capture(self) -> None:
         if not self.concealed_for_capture:
             return
         self.show()
@@ -167,7 +172,7 @@ class DiagnosticsDialog(QDialog):
         self.raise_()
         self.activateWindow()
 
-    def set_snapshot(self, snapshot):
+    def set_snapshot(self, snapshot: DiagnosticSnapshot) -> None:
         source_pixmap = (
             self._pixmap_from_image(snapshot.image)
             if snapshot.image is not None
@@ -207,7 +212,9 @@ class DiagnosticsDialog(QDialog):
         else:
             self._scale_preview()
 
-    def set_warning(self, message, *, remediation=None):
+    def set_warning(
+        self, message: str, *, remediation: tuple[str, str] | None = None
+    ) -> None:
         if self.refresh_in_flight:
             self._finish_refresh(
                 "Refresh failed. Resolve the warning below, then select Refresh now."
@@ -218,14 +225,19 @@ class DiagnosticsDialog(QDialog):
         self.warning_action.setText(remediation[1] if remediation else "")
         self.warning_action.setVisible(bool(message and remediation))
 
-    def set_permission_warnings(self, warnings, *, remediation=None):
+    def set_permission_warnings(
+        self,
+        warnings: list[str],
+        *,
+        remediation: tuple[str, str] | None = None,
+    ) -> None:
         self.set_warning("\n\n".join(warnings), remediation=remediation)
 
-    def _request_remediation(self):
+    def _request_remediation(self) -> None:
         if self.warning_remediation:
             self.remediation_requested.emit(self.warning_remediation)
 
-    def _scale_preview(self):
+    def _scale_preview(self) -> None:
         if self.source_pixmap is None:
             return
         size = self.preview.size()
@@ -240,7 +252,7 @@ class DiagnosticsDialog(QDialog):
         )
 
     @staticmethod
-    def _pixmap_from_image(image):
+    def _pixmap_from_image(image: Image.Image) -> QPixmap:
         image = image.convert("RGB")
         data = image.tobytes("raw", "RGB")
         qimage = QImage(
@@ -250,8 +262,11 @@ class DiagnosticsDialog(QDialog):
             image.width * 3,
             QImage.Format.Format_RGB888,
         ).copy()
-        return QPixmap.fromImage(qimage)
+        pixmap = QPixmap.fromImage(qimage)
+        if not isinstance(pixmap, QPixmap):
+            raise TypeError("Qt did not create a diagnostics preview pixmap")
+        return pixmap
 
     @staticmethod
-    def _format_latency(value):
+    def _format_latency(value: float | None) -> str:
         return "-" if value is None else f"{value:.1f} ms"
