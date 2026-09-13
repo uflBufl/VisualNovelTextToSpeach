@@ -1,6 +1,9 @@
+from collections.abc import Callable
+from concurrent.futures import Future
 from datetime import datetime
 
-from PySide6.QtCore import QSignalBlocker, QTimer
+from PySide6.QtCore import QSignalBlocker, QThreadPool, QTimer
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -13,21 +16,23 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.history import DialogueHistory, DialogueHistoryEntry
 
 
 class DialogueHistoryDialog(QDialog):
     def __init__(
         self,
-        history,
-        replay_handler,
-        parent=None,
+        history: DialogueHistory,
+        replay_handler: Callable[[str, str], object],
+        parent: QWidget | None = None,
         *,
-        stop_handler=None,
-        thread_pool=None,
-    ):
+        stop_handler: Callable[[], object] | None = None,
+        thread_pool: QThreadPool | None = None,
+    ) -> None:
         super().__init__(parent)
         self.history = history
         self.replay_handler = replay_handler
@@ -37,7 +42,7 @@ class DialogueHistoryDialog(QDialog):
         self.stop_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.stop_runner.finished.connect(self._stop_finished)
         self._close_pending = False
-        self.visible_entries = []
+        self.visible_entries: list[DialogueHistoryEntry] = []
         self.setWindowTitle("Dialogue history")
         self.resize(820, 560)
 
@@ -98,8 +103,8 @@ class DialogueHistoryDialog(QDialog):
         self.timer.start()
         self.refresh()
 
-    def refresh(self):
-        selected_id = None
+    def refresh(self) -> None:
+        selected_id: str | None = None
         entry = self.current_entry()
         if entry is not None:
             selected_id = entry.id
@@ -137,13 +142,13 @@ class DialogueHistoryDialog(QDialog):
         else:
             scroll_bar.setValue(scroll_bar.maximum())
 
-    def current_entry(self):
+    def current_entry(self) -> DialogueHistoryEntry | None:
         row = self.entries.currentRow()
         return (
             self.visible_entries[row] if 0 <= row < len(self.visible_entries) else None
         )
 
-    def show_entry(self, row):
+    def show_entry(self, row: int) -> None:
         entry = (
             self.visible_entries[row] if 0 <= row < len(self.visible_entries) else None
         )
@@ -159,7 +164,7 @@ class DialogueHistoryDialog(QDialog):
             f"{entry.character}\n{entry.recorded_at}\n\n{entry.text}"
         )
 
-    def replay_selected(self):
+    def replay_selected(self) -> None:
         entry = self.current_entry()
         if entry is None or self.replay_runner.active:
             return
@@ -174,13 +179,15 @@ class DialogueHistoryDialog(QDialog):
         )
 
     @staticmethod
-    def _run_replay(handler, character, text):
+    def _run_replay(
+        handler: Callable[[str, str], object], character: str, text: str
+    ) -> object:
         result = handler(character, text)
-        if hasattr(result, "result") and callable(result.result):
+        if isinstance(result, Future):
             return result.result()
         return result
 
-    def _replay_finished(self, _result, error):
+    def _replay_finished(self, _result: object, error: Exception | None) -> None:
         self.stop_button.setEnabled(False)
         self.replay_button.setEnabled(
             self.current_entry() is not None and not self.stop_runner.active
@@ -193,7 +200,7 @@ class DialogueHistoryDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def stop_replay(self, *, close_after=False):
+    def stop_replay(self, *, close_after: bool = False) -> None:
         if close_after:
             self._close_pending = True
         if not self.replay_runner.active:
@@ -211,7 +218,7 @@ class DialogueHistoryDialog(QDialog):
         self.status.setText("Stopping the current replay...")
         self.stop_runner.start(self.stop_handler)
 
-    def _stop_finished(self, _result, error):
+    def _stop_finished(self, _result: object, error: Exception | None) -> None:
         if error is not None:
             self._close_pending = False
             self.stop_button.setEnabled(self.replay_runner.active)
@@ -225,14 +232,14 @@ class DialogueHistoryDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self.replay_runner.active:
             self.stop_replay(close_after=True)
             event.ignore()
             return
         super().closeEvent(event)
 
-    def export_history(self):
+    def export_history(self) -> None:
         path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Export dialogue history",
