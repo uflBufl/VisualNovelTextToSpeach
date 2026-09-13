@@ -17,6 +17,10 @@ RULES = ("C901", "PLR0912", "PLR0915")
 
 def scope_at_line(source_path: Path, line: int) -> str | None:
     tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=source_path)
+    return _scope_at_line(tree, line)
+
+
+def _scope_at_line(tree: ast.AST, line: int) -> str | None:
     scopes: list[tuple[int, int, str]] = []
 
     def visit(node: ast.AST, parents: tuple[str, ...] = ()) -> None:
@@ -39,6 +43,12 @@ def scope_at_line(source_path: Path, line: int) -> str | None:
 
 
 def finding_identity(root: Path, finding: dict[str, object]) -> tuple[str, str, str]:
+    return _finding_identity(root, finding, {})
+
+
+def _finding_identity(
+    root: Path, finding: dict[str, object], source_trees: dict[Path, ast.AST]
+) -> tuple[str, str, str]:
     code = finding.get("code")
     filename = finding.get("filename")
     location = finding.get("location")
@@ -55,7 +65,12 @@ def finding_identity(root: Path, finding: dict[str, object]) -> tuple[str, str, 
         raise ValueError(
             f"Ruff finding is outside the repository: {filename}"
         ) from error
-    scope = scope_at_line(path, location["row"])
+    cache_key = path.resolve()
+    if cache_key not in source_trees:
+        source_trees[cache_key] = ast.parse(
+            path.read_text(encoding="utf-8"), filename=path
+        )
+    scope = _scope_at_line(source_trees[cache_key], location["row"])
     if scope is None:
         raise ValueError(
             f"Ruff finding {code} in {relative_path} has no function scope"
@@ -94,7 +109,10 @@ def check_findings(
     root: Path, baseline: object, findings: list[dict[str, object]]
 ) -> list[str]:
     allowed = baseline_counts(baseline)
-    current = Counter(finding_identity(root, finding) for finding in findings)
+    source_trees: dict[Path, ast.AST] = {}
+    current = Counter(
+        _finding_identity(root, finding, source_trees) for finding in findings
+    )
     unexpected = sorted(
         (identity, count, allowed[identity])
         for identity, count in current.items()
