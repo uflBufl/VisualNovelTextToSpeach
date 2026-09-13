@@ -67,7 +67,7 @@ from vntts.live_snapshot import read_live_snapshot as read_live_snapshot
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.live_speech import TypedPlaybackBackend, play_typed_text
 from vntts.ocr import OCRResult, UncertainFrameRecorder, default_minimum_ocr_confidence
-from vntts.ocr_corrections import OCRCorrectionStore
+from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
 from vntts.playback import PreparedPlayback
 from vntts.runtime_config import (
     get_live_configuration,
@@ -398,7 +398,7 @@ def create_dialog_read_scheduler(
     diagnostic_handler: Callable[[object], object] | None = None,
     voice_resolver: Callable[[str], str] | None = None,
     ocr_language: str = "eng",
-    correction_dictionary: Mapping[str, str] | None = None,
+    correction_dictionary: OCRCorrectionDictionary | None = None,
 ) -> Callable[[], bool]:
     active_read: _DialogReadFuture | None = None
     active_read_lock = Lock()

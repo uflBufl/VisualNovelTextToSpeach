@@ -1,10 +1,16 @@
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from PIL import Image
 
-from vntts.voices import CharacterVoiceRouter, is_narrator
+from vntts.voices import CharacterVoice, CharacterVoiceRegistry, is_narrator
+
+
+class VoiceRoutingSnapshot(Protocol):
+    registry: CharacterVoiceRegistry
+    narrator_voice: CharacterVoice | None
 
 
 @dataclass(frozen=True)
@@ -30,7 +36,7 @@ class DiagnosticSnapshot:
 
 
 def resolve_voice_label(
-    voice_router: CharacterVoiceRouter | None, character: str | None
+    voice_router: VoiceRoutingSnapshot | None, character: str | None
 ) -> str:
     if voice_router is None:
         return "Not loaded"
@@ -42,7 +48,8 @@ def resolve_voice_label(
         )
         if voice is None:
             reference = getattr(voice_router, "narrator_reference", None)
-            return str(reference or voice_router.narrator_speaker or "Default narrator")
+            speaker = getattr(voice_router, "narrator_speaker", None)
+            return str(reference or speaker or "Default narrator")
     return f"{voice.source_character or voice.character}; voice ID: {voice.speaker}"
 
 
