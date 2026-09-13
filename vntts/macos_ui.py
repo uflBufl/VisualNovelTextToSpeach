@@ -1,3 +1,5 @@
+from typing import Callable, Literal, TypeAlias, TypedDict
+
 from PySide6.QtCore import QEvent, QEventLoop, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
@@ -9,6 +11,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.macos import (
@@ -17,7 +20,21 @@ from vntts.macos import (
     request_screen_capture_permission,
 )
 
-privacy_urls = {
+PermissionName: TypeAlias = Literal["screen_capture", "accessibility"]
+PermissionGranted: TypeAlias = bool | None
+PermissionRequest: TypeAlias = Callable[[], object]
+UrlOpener: TypeAlias = Callable[[QUrl], bool]
+
+
+class PermissionStatus(TypedDict):
+    screen_capture: PermissionGranted
+    accessibility: PermissionGranted
+
+
+PermissionStatusProvider: TypeAlias = Callable[[], PermissionStatus]
+
+
+privacy_urls: dict[PermissionName, str] = {
     "screen_capture": (
         "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
     ),
@@ -30,13 +47,13 @@ privacy_urls = {
 class MacOSPermissionsDialog(QDialog):
     def __init__(
         self,
-        parent=None,
+        parent: QWidget | None = None,
         *,
-        status_provider=None,
-        screen_request=None,
-        accessibility_request=None,
-        url_opener=None,
-    ):
+        status_provider: PermissionStatusProvider | None = None,
+        screen_request: PermissionRequest | None = None,
+        accessibility_request: PermissionRequest | None = None,
+        url_opener: UrlOpener | None = None,
+    ) -> None:
         super().__init__(parent)
         self.status_provider = status_provider or get_macos_permission_status
         self.screen_request = screen_request or request_screen_capture_permission
@@ -109,7 +126,7 @@ class MacOSPermissionsDialog(QDialog):
         layout.addWidget(buttons)
         self.refresh()
 
-    def refresh(self):
+    def refresh(self) -> None:
         try:
             status = self.status_provider()
         except Exception as error:
@@ -131,27 +148,36 @@ class MacOSPermissionsDialog(QDialog):
         )
 
     @staticmethod
-    def _set_permission_actions(granted, request_button, settings_button):
+    def _set_permission_actions(
+        granted: PermissionGranted,
+        request_button: QPushButton,
+        settings_button: QPushButton,
+    ) -> None:
         request_button.setVisible(granted is not True)
         settings_button.setText(
             "Manage in Settings" if granted is True else "Open Settings"
         )
 
-    def request_screen(self):
+    def request_screen(self) -> None:
         self._request_permission(
             self.screen_request,
             self.request_screen_button,
             self.screen_status,
         )
 
-    def request_accessibility(self):
+    def request_accessibility(self) -> None:
         self._request_permission(
             self.accessibility_request,
             self.request_accessibility_button,
             self.accessibility_status,
         )
 
-    def _request_permission(self, request, button, status_label):
+    def _request_permission(
+        self,
+        request: PermissionRequest,
+        button: QPushButton,
+        status_label: QLabel,
+    ) -> None:
         button.setEnabled(False)
         status_label.setText("Requesting permission...")
         QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
@@ -164,7 +190,7 @@ class MacOSPermissionsDialog(QDialog):
         button.setEnabled(True)
         self.refresh()
 
-    def open_settings(self, permission):
+    def open_settings(self, permission: PermissionName) -> None:
         label = (
             self.screen_status
             if permission == "screen_capture"
@@ -181,14 +207,14 @@ class MacOSPermissionsDialog(QDialog):
         label.setText("System Settings opened; status will refresh on return.")
         self._refresh_on_activate = True
 
-    def changeEvent(self, event):
+    def changeEvent(self, event: QEvent) -> None:
         if event.type() == QEvent.Type.WindowActivate and self._refresh_on_activate:
             self._refresh_on_activate = False
             QTimer.singleShot(0, self.refresh)
         super().changeEvent(event)
 
     @staticmethod
-    def _status_text(value):
+    def _status_text(value: PermissionGranted) -> str:
         if value is None:
             return "Status unavailable"
         return "Granted" if value else "Not granted"
