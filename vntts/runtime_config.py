@@ -3,7 +3,7 @@
 import os
 import sys
 from collections.abc import Callable
-from typing import TypedDict, TypeVar
+from typing import TypedDict, TypeVar, overload
 
 from pynput import keyboard
 
@@ -336,9 +336,17 @@ def initialize_voice_router(
     )
 
 
+@overload
+def initialize_tts() -> TTSEngine | None: ...
+
+
+@overload
+def initialize_tts(tts_factory: Callable[..., EngineT]) -> EngineT | None: ...
+
+
 def initialize_tts(
-    tts_factory: Callable[..., EngineT] = TTSEngine,
-) -> EngineT | None:
+    tts_factory: Callable[..., object] = TTSEngine,
+) -> object | None:
     print("Loading TTS model...")
     try:
         tts = tts_factory(**get_tts_configuration())
