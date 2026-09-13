@@ -1,7 +1,10 @@
+from collections.abc import Callable
 from pathlib import Path
 from threading import Event
+from typing import Protocol, TypeAlias
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QThreadPool, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -26,8 +29,42 @@ from vntts.assets import (
     VoicePackManager,
 )
 from vntts.async_ui import LatestTaskRunner
+from vntts.settings import AppSettings
 
 default_model = "tts_models/multilingual/multi-dataset/xtts_v2"
+
+ManifestIdentity: TypeAlias = tuple[str, str]
+ManifestValidationResult: TypeAlias = tuple[str, str, str]
+ProgressCallback: TypeAlias = Callable[[int | None, str], None]
+VoiceImportOperation: TypeAlias = Callable[..., object]
+
+
+class _ModelManager(Protocol):
+    def model_path(self, model_name: str) -> Path: ...
+
+    def download(
+        self,
+        model_name: str,
+        *,
+        progress: ProgressCallback,
+        cancel_event: Event,
+    ) -> Path: ...
+
+    def validate(self, model_name: str) -> Path: ...
+
+
+class _VoiceManager(Protocol):
+    def import_pack(self, source_manifest: str) -> Path: ...
+
+    def import_voice(
+        self,
+        character: str,
+        reference_files: tuple[str, ...],
+        *,
+        aliases: tuple[str, ...],
+    ) -> Path: ...
+
+    def validate(self, manifest_path: Path) -> Path: ...
 
 
 class AssetSignals(QObject):
@@ -36,12 +73,12 @@ class AssetSignals(QObject):
 
 
 class VoiceImportDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add character voice")
         self.character = QLineEdit()
         self.aliases = QLineEdit()
-        self.references = []
+        self.references: list[str] = []
         self.reference_label = QLabel("No files selected")
         choose_button = QPushButton("Choose audio files...")
         choose_button.clicked.connect(self.choose_references)
@@ -61,7 +98,7 @@ class VoiceImportDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(buttons)
 
-    def choose_references(self):
+    def choose_references(self) -> None:
         files, _selected_filter = QFileDialog.getOpenFileNames(
             self,
             "Choose local voice references",
@@ -74,7 +111,7 @@ class VoiceImportDialog(QDialog):
                 f"{len(files)} file(s): {', '.join(Path(path).name for path in files)}"
             )
 
-    def validate_and_accept(self):
+    def validate_and_accept(self) -> None:
         if not self.character.text().strip():
             QMessageBox.warning(self, "Missing character", "Enter a character name.")
             return
@@ -87,7 +124,7 @@ class VoiceImportDialog(QDialog):
             return
         self.accept()
 
-    def values(self):
+    def values(self) -> tuple[str, list[str], list[str]]:
         aliases = [
             alias.strip() for alias in self.aliases.text().split(",") if alias.strip()
         ]
@@ -97,17 +134,17 @@ class VoiceImportDialog(QDialog):
 class AssetManagerDialog(QDialog):
     def __init__(
         self,
-        settings,
+        settings: AppSettings,
         *,
-        model_manager=None,
-        voice_manager=None,
-        thread_pool=None,
-        parent=None,
-    ):
+        model_manager: _ModelManager | None = None,
+        voice_manager: _VoiceManager | None = None,
+        thread_pool: QThreadPool | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
-        self.settings_value = settings
-        self.model_manager = model_manager or ModelAssetManager()
-        self.voice_manager = voice_manager or VoicePackManager()
+        self.settings_value: AppSettings = settings
+        self.model_manager: _ModelManager = model_manager or ModelAssetManager()
+        self.voice_manager: _VoiceManager = voice_manager or VoicePackManager()
         self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.voice_runner.finished.connect(self._voice_import_finished)
         self.model_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -117,10 +154,10 @@ class AssetManagerDialog(QDialog):
         self.signals = AssetSignals()
         self.cancel_event = Event()
         self.operation_running = False
-        self.operation_kind = None
+        self.operation_kind: str | None = None
         self._close_pending = False
-        self._voice_import_message = None
-        self._validated_manifest_identity = None
+        self._voice_import_message: str | None = None
+        self._validated_manifest_identity: ManifestIdentity | None = None
         self._accept_after_manifest_validation = False
         self.model_management_available = settings.speech_backend == "coqui-xtts"
         self.setWindowTitle(
@@ -148,7 +185,7 @@ class AssetManagerDialog(QDialog):
         self.signals.progress.connect(self.update_progress)
         self.signals.voice_imported.connect(self.voice_imported)
 
-    def _create_models_tab(self):
+    def _create_models_tab(self) -> QWidget:
         tab = QWidget()
         self.model = QComboBox()
         self.model.setEditable(True)
@@ -189,7 +226,7 @@ class AssetManagerDialog(QDialog):
         layout.addStretch()
         return tab
 
-    def _create_voices_tab(self):
+    def _create_voices_tab(self) -> QWidget:
         tab = QWidget()
         self.voice_manifest = QLineEdit(self.settings_value.voice_manifest or "")
         self.voice_manifest.setAccessibleName("Active voice manifest")
@@ -250,7 +287,7 @@ class AssetManagerDialog(QDialog):
         self.setTabOrder(self.import_pack_button, self.add_voice_button)
         return tab
 
-    def _voice_manifest_edited(self):
+    def _voice_manifest_edited(self) -> None:
         manifest = self.voice_manifest.text().strip()
         self.manifest_runner.cancel()
         self._validated_manifest_identity = None
@@ -269,7 +306,7 @@ class AssetManagerDialog(QDialog):
                 "No active voice manifest selected. Live voice assignments are disabled."
             )
 
-    def browse_voice_manifest(self):
+    def browse_voice_manifest(self) -> None:
         current = self.voice_manifest.text().strip()
         start = ""
         if current:
@@ -286,7 +323,7 @@ class AssetManagerDialog(QDialog):
         self.voice_manifest.setText(source)
         self.validate_voice_manifest()
 
-    def validate_voice_manifest(self):
+    def validate_voice_manifest(self) -> bool:
         manifest = self.voice_manifest.text().strip()
         if not manifest:
             self.voice_status.setText(
@@ -300,7 +337,7 @@ class AssetManagerDialog(QDialog):
         self.manifest_runner.start(self._validate_manifest_snapshot, manifest)
         return False
 
-    def _validate_manifest_snapshot(self, manifest):
+    def _validate_manifest_snapshot(self, manifest: str) -> ManifestValidationResult:
         path = Path(manifest).expanduser().resolve()
         before = sha256_file(path)
         validated = self.voice_manager.validate(path)
@@ -309,7 +346,9 @@ class AssetManagerDialog(QDialog):
             raise ValueError("Voice manifest changed while validation was running")
         return str(path), after, str(validated)
 
-    def _manifest_validation_finished(self, result, error):
+    def _manifest_validation_finished(
+        self, result: ManifestValidationResult, error: Exception | None
+    ) -> None:
         self._set_manifest_validation_pending(False)
         selected = self.voice_manifest.text().strip()
         if error is not None:
@@ -337,7 +376,7 @@ class AssetManagerDialog(QDialog):
             self._accept_after_manifest_validation = False
             self._accept_validated_settings()
 
-    def _set_manifest_validation_pending(self, pending):
+    def _set_manifest_validation_pending(self, pending: bool) -> None:
         pending = bool(pending)
         self.voice_progress.setRange(0, 0 if pending else 100)
         self.validate_manifest_button.setEnabled(
@@ -349,10 +388,10 @@ class AssetManagerDialog(QDialog):
             save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
             save.setEnabled(not pending and not self.operation_running)
 
-    def model_name(self):
+    def model_name(self) -> str:
         return self.model.currentText().strip()
 
-    def download_model(self):
+    def download_model(self) -> None:
         if self.operation_running or not self.model_management_available:
             return
         if not self.model_name():
@@ -373,25 +412,25 @@ class AssetManagerDialog(QDialog):
         self.model_status.setText("Preparing model download...")
         self.model_runner.start(self._download_model, self.model_name())
 
-    def _download_model(self, model_name):
+    def _download_model(self, model_name: str) -> Path:
         return self.model_manager.download(
             model_name,
             progress=self.signals.progress.emit,
             cancel_event=self.cancel_event,
         )
 
-    def cancel_download(self):
+    def cancel_download(self) -> None:
         self.cancel_event.set()
         self.model_status.setText("Cancelling after the current network chunk...")
 
-    def verify_model(self):
+    def verify_model(self) -> None:
         if self.operation_running or not self.model_management_available:
             return
         self.set_operation_running(True, "verify")
         self.model_status.setText("Verifying model checksums...")
         self.model_runner.start(self.model_manager.validate, self.model_name())
 
-    def _model_operation_finished(self, path, error):
+    def _model_operation_finished(self, path: object, error: Exception | None) -> None:
         if self.operation_kind == "download":
             message = (
                 f"Model ready at {path}"
@@ -408,7 +447,7 @@ class AssetManagerDialog(QDialog):
             )
         self.model_finished(error is None, message)
 
-    def update_progress(self, percent, message):
+    def update_progress(self, percent: int | None, message: str) -> None:
         if percent is None:
             self.progress.setRange(0, 0)
         else:
@@ -416,7 +455,7 @@ class AssetManagerDialog(QDialog):
             self.progress.setValue(percent)
         self.model_status.setText(message)
 
-    def model_finished(self, successful, message):
+    def model_finished(self, successful: bool, message: str) -> None:
         self.set_operation_running(False)
         self.progress.setRange(0, 100)
         if successful:
@@ -429,7 +468,7 @@ class AssetManagerDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def set_operation_running(self, running, kind=None):
+    def set_operation_running(self, running: bool, kind: str | None = None) -> None:
         self.operation_running = running
         self.operation_kind = kind if running else None
         self.download_button.setEnabled(not running)
@@ -445,7 +484,7 @@ class AssetManagerDialog(QDialog):
         self.buttons.setEnabled(not running)
         self._set_manifest_validation_pending(self.manifest_runner.active)
 
-    def import_voice_pack(self):
+    def import_voice_pack(self) -> None:
         source, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Import local voice manifest",
@@ -460,7 +499,7 @@ class AssetManagerDialog(QDialog):
             message="Voice pack imported",
         )
 
-    def add_character_voice(self):
+    def add_character_voice(self) -> None:
         dialog = VoiceImportDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -473,7 +512,13 @@ class AssetManagerDialog(QDialog):
             message=f"Imported {len(references)} reference(s) for {character}",
         )
 
-    def _start_voice_import(self, operation, *arguments, message, **keyword_arguments):
+    def _start_voice_import(
+        self,
+        operation: VoiceImportOperation,
+        *arguments: object,
+        message: str,
+        **keyword_arguments: object,
+    ) -> None:
         if self.operation_running:
             return
         self._voice_import_message = message
@@ -484,7 +529,7 @@ class AssetManagerDialog(QDialog):
         )
         self.voice_runner.start(operation, *arguments, **keyword_arguments)
 
-    def _voice_import_finished(self, manifest, error):
+    def _voice_import_finished(self, manifest: object, error: Exception | None) -> None:
         message = self._voice_import_message
         self._voice_import_message = None
         self.set_operation_running(False)
@@ -501,12 +546,12 @@ class AssetManagerDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def voice_imported(self, manifest, message):
+    def voice_imported(self, manifest: str, message: str) -> None:
         self.voice_manifest.setText(manifest)
         self.voice_status.setText(message)
         self.settings_value = self.settings_value.updated(voice_manifest=manifest)
 
-    def accept_settings(self):
+    def accept_settings(self) -> None:
         if self.operation_running:
             return
         manifest = self.voice_manifest.text().strip() or None
@@ -527,7 +572,7 @@ class AssetManagerDialog(QDialog):
             return
         self._accept_validated_settings()
 
-    def _accept_validated_settings(self):
+    def _accept_validated_settings(self) -> None:
         manifest = self.voice_manifest.text().strip() or None
         model = (
             self.model_name() or None
@@ -540,10 +585,10 @@ class AssetManagerDialog(QDialog):
         )
         self.accept()
 
-    def settings(self):
+    def settings(self) -> AppSettings:
         return self.settings_value
 
-    def reject(self):
+    def reject(self) -> None:
         if self.manifest_runner.active:
             self.manifest_runner.cancel()
             self._accept_after_manifest_validation = False
@@ -568,7 +613,7 @@ class AssetManagerDialog(QDialog):
             return
         super().reject()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self.manifest_runner.active:
             self.manifest_runner.cancel()
             self._accept_after_manifest_validation = False
