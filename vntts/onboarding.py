@@ -1,13 +1,17 @@
 import platform
 import sys
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from vntts.assets import ModelAssetManager
 from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.hotkeys import HotkeyValidationError, validate_hotkey_assignments
 from vntts.macos import get_macos_permission_status
 from vntts.release_backends import packaged_speech_backend_available
+from vntts.runtime_installation import Cancellation, ProgressCallback
+from vntts.settings import AppSettings
 from vntts.speech_worker import resolve_speech_runtime_paths
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
@@ -15,12 +19,12 @@ from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 @dataclass(frozen=True)
 class DiagnosticResult:
     name: str
-    status: str
+    status: Literal["ok", "warning", "error"]
     message: str
     remediation: str | None = None
 
     @property
-    def passed(self):
+    def passed(self) -> bool:
         return self.status != "error"
 
 
@@ -28,11 +32,14 @@ class OnboardingDiagnostics:
     def __init__(
         self,
         *,
-        tesseract_probe=None,
-        audio_probe=None,
-        model_path_resolver=None,
-        permission_status_provider=None,
-    ):
+        tesseract_probe: Callable[[], object] | None = None,
+        audio_probe: Callable[[], object] | None = None,
+        model_path_resolver: Callable[[str], str | Path] | None = None,
+        permission_status_provider: Callable[
+            [], Mapping[str, bool | None]
+        ]
+        | None = None,
+    ) -> None:
         self.tesseract_probe = tesseract_probe or probe_tesseract
         self.audio_probe = audio_probe or probe_audio_output
         self.model_path_resolver = model_path_resolver or get_model_cache_path
@@ -40,7 +47,7 @@ class OnboardingDiagnostics:
             permission_status_provider or get_macos_permission_status
         )
 
-    def run(self, settings):
+    def run(self, settings: AppSettings) -> tuple[DiagnosticResult, ...]:
         results = [
             self._check_hotkeys(settings),
             self._check_capture_source(settings),
@@ -54,7 +61,9 @@ class OnboardingDiagnostics:
             results.insert(2, permission_result)
         return tuple(results)
 
-    def moss_installation_space(self, settings):
+    def moss_installation_space(
+        self, settings: AppSettings
+    ) -> tuple[int, int, int] | None:
         if (
             settings.speech_backend != "moss-tts"
             or sys.platform != "win32"
@@ -71,12 +80,12 @@ class OnboardingDiagnostics:
 
     def prepare_and_run(
         self,
-        settings,
+        settings: AppSettings,
         *,
-        cancellation,
-        progress,
-        allow_moss_download=False,
-    ):
+        cancellation: Cancellation,
+        progress: ProgressCallback,
+        allow_moss_download: bool = False,
+    ) -> tuple[DiagnosticResult, ...]:
         """Only the setup journey provisions dependencies; ordinary probes stay read-only."""
         from vntts.moss_cpp_backend import moss_cpp_requested
         from vntts.runtime_installation import ensure_speech_runtime
@@ -105,14 +114,16 @@ class OnboardingDiagnostics:
         progress("Checking OCR, audio, permissions, and speech assets...")
         return self.run(settings)
 
-    def _check_platform_permissions(self, settings):
+    def _check_platform_permissions(
+        self, settings: AppSettings
+    ) -> DiagnosticResult | None:
         status = self.permission_status_provider()
         screen_capture = status.get("screen_capture")
         accessibility = status.get("accessibility")
         needs_accessibility = _auto_advance_requires_accessibility(settings)
         if screen_capture is None and accessibility is None:
             return None
-        missing = []
+        missing: list[str] = []
         if screen_capture is False:
             missing.append("Screen Recording for game capture")
         if accessibility is False and needs_accessibility:
@@ -137,7 +148,7 @@ class OnboardingDiagnostics:
             message += " and Accessibility is granted"
         return DiagnosticResult("macOS permissions", "ok", message)
 
-    def _check_hotkeys(self, settings):
+    def _check_hotkeys(self, settings: AppSettings) -> DiagnosticResult:
         try:
             validate_hotkey_assignments(
                 {
@@ -149,7 +160,7 @@ class OnboardingDiagnostics:
             return DiagnosticResult("Hotkeys", "error", str(error), "settings")
         return DiagnosticResult("Hotkeys", "ok", "Read and live hotkeys are valid")
 
-    def _check_capture_source(self, settings):
+    def _check_capture_source(self, settings: AppSettings) -> DiagnosticResult:
         if settings.capture_mode == "window" and not settings.game_window_title:
             return DiagnosticResult(
                 "Capture source",
@@ -164,21 +175,21 @@ class OnboardingDiagnostics:
         )
         return DiagnosticResult("Capture source", "ok", description)
 
-    def _check_tesseract(self):
+    def _check_tesseract(self) -> DiagnosticResult:
         try:
             version = self.tesseract_probe()
         except Exception as error:
             return DiagnosticResult("Tesseract OCR", "error", str(error))
         return DiagnosticResult("Tesseract OCR", "ok", f"Version {version}")
 
-    def _check_audio(self):
+    def _check_audio(self) -> DiagnosticResult:
         try:
             device = self.audio_probe()
         except Exception as error:
             return DiagnosticResult("Audio output", "error", str(error))
         return DiagnosticResult("Audio output", "ok", str(device))
 
-    def _check_model(self, settings):
+    def _check_model(self, settings: AppSettings) -> DiagnosticResult:
         from vntts.moss_cpp_backend import moss_cpp_paths, moss_cpp_requested
 
         if settings.speech_backend == "moss-tts" and moss_cpp_requested(
@@ -235,7 +246,7 @@ class OnboardingDiagnostics:
             "Not cached yet; it will be downloaded before the final test",
         )
 
-    def _check_voice_manifest(self, settings):
+    def _check_voice_manifest(self, settings: AppSettings) -> DiagnosticResult:
         if not settings.voice_manifest:
             if settings.speech_backend == "pocket-tts":
                 return DiagnosticResult(
@@ -285,13 +296,13 @@ class OnboardingDiagnostics:
         )
 
 
-def probe_tesseract():
+def probe_tesseract() -> object:
     import pytesseract
 
     return pytesseract.get_tesseract_version()
 
 
-def probe_audio_output():
+def probe_audio_output() -> object:
     import sounddevice
 
     device = sounddevice.query_devices(kind="output")
@@ -302,7 +313,7 @@ def probe_audio_output():
     return getattr(device, "name", None) or str(device)
 
 
-def _auto_advance_requires_accessibility(settings):
+def _auto_advance_requires_accessibility(settings: AppSettings) -> bool:
     if not settings.auto_advance_enabled or not auto_advance_allowed(
         settings.capture_mode,
         settings.live_sequence_mode,
@@ -310,8 +321,8 @@ def _auto_advance_requires_accessibility(settings):
         return False
     if settings.live_sequence_mode == "audio-auto":
         return bool(settings.story_index and settings.live_sequence_plan)
-    return settings.live_sequence_mode != "audio-manual"
+    return str(settings.live_sequence_mode) != "audio-manual"
 
 
-def get_model_cache_path(model_name):
-    return ModelAssetManager().model_path(model_name)
+def get_model_cache_path(model_name: str) -> Path:
+    return Path(ModelAssetManager().model_path(model_name))
