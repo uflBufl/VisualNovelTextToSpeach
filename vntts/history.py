@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -18,16 +19,23 @@ class DialogueHistoryEntry:
 
 
 class DialogueHistory:
-    def __init__(self, *, maximum_entries=1000, clock=None):
+    def __init__(
+        self,
+        *,
+        maximum_entries: int = 1000,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         if maximum_entries < 1:
             raise ValueError("maximum_entries must be positive")
         self.maximum_entries = maximum_entries
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.entries = []
-        self.active_entry_id = None
+        self.entries: list[DialogueHistoryEntry] = []
+        self.active_entry_id: str | None = None
         self.lock = RLock()
 
-    def add(self, character, text):
+    def add(
+        self, character: str | None, text: str | None
+    ) -> DialogueHistoryEntry | None:
         character = (character or "Narrator").strip() or "Narrator"
         text = " ".join((text or "").split())
         if not text:
@@ -57,15 +65,15 @@ class DialogueHistory:
             self.active_entry_id = entry.id
             return entry
 
-    def finish_current(self):
+    def finish_current(self) -> None:
         with self.lock:
             self.active_entry_id = None
 
-    def snapshot(self):
+    def snapshot(self) -> list[DialogueHistoryEntry]:
         with self.lock:
             return list(self.entries)
 
-    def search(self, query=""):
+    def search(self, query: str | None = "") -> list[DialogueHistoryEntry]:
         query = " ".join((query or "").split()).casefold()
         entries = self.snapshot()
         if not query:
@@ -76,7 +84,7 @@ class DialogueHistory:
             if query in entry.character.casefold() or query in entry.text.casefold()
         ]
 
-    def export(self, path):
+    def export(self, path: str | Path) -> Path:
         path = Path(path).expanduser()
         entries = self.snapshot()
         if path.suffix.casefold() == ".json":
@@ -97,13 +105,13 @@ class DialogueHistory:
         atomic_write_text(path, content + ("\n" if content else ""))
         return path
 
-    def _active_entry(self):
+    def _active_entry(self) -> DialogueHistoryEntry | None:
         if not self.entries or self.entries[-1].id != self.active_entry_id:
             return None
         return self.entries[-1]
 
     @staticmethod
-    def _is_continuation(previous, current):
+    def _is_continuation(previous: str, current: str) -> bool:
         if previous.startswith(current) or current.startswith(previous):
             return True
         return SequenceMatcher(None, previous, current).ratio() >= 0.65
