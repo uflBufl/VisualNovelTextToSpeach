@@ -11,6 +11,9 @@ from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.bulk_generation import ReviewAuthority
 
+WORKSPACE_SCHEMA = "vntts.authoring-workspace"
+WORKSPACE_VERSION = 1
+
 
 class AuthoringWorkbenchError(RuntimeError):
     """A workspace or authoring action is unsafe or inconsistent."""
@@ -257,6 +260,8 @@ __all__ = [
     "WorkspaceCreationResult",
     "WorkspaceSummary",
     "WorkspaceVoice",
+    "WORKSPACE_SCHEMA",
+    "WORKSPACE_VERSION",
     "_OutcomeMergeBase",
     "_OutcomeMergeSource",
     "_OutcomeMergeSources",
