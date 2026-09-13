@@ -74,13 +74,11 @@ class GameProfilesDialog(QDialog):
         form.addRow("Stored settings", self.summary)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        use_button = buttons.addButton(
+        self.use_button = _add_action_button(
+            buttons,
             "Use selected profile",
             QDialogButtonBox.ButtonRole.AcceptRole,
         )
-        if not isinstance(use_button, QPushButton):
-            raise RuntimeError("Profile activation button was not created")
-        self.use_button: QPushButton = use_button
         self.use_button.setAccessibleName("Activate selected game profile")
         buttons.accepted.connect(self.use_profile)
         buttons.rejected.connect(self.reject)
@@ -283,3 +281,13 @@ class GameProfilesDialog(QDialog):
     def _ask_name(self, title: str, label: str, value: str = "") -> str | None:
         name, accepted = QInputDialog.getText(self, title, label, text=value)
         return name.strip() if accepted else None
+
+
+def _add_action_button(
+    buttons: QDialogButtonBox,
+    text: str,
+    role: QDialogButtonBox.ButtonRole,
+) -> QPushButton:
+    button = QPushButton(text)
+    buttons.addButton(button, role)
+    return button
