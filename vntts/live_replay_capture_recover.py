@@ -7,15 +7,17 @@ import hashlib
 import io
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from os.path import commonprefix
 from pathlib import Path
+from typing import TypeAlias
 
 from PIL import Image
 
 from vntts.authoring.publication import staged_directory
-from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import (
     CapturedDialogFrame,
@@ -35,11 +37,19 @@ from vntts.live_replay_sequence_seal import (
     _write_bytes,
     _write_json,
 )
-from vntts.live_sequence import LiveSequencePlan
+from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
 from vntts.settings import load_app_settings
 
 CAPTURE_RECOVERY_VERSION = 1
-_BLOCKED_OBSERVATION = object()
+JSONDocument: TypeAlias = dict[str, object]
+
+
+class _BlockedObservation:
+    pass
+
+
+_BLOCKED_OBSERVATION = _BlockedObservation()
+Candidate = tuple["_Observation", LiveSequenceEvent | None | _BlockedObservation, str]
 
 
 class LiveReplayCaptureRecoveryError(RuntimeError):
@@ -54,13 +64,13 @@ class CaptureRecoveryResult:
     event_count: int
     contains_silent: bool
     sufficient: bool
-    recommended_follow_up: dict | None
+    recommended_follow_up: JSONDocument | None
 
 
 @dataclass(frozen=True)
 class _Observation:
     observation_index: int
-    frames: tuple[dict, ...]
+    frames: tuple[JSONDocument, ...]
     character: str | None
     text: str | None
     line_id: str | None
@@ -71,8 +81,8 @@ class _Observation:
 
 @dataclass
 class _MappedEvent:
-    event: object
-    frames: list[dict]
+    event: LiveSequenceEvent
+    frames: list[JSONDocument]
     observation_indices: list[int]
     mapping_method: str
     observed_character: str
@@ -83,28 +93,29 @@ class _MappedEvent:
 
 
 def recover_live_replay_capture(
-    capture_corpus,
-    output_directory,
+    capture_corpus: str | Path,
+    output_directory: str | Path,
     *,
-    story_index,
-    sequence_plan,
-    minimum_events=20,
-    require_silent=True,
-    start_event_id=None,
-    end_event_id=None,
-    complete_visible_chapter=False,
-):
+    story_index: str | Path,
+    sequence_plan: str | Path,
+    minimum_events: int = 20,
+    require_silent: bool = True,
+    start_event_id: str | None = None,
+    end_event_id: str | None = None,
+    complete_visible_chapter: bool = False,
+) -> CaptureRecoveryResult:
     """Publish a new raw corpus only when one explicit capture path meets its gate."""
     if isinstance(minimum_events, bool) or minimum_events < 1:
         raise LiveReplayCaptureRecoveryError("minimum_events must be positive")
     capture_path, capture_payload = _read_regular_file(
         capture_corpus, "Raw replay corpus"
     )
-    capture = _decode_json(capture_payload, "Raw replay corpus")
+    capture: JSONDocument = _decode_json(capture_payload, "Raw replay corpus")
+    capture_binding = capture.get("capture")
     if (
         capture.get("schema_version") != 1
         or capture.get("fixture_kind") != "saved-frame-ocr-replay-capture"
-        or not isinstance(capture.get("capture"), dict)
+        or not isinstance(capture_binding, dict)
     ):
         raise LiveReplayCaptureRecoveryError(
             "Capture recovery requires raw vntts-capture-live-replay output"
@@ -116,10 +127,15 @@ def recover_live_replay_capture(
         or any(not isinstance(record, dict) for record in raw_dialogue)
     ):
         raise LiveReplayCaptureRecoveryError("Raw replay corpus has no dialogue")
+    dialogue_records = tuple(
+        record for record in raw_dialogue if isinstance(record, dict)
+    )
     _report_path, report_payload = _read_regular_file(
         capture_path.with_name("capture-report.json"), "Capture review report"
     )
-    report_document = _decode_json(report_payload, "Capture review report")
+    report_document: JSONDocument = _decode_json(
+        report_payload, "Capture review report"
+    )
     try:
         _validate_capture_report(capture, report_document)
     except SequenceReplaySealError as error:
@@ -129,7 +145,7 @@ def recover_live_replay_capture(
     _plan_path, plan_payload = _read_regular_file(sequence_plan, "Sequence plan")
     story_sha256 = hashlib.sha256(story_payload).hexdigest()
     plan_sha256 = hashlib.sha256(plan_payload).hexdigest()
-    if capture["capture"].get("story_index_sha256") != story_sha256:
+    if capture_binding.get("story_index_sha256") != story_sha256:
         raise LiveReplayCaptureRecoveryError(
             "Raw capture is not bound to the selected story-index bytes"
         )
@@ -187,7 +203,7 @@ def recover_live_replay_capture(
             _load_observations(
                 capture_path,
                 capture,
-                raw_dialogue,
+                dialogue_records,
                 resolver,
             )
         )
@@ -245,7 +261,7 @@ def recover_live_replay_capture(
                 effective_minimum_events,
                 require_silent=require_silent,
             )
-        analysis = {
+        analysis: JSONDocument = {
             "schema": "vntts.live-replay-capture-recovery-report",
             "schema_version": CAPTURE_RECOVERY_VERSION,
             "authority": {
@@ -332,17 +348,25 @@ def recover_live_replay_capture(
         )
 
 
-def _load_observations(capture_path, capture, raw_dialogue, resolver):
-    binding = capture["capture"].get("observation_ledger")
+def _load_observations(
+    capture_path: Path,
+    capture: JSONDocument,
+    raw_dialogue: tuple[JSONDocument, ...],
+    resolver: ChapterVoicePreloader,
+) -> tuple[tuple[_Observation, ...], str | None, bytes | None, list[JSONDocument]]:
+    capture_binding = capture.get("capture")
+    if not isinstance(capture_binding, dict):
+        raise LiveReplayCaptureRecoveryError("Raw capture authority is invalid")
+    binding = capture_binding.get("observation_ledger")
     if binding is None:
-        observations = []
+        observations: list[_Observation] = []
         for index, record in enumerate(raw_dialogue, start=1):
-            frames = record.get("frames")
-            if not isinstance(frames, list) or not frames:
+            raw_frames = record.get("frames")
+            if not isinstance(raw_frames, list) or not raw_frames:
                 raise LiveReplayCaptureRecoveryError(
                     f"Raw replay dialogue {index} has no exact frames"
                 )
-            _validate_frames(capture_path.parent, frames)
+            frames = _validate_frames(capture_path.parent, raw_frames)
             dialog_visible, bright_dialog_pixels = _frame_visibility(
                 _validated_frame_payload(capture_path.parent, frames[0])
             )
@@ -375,13 +399,13 @@ def _load_observations(capture_path, capture, raw_dialogue, resolver):
         raise LiveReplayCaptureRecoveryError(
             "Capture observation ledger checksum changed"
         )
-    document = _decode_json(payload, "Capture observation ledger")
+    document: JSONDocument = _decode_json(payload, "Capture observation ledger")
     entries = document.get("observations")
     if (
         document.get("schema") != "vntts.live-replay-capture-observations"
         or document.get("schema_version") != 1
         or document.get("story_index_sha256")
-        != capture["capture"].get("story_index_sha256")
+        != capture_binding.get("story_index_sha256")
         or not isinstance(entries, list)
         or len(entries) != binding.get("observation_count")
         or document.get("observation_count") != len(entries)
@@ -390,13 +414,17 @@ def _load_observations(capture_path, capture, raw_dialogue, resolver):
             "Capture observation ledger authority is invalid"
         )
     observations = []
-    visual_ellipses = []
+    visual_ellipses: list[JSONDocument] = []
     for index, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict) or entry.get("observation_index") != index:
             raise LiveReplayCaptureRecoveryError(
                 "Capture observation ledger order is invalid"
             )
         frame = entry.get("frame")
+        if not isinstance(frame, dict):
+            raise LiveReplayCaptureRecoveryError(
+                "Capture observation frame must bind only path and sha256"
+            )
         frame_payload = _validated_frame_payload(capture_path.parent, frame)
         dialog_visible, bright_dialog_pixels = _frame_visibility(frame_payload)
         character = _optional_text(entry.get("observed_character"))
@@ -436,12 +464,19 @@ def _load_observations(capture_path, capture, raw_dialogue, resolver):
     return tuple(observations), digest, payload, visual_ellipses
 
 
-def _validate_frames(root, frames):
+def _validate_frames(root: Path, frames: Sequence[object]) -> tuple[JSONDocument, ...]:
+    validated: list[JSONDocument] = []
     for frame in frames:
+        if not isinstance(frame, dict):
+            raise LiveReplayCaptureRecoveryError(
+                "Capture observation frame must bind only path and sha256"
+            )
         _validated_frame_payload(root, frame)
+        validated.append(frame)
+    return tuple(validated)
 
 
-def _validated_frame_payload(root, frame):
+def _validated_frame_payload(root: Path, frame: object) -> bytes:
     if not isinstance(frame, dict) or set(frame) != {"path", "sha256"}:
         raise LiveReplayCaptureRecoveryError(
             "Capture observation frame must bind only path and sha256"
@@ -454,10 +489,14 @@ def _validated_frame_payload(root, frame):
         raise LiveReplayCaptureRecoveryError(
             "Capture observation frame checksum changed"
         )
+    if not isinstance(payload, bytes):
+        raise LiveReplayCaptureRecoveryError(
+            "Capture observation frame payload is invalid"
+        )
     return payload
 
 
-def _frame_visibility(payload):
+def _frame_visibility(payload: bytes) -> tuple[bool, int]:
     try:
         with Image.open(io.BytesIO(payload)) as image:
             grayscale = image.convert("L")
@@ -474,8 +513,12 @@ def _frame_visibility(payload):
     )
 
 
-def _candidate_events(observations, resolver, plan):
-    candidates = []
+def _candidate_events(
+    observations: Sequence[_Observation],
+    resolver: ChapterVoicePreloader,
+    plan: LiveSequencePlan,
+) -> tuple[Candidate, ...]:
+    candidates: list[Candidate] = []
     for observation in observations:
         if (
             observation.status
@@ -486,8 +529,8 @@ def _candidate_events(observations, resolver, plan):
             candidates.append((observation, None, observation.status))
             continue
         if observation.status in {"canonical", "legacy-dialogue"}:
-            line = resolver.line_for_id(observation.line_id)
-            event = plan.event_for_line(observation.line_id)
+            line: ChapterDialogue | None = resolver.line_for_id(observation.line_id)
+            event: LiveSequenceEvent | None = plan.event_for_line(observation.line_id)
             if (
                 line is not None
                 and event is not None
@@ -509,7 +552,11 @@ def _candidate_events(observations, resolver, plan):
     return tuple(candidates)
 
 
-def _bounded_plan_match(observation, resolver, plan):
+def _bounded_plan_match(
+    observation: _Observation,
+    resolver: ChapterVoicePreloader,
+    plan: LiveSequencePlan,
+) -> tuple[LiveSequenceEvent, str] | None:
     if not observation.text or observation.status == "uncertain":
         return None
     line, method = resolver.resolve_bounded_among(
@@ -524,25 +571,33 @@ def _bounded_plan_match(observation, resolver, plan):
     )
     if line is None:
         return None
-    event = plan.event_for_line(line.line_id)
+    event: LiveSequenceEvent | None = plan.event_for_line(line.line_id)
     if event is None:
         return None
     return event, method
 
 
-def _longest_explicit_run(candidates, plan, resolver, *, start_event_id=None):
-    best = []
+def _longest_explicit_run(
+    candidates: Sequence[Candidate],
+    plan: LiveSequencePlan,
+    resolver: ChapterVoicePreloader,
+    *,
+    start_event_id: str | None = None,
+) -> list[_MappedEvent]:
+    best: list[_MappedEvent] = []
     for start, (observation, event, method) in enumerate(candidates):
-        if event is None or event is _BLOCKED_OBSERVATION:
+        if event is None or isinstance(event, _BlockedObservation):
             continue
         if start_event_id is not None and event.event_id != start_event_id:
             continue
-        run = [_mapped_event(observation, event, method)]
+        run: list[_MappedEvent] = [_mapped_event(observation, event, method)]
         current = event
-        pending = []
+        pending: list[int] = []
         for next_observation, next_event, next_method in candidates[start + 1 :]:
-            if next_event is _BLOCKED_OBSERVATION:
-                visible = _next_visible_events(plan, current)
+            if isinstance(next_event, _BlockedObservation):
+                visible: tuple[LiveSequenceEvent, ...] = _next_visible_events(
+                    plan, current
+                )
                 expected = visible[0] if len(visible) == 1 else None
                 recovered_method = _frontier_bounded_match(
                     next_observation,
@@ -607,7 +662,11 @@ def _longest_explicit_run(candidates, plan, resolver, *, start_event_id=None):
     return best
 
 
-def _frontier_bounded_match(observation, resolver, expected):
+def _frontier_bounded_match(
+    observation: _Observation,
+    resolver: ChapterVoicePreloader,
+    expected: LiveSequenceEvent | None,
+) -> str | None:
     """Match weak OCR only to the one plan-authorized visible successor.
 
     The immutable frame still supplies the evidence. Sequence context merely
@@ -622,7 +681,7 @@ def _frontier_bounded_match(observation, resolver, expected):
         or observation.status == "uncertain"
     ):
         return None
-    line = resolver.line_for_id(expected.line_id)
+    line: ChapterDialogue | None = resolver.line_for_id(expected.line_id)
     if line is None:
         return None
     observed = _normalized_text(observation.text)
@@ -661,7 +720,7 @@ def _frontier_bounded_match(observation, resolver, expected):
     return None
 
 
-def _same_silent_observation(current, observation):
+def _same_silent_observation(current: _MappedEvent, observation: _Observation) -> bool:
     current_speaker = _normalized_text(current.observed_character)
     observed_speaker = _normalized_text(observation.character)
     unknown = {"", "narrator", "unknown"}
@@ -670,7 +729,12 @@ def _same_silent_observation(current, observation):
     return current_speaker == observed_speaker
 
 
-def _merge_mapped_observation(current, observation, method, pending):
+def _merge_mapped_observation(
+    current: _MappedEvent,
+    observation: _Observation,
+    method: str,
+    pending: Sequence[int],
+) -> None:
     incoming_rank = (
         observation.dialog_visible,
         _mapping_rank(method),
@@ -698,7 +762,7 @@ def _merge_mapped_observation(current, observation, method, pending):
         )
 
 
-def _mapping_rank(method):
+def _mapping_rank(method: str) -> int:
     return {
         "exact-canonical-observation": 4,
         "expected-exact": 4,
@@ -717,17 +781,21 @@ def _mapping_rank(method):
     }.get(str(method), 1)
 
 
-def _recommended_capture_segment(plan, minimum_events, *, require_silent):
+def _recommended_capture_segment(
+    plan: LiveSequencePlan, minimum_events: int, *, require_silent: bool
+) -> JSONDocument:
     """Return one shortest explicit visible run that can satisfy the gate."""
-    visible_events = sorted(
+    visible_events: list[LiveSequenceEvent] = sorted(
         (event for event in plan.events.values() if event.kind in {"speech", "silent"}),
         key=lambda event: (str(event.chapter), event.sequence, event.event_id),
     )
     for start in visible_events:
-        segment = [start]
+        segment: list[LiveSequenceEvent] = [start]
         current = start
         while len(segment) < minimum_events:
-            successors = _next_visible_events(plan, current)
+            successors: tuple[LiveSequenceEvent, ...] = _next_visible_events(
+                plan, current
+            )
             if len(successors) != 1:
                 break
             current = successors[0]
@@ -760,7 +828,7 @@ def _recommended_capture_segment(plan, minimum_events, *, require_silent):
     }
 
 
-def _event_wire(event):
+def _event_wire(event: LiveSequenceEvent) -> JSONDocument:
     return {
         "event_id": event.event_id,
         "chapter": event.chapter,
@@ -770,7 +838,13 @@ def _event_wire(event):
     }
 
 
-def _mapped_event(observation, event, method, *, absorbed=()):
+def _mapped_event(
+    observation: _Observation,
+    event: LiveSequenceEvent,
+    method: str,
+    *,
+    absorbed: Sequence[int] = (),
+) -> _MappedEvent:
     return _MappedEvent(
         event,
         list(observation.frames),
@@ -784,7 +858,7 @@ def _mapped_event(observation, event, method, *, absorbed=()):
     )
 
 
-def _mapped_wire(item):
+def _mapped_wire(item: _MappedEvent) -> JSONDocument:
     return {
         "event_id": item.event.event_id,
         "event_kind": item.event.kind,
@@ -799,23 +873,23 @@ def _mapped_wire(item):
 
 
 def _publish_recovered_corpus(
-    staging,
-    capture_root,
-    capture,
-    capture_payload,
-    report_payload,
-    raw_observation_payload,
-    selected,
-    resolver,
+    staging: Path,
+    capture_root: Path,
+    capture: JSONDocument,
+    capture_payload: bytes,
+    report_payload: bytes,
+    raw_observation_payload: bytes | None,
+    selected: Sequence[_MappedEvent],
+    resolver: ChapterVoicePreloader,
     *,
-    story_sha256,
-    plan_sha256,
-):
-    copied = {}
-    dialogue = []
-    ledger = []
+    story_sha256: str,
+    plan_sha256: str,
+) -> Path:
+    copied: dict[tuple[object, object], JSONDocument] = {}
+    dialogue: list[JSONDocument] = []
+    ledger: list[JSONDocument] = []
     for dialogue_index, item in enumerate(selected, start=1):
-        frames = []
+        frames: list[JSONDocument] = []
         for source in item.frames:
             key = (source["path"], source["sha256"])
             frame = copied.get(key)
@@ -854,7 +928,7 @@ def _publish_recovered_corpus(
                     "story_match": item.mapping_method,
                 }
             )
-    observation_document = {
+    observation_document: JSONDocument = {
         "schema": "vntts.live-replay-capture-observations",
         "schema_version": 1,
         "story_index_sha256": story_sha256,
@@ -863,12 +937,12 @@ def _publish_recovered_corpus(
     }
     observation_path = staging / "observation-ledger.json"
     _write_json(observation_path, observation_document)
-    observation_binding = {
+    observation_binding: JSONDocument = {
         "path": observation_path.name,
         "sha256": hashlib.sha256(observation_path.read_bytes()).hexdigest(),
         "observation_count": len(ledger),
     }
-    capture_authority = {
+    capture_authority: JSONDocument = {
         "schema_version": 1,
         "frame_count": len(copied),
         "dialogue_count": len(dialogue),
@@ -885,14 +959,14 @@ def _publish_recovered_corpus(
             "mapping_policy": "exact-explicit-sequence-run",
         },
     }
-    corpus_document = {
+    corpus_document: JSONDocument = {
         "schema_version": 1,
         "name": f"{capture.get('name') or 'Captured live replay'} recovered run",
         "fixture_kind": "saved-frame-ocr-replay-capture",
         "capture": capture_authority,
         "dialogue": dialogue,
     }
-    report_document = {
+    report_document: JSONDocument = {
         "schema": "vntts.live-replay-capture-report",
         "schema_version": 1,
         **capture_authority,
@@ -908,7 +982,7 @@ def _publish_recovered_corpus(
                 "text": record["text"],
                 "line_id": record["line_id"],
                 "story_match": record["story_match"],
-                "frame_count": len(record["frames"]),
+                "frame_count": _frame_count(record),
                 "boundary_reason": record["capture_boundary"],
             }
             for index, record in enumerate(dialogue, start=1)
@@ -927,7 +1001,12 @@ def _publish_recovered_corpus(
     return corpus_path
 
 
-def _recovered_dialogue_record(index, item, frames, resolver):
+def _recovered_dialogue_record(
+    index: int,
+    item: _MappedEvent,
+    frames: list[JSONDocument],
+    resolver: ChapterVoicePreloader,
+) -> JSONDocument:
     if item.event.kind == "silent":
         return {
             "frames": frames,
@@ -939,7 +1018,8 @@ def _recovered_dialogue_record(index, item, frames, resolver):
             "capture_boundary": "recovered-unique-silent-frontier",
             "story_match": "punctuation-only",
         }
-    line = resolver.line_for_id(item.event.line_id)
+    line: ChapterDialogue | None = resolver.line_for_id(item.event.line_id)
+    assert line is not None
     return {
         "frames": frames,
         "character": line.speaker,
@@ -961,17 +1041,23 @@ def _recovered_dialogue_record(index, item, frames, resolver):
     }
 
 
-def _optional_text(value):
+def _optional_text(value: object) -> str | None:
     if value is None:
         return None
     return str(value).strip() or None
 
 
-def _normalized_text(value):
+def _normalized_text(value: object) -> str:
     return " ".join(re.findall(r"\w+", str(value or "").casefold()))
 
 
-def build_parser():
+def _frame_count(record: JSONDocument) -> int:
+    frames = record.get("frames")
+    assert isinstance(frames, list)
+    return len(frames)
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Recover one explicit sequence segment from immutable live capture evidence"
@@ -1002,15 +1088,15 @@ def build_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     settings = load_app_settings()
     story_index = arguments.story_index or settings.story_index
     sequence_plan = arguments.sequence_plan or settings.live_sequence_plan
     if not story_index:
-        return cli_error("Configure or pass --story-index")
+        return int(cli_error("Configure or pass --story-index"))
     if not sequence_plan:
-        return cli_error("Configure or pass --sequence-plan")
+        return int(cli_error("Configure or pass --sequence-plan"))
     try:
         result = recover_live_replay_capture(
             arguments.capture_corpus,
@@ -1024,8 +1110,8 @@ def main(argv=None):
             complete_visible_chapter=arguments.complete_visible_chapter,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return cli_error(error)
-    messages = [
+        return int(cli_error(error))
+    messages: list[str | Path] = [
         f"Longest explicit recovered run: {result.event_count} events",
         (
             "Recovered run includes a silent event"
@@ -1040,14 +1126,21 @@ def main(argv=None):
         start = result.recommended_follow_up.get("start")
         end = result.recommended_follow_up.get("end")
         if start and end:
+            assert isinstance(start, dict)
+            assert isinstance(end, dict)
+            minimum_visible_events = result.recommended_follow_up[
+                "minimum_visible_events"
+            ]
             messages.append(
                 "Next capture: chapter "
                 f"{start['chapter']}, visible sequence {start['sequence']} through "
-                f"{end['sequence']} ({result.recommended_follow_up['minimum_visible_events']} "
+                f"{end['sequence']} ({minimum_visible_events} "
                 "events, without skipping)"
             )
         else:
-            messages.append(result.recommended_follow_up["instruction"])
+            instruction = result.recommended_follow_up.get("instruction")
+            assert isinstance(instruction, str)
+            messages.append(instruction)
     cli_messages(messages)
     return 0 if result.sufficient else 2
 
