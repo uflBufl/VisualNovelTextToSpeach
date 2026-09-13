@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from vntts.authoring.legacy_import import (
+    LegacyImportResult,
     default_import_root,
     default_legacy_jobs_root,
     discover_legacy_jobs,
@@ -15,6 +16,7 @@ from vntts.authoring.legacy_import import (
     inspect_standalone_generation,
 )
 from vntts.authoring.listening_import import (
+    ListeningImportResult,
     import_listening_session,
     inspect_listening_session,
 )
@@ -31,7 +33,9 @@ COMMANDS = frozenset(
 )
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     discover = subparsers.add_parser(
         "discover-legacy",
         help="Inspect Reverse: 1999 pregeneration jobs without changing them",
@@ -73,7 +77,7 @@ def configure_parsers(subparsers) -> None:
     )
 
 
-def _print_import_result(result) -> None:
+def _print_import_result(result: LegacyImportResult | ListeningImportResult) -> None:
     print(
         json.dumps(
             {
@@ -88,6 +92,7 @@ def _print_import_result(result) -> None:
 
 
 def handle(arguments: argparse.Namespace) -> int:
+    result: LegacyImportResult | ListeningImportResult
     if arguments.command == "discover-legacy":
         candidates = discover_legacy_jobs(arguments.jobs_root)
         print(
