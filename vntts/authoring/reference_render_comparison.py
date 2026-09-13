@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +30,7 @@ from vntts.authoring.listening import (
     create_listening_session_from_reports,
     load_listening_session,
 )
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
@@ -245,9 +243,6 @@ def publish_reference_render_comparison(
             f"Reference render destination already exists: {output}"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
     audit_document = _read_audit_document(plan.audit_directory)
     groups = {value["group_id"]: value for value in audit_document["groups"]}
     cases = {
@@ -264,167 +259,167 @@ def publish_reference_render_comparison(
     complete_by_arm = {}
     copied_controls = {}
     try:
-        for arm in plan.arms:
-            arm_id = arm["arm_id"]
-            arm_root = staging / "arms" / arm_id
-            audio_root = arm_root / "audio"
-            audio_root.mkdir(parents=True)
-            report_samples = []
-            renders = []
-            complete_ids = set()
-            for position, sample in enumerate(arm["samples"], start=1):
-                queue_id = sample["queue_id"]
-                case = cases[(sample["case_group_id"], queue_id)]
-                candidate_group = groups[sample["candidate_group_id"]]
-                candidate = next(
-                    value
-                    for value in candidate_group["candidates"]
-                    if value["candidate_id"] == sample["candidate_id"]
-                )
-                control_key = (
-                    sample["candidate_group_id"],
-                    sample["candidate_id"],
-                )
-                if control_key not in copied_controls:
-                    control = prepare_failure_reference_audio(
-                        plan.audit_directory, *control_key
+        with staged_directory(
+            output.parent, prefix=f".{output.name}.staging-"
+        ) as staging:
+            for arm in plan.arms:
+                arm_id = arm["arm_id"]
+                arm_root = staging / "arms" / arm_id
+                audio_root = arm_root / "audio"
+                audio_root.mkdir(parents=True)
+                report_samples = []
+                renders = []
+                complete_ids = set()
+                for position, sample in enumerate(arm["samples"], start=1):
+                    queue_id = sample["queue_id"]
+                    case = cases[(sample["case_group_id"], queue_id)]
+                    candidate_group = groups[sample["candidate_group_id"]]
+                    candidate = next(
+                        value
+                        for value in candidate_group["candidates"]
+                        if value["candidate_id"] == sample["candidate_id"]
                     )
-                    control_relative = (
-                        Path("controls")
-                        / sample["candidate_group_id"]
-                        / f"{sample['candidate_id']}{control.path.suffix.lower()}"
-                    )
-                    control_target = staging / control_relative
-                    control_target.parent.mkdir(parents=True, exist_ok=True)
-                    control_target.write_bytes(control.payload)
-                    if sha256_file(control_target) != control.sha256:
-                        raise ReferenceRenderComparisonError(
-                            "Copied alternative reference checksum changed"
-                        )
-                    copied_controls[control_key] = {
-                        "group_id": sample["candidate_group_id"],
-                        "candidate_id": sample["candidate_id"],
-                        "audio": control_relative.as_posix(),
-                        "sha256": control.sha256,
-                    }
-                base_record = {
-                    "id": queue_id,
-                    "line_id": case["line_id"],
-                    "text": case["text"],
-                    "text_sha256": case["text_sha256"],
-                    "case_group_id": sample["case_group_id"],
-                    "candidate_group_id": sample["candidate_group_id"],
-                    "candidate_id": sample["candidate_id"],
-                    "reference_sha256": candidate["sha256"],
-                }
-                try:
-                    preview = service.generate(
-                        sample["case_group_id"],
+                    control_key = (
+                        sample["candidate_group_id"],
                         sample["candidate_id"],
-                        case["text"],
-                        candidate_group_id=sample["candidate_group_id"],
                     )
-                except FailureReferencePreviewCancelled:
-                    raise
-                except FailureReferencePreviewIncomplete as error:
-                    report_samples.append(
-                        {**base_record, "outcome": "error", "error": str(error)}
-                    )
-                    renders.append(
-                        {**base_record, "outcome": "error", "error": str(error)}
-                    )
-                    continue
-                relative_audio = Path("audio") / f"{position:04d}.wav"
-                target = arm_root / relative_audio
-                target.write_bytes(preview.payload)
-                if sha256_file(target) != preview.audio_sha256:
-                    raise ReferenceRenderComparisonError(
-                        "Rendered alternative-reference audio checksum changed"
-                    )
-                complete_ids.add(queue_id)
-                complete_record = {
-                    **base_record,
-                    "outcome": "complete",
-                    "audio": relative_audio.as_posix(),
-                    "audio_sha256": preview.audio_sha256,
-                    "sample_rate": preview.sample_rate,
-                    "backend": preview.backend,
-                    "model": preview.model,
-                    "generation_profile": preview.generation_profile,
-                    "seed": preview.seed,
+                    if control_key not in copied_controls:
+                        control = prepare_failure_reference_audio(
+                            plan.audit_directory, *control_key
+                        )
+                        control_relative = (
+                            Path("controls")
+                            / sample["candidate_group_id"]
+                            / f"{sample['candidate_id']}{control.path.suffix.lower()}"
+                        )
+                        control_target = staging / control_relative
+                        control_target.parent.mkdir(parents=True, exist_ok=True)
+                        control_target.write_bytes(control.payload)
+                        if sha256_file(control_target) != control.sha256:
+                            raise ReferenceRenderComparisonError(
+                                "Copied alternative reference checksum changed"
+                            )
+                        copied_controls[control_key] = {
+                            "group_id": sample["candidate_group_id"],
+                            "candidate_id": sample["candidate_id"],
+                            "audio": control_relative.as_posix(),
+                            "sha256": control.sha256,
+                        }
+                    base_record = {
+                        "id": queue_id,
+                        "line_id": case["line_id"],
+                        "text": case["text"],
+                        "text_sha256": case["text_sha256"],
+                        "case_group_id": sample["case_group_id"],
+                        "candidate_group_id": sample["candidate_group_id"],
+                        "candidate_id": sample["candidate_id"],
+                        "reference_sha256": candidate["sha256"],
+                    }
+                    try:
+                        preview = service.generate(
+                            sample["case_group_id"],
+                            sample["candidate_id"],
+                            case["text"],
+                            candidate_group_id=sample["candidate_group_id"],
+                        )
+                    except FailureReferencePreviewCancelled:
+                        raise
+                    except FailureReferencePreviewIncomplete as error:
+                        report_samples.append(
+                            {**base_record, "outcome": "error", "error": str(error)}
+                        )
+                        renders.append(
+                            {**base_record, "outcome": "error", "error": str(error)}
+                        )
+                        continue
+                    relative_audio = Path("audio") / f"{position:04d}.wav"
+                    target = arm_root / relative_audio
+                    target.write_bytes(preview.payload)
+                    if sha256_file(target) != preview.audio_sha256:
+                        raise ReferenceRenderComparisonError(
+                            "Rendered alternative-reference audio checksum changed"
+                        )
+                    complete_ids.add(queue_id)
+                    complete_record = {
+                        **base_record,
+                        "outcome": "complete",
+                        "audio": relative_audio.as_posix(),
+                        "audio_sha256": preview.audio_sha256,
+                        "sample_rate": preview.sample_rate,
+                        "backend": preview.backend,
+                        "model": preview.model,
+                        "generation_profile": preview.generation_profile,
+                        "seed": preview.seed,
+                    }
+                    report_samples.append(complete_record)
+                    renders.append(complete_record)
+                report = {
+                    "schema": "vntts.voice-model-report",
+                    "schema_version": 1,
+                    "model_id": arm_id,
+                    "provider": "reference-render-comparison",
+                    "backend": "reference-render-comparison",
+                    "model": "one exact alternative reference per sample",
+                    "samples": report_samples,
                 }
-                report_samples.append(complete_record)
-                renders.append(complete_record)
-            report = {
-                "schema": "vntts.voice-model-report",
-                "schema_version": 1,
-                "model_id": arm_id,
-                "provider": "reference-render-comparison",
-                "backend": "reference-render-comparison",
-                "model": "one exact alternative reference per sample",
-                "samples": report_samples,
+                report_path = arm_root / "report.json"
+                atomic_write_json(report_path, report)
+                reports.append(report_path.relative_to(staging).as_posix())
+                report_sha256 = sha256_file(report_path)
+                complete_by_arm[arm_id] = complete_ids
+                arm_documents.append(
+                    {
+                        "arm_id": arm_id,
+                        "report": report_path.relative_to(staging).as_posix(),
+                        "report_sha256": report_sha256,
+                        "complete_count": len(complete_ids),
+                        "failure_count": len(renders) - len(complete_ids),
+                        "renders": renders,
+                    }
+                )
+            shared = set(plan.queue_ids)
+            for values in complete_by_arm.values():
+                shared &= values
+            body = {
+                "schema": REFERENCE_RENDER_SCHEMA,
+                "schema_version": REFERENCE_RENDER_VERSION,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "input_plan": str(plan.path),
+                "input_plan_sha256": plan.sha256,
+                "audit": str(plan.audit_directory),
+                "audit_id": plan.audit_id,
+                "audit_sha256": sha256_file(plan.audit_directory / "audit.json"),
+                "queue_ids": list(plan.queue_ids),
+                "controls": sorted(
+                    copied_controls.values(),
+                    key=lambda value: (value["group_id"], value["candidate_id"]),
+                ),
+                "arms": arm_documents,
+                "reports": reports,
+                "complete_pair_queue_ids": sorted(shared),
+                "policy": {
+                    "render_only": True,
+                    "generation_state_mutated": False,
+                    "review_decision_inferred": False,
+                    "requires_human_listening": True,
+                },
             }
-            report_path = arm_root / "report.json"
-            atomic_write_json(report_path, report)
-            reports.append(report_path.relative_to(staging).as_posix())
-            report_sha256 = sha256_file(report_path)
-            complete_by_arm[arm_id] = complete_ids
-            arm_documents.append(
-                {
-                    "arm_id": arm_id,
-                    "report": report_path.relative_to(staging).as_posix(),
-                    "report_sha256": report_sha256,
-                    "complete_count": len(complete_ids),
-                    "failure_count": len(renders) - len(complete_ids),
-                    "renders": renders,
-                }
+            comparison_id = canonical_document_sha256(body)
+            document = {**body, "comparison_id": comparison_id}
+            atomic_write_json(staging / "comparison.json", document)
+            _assert_plan_and_audit_unchanged(plan)
+            rename_directory_no_replace(staging, output)
+            return ReferenceRenderComparison(
+                output,
+                comparison_id,
+                len(plan.arms),
+                len(plan.queue_ids),
+                len(shared),
             )
-        shared = set(plan.queue_ids)
-        for values in complete_by_arm.values():
-            shared &= values
-        body = {
-            "schema": REFERENCE_RENDER_SCHEMA,
-            "schema_version": REFERENCE_RENDER_VERSION,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "input_plan": str(plan.path),
-            "input_plan_sha256": plan.sha256,
-            "audit": str(plan.audit_directory),
-            "audit_id": plan.audit_id,
-            "audit_sha256": sha256_file(plan.audit_directory / "audit.json"),
-            "queue_ids": list(plan.queue_ids),
-            "controls": sorted(
-                copied_controls.values(),
-                key=lambda value: (value["group_id"], value["candidate_id"]),
-            ),
-            "arms": arm_documents,
-            "reports": reports,
-            "complete_pair_queue_ids": sorted(shared),
-            "policy": {
-                "render_only": True,
-                "generation_state_mutated": False,
-                "review_decision_inferred": False,
-                "requires_human_listening": True,
-            },
-        }
-        comparison_id = canonical_document_sha256(body)
-        document = {**body, "comparison_id": comparison_id}
-        atomic_write_json(staging / "comparison.json", document)
-        _assert_plan_and_audit_unchanged(plan)
-        rename_directory_no_replace(staging, output)
-        staging = None
-        return ReferenceRenderComparison(
-            output,
-            comparison_id,
-            len(plan.arms),
-            len(plan.queue_ids),
-            len(shared),
-        )
     except (FailureReferenceAuditError, FailureReferencePreviewError) as error:
         raise ReferenceRenderComparisonError(str(error)) from error
     finally:
         service.close()
-        if staging is not None:
-            shutil.rmtree(staging, ignore_errors=True)
 
 
 def create_reference_render_listening(

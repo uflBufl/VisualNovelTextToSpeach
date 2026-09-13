@@ -7,7 +7,6 @@ import io
 import json
 import math
 import shutil
-import tempfile
 import wave
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -26,7 +25,7 @@ from vntts.authoring.listening import (
     ModelListeningError,
     create_listening_session_from_reports,
 )
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.document_identity import is_lowercase_sha256
 
@@ -184,14 +183,11 @@ def publish_silence_comparison(
             f"Silence comparison destination already exists: {output}"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
     checked_sources = []
     records = []
     segmented_report_samples = []
     compressed_report_samples = []
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         for value in values:
             raw_path, raw_payload, raw_sha256, raw_pcm, raw_rate = _read_source_wav(
                 value.raw_audio, "raw comparison audio"
@@ -370,10 +366,6 @@ def publish_silence_comparison(
                 output / "reports/silence-compression.json",
             ),
         )
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
 
 
 def load_silence_comparison(directory):

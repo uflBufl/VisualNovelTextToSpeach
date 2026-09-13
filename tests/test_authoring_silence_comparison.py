@@ -169,6 +169,26 @@ class AuthoringSilenceComparisonTest(unittest.TestCase):
                 publish_silence_comparison((sample,), output)
             self.assertEqual(sha256_file(output / "comparison.json"), digest)
 
+    def test_publication_cleans_staging_after_keyboard_interrupt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sample = self._fixture(root)
+            output = root / "comparison"
+            real_write = Path.write_bytes
+
+            def write_and_interrupt(path, payload):
+                result = real_write(path, payload)
+                if Path(path).name.endswith("-raw.wav"):
+                    raise KeyboardInterrupt
+                return result
+
+            with mock.patch.object(Path, "write_bytes", write_and_interrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    publish_silence_comparison((sample,), output)
+
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".comparison.staging-*")), [])
+
     def test_input_plan_and_cli_publish_check_and_session(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

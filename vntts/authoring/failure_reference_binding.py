@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,7 +24,7 @@ from vntts.authoring.failure_reference_binding_records import (
     load_failure_reference_binding_document as load_failure_reference_binding_document,
 )
 from vntts.authoring.private_files import private_file_is_restricted
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.document_identity import canonical_document_sha256
 
@@ -206,10 +204,7 @@ def publish_failure_reference_binding(audit_directory, output_directory):
         )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         for _source, digest, relative, payload in sources:
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -242,11 +237,6 @@ def publish_failure_reference_binding(audit_directory, output_directory):
                     "Selected reference changed before binding publication"
                 )
         rename_directory_no_replace(staging, output)
-        staging = None
-    except Exception:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-        raise
     return FailureReferenceBinding(
         output,
         binding_id,

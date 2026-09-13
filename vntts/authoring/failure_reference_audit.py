@@ -6,7 +6,6 @@ import hashlib
 import json
 import random
 import shutil
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +25,7 @@ from vntts.authoring.bulk_generation import (
     normalized_failure_record,
 )
 from vntts.authoring.private_files import private_file_is_restricted
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
     load_workspace_authority,
@@ -174,13 +173,10 @@ def publish_failure_reference_audit(
         )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
     source_files = []
     public_groups = []
     private_groups = []
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         for group_id, group in sorted(grouped.items()):
             candidates = []
             for reference in group["identity"]["references"]:
@@ -338,10 +334,6 @@ def publish_failure_reference_audit(
             len(public_groups),
             body["blinded_trial_count"],
         )
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
 
 
 def load_failure_reference_audit(directory):
