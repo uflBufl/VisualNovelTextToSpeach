@@ -23,6 +23,7 @@ from vntts.generated_audio import (
     GeneratedAudioRoute,
     LiveFallbackRoute,
     LiveTTSRoute,
+    PendingGeneratedAudioRoute,
     PlaybackStatus,
     PreparedGeneratedAudio,
     PreparedSourceAudioPassThrough,
@@ -97,6 +98,55 @@ def write_wav(path, samples, sample_rate=24_000):
 
 
 class GeneratedAudioTest(unittest.TestCase):
+    def test_runtime_progress_waits_for_the_exact_generated_line(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "audio" / "line.wav"
+            audio.parent.mkdir()
+            write_wav(audio, [0.0, 0.25, -0.25, 0.0])
+            manifest = root / "generated-audio.json"
+            write_generated_audio_manifest(
+                manifest, {"vntts.runtime.progress": True}, []
+            )
+            library = GeneratedAudioLibrary.load_optional(manifest)
+            output = FakeAudioOutput()
+            backend = GeneratedAudioFallbackBackend(
+                self.create_live_backend(),
+                library,
+                self.create_resolver(),
+                audio_output=output,
+            )
+            route = backend.prepare_route("Ada", "Hello.")
+            statuses = []
+
+            def publish_on_wait(message):
+                statuses.append(message)
+                if len(statuses) == 1:
+                    write_generated_audio_manifest(
+                        manifest,
+                        {"vntts.runtime.progress": True},
+                        [
+                            {
+                                "line_id": "game:1",
+                                "text_sha256": text_sha256("Hello."),
+                                "audio": "audio/line.wav",
+                                "audio_format": "wav-pcm16-mono",
+                                "audio_sha256": sha256_file(audio),
+                                "sample_rate": 24_000,
+                                "sample_count": 4,
+                            }
+                        ],
+                    )
+
+            backend.progress_wait_status = publish_on_wait
+            outcome = backend.play_route(route)
+
+        self.assertIsInstance(route, PendingGeneratedAudioRoute)
+        self.assertTrue(outcome.successful)
+        self.assertEqual(outcome.audio_source, "generated")
+        self.assertEqual(len(output.plays), 1)
+        self.assertEqual(statuses[-1], "Prepared audio is ready; continuing reading.")
+
     def test_library_reloads_an_atomically_replaced_manifest(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -125,6 +125,16 @@ class GeneratedAudioRoute:
 
 
 @dataclass(frozen=True)
+class PendingGeneratedAudioRoute:
+    line_id: str
+    text_sha256: str
+    trace: AudioRouteTrace
+    synthesis_ms: float = 0.0
+    first_audio_ms: float | None = None
+    cache_source: str | None = "generation-in-progress"
+
+
+@dataclass(frozen=True)
 class LiveFallbackDecision:
     schema: str
     schema_version: int
@@ -192,6 +202,7 @@ class AudioEventOmissionRoute:
 RouteDecision = (
     SourceAudioRoute
     | GeneratedAudioRoute
+    | PendingGeneratedAudioRoute
     | LiveFallbackRoute
     | LiveTTSRoute
     | AudioEventOmissionRoute
@@ -263,6 +274,7 @@ class GeneratedAudioLibrary:
     def _apply_index(self, index):
         _validate_generated_audio_paths(index)
         self.index = index
+        self.runtime_progress = index.metadata.get("vntts.runtime.progress") is True
         self.live_fallbacks = _live_fallback_index(index.metadata)
         self.audio_event_omissions = _audio_event_omission_index(index.metadata)
         generated_identities = {
@@ -491,12 +503,14 @@ class GeneratedAudioFallbackBackend:
         self.generated_preflight_lock = Lock()
         self.source_audio_completion_stop = Event()
         self.generated_audio_stop = Event()
+        self.progress_wait_stop = Event()
         self.generated_reservations = BoundedCache(32)
         self.active_generated_stream = None
         self.active_playback_source = None
         self.playback_active = False
         self.live_mode_active = False
         self.voice_override = None
+        self.progress_wait_status = lambda _message: None
         self.set_volume(volume, delegate=False)
         self.set_speed(speed, delegate=False)
 
@@ -546,6 +560,8 @@ class GeneratedAudioFallbackBackend:
                 )
                 if prepared is not None:
                     return True
+            if self.library.runtime_progress:
+                return True
             live_fallback = self.library.find_live_fallback(
                 line.line_id,
                 line.text_sha256,
@@ -779,6 +795,26 @@ class GeneratedAudioFallbackBackend:
             elif self.speed != 1.0:
                 artifact_preflight_state = "generated-audio-skipped-nondefault-speed"
             fallback_reasons.append(artifact_preflight_state)
+        if (
+            line is not None
+            and line.line_id
+            and self.library is not None
+            and self.library.runtime_progress
+            and not voice_overridden
+        ):
+            return PendingGeneratedAudioRoute(
+                line.line_id,
+                line.text_sha256,
+                AudioRouteTrace(
+                    None,
+                    "waiting-for-generation",
+                    match_result,
+                    ";".join(dict.fromkeys(fallback_reasons)) or None,
+                    None,
+                    line.line_id,
+                    "generation-in-progress",
+                ),
+            )
         live_fallback = (
             None
             if line is None or self.library is None
@@ -876,6 +912,8 @@ class GeneratedAudioFallbackBackend:
             return self._play_source_route(route, playback_guard)
         if isinstance(route, GeneratedAudioRoute):
             return self._play_generated_route(route, playback_guard)
+        if isinstance(route, PendingGeneratedAudioRoute):
+            return self._play_pending_generated_route(route, playback_guard)
         if isinstance(route, LiveFallbackRoute):
             return self._play_live_route(route, playback_guard)
         if isinstance(route, LiveTTSRoute):
@@ -888,6 +926,47 @@ class GeneratedAudioFallbackBackend:
             )
             return _route_outcome(route, status, 0.0)
         raise TypeError(f"Unsupported audio route: {type(route).__name__}")
+
+    def _play_pending_generated_route(self, route, playback_guard):
+        self.progress_wait_stop.clear()
+        self.progress_wait_status(
+            "Waiting for offline preparation to finish the current dialogue..."
+        )
+        started = self.clock()
+        self.playback_active = True
+        self.active_playback_source = "preparing"
+        try:
+            while playback_guard is None or playback_guard():
+                prepared, _state = self.library.find_with_preflight(
+                    route.line_id, route.text_sha256
+                )
+                if prepared is not None:
+                    self.progress_wait_status(
+                        "Prepared audio is ready; continuing reading."
+                    )
+                    return self._play_generated_route(
+                        GeneratedAudioRoute(
+                            prepared,
+                            replace(
+                                route.trace,
+                                effective_source="generated",
+                                artifact_preflight_state=(
+                                    "generated-audio-entry-verified"
+                                ),
+                            ),
+                        ),
+                        playback_guard,
+                    )
+                if self.progress_wait_stop.wait(0.25):
+                    break
+            return _route_outcome(
+                route,
+                PlaybackStatus.INTERRUPTED,
+                (self.clock() - started) * 1000,
+            )
+        finally:
+            self.playback_active = False
+            self.active_playback_source = None
 
     def _play_source_route(self, route, playback_guard):
         prepared = route.prepared
@@ -1094,6 +1173,7 @@ class GeneratedAudioFallbackBackend:
 
     def stop(self):
         was_playing = self.playback_active
+        self.progress_wait_stop.set()
         if self.active_playback_source == "game":
             self.source_audio_completion_stop.set()
         elif self.active_playback_source == "generated":

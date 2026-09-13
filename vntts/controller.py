@@ -40,6 +40,7 @@ from vntts.generated_audio import (
     GeneratedAudioRoute,
     LiveFallbackRoute,
     LiveTTSRoute,
+    PendingGeneratedAudioRoute,
     PlaybackOutcome,
     PlaybackStatus,
     PreparedGeneratedAudio,
@@ -253,6 +254,7 @@ def _diagnostic_route_metrics(value: object) -> _DiagnosticRouteMetrics | None:
         value,
         (
             GeneratedAudioRoute,
+            PendingGeneratedAudioRoute,
             LiveFallbackRoute,
             SourceAudioRoute,
             LiveTTSRoute,
@@ -846,6 +848,7 @@ class AppController:
             **backend_options,
         )
         generated_backend.voice_override = self._has_manual_voice_override
+        generated_backend.progress_wait_status = self.status_handler
         self.speech_backend = generated_backend
         if policy == "prefer-game-audio":
             suffix = (
@@ -3035,6 +3038,7 @@ class AppController:
                     audio,
                     (
                         GeneratedAudioRoute,
+                        PendingGeneratedAudioRoute,
                         LiveFallbackRoute,
                         SourceAudioRoute,
                         LiveTTSRoute,
@@ -3069,6 +3073,7 @@ class AppController:
                         audio,
                         (
                             GeneratedAudioRoute,
+                            PendingGeneratedAudioRoute,
                             SourceAudioRoute,
                             PreparedGeneratedAudio,
                             PreparedSourceAudioPassThrough,
@@ -3316,6 +3321,8 @@ class AppController:
             )
 
     def _describe_audio_source(self, prepared: object) -> str:
+        if isinstance(prepared, PendingGeneratedAudioRoute):
+            return f"Waiting for prepared audio (line {prepared.line_id})"
         lead_seconds = float(getattr(prepared, "source_audio_lead_seconds", 0.0) or 0.0)
         if lead_seconds > 0 and isinstance(
             prepared,
@@ -3420,6 +3427,7 @@ class AppController:
                 (
                     SourceAudioRoute,
                     GeneratedAudioRoute,
+                    PendingGeneratedAudioRoute,
                     LiveFallbackRoute,
                     LiveTTSRoute,
                 ),
@@ -3450,7 +3458,9 @@ class AppController:
                 artifact_state,
             )
         prepared_payload = (
-            prepared.prepared
+            None
+            if isinstance(prepared, PendingGeneratedAudioRoute)
+            else prepared.prepared
             if isinstance(
                 prepared,
                 (
@@ -3466,7 +3476,8 @@ class AppController:
             prepared_payload = prepared_payload.payload
         voice_reference_id = (
             None
-            if isinstance(
+            if prepared_payload is None
+            or isinstance(
                 prepared_payload,
                 (PreparedGeneratedAudio, PreparedSourceAudioPassThrough),
             )
