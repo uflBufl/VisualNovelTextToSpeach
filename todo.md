@@ -3,6 +3,100 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
+## P1 - Consolidate atomic workspace publication
+
+- [ ] Inventory the 41 `tempfile.mkdtemp` publication sites in 31 production
+      modules and classify atomic publishers, disposable previews and directories
+      whose lifetime intentionally escapes the call. Migrate only the first two
+      classes to the existing `publication.staged_directory`; preserve exact
+      destination-conflict, retry and cleanup behavior.
+- [ ] Pilot the shared publication lifecycle on
+      `reviewed_rejection_fallback.py`, `reviewed_waveform_publication.py`,
+      `audio_event_projection_fallback.py` and
+      `known_role_live_fallback.py`. Keep domain validation in each publisher;
+      centralize the repeated staging, lease/recheck, no-replace commit and
+      cleanup sequence only where it remains identical after the pilot.
+- [ ] Migrate the remaining qualified publishers in small domain groups. For
+      every group, test a source-digest race, an existing destination, an
+      exception during staging and removal of abandoned staging directories,
+      then run its focused authoring tests and the full suite.
+
+## P1 - Expand static typing by coherent boundaries
+
+- [ ] Establish the all-production mypy inventory as a shrinking baseline. The
+      current strict scan reports 3,568 errors across 207 files, including 3,562
+      `no-untyped-def` errors, while `pyproject.toml` checks only 19 files. Make
+      `check_mypy_scope.py` retain every newly completed module and reject scope
+      loss without accepting new `Any`, `cast` or blanket ignores as completion.
+- [ ] Type the small shared foundations first: `path_safety.py`,
+      `application_directories.py`, `document_identity.py`, `versioned_json.py`,
+      `hotkeys.py`, `dialog.py` and `auto_advance_policy.py`. Add each passing
+      file to the configured scope and baseline in the same change.
+- [ ] Type the persisted authoring contract boundary through
+      `generation_state.py`, `reconciliation_schema.py`, `workspace_state.py`
+      and `queue_extension.py`, then their nearest bulk-generation, workbench and
+      terminal-conflict consumers. Preserve optionality, validation order and
+      existing error text for stored JSON; run the focused reconciliation,
+      generation-state, terminal-conflict and workbench tests after each slice.
+- [ ] Type the runtime boundary through `voices.py`, `runtime_config.py`,
+      `speech_worker.py`, `speech_backend.py`, `controller_components.py` and
+      `controller.py`. Replace the broad `Any` bridge in the already-scoped
+      `controller_components.py` with concrete existing runtime types as its
+      owners become typed; keep backend protocols limited to multiple real
+      implementations.
+- [ ] Type Qt/UI modules only after their service contracts are checked. Work
+      screen by screen so signal payloads, optional widget state and worker
+      results become explicit without introducing parallel view-model layers.
+
+## P1 - Reduce structural complexity at lifecycle owners
+
+- [ ] Restore the complexity ratchet before taking a new baseline. It currently
+      rejects five findings in `workbench._load_workspace_scoped`,
+      `workbench._validate_workspace_offline_fallback_state` and
+      `workspace_state.load_stable_workspace_generation_state`; remove those
+      regressions rather than adding allowances.
+- [ ] Split `authoring/workbench.py` along existing ownership boundaries. It is
+      6,389 lines with 140 top-level functions and 38 production consumers:
+      migrate foundation/path/authority callers to the existing focused modules,
+      then isolate workspace creation, inspection, carry-forward and merge
+      phases while retaining only the compatibility imports that still have
+      consumers. Check importability and focused tests after every move.
+- [ ] Decompose the high-branch authoring workflows one lifecycle family at a
+      time: workspace/carry-forward validation, generation-state record
+      validation, source-reference publication and bulk review/fallback. Extract
+      phase helpers with domain names, preserve validation and lease order, and
+      delete each matching C901/PLR0912/PLR0915 baseline entry as it disappears.
+- [ ] Break the seven largest Qt constructors into named section builders,
+      signal wiring and initial-state methods, starting with
+      `pregeneration_ui.py` and `authoring/workbench_ui.py` (558 and 555 lines),
+      then the large constructors in `app.py`, `cohort_bundle_ui.py`,
+      `dashboard_ui.py`, `onboarding_ui.py` and `game_narrator_ui.py`. Reuse the
+      current widgets and layouts; do not add a UI framework or generic factory.
+
+## P1 - Unify background UI task ownership
+
+- [ ] After fixing onboarding cleanup, move result-only diagnostics and asset
+      checksum verification from raw daemon `Thread` launches to the existing
+      `LatestTaskRunner`, with tests proving stale completions and completions
+      after dialog close cannot update the UI.
+- [ ] Give asset download and support export explicit lifecycle contracts before
+      sharing their runner: either cooperative cancellation through the blocking
+      operation or a tested finish-in-background policy. Preserve progress and
+      error delivery, and remove the raw-thread paths only after close/cancel
+      tests pass.
+
+## P1 - Make debt tooling trustworthy
+
+- [ ] Establish dependency vulnerability evidence for the root and every backend
+      lock without adding a new dependency first. Triage the current locks with
+      an existing advisory service/tool, record actionable advisories, and add a
+      CI gate only if it covers pinned Git dependencies and produces stable,
+      suppressible results.
+- [ ] Investigate uv's invalid `>= '2.7'` metadata warning from the pinned
+      Chatterbox dependency. Keep the current pin while frozen sync and platform
+      smoke pass; move to a corrected upstream commit only after Windows and
+      Linux Chatterbox smoke tests succeed.
+
 ## P0 - Reduce OpenMOSS generation latency
 
 - [ ] Run the qualified GPU/8 profile beside Reverse: 1999 and confirm game-time
