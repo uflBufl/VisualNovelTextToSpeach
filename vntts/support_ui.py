@@ -1,5 +1,7 @@
+from typing import Literal
+
 from PySide6.QtCore import QTimer, Signal
-from PySide6.QtGui import QKeySequence, QTextCursor
+from PySide6.QtGui import QHideEvent, QKeySequence, QShowEvent, QTextCursor
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -20,7 +22,11 @@ class SupportCenterDialog(QDialog):
     export_requested = Signal()
     settings_folder_requested = Signal()
 
-    def __init__(self, event_log, parent=None):
+    def __init__(
+        self,
+        event_log: support.RuntimeSupportLog,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.event_log = event_log
         self.setWindowTitle("Support and logs")
@@ -30,7 +36,7 @@ class SupportCenterDialog(QDialog):
         self.events = QTextEdit()
         self.events.setReadOnly(True)
         self.events.setPlaceholderText("No runtime events recorded yet.")
-        self._rendered_lines = []
+        self._rendered_lines: list[str] = []
         self.pending_event_count = 0
         self.new_events_button = QPushButton("Show new events")
         self.new_events_button.setAccessibleName("Show new runtime log events")
@@ -107,21 +113,26 @@ class SupportCenterDialog(QDialog):
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self.refresh)
 
-    def request_diagnostics(self):
+    def request_diagnostics(self) -> None:
         if not self.diagnostics_button.isEnabled():
             return
         self.diagnostics_button.setEnabled(False)
         self.operation_status.setText("Opening live diagnostics...")
         self.diagnostics_requested.emit()
 
-    def request_settings_folder(self):
+    def request_settings_folder(self) -> None:
         if not self.settings_button.isEnabled():
             return
         self.settings_button.setEnabled(False)
         self.operation_status.setText("Opening the application settings folder...")
         self.settings_folder_requested.emit()
 
-    def set_launcher_result(self, launcher, successful, message):
+    def set_launcher_result(
+        self,
+        launcher: Literal["diagnostics", "settings-folder"],
+        successful: bool,
+        message: str,
+    ) -> None:
         buttons = {
             "diagnostics": self.diagnostics_button,
             "settings-folder": self.settings_button,
@@ -133,16 +144,16 @@ class SupportCenterDialog(QDialog):
         else:
             self.operation_status.setText(f"{message}. Select the action to retry.")
 
-    def showEvent(self, event):
+    def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self.refresh()
         self.timer.start()
 
-    def hideEvent(self, event):
+    def hideEvent(self, event: QHideEvent) -> None:
         self.timer.stop()
         super().hideEvent(event)
 
-    def refresh(self):
+    def refresh(self) -> None:
         entries = sorted(
             self.event_log.snapshot()
             + support.native_speech_log.snapshot()
@@ -213,7 +224,7 @@ class SupportCenterDialog(QDialog):
         )
         self.new_events_button.show()
 
-    def show_new_events(self):
+    def show_new_events(self) -> None:
         cursor = self.events.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.events.setTextCursor(cursor)
@@ -221,7 +232,7 @@ class SupportCenterDialog(QDialog):
         self.pending_event_count = 0
         self.new_events_button.hide()
 
-    def request_export(self):
+    def request_export(self) -> None:
         if not self.export_button.isEnabled():
             return
         self.export_button.setEnabled(False)
@@ -230,7 +241,7 @@ class SupportCenterDialog(QDialog):
         )
         self.export_requested.emit()
 
-    def set_export_result(self, successful, message):
+    def set_export_result(self, successful: bool | None, message: str) -> None:
         self.export_button.setEnabled(True)
         if successful is True:
             self.operation_status.setText(f"Support report saved to {message}")
@@ -242,6 +253,6 @@ class SupportCenterDialog(QDialog):
             self.operation_status.setText(message or "Support report export cancelled.")
 
 
-def _support_value(value):
+def _support_value(value: object) -> str:
     text = str(value)
     return text if len(text) <= 500 else f"{text[:485]}... <truncated>"
