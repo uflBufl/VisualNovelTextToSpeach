@@ -181,6 +181,7 @@ files = [
     "vntts/history.py",
     "vntts/history_ui.py",
     "vntts/live.py",
+    "vntts/live_replay.py",
     "vntts/live_snapshot.py",
     "vntts/live_speech.py",
     "vntts/macos_ui.py",

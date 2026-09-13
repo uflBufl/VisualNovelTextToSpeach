@@ -110,6 +110,7 @@ class LivePipelineMetrics:
 
 
 DialogRoute: TypeAlias = SilentDialogRoute | CanonicalDialogRoute | Observation
+DialogObservationDecision: TypeAlias = DialogRoute | bool | None
 StableFrameRoute: TypeAlias = DialogRoute | None | Literal[False]
 TrackerResolver: TypeAlias = Callable[[str, str], str | None]
 TrackerProbe: TypeAlias = Callable[[str, str], bool]
@@ -605,9 +606,7 @@ class LiveDialogReader:
         stable_frame_minimum_seconds: float = 0.12,
         stable_frame_clock: Callable[[], float] = monotonic,
         interrupt_speech: Callable[[], object] | None = None,
-        dialog_observed: Callable[
-            [str | None, str], DialogRoute | Literal[False] | None
-        ]
+        dialog_observed: Callable[[str | None, str], DialogObservationDecision]
         | None = None,
         interval_seconds: float = 0.2,
         tracker_factory: Callable[

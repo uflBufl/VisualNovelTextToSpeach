@@ -51,6 +51,7 @@ from vntts.live import (
     AdaptiveSpeechBackpressure,
     AutoAdvanceAttempt,
     CanonicalDialogRoute,
+    DialogObservationDecision,
     LiveDialogReader,
     SilentDialogRoute,
     SpeechChunk,
@@ -985,8 +986,8 @@ class AppController:
         return UncertainFrameRecorder(self.settings.ocr_diagnostics_directory)
 
     def _dialog_observed(
-        self, character: str, text: str
-    ) -> bool | tuple[str, str] | SilentDialogRoute:
+        self, character: str | None, text: str
+    ) -> DialogObservationDecision:
         if not text:
             with self.story_cursor_lock:
                 if (
@@ -2493,7 +2494,7 @@ class AppController:
             return successful
 
     def _canonical_observed_character(
-        self, character: str, text: str | None = None
+        self, character: str | None, text: str | None = None
     ) -> str:
         original = str(character or "Narrator").strip() or "Narrator"
         canonicalize = getattr(self.chapter_voice_preloader, "canonical_speaker", None)
@@ -2647,21 +2648,25 @@ class AppController:
             self.error_handler(error)
 
     def _enqueue_dialog(self, character: str, text: str) -> bool:
-        character = self._canonical_observed_character(character, text)
-        resolved_text = self._resolve_early_indexed_dialogue(character, text)
+        canonical_character = self._canonical_observed_character(character, text)
+        resolved_text = self._resolve_early_indexed_dialogue(canonical_character, text)
         if resolved_text is not None:
             text = resolved_text
-        decision = self._dialog_observed(character, text)
+        decision = self._dialog_observed(canonical_character, text)
         if decision is False:
             return False
         if isinstance(decision, SilentDialogRoute):
             return True
         if isinstance(decision, tuple) and len(decision) == 2:
-            character, text = decision
+            routed_character, routed_text = decision
+        else:
+            routed_character, routed_text = canonical_character, text
         reader = self.live_reader
         if reader is None:
             return False
-        return reader.enqueue(character, text)
+        if routed_character is None:
+            routed_character = canonical_character
+        return reader.enqueue(routed_character, routed_text)
 
     def _ocr_uncertain(self, result: OCRResult, minimum_confidence: float) -> None:
         if self.live_reader is not None:
