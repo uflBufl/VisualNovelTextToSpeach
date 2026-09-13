@@ -222,8 +222,8 @@ class OCRCorrectionsDialog(QDialog):
         )
 
     @staticmethod
-    def _cell_text(item: object) -> str:
-        return item.text() if isinstance(item, QTableWidgetItem) else ""
+    def _cell_text(item: QTableWidgetItem | None) -> str:
+        return item.text() if item is not None else ""
 
     def _all_table_rows(self) -> AllTableRows:
         return (
@@ -259,6 +259,49 @@ class OCRCorrectionsDialog(QDialog):
                     item.setBackground(QColor())
                     item.setToolTip("")
 
+    def _validate_table(
+        self, scope: str, table: QTableWidget
+    ) -> tuple[list[str], QTableWidgetItem | None]:
+        self._clear_validation(table)
+        errors: list[str] = []
+        first_item: QTableWidgetItem | None = None
+        seen: dict[str, QTableWidgetItem] = {}
+        for row in range(table.rowCount()):
+            source_item = table.item(row, 0)
+            replacement_item = table.item(row, 1)
+            source = self._cell_text(source_item).strip()
+            replacement = self._cell_text(replacement_item).strip()
+            if not source and not replacement:
+                continue
+            invalid_items: list[QTableWidgetItem] = []
+            message: str | None = None
+            if not source or not replacement:
+                message = f"{scope} row {row + 1}: complete both fields."
+                invalid_items = [
+                    item
+                    for item, value in (
+                        (source_item, source),
+                        (replacement_item, replacement),
+                    )
+                    if not value and item is not None
+                ]
+            elif source.casefold() in seen:
+                message = f"{scope} row {row + 1}: duplicate source '{source}'."
+                invalid_items = [source_item] if source_item is not None else []
+                original = seen[source.casefold()]
+                original.setBackground(QColor("#ffd9d5"))
+                original.setToolTip("Duplicate OCR correction source")
+            elif source_item is not None:
+                seen[source.casefold()] = source_item
+            if message is None:
+                continue
+            errors.append(message)
+            for item in invalid_items:
+                item.setBackground(QColor("#ffd9d5"))
+                item.setToolTip(message)
+                first_item = first_item or item
+        return errors, first_item
+
     def validate_rows(self, *, show_valid: bool = True) -> tuple[str, ...]:
         signal_blockers = (
             QSignalBlocker(self.global_table),
@@ -270,52 +313,9 @@ class OCRCorrectionsDialog(QDialog):
             ("Global", self.global_table),
             ("Profile", self.profile_table),
         ):
-            self._clear_validation(table)
-            seen: dict[str, QTableWidgetItem] = {}
-            for row in range(table.rowCount()):
-                source_item = table.item(row, 0)
-                replacement_item = table.item(row, 1)
-                source = (
-                    source_item.text().strip()
-                    if isinstance(source_item, QTableWidgetItem)
-                    else ""
-                )
-                replacement = (
-                    replacement_item.text().strip()
-                    if isinstance(replacement_item, QTableWidgetItem)
-                    else ""
-                )
-                if not source and not replacement:
-                    continue
-                invalid_items: list[QTableWidgetItem] = []
-                message: str | None = None
-                if not source or not replacement:
-                    message = f"{scope} row {row + 1}: complete both fields."
-                    invalid_items = [
-                        item
-                        for item, value in (
-                            (source_item, source),
-                            (replacement_item, replacement),
-                        )
-                        if not value and isinstance(item, QTableWidgetItem)
-                    ]
-                elif source.casefold() in seen:
-                    message = f"{scope} row {row + 1}: duplicate source '{source}'."
-                    if isinstance(source_item, QTableWidgetItem):
-                        invalid_items = [source_item]
-                    original = seen[source.casefold()]
-                    original.setBackground(QColor("#ffd9d5"))
-                    original.setToolTip("Duplicate OCR correction source")
-                else:
-                    if isinstance(source_item, QTableWidgetItem):
-                        seen[source.casefold()] = source_item
-                if message is None:
-                    continue
-                errors.append(message)
-                for item in invalid_items:
-                    item.setBackground(QColor("#ffd9d5"))
-                    item.setToolTip(message)
-                    first_item = first_item or item
+            table_errors, table_first_item = self._validate_table(scope, table)
+            errors.extend(table_errors)
+            first_item = first_item or table_first_item
         if errors:
             self.status.setText(
                 f"Fix {len(errors)} correction row error(s) before saving:\n"
