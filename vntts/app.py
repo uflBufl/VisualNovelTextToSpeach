@@ -222,12 +222,67 @@ class AppSignals(QObject):
 class SettingsDialog(QDialog):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
+        self._initialize_settings(settings)
+        window_layout = self._build_capture_controls(settings)
+        self._build_engine_controls(settings)
+        self._build_speech_routing_controls(settings)
+        self._build_playback_controls(settings)
+        self._build_application_controls(settings)
+        (
+            screenshot_layout,
+            diagnostics_layout,
+            narrator_reference_layout,
+            game_pack_layout,
+            voice_manifest_layout,
+            story_index_layout,
+            live_sequence_plan_layout,
+            live_speaker_corpus_layout,
+            generated_audio_manifest_layout,
+        ) = self._build_path_selectors()
+        shortcuts_form = self._build_shortcuts_form()
+        capture_form = self._build_capture_form(
+            window_layout, screenshot_layout, diagnostics_layout
+        )
+        speech_form = self._build_speech_form(
+            narrator_reference_layout,
+            game_pack_layout,
+            voice_manifest_layout,
+            story_index_layout,
+            live_sequence_plan_layout,
+            live_speaker_corpus_layout,
+            generated_audio_manifest_layout,
+        )
+        playback_form = self._build_playback_form(
+            capture_form,
+            speech_form,
+            screenshot_layout,
+            diagnostics_layout,
+            game_pack_layout,
+            voice_manifest_layout,
+            story_index_layout,
+            live_sequence_plan_layout,
+            live_speaker_corpus_layout,
+            generated_audio_manifest_layout,
+        )
+        application_form = self._build_application_form()
+        content_layout = self._build_settings_content(
+            shortcuts_form,
+            capture_form,
+            speech_form,
+            playback_form,
+            application_form,
+        )
+        self._build_dialog_layout(content_layout)
+        self._connect_controls()
+
+    def _initialize_settings(self, settings):
         self.original_settings = settings
         self.narrator_assignments = dict(settings.voice_assignments)
         self.character_defaults = dict(settings.character_voice_defaults)
         self._game_pack_validation = None
         self.setWindowTitle(f"{application_name} settings")
 
+    def _build_capture_controls(self, settings):
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
         self.pause_hotkey = HotkeyRecorder(settings.pause_hotkey)
@@ -283,6 +338,10 @@ class SettingsDialog(QDialog):
         window_layout = QHBoxLayout()
         window_layout.addWidget(self.game_window)
         window_layout.addWidget(refresh_windows_button)
+        self.refresh_windows_button = refresh_windows_button
+        return window_layout
+
+    def _build_engine_controls(self, settings):
         self.tts_model = QLineEdit(settings.tts_model or "")
         self.speech_backend = QComboBox()
         for label, backend, available in speech_backend_options(
@@ -318,6 +377,8 @@ class SettingsDialog(QDialog):
         self.ocr_minimum_confidence.setRange(0, 100)
         self.ocr_minimum_confidence.setSuffix("%")
         self.ocr_minimum_confidence.setValue(settings.ocr_minimum_confidence)
+
+    def _build_speech_routing_controls(self, settings):
         self.ocr_language = QLineEdit(settings.ocr_language)
         self.tts_language = QLineEdit(settings.tts_language or "")
         self.narrator_reference = QLineEdit(settings.tts_speaker_wav or "")
@@ -352,6 +413,8 @@ class SettingsDialog(QDialog):
             settings.generated_audio_manifest or ""
         )
         self.narrator_speaker = QLineEdit(settings.narrator_speaker or "")
+
+    def _build_playback_controls(self, settings):
         self.tts_profile = QComboBox()
         self.tts_profile.addItems(["stable", "natural", "expressive"])
         self.tts_profile.setCurrentText(settings.tts_profile)
@@ -394,6 +457,8 @@ class SettingsDialog(QDialog):
         self.auto_advance_delay.setRange(0, 5000)
         self.auto_advance_delay.setSuffix(" ms")
         self.auto_advance_delay.setValue(settings.auto_advance_delay_ms)
+
+    def _build_application_controls(self, settings):
         self.warm_up_voices = QCheckBox("Warm up model and voices before gameplay")
         self.warm_up_voices.setChecked(settings.warm_up_voices)
         self.launch_at_login = QCheckBox("Launch automatically when I sign in")
@@ -418,6 +483,7 @@ class SettingsDialog(QDialog):
         self.pocket_terms_label.setWordWrap(True)
         self.pocket_terms_label.setOpenExternalLinks(True)
 
+    def _build_path_selectors(self):
         (
             screenshot_layout,
             self.screenshot_browse_button,
@@ -503,8 +569,19 @@ class SettingsDialog(QDialog):
                 "Changes to this setting require an application restart."
             )
             field.setAccessibleDescription(f"{current} {restart_description}".strip())
-        self.refresh_windows_button = refresh_windows_button
+        return (
+            screenshot_layout,
+            diagnostics_layout,
+            narrator_reference_layout,
+            game_pack_layout,
+            voice_manifest_layout,
+            story_index_layout,
+            live_sequence_plan_layout,
+            live_speaker_corpus_layout,
+            generated_audio_manifest_layout,
+        )
 
+    def _build_shortcuts_form(self):
         shortcuts_form = QFormLayout()
         shortcuts_form.addRow("Read once hotkey", self.read_hotkey)
         shortcuts_form.addRow("Live reading hotkey", self.live_hotkey)
@@ -515,7 +592,9 @@ class SettingsDialog(QDialog):
         shortcuts_form.addRow("Emergency stop hotkey", self.emergency_stop_hotkey)
         if sys.platform == "darwin":
             shortcuts_form.addRow(self.macos_hotkey_notice)
+        return shortcuts_form
 
+    def _build_capture_form(self, window_layout, screenshot_layout, diagnostics_layout):
         capture_form = QFormLayout()
         _add_composite_form_row(
             capture_form,
@@ -536,7 +615,18 @@ class SettingsDialog(QDialog):
             self.ocr_diagnostics_directory,
             diagnostics_layout,
         )
+        return capture_form
 
+    def _build_speech_form(
+        self,
+        narrator_reference_layout,
+        game_pack_layout,
+        voice_manifest_layout,
+        story_index_layout,
+        live_sequence_plan_layout,
+        live_speaker_corpus_layout,
+        generated_audio_manifest_layout,
+    ):
         speech_form = QFormLayout()
         self.speech_form = speech_form
         speech_form.addRow("Speech engine (restart required)", self.speech_backend)
@@ -604,7 +694,21 @@ class SettingsDialog(QDialog):
         speech_form.addRow("XTTS license", self.xtts_terms)
         speech_form.addRow("", self.pocket_gated_model)
         speech_form.addRow("", self.pocket_terms_label)
+        return speech_form
 
+    def _build_playback_form(
+        self,
+        capture_form,
+        speech_form,
+        screenshot_layout,
+        diagnostics_layout,
+        game_pack_layout,
+        voice_manifest_layout,
+        story_index_layout,
+        live_sequence_plan_layout,
+        live_speaker_corpus_layout,
+        generated_audio_manifest_layout,
+    ):
         playback_form = QFormLayout()
         playback_form.addRow("Output volume", self.output_volume)
         playback_form.addRow("Speaking speed", self.speech_rate)
@@ -636,12 +740,23 @@ class SettingsDialog(QDialog):
             (playback_form, self.auto_advance_delay),
         )
         self.advanced_settings.toggled.connect(self._set_advanced_settings)
+        return playback_form
 
+    def _build_application_form(self):
         application_form = QFormLayout()
         application_form.addRow("Startup readiness", self.warm_up_voices)
         application_form.addRow("macOS startup", self.launch_at_login)
         application_form.addRow("Closing the window", self.keep_running_on_close)
+        return application_form
 
+    def _build_settings_content(
+        self,
+        shortcuts_form,
+        capture_form,
+        speech_form,
+        playback_form,
+        application_form,
+    ):
         self.settings_regions = (
             self._settings_region("Keyboard shortcuts", shortcuts_form),
             self._settings_region("Capture and OCR", capture_form),
@@ -664,7 +779,9 @@ class SettingsDialog(QDialog):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.settings_scroll.setWidget(settings_content)
+        return settings_content_layout
 
+    def _build_dialog_layout(self, settings_content_layout):
         self.section_navigation = QComboBox()
         self.section_navigation.addItems(
             region.title() for region in self.settings_regions
@@ -710,6 +827,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.advanced_settings)
         layout.addWidget(buttons)
         self._resize_for_available_screen()
+
+    def _connect_controls(self):
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
         self.tts_model.textChanged.connect(self.update_terms_control)
         self.speech_backend.currentIndexChanged.connect(
