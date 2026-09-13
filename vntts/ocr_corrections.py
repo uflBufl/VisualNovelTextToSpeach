@@ -1,22 +1,27 @@
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import Self, TypeAlias
 
+from vntts.ocr import OCRResult
 from vntts.settings import get_config_directory
 from vntts.versioned_json import load_versioned_json, write_versioned_json
 
 corrections_schema_version = 1
+PathInput: TypeAlias = str | Path
+CorrectionEntries: TypeAlias = Mapping[str, str]
 
 
-def get_ocr_corrections_path():
-    return get_config_directory() / "ocr-corrections.json"
+def get_ocr_corrections_path() -> Path:
+    return Path(get_config_directory()) / "ocr-corrections.json"
 
 
 class OCRCorrectionDictionary:
-    def __init__(self, entries=None):
+    def __init__(self, entries: object = None) -> None:
         self.entries = normalize_correction_entries(entries or {})
 
-    def correct_result(self, result):
+    def correct_result(self, result: OCRResult) -> OCRResult:
         character, character_changes = self.correct_text(result.character)
         text, text_changes = self.correct_text(result.text)
         changes = tuple(dict.fromkeys((*character_changes, *text_changes)))
@@ -29,9 +34,9 @@ class OCRCorrectionDictionary:
             corrections=changes,
         )
 
-    def correct_text(self, value):
+    def correct_text(self, value: str | None) -> tuple[str, tuple[str, ...]]:
         corrected = value or ""
-        changes = []
+        changes: list[str] = []
         entries = sorted(
             self.entries.items(),
             key=lambda item: len(item[0]),
@@ -48,7 +53,13 @@ class OCRCorrectionDictionary:
 
 
 class OCRCorrectionStore:
-    def __init__(self, path=None, *, global_entries=None, profile_entries=None):
+    def __init__(
+        self,
+        path: PathInput | None = None,
+        *,
+        global_entries: object = None,
+        profile_entries: Mapping[object, object] | None = None,
+    ) -> None:
         self.path = (
             get_ocr_corrections_path() if path is None else Path(path).expanduser()
         )
@@ -59,33 +70,44 @@ class OCRCorrectionStore:
         }
 
     @classmethod
-    def load(cls, path=None, *, warn=None):
-        warn = (lambda _message: None) if warn is None else warn
+    def load(
+        cls,
+        path: PathInput | None = None,
+        *,
+        warn: Callable[[str], None] | None = None,
+    ) -> Self:
+        report = (lambda _message: None) if warn is None else warn
         store = cls(path)
 
-        def decode(payload):
+        def decode(payload: dict[str, object]) -> OCRCorrectionStore:
             store.global_entries = normalize_correction_entries(payload["global"])
+            profiles = payload["profiles"]
+            if not isinstance(profiles, dict):
+                raise ValueError("OCR correction profiles must be a mapping")
             store.profile_entries = {
                 str(profile_id): normalize_correction_entries(entries)
-                for profile_id, entries in payload["profiles"].items()
+                for profile_id, entries in profiles.items()
             }
             return store
 
-        def fallback():
+        def fallback() -> OCRCorrectionStore:
             store.global_entries = {}
             store.profile_entries = {}
             return store
 
-        return load_versioned_json(
+        loaded = load_versioned_json(
             store.path,
             schema_version=corrections_schema_version,
             document_name="OCR corrections",
             decode=decode,
             fallback=fallback,
-            warn=warn,
+            warn=report,
         )
+        if not isinstance(loaded, cls):
+            raise TypeError("OCR correction loader returned an invalid store")
+        return loaded
 
-    def save(self):
+    def save(self) -> Path:
         write_versioned_json(
             self.path,
             corrections_schema_version,
@@ -96,7 +118,7 @@ class OCRCorrectionStore:
         )
         return self.path
 
-    def dictionary_for(self, profile_id=None):
+    def dictionary_for(self, profile_id: str | None = None) -> OCRCorrectionDictionary:
         combined = dict(self.global_entries)
         if profile_id and profile_id in self.profile_entries:
             profile_keys = {key.casefold() for key in self.profile_entries[profile_id]}
@@ -108,7 +130,12 @@ class OCRCorrectionStore:
             combined.update(self.profile_entries[profile_id])
         return OCRCorrectionDictionary(combined)
 
-    def replace_entries(self, global_entries, profile_id=None, profile_entries=None):
+    def replace_entries(
+        self,
+        global_entries: object,
+        profile_id: str | None = None,
+        profile_entries: object = None,
+    ) -> None:
         normalized_global = normalize_correction_entries(global_entries)
         normalized_profile = (
             normalize_correction_entries(profile_entries or {}) if profile_id else None
@@ -121,7 +148,7 @@ class OCRCorrectionStore:
                 self.profile_entries.pop(str(profile_id), None)
         self.save()
 
-    def upsert_entries(self, entries, profile_id=None):
+    def upsert_entries(self, entries: object, profile_id: str | None = None) -> None:
         normalized = normalize_correction_entries(entries)
         target = (
             self.profile_entries.setdefault(str(profile_id), {})
@@ -141,22 +168,22 @@ class OCRCorrectionStore:
             self.global_entries = merged
         self.save()
 
-    def copy_profile(self, source_id, destination_id):
+    def copy_profile(self, source_id: str, destination_id: str) -> None:
         entries = self.profile_entries.get(str(source_id))
         if entries:
             self.profile_entries[str(destination_id)] = dict(entries)
             self.save()
 
-    def remove_profile(self, profile_id):
+    def remove_profile(self, profile_id: str) -> None:
         if self.profile_entries.pop(str(profile_id), None) is not None:
             self.save()
 
 
-def normalize_correction_entries(entries):
+def normalize_correction_entries(entries: object) -> dict[str, str]:
     if not isinstance(entries, dict):
         raise ValueError("OCR corrections must be a mapping")
-    normalized = {}
-    seen = set()
+    normalized: dict[str, str] = {}
+    seen: set[str] = set()
     for source, replacement in entries.items():
         if not isinstance(source, str) or not source.strip():
             raise ValueError("OCR correction source must not be empty")
