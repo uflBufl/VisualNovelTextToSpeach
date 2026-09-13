@@ -119,7 +119,6 @@
     "vntts/pregeneration_setup.py": 41,
     "vntts/pregeneration_ui.py": 119,
     "vntts/pregeneration_voices.py": 50,
-    "vntts/reference_quality.py": 5,
     "vntts/runtime_ownership.py": 12,
     "vntts/services/tts_engine.py": 19,
     "vntts/source_audio_semantics.py": 6,

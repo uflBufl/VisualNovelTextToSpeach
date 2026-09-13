@@ -215,6 +215,7 @@ files = [
     "vntts/pregeneration_audition_ui.py",
     "vntts/qt_audio.py",
     "vntts/readiness_ui.py",
+    "vntts/reference_quality.py",
     "vntts/release_backends.py",
     "vntts/release_matrix.py",
     "vntts/release_runtime.py",

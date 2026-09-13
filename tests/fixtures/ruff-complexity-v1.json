@@ -1383,12 +1383,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/reference_quality.py",
-      "scope": "analyze_reference_bytes",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/release_matrix.py",
       "scope": "validate_release_evidence",
       "count": 1
@@ -2433,12 +2427,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/reference_quality.py",
-      "scope": "analyze_reference_bytes",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/release_matrix.py",
       "scope": "validate_release_evidence",
       "count": 1
@@ -3335,12 +3323,6 @@
       "code": "PLR0915",
       "path": "vntts/readiness_ui.py",
       "scope": "ReadinessDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/reference_quality.py",
-      "scope": "analyze_reference_bytes",
       "count": 1
     },
     {
