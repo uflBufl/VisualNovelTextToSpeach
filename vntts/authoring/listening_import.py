@@ -6,7 +6,6 @@ import hashlib
 import json
 import shutil
 import sys
-import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,6 +16,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.import_paths import default_import_root
 from vntts.authoring.private_files import private_file_is_restricted
+from vntts.authoring.publication import staged_directory
 from vntts.authoring.workspace_foundation import load_json_object, require_sha256
 
 SESSION_SCHEMA = "r1999.model-listening-session"
@@ -153,8 +153,7 @@ def import_listening_session(session_directory, destination_root=None):
     if destination.exists():
         return _validate_existing(destination, inspection)
 
-    staging = Path(tempfile.mkdtemp(prefix=f".{import_id}-", dir=destination_root))
-    try:
+    with staged_directory(destination_root, prefix=f".{import_id}-") as staging:
         for role, source, relative, digest in inspection.artifacts:
             target = staging / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -179,10 +178,6 @@ def import_listening_session(session_directory, destination_root=None):
             if destination.exists():
                 return _validate_existing(destination, inspection)
             raise
-        staging = None
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
     return ListeningImportResult(destination, manifest, True)
 
 

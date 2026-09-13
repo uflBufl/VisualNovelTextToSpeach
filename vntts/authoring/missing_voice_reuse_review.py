@@ -8,7 +8,6 @@ import json
 import os
 import random
 import shutil
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +22,7 @@ from vntts.authoring.missing_voice_reuse import (
     load_missing_voice_reuse_plan,
 )
 from vntts.authoring.private_files import private_file_is_restricted
+from vntts.authoring.publication import staged_directory
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_BINDING_FIELD,
 )
@@ -220,8 +220,7 @@ def build_missing_voice_reuse_review(
             f"Missing-voice review directory is not empty: {root}"
         )
     root.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{root.name}-", dir=root.parent))
-    try:
+    with staged_directory(root.parent, prefix=f".{root.name}-") as staging:
         public_candidates = []
         for candidate_id in ordered:
             label = labels[candidate_id]
@@ -386,10 +385,6 @@ def build_missing_voice_reuse_review(
                     f"Missing-voice review destination already exists: {root}"
                 ) from error
             raise
-        staging = None
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
     load_missing_voice_reuse_review(root / "session.json")
     return root / "session.json"
 

@@ -213,6 +213,25 @@ class ListeningImportTest(unittest.TestCase):
 
             self.assertEqual(list((root / "app-data").iterdir()), [])
 
+    def test_keyboard_interrupt_cleans_staging_directory(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+            original_copy = __import__("shutil").copy2
+
+            def copy_and_interrupt(source_path, destination):
+                original_copy(source_path, destination)
+                raise KeyboardInterrupt
+
+            with patch(
+                "vntts.authoring.listening_import.shutil.copy2",
+                side_effect=copy_and_interrupt,
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    import_listening_session(source, root / "app-data")
+
+            self.assertEqual(list((root / "app-data").iterdir()), [])
+
     def test_blind_audio_mutation_during_copy_aborts_before_publish(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

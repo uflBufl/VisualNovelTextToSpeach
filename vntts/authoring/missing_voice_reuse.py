@@ -7,7 +7,6 @@ import hashlib
 import json
 import re
 import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,7 +37,7 @@ from vntts.authoring.failure_repair import (
     FailureRepairPolicy,
     inline_sentence_pause_prompt,
 )
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION,
     MISSING_VOICE_REUSE_BINDING_FIELD,
@@ -613,10 +612,7 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
     if destination.exists():
         _validate_candidate_input(destination, document, candidate)
         return destination, False
-    staging = Path(
-        tempfile.mkdtemp(prefix=".missing-voice-reuse-staging-", dir=root)
-    ).resolve()
-    try:
+    with staged_directory(root, prefix=".missing-voice-reuse-staging-") as staging:
         source_manifest = source_directory / "inputs/voice/manifest.json"
         source_payload = source_manifest.read_bytes()
         if (
@@ -691,11 +687,6 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
         )
         _validate_candidate_input(staging, document, candidate)
         rename_directory_no_replace(staging, destination)
-        staging = None
-    except Exception:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-        raise
     return destination, True
 
 
