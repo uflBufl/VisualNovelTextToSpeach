@@ -6,15 +6,14 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import stat
-import tempfile
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from vntts_artifacts.generated_audio import GeneratedAudioDocument
 
+from vntts.authoring.publication import staged_directory
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import is_standalone_ellipsis_text
@@ -117,8 +116,7 @@ def seal_sequence_replay(
     if not parent.is_dir():
         raise SequenceReplaySealError(f"Replay seal parent does not exist: {parent}")
     output = parent / selected_output.name
-    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=parent))
-    try:
+    with staged_directory(parent, prefix=f".{output.name}.") as staging:
         authority = staging / "authority"
         authority.mkdir()
         story_copy = authority / "story-index.jsonl"
@@ -282,9 +280,6 @@ def seal_sequence_replay(
             len(dialogue),
             review["operator_review_required"],
         )
-    except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
 
 
 def _map_dialogue(raw_dialogue, resolver, plan):

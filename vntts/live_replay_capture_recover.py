@@ -7,8 +7,6 @@ import hashlib
 import io
 import os
 import re
-import shutil
-import tempfile
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from os.path import commonprefix
@@ -16,6 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from vntts.authoring.publication import staged_directory
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import (
@@ -146,8 +145,7 @@ def recover_live_replay_capture(
             f"Capture recovery parent does not exist: {parent}"
         )
     output = parent / selected_output.name
-    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=parent))
-    try:
+    with staged_directory(parent, prefix=f".{output.name}.") as staging:
         authority = staging / "authority"
         authority.mkdir()
         story_copy = authority / "story-index.jsonl"
@@ -332,9 +330,6 @@ def recover_live_replay_capture(
             sufficient,
             follow_up,
         )
-    except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
 
 
 def _load_observations(capture_path, capture, raw_dialogue, resolver):
