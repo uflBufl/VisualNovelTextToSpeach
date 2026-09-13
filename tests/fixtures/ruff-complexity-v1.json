@@ -423,36 +423,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/legacy_import.py",
-      "scope": "_discover_unsupported_legacy_artifacts",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/legacy_import.py",
-      "scope": "_validate_existing_import",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/legacy_import.py",
-      "scope": "_validate_generated_manifest",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/legacy_import.py",
-      "scope": "_validate_job",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/legacy_import.py",
-      "scope": "_validate_state",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/legacy_reason_review.py",
       "scope": "publish_reason_review_decisions",
       "count": 1
@@ -1305,12 +1275,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/native_resources.py",
-      "scope": "NativeResourceSampler._sample_gpu",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/ocr.py",
       "scope": "recognize_speaker_from_data",
       "count": 1
@@ -1847,30 +1811,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/known_role_reuse.py",
       "scope": "publish_known_role_reuse_binding",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/legacy_import.py",
-      "scope": "_discover_unsupported_legacy_artifacts",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/legacy_import.py",
-      "scope": "_validate_existing_import",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/legacy_import.py",
-      "scope": "_validate_generated_manifest",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/legacy_import.py",
-      "scope": "_validate_job",
       "count": 1
     },
     {
