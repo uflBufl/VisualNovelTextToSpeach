@@ -115,7 +115,7 @@ class WorkspaceSummary:
     latest_status: str | None
     latest_updated_at: str | None
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         for field in ("directory", "queue", "output", "state", "voice_manifest"):
             value = payload[field]
@@ -203,14 +203,14 @@ class WorkbenchProjectionData:
 
     summary: WorkspaceSummary
     reviews: tuple[ReviewItem, ...]
-    workspace: dict
+    workspace: dict[str, object]
     collections: tuple[WorkspaceCollection, ...]
     collection_selection: CollectionSelection
     history: tuple[ImmutableHistoryTimestamp, ...]
     voices: tuple[WorkspaceVoice, ...]
     _voice_controls: tuple[tuple[Path, str], ...]
 
-    def verify_voice_controls(self):
+    def verify_voice_controls(self) -> None:
         """Fail if a voice reference changed after the projection was built."""
         for path, digest in self._voice_controls:
             _read_bound_bytes(path, digest, "Voice reference snapshot")
@@ -221,20 +221,20 @@ class _WorkbenchProjectionRead:
     """Validated input objects shared only by one projection build."""
 
     directory: Path
-    workspace: dict
+    workspace: dict[str, object]
     workspace_sha256: str
     queue_path: Path
     queue: VoiceGenerationQueue
     output: Path
     state_path: Path | None
-    state: dict | None
+    state: dict[str, object] | None
     state_sha256: str | None
     story: object
     voices: tuple[WorkspaceVoice, ...]
     voice_controls: tuple[tuple[Path, str], ...]
 
 
-def _read_bound_bytes(path, expected_sha256, label):
+def _read_bound_bytes(path: str | Path, expected_sha256: str, label: str) -> bytes:
     path = Path(path)
     if path.is_symlink() or not path.is_file():
         raise AuthoringWorkbenchError(f"{label} is missing or unsafe")

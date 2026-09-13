@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import re
+from pathlib import Path
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
@@ -92,7 +93,7 @@ PACE_SLOW_MINIMUM_DELTA_WPM = 20.0
 _IMPORT_ID_PATTERN = re.compile(r"legacy-[0-9a-f]{24}")
 
 
-def review_technical_summary(item):
+def review_technical_summary(item: ReviewItem) -> str:
     """Describe objective review metrics without making a listening decision."""
     if item.duration_seconds is None:
         if item.failure_category is not None:
@@ -129,11 +130,11 @@ def review_technical_summary(item):
 
 
 def review_workspace_item(
-    workspace_directory,
-    queue_id,
-    decision,
-    expected_authority=None,
-):
+    workspace_directory: str | Path,
+    queue_id: str,
+    decision: str,
+    expected_authority: object = None,
+) -> ReviewCommit | WorkspaceSummary:
     if expected_authority is None:
         summary = inspect_workspace(workspace_directory)
         if summary.state is None:
@@ -170,7 +171,7 @@ def review_workspace_item(
     return inspect_workspace(workspace_directory)
 
 
-def prepare_review_audio(item):
+def prepare_review_audio(item: ReviewItem) -> bytes:
     """Return exact selected WAV bytes without projecting unrelated review rows."""
     if (
         not isinstance(item, ReviewItem)
@@ -192,7 +193,7 @@ def prepare_review_audio(item):
         raise AuthoringWorkbenchError(str(error)) from error
 
 
-def review_selected_item(item, decision):
+def review_selected_item(item: ReviewItem, decision: str) -> ReviewCommit:
     """Save one displayed review item without rescanning unrelated outcomes."""
     if (
         not isinstance(item, ReviewItem)
@@ -218,7 +219,9 @@ def review_selected_item(item, decision):
     return result
 
 
-def failure_reference_runtime_binding(workspace_directory):
+def failure_reference_runtime_binding(
+    workspace_directory: str | Path,
+) -> FailureReferenceRuntimeBinding | None:
     """Return exact synthetic voices and controls for one bound successor."""
     directory, workspace = _load_workspace(workspace_directory)
     return _failure_reference_runtime_binding(directory, workspace)
@@ -227,7 +230,7 @@ def failure_reference_runtime_binding(workspace_directory):
 _terminal_review_outcome = is_terminal_review_outcome
 
 
-def read_workspace_file_bytes(path, label):
+def read_workspace_file_bytes(path: str | Path, label: str) -> bytes:
     """Read one non-symlink workspace file with workbench error semantics."""
     return _read_file_bytes(path, label)
 
@@ -235,33 +238,35 @@ def read_workspace_file_bytes(path, label):
 _workspace_config_fingerprint = workspace_config_fingerprint
 
 
-def load_workspace_json(path, description):
+def load_workspace_json(path: str | Path, description: str) -> dict[str, object]:
     """Load one workspace JSON object with workbench error semantics."""
     return _load_json(path, description)
 
 
-def load_workspace_json_snapshot(path, description):
+def load_workspace_json_snapshot(
+    path: str | Path, description: str
+) -> tuple[dict[str, object], str, bytes]:
     """Load one exact workspace JSON object and its payload identity."""
     return _load_json_snapshot(path, description)
 
 
-def safe_workspace_relative_path(value, label):
+def safe_workspace_relative_path(value: object, label: str) -> Path:
     """Validate one canonical POSIX-relative workspace path."""
     return _safe_relative(value, label)
 
 
-def contained_workspace_path(root, relative, label):
+def contained_workspace_path(root: Path, relative: Path, label: str) -> Path:
     """Resolve one already validated relative path inside its owning root."""
     return _within(root, relative, label)
 
 
-def merge_terminal_conflict_resolution(*args, **kwargs):
+def merge_terminal_conflict_resolution(*args: object, **kwargs: object) -> object:
     """Compatibility facade for the former direct workbench export."""
     module = importlib.import_module("vntts.authoring.terminal_conflict_workspace")
     return module.merge_terminal_conflict_resolution(*args, **kwargs)
 
 
-def require_workspace_sha256(value, label):
+def require_workspace_sha256(value: object, label: str) -> str:
     """Validate one workspace SHA-256 with workbench error semantics."""
     return _require_sha256(value, label)
 

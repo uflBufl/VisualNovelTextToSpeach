@@ -109,8 +109,6 @@
     "vntts/authoring/terminal_conflict_successor.py": 8,
     "vntts/authoring/voice_quality_gate.py": 16,
     "vntts/authoring/voice_repair_comparison.py": 26,
-    "vntts/authoring/workbench.py": 12,
-    "vntts/authoring/workbench_contracts.py": 3,
     "vntts/authoring/workbench_ui.py": 112,
     "vntts/authoring/workspace_authority.py": 72,
     "vntts/authoring/workspace_creation.py": 42,
