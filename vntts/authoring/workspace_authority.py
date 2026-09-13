@@ -1353,6 +1353,37 @@ def _validate_workspace_outcome_merge(directory, workspace, *, state=None):
     merge = workspace.get("outcome_merge")
     if merge is None:
         return
+    _validate_outcome_merge_header(merge)
+    source_by_id = _validate_outcome_merge_sources(merge)
+    items = merge.get("items")
+    if not isinstance(items, list) or not items:
+        raise AuthoringWorkbenchError("Workspace outcome merge item ledger is empty")
+    terminal_queue_ids, audio_event_queue_id, rejection_queue_ids = (
+        _outcome_merge_extension_queue_ids(workspace)
+    )
+    state = _load_workspace_generation_state(
+        state,
+        directory / "generated-audio/generation-state.json",
+        directory / "queue.jsonl",
+    )
+    queue_ids = []
+    counts = Counter()
+    for item in items:
+        queue_id, source_workspace_id = _validate_outcome_merge_item(
+            directory,
+            item,
+            source_by_id,
+            state,
+            terminal_queue_ids,
+            audio_event_queue_id,
+            rejection_queue_ids,
+        )
+        queue_ids.append(queue_id)
+        counts[source_workspace_id] += 1
+    _validate_merge_ledger_counts(queue_ids, counts, source_by_id, "outcome merge")
+
+
+def _validate_outcome_merge_header(merge):
     version = merge.get("schema_version") if isinstance(merge, dict) else None
     fields = {
         "schema",
@@ -1378,191 +1409,202 @@ def _validate_workspace_outcome_merge(directory, workspace, *, state=None):
     _require_sha256(merge.get("base_state_sha256"), "Outcome merge base state SHA-256")
     if version == 2:
         _require_sha256(
-            merge.get("source_reconciliation_id"),
-            "Outcome merge reconciliation ID",
+            merge.get("source_reconciliation_id"), "Outcome merge reconciliation ID"
         )
+    return version
+
+
+def _validate_outcome_merge_sources(merge):
     sources = merge.get("sources")
     if not isinstance(sources, list) or not sources:
         raise AuthoringWorkbenchError("Workspace outcome merge source ledger is empty")
     source_by_id = {}
     for source in sources:
-        if not isinstance(source, dict) or set(source) != {
-            "workspace_id",
-            "config_fingerprint",
-            "state_sha256",
-            "terminal_item_count",
-        }:
-            raise AuthoringWorkbenchError("Workspace outcome merge source is malformed")
-        workspace_id = source.get("workspace_id")
-        if (
-            not isinstance(workspace_id, str)
-            or not re.fullmatch(r"resume-[0-9a-f]{24}-[0-9a-f]{16}", workspace_id)
-            or workspace_id in source_by_id
-            or workspace_id == merge["base_workspace_id"]
-        ):
-            raise AuthoringWorkbenchError(
-                "Workspace outcome merge source identity is invalid"
-            )
-        _require_sha256(
-            source.get("config_fingerprint"),
-            "Outcome merge source configuration fingerprint",
-        )
-        _require_sha256(
-            source.get("state_sha256"), "Outcome merge source state SHA-256"
-        )
-        count = source.get("terminal_item_count")
-        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
-            raise AuthoringWorkbenchError(
-                "Workspace outcome merge source count is invalid"
-            )
-        source_by_id[workspace_id] = source
+        _validate_outcome_merge_source(source, source_by_id, merge["base_workspace_id"])
+        source_by_id[source["workspace_id"]] = source
     if sources != sorted(sources, key=lambda value: value["workspace_id"]):
         raise AuthoringWorkbenchError(
             "Workspace outcome merge sources are not canonical"
         )
-    items = merge.get("items")
-    if not isinstance(items, list) or not items:
-        raise AuthoringWorkbenchError("Workspace outcome merge item ledger is empty")
-    terminal_merge = workspace.get("terminal_conflict_merge")
-    terminal_items = (
-        terminal_merge.get("items") if isinstance(terminal_merge, dict) else None
-    )
-    terminal_queue_ids = (
-        {
-            value.get("queue_id")
-            for value in terminal_items
-            if isinstance(value, dict) and isinstance(value.get("queue_id"), str)
-        }
-        if isinstance(terminal_items, list)
-        else set()
-    )
-    audio_event_config = workspace.get("audio_event_composition")
-    audio_event_queue_id = (
-        audio_event_config.get("queue_id")
-        if isinstance(audio_event_config, dict)
-        else None
-    )
-    reviewed_rejection = workspace.get("reviewed_rejection_live_fallback")
-    reviewed_rejection_items = (
-        reviewed_rejection.get("items")
-        if isinstance(reviewed_rejection, dict)
-        else None
-    )
-    reviewed_rejection_queue_ids = (
-        {
-            value.get("queue_id")
-            for value in reviewed_rejection_items
-            if isinstance(value, dict) and isinstance(value.get("queue_id"), str)
-        }
-        if isinstance(reviewed_rejection_items, list)
-        else set()
-    )
-    queue_ids = []
-    counts = Counter()
-    if state is None:
-        try:
-            state = load_generation_state(
-                directory / "generated-audio/generation-state.json",
-                directory / "queue.jsonl",
-            )
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
-    for item in items:
-        if not isinstance(item, dict) or set(item) != {
-            "queue_id",
-            "source_workspace_id",
-            "source_state_sha256",
-            "source_item_sha256",
-            "audio_sha256",
-            "status",
-            "review_status",
-        }:
-            raise AuthoringWorkbenchError("Workspace outcome merge item is malformed")
-        queue_id = _required_text(item.get("queue_id"), "Outcome merge queue ID")
-        source = source_by_id.get(item.get("source_workspace_id"))
-        if (
-            source is None
-            or item.get("source_state_sha256") != source["state_sha256"]
-            or (item.get("status"), item.get("review_status"))
-            not in {("approved", "approved"), ("generated", "rejected")}
-        ):
-            raise AuthoringWorkbenchError(
-                "Workspace outcome merge item provenance is inconsistent"
-            )
-        source_item_sha256 = _require_sha256(
-            item.get("source_item_sha256"), "Outcome merge source item SHA-256"
-        )
-        audio_sha256 = _require_sha256(
-            item.get("audio_sha256"), "Outcome merge WAV SHA-256"
-        )
-        if queue_id == audio_event_queue_id:
-            queue_ids.append(queue_id)
-            counts[item["source_workspace_id"]] += 1
-            continue
-        result = state["items"].get(queue_id)
-        if not isinstance(result, dict) or not _terminal_review_outcome(result):
-            raise AuthoringWorkbenchError(
-                f"Workspace outcome merge result is not terminal for {queue_id!r}"
-            )
-        observed = result.get("outcome_merge")
-        expected = {key: value for key, value in item.items() if key != "queue_id"}
-        if observed != expected:
-            raise AuthoringWorkbenchError(
-                f"Workspace outcome merge result changed for {queue_id!r}"
-            )
-        source_result = copy.deepcopy(result)
-        source_result.pop("outcome_merge", None)
-        if queue_id in terminal_queue_ids:
-            source_result.pop("terminal_conflict_resolution", None)
-        if queue_id in reviewed_rejection_queue_ids:
-            fallback = source_result.pop("live_fallback", None)
-            evidence = fallback.get("evidence") if isinstance(fallback, dict) else None
-            base_result = (
-                copy.deepcopy(evidence.get("base_result"))
-                if isinstance(evidence, dict)
-                and isinstance(evidence.get("base_result"), dict)
-                else None
-            )
-            if base_result is None:
-                raise AuthoringWorkbenchError(
-                    f"Workspace merged fallback evidence changed for {queue_id!r}"
-                )
-            base_result.pop("outcome_merge", None)
-            if queue_id in terminal_queue_ids:
-                base_result.pop("terminal_conflict_resolution", None)
-            if "updated_at" in base_result:
-                source_result["updated_at"] = base_result["updated_at"]
-            else:
-                source_result.pop("updated_at", None)
-            if source_result != base_result:
-                raise AuthoringWorkbenchError(
-                    f"Workspace merged fallback base changed for {queue_id!r}"
-                )
-        if canonical_document_sha256(source_result) != source_item_sha256:
-            raise AuthoringWorkbenchError(
-                f"Workspace merged source item changed for {queue_id!r}"
-            )
-        audio_path = _within(
-            directory / "generated-audio",
-            _safe_relative(result.get("path"), "Outcome merge WAV path"),
-            "Outcome merge WAV",
-        )
-        if not audio_path.is_file() or sha256_file(audio_path) != audio_sha256:
-            raise AuthoringWorkbenchError(
-                f"Workspace outcome merge WAV changed for {queue_id!r}"
-            )
-        queue_ids.append(queue_id)
-        counts[item["source_workspace_id"]] += 1
-    if queue_ids != sorted(set(queue_ids)):
+    return source_by_id
+
+
+def _validate_outcome_merge_source(source, source_by_id, base_workspace_id):
+    if not isinstance(source, dict) or set(source) != {
+        "workspace_id",
+        "config_fingerprint",
+        "state_sha256",
+        "terminal_item_count",
+    }:
+        raise AuthoringWorkbenchError("Workspace outcome merge source is malformed")
+    workspace_id = source.get("workspace_id")
+    if (
+        not isinstance(workspace_id, str)
+        or not re.fullmatch(r"resume-[0-9a-f]{24}-[0-9a-f]{16}", workspace_id)
+        or workspace_id in source_by_id
+        or workspace_id == base_workspace_id
+    ):
         raise AuthoringWorkbenchError(
-            "Workspace outcome merge item ledger is not canonical"
+            "Workspace outcome merge source identity is invalid"
         )
+    _require_sha256(
+        source.get("config_fingerprint"),
+        "Outcome merge source configuration fingerprint",
+    )
+    _require_sha256(source.get("state_sha256"), "Outcome merge source state SHA-256")
+    count = source.get("terminal_item_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise AuthoringWorkbenchError("Workspace outcome merge source count is invalid")
+
+
+def _workspace_extension_queue_ids(workspace, field):
+    extension = workspace.get(field)
+    items = extension.get("items") if isinstance(extension, dict) else None
+    if not isinstance(items, list):
+        return set()
+    return {
+        value.get("queue_id")
+        for value in items
+        if isinstance(value, dict) and isinstance(value.get("queue_id"), str)
+    }
+
+
+def _outcome_merge_extension_queue_ids(workspace):
+    audio_event = workspace.get("audio_event_composition")
+    audio_event_queue_id = (
+        audio_event.get("queue_id") if isinstance(audio_event, dict) else None
+    )
+    return (
+        _workspace_extension_queue_ids(workspace, "terminal_conflict_merge"),
+        audio_event_queue_id,
+        _workspace_extension_queue_ids(workspace, "reviewed_rejection_live_fallback"),
+    )
+
+
+def _validate_outcome_merge_item(
+    directory,
+    item,
+    source_by_id,
+    state,
+    terminal_queue_ids,
+    audio_event_queue_id,
+    rejection_queue_ids,
+):
+    if not isinstance(item, dict) or set(item) != {
+        "queue_id",
+        "source_workspace_id",
+        "source_state_sha256",
+        "source_item_sha256",
+        "audio_sha256",
+        "status",
+        "review_status",
+    }:
+        raise AuthoringWorkbenchError("Workspace outcome merge item is malformed")
+    queue_id = _required_text(item.get("queue_id"), "Outcome merge queue ID")
+    source = source_by_id.get(item.get("source_workspace_id"))
+    if (
+        source is None
+        or item.get("source_state_sha256") != source["state_sha256"]
+        or (item.get("status"), item.get("review_status"))
+        not in {("approved", "approved"), ("generated", "rejected")}
+    ):
+        raise AuthoringWorkbenchError(
+            "Workspace outcome merge item provenance is inconsistent"
+        )
+    source_item_sha256 = _require_sha256(
+        item.get("source_item_sha256"), "Outcome merge source item SHA-256"
+    )
+    audio_sha256 = _require_sha256(
+        item.get("audio_sha256"), "Outcome merge WAV SHA-256"
+    )
+    if queue_id != audio_event_queue_id:
+        _validate_outcome_merge_result(
+            directory,
+            state["items"].get(queue_id),
+            item,
+            queue_id,
+            source_item_sha256,
+            audio_sha256,
+            terminal_queue_ids,
+            rejection_queue_ids,
+        )
+    return queue_id, item["source_workspace_id"]
+
+
+def _validate_outcome_merge_result(
+    directory,
+    result,
+    item,
+    queue_id,
+    source_item_sha256,
+    audio_sha256,
+    terminal_queue_ids,
+    rejection_queue_ids,
+):
+    if not isinstance(result, dict) or not _terminal_review_outcome(result):
+        raise AuthoringWorkbenchError(
+            f"Workspace outcome merge result is not terminal for {queue_id!r}"
+        )
+    expected = {key: value for key, value in item.items() if key != "queue_id"}
+    if result.get("outcome_merge") != expected:
+        raise AuthoringWorkbenchError(
+            f"Workspace outcome merge result changed for {queue_id!r}"
+        )
+    source_result = copy.deepcopy(result)
+    source_result.pop("outcome_merge", None)
+    if queue_id in terminal_queue_ids:
+        source_result.pop("terminal_conflict_resolution", None)
+    if queue_id in rejection_queue_ids:
+        _validate_merged_fallback_base(source_result, queue_id, terminal_queue_ids)
+    if canonical_document_sha256(source_result) != source_item_sha256:
+        raise AuthoringWorkbenchError(
+            f"Workspace merged source item changed for {queue_id!r}"
+        )
+    audio_path = _within(
+        directory / "generated-audio",
+        _safe_relative(result.get("path"), "Outcome merge WAV path"),
+        "Outcome merge WAV",
+    )
+    if not audio_path.is_file() or sha256_file(audio_path) != audio_sha256:
+        raise AuthoringWorkbenchError(
+            f"Workspace outcome merge WAV changed for {queue_id!r}"
+        )
+
+
+def _validate_merged_fallback_base(source_result, queue_id, terminal_queue_ids):
+    fallback = source_result.pop("live_fallback", None)
+    evidence = fallback.get("evidence") if isinstance(fallback, dict) else None
+    base_result = (
+        copy.deepcopy(evidence.get("base_result"))
+        if isinstance(evidence, dict) and isinstance(evidence.get("base_result"), dict)
+        else None
+    )
+    if base_result is None:
+        raise AuthoringWorkbenchError(
+            f"Workspace merged fallback evidence changed for {queue_id!r}"
+        )
+    base_result.pop("outcome_merge", None)
+    if queue_id in terminal_queue_ids:
+        base_result.pop("terminal_conflict_resolution", None)
+    if "updated_at" in base_result:
+        source_result["updated_at"] = base_result["updated_at"]
+    else:
+        source_result.pop("updated_at", None)
+    if source_result != base_result:
+        raise AuthoringWorkbenchError(
+            f"Workspace merged fallback base changed for {queue_id!r}"
+        )
+
+
+def _validate_merge_ledger_counts(queue_ids, counts, source_by_id, label):
+    if queue_ids != sorted(set(queue_ids)):
+        raise AuthoringWorkbenchError(f"Workspace {label} item ledger is not canonical")
     if any(
         counts[workspace_id] != source["terminal_item_count"]
         for workspace_id, source in source_by_id.items()
     ):
         raise AuthoringWorkbenchError(
-            "Workspace outcome merge source counts are inconsistent"
+            f"Workspace {label} source counts are inconsistent"
         )
 
 
