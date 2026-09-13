@@ -1,5 +1,5 @@
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
@@ -32,7 +32,6 @@ default_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 
 class AssetSignals(QObject):
     progress = Signal(object, str)
-    model_finished = Signal(bool, str)
     voice_imported = Signal(str, str)
 
 
@@ -111,6 +110,8 @@ class AssetManagerDialog(QDialog):
         self.voice_manager = voice_manager or VoicePackManager()
         self.voice_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.voice_runner.finished.connect(self._voice_import_finished)
+        self.model_runner = LatestTaskRunner(self, thread_pool=thread_pool)
+        self.model_runner.finished.connect(self._model_operation_finished)
         self.manifest_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.manifest_runner.finished.connect(self._manifest_validation_finished)
         self.signals = AssetSignals()
@@ -145,7 +146,6 @@ class AssetManagerDialog(QDialog):
         layout.addWidget(self.buttons)
 
         self.signals.progress.connect(self.update_progress)
-        self.signals.model_finished.connect(self.model_finished)
         self.signals.voice_imported.connect(self.voice_imported)
 
     def _create_models_tab(self):
@@ -371,22 +371,14 @@ class AssetManagerDialog(QDialog):
         self.cancel_event = Event()
         self.set_operation_running(True, "download")
         self.model_status.setText("Preparing model download...")
-        model_name = self.model_name()
-        Thread(target=self._download_model, args=(model_name,), daemon=True).start()
+        self.model_runner.start(self._download_model, self.model_name())
 
     def _download_model(self, model_name):
-        try:
-            path = self.model_manager.download(
-                model_name,
-                progress=self.signals.progress.emit,
-                cancel_event=self.cancel_event,
-            )
-        except ModelDownloadCancelled as error:
-            self.signals.model_finished.emit(False, str(error))
-        except Exception as error:
-            self.signals.model_finished.emit(False, f"Model download failed: {error}")
-        else:
-            self.signals.model_finished.emit(True, f"Model ready at {path}")
+        return self.model_manager.download(
+            model_name,
+            progress=self.signals.progress.emit,
+            cancel_event=self.cancel_event,
+        )
 
     def cancel_download(self):
         self.cancel_event.set()
@@ -397,17 +389,24 @@ class AssetManagerDialog(QDialog):
             return
         self.set_operation_running(True, "verify")
         self.model_status.setText("Verifying model checksums...")
-        model_name = self.model_name()
+        self.model_runner.start(self.model_manager.validate, self.model_name())
 
-        def verify():
-            try:
-                path = self.model_manager.validate(model_name)
-            except Exception as error:
-                self.signals.model_finished.emit(False, f"Verification failed: {error}")
-            else:
-                self.signals.model_finished.emit(True, f"Checksums passed at {path}")
-
-        Thread(target=verify, daemon=True).start()
+    def _model_operation_finished(self, path, error):
+        if self.operation_kind == "download":
+            message = (
+                f"Model ready at {path}"
+                if error is None
+                else str(error)
+                if isinstance(error, ModelDownloadCancelled)
+                else f"Model download failed: {error}"
+            )
+        else:
+            message = (
+                f"Checksums passed at {path}"
+                if error is None
+                else f"Verification failed: {error}"
+            )
+        self.model_finished(error is None, message)
 
     def update_progress(self, percent, message):
         if percent is None:
@@ -549,6 +548,11 @@ class AssetManagerDialog(QDialog):
             self.manifest_runner.cancel()
             self._accept_after_manifest_validation = False
         if self.operation_running:
+            if self.operation_kind == "verify":
+                self.model_runner.cancel()
+                self.set_operation_running(False)
+                super().reject()
+                return
             self._close_pending = True
             if self.operation_kind == "download":
                 self.cancel_download()
@@ -569,6 +573,11 @@ class AssetManagerDialog(QDialog):
             self.manifest_runner.cancel()
             self._accept_after_manifest_validation = False
         if self.operation_running:
+            if self.operation_kind == "verify":
+                self.model_runner.cancel()
+                self.set_operation_running(False)
+                super().closeEvent(event)
+                return
             self._close_pending = True
             if self.operation_kind == "download":
                 self.cancel_download()

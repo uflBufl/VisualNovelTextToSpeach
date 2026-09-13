@@ -21,16 +21,8 @@ from PySide6.QtWidgets import (  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from vntts.asset_ui import AssetManagerDialog, default_model  # noqa: E402
+from vntts.assets import ModelDownloadCancelled  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
-
-
-class ImmediateThread:
-    def __init__(self, *, target, args=(), daemon=True):
-        self.target = target
-        self.args = args
-
-    def start(self):
-        self.target(*self.args)
 
 
 class AssetManagerDialogTest(unittest.TestCase):
@@ -63,12 +55,71 @@ class AssetManagerDialogTest(unittest.TestCase):
             voice_manager=Mock(),
         )
 
-        with patch("vntts.asset_ui.Thread", ImmediateThread):
-            dialog.download_model()
+        dialog.download_model()
+        self.wait_for(lambda: not dialog.model_runner.active)
 
         self.assertEqual(dialog.progress.value(), 100)
         self.assertIn("Model ready", dialog.model_status.text())
         self.assertEqual(dialog.settings().tts_model, default_model)
+
+    def test_model_verification_discards_stale_completion(self):
+        class ManualThreadPool:
+            def __init__(self):
+                self.tasks = []
+
+            def start(self, task):
+                self.tasks.append(task)
+
+        pool = ManualThreadPool()
+        model_manager = Mock()
+        model_manager.model_path.return_value = Path("managed/model")
+        dialog = AssetManagerDialog(
+            AppSettings(speech_backend="coqui-xtts"),
+            model_manager=model_manager,
+            voice_manager=Mock(),
+            thread_pool=pool,
+        )
+        dialog.set_operation_running(True, "verify")
+        dialog.model_runner.start(lambda: Path("stale"))
+        dialog.model_runner.start(lambda: Path("latest"))
+
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
+        self.assertTrue(dialog.operation_running)
+        self.assertNotIn("stale", dialog.model_status.text())
+
+        pool.tasks.pop(0).run()
+        self.application.processEvents()
+        self.assertFalse(dialog.operation_running)
+        self.assertIn("latest", dialog.model_status.text())
+
+    def test_model_verification_can_finish_after_close_without_updating_ui(self):
+        started = Event()
+        release = Event()
+        model_manager = Mock()
+        model_manager.model_path.return_value = Path("managed/model")
+
+        def validate(_model_name):
+            started.set()
+            release.wait(3)
+            return Path("managed/model")
+
+        model_manager.validate.side_effect = validate
+        dialog = AssetManagerDialog(
+            AppSettings(speech_backend="coqui-xtts"),
+            model_manager=model_manager,
+            voice_manager=Mock(),
+        )
+        dialog.verify_model()
+        self.wait_for(started.is_set)
+        close_event = QCloseEvent()
+        dialog.closeEvent(close_event)
+
+        self.assertTrue(close_event.isAccepted())
+        self.assertFalse(dialog.model_runner.active)
+        release.set()
+        self.wait_for(lambda: not dialog.model_runner.active)
+        self.assertEqual(dialog.model_status.text(), "Verifying model checksums...")
 
     def test_default_pocket_backend_offers_only_character_voice_assets(self):
         model_manager = Mock()
@@ -99,6 +150,30 @@ class AssetManagerDialogTest(unittest.TestCase):
         dialog.cancel_download()
 
         self.assertTrue(dialog.cancel_event.is_set())
+
+    def test_download_cancellation_waits_for_the_cooperative_worker(self):
+        started = Event()
+        model_manager = Mock()
+        model_manager.model_path.return_value = Path("managed/model")
+
+        def download(_model_name, *, progress, cancel_event):
+            started.set()
+            while not cancel_event.is_set():
+                time.sleep(0.005)
+            raise ModelDownloadCancelled("Model download cancelled")
+
+        model_manager.download.side_effect = download
+        dialog = AssetManagerDialog(
+            AppSettings(speech_backend="coqui-xtts", xtts_terms_accepted=True),
+            model_manager=model_manager,
+            voice_manager=Mock(),
+        )
+        dialog.download_model()
+        self.wait_for(started.is_set)
+        dialog.cancel_download()
+        self.wait_for(lambda: not dialog.operation_running)
+
+        self.assertIn("Model download cancelled", dialog.model_status.text())
 
     def test_voice_pack_import_is_nonblocking_and_close_safe(self):
         with TemporaryDirectory() as directory:
