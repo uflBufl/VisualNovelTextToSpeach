@@ -32,7 +32,7 @@ from vntts.authoring.listening import (
     create_listening_session_from_reports,
     load_listening_session,
 )
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_FIELD,
     SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
@@ -196,10 +196,7 @@ def import_source_reference_review(report_path, review_path, story_index_path, o
     queue_items_by_character = _queue_items_by_character(story)
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         clusters = []
         copied_sources = []
         mapped_queue_ids = set()
@@ -314,10 +311,6 @@ def import_source_reference_review(report_path, review_path, story_index_path, o
             len(mapped_queue_ids),
             len(candidates) - len(decisions),
         )
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
 
 
 def load_source_reference_plan(directory):
@@ -527,11 +520,8 @@ def publish_source_reference_bindings(
             f"Source-reference bindings output exists: {output}"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
     source_snapshots = []
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         voices = []
         narrator_references = []
         for index, relative in enumerate(narrator.references, start=1):
@@ -691,10 +681,6 @@ def publish_source_reference_bindings(
         return SourceReferenceBindingsResult(
             output, len(selected_variants), len(queue_overrides)
         )
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
 
 
 def publish_source_reference_binding_successor(
@@ -766,11 +752,10 @@ def publish_source_reference_binding_successor(
                 "Successor source-reference manifests have different game or language"
             )
 
-        staging = Path(
-            tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-        ).resolve()
         snapshots = []
-        try:
+        with staged_directory(
+            output.parent, prefix=f".{output.name}.staging-"
+        ) as staging:
             voices = []
             voice_digests = {}
             for source_index, (manifest_path, manifest_voices) in enumerate(
@@ -888,10 +873,6 @@ def publish_source_reference_binding_successor(
             return SourceReferenceBindingsResult(
                 output, len(selected_variants), len(overrides)
             )
-        except Exception:
-            if staging.exists():
-                shutil.rmtree(staging)
-            raise
 
 
 def publish_source_reference_binding_retirement(
@@ -1024,11 +1005,10 @@ def publish_source_reference_binding_retirement(
         if queue_id not in removed_queue_ids
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.retirement-", dir=output.parent)
-    ).resolve()
     snapshots = []
-    try:
+    with staged_directory(
+        output.parent, prefix=f".{output.name}.retirement-"
+    ) as staging:
         voices = []
         for voice_index, voice in enumerate(base_voices, start=1):
             references = []
@@ -1096,13 +1076,9 @@ def publish_source_reference_binding_retirement(
                 source, digest, f"retired binding reference {source.name}"
             )
         rename_directory_no_replace(staging, output)
-        staging = None
         return SourceReferenceBindingsResult(
             output, len(remaining_variants), len(overrides)
         )
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
 
 
 def _combined_binding_ledgers(*bindings):
@@ -1187,10 +1163,7 @@ def publish_source_reference_evaluation(plan_directory, output):
             f"Source-reference evaluation output exists: {output}"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         voices = []
         items = []
         variants = []
@@ -1345,10 +1318,6 @@ def publish_source_reference_evaluation(plan_directory, output):
                 )
         rename_directory_no_replace(staging, output)
         return SourceReferenceEvaluationResult(output, len(variants), len(items))
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
 
 
 def publish_source_reference_listening_reports(
@@ -1571,10 +1540,7 @@ def publish_source_reference_listening_reports(
         )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         reports = []
         original_report = staging / "original-source.json"
         atomic_write_json(
@@ -1645,10 +1611,6 @@ def publish_source_reference_listening_reports(
             + len(originals),
             blind_trials,
         )
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
 
 
 def _model_report(
