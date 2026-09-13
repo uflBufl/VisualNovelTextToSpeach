@@ -5,6 +5,7 @@
     "vntts/auto_advance_policy.py",
     "vntts/authoring/authority.py",
     "vntts/authoring/cli_dispatch.py",
+    "vntts/authoring/generation_state.py",
     "vntts/authoring/import_paths.py",
     "vntts/authoring/private_files.py",
     "vntts/authoring/queue_extension.py",

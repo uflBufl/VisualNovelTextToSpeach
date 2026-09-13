@@ -8,11 +8,13 @@ import importlib
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
+from typing import TypeAlias
 
 import numpy as np
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
+    VoiceGenerationQueueItem,
 )
 from vntts_artifacts.voice_manifest import normalize_character_name
 
@@ -110,8 +112,13 @@ FAILURE_KINDS = {
     "interrupted",
 }
 
+StateObject: TypeAlias = dict[str, object]
+QueueById: TypeAlias = dict[str, VoiceGenerationQueueItem]
 
-def load_stable_generation_queue(queue_path):
+
+def load_stable_generation_queue(
+    queue_path: str | Path,
+) -> tuple[VoiceGenerationQueue, str]:
     """Load a queue from one immutable byte snapshot and return its SHA-256."""
     queue_path = Path(queue_path)
     try:
@@ -129,7 +136,9 @@ def load_stable_generation_queue(queue_path):
     return queue, digest
 
 
-def _validate_live_fallback_evidence(evidence, previous_result_sha256):
+def _validate_live_fallback_evidence(
+    evidence: object, previous_result_sha256: object
+) -> None:
     if isinstance(evidence, dict) and evidence.get("schema_version") == 2:
         return _validate_render_review_fallback_evidence(
             evidence, previous_result_sha256
@@ -199,7 +208,9 @@ def _validate_live_fallback_evidence(evidence, previous_result_sha256):
         raise BulkGenerationError("Live fallback evidence hypotheses are not canonical")
 
 
-def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
+def _validate_render_review_fallback_evidence(
+    evidence: StateObject, previous_result_sha256: object
+) -> None:
     if (
         set(evidence)
         != {
@@ -285,7 +296,12 @@ def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
         )
 
 
-def _validate_state_document(state, output_directory, queue, queue_sha256):
+def _validate_state_document(
+    state: StateObject,
+    output_directory: Path,
+    queue: VoiceGenerationQueue | None,
+    queue_sha256: str | None,
+) -> None:
     schema_pair = (state.get("schema"), state.get("schema_version"))
     if schema_pair not in {
         (STATE_SCHEMA, STATE_VERSION),
@@ -314,13 +330,14 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
             raise BulkGenerationError(
                 f"Generation state {field} does not match the queue metadata"
             )
-    if not isinstance(state.get("items"), dict):
+    state_items = state.get("items")
+    if not isinstance(state_items, dict):
         raise BulkGenerationError("Generation state items must be an object")
     _validate_synthesis_controls(state)
     queue_by_id = (
         None if queue is None else {item.queue_id: item for item in queue.items}
     )
-    for queue_id, result in state["items"].items():
+    for queue_id, result in state_items.items():
         if queue_by_id is not None and queue_id not in queue_by_id:
             raise BulkGenerationError(
                 f"Generation state references unknown queue_id {queue_id!r}"
@@ -336,7 +353,7 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
                 raise BulkGenerationError(str(error)) from error
         status = result.get("status")
         review = result.get("review_status")
-        valid = {
+        valid: dict[object, set[object]] = {
             "failed": {None},
             "generated": {"pending_review", "rejected"},
             "approved": {"approved"},
@@ -413,7 +430,9 @@ def _validate_state_document(state, output_directory, queue, queue_sha256):
         _validate_active_attempt(active, queue_by_id)
 
 
-def _validate_failure_record(failure, queue_id, *, result=None):
+def _validate_failure_record(
+    failure: object, queue_id: str, *, result: StateObject | None = None
+) -> None:
     if not isinstance(failure, dict) or failure.get("schema_version") != 1:
         raise BulkGenerationError(f"State item {queue_id!r} typed failure is invalid")
     if failure.get("kind") not in FAILURE_KINDS:
@@ -447,7 +466,13 @@ def _validate_failure_record(failure, queue_id, *, result=None):
         _validate_pause_diagnosis(diagnosis, features, queue_id, result=result)
 
 
-def _validate_pause_diagnosis(diagnosis, features, queue_id, *, result):
+def _validate_pause_diagnosis(
+    diagnosis: object,
+    features: StateObject,
+    queue_id: str,
+    *,
+    result: StateObject | None,
+) -> None:
     expected_fields = {
         "schema_version",
         "analysis_version",
@@ -526,7 +551,15 @@ def _validate_pause_diagnosis(diagnosis, features, queue_id, *, result):
             raise BulkGenerationError(
                 f"State item {queue_id!r} pause span timing is invalid"
             )
-        start, end, duration = values
+        start_value, end_value, duration_value = values
+        assert isinstance(start_value, (int, float))
+        assert isinstance(end_value, (int, float))
+        assert isinstance(duration_value, (int, float))
+        start, end, duration = (
+            float(start_value),
+            float(end_value),
+            float(duration_value),
+        )
         if (
             start < previous_end
             or end <= start
@@ -539,7 +572,11 @@ def _validate_pause_diagnosis(diagnosis, features, queue_id, *, result):
         previous_end = end
 
 
-def _validate_live_fallback_decision(result, queue_id, queue_item):
+def _validate_live_fallback_decision(
+    result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+) -> None:
     decision = result.get("live_fallback")
     if decision is None:
         if result.get("status") == "live_fallback":
@@ -711,7 +748,11 @@ def _validate_live_fallback_decision(result, queue_id, queue_item):
         )
 
 
-def _validate_audio_event_omission(result, queue_id, queue_item):
+def _validate_audio_event_omission(
+    result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+) -> None:
     result_fields = {
         "status",
         "review_status",
@@ -803,8 +844,8 @@ def _validate_audio_event_omission(result, queue_id, queue_item):
 
 
 def _validate_missing_voice_live_fallback_evidence(
-    evidence, queue_id, requested_voice_character
-):
+    evidence: object, queue_id: str, requested_voice_character: object
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -861,12 +902,12 @@ def _validate_missing_voice_live_fallback_evidence(
 
 
 def _validate_known_role_live_fallback_evidence(
-    evidence,
-    queue_id,
-    source_character,
-    requested_synthesis_character,
-    effective_synthesis_character,
-):
+    evidence: object,
+    queue_id: str,
+    source_character: object,
+    requested_synthesis_character: object,
+    effective_synthesis_character: object,
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -925,12 +966,12 @@ def _validate_known_role_live_fallback_evidence(
 
 
 def _validate_audio_event_projection_live_fallback_evidence(
-    evidence,
-    queue_id,
-    previous_result_sha256,
-    requested_voice_character,
-    queue_item,
-):
+    evidence: object,
+    queue_id: str,
+    previous_result_sha256: object,
+    requested_voice_character: object,
+    queue_item: VoiceGenerationQueueItem | None,
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -1021,12 +1062,12 @@ def _validate_audio_event_projection_live_fallback_evidence(
 
 
 def _validate_reviewed_rejection_live_fallback_evidence(
-    evidence,
-    queue_id,
-    previous_result_sha256,
-    requested_voice_character,
-    queue_item,
-):
+    evidence: object,
+    queue_id: str,
+    previous_result_sha256: object,
+    requested_voice_character: object,
+    queue_item: VoiceGenerationQueueItem | None,
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -1121,10 +1162,8 @@ def _validate_reviewed_rejection_live_fallback_evidence(
 
 
 def _validate_automatic_recovery_live_fallback_evidence(
-    evidence,
-    queue_id,
-    previous_result_sha256,
-):
+    evidence: object, queue_id: str, previous_result_sha256: object
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -1181,7 +1220,11 @@ def _validate_automatic_recovery_live_fallback_evidence(
     _validate_seed_application(base_result, queue_id)
 
 
-def _validate_synthesis_identity(result, queue_id, queue_item=None):
+def _validate_synthesis_identity(
+    result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None = None,
+) -> None:
     expected_requested = (
         None
         if queue_item is None
@@ -1296,6 +1339,8 @@ def _validate_synthesis_identity(result, queue_id, queue_item=None):
         fallback.get("narrator_character"),
         f"State item {queue_id!r} fallback narrator character",
     )
+    overrides = configuration.get("synthesis_character_overrides")
+    assert isinstance(overrides, dict)
     if (
         requested != source
         or effective != synthesis
@@ -1303,17 +1348,16 @@ def _validate_synthesis_identity(result, queue_id, queue_item=None):
         or not policy.applies_to(source)
         or result.get("narrator_character") != narrator
         or configuration["missing_voice_policy"] != policy.to_document()
-        or configuration["synthesis_character_overrides"].get(
-            normalize_character_name(source)
-        )
-        != "Narrator"
+        or overrides.get(normalize_character_name(source)) != "Narrator"
     ):
         raise BulkGenerationError(
             f"State item {queue_id!r} synthesis fallback provenance conflicts"
         )
 
 
-def _validate_synthesis_configuration(result, queue_id):
+def _validate_synthesis_configuration(
+    result: StateObject, queue_id: str
+) -> StateObject | None:
     configuration = result.get("synthesis_configuration")
     if configuration is None:
         return None
@@ -1400,14 +1444,18 @@ def _validate_synthesis_configuration(result, queue_id):
 
 
 def _validate_audio_event_spoken_projection(
-    result, queue_id, queue_item, configuration
-):
+    result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+    configuration: StateObject | None,
+) -> None:
     transform = result.get("text_transform")
     projection_ids = (
         configuration.get("audio_event_spoken_projection_queue_ids", ())
         if isinstance(configuration, dict)
         else ()
     )
+    assert isinstance(projection_ids, (list, tuple))
     if queue_id not in projection_ids:
         if transform == "audio-event-spoken-projection-v1":
             raise BulkGenerationError(
@@ -1433,7 +1481,11 @@ def _validate_audio_event_spoken_projection(
         )
 
 
-def _validate_failure_repair_record(result, queue_id, queue_item):
+def _validate_failure_repair_record(
+    result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+) -> None:
     repair = result.get("failure_repair")
     if repair is None:
         return
@@ -1494,6 +1546,8 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
         for value in seeds:
             _integer(value, f"State item {queue_id!r} sentence repair seed")
         outer_seed = result.get("seed")
+        if outer_seed is not None:
+            assert isinstance(outer_seed, int)
         if outer_seed is not None and seeds != [
             outer_seed + index for index in range(len(seeds))
         ]:
@@ -1714,7 +1768,7 @@ def _validate_failure_repair_record(result, queue_id, queue_item):
         )
 
 
-def _validate_seed_application(result, queue_id):
+def _validate_seed_application(result: StateObject, queue_id: str) -> None:
     if "seed_applied" not in result:
         return
     applied = result.get("seed_applied")
@@ -1729,7 +1783,9 @@ def _validate_seed_application(result, queue_id):
         )
 
 
-def _validate_active_attempt(active, queue_by_id):
+def _validate_active_attempt(
+    active: StateObject, queue_by_id: QueueById | None
+) -> None:
     queue_id = active.get("queue_id")
     if not isinstance(queue_id, str) or not queue_id:
         raise BulkGenerationError("Active attempt queue_id must be non-empty text")
@@ -1792,8 +1848,9 @@ def _validate_active_attempt(active, queue_by_id):
         ):
             raise BulkGenerationError("Active provider attempt counter is inconsistent")
     for field in ("started_at", "updated_at"):
+        timestamp = active.get(field)
         if field in active and (
-            not isinstance(active[field], str) or not active[field].strip()
+            not isinstance(timestamp, str) or not timestamp.strip()
         ):
             raise BulkGenerationError(f"Active attempt {field} must be timestamp text")
     if active.get("last_error") is not None and not isinstance(
@@ -1826,7 +1883,7 @@ def _validate_active_attempt(active, queue_by_id):
         _validate_seed_application(active_result, queue_id)
 
 
-def _validate_synthesis_controls(state):
+def _validate_synthesis_controls(state: StateObject) -> None:
     registry = state.get("synthesis_controls")
     if registry is None:
         return
@@ -1908,7 +1965,9 @@ def _validate_synthesis_controls(state):
                     )
 
 
-def _validate_reviewed_waveform_publication(state, queue_by_id):
+def _validate_reviewed_waveform_publication(
+    state: StateObject, queue_by_id: QueueById | None
+) -> None:
     publication = state.get("reviewed_waveform_publication")
     if publication is None:
         return
@@ -2004,7 +2063,9 @@ def _validate_reviewed_waveform_publication(state, queue_by_id):
         if not isinstance(ledger, dict) or set(ledger) != ledger_fields:
             raise BulkGenerationError("Reviewed-waveform publication item is malformed")
         queue_id = _required_text(ledger.get("queue_id"), "Reviewed-waveform queue ID")
-        result = state["items"].get(queue_id)
+        state_items = state["items"]
+        assert isinstance(state_items, dict)
+        result = state_items.get(queue_id)
         base_result = ledger.get("base_result")
         route = ledger.get("route")
         if (
@@ -2092,7 +2153,7 @@ def _validate_reviewed_waveform_publication(state, queue_by_id):
         )
 
 
-def reviewed_waveform_publication_queue_ids(state):
+def reviewed_waveform_publication_queue_ids(state: StateObject) -> frozenset[str]:
     """Return exact approved queue IDs covered by a validated migration."""
     publication = state.get("reviewed_waveform_publication")
     if not isinstance(publication, dict):
@@ -2101,8 +2162,13 @@ def reviewed_waveform_publication_queue_ids(state):
 
 
 def _validate_success_item(
-    queue_id, result, output_directory, queue_item, *, state_schema
-):
+    queue_id: str,
+    result: StateObject,
+    output_directory: Path,
+    queue_item: VoiceGenerationQueueItem | None,
+    *,
+    state_schema: object,
+) -> None:
     if queue_item is not None and (
         result.get("line_id") != queue_item.line_id
         or result.get("text_sha256") != queue_item.text_sha256
@@ -2202,7 +2268,7 @@ def _validate_success_item(
             raise BulkGenerationError(str(error)) from error
 
 
-def _control_directory_digest(records):
+def _control_directory_digest(records: list[dict[str, str]]) -> str:
     digest = hashlib.sha256()
     for record in records:
         relative = record["path"].encode("utf-8")
@@ -2212,32 +2278,34 @@ def _control_directory_digest(records):
     return digest.hexdigest()
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise BulkGenerationError(f"{label} must be non-empty text")
     return value.strip()
 
 
-def _required_sha256(value, label):
-    if not is_lowercase_sha256(value):
+def _required_sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or not is_lowercase_sha256(value):
         raise BulkGenerationError(f"{label} must be a lowercase SHA-256 digest")
     return value
 
 
-def _integer(value, label):
+def _integer(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise BulkGenerationError(f"{label} must be an integer")
     return value
 
 
-def _nonnegative_int(value, label):
+def _nonnegative_int(value: object, label: str) -> int:
     value = _integer(value, label)
     if value < 0:
         raise BulkGenerationError(f"{label} cannot be negative")
     return value
 
 
-def _provider_attempts(result, total_attempts, *, default_provider=None):
+def _provider_attempts(
+    result: StateObject, total_attempts: int, *, default_provider: object = None
+) -> dict[str, int]:
     """Return validated per-provider counts, deriving old state losslessly."""
     value = result.get("attempts_by_provider")
     if value is None:
@@ -2287,9 +2355,15 @@ state_nonnegative_int = _nonnegative_int
 provider_attempts = _provider_attempts
 
 
-def validate_generation_state_document(document, output_directory, queue, queue_sha256):
+def validate_generation_state_document(
+    document: object,
+    output_directory: str | Path,
+    queue: VoiceGenerationQueue | None,
+    queue_sha256: str | None,
+) -> StateObject:
     """Validate captured state semantics without reopening its JSON path."""
     state = copy.deepcopy(document)
+    assert isinstance(state, dict)
     _validate_state_document(
         state,
         Path(output_directory).expanduser().resolve(),
