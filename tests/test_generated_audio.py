@@ -561,7 +561,7 @@ class GeneratedAudioTest(unittest.TestCase):
                     "schema_version": 1,
                     "mode": "explicit",
                     "entries": [decision],
-                }
+                },
             },
             [],
         )

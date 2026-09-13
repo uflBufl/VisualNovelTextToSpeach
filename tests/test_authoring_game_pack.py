@@ -837,9 +837,7 @@ class AuthoringGamePackTest(unittest.TestCase):
             review_generation_item(
                 fixture["state"], fixture["items"][1]["queue_id"], "rejected"
             )
-            progress_manifest = (
-                fixture["state"].parent / RUNTIME_PROGRESS_MANIFEST_NAME
-            )
+            progress_manifest = fixture["state"].parent / RUNTIME_PROGRESS_MANIFEST_NAME
             write_runtime_progress_manifest_from_state(
                 json.loads(fixture["state"].read_text(encoding="utf-8")),
                 fixture["state"].parent,

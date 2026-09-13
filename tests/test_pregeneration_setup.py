@@ -467,6 +467,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def run_next_task(self, pool):
+        pool.tasks.pop().run()
+        self.application.processEvents()
+
     def test_selection_estimate_and_engine_remedy_are_visible_in_the_shared_flow(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -527,8 +531,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.assertEqual(dialog.discovery_progress.minimum(), 0)
                 self.assertEqual(dialog.discovery_progress.maximum(), 0)
 
-                pool.tasks.pop().run()
-                self.application.processEvents()
+                self.run_next_task(pool)
 
                 self.assertFalse(dialog.discovery_panel.isVisible())
                 self.assertTrue(dialog.selection_panel.isVisible())
@@ -541,8 +544,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.assertFalse(dialog.continue_button.isEnabled())
                 self.assertTrue(dialog.cancel_button.isEnabled())
 
-                pool.tasks.pop().run()
-                self.application.processEvents()
+                self.run_next_task(pool)
 
             self.assertEqual(dialog.stories.count(), 2)
             self.assertFalse(dialog.discovery_panel.isVisible())
@@ -815,13 +817,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(len(pool.tasks), 1)
             self.assertIn("background", dialog.story_audio_status.text())
             dialog.stories.setCurrentRow(1)
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
             self.assertNotIn("Original game audio", dialog.story_audio_status.text())
             dialog.stories.setCurrentRow(0)
             dialog.check_story_audio.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
             self.assertIn("Main Story 1", dialog.story_audio_status.text())
             self.assertIn(
                 "Original game audio (indexed): 1", dialog.story_audio_status.text()
@@ -876,8 +876,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 return_value=(ready, live, ("Centurion", "Rhiannon")),
             ):
                 dialog.check_story_audio.click()
-                pool.tasks.pop().run()
-                self.application.processEvents()
+                self.run_next_task(pool)
             self.assertIn("Ready with live speech", dialog.stories.item(0).text())
             self.assertIn("1 live speech", dialog.stories.item(0).text())
             self.assertIn("active in Reading", dialog.stories.item(0).text())
@@ -893,8 +892,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 ),
             ):
                 dialog.check_story_audio.click()
-                pool.tasks.pop().run()
-                self.application.processEvents()
+                self.run_next_task(pool)
                 self.assertEqual(
                     dialog.stories.item(0).data(Qt.ItemDataRole.UserRole + 2), "ready"
                 )
@@ -913,8 +911,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 side_effect=ValueError("Saved audio damaged. Prepare again."),
             ):
                 dialog.check_story_audio.click()
-                pool.tasks.pop().run()
-                self.application.processEvents()
+                self.run_next_task(pool)
             self.assertIn("Needs attention", dialog.stories.item(0).text())
             self.assertIn("Saved audio damaged", dialog.story_audio_status.text())
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
@@ -959,7 +956,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
     def test_active_chapter_reports_playable_prefix_from_current_line(self):
         with TemporaryDirectory() as directory:
-            content = inspect_story_index(write_story_index(Path(directory) / "content"))
+            content = inspect_story_index(
+                write_story_index(Path(directory) / "content")
+            )
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
@@ -1027,8 +1026,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 side_effect=PregenerationVoiceCancelled("Paused after scope check"),
             ) as prepare:
                 dialog.prepare_again.click()
-                pool.tasks.pop().run()
-                self.application.processEvents()
+                self.run_next_task(pool)
                 self.assertEqual(
                     prepare.call_args.args[0].selected_story_ids, ("main-1",)
                 )
@@ -1250,8 +1248,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                     "Reading uses live speech only",
                     preparation.story_audio_status.text(),
                 )
-                pool.tasks.pop().run()
-                self.application.processEvents()
+                self.run_next_task(pool)
                 plan = SimpleNamespace(
                     synthesis_backend="pocket-tts", synthesis_model=None
                 )
@@ -1337,8 +1334,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 )
                 dialog.show()
                 self.application.processEvents()
-                pool.tasks.pop().run()
-                self.application.processEvents()
+                self.run_next_task(pool)
 
             self.assertEqual(dialog.source.count(), 2)
             self.assertEqual(
@@ -1406,14 +1402,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(dialog.planning_voices)
             self.assertFalse(dialog.stories.isEnabled())
             self.assertEqual(dialog.cancel_button.text(), "Cancel voice matching")
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertFalse(dialog.planning_voices)
             self.assertTrue(dialog.preparing_inputs)
             self.assertEqual(dialog.cancel_button.text(), "Cancel preparation")
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertFalse(dialog.preparing_inputs)
             self.assertTrue(dialog._awaiting_voice_confirmation)
@@ -1422,18 +1416,15 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.continue_button.click()
             self.assertTrue(dialog.generating)
             self.assertEqual(dialog.cancel_button.text(), "Cancel generation")
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertTrue(dialog.accepting_audio)
             self.assertEqual(dialog.cancel_button.text(), "Cancel final checks")
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertTrue(dialog.publishing_pack)
             self.assertEqual(dialog.cancel_button.text(), "Cancel final save")
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertIsNotNone(dialog.job())
             self.assertIsNotNone(dialog.voice_plan())
@@ -1515,8 +1506,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generator.inspect_progress.assert_not_called()
             dialog._poll_generation_progress()
             self.assertEqual(len(pool.tasks), 1)
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
             self.assertEqual(dialog.progress_bar.value(), 1)
             self.assertIn("1 of 4", plain_label_text(dialog.progress_counts))
             self.assertIn("saved on disk", dialog.progress_guarantee.text())
@@ -1524,8 +1514,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(dialog.progress_runtime.isVisible())
 
             dialog._poll_generation_progress()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertEqual(dialog.progress_bar.value(), 3)
             self.assertEqual(dialog.progress_phase.text(), "Checking generated audio")
@@ -1569,24 +1558,20 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._generation_input = Mock(ready_items=60)
             dialog.generating = True
             dialog._start_generation_progress()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
             self.assertIn("Estimating", plain_label_text(dialog.progress_timing))
             clock.return_value = 60
             dialog._poll_generation_progress()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
             self.assertIn("4 min", plain_label_text(dialog.progress_timing))
             dialog._poll_generation_progress()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
             self.assertIn(
                 "Progress unavailable", plain_label_text(dialog.progress_timing)
             )
             self.assertEqual(dialog.progress_bar.value(), 52)
             dialog._poll_generation_progress()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
             self.assertIn(
                 "Waiting for progress", plain_label_text(dialog.progress_timing)
             )
@@ -1594,8 +1579,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._poll_generation_progress()
             dialog._stop_generation_progress()
             dialog.generating = False
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
             self.assertEqual(dialog.progress_bar.value(), 52)
             self.assertEqual(plain_label_text(dialog.progress_timing), "")
             dialog.deleteLater()
@@ -1664,24 +1648,19 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             dialog.select_all_button.click()
             dialog.continue_button.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
+            self.run_next_task(pool)
             dialog.continue_button.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertFalse(dialog.recovering)
             self.assertTrue(dialog.accepting_audio)
             recovery.generate_and_recover.assert_called_once()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertFalse(dialog.accepting_audio)
             self.assertTrue(dialog.publishing_pack)
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertFalse(dialog.publishing_pack)
             self.assertIs(dialog.generation_result(), final)
@@ -1790,8 +1769,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.cancel_button.text(), "Cancel import")
             self.assertEqual(len(pool.tasks), 1)
 
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertEqual(
                 importer.import_installed.call_args.args[1],
@@ -1827,8 +1805,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
         self.assertTrue(dialog.importing)
         self.assertIn("Cancelling", dialog.source_status.text())
-        pool.tasks.pop().run()
-        self.application.processEvents()
+        self.run_next_task(pool)
 
         self.assertFalse(dialog.importing)
         self.assertEqual(dialog.source_status.text(), "Game import cancelled.")
@@ -1861,8 +1838,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             self.assertTrue(dialog.planning_voices)
             self.assertIn("Cancelling voice", dialog.resume_status.text())
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertFalse(dialog.planning_voices)
         self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
@@ -1949,14 +1925,12 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             dialog.select_all_button.click()
             dialog.continue_button.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
             dialog.continue_button.click()
             self.assertTrue(dialog.preparing_inputs)
 
             dialog.cancel_button.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertFalse(dialog.preparing_inputs)
             self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
@@ -1982,8 +1956,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.select_all_button.click()
             dialog.change_voices.setChecked(True)
             dialog.continue_button.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertTrue(
                 voice_plan_store.create.call_args.kwargs["ignore_decisions"]
@@ -2028,17 +2001,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             dialog.select_all_button.click()
             dialog.continue_button.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
+            self.run_next_task(pool)
             dialog.continue_button.click()
             self.assertTrue(dialog.generating)
 
             dialog.cancel_button.click()
             self.assertIn("Cancelling generation", dialog.resume_status.text())
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            self.run_next_task(pool)
 
             self.assertFalse(dialog.generating)
             self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
