@@ -11,13 +11,18 @@ import tempfile
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, replace
-from datetime import timezone
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from statistics import median
+from typing import SupportsIndex, SupportsInt
 
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import (
+    StoryIndexDocument,
+    StoryIndexError,
+    load_story_index_document,
+)
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
@@ -35,7 +40,9 @@ from vntts.authoring.audio_event_workspace import (
 )
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
+    JsonDocument,
     ReviewAuthority,
+    StateItems,
     is_spoken_queue_item,
     load_generation_state,
     normalized_failure_record,
@@ -125,11 +132,13 @@ PACE_SLOW_MINIMUM_DELTA_WPM = 20.0
 _IMPORT_ID_PATTERN = re.compile(r"legacy-[0-9a-f]{24}")
 
 
-def generation_failure_category(error, *, text=""):
+def generation_failure_category(error: object, *, text: str = "") -> str:
     """Collapse volatile backend diagnostics into actionable failure cohorts."""
     if isinstance(error, dict):
         failure = normalized_failure_record(error, text=text)
         kind = failure.get("kind")
+        if not isinstance(kind, str):
+            return "other generation failure"
         if (
             kind == "speech_silence"
             and text
@@ -152,7 +161,9 @@ def generation_failure_category(error, *, text=""):
     return "other generation failure"
 
 
-def _review_internal_pause_seconds(result, *, failed):
+def _review_internal_pause_seconds(
+    result: JsonDocument, *, failed: bool
+) -> float | None:
     source = (
         normalized_failure_record(result).get("speech_quality")
         if failed
@@ -166,8 +177,18 @@ def _review_internal_pause_seconds(result, *, failed):
     return float(value)
 
 
+def _inspection_state_items(state: Mapping[str, object]) -> StateItems:
+    items = state.get("items")
+    if not isinstance(items, dict) or any(
+        not isinstance(queue_id, str) or not isinstance(value, dict)
+        for queue_id, value in items.items()
+    ):
+        raise AuthoringWorkbenchError("Generation state items are malformed")
+    return {queue_id: value for queue_id, value in items.items()}
+
+
 @lru_cache(maxsize=2048)
-def discover_imports(import_root=None):
+def discover_imports(import_root: str | Path | None = None) -> tuple[Path, ...]:
     root = (
         Path(import_root or legacy_import.default_import_root()).expanduser().resolve()
     )
@@ -201,7 +222,7 @@ def discover_imports(import_root=None):
     return tuple(results)
 
 
-def discover_workspaces(workspaces_root=None):
+def discover_workspaces(workspaces_root: str | Path | None = None) -> tuple[Path, ...]:
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     if not root.is_dir():
         return ()
@@ -227,14 +248,14 @@ def discover_workspaces(workspaces_root=None):
 
 
 def inspect_workspace(
-    workspace_directory,
+    workspace_directory: str | Path,
     *,
-    voice_manifest=None,
-    local_process_id=None,
-    local_process_started_at=None,
-    process_checker=process_is_alive,
-    process_start_checker=process_started_at,
-):
+    voice_manifest: str | Path | None = None,
+    local_process_id: int | None = None,
+    local_process_started_at: str | None = None,
+    process_checker: Callable[[int], bool] = process_is_alive,
+    process_start_checker: Callable[[int], str | None] = process_started_at,
+) -> WorkspaceSummary:
     directory, workspace = _load_workspace(workspace_directory)
     queue_path = _within(
         directory, _safe_relative(workspace["queue"], "Queue"), "Queue"
@@ -269,21 +290,21 @@ def inspect_workspace(
 
 
 def _inspect_workspace_from_read(
-    directory,
-    workspace,
-    queue_path,
-    output,
-    queue,
-    state_path,
-    state,
+    directory: Path,
+    workspace: JsonDocument,
+    queue_path: Path,
+    output: Path,
+    queue: VoiceGenerationQueue,
+    state_path: Path | None,
+    state: JsonDocument | None,
     *,
-    voice_manifest=None,
-    local_process_id=None,
-    local_process_started_at=None,
-    process_checker=process_is_alive,
-    process_start_checker=process_started_at,
-):
-    state_items = {} if state is None else state["items"]
+    voice_manifest: str | Path | None = None,
+    local_process_id: int | None = None,
+    local_process_started_at: str | None = None,
+    process_checker: Callable[[int], bool] = process_is_alive,
+    process_start_checker: Callable[[int], str | None] = process_started_at,
+) -> WorkspaceSummary:
+    state_items = {} if state is None else _inspection_state_items(state)
 
     audio_event_config = workspace.get("audio_event_composition")
     audio_event_ids = (
@@ -440,7 +461,12 @@ def _inspect_workspace_from_read(
     )
 
 
-def _review_technical_metrics(result, text, *, projected_speech_quality=None):
+def _review_technical_metrics(
+    result: JsonDocument,
+    text: str,
+    *,
+    projected_speech_quality: JsonDocument | None = None,
+) -> tuple[float | None, float | None, float | None, tuple[str, ...]]:
     quality = result.get("quality")
     if not isinstance(quality, dict):
         return None, None, None, ()
@@ -494,11 +520,11 @@ def _review_technical_metrics(result, text, *, projected_speech_quality=None):
     return duration, words_per_minute, peak, tuple(flags)
 
 
-def _pace_word_count(text):
+def _pace_word_count(text: str) -> int:
     return len(re.findall(r"[\w’'-]+", str(text or ""), flags=re.UNICODE))
 
 
-def _pace_length_bucket(word_count):
+def _pace_length_bucket(word_count: int) -> str:
     if word_count <= 9:
         return "short"
     if word_count <= 20:
@@ -506,11 +532,13 @@ def _pace_length_bucket(word_count):
     return "long"
 
 
-def _pace_voice_key(item):
+def _pace_voice_key(item: ReviewItem) -> str:
     return str(item.voice_character or item.speaker or "").strip().casefold()
 
 
-def _annotate_pace_advisories(records):
+def _annotate_pace_advisories(
+    records: Sequence[ReviewItem],
+) -> tuple[ReviewItem, ...]:
     """Project relative slow-pace outliers without changing review authority."""
     eligible = [
         item
@@ -519,15 +547,16 @@ def _annotate_pace_advisories(records):
         and item.words_per_minute > 0
         and _pace_word_count(item.text) >= PACE_MINIMUM_WORDS
     ]
-    by_voice = {}
-    by_voice_and_length = {}
+    by_voice: dict[str, list[float]] = {}
+    by_voice_and_length: dict[tuple[str, str], list[float]] = {}
     for item in eligible:
+        words_per_minute = item.words_per_minute
+        if words_per_minute is None:
+            continue
         voice = _pace_voice_key(item)
         length = _pace_length_bucket(_pace_word_count(item.text))
-        by_voice.setdefault(voice, []).append(item.words_per_minute)
-        by_voice_and_length.setdefault((voice, length), []).append(
-            item.words_per_minute
-        )
+        by_voice.setdefault(voice, []).append(words_per_minute)
+        by_voice_and_length.setdefault((voice, length), []).append(words_per_minute)
 
     annotated = []
     for item in records:
@@ -545,16 +574,17 @@ def _annotate_pace_advisories(records):
             elif len(same_voice) >= PACE_MINIMUM_VOICE_SAMPLES:
                 baseline = float(median(same_voice))
                 scope = "same voice/all eligible lengths"
-        advisories = ()
+        advisories: tuple[str, ...] = ()
         ratio = None
-        if baseline is not None and baseline > 0:
-            ratio = float(item.words_per_minute / baseline)
+        words_per_minute = item.words_per_minute
+        if baseline is not None and baseline > 0 and words_per_minute is not None:
+            ratio = float(words_per_minute / baseline)
             if (
                 ratio <= PACE_SLOW_RELATIVE_RATIO
-                and baseline - item.words_per_minute >= PACE_SLOW_MINIMUM_DELTA_WPM
+                and baseline - words_per_minute >= PACE_SLOW_MINIMUM_DELTA_WPM
             ):
                 advisories = (
-                    f"slow relative outlier {item.words_per_minute:.0f} WPM "
+                    f"slow relative outlier {words_per_minute:.0f} WPM "
                     f"vs {baseline:.0f} WPM {scope} median",
                 )
         annotated.append(
@@ -569,7 +599,9 @@ def _annotate_pace_advisories(records):
     return tuple(annotated)
 
 
-def _corrected_legacy_speech_quality(audio_path, expected_sha256):
+def _corrected_legacy_speech_quality(
+    audio_path: str | Path, expected_sha256: str
+) -> JsonDocument:
     """Re-measure one legacy WAV from digest-bound bytes for review attention."""
     path = Path(audio_path)
     try:
@@ -593,14 +625,16 @@ def _corrected_legacy_speech_quality(audio_path, expected_sha256):
         raise AuthoringWorkbenchError(str(error)) from error
 
 
-def _review_voice_character(item, result):
+def _review_voice_character(
+    item: VoiceGenerationQueueItem, result: JsonDocument
+) -> str:
     return str(
         result.get("voice_character")
         or synthesis_character_for_line(item.speaker, item.voice_character)
     )
 
 
-def _normalize_review_queue_ids(queue_ids):
+def _normalize_review_queue_ids(queue_ids: object) -> set[str] | None:
     if queue_ids is None:
         return None
     if not isinstance(queue_ids, (list, tuple, set, frozenset)):
@@ -615,7 +649,9 @@ def _normalize_review_queue_ids(queue_ids):
     return selected
 
 
-def list_review_items(workspace_directory, queue_ids=None):
+def list_review_items(
+    workspace_directory: str | Path, queue_ids: object = None
+) -> tuple[ReviewItem, ...]:
     selected_queue_ids = _normalize_review_queue_ids(queue_ids)
     directory, workspace = _load_workspace(workspace_directory)
     queue_path = _within(
@@ -650,26 +686,26 @@ def list_review_items(workspace_directory, queue_ids=None):
 
 
 def _list_review_items_from_read(
-    queue,
-    story,
-    state_path,
-    state,
-    state_sha256,
-    queue_path,
-    output,
+    queue: VoiceGenerationQueue,
+    story: StoryIndexDocument,
+    state_path: Path,
+    state: JsonDocument,
+    state_sha256: str,
+    queue_path: Path,
+    output: Path,
     *,
-    selected_queue_ids=None,
-):
+    selected_queue_ids: set[str] | None = None,
+) -> tuple[ReviewItem, ...]:
     collection_by_record = {
         (record.line_id, record.text_sha256): collection.collection_id
         for collection in story.collections
         for record in story.records_for_collection(collection.collection_id)
     }
-    records = []
+    records: list[ReviewItem] = []
     for item in queue.items:
         if selected_queue_ids is not None and item.queue_id not in selected_queue_ids:
             continue
-        result = state["items"].get(item.queue_id)
+        result = _inspection_state_items(state).get(item.queue_id)
         if not isinstance(result, dict):
             continue
         status = str(result.get("status") or "unknown")
@@ -696,6 +732,7 @@ def _list_review_items_from_read(
             item.text,
             projected_speech_quality=projected_speech_quality,
         )
+        repair = result.get("failure_repair")
         records.append(
             ReviewItem(
                 queue_id=item.queue_id,
@@ -704,17 +741,19 @@ def _list_review_items_from_read(
                 voice_character=_review_voice_character(item, result),
                 text=item.text,
                 status=status,
-                review_status=result.get("review_status"),
-                attempts=int(result.get("attempts") or 0),
-                seed=result.get("seed"),
-                last_error=result.get("last_error"),
+                review_status=_optional_text(result.get("review_status")),
+                attempts=_integer(result.get("attempts") or 0, "Review attempts"),
+                seed=_optional_integer(result.get("seed")),
+                last_error=_optional_text(result.get("last_error")),
                 audio=audio,
                 collection_id=collection_by_record.get(
                     (item.line_id, item.text_sha256)
                 ),
                 authority=(
                     ReviewAuthority(
-                        queue_sha256=state["queue_sha256"],
+                        queue_sha256=str(
+                            _required_text(state.get("queue_sha256"), "Queue SHA-256")
+                        ),
                         state_sha256=state_sha256,
                         item_sha256=hashlib.sha256(
                             json.dumps(
@@ -743,10 +782,8 @@ def _list_review_items_from_read(
                 internal_pause_seconds=_review_internal_pause_seconds(
                     result, failed=status == "failed"
                 ),
-                repair_strategy=(
-                    result.get("failure_repair", {}).get("strategy")
-                    if isinstance(result.get("failure_repair"), dict)
-                    else None
+                repair_strategy=_optional_text(
+                    repair.get("strategy") if isinstance(repair, dict) else None
                 ),
             )
         )
@@ -761,11 +798,11 @@ def _list_review_items_from_read(
 
 
 def inspect_generation_readiness(
-    workspace_directory,
+    workspace_directory: str | Path,
     *,
-    queue_ids=None,
-    regenerate_existing=False,
-):
+    queue_ids: Sequence[str] | None = None,
+    regenerate_existing: bool = False,
+) -> GenerationReadiness:
     if regenerate_existing and queue_ids is None:
         raise AuthoringWorkbenchError(
             "Workspace regeneration requires explicit queue IDs"
@@ -778,11 +815,11 @@ def inspect_generation_readiness(
         )
     )
     queue = VoiceGenerationQueue.load(summary.queue)
-    state_items = {}
-    state = None
+    state_items: StateItems = {}
+    state: JsonDocument | None = None
     if summary.state is not None:
         state = load_generation_state(summary.state, summary.queue)
-        state_items = state["items"]
+        state_items = _inspection_state_items(state)
     control_workspace = _load_workspace(workspace_directory)[1]
     return _inspect_generation_readiness_from_read(
         loaded_directory,
@@ -799,18 +836,18 @@ def inspect_generation_readiness(
 
 
 def _inspect_generation_readiness_from_read(
-    directory,
-    workspace,
-    summary,
-    queue,
-    state,
+    directory: Path,
+    workspace: JsonDocument,
+    summary: WorkspaceSummary,
+    queue: VoiceGenerationQueue,
+    state: JsonDocument | None,
     *,
-    queue_ids=None,
-    regenerate_existing=False,
-    projection_ids=None,
-    state_items=None,
-    control_workspace=None,
-):
+    queue_ids: Sequence[str] | None = None,
+    regenerate_existing: bool = False,
+    projection_ids: Iterable[str] | None = None,
+    state_items: StateItems | None = None,
+    control_workspace: JsonDocument | None = None,
+) -> GenerationReadiness:
     if regenerate_existing and queue_ids is None:
         raise AuthoringWorkbenchError(
             "Workspace regeneration requires explicit queue IDs"
@@ -824,11 +861,8 @@ def _inspect_generation_readiness_from_read(
         if projection_ids is None
         else set(projection_ids)
     )
-    state_items = (
-        state["items"]
-        if state_items is None and state is not None
-        else ({} if state_items is None else state_items)
-    )
+    if state_items is None:
+        state_items = {} if state is None else _inspection_state_items(state)
     control_workspace = workspace if control_workspace is None else control_workspace
     selected = _selected_queue_ids(queue, queue_ids)
     candidates, pending, failed = _generation_candidates(
@@ -921,7 +955,11 @@ def _generation_candidates(
     return candidates, pending, failed
 
 
-def inspect_collection_selection(workspace_directory, *, collection_ids=None):
+def inspect_collection_selection(
+    workspace_directory: str | Path,
+    *,
+    collection_ids: Iterable[str] | None = None,
+) -> CollectionSelection:
     """Map declared story collections to exact immutable queue identities."""
     directory, workspace = _load_workspace(workspace_directory)
     document = _load_bound_story_document(directory, workspace)
@@ -936,7 +974,11 @@ def inspect_collection_selection(workspace_directory, *, collection_ids=None):
     return _collection_selection_from_scope(selected, record_keys, queue_ids, readiness)
 
 
-def _collection_selection_scope(document, queue, collection_ids):
+def _collection_selection_scope(
+    document: StoryIndexDocument,
+    queue: VoiceGenerationQueue,
+    collection_ids: Iterable[str] | None,
+) -> tuple[tuple[str, ...], set[tuple[str, str]], tuple[str, ...]]:
     declared = tuple(collection.collection_id for collection in document.collections)
     if collection_ids is None:
         selected = declared
@@ -962,7 +1004,12 @@ def _collection_selection_scope(document, queue, collection_ids):
     return selected, record_keys, queue_ids
 
 
-def _collection_selection_from_scope(selected, record_keys, queue_ids, readiness):
+def _collection_selection_from_scope(
+    selected: tuple[str, ...],
+    record_keys: set[tuple[str, str]],
+    queue_ids: tuple[str, ...],
+    readiness: GenerationReadiness,
+) -> CollectionSelection:
     return CollectionSelection(
         collection_ids=selected,
         collection_count=len(selected),
@@ -973,13 +1020,17 @@ def _collection_selection_from_scope(selected, record_keys, queue_ids, readiness
     )
 
 
-def list_workspace_collections(workspace_directory):
+def list_workspace_collections(
+    workspace_directory: str | Path,
+) -> tuple[WorkspaceCollection, ...]:
     directory, workspace = _load_workspace(workspace_directory)
     document = _load_bound_story_document(directory, workspace)
     return _workspace_collections_from_document(document)
 
 
-def _workspace_collections_from_document(document):
+def _workspace_collections_from_document(
+    document: StoryIndexDocument,
+) -> tuple[WorkspaceCollection, ...]:
     return tuple(
         WorkspaceCollection(
             collection_id=collection.collection_id,
@@ -991,20 +1042,26 @@ def _workspace_collections_from_document(document):
     )
 
 
-def workspace_voice_snapshot(workspace_directory):
+def workspace_voice_snapshot(
+    workspace_directory: str | Path,
+) -> tuple[WorkspaceVoice, ...]:
     """Load exact hash-bound voice tokens without trusting cached resolved paths."""
     directory, workspace = _load_workspace(workspace_directory)
     return _workspace_voice_snapshot_from_read(directory, workspace)
 
 
-def _workspace_voice_snapshot_from_read(directory, workspace):
+def _workspace_voice_snapshot_from_read(
+    directory: Path, workspace: JsonDocument
+) -> tuple[WorkspaceVoice, ...]:
     voices, _controls = _workspace_voice_projection_from_read(
         directory, workspace, verify_controls=True
     )
     return voices
 
 
-def _workspace_voice_projection_from_read(directory, workspace, *, verify_controls):
+def _workspace_voice_projection_from_read(
+    directory: Path, workspace: JsonDocument, *, verify_controls: bool
+) -> tuple[tuple[WorkspaceVoice, ...], tuple[tuple[Path, str], ...]]:
     voice = workspace.get("voice_manifest")
     if not isinstance(voice, dict):
         return (), ()
@@ -1068,7 +1125,9 @@ def _workspace_voice_projection_from_read(directory, workspace, *, verify_contro
     return tuple(values), tuple(controls.items())
 
 
-def _load_bound_story_document(directory, workspace):
+def _load_bound_story_document(
+    directory: Path, workspace: JsonDocument
+) -> StoryIndexDocument:
     story = workspace.get("story_index")
     if not isinstance(story, dict):
         raise AuthoringWorkbenchError(
@@ -1093,21 +1152,30 @@ def _load_bound_story_document(directory, workspace):
             raise AuthoringWorkbenchError(str(error)) from error
 
 
-def immutable_history_timestamps(workspace_directory):
+def immutable_history_timestamps(
+    workspace_directory: str | Path,
+) -> tuple[ImmutableHistoryTimestamp, ...]:
     """Return friendly timestamps from immutable source and workspace records."""
     directory, workspace = _load_workspace(workspace_directory)
     return _immutable_history_timestamps_from_read(directory, workspace)
 
 
-def _immutable_history_timestamps_from_read(directory, workspace):
+def _immutable_history_timestamps_from_read(
+    directory: Path, workspace: JsonDocument
+) -> tuple[ImmutableHistoryTimestamp, ...]:
+    source = workspace.get("source")
+    if not isinstance(source, Mapping):
+        raise AuthoringWorkbenchError("Workspace source is malformed")
+    snapshot_name = _required_text(source.get("snapshot"), "Workspace import snapshot")
+    import_sha256 = _required_text(source.get("import_sha256"), "Workspace import SHA-256")
     snapshot, snapshot_sha256, _payload = _load_json_snapshot(
-        directory / workspace["source"]["snapshot"],
+        directory / snapshot_name,
         "workspace import snapshot",
     )
-    if snapshot_sha256 != workspace["source"]["import_sha256"]:
+    if snapshot_sha256 != import_sha256:
         raise AuthoringWorkbenchError("Workspace import snapshot was modified")
     legacy_job = snapshot.get("legacy_job")
-    candidates = []
+    candidates: list[tuple[str, object]] = []
     if isinstance(legacy_job, dict):
         candidates.extend(
             (
@@ -1117,7 +1185,7 @@ def _immutable_history_timestamps_from_read(directory, workspace):
         )
     candidates.append(("Imported", snapshot.get("imported_at")))
     candidates.append(("Workspace created", workspace.get("created_at")))
-    values = []
+    values: list[tuple[datetime, str, ImmutableHistoryTimestamp]] = []
     for kind, value in candidates:
         parsed = _parse_history_timestamp(value)
         if parsed is None:
@@ -1137,12 +1205,16 @@ def _immutable_history_timestamps_from_read(directory, workspace):
     return tuple(value for _instant, _kind, value in sorted(values))
 
 
-def _load_workbench_projection_read(workspace_directory):
+def _load_workbench_projection_read(
+    workspace_directory: str | Path,
+) -> _WorkbenchProjectionRead:
     with shared_workspace_state_reads():
         return _load_workbench_projection_read_scoped(workspace_directory)
 
 
-def _load_workbench_projection_read_scoped(workspace_directory):
+def _load_workbench_projection_read_scoped(
+    workspace_directory: str | Path,
+) -> _WorkbenchProjectionRead:
     directory, workspace, workspace_sha256 = load_workspace_authority(
         workspace_directory
     )
@@ -1198,12 +1270,12 @@ def _load_workbench_projection_read_scoped(workspace_directory):
 
 
 def load_workbench_projection_data(
-    workspace_directory,
-    selected_collection_ids=None,
+    workspace_directory: str | Path,
+    selected_collection_ids: Iterable[str] | None = None,
     *,
-    local_process_id=None,
-    local_process_started_at=None,
-):
+    local_process_id: int | None = None,
+    local_process_started_at: str | None = None,
+) -> WorkbenchProjectionData:
     """Build one full UI projection from one bounded authority read."""
     read = _load_workbench_projection_read(workspace_directory)
     summary = _inspect_workspace_from_read(
@@ -1219,7 +1291,7 @@ def load_workbench_projection_data(
     )
     reviews = (
         ()
-        if read.state_path is None
+        if read.state_path is None or read.state is None or read.state_sha256 is None
         else _list_review_items_from_read(
             read.queue,
             read.story,
@@ -1265,19 +1337,19 @@ def load_workbench_projection_data(
 
 
 def generation_command(
-    workspace_directory,
+    workspace_directory: str | Path,
     *,
-    backend=None,
-    voice_manifest=None,
-    model=None,
-    generation_profile=None,
-    narrator_character=None,
-    retries=2,
-    seed=0,
-    include_prefer_source=False,
-    queue_ids=None,
-    regenerate_existing=False,
-):
+    backend: str | None = None,
+    voice_manifest: str | Path | None = None,
+    model: str | None = None,
+    generation_profile: str | None = None,
+    narrator_character: str | None = None,
+    retries: int = 2,
+    seed: int = 0,
+    include_prefer_source: bool = False,
+    queue_ids: Sequence[str] | None = None,
+    regenerate_existing: bool = False,
+) -> tuple[str, ...]:
     if include_prefer_source:
         raise AuthoringWorkbenchError(
             "Recoverable source-audio generation requires an explicit preflight policy"
@@ -1414,7 +1486,7 @@ def _configured_narrator(
         raise AuthoringWorkbenchError(
             "Persist the narrator selection in workspace configuration before generation"
         )
-    return _required_text(configured, "Narrator character")
+    return str(_required_text(configured, "Narrator character"))
 
 
 def _base_generation_command(
@@ -1527,19 +1599,19 @@ def _append_queue_options(
 
 
 def generation_control_bindings(
-    workspace_directory,
+    workspace_directory: str | Path,
     *,
-    queue,
-    output,
-    voice_manifest,
-    backend,
-    model,
-    generation_profile,
-    narrator_character,
-    missing_voice_policy=None,
-    failure_repair_policy=None,
-    audio_event_spoken_projection_queue_ids=None,
-):
+    queue: str | Path,
+    output: str | Path,
+    voice_manifest: str | Path,
+    backend: str,
+    model: str | None,
+    generation_profile: str | None,
+    narrator_character: str,
+    missing_voice_policy: object = None,
+    failure_repair_policy: object = None,
+    audio_event_spoken_projection_queue_ids: Iterable[object] | None = None,
+) -> dict[Path, str]:
     directory, workspace = _load_workspace(workspace_directory)
     selected_manifest = _selected_voice_manifest(directory, workspace)
     _validate_generation_paths(
@@ -1649,7 +1721,7 @@ def _generation_voice_control_bindings(
     return bindings
 
 
-def generation_output_identity(workspace_directory):
+def generation_output_identity(workspace_directory: str | Path) -> dict[str, str | int]:
     directory, _workspace = _load_workspace(workspace_directory)
     output = directory / "generated-audio"
     metadata = output.stat(follow_symlinks=False)
@@ -1660,7 +1732,9 @@ def generation_output_identity(workspace_directory):
     }
 
 
-def _active_attempt(value, eligible_ids):
+def _active_attempt(
+    value: object, eligible_ids: set[str]
+) -> ActiveAttempt | None:
     if not isinstance(value, dict) or value.get("queue_id") not in eligible_ids:
         return None
     return ActiveAttempt(
@@ -1680,20 +1754,20 @@ def _active_attempt(value, eligible_ids):
 
 
 def _runtime_status(
-    output,
-    active,
-    pending,
-    review_pending,
-    failed,
-    missing_voice,
-    blocked_reasons,
+    output: Path,
+    active: ActiveAttempt | None,
+    pending: int,
+    review_pending: int,
+    failed: int,
+    missing_voice: int | None,
+    blocked_reasons: Sequence[str],
     *,
-    queue_sha256,
-    local_process_id,
-    local_process_started_at,
-    process_checker,
-    process_start_checker,
-):
+    queue_sha256: str,
+    local_process_id: int | None,
+    local_process_started_at: str | None,
+    process_checker: Callable[[int], bool],
+    process_start_checker: Callable[[int], str | None],
+) -> AuthoringRuntimeStatus:
     lease_path = output / ".generation-lease.json"
     if lease_path.is_file():
         return _leased_runtime_status(
@@ -1781,13 +1855,13 @@ def _unleased_runtime_status(
 
 
 def _voice_readiness(
-    workspace,
-    spoken,
-    completed_ids,
-    manifest_path,
+    workspace: Mapping[str, object],
+    spoken: Iterable[VoiceGenerationQueueItem],
+    completed_ids: set[str],
+    manifest_path: str | Path | None,
     *,
-    directory=None,
-):
+    directory: Path | None = None,
+) -> tuple[set[str], tuple[str, ...]]:
     if manifest_path is None:
         return set(), ("Select an existing voice manifest",)
     registry, queue_overrides = _load_voice_routing(manifest_path)
@@ -1839,7 +1913,7 @@ def _load_voice_routing(
 
 def _extend_voice_routing(
     directory: Path,
-    workspace: dict[str, object],
+    workspace: Mapping[str, object],
     registry: CharacterVoiceRegistry,
     queue_overrides: dict[str, str],
 ) -> tuple[CharacterVoiceRegistry, dict[str, str]]:
@@ -1867,13 +1941,13 @@ def _voice_missing(voice: CharacterVoice | None) -> bool:
 
 
 def inspect_voice_readiness(
-    workspace,
-    spoken,
-    completed_ids,
-    manifest_path,
+    workspace: Mapping[str, object],
+    spoken: Iterable[VoiceGenerationQueueItem],
+    completed_ids: set[str],
+    manifest_path: str | Path | None,
     *,
-    directory=None,
-):
+    directory: Path | None = None,
+) -> tuple[set[str], tuple[str, ...]]:
     """Project exact missing-voice IDs through the workbench policy."""
     return _voice_readiness(
         workspace,
@@ -1884,8 +1958,10 @@ def inspect_voice_readiness(
     )
 
 
-def _workspace_control_reasons(workspace):
+def _workspace_control_reasons(workspace: Mapping[str, object]) -> tuple[str, ...]:
     run_config = workspace.get("run_config", {})
+    if not isinstance(run_config, Mapping):
+        run_config = {}
     missing = [
         label
         for field, label in (
@@ -1900,7 +1976,9 @@ def _workspace_control_reasons(workspace):
     return ("Workspace requires " + ", ".join(missing),)
 
 
-def _latest_outcome(queue, relevant):
+def _latest_outcome(
+    queue: VoiceGenerationQueue, relevant: Mapping[str, JsonDocument]
+) -> tuple[str | None, str | None, str | None, str | None]:
     if not relevant:
         return None, None, None, None
     queue_by_id = {item.queue_id: item for item in queue.items}
@@ -1916,12 +1994,14 @@ def _latest_outcome(queue, relevant):
     )
 
 
-def _optional_integer(value):
+def _optional_integer(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _integer(value, label):
+def _integer(value: object, label: str) -> int:
     if isinstance(value, bool):
+        raise AuthoringWorkbenchError(f"{label} must be an integer")
+    if not isinstance(value, (str, bytes, bytearray, SupportsInt, SupportsIndex)):
         raise AuthoringWorkbenchError(f"{label} must be an integer")
     try:
         return int(value)
@@ -1929,7 +2009,7 @@ def _integer(value, label):
         raise AuthoringWorkbenchError(f"{label} must be an integer") from error
 
 
-def _nonnegative_integer(value, label):
+def _nonnegative_integer(value: object, label: str) -> int:
     result = _integer(value, label)
     if result < 0:
         raise AuthoringWorkbenchError(f"{label} must not be negative")
