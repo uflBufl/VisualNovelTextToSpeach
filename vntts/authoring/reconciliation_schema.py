@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 from collections import Counter
+from collections.abc import Mapping, Set
 from pathlib import Path
 
 from vntts.authoring.authority import canonical_document_sha256
@@ -42,14 +43,13 @@ class AuthoringReconciliationSchemaError(RuntimeError):
     """A reconciliation wire document is malformed or inconsistent."""
 
 
-def validate_authoring_reconciliation_document(report):
+def validate_authoring_reconciliation_document(report: object) -> dict[str, object]:
     """Return a deep-validated version-1 reconciliation wire document."""
-    document = report
-    if not isinstance(document, dict):
+    if not isinstance(report, dict):
         raise AuthoringReconciliationSchemaError(
             "Authoring reconciliation must be an object"
         )
-    document = copy.deepcopy(document)
+    document: dict[str, object] = copy.deepcopy(report)
     if (
         document.get("schema") != AUTHORING_RECONCILIATION_SCHEMA
         or document.get("schema_version") != AUTHORING_RECONCILIATION_VERSION
@@ -106,7 +106,10 @@ def validate_authoring_reconciliation_document(report):
         raise AuthoringReconciliationSchemaError("Primary workspace ID is invalid")
 
     workspaces = _validated_report_workspaces(document.get("workspaces"))
-    workspace_ids = {value["workspace_id"] for value in workspaces}
+    workspace_ids = {
+        _required_text(value.get("workspace_id"), "Workspace ID")
+        for value in workspaces
+    }
     if primary_workspace_id not in workspace_ids:
         raise AuthoringReconciliationSchemaError(
             "Primary workspace is absent from the reconciliation"
@@ -156,11 +159,12 @@ def validate_authoring_reconciliation_document(report):
     return document
 
 
-def _validated_report_workspaces(value):
+def _validated_report_workspaces(value: object) -> list[dict[str, object]]:
     workspaces = _required_list(value, "Reconciliation workspaces")
-    seen = set()
-    for workspace in workspaces:
-        workspace = _required_object(workspace, "Reconciliation workspace")
+    seen: set[str] = set()
+    validated = []
+    for value in workspaces:
+        workspace = _required_object(value, "Reconciliation workspace")
         _require_fields(
             workspace,
             {
@@ -250,12 +254,14 @@ def _validated_report_workspaces(value):
             raise AuthoringReconciliationSchemaError(
                 "Workspace scoped terminal/action counts are inconsistent"
             )
-    return workspaces
+        validated.append(workspace)
+    return validated
 
 
-def _validated_report_bundles(value):
+def _validated_report_bundles(value: object) -> list[dict[str, object]]:
     bundles = _required_list(value, "Reconciliation review bundles")
-    seen = set()
+    seen: set[str] = set()
+    validated = []
     required = {
         "publication",
         "publication_sha256",
@@ -272,8 +278,8 @@ def _validated_report_bundles(value):
         "original_items",
         "remaining_items",
     }
-    for bundle in bundles:
-        bundle = _required_object(bundle, "Reconciliation review bundle")
+    for value in bundles:
+        bundle = _required_object(value, "Reconciliation review bundle")
         _require_fields(bundle, required, "Reconciliation review bundle")
         publication = _required_text(
             bundle.get("publication"), "Review bundle publication"
@@ -311,14 +317,16 @@ def _validated_report_bundles(value):
                 raise AuthoringReconciliationSchemaError(
                     f"Review bundle remaining {noun} count is invalid"
                 )
-    return bundles
+        validated.append(bundle)
+    return validated
 
 
-def _validated_report_quality_reviews(value):
+def _validated_report_quality_reviews(value: object) -> list[dict[str, object]]:
     reviews = _required_list(value, "Reconciliation quality reviews")
-    seen = set()
-    for review in reviews:
-        review = _required_object(review, "Reconciliation quality review")
+    seen: set[str] = set()
+    validated = []
+    for value in reviews:
+        review = _required_object(value, "Reconciliation quality review")
         _require_fields(
             review,
             {
@@ -362,14 +370,18 @@ def _validated_report_quality_reviews(value):
             raise AuthoringReconciliationSchemaError(
                 "Quality decision counts are inconsistent"
             )
-    return reviews
+        validated.append(review)
+    return validated
 
 
-def _validated_report_actions(value, workspace_ids):
+def _validated_report_actions(
+    value: object, workspace_ids: set[str]
+) -> list[dict[str, object]]:
     actions = _required_list(value, "Reconciliation actions")
-    seen = set()
-    for action in actions:
-        action = _required_object(action, "Reconciliation action")
+    seen: set[tuple[object, ...]] = set()
+    validated = []
+    for value in actions:
+        action = _required_object(value, "Reconciliation action")
         kind = action.get("action")
         if kind not in RECONCILIATION_ACTIONS:
             raise AuthoringReconciliationSchemaError("Reconciliation action is invalid")
@@ -489,14 +501,18 @@ def _validated_report_actions(value, workspace_ids):
                 "Reconciliation action is duplicated"
             )
         seen.add(identity)
-    return actions
+        validated.append(action)
+    return validated
 
 
-def _validated_report_conflicts(value, workspace_ids):
+def _validated_report_conflicts(
+    value: object, workspace_ids: set[str]
+) -> list[dict[str, object]]:
     conflicts = _required_list(value, "Reconciliation terminal conflicts")
-    seen = set()
-    for conflict in conflicts:
-        conflict = _required_object(conflict, "Terminal conflict")
+    seen: set[str] = set()
+    validated = []
+    for value in conflicts:
+        conflict = _required_object(value, "Terminal conflict")
         _require_fields(
             conflict, {"queue_id", "reason", "occurrences"}, "Terminal conflict"
         )
@@ -512,9 +528,9 @@ def _validated_report_conflicts(value, workspace_ids):
             raise AuthoringReconciliationSchemaError(
                 "Terminal conflict must contain multiple occurrences"
             )
-        occurrence_ids = set()
-        for occurrence in occurrences:
-            occurrence = _required_object(occurrence, "Conflict occurrence")
+        occurrence_ids: set[tuple[str, str]] = set()
+        for value in occurrences:
+            occurrence = _required_object(value, "Conflict occurrence")
             _require_fields(
                 occurrence,
                 {
@@ -551,10 +567,13 @@ def _validated_report_conflicts(value, workspace_ids):
                     "Conflict occurrence is duplicated"
                 )
             occurrence_ids.add(identity)
-    return conflicts
+        validated.append(conflict)
+    return validated
 
 
-def _require_fields(document, fields, label):
+def _require_fields(
+    document: Mapping[str, object], fields: Set[str], label: str
+) -> None:
     missing = sorted(set(fields) - set(document))
     if missing:
         raise AuthoringReconciliationSchemaError(
@@ -562,49 +581,57 @@ def _require_fields(document, fields, label):
         )
 
 
-def _required_object(value, label):
+def _required_object(value: object, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise AuthoringReconciliationSchemaError(f"{label} must be an object")
     return value
 
 
-def _required_list(value, label):
+def _required_list(value: object, label: str) -> list[object]:
     if not isinstance(value, list):
         raise AuthoringReconciliationSchemaError(f"{label} must be a list")
     return value
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise AuthoringReconciliationSchemaError(f"{label} must be non-empty text")
     return value
 
 
-def _optional_text(value, label):
-    if value is not None and (not isinstance(value, str) or not value.strip()):
+def _optional_text(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
         raise AuthoringReconciliationSchemaError(f"{label} must be text or null")
     return value
 
 
-def _required_sha256(value, label):
+def _required_sha256(value: object, label: str) -> str:
     if not isinstance(value, str) or not SHA256_PATTERN.fullmatch(value):
         raise AuthoringReconciliationSchemaError(f"{label} must be lowercase SHA-256")
     return value
 
 
-def _optional_sha256(value, label):
-    if value is not None:
-        _required_sha256(value, label)
-    return value
+def _optional_sha256(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _required_sha256(value, label)
 
 
-def _nonnegative_integer(value, label):
+def _nonnegative_integer(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise AuthoringReconciliationSchemaError(f"{label} must be non-negative")
     return value
 
 
-def _validated_count_map(value, label, allowed, *, exact=False):
+def _validated_count_map(
+    value: object,
+    label: str,
+    allowed: Set[str],
+    *,
+    exact: bool = False,
+) -> dict[str, int]:
     counts = _required_object(value, label)
     keys = set(counts)
     if (exact and keys != set(allowed)) or not keys <= set(allowed):

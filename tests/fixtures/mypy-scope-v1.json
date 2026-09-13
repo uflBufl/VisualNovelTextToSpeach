@@ -8,6 +8,7 @@
     "vntts/authoring/import_paths.py",
     "vntts/authoring/private_files.py",
     "vntts/authoring/queue_extension.py",
+    "vntts/authoring/reconciliation_schema.py",
     "vntts/authoring/workspace_config.py",
     "vntts/authoring/workspace_foundation.py",
     "vntts/authoring/workspace_state.py",
