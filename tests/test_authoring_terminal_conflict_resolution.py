@@ -77,6 +77,7 @@ class TerminalConflictResolutionTest(unittest.TestCase):
                 publish_terminal_conflict_resolution(review, root / "resolution")
 
             self.assertFalse((root / "resolution").exists())
+            self.assertEqual(list(root.glob(".resolution.staging-*")), [])
 
     def test_selected_candidate_is_copied_and_publication_is_idempotent(self):
         with TemporaryDirectory() as directory:

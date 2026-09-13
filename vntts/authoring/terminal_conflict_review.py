@@ -6,9 +6,7 @@ import copy
 import hashlib
 import json
 import os
-import shutil
 import socket
-import tempfile
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -39,6 +37,7 @@ from vntts.authoring.bulk_generation import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.reconciliation import (
     AuthoringReconciliationError,
@@ -150,10 +149,7 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output_exists = output.exists() or output.is_symlink()
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         workspace_queue_ids = {}
         for conflict in conflicts:
             for occurrence in conflict["occurrences"]:
@@ -365,8 +361,6 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
                 raise TerminalConflictReviewError(
                     f"Terminal conflict review output has another identity: {output}"
                 )
-            shutil.rmtree(staging)
-            staging = None
             return existing
         try:
             rename_directory_no_replace(staging, output)
@@ -374,11 +368,6 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
             raise TerminalConflictReviewError(
                 f"Unable to publish terminal conflict review: {error}"
             ) from error
-        staging = None
-    except BaseException:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-        raise
     return TerminalConflictReview(
         output, review_id, len(cases), candidate_total, 0, True
     )

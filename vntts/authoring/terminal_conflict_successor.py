@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import copy
-import shutil
-import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from functools import partial
@@ -21,6 +19,7 @@ from vntts.authoring.authority import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.reconciliation_schema import (
     RECONCILIATION_ACTIONS,
@@ -206,10 +205,7 @@ def publish_terminal_conflict_successor(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output_exists = output.exists() or output.is_symlink()
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         atomic_write_json(staging / "successor.json", document, sort_keys=True)
         load_terminal_conflict_successor(staging)
         try:
@@ -234,8 +230,6 @@ def publish_terminal_conflict_successor(
                 raise TerminalConflictSuccessorError(
                     f"Terminal conflict successor output has another identity: {output}"
                 )
-            shutil.rmtree(staging)
-            staging = None
             return existing
         try:
             rename_directory_no_replace(staging, output)
@@ -243,11 +237,6 @@ def publish_terminal_conflict_successor(
             raise TerminalConflictSuccessorError(
                 f"Unable to publish terminal conflict successor: {error}"
             ) from error
-        staging = None
-    except BaseException:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-        raise
     return TerminalConflictSuccessor(
         output,
         successor_id,

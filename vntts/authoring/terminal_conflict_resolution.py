@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import shutil
-import tempfile
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path, PurePosixPath
@@ -22,6 +20,7 @@ from vntts.authoring.authority import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.terminal_conflict_records import (
     require_terminal_conflict_directory,
@@ -119,11 +118,8 @@ def publish_terminal_conflict_resolution(review_directory, output_directory):
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output_exists = output.exists() or output.is_symlink()
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
     selected_snapshots = []
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         records = []
         selected_count = 0
         neither_count = 0
@@ -245,8 +241,6 @@ def publish_terminal_conflict_resolution(review_directory, output_directory):
                 raise TerminalConflictResolutionError(
                     f"Terminal conflict resolution output has another identity: {output}"
                 )
-            shutil.rmtree(staging)
-            staging = None
             return existing
         try:
             rename_directory_no_replace(staging, output)
@@ -254,11 +248,6 @@ def publish_terminal_conflict_resolution(review_directory, output_directory):
             raise TerminalConflictResolutionError(
                 f"Unable to publish terminal conflict resolution: {error}"
             ) from error
-        staging = None
-    except BaseException:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-        raise
     return TerminalConflictResolution(
         output,
         resolution_id,
