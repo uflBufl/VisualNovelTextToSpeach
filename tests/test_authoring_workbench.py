@@ -3810,6 +3810,38 @@ class AuthoringWorkbenchTest(unittest.TestCase):
         self.assertIn("--regenerate-existing", regeneration)
         self.assertEqual(regeneration[regeneration.index("--queue-id") + 1], queue_id)
 
+    def test_generation_command_uses_one_stable_preflight_read(self):
+        with TemporaryDirectory() as directory:
+            _fixture, _imported, created = self.create_workspace(Path(directory))
+            with (
+                patch.object(
+                    workspace_inspection_module,
+                    "_load_workbench_projection_read",
+                    wraps=workspace_inspection_module._load_workbench_projection_read,
+                ) as stable_read,
+                patch.object(
+                    workspace_inspection_module,
+                    "inspect_workspace",
+                    wraps=workspace_inspection_module.inspect_workspace,
+                ) as inspect_workspace_mock,
+                patch.object(
+                    workspace_inspection_module,
+                    "inspect_generation_readiness",
+                    wraps=workspace_inspection_module.inspect_generation_readiness,
+                ) as inspect_readiness_mock,
+            ):
+                with self.assertRaisesRegex(
+                    AuthoringWorkbenchError,
+                    "No pending or failed queue items are selected",
+                ):
+                    generation_command(created.directory)
+
+        stable_read.assert_called_once_with(
+            created.directory, load_projection_details=False
+        )
+        inspect_workspace_mock.assert_not_called()
+        inspect_readiness_mock.assert_not_called()
+
     def test_scoped_regeneration_accepts_only_pending_review_outcomes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

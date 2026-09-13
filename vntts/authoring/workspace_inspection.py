@@ -1209,14 +1209,18 @@ def _immutable_history_timestamps_from_read(
 
 
 def _load_workbench_projection_read(
-    workspace_directory: str | Path,
+    workspace_directory: str | Path, *, load_projection_details: bool = True
 ) -> _WorkbenchProjectionRead:
     with shared_workspace_state_reads():
-        return _load_workbench_projection_read_scoped(workspace_directory)
+        return _load_workbench_projection_read_scoped(
+            workspace_directory, load_projection_details=load_projection_details
+        )
 
 
 def _load_workbench_projection_read_scoped(
     workspace_directory: str | Path,
+    *,
+    load_projection_details: bool,
 ) -> _WorkbenchProjectionRead:
     directory, workspace, workspace_sha256 = load_workspace_authority(
         workspace_directory
@@ -1250,9 +1254,17 @@ def _load_workbench_projection_read_scoped(
     queue_sha256 = workspace_queue_sha256(workspace, error_type=AuthoringWorkbenchError)
     if sha256_file(queue_path) != queue_sha256:
         raise AuthoringWorkbenchError("Workspace queue was modified")
-    story = _load_bound_story_document(directory, workspace)
-    voices, voice_controls = _workspace_voice_projection_from_read(
-        directory, workspace, verify_controls=False
+    story = (
+        _load_bound_story_document(directory, workspace)
+        if load_projection_details
+        else None
+    )
+    voices, voice_controls = (
+        _workspace_voice_projection_from_read(
+            directory, workspace, verify_controls=False
+        )
+        if load_projection_details
+        else ((), ())
     )
     if sha256_file(directory / "workspace.json") != workspace_sha256:
         raise AuthoringWorkbenchError("Workspace authority changed while it was loaded")
@@ -1361,7 +1373,10 @@ def generation_command(
         raise AuthoringWorkbenchError(
             "Workspace regeneration requires explicit queue IDs"
         )
-    directory, workspace = _load_workspace(workspace_directory)
+    read = _load_workbench_projection_read(
+        workspace_directory, load_projection_details=False
+    )
+    directory, workspace = read.directory, read.workspace
     policy, repair_policy, projection_ids, queue_ids = _generation_scope(
         workspace, queue_ids, retries
     )
@@ -1371,9 +1386,22 @@ def generation_command(
         model=model,
         generation_profile=generation_profile,
     )
-    summary = inspect_workspace(directory, voice_manifest=voice_manifest)
-    readiness = inspect_generation_readiness(
-        workspace_directory,
+    summary = _inspect_workspace_from_read(
+        directory,
+        workspace,
+        read.queue_path,
+        read.output,
+        read.queue,
+        read.state_path,
+        read.state,
+        voice_manifest=voice_manifest,
+    )
+    readiness = _inspect_generation_readiness_from_read(
+        directory,
+        workspace,
+        summary,
+        read.queue,
+        read.state,
         queue_ids=queue_ids,
         regenerate_existing=regenerate_existing,
     )
