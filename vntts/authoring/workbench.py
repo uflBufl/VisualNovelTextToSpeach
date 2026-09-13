@@ -152,6 +152,7 @@ from vntts.authoring.workspace_foundation import (
 from vntts.authoring.workspace_state import (
     cached_workspace_generation_state,
     load_stable_workspace_generation_state,
+    share_workspace_generation_state,
     shared_workspace_state_reads,
 )
 from vntts.authoring.workspace_voice_runtime import (
@@ -4543,13 +4544,26 @@ def _load_workspace_scoped(workspace_directory):
     elif any(workspace.get(field) is not None for field in direct_state_extensions) or (
         isinstance(carry, dict) and carry.get("schema_version") in {2, 3, 4}
     ):
+        state_path = directory / "generated-audio/generation-state.json"
+        payload = read_regular_file(
+            state_path,
+            "workspace generation state",
+            error_type=AuthoringWorkbenchError,
+        )
+        state_sha256 = hashlib.sha256(payload).hexdigest()
         try:
             state = load_generation_state(
-                directory / "generated-audio/generation-state.json",
+                state_path,
                 directory / "queue.jsonl",
             )
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
+        queue = _load_bound_workspace_queue(directory, workspace)
+        share_workspace_generation_state(
+            directory,
+            workspace,
+            (queue, state, payload, state_sha256),
+        )
     _validate_workspace_input_config(directory, workspace, snapshot)
     _validate_workspace_failure_reference_binding(directory, workspace)
     _validate_workspace_offline_fallback_state(directory, workspace, state=state)
@@ -4618,9 +4632,11 @@ def _load_workspace_scoped(workspace_directory):
         or match.group(2) != expected_config[:16]
     ):
         raise AuthoringWorkbenchError("Workspace configuration identity was modified")
-    if state_sha256 is not None and sha256_file(
-        directory / "generated-audio/generation-state.json"
-    ) != state_sha256:
+    if (
+        state_sha256 is not None
+        and sha256_file(directory / "generated-audio/generation-state.json")
+        != state_sha256
+    ):
         raise AuthoringWorkbenchError("Workspace generation state changed while loaded")
     return directory, workspace
 

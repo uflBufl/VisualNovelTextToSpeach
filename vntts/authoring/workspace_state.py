@@ -41,6 +41,12 @@ def cached_workspace_generation_state(directory, workspace):
     return cache.get(_state_cache_key(directory, workspace))
 
 
+def share_workspace_generation_state(directory, workspace, result):
+    cache = _SHARED_STATE_READS.get()
+    if cache is not None:
+        cache[_state_cache_key(directory, workspace)] = result
+
+
 def load_stable_workspace_generation_state(
     directory,
     workspace,
@@ -107,5 +113,6 @@ def _state_cache_key(directory, workspace):
 __all__ = [
     "cached_workspace_generation_state",
     "load_stable_workspace_generation_state",
+    "share_workspace_generation_state",
     "shared_workspace_state_reads",
 ]

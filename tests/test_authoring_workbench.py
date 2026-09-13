@@ -454,6 +454,36 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
             validation.assert_called_once()
 
+    def test_carry_forward_projection_loads_generation_state_once(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture, imported, source = create_carry_source_workspace(root)
+            review_workspace_item(source.directory, fixture["queue_id"], "approved")
+            source_directory = downgrade_workspace_run_config_to_legacy(
+                source.directory
+            )
+            carried = create_resume_workspace(
+                imported,
+                root / "workspaces",
+                story_index=fixture["job"]["story_index"],
+                voice_manifest=write_carry_target_manifest(root),
+                backend="moss-tts",
+                model="model with spaces",
+                generation_profile="stable",
+                narrator_character="Paper Heron",
+                carry_forward_from=source_directory,
+                carry_forward_characters=("Rhiannon",),
+            )
+            load_state = workbench_module.load_generation_state
+            with patch.object(
+                workbench_module,
+                "load_generation_state",
+                wraps=load_state,
+            ) as loading:
+                workbench_module.load_workbench_projection_data(carried.directory)
+
+            loading.assert_called_once()
+
     def test_workspace_binds_selected_reference_extension_to_copied_wavs(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
