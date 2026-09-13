@@ -1294,20 +1294,17 @@ class AppController:
                 "visible story position to resume."
             )
         elif snapshot.state == StoryCursorState.MANUAL:
-            recovery_required = True
             guidance = (
-                "A choice or manual boundary needs an explicit story-position "
-                "selection."
+                "Make the in-game decision. Reading resumes automatically when the "
+                "next dialogue appears."
             )
         elif (
             snapshot.state == StoryCursorState.WAITING_TRANSITION
             and cursor.deterministic_manual_successor() is not None
         ):
-            recovery_required = True
             guidance = (
-                "The advance key was sent and the next planned event is a choice or "
-                "manual boundary. Make the in-game decision, then select the visible "
-                "expected event; no second key will be sent."
+                "The next planned event is a choice or manual boundary. Make the "
+                "in-game decision; reading resumes when the next dialogue appears."
             )
         elif event is not None and not event.successors:
             guidance = "This is a terminal sequence event; no successor is expected."
@@ -2846,7 +2843,7 @@ class AppController:
         elif state == "dispatched":
             self.status_handler(
                 "Auto advance key sent; a choice/manual boundary is next. Make the "
-                "in-game decision, then select the visible expected event."
+                "in-game decision; reading resumes with the next dialogue."
                 if awaiting_manual_boundary
                 else "Auto advance key sent; waiting for dialogue change"
             )
@@ -2861,8 +2858,8 @@ class AppController:
         elif state == "failed":
             self.status_handler(
                 "The expected choice/manual transition was not confirmed; no second "
-                "key was sent. Make the decision and select the visible expected "
-                "event."
+                "key was sent. Make the decision; reading is still watching for the "
+                "next dialogue."
                 if awaiting_manual_boundary
                 else "Dialogue change was not confirmed after the extended wait; no "
                 "second key was sent. Advance manually."

@@ -2555,6 +2555,7 @@ class MainTest(unittest.TestCase):
     def test_sequence_manual_branch_uses_only_unique_expected_candidate(self):
         branch_rows = []
         for sequence, speaker, text in (
+            (1, "Rhiannon", "Choose carefully."),
             (2, "Ada", "The left branch."),
             (3, "Bea", "The right branch."),
         ):
@@ -2570,10 +2571,19 @@ class MainTest(unittest.TestCase):
             )
         preloader = ChapterVoicePreloader.from_document({"dialogue": branch_rows})
         events = {
+            "intro": LiveSequenceEvent(
+                "intro",
+                "1",
+                1,
+                "speech",
+                "automatic",
+                ("choice",),
+                "reverse1999:1:1",
+            ),
             "choice": LiveSequenceEvent(
                 "choice",
                 "1",
-                1,
+                2,
                 "choice",
                 "manual",
                 ("left", "right"),
@@ -2606,9 +2616,13 @@ class MainTest(unittest.TestCase):
             Path("story.jsonl"),
             "1" * 64,
             "2" * 64,
-            (LiveSequenceChapter("1", ("choice",), tuple(events)),),
+            (LiveSequenceChapter("1", ("intro",), tuple(events)),),
             events,
-            {"reverse1999:1:2": "left", "reverse1999:1:3": "right"},
+            {
+                "reverse1999:1:1": "intro",
+                "reverse1999:1:2": "left",
+                "reverse1999:1:3": "right",
+            },
         )
         pipeline = []
         controller = AppController(
@@ -2624,7 +2638,11 @@ class MainTest(unittest.TestCase):
                 (args, kwargs)
             ),
         )
-        controller.story_cursor.anchor_event("choice")
+        controller.story_cursor.anchor_event("intro")
+        controller.story_cursor.begin_playback()
+        controller.story_cursor.finish_playback()
+        controller.story_cursor.dispatch_advance()
+        status = controller.get_live_sequence_status()
 
         self.assertIsNone(controller._stable_live_frame_route("changed", True))
         routed = controller._dialog_observed(
@@ -2633,6 +2651,8 @@ class MainTest(unittest.TestCase):
         )
 
         self.assertEqual(routed, ("Bea", "The right branch."))
+        self.assertFalse(status.recovery_required)
+        self.assertIn("resumes", status.guidance)
         self.assertEqual(controller.story_cursor.current_event_id, "right")
         self.assertEqual(pipeline[-1][1]["match_result"], "expected-text-only")
         self.assertNotIn("text", pipeline[-1][1])

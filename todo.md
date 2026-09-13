@@ -59,13 +59,6 @@ measurements in agent memory and completed-work history in Git, not here.
       emergency stop, or make the compact controls the explicit gameplay handoff
       until those shortcuts are available.
 
-## P2 - Handle in-game choices without mode babysitting
-
-- [ ] Detect a Reverse: 1999 choice/manual boundary outside the dialogue OCR
-      region, pause auto advance without losing the story cursor, and resume
-      ordinary reading after the player chooses. Do not require the player to
-      predict a choice and toggle live reading manually.
-
 ## P2 - Optional model experiments
 
 - [ ] On a CUDA host, compare MOSS Delay 8B with MOSS Local 4B on the existing
