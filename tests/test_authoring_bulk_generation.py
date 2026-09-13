@@ -38,6 +38,7 @@ from vntts.authoring.bulk_generation import (
 )
 from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
+from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
 from vntts.authoring.silence_evidence import (
     SilenceFailureEvidenceError,
@@ -230,6 +231,9 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             second = self.run_generation(queue, output, renderer, seed=7)
             state = load_generation_state(first.state, queue)
             raw_manifest = json.loads(first.manifest.read_text(encoding="utf-8"))
+            progress_manifest = json.loads(
+                (output / RUNTIME_PROGRESS_MANIFEST_NAME).read_text(encoding="utf-8")
+            )
             result = state["items"][item["queue_id"]]
             audio = output / result["path"]
             audio_hash = sha256_file(audio)
@@ -250,6 +254,15 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         self.assertEqual(result["file_sha256"], audio_hash)
         self.assertEqual(result["quality"]["sample_rate"], 16_000)
         self.assertEqual(raw_manifest["entry_count"], 0)
+        self.assertTrue(progress_manifest["vntts.runtime.progress"])
+        self.assertEqual(
+            progress_manifest["source_queue_sha256"], state["queue_sha256"]
+        )
+        self.assertEqual(progress_manifest["entry_count"], 1)
+        self.assertEqual(
+            progress_manifest["entries"][0]["review_status"], "pending_review"
+        )
+        self.assertEqual(progress_manifest["entries"][0]["line_id"], item["line_id"])
 
     def test_explicit_synthesis_cache_policy_reaches_backend(self):
         with TemporaryDirectory() as directory:

@@ -59,6 +59,8 @@ _JsonObject: TypeAlias = dict[str, object]
 _GenerationResult: TypeAlias = _JsonObject
 _GenerationState: TypeAlias = _JsonObject
 
+RUNTIME_PROGRESS_MANIFEST_NAME = "live-progress-manifest.json"
+
 
 class _Pcm16MonoWavInfo(Protocol):
     duration_seconds: float
@@ -204,12 +206,43 @@ def approved_manifest_entries(
     validate_files: bool = True,
 ) -> list[dict[str, object]]:
     """Project approved state items into stable generated-audio entries."""
+    return _manifest_entries(
+        state,
+        output_directory,
+        statuses={("approved", "approved")},
+        validate_files=validate_files,
+    )
+
+
+def runtime_progress_manifest_entries(
+    state: _GenerationState,
+    output_directory: Path | str,
+    *,
+    validate_files: bool = True,
+) -> list[dict[str, object]]:
+    """Project complete validated WAVs for temporary playback during generation."""
+    return _manifest_entries(
+        state,
+        output_directory,
+        statuses={
+            ("generated", "pending_review"),
+            ("approved", "approved"),
+        },
+        validate_files=validate_files,
+    )
+
+
+def _manifest_entries(
+    state: _GenerationState,
+    output_directory: Path | str,
+    *,
+    statuses: set[tuple[str, str]],
+    validate_files: bool,
+) -> list[dict[str, object]]:
     entries = []
     for queue_id, result in _generation_items(state).items():
-        if (
-            result.get("status") != "approved"
-            or result.get("review_status") != "approved"
-        ):
+        status = result.get("status"), result.get("review_status")
+        if status not in statuses:
             continue
         relative = safe_generation_relative_path(
             result.get("path"), f"State item {queue_id!r} path"
@@ -248,7 +281,7 @@ def approved_manifest_entries(
             "model": result["model"],
             "prompt_sha256": result["prompt_sha256"],
             "seed": result["seed"],
-            "review_status": "approved",
+            "review_status": status[1],
         }
         for field in (
             "generation_profile",
@@ -297,20 +330,59 @@ def write_generated_manifest_from_state(
         if entries is None
         else entries
     )
-    metadata = {
+    _write_generated_manifest(
+        state,
+        manifest_path,
+        entries,
+        validate_files=validate_files,
+    )
+
+
+def write_runtime_progress_manifest_from_state(
+    state: _GenerationState,
+    output_directory: Path | str,
+    manifest_path: Path | str,
+    *,
+    validate_files: bool = True,
+) -> None:
+    """Atomically publish complete WAVs for playback while generation continues."""
+    entries = runtime_progress_manifest_entries(
+        state,
+        output_directory,
+        validate_files=validate_files,
+    )
+    _write_generated_manifest(
+        state,
+        manifest_path,
+        entries,
+        validate_files=validate_files,
+        metadata={"vntts.runtime.progress": True},
+    )
+
+
+def _write_generated_manifest(
+    state: _GenerationState,
+    manifest_path: Path | str,
+    entries: list[dict[str, object]],
+    *,
+    validate_files: bool,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    document_metadata = {
         "game": state.get("game"),
         "language": state.get("language"),
         "source_queue_sha256": state["queue_sha256"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        **(metadata or {}),
     }
     try:
         if validate_files:
-            write_generated_audio_manifest(manifest_path, metadata, entries)
+            write_generated_audio_manifest(manifest_path, document_metadata, entries)
         else:
             atomic_write_json(
                 manifest_path,
                 {
-                    **metadata,
+                    **document_metadata,
                     "schema": GENERATED_AUDIO_SCHEMA,
                     "schema_version": GENERATED_AUDIO_SCHEMA_VERSION,
                     "entry_count": len(entries),
@@ -396,11 +468,14 @@ def _nonnegative_int(value: object, label: str) -> int:
 
 
 __all__ = [
+    "RUNTIME_PROGRESS_MANIFEST_NAME",
     "AudioQuality",
     "approved_manifest_entries",
     "contained_generation_path",
     "inspect_generated_wav",
+    "runtime_progress_manifest_entries",
     "safe_generation_relative_path",
     "validate_success_file",
     "write_generated_manifest_from_state",
+    "write_runtime_progress_manifest_from_state",
 ]

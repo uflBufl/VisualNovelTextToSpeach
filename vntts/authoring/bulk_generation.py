@@ -64,15 +64,17 @@ from vntts.authoring.generation_lease import (
     process_is_alive,
     process_started_at,
 )
-from vntts.authoring.generation_manifest import AudioQuality as AudioQuality
-from vntts.authoring.generation_manifest import RecordedVoice as RecordedVoice
 from vntts.authoring.generation_manifest import (
+    RUNTIME_PROGRESS_MANIFEST_NAME,
     approved_manifest_entries,
     inspect_generated_wav,
     snapshot_recorded_voices,
     validate_success_file,
     write_generated_manifest_from_state,
+    write_runtime_progress_manifest_from_state,
 )
+from vntts.authoring.generation_manifest import AudioQuality as AudioQuality
+from vntts.authoring.generation_manifest import RecordedVoice as RecordedVoice
 from vntts.authoring.generation_state import (
     AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA as AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA,
 )
@@ -2481,6 +2483,18 @@ def _render_and_publish_generation_attempt(
     return prefetched_render
 
 
+def _publish_runtime_progress(run: _GenerationExecutionContext) -> None:
+    run.lease.assert_owned()
+    write_runtime_progress_manifest_from_state(
+        run.state,
+        run.output_directory,
+        run.output_directory / RUNTIME_PROGRESS_MANIFEST_NAME,
+        # Every included WAV was validated before its atomic state update.
+        # Playback independently verifies the file hash before use.
+        validate_files=False,
+    )
+
+
 def _execute_generation_item(
     run: _GenerationExecutionContext,
     item_index: int,
@@ -2515,12 +2529,6 @@ def _execute_generation_item(
                 prefetched_render,
                 pipeline_enabled,
             )
-            return _GenerationItemExecutionResult(
-                generated=True,
-                cancelled=False,
-                captured_silence_failure=captured_silence_failure,
-                prefetched_render=prefetched_render,
-            )
         except (
             BulkGenerationSourceChangedError,
             BulkGenerationProvenanceError,
@@ -2550,6 +2558,7 @@ def _execute_generation_item(
             last_error = failure.last_error
             if failure.captured_silence_failure is not None:
                 captured_silence_failure = failure.captured_silence_failure
+            _publish_runtime_progress(run)
             if failure.cancelled:
                 return _GenerationItemExecutionResult(
                     generated=False,
@@ -2557,6 +2566,14 @@ def _execute_generation_item(
                     captured_silence_failure=captured_silence_failure,
                     prefetched_render=prefetched_render,
                 )
+        else:
+            _publish_runtime_progress(run)
+            return _GenerationItemExecutionResult(
+                generated=True,
+                cancelled=False,
+                captured_silence_failure=captured_silence_failure,
+                prefetched_render=prefetched_render,
+            )
     return _GenerationItemExecutionResult(
         generated=False,
         cancelled=False,
