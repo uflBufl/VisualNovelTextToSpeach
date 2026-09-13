@@ -563,7 +563,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.decision_reason.setAccessibleName("Missing voice decision availability")
         self.decision_buttons: dict[str, QPushButton] = {}
         decisions = review_form_layout()
-        for index, candidate in enumerate(self.bundle["candidates"]):
+        for candidate in self.bundle["candidates"]:
             label = candidate["label"]
             button = QPushButton(
                 f"Use fallback {label} for these lines"
