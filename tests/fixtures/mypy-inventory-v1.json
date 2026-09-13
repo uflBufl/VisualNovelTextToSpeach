@@ -108,7 +108,6 @@
     "vntts/game_content_importer.py": 17,
     "vntts/game_narrator.py": 3,
     "vntts/generated_audio.py": 44,
-    "vntts/live.py": 81,
     "vntts/live_replay.py": 69,
     "vntts/live_replay_capture.py": 20,
     "vntts/live_replay_capture_recover.py": 22,

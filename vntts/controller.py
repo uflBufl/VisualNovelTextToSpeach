@@ -136,74 +136,12 @@ class _ExecutorFuture(Protocol):
     ) -> object: ...
 
 
-class _PipelineMetrics(Protocol):
-    recognized_frames: int
-    speech_queue_depth: int
-    max_speech_queue_depth: int
-
-
 class _Executor(Protocol):
     def submit(
         self, callback: Callable[..., object], /, *args: object, **kwargs: object
     ) -> _ExecutorFuture: ...
 
     def shutdown(self, wait: bool = True) -> None: ...
-
-
-class _LiveReader(_LiveReaderState, Protocol):
-    @property
-    def active_generation(self) -> int: ...
-
-    @property
-    def auto_advance_delay_seconds(self) -> float: ...
-
-    @auto_advance_delay_seconds.setter
-    def auto_advance_delay_seconds(self, value: float) -> None: ...
-
-    @property
-    def interval_seconds(self) -> float: ...
-
-    @interval_seconds.setter
-    def interval_seconds(self, value: float) -> None: ...
-
-    max_speech_jobs: int
-
-    @property
-    def require_visible_auto_advance(self) -> bool: ...
-
-    @require_visible_auto_advance.setter
-    def require_visible_auto_advance(self, value: bool) -> None: ...
-
-    @property
-    def tracker_options(self) -> object: ...
-
-    @tracker_options.setter
-    def tracker_options(self, value: object) -> None: ...
-
-    def bind_current_frame_route(self) -> bool: ...
-    def block_auto_advance_for_generation(
-        self, generation: int, reason: str
-    ) -> bool: ...
-    def clear_queue(self) -> bool: ...
-    def confirm_pending_auto_advance(self) -> None: ...
-    def emergency_stop(self) -> bool: ...
-    def enqueue(
-        self, character: str, text: str, *, line_id: str | None = None
-    ) -> bool: ...
-    def frame_route_epoch_is_current(self, epoch: object) -> bool: ...
-    def record_first_pcm(self, timestamp: float) -> None: ...
-    def release_waiters(self) -> None: ...
-    def repeat_last(self) -> bool: ...
-    def resume_after_emergency(self) -> None: ...
-    def seal_generation(self, generation: int) -> None: ...
-    def set_auto_advance(self, callback: Callable[[], object] | None) -> None: ...
-    def skip_current(self) -> bool: ...
-    def stop(self) -> None: ...
-    def toggle(self) -> bool: ...
-    def toggle_pause(self) -> bool: ...
-    def wait(self) -> None: ...
-    def wait_until_playable(self, chunk: SpeechChunk) -> bool: ...
-    def get_pipeline_metrics(self) -> _PipelineMetrics: ...
 
 
 class _VoiceRouter(Protocol):
@@ -307,10 +245,6 @@ def _is_typed_playback_backend(value: object) -> TypeGuard[TypedPlaybackBackend]
 
 def _is_story_cursor(value: object) -> TypeGuard[_StoryCursor]:
     return isinstance(value, _StoryCursor)
-
-
-def _create_live_reader(*args: object, **kwargs: object) -> _LiveReader:
-    return LiveDialogReader(*args, **kwargs)
 
 
 def _diagnostic_route_metrics(value: object) -> _DiagnosticRouteMetrics | None:
@@ -453,7 +387,7 @@ class AppController:
     speech_executor: _Executor | None
     playback_executor: _Executor | None
     chapter_voice_preloader: ChapterVoicePreloader
-    live_reader: _LiveReader | None
+    live_reader: LiveDialogReader | None
     live_sequence_plan: _LiveSequencePlanContract | None
     story_cursor: _StoryCursor | None
     speech_backend: SpeechBackend | GeneratedAudioFallbackBackend | None
@@ -523,7 +457,7 @@ class AppController:
         self.speech_backpressure_factory = speech_backpressure_factory
         self.dialog_read_scheduler_factory = create_dialog_read_scheduler
         self.thread_pool_executor_factory = ThreadPoolExecutor
-        self.live_reader_factory: Callable[..., _LiveReader] = _create_live_reader
+        self.live_reader_factory: Callable[..., LiveDialogReader] = LiveDialogReader
         self.voice_registry_initializer = initialize_voice_registry
         self.voice_router_initializer = initialize_voice_router
         self.correction_store = correction_store or OCRCorrectionStore.load()
@@ -1962,7 +1896,7 @@ class AppController:
         _fingerprint: object,
         settled: bool,
         expected_owner: str | None = None,
-        route_epoch: object | None = None,
+        route_epoch: int | None = None,
     ) -> bool | tuple[str, str] | CanonicalDialogRoute | SilentDialogRoute | None:
         with self.story_cursor_lock:
             cursor = self.story_cursor

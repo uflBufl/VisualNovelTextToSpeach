@@ -573,10 +573,13 @@ class RuntimeLifecycleComponent:
         screenshot_directory = get_screenshot_directory(controller.settings)
         live_configuration = controller._get_live_configuration()
         interval_seconds = live_configuration["interval_seconds"]
-        if not isinstance(interval_seconds, (int, float)):
+        tracker_options = live_configuration["tracker_options"]
+        if not isinstance(interval_seconds, (int, float)) or not isinstance(
+            tracker_options, dict
+        ):
             return None
         reader.interval_seconds = float(interval_seconds)
-        reader.tracker_options = live_configuration["tracker_options"]
+        reader.tracker_options = tracker_options
         reader.require_visible_auto_advance = controller._live_sequence_audio_active()
         reader.set_auto_advance(controller._live_auto_advance_callback())
         reader.auto_advance_delay_seconds = (
