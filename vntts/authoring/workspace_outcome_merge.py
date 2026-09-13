@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
+    JsonDocument,
 )
 from vntts.authoring.failure_repair import (
     BOUNDED_SEED_RETRY,
@@ -23,6 +25,7 @@ from vntts.authoring.failure_repair import (
 )
 from vntts.authoring.game_pack import FinalGamePackError
 from vntts.authoring.generation_lease import (
+    GenerationLease,
     process_is_alive,
 )
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
@@ -43,6 +46,7 @@ from vntts.authoring.workspace_authority import (
     _load_workspace,
     _load_workspace_snapshot,
     _require_sha256,
+    _required_text,
     _safe_relative,
     _stable_workspace_state,
     _validate_workspace_carry_forward,
@@ -66,10 +70,10 @@ _workspace_config_fingerprint = workspace_config_fingerprint
 
 
 def merge_workspace_outcomes(
-    base_workspace,
-    outcome_workspaces,
-    workspaces_root=None,
-):
+    base_workspace: str | Path,
+    outcome_workspaces: Iterable[str | Path],
+    workspaces_root: str | Path | None = None,
+) -> WorkspaceCreationResult:
     """Create a config-addressed successor from exact reviewed repair outcomes."""
     return _merge_workspace_outcomes(
         base_workspace,
@@ -80,11 +84,11 @@ def merge_workspace_outcomes(
 
 
 def merge_reconciled_workspace_outcomes(
-    base_workspace,
-    outcome_workspaces,
-    reconciliation_selection,
-    workspaces_root=None,
-):
+    base_workspace: str | Path,
+    outcome_workspaces: Iterable[str | Path],
+    reconciliation_selection: JsonDocument,
+    workspaces_root: str | Path | None = None,
+) -> WorkspaceCreationResult:
     """Merge only terminal outcomes selected by an immutable reconciliation."""
     return _merge_workspace_outcomes(
         base_workspace,
@@ -95,10 +99,10 @@ def merge_reconciled_workspace_outcomes(
 
 
 def _load_outcome_merge_base(
-    base_workspace,
-    outcome_workspaces,
-    reconciliation_selection,
-):
+    base_workspace: str | Path,
+    outcome_workspaces: Iterable[str | Path],
+    reconciliation_selection: JsonDocument | None,
+) -> tuple[_OutcomeMergeBase, tuple[Path, ...]]:
     base_directory, base_document, base_workspace_sha256 = _load_workspace_snapshot(
         base_workspace, "base"
     )
@@ -144,7 +148,11 @@ def _load_outcome_merge_base(
     )
 
 
-def _load_outcome_merge_source(source_value, base, reconciliation_selection):
+def _load_outcome_merge_source(
+    source_value: Path,
+    base: _OutcomeMergeBase,
+    reconciliation_selection: JsonDocument | None,
+) -> _OutcomeMergeSource:
     source_directory, source_document, source_workspace_sha256 = (
         _load_workspace_snapshot(source_value, "source")
     )
@@ -207,15 +215,20 @@ def _load_outcome_merge_source(source_value, base, reconciliation_selection):
     )
 
 
-def _collect_outcome_merge_item(base, source, queue_id, merged_items):
-    result = source.state["items"].get(queue_id)
-    if not isinstance(result, dict) or not _terminal_review_outcome(result):
+def _collect_outcome_merge_item(
+    base: _OutcomeMergeBase,
+    source: _OutcomeMergeSource,
+    queue_id: str,
+    merged_items: dict[str, tuple[JsonDocument, JsonDocument]],
+) -> tuple[JsonDocument, JsonDocument, tuple[Path, bytes, Path]] | None:
+    result = _outcome_state_items(source.state).get(queue_id)
+    if result is None or not _terminal_review_outcome(result):
         return None
     if queue_id in merged_items:
         raise AuthoringWorkbenchError(
             f"Outcome merge has conflicting sources for {queue_id!r}"
         )
-    base_result = base.state["items"].get(queue_id)
+    base_result = _outcome_state_items(base.state).get(queue_id)
     if source.selected_records is None:
         repair = result.get("failure_repair")
         if not isinstance(repair, dict) or repair.get("strategy") not in {
@@ -244,8 +257,10 @@ def _collect_outcome_merge_item(base, source, queue_id, merged_items):
             )
     else:
         expected = source.selected_records[queue_id]
-        action = expected["action"]
-        selected_source = expected["source"]
+        action = _outcome_json_object(expected.get("action"), "reconciliation action")
+        selected_source = _outcome_json_object(
+            expected.get("source"), "reconciliation source"
+        )
         queue_item = base.queue_by_id.get(queue_id)
         authority = (
             "approved"
@@ -299,7 +314,11 @@ def _collect_outcome_merge_item(base, source, queue_id, merged_items):
     return copy.deepcopy(result), ledger, (audio_path, audio_payload, relative)
 
 
-def _collect_outcome_merge_sources(base, source_values, reconciliation_selection):
+def _collect_outcome_merge_sources(
+    base: _OutcomeMergeBase,
+    source_values: Sequence[Path],
+    reconciliation_selection: JsonDocument | None,
+) -> _OutcomeMergeSources:
     collected = _OutcomeMergeSources({}, [], [], {})
     for source_value in source_values:
         source = _load_outcome_merge_source(
@@ -344,11 +363,19 @@ def _collect_outcome_merge_sources(base, source_values, reconciliation_selection
                 (source.directory / "workspace.json", source.workspace_sha256),
             )
         )
-    collected.records.sort(key=lambda value: value["workspace_id"])
+    collected.records.sort(
+        key=lambda value: _required_text(
+            value.get("workspace_id"), "Outcome merge source workspace ID"
+        )
+    )
     return collected
 
 
-def _outcome_merge_identity(base, sources, reconciliation_selection):
+def _outcome_merge_identity(
+    base: _OutcomeMergeBase,
+    sources: _OutcomeMergeSources,
+    reconciliation_selection: JsonDocument | None,
+) -> tuple[JsonDocument, str, str]:
     ledger_items = [sources.items[key][1] for key in sorted(sources.items)]
     outcome_merge = {
         "schema": "vntts.authoring-workspace-outcome-merge",
@@ -362,8 +389,10 @@ def _outcome_merge_identity(base, sources, reconciliation_selection):
         outcome_merge["source_reconciliation_id"] = reconciliation_selection[
             "report_id"
         ]
+    source = _outcome_json_object(base.document.get("source"), "base source")
+    import_id = _required_text(source.get("import_id"), "Base import ID")
     config_fingerprint = _workspace_config_fingerprint(
-        base.document["source"]["import_id"],
+        import_id,
         base.document.get("story_index"),
         base.document.get("voice_manifest"),
         base.document["narrator_character"],
@@ -383,13 +412,14 @@ def _outcome_merge_identity(base, sources, reconciliation_selection):
         queue_extension=base.document.get("queue_extension"),
     )
     workspace_id = (
-        f"resume-{base.document['source']['import_id'].removeprefix('legacy-')}-"
-        f"{config_fingerprint[:16]}"
+        f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
     )
     return outcome_merge, config_fingerprint, workspace_id
 
 
-def _stage_outcome_merge_base(base, staging):
+def _stage_outcome_merge_base(
+    base: _OutcomeMergeBase, staging: Path
+) -> tuple[Path, JsonDocument, dict[str, str], list[tuple[Path, str]]]:
     base_snapshots = [
         (base.directory / "workspace.json", base.workspace_sha256),
         (
@@ -411,9 +441,9 @@ def _stage_outcome_merge_base(base, staging):
     output = staging / "generated-audio"
     output.mkdir()
     target_state = copy.deepcopy(base.state)
-    path_owners = {}
-    for queue_id, result in base.state["items"].items():
-        if not isinstance(result, dict) or not isinstance(result.get("path"), str):
+    path_owners: dict[str, str] = {}
+    for queue_id, result in _outcome_state_items(base.state).items():
+        if not isinstance(result.get("path"), str):
             continue
         relative = _safe_relative(
             result["path"], f"Base generation item {queue_id!r} path"
@@ -442,7 +472,28 @@ def _stage_outcome_merge_base(base, staging):
     return output, target_state, path_owners, base_snapshots
 
 
-def _overlay_outcome_merge_items(output, target_state, path_owners, sources):
+def _outcome_json_object(value: object, label: str) -> JsonDocument:
+    if not isinstance(value, dict):
+        raise AuthoringWorkbenchError(f"{label.title()} must be an object")
+    return value
+
+
+def _outcome_state_items(state: JsonDocument) -> dict[str, JsonDocument]:
+    raw_items = _outcome_json_object(state.get("items"), "generation state items")
+    items: dict[str, JsonDocument] = {}
+    for queue_id, value in raw_items.items():
+        if not isinstance(queue_id, str) or not isinstance(value, dict):
+            raise AuthoringWorkbenchError("Generation state items are malformed")
+        items[queue_id] = value
+    return items
+
+
+def _overlay_outcome_merge_items(
+    output: Path,
+    target_state: JsonDocument,
+    path_owners: dict[str, str],
+    sources: _OutcomeMergeSources,
+) -> None:
     for queue_id, (result, ledger) in sources.items.items():
         previous = target_state["items"].get(queue_id)
         previous_path = previous.get("path") if isinstance(previous, dict) else None
@@ -471,14 +522,14 @@ def _overlay_outcome_merge_items(output, target_state, path_owners, sources):
 
 
 def _write_outcome_merge_workspace(
-    base,
-    staging,
-    output,
-    target_state,
-    workspace_id,
-    outcome_merge,
-    config_fingerprint,
-):
+    base: _OutcomeMergeBase,
+    staging: Path,
+    output: Path,
+    target_state: JsonDocument,
+    workspace_id: str,
+    outcome_merge: JsonDocument,
+    config_fingerprint: str,
+) -> None:
     atomic_write_json(output / "generation-state.json", target_state, sort_keys=True)
     workspace = copy.deepcopy(base.document)
     workspace.update(
@@ -511,7 +562,12 @@ def _write_outcome_merge_workspace(
         module.validate_config_rebase_workspace(staging, workspace, target_state)
 
 
-def _commit_staged_outcome_merge(staging, destination, outcome_merge, held_leases):
+def _commit_staged_outcome_merge(
+    staging: Path,
+    destination: Path,
+    outcome_merge: JsonDocument,
+    held_leases: Sequence[GenerationLease],
+) -> WorkspaceCreationResult:
     if destination.exists():
         _directory, existing = _load_workspace(destination)
         if existing.get("outcome_merge") != outcome_merge:
@@ -537,14 +593,14 @@ def _commit_staged_outcome_merge(staging, destination, outcome_merge, held_lease
 
 
 def _publish_staged_outcome_merge(
-    base,
-    source_values,
-    sources,
-    base_snapshots,
-    staging,
-    destination,
-    outcome_merge,
-):
+    base: _OutcomeMergeBase,
+    source_values: Sequence[Path],
+    sources: _OutcomeMergeSources,
+    base_snapshots: Sequence[tuple[Path, str]],
+    staging: Path,
+    destination: Path,
+    outcome_merge: JsonDocument,
+) -> WorkspaceCreationResult:
     try:
         source_directories = (base.directory, *source_values)
         with generation_publication_leases(
@@ -578,12 +634,12 @@ def _publish_staged_outcome_merge(
 
 
 def _merge_workspace_outcomes(
-    base_workspace,
-    outcome_workspaces,
-    workspaces_root,
+    base_workspace: str | Path,
+    outcome_workspaces: Iterable[str | Path],
+    workspaces_root: str | Path | None,
     *,
-    reconciliation_selection,
-):
+    reconciliation_selection: JsonDocument | None,
+) -> WorkspaceCreationResult:
     """Assemble one exact terminal-outcome successor."""
     base, source_values = _load_outcome_merge_base(
         base_workspace,
@@ -624,7 +680,7 @@ def _merge_workspace_outcomes(
         )
 
 
-def _root_carry_forward_authority(value):
+def _root_carry_forward_authority(value: object) -> object:
     if not isinstance(value, dict):
         return value
     observed = set()

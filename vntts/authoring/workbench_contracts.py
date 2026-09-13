@@ -7,7 +7,10 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 
-from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueItem,
+)
 
 from vntts.authoring.bulk_generation import ReviewAuthority
 
@@ -39,32 +42,32 @@ class WorkspaceCreationResult:
 @dataclass(frozen=True)
 class _OutcomeMergeBase:
     directory: Path
-    document: dict
+    document: dict[str, object]
     workspace_sha256: str
     queue: VoiceGenerationQueue
-    state: dict
+    state: dict[str, object]
     state_sha256: str
     queue_sha256: str
-    queue_by_id: dict
+    queue_by_id: dict[str, VoiceGenerationQueueItem]
 
 
 @dataclass(frozen=True)
 class _OutcomeMergeSource:
     directory: Path
-    document: dict
+    document: dict[str, object]
     workspace_sha256: str
-    state: dict
+    state: dict[str, object]
     state_sha256: str
     selected_ids: tuple[str, ...]
-    selected_records: dict | None
+    selected_records: dict[str, dict[str, object]] | None
 
 
 @dataclass
 class _OutcomeMergeSources:
-    items: dict
-    records: list
-    snapshots: list
-    audio: dict
+    items: dict[str, tuple[dict[str, object], dict[str, object]]]
+    records: list[dict[str, object]]
+    snapshots: list[tuple[Path, str]]
+    audio: dict[str, tuple[Path, bytes, Path]]
 
 
 @dataclass(frozen=True)
