@@ -92,7 +92,9 @@ class CharacterVoice:
 class CharacterVoiceRegistry:
     def __init__(self, voices: Sequence[CharacterVoice] = ()) -> None:
         self.voices: dict[str, CharacterVoice] = {}
+        self.voice_names: dict[str, str] = {}
         self.assignments: dict[str, CharacterVoice | None] = {}
+        self.assignment_names: dict[str, str] = {}
         for voice in voices:
             self._add_name(voice.character, voice)
             for alias in voice.aliases:
@@ -165,7 +167,9 @@ class CharacterVoiceRegistry:
         normalized_name = normalize_character_name(character)
         if not normalized_name:
             raise VoiceManifestError("Character name is required")
-        self.assignments[normalized_name] = self.resolve_source(source_id)
+        voice = self.resolve_source(source_id)
+        self.assignments[normalized_name] = voice
+        self.assignment_names[normalized_name] = character.strip()
 
     def apply_assignments(
         self,
@@ -215,16 +219,35 @@ class CharacterVoiceRegistry:
             if voice is not None:
                 _validate_voice_reference_ownership(voice)
             return voice
-        exact_voice = self.voices.get(normalized_name)
-        if exact_voice is not None:
-            _validate_voice_reference_ownership(exact_voice)
-            return exact_voice
+        closest_name = self._closest_voice_name(normalized_name, minimum_similarity)
+        if closest_name is None:
+            return None
+        voice = self.voices[closest_name]
+        _validate_voice_reference_ownership(voice)
+        return voice
+
+    def resolve_closest_character(
+        self, character: str | None, *, minimum_similarity: float = 0.78
+    ) -> str | None:
+        """Resolve a speaker name without replacing it with its assigned voice."""
+        original = synthesis_character(character)
+        normalized_name = normalize_character_name(original)
+        if normalized_name in self.assignments:
+            return self.assignment_names.get(normalized_name, str(original).strip())
+        closest_name = self._closest_voice_name(normalized_name, minimum_similarity)
+        return None if closest_name is None else self.voice_names[closest_name]
+
+    def _closest_voice_name(
+        self, normalized_name: str, minimum_similarity: float
+    ) -> str | None:
+        if normalized_name in self.voices:
+            return normalized_name
         if len(normalized_name) < 3:
             return None
 
         best_similarity = 0.0
-        best_voice = None
-        for configured_name, voice in self.voices.items():
+        best_name = None
+        for configured_name in self.voices:
             if len(configured_name) < 3:
                 continue
             similarity = SequenceMatcher(
@@ -234,12 +257,10 @@ class CharacterVoiceRegistry:
             ).ratio()
             if similarity > best_similarity:
                 best_similarity = similarity
-                best_voice = voice
+                best_name = configured_name
         if best_similarity < minimum_similarity:
             return None
-        assert best_voice is not None
-        _validate_voice_reference_ownership(best_voice)
-        return best_voice
+        return best_name
 
     def _add_name(self, name: str, voice: CharacterVoice) -> None:
         normalized_name = normalize_character_name(name)
@@ -247,6 +268,7 @@ class CharacterVoiceRegistry:
         if existing_voice is not None and existing_voice != voice:
             raise VoiceManifestError(f"Duplicate voice name or alias: {name!r}")
         self.voices[normalized_name] = voice
+        self.voice_names[normalized_name] = name
 
 
 def _contained_manifest_reference(

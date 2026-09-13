@@ -92,6 +92,45 @@ class RecognizedDialogTest(unittest.TestCase):
         self.assertEqual(character, "Marcus")
         self.assertEqual(text, "Hello from the suitcase.")
 
+    def test_assigned_voice_does_not_replace_recognized_speaker_identity(self):
+        registry = CharacterVoiceRegistry(
+            [
+                CharacterVoice(
+                    "Player candidate Rhiannon 420a10dbcd77",
+                    "candidate",
+                    aliases=("Rhiannon",),
+                    source_character="Rhiannon",
+                )
+            ]
+        )
+        registry.set_assignment(
+            "Rhiannon", "character:playercandidaterhiannon420a10dbcd77"
+        )
+
+        character, text = parse_recognized_dialog(
+            "Rhiannon\nThat was close!\n", registry
+        )
+        speaker = recognize_speaker_from_data(
+            {
+                "text": ["Rhiannon", "That", "was", "close!"],
+                "conf": [96, 96, 96, 96],
+                "block_num": [1, 2, 2, 2],
+                "par_num": [1, 1, 1, 1],
+                "line_num": [1, 1, 1, 1],
+                "left": [80, 75, 160, 220],
+                "top": [30, 150, 150, 150],
+                "width": [180, 70, 50, 90],
+                "height": [45, 40, 40, 40],
+            },
+            registry,
+            image_width=1000,
+            image_height=300,
+        )
+
+        self.assertEqual(character, "Rhiannon")
+        self.assertEqual(text, "That was close!")
+        self.assertEqual(speaker[0], "Rhiannon")
+
     def test_unknown_speaker_is_detected_from_text_line_structure(self):
         character, text = parse_recognized_dialog(
             "Kamuta\nThese old ones are enough to carry everyone.\n",

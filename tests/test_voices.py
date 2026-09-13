@@ -273,6 +273,20 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
         self.assertEqual(registry.resolve("Selone").speaker, "alba")
         self.assertIs(registry.resolve("Narrator"), marcus)
 
+    def test_closest_character_keeps_role_separate_from_assigned_voice(self):
+        voice = CharacterVoice(
+            "Player candidate Rhiannon 420a10dbcd77",
+            "candidate",
+            aliases=("Rhiannon",),
+        )
+        registry = CharacterVoiceRegistry([voice])
+        registry.set_assignment(
+            "Rhiannon", "character:playercandidaterhiannon420a10dbcd77"
+        )
+
+        self.assertEqual(registry.resolve_closest_character("Rhianon"), "Rhiannon")
+        self.assertEqual(registry.resolve_closest_character("Rhiannon"), "Rhiannon")
+
     def test_default_assignment_overrides_a_manifest_voice(self):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Marcus", "local-marcus", Path("marcus.wav"))]

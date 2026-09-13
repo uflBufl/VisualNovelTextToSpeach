@@ -2521,9 +2521,11 @@ class AppController:
 
         registry = getattr(self.voice_router, "registry", None)
         if registry is not None:
-            voice = registry.resolve_closest(original, minimum_similarity=0.86)
-            if voice is not None and isinstance(getattr(voice, "character", None), str):
-                return str(voice.character)
+            canonical = registry.resolve_closest_character(
+                original, minimum_similarity=0.86
+            )
+            if canonical is not None:
+                return canonical
 
         normalized = normalize_character_name(original)
         ranked = sorted(

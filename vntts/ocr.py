@@ -406,9 +406,9 @@ def recognize_speaker_from_data(
         for line in lines:
             if len(line.text) > 40:
                 continue
-            voice = voice_registry.resolve_closest(line.text)
-            if voice is not None and _has_dialog_below(line, lines):
-                return voice.character, line
+            character = voice_registry.resolve_closest_character(line.text)
+            if character is not None and _has_dialog_below(line, lines):
+                return character, line
 
     candidates = []
     for position, line in enumerate(lines[:-1]):
@@ -646,12 +646,12 @@ def parse_recognized_dialog(text, voice_registry=None):
         for position, line in enumerate(lines[:6]):
             if len(line) > 40:
                 continue
-            voice = voice_registry.resolve_closest(line)
-            if voice is None:
+            character = voice_registry.resolve_closest_character(line)
+            if character is None:
                 continue
             dialog_lines = clean_dialog_lines("\n".join(lines[position + 1 :]))
             if dialog_lines:
-                return voice.character, " ".join(dialog_lines)
+                return character, " ".join(dialog_lines)
 
     if len(lines) >= 2 and is_probable_character_name(lines[0]):
         dialog_lines = clean_dialog_lines("\n".join(lines[1:]))
