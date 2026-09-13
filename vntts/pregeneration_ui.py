@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.story_index import load_story_index_document
 
 from vntts.application_directories import get_local_data_directory
 from vntts.async_ui import LatestTaskRunner
@@ -1645,16 +1644,7 @@ class OfflineAudioPreparationDialog(QDialog):
         selection = next(
             value for value in content.selections if value.selection_id == selection_id
         )
-        selected_lines = set(selection.line_ids)
-        speakers = tuple(
-            sorted(
-                {
-                    record.speaker
-                    for record in load_story_index_document(content.story_index).records
-                    if record.line_id in selected_lines and record.speakable
-                }
-            )
-        )
+        speakers = selection.playback_speakers
         return saved, active, speakers
 
     def _reading_override_reason(self, selection_id, coverage):

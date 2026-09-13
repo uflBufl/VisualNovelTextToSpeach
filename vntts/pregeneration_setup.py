@@ -25,7 +25,7 @@ from vntts.settings import AppSettings
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 
 job_schema_version = 1
-story_catalog_schema_version = 1
+story_catalog_schema_version = 2
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.
@@ -50,6 +50,7 @@ class StorySelection:
     generation_lines: int
     speaker_count: int
     speakers: tuple[str, ...]
+    playback_speakers: tuple[str, ...]
     generation_text_characters: int
 
 
@@ -306,6 +307,7 @@ def _cached_story_selection(document):
         "generation_lines",
         "speaker_count",
         "speakers",
+        "playback_speakers",
         "generation_text_characters",
     }
     if not isinstance(document, dict) or set(document) != fields:
@@ -324,6 +326,7 @@ def _cached_story_selection(document):
         generation_lines=_nonnegative_int(document, "generation_lines"),
         speaker_count=_nonnegative_int(document, "speaker_count"),
         speakers=speakers,
+        playback_speakers=_text_tuple(document, "playback_speakers", allow_empty=True),
         generation_text_characters=_nonnegative_int(
             document, "generation_text_characters"
         ),
@@ -775,6 +778,11 @@ def _selection_from_records(selection_id, title, kind, order, records):
         for record in generation
         if (record.voice_character or record.speaker).strip()
     }
+    playback_speakers = {
+        (record.voice_character or record.speaker).strip()
+        for record in speakable
+        if (record.voice_character or record.speaker).strip()
+    }
     selection = StorySelection(
         selection_id=selection_id,
         title=title,
@@ -787,6 +795,7 @@ def _selection_from_records(selection_id, title, kind, order, records):
         generation_lines=len(generation),
         speaker_count=len(speakers),
         speakers=tuple(sorted(speakers)),
+        playback_speakers=tuple(sorted(playback_speakers)),
         generation_text_characters=sum(
             len(getattr(record, "text", "")) for record in generation
         ),
