@@ -8,25 +8,45 @@ import json
 import os
 import stat
 import unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Protocol, TypeAlias
 
 from vntts_artifacts.generated_audio import GeneratedAudioDocument
 
 from vntts.authoring.publication import staged_directory
-from vntts.chapter_voice_preload import ChapterVoicePreloader
+from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import is_standalone_ellipsis_text
 from vntts.document_identity import is_lowercase_sha256
-from vntts.live_replay import LiveReplayRunner, load_live_replay_corpus
-from vntts.live_sequence import LiveSequencePlan
-from vntts.settings import audio_source_policies, load_app_settings
+from vntts.live_replay import (
+    LiveReplayRunner,
+    ReplayRecognizer,
+    load_live_replay_corpus,
+)
+from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
+from vntts.settings import AppSettings, audio_source_policies, load_app_settings
 
 SEQUENCE_REPLAY_SEAL_VERSION = 1
+PathInput: TypeAlias = str | os.PathLike[str]
+JSONDocument: TypeAlias = dict[str, object]
 
 
 class SequenceReplaySealError(RuntimeError):
     """A raw capture cannot be safely bound to one exact sequence."""
+
+
+class _SealArguments(Protocol):
+    capture_corpus: Path
+    output: Path
+    story_index: Path | None
+    sequence_plan: Path | None
+    generated_audio_manifest: Path | None
+    no_generated_audio_manifest: bool
+    mode: str
+    audio_source_policy: str | None
+    timeout: float
 
 
 @dataclass(frozen=True)
@@ -40,18 +60,18 @@ class SealedSequenceReplayResult:
 
 
 def seal_sequence_replay(
-    capture_corpus,
-    output_directory,
+    capture_corpus: PathInput,
+    output_directory: PathInput,
     *,
-    story_index,
-    sequence_plan,
-    mode="audio-manual",
-    generated_audio_manifest=None,
-    audio_source_policy="prefer-game-audio",
-    recognizer=None,
-    interval_seconds=0.01,
-    timeout_seconds=30.0,
-):
+    story_index: PathInput,
+    sequence_plan: PathInput,
+    mode: str = "audio-manual",
+    generated_audio_manifest: PathInput | None = None,
+    audio_source_policy: str = "prefer-game-audio",
+    recognizer: ReplayRecognizer | None = None,
+    interval_seconds: float = 0.01,
+    timeout_seconds: float = 30.0,
+) -> SealedSequenceReplayResult:
     """Publish a contained v2 corpus only after its production replay passes."""
     if mode not in {"shadow", "audio-manual", "audio-auto"}:
         raise SequenceReplaySealError(f"Unsupported sequence replay mode: {mode!r}")
@@ -66,7 +86,7 @@ def seal_sequence_replay(
     if (
         capture.get("schema_version") != 1
         or capture.get("fixture_kind") != "saved-frame-ocr-replay-capture"
-        or not isinstance(capture.get("capture"), dict)
+        or not isinstance(capture_binding := capture.get("capture"), dict)
     ):
         raise SequenceReplaySealError(
             "Sequence sealing requires raw schema-v1 vntts-capture-live-replay output"
@@ -78,6 +98,10 @@ def seal_sequence_replay(
         or any(not isinstance(record, dict) for record in raw_dialogue)
     ):
         raise SequenceReplaySealError("Raw replay corpus has no dialogue records")
+    capture_authority: JSONDocument = capture_binding
+    raw_dialogue_records: tuple[JSONDocument, ...] = tuple(
+        record for record in raw_dialogue if isinstance(record, dict)
+    )
     capture_report_path = capture_path.with_name("capture-report.json")
     _capture_report_path, capture_report_payload = _read_regular_file(
         capture_report_path, "Capture review report"
@@ -97,16 +121,18 @@ def seal_sequence_replay(
     _plan_path, plan_payload = _read_regular_file(sequence_plan, "Sequence plan")
     story_sha256 = hashlib.sha256(story_payload).hexdigest()
     plan_sha256 = hashlib.sha256(plan_payload).hexdigest()
-    captured_story_sha256 = capture["capture"].get("story_index_sha256")
+    captured_story_sha256 = capture_authority.get("story_index_sha256")
     if captured_story_sha256 != story_sha256:
         raise SequenceReplaySealError(
             "Raw capture is not bound to the selected story-index bytes"
         )
-    recovery = capture["capture"].get("recovery")
-    if recovery is not None and recovery["sequence_plan_sha256"] != plan_sha256:
-        raise SequenceReplaySealError(
-            "Recovered capture is not bound to the selected sequence-plan bytes"
-        )
+    recovery = capture_authority.get("recovery")
+    if recovery is not None:
+        recovery_document = _required_document(recovery, "Capture recovery authority")
+        if recovery_document["sequence_plan_sha256"] != plan_sha256:
+            raise SequenceReplaySealError(
+                "Recovered capture is not bound to the selected sequence-plan bytes"
+            )
     selected_output = Path(output_directory).expanduser()
     if selected_output.exists() or selected_output.is_symlink():
         raise SequenceReplaySealError(
@@ -130,8 +156,8 @@ def seal_sequence_replay(
             raise SequenceReplaySealError(
                 f"Story index and sequence plan are incompatible: {error}"
             ) from error
-        mappings = _map_dialogue(raw_dialogue, resolver, plan)
-        frame_records = _copy_frames(capture_path.parent, staging, raw_dialogue)
+        mappings = _map_dialogue(raw_dialogue_records, resolver, plan)
+        frame_records = _copy_frames(capture_path.parent, staging, raw_dialogue_records)
         raw_copy = staging / "provenance" / "raw-corpus.json"
         _write_bytes(raw_copy, capture_payload)
         _write_bytes(
@@ -146,7 +172,7 @@ def seal_sequence_replay(
             resolver,
         )
         dialogue = _sealed_dialogue(
-            raw_dialogue,
+            raw_dialogue_records,
             frame_records,
             mappings,
             resolver,
@@ -162,12 +188,12 @@ def seal_sequence_replay(
             "key_dispatch_attempts": 0,
             "confirmed_key_dispatches": 0,
         }
-        corpus = {
+        corpus: JSONDocument = {
             "schema_version": 2,
             "name": f"{capture.get('name') or capture_path.stem} sequence replay",
             "fixture_kind": "sealed-real-capture-production-controller",
             "capture": {
-                **capture["capture"],
+                **capture_authority,
                 "raw_corpus_sha256": hashlib.sha256(capture_payload).hexdigest(),
                 "sequence_seal_version": SEQUENCE_REPLAY_SEAL_VERSION,
             },
@@ -199,7 +225,12 @@ def seal_sequence_replay(
             audio_source_policy=audio_source_policy,
         ).run()
         _validate_probe(probe, mappings, dialogue)
-        route_sources = iter(probe["route_sources"])
+        probe_sequence = _required_document(probe.get("sequence"), "Probe sequence")
+        probe_observed = _required_document(
+            probe_sequence.get("observed"), "Probe sequence observations"
+        )
+        probe_route_sources = _required_list(probe.get("route_sources"), "Probe routes")
+        route_sources = iter(probe_route_sources)
         for record in dialogue:
             if record["expect_playback"]:
                 record["expected_source"] = next(route_sources)
@@ -211,7 +242,8 @@ def seal_sequence_replay(
             raise SequenceReplaySealError(
                 "Probe produced more audio routes than captured speech records"
             )
-        corpus["live_sequence"]["expected"] = probe["sequence"]["observed"]
+        live_sequence = _required_document(corpus.get("live_sequence"), "Live sequence")
+        live_sequence["expected"] = probe_observed
         corpus["dialogue"] = dialogue
         _write_json(corpus_path, corpus)
 
@@ -230,15 +262,16 @@ def seal_sequence_replay(
         _write_json(replay_report, final_report)
 
         boundary_review_required = bool(
-            capture["capture"].get("boundary_review_required")
+            capture_authority.get("boundary_review_required")
         )
         inferred_mapping = any(
             mapping["mapping_method"] != "exact-line-id" for mapping in mappings
         )
+        operator_review_required = boundary_review_required or inferred_mapping
         review = {
             "schema": "vntts.sequence-replay-seal-review",
             "schema_version": SEQUENCE_REPLAY_SEAL_VERSION,
-            "operator_review_required": boundary_review_required or inferred_mapping,
+            "operator_review_required": operator_review_required,
             "human_acceptance_recorded": False,
             "note": (
                 "Measured counters and routes are reproducible baseline evidence, "
@@ -256,16 +289,26 @@ def seal_sequence_replay(
                 ),
             },
             "capture_boundary_review_required": boundary_review_required,
-            "capture_boundary_review_count": capture["capture"].get(
+            "capture_boundary_review_count": capture_authority.get(
                 "boundary_review_count", 0
             ),
             "capture_report_boundary_count": len(
-                capture_report_document.get("boundaries", ())
+                _required_list(
+                    capture_report_document.get("boundaries"),
+                    "Capture report boundaries",
+                )
             ),
             "mappings": mappings,
             "measured_baseline": {
-                "route_sources": final_report["route_sources"],
-                **final_report["sequence"]["observed"],
+                "route_sources": _required_list(
+                    final_report.get("route_sources"), "Final replay routes"
+                ),
+                **_required_document(
+                    _required_document(
+                        final_report.get("sequence"), "Final replay sequence"
+                    ).get("observed"),
+                    "Final replay sequence observations",
+                ),
             },
             "sealed_replay_successful": True,
         }
@@ -278,13 +321,17 @@ def seal_sequence_replay(
             output / review_path.name,
             output / replay_report.name,
             len(dialogue),
-            review["operator_review_required"],
+            operator_review_required,
         )
 
 
-def _map_dialogue(raw_dialogue, resolver, plan):
-    mappings = []
-    previous_event = None
+def _map_dialogue(
+    raw_dialogue: Sequence[JSONDocument],
+    resolver: ChapterVoicePreloader,
+    plan: LiveSequencePlan,
+) -> list[JSONDocument]:
+    mappings: list[JSONDocument] = []
+    previous_event: LiveSequenceEvent | None = None
     for index, record in enumerate(raw_dialogue, start=1):
         if not isinstance(record, dict):
             raise SequenceReplaySealError(
@@ -296,16 +343,17 @@ def _map_dialogue(raw_dialogue, resolver, plan):
             raise SequenceReplaySealError(
                 f"Raw replay dialogue {index} has no observed text"
             )
-        frontier = (
-            None
-            if previous_event is None
-            else _next_visible_events(plan, previous_event)
-        )
+        frontier: tuple[LiveSequenceEvent, ...] = ()
+        if previous_event is not None:
+            frontier = _next_visible_events(plan, previous_event)
         raw_line_id = str(record.get("line_id") or "").strip() or None
-        line = resolver.line_for_id(raw_line_id) if raw_line_id else None
+        line: ChapterDialogue | None = (
+            resolver.line_for_id(raw_line_id) if raw_line_id else None
+        )
         event = plan.event_for_line(line.line_id) if line is not None else None
         method = "exact-line-id"
         if event is not None:
+            assert line is not None
             if (line.speaker, line.text) != (character, text):
                 raise SequenceReplaySealError(
                     f"Raw replay dialogue {index} disagrees with canonical line "
@@ -313,13 +361,17 @@ def _map_dialogue(raw_dialogue, resolver, plan):
                 )
         else:
             if previous_event is None:
-                candidates = tuple(
-                    event
-                    for event in plan.events.values()
-                    if event.is_speech
-                    and _normalized_exact(resolver.line_for_id(event.line_id).text)
-                    == _normalized_exact(text)
-                )
+                initial_candidates: list[LiveSequenceEvent] = []
+                for candidate in plan.events.values():
+                    if not candidate.is_speech:
+                        continue
+                    candidate_line = resolver.line_for_id(candidate.line_id)
+                    assert candidate_line is not None
+                    if _normalized_exact(candidate_line.text) == _normalized_exact(
+                        text
+                    ):
+                        initial_candidates.append(candidate)
+                candidates: tuple[LiveSequenceEvent, ...] = tuple(initial_candidates)
             else:
                 candidates = frontier
             if previous_event is not None and len(candidates) != 1:
@@ -338,7 +390,7 @@ def _map_dialogue(raw_dialogue, resolver, plan):
                 line = None
                 method = "unique-silent-frontier"
             else:
-                speech = []
+                speech: list[tuple[LiveSequenceEvent, ChapterDialogue]] = []
                 for candidate in candidates:
                     if not candidate.is_speech or candidate.line_id is None:
                         continue
@@ -379,10 +431,12 @@ def _map_dialogue(raw_dialogue, resolver, plan):
     return mappings
 
 
-def _next_visible_events(plan, event):
+def _next_visible_events(
+    plan: LiveSequencePlan, event: LiveSequenceEvent
+) -> tuple[LiveSequenceEvent, ...]:
     pending = list(event.successors)
-    visited = set()
-    visible = []
+    visited: set[str] = set()
+    visible: list[LiveSequenceEvent] = []
     while pending:
         event_id = pending.pop(0)
         if event_id in visited:
@@ -398,16 +452,18 @@ def _next_visible_events(plan, event):
     return tuple(visible)
 
 
-def _copy_frames(capture_root, staging, raw_dialogue):
-    copied = []
-    seen = {}
+def _copy_frames(
+    capture_root: Path, staging: Path, raw_dialogue: Sequence[JSONDocument]
+) -> list[list[JSONDocument]]:
+    copied: list[list[JSONDocument]] = []
+    seen: dict[str, str] = {}
     for dialogue_index, record in enumerate(raw_dialogue, start=1):
         frames = record.get("frames") if isinstance(record, dict) else None
         if not isinstance(frames, list) or not frames:
             raise SequenceReplaySealError(
                 f"Raw replay dialogue {dialogue_index} has no exact frames"
             )
-        copied_frames = []
+        copied_frames: list[JSONDocument] = []
         for frame_index, frame in enumerate(frames, start=1):
             if not isinstance(frame, dict) or set(frame) != {"path", "sha256"}:
                 raise SequenceReplaySealError(
@@ -434,7 +490,12 @@ def _copy_frames(capture_root, staging, raw_dialogue):
     return copied
 
 
-def _snapshot_generated_audio(manifest, staging, mappings, resolver):
+def _snapshot_generated_audio(
+    manifest: PathInput | None,
+    staging: Path,
+    mappings: Sequence[JSONDocument],
+    resolver: ChapterVoicePreloader,
+) -> tuple[JSONDocument | None, set[str]]:
     if manifest is None:
         return None, set()
     manifest_path, manifest_payload = _read_regular_file(
@@ -453,11 +514,15 @@ def _snapshot_generated_audio(manifest, staging, mappings, resolver):
         raise SequenceReplaySealError(
             "Generated audio manifest changed while it was being loaded"
         )
-    identities = {
-        (mapping["line_id"], resolver.line_for_id(mapping["line_id"]).text_sha256)
-        for mapping in mappings
-        if mapping["line_id"] is not None
-    }
+    identities: set[tuple[str | None, str | None]] = set()
+    for mapping in mappings:
+        line_id = mapping["line_id"]
+        if line_id is None:
+            continue
+        assert isinstance(line_id, str)
+        line: ChapterDialogue | None = resolver.line_for_id(line_id)
+        assert line is not None
+        identities.add((line_id, line.text_sha256))
     selected = [
         record
         for record in document.records
@@ -467,7 +532,7 @@ def _snapshot_generated_audio(manifest, staging, mappings, resolver):
     if not selected:
         return None, set()
     raw_document = _decode_json(manifest_payload, "Generated audio manifest")
-    records = []
+    records: list[JSONDocument] = []
     for record in selected:
         if record.audio.is_symlink():
             raise SequenceReplaySealError(
@@ -487,7 +552,7 @@ def _snapshot_generated_audio(manifest, staging, mappings, resolver):
                 )
         else:
             _write_bytes(destination, payload)
-        wire = record.to_record()
+        wire: JSONDocument = record.to_record()
         wire["audio"] = relative
         records.append(wire)
     sealed_manifest = {
@@ -516,16 +581,16 @@ def _snapshot_generated_audio(manifest, staging, mappings, resolver):
 
 
 def _sealed_dialogue(
-    raw_dialogue,
-    frame_records,
-    mappings,
-    resolver,
-    generated_lines,
+    raw_dialogue: Sequence[JSONDocument],
+    frame_records: Sequence[list[JSONDocument]],
+    mappings: Sequence[JSONDocument],
+    resolver: ChapterVoicePreloader,
+    generated_lines: set[str],
     *,
-    mode,
-    audio_source_policy,
-):
-    dialogue = []
+    mode: str,
+    audio_source_policy: str,
+) -> list[JSONDocument]:
+    dialogue: list[JSONDocument] = []
     for raw, frames, mapping in zip(raw_dialogue, frame_records, mappings, strict=True):
         line_id = mapping["line_id"]
         if line_id is None:
@@ -576,7 +641,11 @@ def _sealed_dialogue(
     return dialogue
 
 
-def _validate_probe(report, mappings, dialogue):
+def _validate_probe(
+    report: JSONDocument,
+    mappings: Sequence[JSONDocument],
+    dialogue: Sequence[JSONDocument],
+) -> None:
     expected_dialogue = [
         {"character": record["character"], "text": record["text"]}
         for record in dialogue
@@ -584,21 +653,30 @@ def _validate_probe(report, mappings, dialogue):
     ]
     expected_event_ids = [mapping["event_id"] for mapping in mappings]
     expected_line_ids = [mapping["line_id"] for mapping in mappings]
-    if report["errors"]:
-        raise SequenceReplaySealError(
-            f"Production replay probe failed: {report['errors'][0]}"
-        )
-    if not report["media_integrity"]["frame_consumption"]["complete"]:
-        consumption = report["media_integrity"]["frame_consumption"]
+    errors = _required_list(report.get("errors"), "Production replay errors")
+    if errors:
+        raise SequenceReplaySealError(f"Production replay probe failed: {errors[0]}")
+    media_integrity = _required_document(
+        report.get("media_integrity"), "Production replay media integrity"
+    )
+    consumption = _required_document(
+        media_integrity.get("frame_consumption"), "Production replay frame consumption"
+    )
+    if not consumption.get("complete"):
         raise SequenceReplaySealError(
             "Production replay probe did not consume all frames: "
             f"{consumption['consumed_count']}/{consumption['declared_count']}"
         )
-    if report["observed_dialogue"] != expected_dialogue:
+    if report.get("observed_dialogue") != expected_dialogue:
         raise SequenceReplaySealError(
             "Production replay probe did not reproduce canonical captured speech"
         )
-    observed = report["sequence"]["observed"]
+    observed = _required_document(
+        _required_document(report.get("sequence"), "Production replay sequence").get(
+            "observed"
+        ),
+        "Production replay sequence observations",
+    )
     if (
         observed["event_ids"] != expected_event_ids
         or observed["line_ids"] != expected_line_ids
@@ -606,20 +684,23 @@ def _validate_probe(report, mappings, dialogue):
         raise SequenceReplaySealError(
             "Production replay probe did not reproduce canonical sequence identities"
         )
-    expected_routes = sum(record["expect_playback"] for record in dialogue)
-    if len(report["route_sources"]) != expected_routes:
+    expected_routes = sum(1 for record in dialogue if record["expect_playback"])
+    if (
+        len(_required_list(report.get("route_sources"), "Production replay routes"))
+        != expected_routes
+    ):
         raise SequenceReplaySealError(
             "Production replay probe did not produce one route per speech record"
         )
 
 
-def _validate_capture_report(capture, report):
+def _validate_capture_report(capture: JSONDocument, report: JSONDocument) -> None:
     if (
         report.get("schema") != "vntts.live-replay-capture-report"
         or report.get("schema_version") != 1
     ):
         raise SequenceReplaySealError("Capture review report has an unsupported schema")
-    authority = capture["capture"]
+    authority = _required_document(capture.get("capture"), "Raw replay corpus capture")
     for field in (
         "frame_count",
         "dialogue_count",
@@ -643,7 +724,12 @@ def _validate_capture_report(capture, report):
         raise SequenceReplaySealError(
             "Capture review report dialogue ledger is invalid"
         )
-    raw_dialogue = capture.get("dialogue")
+    raw_dialogue = _required_list(capture.get("dialogue"), "Raw replay dialogue")
+    if any(not isinstance(record, dict) for record in raw_dialogue):
+        raise SequenceReplaySealError("Raw replay corpus has no dialogue records")
+    raw_dialogue_records: tuple[JSONDocument, ...] = tuple(
+        record for record in raw_dialogue if isinstance(record, dict)
+    )
     expected_dialogue = [
         {
             "dialogue_index": index,
@@ -651,10 +737,12 @@ def _validate_capture_report(capture, report):
             "text": record.get("text"),
             "line_id": record.get("line_id"),
             "story_match": record.get("story_match"),
-            "frame_count": len(record.get("frames", ())),
+            "frame_count": len(
+                _required_list(record.get("frames", ()), "Raw replay frames")
+            ),
             "boundary_reason": record.get("capture_boundary"),
         }
-        for index, record in enumerate(raw_dialogue, start=1)
+        for index, record in enumerate(raw_dialogue_records, start=1)
     ]
     if dialogue != expected_dialogue:
         raise SequenceReplaySealError(
@@ -666,7 +754,7 @@ def _validate_capture_report(capture, report):
             "reason": "inferred-observation-replacement",
             "requires_operator_review": True,
         }
-        for index, record in enumerate(raw_dialogue, start=1)
+        for index, record in enumerate(raw_dialogue_records, start=1)
         if record.get("capture_boundary") == "inferred-observation-replacement"
     ]
     if boundaries != expected_boundaries:
@@ -675,8 +763,10 @@ def _validate_capture_report(capture, report):
         )
 
 
-def _validate_capture_observation_ledger(capture_path, capture, report):
-    authority = capture["capture"]
+def _validate_capture_observation_ledger(
+    capture_path: Path, capture: JSONDocument, report: JSONDocument
+) -> None:
+    authority = _required_document(capture.get("capture"), "Raw replay corpus capture")
     binding = authority.get("observation_ledger")
     if binding is None:
         return
@@ -713,8 +803,8 @@ def _validate_capture_observation_ledger(capture_path, capture, report):
         or binding.get("observation_count") != len(observations)
     ):
         raise SequenceReplaySealError("Capture observation ledger is invalid")
-    ledger_frames = set()
-    statuses = []
+    ledger_frames: set[tuple[object, str]] = set()
+    statuses: list[str] = []
     for index, observation in enumerate(observations, start=1):
         if (
             not isinstance(observation, dict)
@@ -732,6 +822,7 @@ def _validate_capture_observation_ledger(capture_path, capture, report):
             raise SequenceReplaySealError(
                 "Capture observation ledger status is invalid"
             )
+        assert isinstance(status, str)
         statuses.append(status)
         frame = observation.get("frame")
         if not isinstance(frame, dict) or set(frame) != {"path", "sha256"}:
@@ -749,12 +840,17 @@ def _validate_capture_observation_ledger(capture_path, capture, report):
         if hashlib.sha256(frame_payload).hexdigest() != frame_digest:
             raise SequenceReplaySealError("Capture observation frame checksum changed")
         ledger_frames.add((frame["path"], frame_digest))
-    dialogue_frames = {
-        (frame.get("path"), frame.get("sha256"))
-        for record in capture["dialogue"]
-        for frame in record.get("frames", ())
-        if isinstance(frame, dict)
-    }
+    raw_dialogue = _required_list(capture.get("dialogue"), "Raw replay dialogue")
+    if any(not isinstance(record, dict) for record in raw_dialogue):
+        raise SequenceReplaySealError("Raw replay corpus has no dialogue records")
+    dialogue_records: tuple[JSONDocument, ...] = tuple(
+        record for record in raw_dialogue if isinstance(record, dict)
+    )
+    dialogue_frames: set[tuple[object, object]] = set()
+    for record in dialogue_records:
+        for frame in _required_list(record.get("frames", ()), "Raw replay frames"):
+            if isinstance(frame, dict):
+                dialogue_frames.add((frame.get("path"), frame.get("sha256")))
     if not dialogue_frames.issubset(ledger_frames):
         raise SequenceReplaySealError(
             "Capture dialogue frames are not bound by the observation ledger"
@@ -777,10 +873,16 @@ def _validate_capture_observation_ledger(capture_path, capture, report):
             "Raw observation-ledger capture must recover one explicit sequence "
             "segment before sealing"
         )
-    _validate_recovery_authority(capture_path.parent, recovery, report)
+    _validate_recovery_authority(
+        capture_path.parent,
+        _required_document(recovery, "Capture recovery authority"),
+        report,
+    )
 
 
-def _validate_recovery_authority(root, recovery, report):
+def _validate_recovery_authority(
+    root: Path, recovery: JSONDocument, report: JSONDocument
+) -> None:
     if (
         not isinstance(recovery, dict)
         or set(recovery)
@@ -819,11 +921,11 @@ def _validate_recovery_authority(root, recovery, report):
             raise SequenceReplaySealError(f"{label} checksum changed")
 
 
-def _normalized_exact(value):
+def _normalized_exact(value: object) -> str:
     return " ".join(unicodedata.normalize("NFKC", str(value)).split()).casefold()
 
 
-def _decode_json(payload, label):
+def _decode_json(payload: bytes, label: str) -> JSONDocument:
     try:
         document = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -833,7 +935,19 @@ def _decode_json(payload, label):
     return document
 
 
-def _read_regular_file(value, label):
+def _required_document(value: object, label: str) -> JSONDocument:
+    if not isinstance(value, dict):
+        raise SequenceReplaySealError(f"{label} must be an object")
+    return value
+
+
+def _required_list(value: object, label: str) -> list[object]:
+    if not isinstance(value, list):
+        raise SequenceReplaySealError(f"{label} must be a list")
+    return value
+
+
+def _read_regular_file(value: PathInput, label: str) -> tuple[Path, bytes]:
     selected = Path(value).expanduser()
     if selected.is_symlink():
         raise SequenceReplaySealError(f"{label} must not be a symlink: {selected}")
@@ -852,7 +966,7 @@ def _read_regular_file(value, label):
     return path, payload
 
 
-def _read_contained(root, value, label):
+def _read_contained(root: PathInput, value: object, label: str) -> tuple[str, bytes]:
     if not isinstance(value, str) or not value.strip() or "\\" in value:
         raise SequenceReplaySealError(f"{label} must use a contained relative path")
     relative = PurePosixPath(value)
@@ -877,13 +991,14 @@ def _read_contained(root, value, label):
     return relative.as_posix(), payload
 
 
-def _required_sha256(value, label):
-    if not is_lowercase_sha256(value):
-        raise SequenceReplaySealError(f"{label} must be a lowercase SHA-256")
-    return value
+def _required_sha256(value: object, label: str) -> str:
+    if is_lowercase_sha256(value):
+        assert isinstance(value, str)
+        return value
+    raise SequenceReplaySealError(f"{label} must be a lowercase SHA-256")
 
 
-def _write_bytes(path, payload):
+def _write_bytes(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as output:
         output.write(payload)
@@ -891,7 +1006,7 @@ def _write_bytes(path, payload):
         os.fsync(output.fileno())
 
 
-def _write_json(path, document):
+def _write_json(path: Path, document: JSONDocument) -> None:
     payload = (
         json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")
@@ -900,7 +1015,7 @@ def _write_json(path, document):
     _write_bytes(path, payload)
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Seal raw vntts-capture-live-replay output into a checksum-bound "
@@ -934,25 +1049,27 @@ def build_parser():
     return parser
 
 
-def _generated_audio_manifest_for_run(arguments, settings):
+def _generated_audio_manifest_for_run(
+    arguments: _SealArguments, settings: AppSettings
+) -> PathInput | None:
     if arguments.no_generated_audio_manifest:
         return None
     return arguments.generated_audio_manifest or settings.generated_audio_manifest
 
 
-def main(argv=None):
-    arguments = build_parser().parse_args(argv)
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments: _SealArguments = build_parser().parse_args(argv)
     settings = load_app_settings()
     story_index = arguments.story_index or settings.story_index
     sequence_plan = arguments.sequence_plan or settings.live_sequence_plan
     generated_manifest = _generated_audio_manifest_for_run(arguments, settings)
     audio_policy = arguments.audio_source_policy or settings.audio_source_policy
     if not story_index:
-        return cli_error("Configure or pass --story-index")
+        return int(cli_error("Configure or pass --story-index"))
     if not sequence_plan:
-        return cli_error("Configure or pass --sequence-plan")
+        return int(cli_error("Configure or pass --sequence-plan"))
     if arguments.timeout <= 0:
-        return cli_error("timeout must be positive")
+        return int(cli_error("timeout must be positive"))
     try:
         result = seal_sequence_replay(
             arguments.capture_corpus,
@@ -965,18 +1082,20 @@ def main(argv=None):
             timeout_seconds=arguments.timeout,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return cli_error(error)
-    return cli_messages(
-        (
-            f"Sealed {result.dialogue_count} sequence-bound dialogue events",
+        return int(cli_error(error))
+    return int(
+        cli_messages(
             (
-                "Operator boundary/mapping review required"
-                if result.operator_review_required
-                else "No inferred boundary or mapping review flags"
-            ),
-            result.corpus,
-            result.review,
-            result.replay_report,
+                f"Sealed {result.dialogue_count} sequence-bound dialogue events",
+                (
+                    "Operator boundary/mapping review required"
+                    if result.operator_review_required
+                    else "No inferred boundary or mapping review flags"
+                ),
+                result.corpus,
+                result.review,
+                result.replay_report,
+            )
         )
     )
 

@@ -55,6 +55,7 @@
     "vntts/live_replay_capture.py",
     "vntts/live_replay_capture_recover.py",
     "vntts/live_replay_coverage.py",
+    "vntts/live_replay_sequence_seal.py",
     "vntts/live_sequence.py",
     "vntts/live_speaker_corpus.py",
     "vntts/live_snapshot.py",
