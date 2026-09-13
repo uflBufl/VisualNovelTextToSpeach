@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QThreadPool, Signal
 from PySide6.QtGui import QCloseEvent, QColor, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -13,9 +13,12 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.onboarding import DiagnosticResult, OnboardingDiagnostics
+from vntts.settings import AppSettings
 from vntts.ui_text import copy_text_button, make_text_copyable
 
 
@@ -26,11 +29,18 @@ class ReadinessDialog(QDialog):
     voices_requested = Signal()
     refresh_requested = Signal()
 
-    def __init__(self, settings, diagnostics, parent=None, *, thread_pool=None):
+    def __init__(
+        self,
+        settings: AppSettings,
+        diagnostics: OnboardingDiagnostics,
+        parent: QWidget | None = None,
+        *,
+        thread_pool: QThreadPool | None = None,
+    ) -> None:
         super().__init__(parent)
         self.settings = settings
         self.diagnostics = diagnostics
-        self._results = ()
+        self._results: tuple[DiagnosticResult, ...] = ()
         self._checks_running = False
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._checks_finished)
@@ -108,7 +118,7 @@ class ReadinessDialog(QDialog):
         make_text_copyable(self)
         self.refresh()
 
-    def _selected_text(self):
+    def _selected_text(self) -> str:
         result = self._selected_result()
         return (
             f"{result.status.upper()} | {result.name}\n{result.message}"
@@ -116,7 +126,7 @@ class ReadinessDialog(QDialog):
             else self.summary.text()
         )
 
-    def _report_text(self):
+    def _report_text(self) -> str:
         return (
             self.summary.text()
             + "\n\n"
@@ -126,11 +136,11 @@ class ReadinessDialog(QDialog):
             )
         )
 
-    def update_settings(self, settings):
+    def update_settings(self, settings: AppSettings) -> None:
         self.settings = settings
         self.refresh()
 
-    def refresh(self):
+    def refresh(self) -> None:
         self.runner.cancel()
         self._results = ()
         self._checks_running = True
@@ -142,7 +152,7 @@ class ReadinessDialog(QDialog):
         self._update_remediation()
         self.runner.start(self.diagnostics.run, self.settings)
 
-    def cancel_checks(self):
+    def cancel_checks(self) -> None:
         if not self.runner.cancel():
             return
         self.table.setRowCount(0)
@@ -154,7 +164,7 @@ class ReadinessDialog(QDialog):
         self.summary.setText("Checks cancelled. No readiness result is active.")
         self._update_remediation()
 
-    def _checks_finished(self, results, error):
+    def _checks_finished(self, results: object, error: Exception | None) -> None:
         self._checks_running = False
         self.progress.hide()
         self.refresh_button.setEnabled(True)
@@ -165,7 +175,8 @@ class ReadinessDialog(QDialog):
             self.summary.setText(f"Checks failed: {error}")
             self._update_remediation()
             return
-        self._results = tuple(results)
+        results = _diagnostic_results(results)
+        self._results = results
         self.table.setRowCount(len(results))
         dark = self.table.palette().color(QPalette.ColorRole.Base).lightness() < 128
         colors = {
@@ -222,13 +233,13 @@ class ReadinessDialog(QDialog):
         self._update_remediation()
         self.refresh_requested.emit()
 
-    def _selected_result(self):
+    def _selected_result(self) -> DiagnosticResult | None:
         row = self.table.currentRow()
         if row < 0 or row >= len(self._results):
             return None
         return self._results[row]
 
-    def _update_remediation(self):
+    def _update_remediation(self) -> None:
         self.selected_details.setPlainText(self._selected_text())
         self.copy_selected.setEnabled(not self._checks_running)
         self.remediation_button.setEnabled(False)
@@ -268,7 +279,7 @@ class ReadinessDialog(QDialog):
             f"{result.name} is {result.status}. {label} to address this check."
         )
 
-    def _run_selected_remediation(self):
+    def _run_selected_remediation(self) -> None:
         result = self._selected_result()
         if result is None or result.status == "ok":
             return
@@ -282,6 +293,14 @@ class ReadinessDialog(QDialog):
         if signal is not None:
             signal.emit()
 
-    def closeEvent(self, event: QCloseEvent):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.runner.cancel()
         super().closeEvent(event)
+
+
+def _diagnostic_results(value: object) -> tuple[DiagnosticResult, ...]:
+    if not isinstance(value, tuple) or not all(
+        isinstance(result, DiagnosticResult) for result in value
+    ):
+        raise TypeError("Readiness results are malformed")
+    return value
