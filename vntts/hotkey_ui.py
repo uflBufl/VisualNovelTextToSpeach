@@ -1,10 +1,22 @@
 import sys
+from typing import Protocol, runtime_checkable
 
 from PySide6.QtCore import QKeyCombination, Qt
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QKeySequenceEdit
+from PySide6.QtWidgets import QKeySequenceEdit, QWidget
 
 from vntts.hotkeys import HotkeyValidationError
+
+
+@runtime_checkable
+class _KeySequenceIndex(Protocol):
+    def __getitem__(self, index: int) -> QKeyCombination: ...
+
+
+def _first_combination(sequence: object) -> QKeyCombination:
+    if isinstance(sequence, _KeySequenceIndex):
+        return sequence[0]
+    raise HotkeyValidationError("this Qt build cannot inspect shortcuts")
 
 _special_keys = {
     Qt.Key.Key_Backspace.value: "<backspace>",
@@ -45,7 +57,13 @@ _qt_special_keys = {
 
 
 class HotkeyRecorder(QKeySequenceEdit):
-    def __init__(self, hotkey, parent=None, *, platform=None):
+    def __init__(
+        self,
+        hotkey: str,
+        parent: QWidget | None = None,
+        *,
+        platform: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self.platform = sys.platform if platform is None else platform
         self.setMaximumSequenceLength(1)
@@ -56,20 +74,22 @@ class HotkeyRecorder(QKeySequenceEdit):
         except HotkeyValidationError:
             self.clear()
 
-    def hotkey(self):
+    def hotkey(self) -> str:
         return hotkey_from_qt_sequence(self.keySequence(), platform=self.platform)
 
-    def set_hotkey(self, hotkey):
+    def set_hotkey(self, hotkey: str) -> None:
         self.setKeySequence(qt_sequence_from_hotkey(hotkey, platform=self.platform))
 
 
-def hotkey_from_qt_sequence(sequence, *, platform=None):
+def hotkey_from_qt_sequence(
+    sequence: QKeySequence, *, platform: str | None = None
+) -> str:
     platform = sys.platform if platform is None else platform
     if sequence.isEmpty():
         raise HotkeyValidationError("press a shortcut")
-    combination = sequence[0]
+    combination = _first_combination(sequence)
     modifiers = combination.keyboardModifiers()
-    tokens = []
+    tokens: list[str] = []
     if platform == "darwin":
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             tokens.append("<cmd>")
@@ -93,12 +113,14 @@ def hotkey_from_qt_sequence(sequence, *, platform=None):
     return "+".join(tokens)
 
 
-def qt_sequence_from_hotkey(hotkey, *, platform=None):
+def qt_sequence_from_hotkey(
+    hotkey: str, *, platform: str | None = None
+) -> QKeySequence:
     platform = sys.platform if platform is None else platform
     components = hotkey.casefold().split("+")
     if not components or not components[-1]:
         raise HotkeyValidationError("invalid shortcut")
-    qt_components = []
+    qt_components: list[str] = []
     for component in components[:-1]:
         if component == "<ctrl>":
             qt_components.append("Meta" if platform == "darwin" else "Ctrl")
@@ -117,9 +139,10 @@ def qt_sequence_from_hotkey(hotkey, *, platform=None):
         if name.startswith("f") and name[1:].isdigit():
             qt_key = name.upper()
         else:
-            qt_key = _qt_special_keys.get(name)
-        if qt_key is None:
-            raise HotkeyValidationError(f"unsupported key {key}")
+            mapped_key = _qt_special_keys.get(name)
+            if mapped_key is None:
+                raise HotkeyValidationError(f"unsupported key {key}")
+            qt_key = mapped_key
     elif len(key) == 1 and key != "+":
         qt_key = key.upper() if key.isalpha() else key
     else:
@@ -131,7 +154,7 @@ def qt_sequence_from_hotkey(hotkey, *, platform=None):
     return sequence
 
 
-def _key_token(key_value):
+def _key_token(key_value: int) -> str | None:
     if Qt.Key.Key_A.value <= key_value <= Qt.Key.Key_Z.value:
         return chr(key_value).casefold()
     if Qt.Key.Key_0.value <= key_value <= Qt.Key.Key_9.value:
