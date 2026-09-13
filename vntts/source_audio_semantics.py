@@ -7,6 +7,7 @@ import json
 import re
 import unicodedata
 from pathlib import Path
+from typing import TypeAlias, TypedDict, TypeGuard, cast
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
@@ -22,23 +23,34 @@ SEMANTIC_EVIDENCE_VERSION = 1
 SEMANTIC_EVIDENCE_METHOD = "local-asr-exact-normalized-transcript"
 WORD_PATTERN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", flags=re.UNICODE)
 
+JsonDocument: TypeAlias = dict[str, object]
+
+
+class SourceAudioSemanticEvidence(TypedDict):
+    evidence_id: str
+    generated_at: str
+    entries: list[JsonDocument]
+
 
 class SourceAudioSemanticEvidenceError(RuntimeError):
     """Semantic source-audio evidence is missing, stale or malformed."""
 
 
-def normalize_semantic_text(text):
+def normalize_semantic_text(text: object) -> str:
     normalized = unicodedata.normalize("NFKC", str(text or ""))
     return " ".join(
         token.casefold().replace("’", "'") for token in WORD_PATTERN.findall(normalized)
     )
 
 
-def semantic_text_sha256(text):
+def semantic_text_sha256(text: object) -> str:
     return hashlib.sha256(normalize_semantic_text(text).encode("utf-8")).hexdigest()
 
 
-def load_source_audio_semantic_evidence(path, story_index_path=None):
+def load_source_audio_semantic_evidence(
+    path: str | Path,
+    story_index_path: str | Path | StoryIndexDocument | None = None,
+) -> SourceAudioSemanticEvidence:
     evidence_path = Path(path).expanduser().resolve()
     try:
         document = json.loads(evidence_path.read_text(encoding="utf-8"))
@@ -46,15 +58,16 @@ def load_source_audio_semantic_evidence(path, story_index_path=None):
         raise SourceAudioSemanticEvidenceError(
             f"Unable to read source-audio semantic evidence {evidence_path}: {error}"
         ) from error
-    validate_source_audio_semantic_evidence(document)
-    if story_index_path is not None:
-        validate_story_semantic_evidence(story_index_path, evidence_path, document)
-    return document
+    if story_index_path is None:
+        return validate_source_audio_semantic_evidence(document)
+    return validate_story_semantic_evidence(story_index_path, evidence_path, document)
 
 
-def validate_source_audio_semantic_evidence(document):
+def validate_source_audio_semantic_evidence(
+    document: object,
+) -> SourceAudioSemanticEvidence:
     if (
-        not isinstance(document, dict)
+        not _is_json_document(document)
         or document.get("schema") != SEMANTIC_EVIDENCE_SCHEMA
         or document.get("schema_version") != SEMANTIC_EVIDENCE_VERSION
     ):
@@ -67,7 +80,7 @@ def validate_source_audio_semantic_evidence(document):
     if not isinstance(locale, str) or not locale.strip():
         raise SourceAudioSemanticEvidenceError("Semantic evidence locale is invalid")
     if (
-        not isinstance(model, dict)
+        not _is_json_document(model)
         or model.get("kind") != "whisper"
         or model.get("decoding") != "deterministic_greedy_default"
     ):
@@ -81,7 +94,7 @@ def validate_source_audio_semantic_evidence(document):
         raise SourceAudioSemanticEvidenceError("Semantic evidence entries are empty")
     keys = []
     for entry in entries:
-        if not isinstance(entry, dict) or entry.get("locale") != locale:
+        if not _is_json_document(entry) or entry.get("locale") != locale:
             raise SourceAudioSemanticEvidenceError(
                 "Semantic evidence entry locale changed"
             )
@@ -145,10 +158,19 @@ def validate_source_audio_semantic_evidence(document):
     }
     if document.get("evidence_id") != canonical_document_sha256(authority):
         raise SourceAudioSemanticEvidenceError("Semantic evidence ID changed")
-    return document
+    if not isinstance(document.get("generated_at"), str):
+        raise SourceAudioSemanticEvidenceError(
+            "Semantic evidence generation timestamp is invalid"
+        )
+    return cast(SourceAudioSemanticEvidence, document)
 
 
-def validate_story_semantic_evidence(story_index, evidence_path, evidence):
+def validate_story_semantic_evidence(
+    story_index: str | Path | StoryIndexDocument,
+    evidence_path: str | Path,
+    evidence: object,
+) -> SourceAudioSemanticEvidence:
+    evidence = validate_source_audio_semantic_evidence(evidence)
     if isinstance(story_index, StoryIndexDocument):
         story = story_index
     else:
@@ -199,7 +221,11 @@ def validate_story_semantic_evidence(story_index, evidence_path, evidence):
     return evidence
 
 
-def _require_sha256(value, label):
-    if not is_lowercase_sha256(value):
+def _require_sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or not is_lowercase_sha256(value):
         raise SourceAudioSemanticEvidenceError(f"{label} SHA-256 is invalid")
     return value
+
+
+def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)

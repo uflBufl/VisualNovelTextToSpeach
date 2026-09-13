@@ -120,7 +120,6 @@
     "vntts/pregeneration_voices.py": 50,
     "vntts/runtime_ownership.py": 12,
     "vntts/services/tts_engine.py": 19,
-    "vntts/source_audio_semantics.py": 6,
     "vntts/speech_presentation.py": 10,
     "vntts/support.py": 48,
     "vntts/tts_benchmark.py": 15,

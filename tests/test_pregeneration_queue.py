@@ -22,6 +22,7 @@ from vntts.pregeneration_voices import VoicePlanStore
 from vntts.settings import AppSettings
 from vntts.source_audio_semantics import (
     SEMANTIC_EVIDENCE_METHOD,
+    SourceAudioSemanticEvidenceError,
     canonical_document_sha256,
     load_source_audio_semantic_evidence,
     semantic_text_sha256,
@@ -220,6 +221,22 @@ def add_semantic_evidence(story_path):
 
 
 class PregenerationInputStoreTest(unittest.TestCase):
+    def test_semantic_evidence_requires_generation_timestamp(self):
+        with TemporaryDirectory() as temporary_directory:
+            story = add_semantic_evidence(
+                write_content(Path(temporary_directory) / "content")
+            )
+            evidence_path = story.parent / "source-audio-semantic-evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence.pop("generated_at")
+            atomic_write_json(evidence_path, evidence, sort_keys=True)
+
+            with self.assertRaisesRegex(
+                SourceAudioSemanticEvidenceError,
+                "generation timestamp",
+            ):
+                load_source_audio_semantic_evidence(evidence_path)
+
     def fixture(self, root, *, narrator=True, backend="pocket-tts"):
         content = inspect_story_index(write_content(root / "content"))
         jobs = PregenerationJobStore(root / "jobs")
