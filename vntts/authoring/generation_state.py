@@ -8,7 +8,7 @@ import importlib
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
-from typing import TypeAlias
+from typing import Callable, TypeAlias
 
 import numpy as np
 from vntts_artifacts.voice_generation_queue import (
@@ -34,6 +34,7 @@ from vntts.authoring.failure_repair import (
 )
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_manifest import (
+    AudioQuality,
     contained_generation_path,
     safe_generation_relative_path,
     validate_success_file_with_samples,
@@ -315,21 +316,7 @@ def _validate_state_document(
             "Generation queue changed; use a new output directory"
         )
     _required_sha256(state.get("queue_sha256"), "Generation state queue_sha256")
-    for field in ("game", "language"):
-        value = state.get(field)
-        if value is not None and (not isinstance(value, str) or not value.strip()):
-            raise BulkGenerationError(
-                f"Generation state {field} must be non-empty text or null"
-            )
-        if queue is None:
-            continue
-        expected = queue.metadata.get(field)
-        if state["schema"] == LEGACY_STATE_SCHEMA and value is None:
-            continue
-        if value != expected:
-            raise BulkGenerationError(
-                f"Generation state {field} does not match the queue metadata"
-            )
+    _validate_state_metadata(state, queue)
     state_items = state.get("items")
     if not isinstance(state_items, dict):
         raise BulkGenerationError("Generation state items must be an object")
@@ -338,89 +325,95 @@ def _validate_state_document(
         None if queue is None else {item.queue_id: item for item in queue.items}
     )
     for queue_id, result in state_items.items():
-        if queue_by_id is not None and queue_id not in queue_by_id:
-            raise BulkGenerationError(
-                f"Generation state references unknown queue_id {queue_id!r}"
-            )
-        if not isinstance(result, dict):
-            raise BulkGenerationError(f"Generation state item {queue_id!r} is invalid")
-        if "terminal_conflict_resolution" in result:
-            try:
-                validate_terminal_conflict_item_provenance(
-                    result["terminal_conflict_resolution"]
-                )
-            except TerminalConflictRecordError as error:
-                raise BulkGenerationError(str(error)) from error
-        status = result.get("status")
-        review = result.get("review_status")
-        valid: dict[object, set[object]] = {
-            "failed": {None},
-            "generated": {"pending_review", "rejected"},
-            "approved": {"approved"},
-            "live_fallback": {"live_fallback"},
-            "omitted": {"omitted"},
-        }
-        if status not in valid or review not in valid[status]:
-            raise BulkGenerationError(
-                f"Generation state item {queue_id!r} has invalid {status!r}/{review!r} status"
-            )
-        total_attempts = _nonnegative_int(
-            result.get("attempts", 0), f"Item {queue_id!r} attempts"
+        _validate_state_item(
+            queue_id, result, output_directory, queue_by_id, state["schema"]
         )
-        _provider_attempts(result, total_attempts)
-        _validate_live_fallback_decision(
-            result,
-            queue_id,
-            None if queue_by_id is None else queue_by_id[queue_id],
-        )
-        if status == "omitted":
-            _validate_audio_event_omission(
-                result,
-                queue_id,
-                None if queue_by_id is None else queue_by_id[queue_id],
-            )
-            continue
-        if status == "failed":
-            if "failure" in result:
-                _validate_failure_record(result["failure"], queue_id, result=result)
-            _validate_synthesis_identity(
-                result,
-                queue_id,
-                None if queue_by_id is None else queue_by_id[queue_id],
-            )
-            _validate_failure_repair_record(
-                result,
-                queue_id,
-                None if queue_by_id is None else queue_by_id[queue_id],
-            )
-            _validate_seed_application(result, queue_id)
-            continue
-        if status == "live_fallback":
-            if "failure" in result:
-                _validate_failure_record(result["failure"], queue_id, result=result)
-            _validate_synthesis_identity(
-                result,
-                queue_id,
-                None if queue_by_id is None else queue_by_id[queue_id],
-            )
-            _validate_failure_repair_record(
-                result,
-                queue_id,
-                None if queue_by_id is None else queue_by_id[queue_id],
-            )
-            _validate_seed_application(result, queue_id)
-            continue
-        queue_item = None if queue_by_id is None else queue_by_id[queue_id]
-        _validate_success_item(
-            queue_id,
-            result,
-            output_directory,
-            queue_item,
-            state_schema=state["schema"],
-        )
-        _validate_failure_repair_record(result, queue_id, queue_item)
-        _validate_seed_application(result, queue_id)
     _validate_reviewed_waveform_publication(state, queue_by_id)
+    _validate_state_active(state, queue_by_id)
+
+
+def _validate_state_metadata(
+    state: StateObject, queue: VoiceGenerationQueue | None
+) -> None:
+    for field in ("game", "language"):
+        value = state.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise BulkGenerationError(
+                f"Generation state {field} must be non-empty text or null"
+            )
+        if (
+            queue is not None
+            and not (state["schema"] == LEGACY_STATE_SCHEMA and value is None)
+            and value != queue.metadata.get(field)
+        ):
+            raise BulkGenerationError(
+                f"Generation state {field} does not match the queue metadata"
+            )
+
+
+def _validate_state_item(
+    queue_id: object,
+    result: object,
+    output_directory: Path,
+    queue_by_id: QueueById | None,
+    state_schema: object,
+) -> None:
+    if not isinstance(queue_id, str) or (
+        queue_by_id is not None and queue_id not in queue_by_id
+    ):
+        raise BulkGenerationError(f"Generation state references unknown queue_id {queue_id!r}")
+    if not isinstance(result, dict):
+        raise BulkGenerationError(f"Generation state item {queue_id!r} is invalid")
+    _validate_terminal_conflict_resolution(result)
+    status = _validate_state_item_status(result, queue_id)
+    _provider_attempts(
+        result,
+        _nonnegative_int(result.get("attempts", 0), f"Item {queue_id!r} attempts"),
+    )
+    queue_item = None if queue_by_id is None else queue_by_id[queue_id]
+    _validate_live_fallback_decision(result, queue_id, queue_item)
+    if status == "omitted":
+        _validate_audio_event_omission(result, queue_id, queue_item)
+        return
+    if status in {"failed", "live_fallback"}:
+        if "failure" in result:
+            _validate_failure_record(result["failure"], queue_id, result=result)
+        _validate_synthesis_identity(result, queue_id, queue_item)
+    else:
+        _validate_success_item(
+            queue_id, result, output_directory, queue_item, state_schema=state_schema
+        )
+    _validate_failure_repair_record(result, queue_id, queue_item)
+    _validate_seed_application(result, queue_id)
+
+
+def _validate_terminal_conflict_resolution(result: StateObject) -> None:
+    if "terminal_conflict_resolution" not in result:
+        return
+    try:
+        validate_terminal_conflict_item_provenance(result["terminal_conflict_resolution"])
+    except TerminalConflictRecordError as error:
+        raise BulkGenerationError(str(error)) from error
+
+
+def _validate_state_item_status(result: StateObject, queue_id: str) -> object:
+    valid: dict[object, set[object]] = {
+        "failed": {None},
+        "generated": {"pending_review", "rejected"},
+        "approved": {"approved"},
+        "live_fallback": {"live_fallback"},
+        "omitted": {"omitted"},
+    }
+    status = result.get("status")
+    review = result.get("review_status")
+    if status not in valid or review not in valid[status]:
+        raise BulkGenerationError(
+            f"Generation state item {queue_id!r} has invalid {status!r}/{review!r} status"
+        )
+    return status
+
+
+def _validate_state_active(state: StateObject, queue_by_id: QueueById | None) -> None:
     active = state.get("active")
     if active is not None and not isinstance(active, dict):
         raise BulkGenerationError(
@@ -584,6 +577,19 @@ def _validate_live_fallback_decision(
                 f"State item {queue_id!r} live fallback decision is missing"
             )
         return
+    if not isinstance(decision, dict):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} live fallback decision is malformed"
+        )
+    version = _validate_live_fallback_structure(decision, queue_id)
+    _validate_live_fallback_evidence_version(
+        decision, result, queue_id, queue_item, version
+    )
+    _validate_live_fallback_common(decision, queue_id)
+    _validate_live_fallback_identity(decision, result, queue_id, queue_item, version)
+
+
+def _validate_live_fallback_structure(decision: StateObject, queue_id: str) -> object:
     common_fields = {
         "schema",
         "schema_version",
@@ -599,7 +605,7 @@ def _validate_live_fallback_decision(
         "previous_result_sha256",
         "decided_at",
     }
-    version = decision.get("schema_version") if isinstance(decision, dict) else None
+    version = decision.get("schema_version")
     expected_fields = (
         common_fields | {"evidence"}
         if version
@@ -615,8 +621,7 @@ def _validate_live_fallback_decision(
         else common_fields
     )
     if (
-        not isinstance(decision, dict)
-        or set(decision) != expected_fields
+        set(decision) != expected_fields
         or decision.get("schema") != LIVE_FALLBACK_SCHEMA
         or version
         not in {
@@ -638,81 +643,152 @@ def _validate_live_fallback_decision(
         raise BulkGenerationError(
             f"State item {queue_id!r} live fallback decision is malformed"
         )
-    if version == LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION:
-        if decision.get("reason") != "reference_unavailable_after_audit":
+    return version
+
+
+LiveFallbackEvidenceValidator: TypeAlias = Callable[
+    [StateObject, StateObject, str, VoiceGenerationQueueItem | None], None
+]
+
+
+def _validate_live_fallback_evidence_version(
+    decision: StateObject,
+    result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+    version: object,
+) -> None:
+    if version == LIVE_FALLBACK_VERSION:
+        if decision.get("reason") in {
+            LIVE_FALLBACK_HYPOTHESES_EXHAUSTED,
+            LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED,
+        }:
             raise BulkGenerationError(
-                f"State item {queue_id!r} missing-voice fallback reason is invalid"
+                f"State item {queue_id!r} live fallback evidence is missing"
             )
-        _validate_missing_voice_live_fallback_evidence(
-            decision.get("evidence"),
-            queue_id,
-            decision.get("requested_voice_character"),
-        )
-    elif version == LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION:
-        if decision.get("reason") != LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} known-role fallback reason is invalid"
-            )
-        _validate_known_role_live_fallback_evidence(
-            decision.get("evidence"),
-            queue_id,
-            result.get("requested_voice_character"),
-            decision.get("requested_voice_character"),
-            result.get("voice_character"),
-        )
-    elif version == LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION:
-        if decision.get("reason") != "generated_audio_rejected":
-            raise BulkGenerationError(
-                f"State item {queue_id!r} audio-event projection fallback reason is invalid"
-            )
-        _validate_audio_event_projection_live_fallback_evidence(
-            decision.get("evidence"),
-            queue_id,
-            decision.get("previous_result_sha256"),
-            decision.get("requested_voice_character"),
-            queue_item,
-        )
-    elif version == LIVE_FALLBACK_REVIEWED_REJECTION_VERSION:
-        if decision.get("reason") != "generated_audio_rejected":
-            raise BulkGenerationError(
-                f"State item {queue_id!r} reviewed-rejection fallback reason is invalid"
-            )
-        _validate_reviewed_rejection_live_fallback_evidence(
-            decision.get("evidence"),
-            queue_id,
-            decision.get("previous_result_sha256"),
-            decision.get("requested_voice_character"),
-            queue_item,
-        )
-    elif version == LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION:
-        if decision.get("reason") != LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} automatic-recovery fallback reason is invalid"
-            )
-        _validate_automatic_recovery_live_fallback_evidence(
-            decision.get("evidence"),
-            queue_id,
-            decision.get("previous_result_sha256"),
-        )
-    elif version in {
-        LIVE_FALLBACK_EVIDENCE_VERSION,
-        LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION,
-    }:
-        if decision.get("reason") != LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} evidence fallback reason is invalid"
-            )
-        _validate_live_fallback_evidence(
-            decision.get("evidence"), decision.get("previous_result_sha256")
-        )
-    elif decision.get("reason") == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
+        return
+    validator = _live_fallback_evidence_validators().get(version)
+    if validator is None:
         raise BulkGenerationError(
-            f"State item {queue_id!r} exhausted-hypothesis evidence is missing"
+            f"State item {queue_id!r} live fallback decision is malformed"
         )
-    elif decision.get("reason") == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
+    validator(decision, result, queue_id, queue_item)
+
+
+def _live_fallback_evidence_validators() -> dict[object, LiveFallbackEvidenceValidator]:
+    return {
+        LIVE_FALLBACK_EVIDENCE_VERSION: _validate_hypotheses_fallback_evidence,
+        LIVE_FALLBACK_REVIEW_EVIDENCE_VERSION: _validate_hypotheses_fallback_evidence,
+        LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION: _validate_missing_voice_fallback_evidence,
+        LIVE_FALLBACK_KNOWN_ROLE_EVIDENCE_VERSION: _validate_known_role_fallback_evidence,
+        LIVE_FALLBACK_AUDIO_EVENT_PROJECTION_VERSION: _validate_audio_event_fallback_evidence,
+        LIVE_FALLBACK_REVIEWED_REJECTION_VERSION: _validate_reviewed_rejection_fallback_evidence,
+        LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION: _validate_automatic_recovery_fallback_evidence,
+    }
+
+
+def _require_live_fallback_reason(
+    decision: StateObject, queue_id: str, expected: str
+) -> None:
+    if decision.get("reason") != expected:
         raise BulkGenerationError(
-            f"State item {queue_id!r} automatic-recovery evidence is missing"
+            f"State item {queue_id!r} live fallback reason is invalid"
         )
+
+
+def _validate_hypotheses_fallback_evidence(
+    decision: StateObject,
+    _result: StateObject,
+    queue_id: str,
+    _queue_item: VoiceGenerationQueueItem | None,
+) -> None:
+    _require_live_fallback_reason(
+        decision, queue_id, LIVE_FALLBACK_HYPOTHESES_EXHAUSTED
+    )
+    _validate_live_fallback_evidence(
+        decision.get("evidence"), decision.get("previous_result_sha256")
+    )
+
+
+def _validate_missing_voice_fallback_evidence(
+    decision: StateObject,
+    _result: StateObject,
+    queue_id: str,
+    _queue_item: VoiceGenerationQueueItem | None,
+) -> None:
+    _require_live_fallback_reason(
+        decision, queue_id, "reference_unavailable_after_audit"
+    )
+    _validate_missing_voice_live_fallback_evidence(
+        decision.get("evidence"), queue_id, decision.get("requested_voice_character")
+    )
+
+
+def _validate_known_role_fallback_evidence(
+    decision: StateObject,
+    result: StateObject,
+    queue_id: str,
+    _queue_item: VoiceGenerationQueueItem | None,
+) -> None:
+    _require_live_fallback_reason(
+        decision, queue_id, LIVE_FALLBACK_HYPOTHESES_EXHAUSTED
+    )
+    _validate_known_role_live_fallback_evidence(
+        decision.get("evidence"),
+        queue_id,
+        result.get("requested_voice_character"),
+        decision.get("requested_voice_character"),
+        result.get("voice_character"),
+    )
+
+
+def _validate_audio_event_fallback_evidence(
+    decision: StateObject,
+    _result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+) -> None:
+    _require_live_fallback_reason(decision, queue_id, "generated_audio_rejected")
+    _validate_audio_event_projection_live_fallback_evidence(
+        decision.get("evidence"),
+        queue_id,
+        decision.get("previous_result_sha256"),
+        decision.get("requested_voice_character"),
+        queue_item,
+    )
+
+
+def _validate_reviewed_rejection_fallback_evidence(
+    decision: StateObject,
+    _result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+) -> None:
+    _require_live_fallback_reason(decision, queue_id, "generated_audio_rejected")
+    _validate_reviewed_rejection_live_fallback_evidence(
+        decision.get("evidence"),
+        queue_id,
+        decision.get("previous_result_sha256"),
+        decision.get("requested_voice_character"),
+        queue_item,
+    )
+
+
+def _validate_automatic_recovery_fallback_evidence(
+    decision: StateObject,
+    _result: StateObject,
+    queue_id: str,
+    _queue_item: VoiceGenerationQueueItem | None,
+) -> None:
+    _require_live_fallback_reason(
+        decision, queue_id, LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED
+    )
+    _validate_automatic_recovery_live_fallback_evidence(
+        decision.get("evidence"), queue_id, decision.get("previous_result_sha256")
+    )
+
+
+def _validate_live_fallback_common(decision: StateObject, queue_id: str) -> None:
     for field in ("model", "generation_profile", "decided_at"):
         _required_text(
             decision.get(field), f"State item {queue_id!r} live fallback {field}"
@@ -720,6 +796,15 @@ def _validate_live_fallback_decision(
     previous = decision.get("previous_result_sha256")
     if previous is not None:
         _required_sha256(previous, f"State item {queue_id!r} previous result SHA-256")
+
+
+def _validate_live_fallback_identity(
+    decision: StateObject,
+    result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+    version: object,
+) -> None:
     if queue_item is not None:
         expected = {
             "line_id": queue_item.line_id,
@@ -1225,21 +1310,7 @@ def _validate_synthesis_identity(
     queue_id: str,
     queue_item: VoiceGenerationQueueItem | None = None,
 ) -> None:
-    expected_requested = (
-        None
-        if queue_item is None
-        else synthesis_character_for_line(
-            queue_item.speaker, queue_item.voice_character
-        )
-    )
-    if queue_item is not None and "speaker" in result:
-        speaker = _required_text(
-            result.get("speaker"), f"State item {queue_id!r} speaker"
-        )
-        if speaker != queue_item.speaker:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} speaker does not match the queue"
-            )
+    expected_requested = _validate_synthesis_speaker(result, queue_id, queue_item)
     requested = result.get("requested_voice_character")
     effective = result.get("voice_character")
     fallback = result.get("synthesis_fallback")
@@ -1264,39 +1335,82 @@ def _validate_synthesis_identity(
         and normalize_character_name(requested) != normalize_character_name(effective)
     )
     if fallback is None:
-        if changed:
-            if configuration is None or not isinstance(source_binding, dict):
-                raise BulkGenerationError(
-                    f"State item {queue_id!r} changed synthesis voice without provenance"
-                )
-            if (
-                set(source_binding)
-                != {
-                    "schema_version",
-                    "queue_id",
-                    "source_voice_character",
-                    "synthesis_voice_character",
-                    "queue_voice_overrides_sha256",
-                }
-                or source_binding.get("schema_version") != 1
-                or source_binding.get("queue_id") != queue_id
-                or source_binding.get("source_voice_character") != requested
-                or source_binding.get("synthesis_voice_character") != effective
-                or source_binding.get("queue_voice_overrides_sha256")
-                != configuration.get("queue_voice_overrides_sha256")
-            ):
-                raise BulkGenerationError(
-                    f"State item {queue_id!r} source-reference binding conflicts"
-                )
-        elif source_binding is not None:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} has an unnecessary source-reference binding"
-            )
+        _validate_source_reference_binding(
+            source_binding, configuration, requested, effective, changed, queue_id
+        )
         if "narrator_character" in result:
             raise BulkGenerationError(
                 f"State item {queue_id!r} has unbound narrator provenance"
             )
         return
+    _validate_narrator_fallback(
+        fallback, source_binding, configuration, requested, effective, result, queue_id
+    )
+
+
+def _validate_synthesis_speaker(
+    result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+) -> str | None:
+    if queue_item is None:
+        return None
+    if "speaker" in result and _required_text(
+        result.get("speaker"), f"State item {queue_id!r} speaker"
+    ) != queue_item.speaker:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} speaker does not match the queue"
+        )
+    return _required_text(
+        synthesis_character_for_line(queue_item.speaker, queue_item.voice_character),
+        f"State item {queue_id!r} requested voice",
+    )
+
+
+def _validate_source_reference_binding(
+    source_binding: object,
+    configuration: StateObject | None,
+    requested: object,
+    effective: object,
+    changed: bool,
+    queue_id: str,
+) -> None:
+    if not changed:
+        if source_binding is not None:
+            raise BulkGenerationError(
+                f"State item {queue_id!r} has an unnecessary source-reference binding"
+            )
+        return
+    if configuration is None or not isinstance(source_binding, dict):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} changed synthesis voice without provenance"
+        )
+    expected = {
+        "schema_version": 1,
+        "queue_id": queue_id,
+        "source_voice_character": requested,
+        "synthesis_voice_character": effective,
+        "queue_voice_overrides_sha256": configuration.get(
+            "queue_voice_overrides_sha256"
+        ),
+    }
+    if set(source_binding) != set(expected) or any(
+        source_binding.get(field) != value for field, value in expected.items()
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} source-reference binding conflicts"
+        )
+
+
+def _validate_narrator_fallback(
+    fallback: object,
+    source_binding: object,
+    configuration: StateObject | None,
+    requested: object,
+    effective: object,
+    result: StateObject,
+    queue_id: str,
+) -> None:
     if configuration is None:
         raise BulkGenerationError(
             f"State item {queue_id!r} fallback lacks its synthesis configuration"
@@ -1379,29 +1493,57 @@ def _validate_synthesis_configuration(
         raise BulkGenerationError(
             f"State item {queue_id!r} synthesis configuration is malformed"
         )
+    policy = _load_missing_voice_policy(configuration, queue_id)
+    repair_policy = _load_failure_repair_policy(configuration, queue_id)
+    canonical = _validate_synthesis_overrides(configuration, policy, queue_id)
+    validated = {
+        "missing_voice_policy": policy.to_document(),
+        "synthesis_character_overrides": canonical,
+        "failure_repair_policy": repair_policy.to_document(),
+    }
+    _add_synthesis_configuration_optionals(validated, configuration, queue_id)
+    return validated
+
+
+def _load_missing_voice_policy(
+    configuration: StateObject, queue_id: str
+) -> MissingVoicePolicy:
     try:
-        policy = MissingVoicePolicy.from_document(
+        return MissingVoicePolicy.from_document(
             configuration.get("missing_voice_policy")
         )
     except MissingVoicePolicyError as error:
         raise BulkGenerationError(str(error)) from error
+
+
+def _load_failure_repair_policy(
+    configuration: StateObject, queue_id: str
+) -> FailureRepairPolicy:
     try:
-        repair_policy = FailureRepairPolicy.from_document(
+        return FailureRepairPolicy.from_document(
             configuration.get("failure_repair_policy")
         )
     except FailureRepairPolicyError as error:
         raise BulkGenerationError(str(error)) from error
+
+
+def _validate_synthesis_overrides(
+    configuration: StateObject, policy: MissingVoicePolicy, queue_id: str
+) -> StateObject:
     overrides = configuration.get("synthesis_character_overrides")
     if not isinstance(overrides, dict):
         raise BulkGenerationError(
             f"State item {queue_id!r} synthesis overrides are malformed"
         )
-    canonical = {}
+    canonical: StateObject = {}
     for source, effective in overrides.items():
         source = _required_text(
             source, f"State item {queue_id!r} synthesis override source"
         )
-        key = normalize_character_name(source)
+        key = _required_text(
+            normalize_character_name(source),
+            f"State item {queue_id!r} synthesis override source",
+        )
         if key != source or key == "narrator":
             raise BulkGenerationError(
                 f"State item {queue_id!r} synthesis override source is not canonical"
@@ -1415,11 +1557,12 @@ def _validate_synthesis_configuration(
         raise BulkGenerationError(
             f"State item {queue_id!r} synthesis overrides are inconsistent"
         )
-    result = {
-        "missing_voice_policy": policy.to_document(),
-        "synthesis_character_overrides": canonical,
-        "failure_repair_policy": repair_policy.to_document(),
-    }
+    return canonical
+
+
+def _add_synthesis_configuration_optionals(
+    result: StateObject, configuration: StateObject, queue_id: str
+) -> None:
     if "audio_event_spoken_projection_queue_ids" in configuration:
         projection_ids = configuration["audio_event_spoken_projection_queue_ids"]
         if (
@@ -1440,7 +1583,7 @@ def _validate_synthesis_configuration(
             configuration.get("queue_voice_overrides_sha256"),
             f"State item {queue_id!r} queue voice override SHA-256",
         )
-    return result
+    return None
 
 
 def _validate_audio_event_spoken_projection(
@@ -1509,263 +1652,289 @@ def _validate_failure_repair_record(
         raise BulkGenerationError(
             f"State item {queue_id!r} failure repair is unauthorized"
         )
-    if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
-        if set(repair) != {
-            "schema_version",
-            "strategy",
-            "segments",
-            "segment_text_sha256",
-            "planned_segment_seeds",
-            "pause_ms",
-        }:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} sentence repair is malformed"
-            )
-        if queue_item is not None:
-            expected = safe_sentence_segments(queue_item.text)
-            if repair.get("segments") != list(expected):
-                raise BulkGenerationError(
-                    f"State item {queue_id!r} sentence repair text changed"
-                )
-            expected_hashes = [
-                hashlib.sha256(value.encode("utf-8")).hexdigest() for value in expected
-            ]
-            if repair.get("segment_text_sha256") != expected_hashes:
-                raise BulkGenerationError(
-                    f"State item {queue_id!r} sentence repair hashes changed"
-                )
-        if repair.get("pause_ms") != policy.segment_pause_ms:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} sentence repair pause conflicts"
-            )
-        seeds = repair.get("planned_segment_seeds")
-        if not isinstance(seeds, list) or len(seeds) != len(repair.get("segments", [])):
-            raise BulkGenerationError(
-                f"State item {queue_id!r} sentence repair seeds are malformed"
-            )
-        for value in seeds:
-            _integer(value, f"State item {queue_id!r} sentence repair seed")
-        outer_seed = result.get("seed")
-        if outer_seed is not None:
-            assert isinstance(outer_seed, int)
-        if outer_seed is not None and seeds != [
-            outer_seed + index for index in range(len(seeds))
-        ]:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} sentence repair seeds conflict"
-            )
-    elif strategy == INLINE_PAUSE_MARKER:
-        if set(repair) != {
-            "schema_version",
-            "strategy",
-            "source_text_sha256",
-            "derived_prompt_sha256",
-            "pause_ms",
-            "marker_count",
-        }:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} inline pause repair is malformed"
-            )
-        if repair.get("pause_ms") != policy.inline_pause_ms:
-            raise BulkGenerationError(f"State item {queue_id!r} inline pause conflicts")
-        _nonnegative_int(
-            repair.get("marker_count"),
-            f"State item {queue_id!r} inline pause marker count",
+    _failure_repair_validators().get(strategy, _validate_bounded_seed_repair)(
+        repair, result, queue_id, queue_item, policy
+    )
+
+
+FailureRepairValidator: TypeAlias = Callable[
+    [StateObject, StateObject, str, VoiceGenerationQueueItem | None, FailureRepairPolicy],
+    None,
+]
+
+
+def _failure_repair_validators() -> dict[str, FailureRepairValidator]:
+    return {
+        SENTENCE_BOUNDARY_SEGMENTATION: _validate_sentence_boundary_repair,
+        INLINE_PAUSE_MARKER: _validate_inline_pause_repair,
+        EDGE_SILENCE_TRIM: _validate_edge_silence_repair,
+        OFFLINE_FALLBACK_BACKEND: _validate_offline_fallback_repair,
+    }
+
+
+def _validate_sentence_boundary_repair(
+    repair: StateObject,
+    result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+    policy: FailureRepairPolicy,
+) -> None:
+    if set(repair) != {
+        "schema_version",
+        "strategy",
+        "segments",
+        "segment_text_sha256",
+        "planned_segment_seeds",
+        "pause_ms",
+    }:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} sentence repair is malformed"
         )
-        if repair.get("marker_count", 0) < 1:
+    if queue_item is not None:
+        expected = safe_sentence_segments(queue_item.text)
+        if repair.get("segments") != list(expected):
             raise BulkGenerationError(
-                f"State item {queue_id!r} inline pause marker count is invalid"
+                f"State item {queue_id!r} sentence repair text changed"
             )
-        if queue_item is not None:
-            prompt, marker_count = inline_sentence_pause_prompt(
-                queue_item.text, pause_ms=policy.inline_pause_ms
-            )
-            expected_source = hashlib.sha256(
-                queue_item.text.encode("utf-8")
-            ).hexdigest()
-            expected_prompt = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-            if (
-                repair.get("source_text_sha256") != expected_source
-                or repair.get("derived_prompt_sha256") != expected_prompt
-                or repair.get("marker_count") != marker_count
-                or result.get("synthesis_text_sha256") != expected_prompt
-            ):
-                raise BulkGenerationError(
-                    f"State item {queue_id!r} inline pause prompt changed"
-                )
-    elif strategy == EDGE_SILENCE_TRIM:
-        allowed = {
-            "schema_version",
-            "strategy",
-            "leading_trimmed_samples",
-            "trailing_trimmed_samples",
-        }
-        if not set(repair).issubset(allowed):
+        expected_hashes = [
+            hashlib.sha256(value.encode("utf-8")).hexdigest() for value in expected
+        ]
+        if repair.get("segment_text_sha256") != expected_hashes:
             raise BulkGenerationError(
-                f"State item {queue_id!r} edge repair is malformed"
+                f"State item {queue_id!r} sentence repair hashes changed"
             )
-        for field in ("leading_trimmed_samples", "trailing_trimmed_samples"):
-            if field in repair:
-                _nonnegative_int(
-                    repair[field], f"State item {queue_id!r} repair {field}"
-                )
-    elif strategy == OFFLINE_FALLBACK_BACKEND:
-        if set(repair) != {"schema_version", "strategy", "source_failure"}:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} offline fallback repair is malformed"
-            )
-        source = repair.get("source_failure")
-        required = {
-            "mode",
-            "source_workspace_id",
-            "source_state_sha256",
-            "source_item_sha256",
-            "character",
-            "source_provider",
-            "source_model",
-            "source_generation_profile",
-            "source_attempts",
-            "source_seed",
-            "source_failure_kind",
-            "source_voice_reference",
-        }
-        optional = {
-            "source_parent_carry_forward",
-            "source_provider_attempts",
-            "source_repair_strategy",
-            "source_unresolved_authority",
-        }
-        if (
-            not isinstance(source, dict)
-            or not required.issubset(source)
-            or not set(source).issubset(required | optional)
-        ):
-            raise BulkGenerationError(
-                f"State item {queue_id!r} offline fallback source is malformed"
-            )
-        source_failure_kind = source.get("source_failure_kind")
-        source_repair_strategy = source.get("source_repair_strategy")
-        source_provider_attempts = source.get("source_provider_attempts")
-        source_authority = source.get("source_unresolved_authority")
-        has_unresolved_authority = source_authority is not None
-        if has_unresolved_authority:
-            if (
-                not isinstance(source_authority, dict)
-                or set(source_authority)
-                != {
-                    "schema",
-                    "schema_version",
-                    "kind",
-                    "authority_id",
-                    "source_sha256",
-                    "queue_id",
-                    "source_item_sha256",
-                }
-                or source_authority.get("schema")
-                != "vntts.authoring-offline-fallback-authority-reference"
-                or source_authority.get("schema_version") != 1
-                or source_authority.get("kind")
-                not in {"failed_voice_review", "failed_prompt_review"}
-                or source_authority.get("queue_id") != queue_id
-                or source_authority.get("source_item_sha256")
-                != source.get("source_item_sha256")
-            ):
-                raise BulkGenerationError(
-                    f"State item {queue_id!r} offline fallback authority is malformed"
-                )
-            _required_sha256(
-                source_authority.get("authority_id"),
-                f"State item {queue_id!r} fallback authority ID",
-            )
-            _required_sha256(
-                source_authority.get("source_sha256"),
-                f"State item {queue_id!r} fallback authority SHA-256",
-            )
-        exhausted_silence_source = (
-            source_failure_kind == "speech_silence"
-            and source_repair_strategy
-            in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
-            and isinstance(source_provider_attempts, int)
-            and not isinstance(source_provider_attempts, bool)
-            and (
-                has_unresolved_authority
-                or source_provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
-            )
+    if repair.get("pause_ms") != policy.segment_pause_ms:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} sentence repair pause conflicts"
         )
-        if (
-            source.get("mode") != "failed-outcome"
-            or source.get("source_provider") == result.get("provider")
-            or source_failure_kind not in {"missed_eos_audio_limit", "speech_silence"}
-            or (
-                source_failure_kind == "speech_silence" and not exhausted_silence_source
-            )
-        ):
-            raise BulkGenerationError(
-                f"State item {queue_id!r} offline fallback source is inconsistent"
-            )
-        if source_provider_attempts is not None:
-            source_provider_attempts = _nonnegative_int(
-                source_provider_attempts,
-                f"State item {queue_id!r} source provider attempts",
-            )
-            if (
-                not has_unresolved_authority
-                and source_provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS
-            ):
-                raise BulkGenerationError(
-                    f"State item {queue_id!r} offline fallback source attempts are not exhausted"
-                )
-        if source_repair_strategy is not None and source_repair_strategy not in {
-            BOUNDED_SEED_RETRY,
-            INLINE_PAUSE_MARKER,
-            SENTENCE_BOUNDARY_SEGMENTATION,
-        }:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} offline fallback source repair is invalid"
-            )
-        _required_sha256(
-            source.get("source_state_sha256"),
-            f"State item {queue_id!r} source state SHA-256",
+    seeds = repair.get("planned_segment_seeds")
+    segments = repair.get("segments")
+    if (
+        not isinstance(seeds, list)
+        or not isinstance(segments, list)
+        or len(seeds) != len(segments)
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} sentence repair seeds are malformed"
         )
-        _required_sha256(
-            source.get("source_item_sha256"),
-            f"State item {queue_id!r} source item SHA-256",
+    for value in seeds:
+        _integer(value, f"State item {queue_id!r} sentence repair seed")
+    outer_seed = result.get("seed")
+    if outer_seed is not None:
+        assert isinstance(outer_seed, int)
+    if outer_seed is not None and seeds != [
+        outer_seed + index for index in range(len(seeds))
+    ]:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} sentence repair seeds conflict"
         )
-        _required_text(
-            source.get("source_model"), f"State item {queue_id!r} source model"
+
+
+def _validate_inline_pause_repair(
+    repair: StateObject,
+    result: StateObject,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem | None,
+    policy: FailureRepairPolicy,
+) -> None:
+    if set(repair) != {
+        "schema_version",
+        "strategy",
+        "source_text_sha256",
+        "derived_prompt_sha256",
+        "pause_ms",
+        "marker_count",
+    }:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} inline pause repair is malformed"
         )
-        _required_text(
-            source.get("source_generation_profile"),
-            f"State item {queue_id!r} source generation profile",
+    if repair.get("pause_ms") != policy.inline_pause_ms:
+        raise BulkGenerationError(f"State item {queue_id!r} inline pause conflicts")
+    marker_count = _nonnegative_int(
+        repair.get("marker_count"), f"State item {queue_id!r} inline pause marker count"
+    )
+    if marker_count < 1:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} inline pause marker count is invalid"
         )
-        _nonnegative_int(
-            source.get("source_attempts"),
-            f"State item {queue_id!r} source attempts",
+    if queue_item is None:
+        return
+    prompt, marker_count = inline_sentence_pause_prompt(
+        queue_item.text, pause_ms=policy.inline_pause_ms
+    )
+    expected_source = hashlib.sha256(queue_item.text.encode("utf-8")).hexdigest()
+    expected_prompt = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    if (
+        repair.get("source_text_sha256") != expected_source
+        or repair.get("derived_prompt_sha256") != expected_prompt
+        or repair.get("marker_count") != marker_count
+        or result.get("synthesis_text_sha256") != expected_prompt
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} inline pause prompt changed"
         )
-        _integer(source.get("source_seed"), f"State item {queue_id!r} source seed")
-        parent_carry = source.get("source_parent_carry_forward")
-        if parent_carry is not None and not isinstance(parent_carry, dict):
-            raise BulkGenerationError(
-                f"State item {queue_id!r} parent carry-forward is malformed"
-            )
-        voice = source.get("source_voice_reference")
-        if (
-            not isinstance(voice, dict)
-            or set(voice) != {"character", "speaker", "aliases", "references"}
-            or not isinstance(voice.get("references"), list)
-            or not voice["references"]
-        ):
-            raise BulkGenerationError(
-                f"State item {queue_id!r} source voice reference is malformed"
-            )
-        for reference in voice["references"]:
-            _required_sha256(
-                reference, f"State item {queue_id!r} source reference SHA-256"
-            )
-    elif set(repair) != {"schema_version", "strategy"}:
+
+
+def _validate_edge_silence_repair(
+    repair: StateObject,
+    _result: StateObject,
+    queue_id: str,
+    _queue_item: VoiceGenerationQueueItem | None,
+    _policy: FailureRepairPolicy,
+) -> None:
+    allowed = {
+        "schema_version",
+        "strategy",
+        "leading_trimmed_samples",
+        "trailing_trimmed_samples",
+    }
+    if not set(repair).issubset(allowed):
+        raise BulkGenerationError(f"State item {queue_id!r} edge repair is malformed")
+    for field in ("leading_trimmed_samples", "trailing_trimmed_samples"):
+        if field in repair:
+            _nonnegative_int(repair[field], f"State item {queue_id!r} repair {field}")
+
+
+def _validate_bounded_seed_repair(
+    repair: StateObject,
+    _result: StateObject,
+    queue_id: str,
+    _queue_item: VoiceGenerationQueueItem | None,
+    _policy: FailureRepairPolicy,
+) -> None:
+    if set(repair) != {"schema_version", "strategy"}:
         raise BulkGenerationError(
             f"State item {queue_id!r} bounded seed repair is malformed"
         )
+
+
+def _validate_offline_fallback_repair(
+    repair: StateObject,
+    result: StateObject,
+    queue_id: str,
+    _queue_item: VoiceGenerationQueueItem | None,
+    _policy: FailureRepairPolicy,
+) -> None:
+    if set(repair) != {"schema_version", "strategy", "source_failure"}:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} offline fallback repair is malformed"
+        )
+    source = repair.get("source_failure")
+    if not isinstance(source, dict):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} offline fallback source is malformed"
+        )
+    _validate_offline_fallback_source_fields(source, queue_id)
+    _validate_offline_fallback_authority(source, queue_id)
+    _validate_offline_fallback_source_consistency(source, result, queue_id)
+    _validate_offline_fallback_source_values(source, queue_id)
+
+
+def _validate_offline_fallback_source_fields(source: StateObject, queue_id: str) -> None:
+    required = {
+        "mode", "source_workspace_id", "source_state_sha256", "source_item_sha256",
+        "character", "source_provider", "source_model", "source_generation_profile",
+        "source_attempts", "source_seed", "source_failure_kind", "source_voice_reference",
+    }
+    optional = {
+        "source_parent_carry_forward", "source_provider_attempts",
+        "source_repair_strategy", "source_unresolved_authority",
+    }
+    if not required.issubset(source) or not set(source).issubset(required | optional):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} offline fallback source is malformed"
+        )
+
+
+def _validate_offline_fallback_authority(source: StateObject, queue_id: str) -> None:
+    authority = source.get("source_unresolved_authority")
+    if authority is None:
+        return
+    expected = {
+        "schema": "vntts.authoring-offline-fallback-authority-reference",
+        "schema_version": 1,
+        "kind": authority.get("kind") if isinstance(authority, dict) else None,
+        "authority_id": authority.get("authority_id") if isinstance(authority, dict) else None,
+        "source_sha256": authority.get("source_sha256") if isinstance(authority, dict) else None,
+        "queue_id": queue_id,
+        "source_item_sha256": source.get("source_item_sha256"),
+    }
+    if (
+        not isinstance(authority, dict)
+        or set(authority) != set(expected)
+        or authority.get("kind") not in {"failed_voice_review", "failed_prompt_review"}
+        or any(authority.get(field) != value for field, value in expected.items())
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} offline fallback authority is malformed"
+        )
+    _required_sha256(authority.get("authority_id"), f"State item {queue_id!r} fallback authority ID")
+    _required_sha256(authority.get("source_sha256"), f"State item {queue_id!r} fallback authority SHA-256")
+
+
+def _validate_offline_fallback_source_consistency(
+    source: StateObject, result: StateObject, queue_id: str
+) -> None:
+    attempts = source.get("source_provider_attempts")
+    exhausted = (
+        source.get("source_failure_kind") == "speech_silence"
+        and source.get("source_repair_strategy")
+        in {None, BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}
+        and isinstance(attempts, int)
+        and not isinstance(attempts, bool)
+        and (
+            source.get("source_unresolved_authority") is not None
+            or attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
+        )
+    )
+    if (
+        source.get("mode") != "failed-outcome"
+        or source.get("source_provider") == result.get("provider")
+        or source.get("source_failure_kind") not in {"missed_eos_audio_limit", "speech_silence"}
+        or (source.get("source_failure_kind") == "speech_silence" and not exhausted)
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} offline fallback source is inconsistent"
+        )
+    if attempts is not None and (
+        _nonnegative_int(attempts, f"State item {queue_id!r} source provider attempts")
+        < MAX_BOUNDED_TOTAL_ATTEMPTS
+        and source.get("source_unresolved_authority") is None
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} offline fallback source attempts are not exhausted"
+        )
+    strategy = source.get("source_repair_strategy")
+    if strategy is not None and strategy not in {
+        BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER, SENTENCE_BOUNDARY_SEGMENTATION,
+    }:
+        raise BulkGenerationError(
+            f"State item {queue_id!r} offline fallback source repair is invalid"
+        )
+
+
+def _validate_offline_fallback_source_values(source: StateObject, queue_id: str) -> None:
+    for field in ("source_state_sha256", "source_item_sha256"):
+        _required_sha256(source.get(field), f"State item {queue_id!r} source {field.removeprefix('source_')} SHA-256")
+    for field in ("source_model", "source_generation_profile"):
+        _required_text(source.get(field), f"State item {queue_id!r} {field.replace('_', ' ')}")
+    _nonnegative_int(source.get("source_attempts"), f"State item {queue_id!r} source attempts")
+    _integer(source.get("source_seed"), f"State item {queue_id!r} source seed")
+    parent_carry = source.get("source_parent_carry_forward")
+    if parent_carry is not None and not isinstance(parent_carry, dict):
+        raise BulkGenerationError(f"State item {queue_id!r} parent carry-forward is malformed")
+    voice = source.get("source_voice_reference")
+    if (
+        not isinstance(voice, dict)
+        or set(voice) != {"character", "speaker", "aliases", "references"}
+        or not isinstance(voice.get("references"), list)
+        or not voice["references"]
+    ):
+        raise BulkGenerationError(
+            f"State item {queue_id!r} source voice reference is malformed"
+        )
+    for reference in voice["references"]:
+        _required_sha256(reference, f"State item {queue_id!r} source reference SHA-256")
 
 
 def _validate_seed_application(result: StateObject, queue_id: str) -> None:
@@ -1789,98 +1958,119 @@ def _validate_active_attempt(
     queue_id = active.get("queue_id")
     if not isinstance(queue_id, str) or not queue_id:
         raise BulkGenerationError("Active attempt queue_id must be non-empty text")
-    queue_item = None
-    if queue_by_id is not None:
-        queue_item = queue_by_id.get(queue_id)
-        if queue_item is None:
-            raise BulkGenerationError("Active attempt references an unknown queue item")
-        expected = {
-            "line_id": queue_item.line_id,
-            "text": queue_item.text,
-            "text_sha256": queue_item.text_sha256,
-            "speaker": queue_item.speaker,
-            "voice_character": queue_item.voice_character,
-        }
-        for field, value in expected.items():
-            if field in active and active[field] != value:
-                raise BulkGenerationError(
-                    f"Active attempt {field} does not match queue item {queue_id!r}"
-                )
-    phase = active.get("phase")
-    if phase is not None and phase not in {
-        "generating",
-        "validating",
-        "publishing",
-        "retrying",
-    }:
-        raise BulkGenerationError(f"Active attempt phase is invalid: {phase!r}")
-    integers = {}
-    for field in ("attempt", "attempt_limit", "total_attempts", "provider_attempt"):
-        if field in active:
-            integers[field] = _nonnegative_int(active[field], f"Active attempt {field}")
-            if integers[field] < 1:
-                raise BulkGenerationError(f"Active attempt {field} must be positive")
-    if (
-        "attempt" in integers
-        and "attempt_limit" in integers
-        and integers["attempt"] > integers["attempt_limit"]
-    ):
-        raise BulkGenerationError("Active attempt exceeds its attempt limit")
-    if (
-        "attempt" in integers
-        and "total_attempts" in integers
-        and integers["total_attempts"] < integers["attempt"]
-    ):
-        raise BulkGenerationError("Active cumulative attempts are inconsistent")
+    queue_item = _validate_active_queue_item(active, queue_id, queue_by_id)
+    _validate_active_phase(active)
+    integers = _validate_active_counts(active)
     if "seed" in active:
         _integer(active["seed"], "Active attempt seed")
-    if "attempts_by_provider" in active:
-        provider_attempts = _provider_attempts(
-            active,
-            integers.get("total_attempts", 0),
-            default_provider=active.get("provider"),
-        )
-        provider = active.get("provider")
-        if (
-            isinstance(provider, str)
-            and "provider_attempt" in integers
-            and provider_attempts.get(provider) != integers["provider_attempt"]
-        ):
-            raise BulkGenerationError("Active provider attempt counter is inconsistent")
+    _validate_active_provider_attempts(active, integers)
+    _validate_active_timestamps(active)
+    if active.get("last_error") is not None and not isinstance(
+        active.get("last_error"), str
+    ):
+        raise BulkGenerationError("Active attempt last_error must be text or null")
+    if queue_item is not None:
+        _validate_active_synthesis(active, queue_id, queue_item)
+
+
+def _validate_active_queue_item(
+    active: StateObject, queue_id: str, queue_by_id: QueueById | None
+) -> VoiceGenerationQueueItem | None:
+    if queue_by_id is None:
+        return None
+    queue_item = queue_by_id.get(queue_id)
+    if queue_item is None:
+        raise BulkGenerationError("Active attempt references an unknown queue item")
+    expected = {
+        "line_id": queue_item.line_id,
+        "text": queue_item.text,
+        "text_sha256": queue_item.text_sha256,
+        "speaker": queue_item.speaker,
+        "voice_character": queue_item.voice_character,
+    }
+    for field, value in expected.items():
+        if field in active and active[field] != value:
+            raise BulkGenerationError(
+                f"Active attempt {field} does not match queue item {queue_id!r}"
+            )
+    return queue_item
+
+
+def _validate_active_phase(active: StateObject) -> None:
+    phase = active.get("phase")
+    if phase is not None and phase not in {
+        "generating", "validating", "publishing", "retrying"
+    }:
+        raise BulkGenerationError(f"Active attempt phase is invalid: {phase!r}")
+
+
+def _validate_active_counts(active: StateObject) -> dict[str, int]:
+    integers: dict[str, int] = {
+        field: _positive_active_count(active[field], field)
+        for field in ("attempt", "attempt_limit", "total_attempts", "provider_attempt")
+        if field in active
+    }
+    if integers.get("attempt", 0) > integers.get("attempt_limit", float("inf")):
+        raise BulkGenerationError("Active attempt exceeds its attempt limit")
+    if integers.get("total_attempts", float("inf")) < integers.get("attempt", 0):
+        raise BulkGenerationError("Active cumulative attempts are inconsistent")
+    return integers
+
+
+def _positive_active_count(value: object, field: str) -> int:
+    count = _nonnegative_int(value, f"Active attempt {field}")
+    if count < 1:
+        raise BulkGenerationError(f"Active attempt {field} must be positive")
+    return count
+
+
+def _validate_active_provider_attempts(
+    active: StateObject, integers: dict[str, int]
+) -> None:
+    if "attempts_by_provider" not in active:
+        return
+    provider_attempts = _provider_attempts(
+        active,
+        integers.get("total_attempts", 0),
+        default_provider=active.get("provider"),
+    )
+    provider = active.get("provider")
+    if (
+        isinstance(provider, str)
+        and "provider_attempt" in integers
+        and provider_attempts.get(provider) != integers["provider_attempt"]
+    ):
+        raise BulkGenerationError("Active provider attempt counter is inconsistent")
+
+
+def _validate_active_timestamps(active: StateObject) -> None:
     for field in ("started_at", "updated_at"):
         timestamp = active.get(field)
         if field in active and (
             not isinstance(timestamp, str) or not timestamp.strip()
         ):
             raise BulkGenerationError(f"Active attempt {field} must be timestamp text")
-    if active.get("last_error") is not None and not isinstance(
-        active.get("last_error"), str
+
+
+def _validate_active_synthesis(
+    active: StateObject, queue_id: str, queue_item: VoiceGenerationQueueItem
+) -> None:
+    active_result = {
+        "requested_voice_character": active.get("requested_voice_character"),
+        "voice_character": active.get("synthesis_voice_character"),
+        "provider": active.get("provider"),
+    }
+    for field in (
+        "synthesis_configuration", "source_reference_binding", "synthesis_fallback",
+        "narrator_character", "failure_repair", "synthesis_text_sha256",
+        "text_transform", "attempts", "attempts_by_provider", "seed_applied",
     ):
-        raise BulkGenerationError("Active attempt last_error must be text or null")
-    if queue_item is not None:
-        active_result = {
-            "requested_voice_character": active.get("requested_voice_character"),
-            "voice_character": active.get("synthesis_voice_character"),
-            "provider": active.get("provider"),
-        }
-        for field in (
-            "synthesis_configuration",
-            "source_reference_binding",
-            "synthesis_fallback",
-            "narrator_character",
-            "failure_repair",
-            "synthesis_text_sha256",
-            "text_transform",
-            "attempts",
-            "attempts_by_provider",
-            "seed_applied",
-        ):
-            if field in active:
-                active_result[field] = active[field]
-        _validate_synthesis_identity(active_result, queue_id, queue_item)
-        active_result["seed"] = active.get("seed")
-        _validate_failure_repair_record(active_result, queue_id, queue_item)
-        _validate_seed_application(active_result, queue_id)
+        if field in active:
+            active_result[field] = active[field]
+    _validate_synthesis_identity(active_result, queue_id, queue_item)
+    active_result["seed"] = active.get("seed")
+    _validate_failure_repair_record(active_result, queue_id, queue_item)
+    _validate_seed_application(active_result, queue_id)
 
 
 def _validate_synthesis_controls(state: StateObject) -> None:
@@ -1893,76 +2083,76 @@ def _validate_synthesis_controls(state: StateObject) -> None:
         )
     for provenance, controls in registry.items():
         _required_sha256(provenance, "Synthesis-control provenance key")
-        if not isinstance(controls, list):
-            raise BulkGenerationError("Synthesis-control set must be a list")
-        roles = set()
-        for control in controls:
-            if not isinstance(control, dict):
-                raise BulkGenerationError("Synthesis control must be an object")
-            role = _required_text(control.get("role"), "Synthesis control role")
-            if role in roles:
-                raise BulkGenerationError(
-                    f"Synthesis-control role is duplicated: {role!r}"
-                )
-            roles.add(role)
-            kind = control.get("kind")
-            expected_fields = {"role", "kind", "path", "sha256"}
-            if kind == "directory":
-                expected_fields.add("files")
-            elif kind != "file":
-                raise BulkGenerationError(
-                    f"Synthesis control kind is invalid: {kind!r}"
-                )
-            if set(control) != expected_fields:
-                raise BulkGenerationError(
-                    f"Synthesis control {role!r} has unsupported fields"
-                )
-            _required_text(control.get("path"), f"Synthesis control {role!r} path")
-            _required_sha256(
-                control.get("sha256"), f"Synthesis control {role!r} sha256"
+        _validate_synthesis_control_set(controls)
+
+
+def _validate_synthesis_control_set(controls: object) -> None:
+    if not isinstance(controls, list):
+        raise BulkGenerationError("Synthesis-control set must be a list")
+    roles: set[str] = set()
+    for control in controls:
+        role = _validate_synthesis_control(control)
+        if role in roles:
+            raise BulkGenerationError(f"Synthesis-control role is duplicated: {role!r}")
+        roles.add(role)
+
+
+def _validate_synthesis_control(control: object) -> str:
+    if not isinstance(control, dict):
+        raise BulkGenerationError("Synthesis control must be an object")
+    role = _required_text(control.get("role"), "Synthesis control role")
+    kind = control.get("kind")
+    expected_fields = {"role", "kind", "path", "sha256"}
+    if kind == "directory":
+        expected_fields.add("files")
+    elif kind != "file":
+        raise BulkGenerationError(f"Synthesis control kind is invalid: {kind!r}")
+    if set(control) != expected_fields:
+        raise BulkGenerationError(
+            f"Synthesis control {role!r} has unsupported fields"
+        )
+    _required_text(control.get("path"), f"Synthesis control {role!r} path")
+    _required_sha256(control.get("sha256"), f"Synthesis control {role!r} sha256")
+    if kind == "directory":
+        _validate_synthesis_control_directory(control, role)
+    return role
+
+
+def _validate_synthesis_control_directory(control: StateObject, role: str) -> None:
+    files = control.get("files")
+    if not isinstance(files, list):
+        raise BulkGenerationError(f"Synthesis control {role!r} files must be a list")
+    parsed_files: list[dict[str, str]] = []
+    paths: set[str] = set()
+    for file_record in files:
+        parsed = _parse_synthesis_control_file(file_record, role)
+        if parsed["path"] in paths:
+            raise BulkGenerationError(
+                f"Synthesis control {role!r} file path is duplicated"
             )
-            if kind == "directory":
-                files = control.get("files")
-                if not isinstance(files, list):
-                    raise BulkGenerationError(
-                        f"Synthesis control {role!r} files must be a list"
-                    )
-                parsed_files = []
-                seen_paths = set()
-                for file_record in files:
-                    if not isinstance(file_record, dict) or set(file_record) != {
-                        "path",
-                        "sha256",
-                    }:
-                        raise BulkGenerationError(
-                            f"Synthesis control {role!r} file record is invalid"
-                        )
-                    relative = file_record.get("path")
-                    if not isinstance(relative, str) or "\\" in relative:
-                        raise BulkGenerationError(
-                            f"Synthesis control {role!r} file path is invalid"
-                        )
-                    pure = PurePosixPath(relative)
-                    if pure.is_absolute() or any(
-                        part in {"", ".", ".."} for part in pure.parts
-                    ):
-                        raise BulkGenerationError(
-                            f"Synthesis control {role!r} file path is unsafe"
-                        )
-                    if relative in seen_paths:
-                        raise BulkGenerationError(
-                            f"Synthesis control {role!r} file path is duplicated"
-                        )
-                    seen_paths.add(relative)
-                    digest = _required_sha256(
-                        file_record.get("sha256"),
-                        f"Synthesis control {role!r} file sha256",
-                    )
-                    parsed_files.append({"path": relative, "sha256": digest})
-                if _control_directory_digest(parsed_files) != control["sha256"]:
-                    raise BulkGenerationError(
-                        f"Synthesis control {role!r} directory digest is inconsistent"
-                    )
+        paths.add(parsed["path"])
+        parsed_files.append(parsed)
+    if _control_directory_digest(parsed_files) != control["sha256"]:
+        raise BulkGenerationError(
+            f"Synthesis control {role!r} directory digest is inconsistent"
+        )
+
+
+def _parse_synthesis_control_file(file_record: object, role: str) -> dict[str, str]:
+    if not isinstance(file_record, dict) or set(file_record) != {"path", "sha256"}:
+        raise BulkGenerationError(f"Synthesis control {role!r} file record is invalid")
+    relative = file_record.get("path")
+    if not isinstance(relative, str) or "\\" in relative:
+        raise BulkGenerationError(f"Synthesis control {role!r} file path is invalid")
+    pure = PurePosixPath(relative)
+    if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
+        raise BulkGenerationError(f"Synthesis control {role!r} file path is unsafe")
+    return {
+        "path": relative,
+        "sha256": _required_sha256(
+            file_record.get("sha256"), f"Synthesis control {role!r} file sha256"
+        ),
+    }
 
 
 def _validate_reviewed_waveform_publication(
@@ -1971,6 +2161,26 @@ def _validate_reviewed_waveform_publication(
     publication = state.get("reviewed_waveform_publication")
     if publication is None:
         return
+    if not isinstance(publication, dict):
+        raise BulkGenerationError("Reviewed-waveform publication authority is malformed")
+    _validate_reviewed_waveform_publication_structure(publication)
+    _validate_reviewed_waveform_publication_metadata(publication)
+    items = publication.get("items")
+    if not isinstance(items, list) or not items:
+        raise BulkGenerationError("Reviewed-waveform publication ledger is empty")
+    observed = [
+        _validate_reviewed_waveform_ledger_item(ledger, state, queue_by_id)
+        for ledger in items
+    ]
+    if observed != sorted(set(observed)):
+        raise BulkGenerationError(
+            "Reviewed-waveform publication items are not canonical"
+        )
+
+
+def _validate_reviewed_waveform_publication_structure(
+    publication: StateObject,
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -1991,8 +2201,7 @@ def _validate_reviewed_waveform_publication(
         "items",
     }
     if (
-        not isinstance(publication, dict)
-        or set(publication) != fields
+        set(publication) != fields
         or publication.get("schema") != REVIEWED_WAVEFORM_PUBLICATION_SCHEMA
         or publication.get("schema_version") != REVIEWED_WAVEFORM_PUBLICATION_VERSION
         or publication.get("reason") != REVIEWED_WAVEFORM_PUBLICATION_REASON
@@ -2006,6 +2215,11 @@ def _validate_reviewed_waveform_publication(
         raise BulkGenerationError(
             "Reviewed-waveform publication authority is malformed"
         )
+
+
+def _validate_reviewed_waveform_publication_metadata(
+    publication: StateObject,
+) -> None:
     for field in (
         "batch_id",
         "base_workspace_sha256",
@@ -2044,112 +2258,92 @@ def _validate_reviewed_waveform_publication(
         )
     for digest in narrator_references:
         _required_sha256(digest, "Reviewed-waveform narrator reference SHA-256")
-    items = publication.get("items")
-    if not isinstance(items, list) or not items:
-        raise BulkGenerationError("Reviewed-waveform publication ledger is empty")
-    observed = []
-    for ledger in items:
-        ledger_fields = {
-            "queue_id",
-            "line_id",
-            "text_sha256",
-            "speaker",
-            "path",
-            "file_sha256",
-            "base_result_sha256",
-            "base_result",
-            "route",
-        }
-        if not isinstance(ledger, dict) or set(ledger) != ledger_fields:
-            raise BulkGenerationError("Reviewed-waveform publication item is malformed")
-        queue_id = _required_text(ledger.get("queue_id"), "Reviewed-waveform queue ID")
-        state_items = state["items"]
-        assert isinstance(state_items, dict)
-        result = state_items.get(queue_id)
-        base_result = ledger.get("base_result")
-        route = ledger.get("route")
-        if (
-            not isinstance(result, dict)
-            or result.get("status") != "approved"
-            or result.get("review_status") != "approved"
-            or not isinstance(base_result, dict)
-            or result != base_result
-            or canonical_document_sha256(base_result)
-            != ledger.get("base_result_sha256")
-            or result.get("line_id") != ledger.get("line_id")
-            or result.get("text_sha256") != ledger.get("text_sha256")
-            or result.get("path") != ledger.get("path")
-            or result.get("file_sha256") != ledger.get("file_sha256")
-        ):
-            raise BulkGenerationError(
-                f"Reviewed-waveform publication item changed for {queue_id!r}"
-            )
-        _required_sha256(
-            ledger.get("text_sha256"), f"Reviewed-waveform {queue_id!r} text SHA-256"
-        )
-        _required_sha256(
-            ledger.get("file_sha256"), f"Reviewed-waveform {queue_id!r} WAV SHA-256"
-        )
-        _required_sha256(
-            ledger.get("base_result_sha256"),
-            f"Reviewed-waveform {queue_id!r} base result SHA-256",
-        )
-        if (
-            not isinstance(route, dict)
-            or set(route)
-            != {
-                "source",
-                "status",
-                "effective_character",
-                "reference_sha256s",
-            }
-            or route.get("source")
-            not in {"config_rebase", "historical_reviewed_waveform"}
-            or route.get("status") not in {"active", "not_reproducible"}
-        ):
-            raise BulkGenerationError(
-                f"Reviewed-waveform route is invalid for {queue_id!r}"
-            )
-        _required_text(
-            route.get("effective_character"),
-            f"Reviewed-waveform {queue_id!r} effective character",
-        )
-        references = route.get("reference_sha256s")
-        if not isinstance(references, list) or references != sorted(set(references)):
-            raise BulkGenerationError(
-                f"Reviewed-waveform references are not canonical for {queue_id!r}"
-            )
-        if route["source"] == "config_rebase" and (
-            route["status"] != "active" or not references
-        ):
-            raise BulkGenerationError(
-                f"Reviewed-waveform active route is incomplete for {queue_id!r}"
-            )
-        if route["source"] == "historical_reviewed_waveform" and (
-            route["status"] != "not_reproducible" or references
-        ):
-            raise BulkGenerationError(
-                f"Reviewed-waveform historical route is overstated for {queue_id!r}"
-            )
-        for digest in references:
-            _required_sha256(
-                digest, f"Reviewed-waveform {queue_id!r} reference SHA-256"
-            )
-        if queue_by_id is not None:
-            queue_item = queue_by_id.get(queue_id)
-            if (
-                queue_item is None
-                or queue_item.line_id != ledger.get("line_id")
-                or queue_item.text_sha256 != ledger.get("text_sha256")
-                or queue_item.speaker != ledger.get("speaker")
-            ):
-                raise BulkGenerationError(
-                    f"Reviewed-waveform queue identity changed for {queue_id!r}"
-                )
-        observed.append(queue_id)
-    if observed != sorted(set(observed)):
+
+
+def _validate_reviewed_waveform_ledger_item(
+    ledger: object, state: StateObject, queue_by_id: QueueById | None
+) -> str:
+    fields = {
+        "queue_id", "line_id", "text_sha256", "speaker", "path", "file_sha256",
+        "base_result_sha256", "base_result", "route",
+    }
+    if not isinstance(ledger, dict) or set(ledger) != fields:
+        raise BulkGenerationError("Reviewed-waveform publication item is malformed")
+    queue_id = _required_text(ledger.get("queue_id"), "Reviewed-waveform queue ID")
+    _validate_reviewed_waveform_base_result(ledger, state, queue_id)
+    _validate_reviewed_waveform_route(ledger.get("route"), queue_id)
+    _validate_reviewed_waveform_queue_identity(ledger, queue_id, queue_by_id)
+    return queue_id
+
+
+def _validate_reviewed_waveform_base_result(
+    ledger: StateObject, state: StateObject, queue_id: str
+) -> None:
+    state_items = state["items"]
+    assert isinstance(state_items, dict)
+    result = state_items.get(queue_id)
+    base_result = ledger.get("base_result")
+    if (
+        not isinstance(result, dict)
+        or result.get("status") != "approved"
+        or result.get("review_status") != "approved"
+        or not isinstance(base_result, dict)
+        or result != base_result
+        or canonical_document_sha256(base_result) != ledger.get("base_result_sha256")
+        or any(result.get(field) != ledger.get(field) for field in ("line_id", "text_sha256", "path", "file_sha256"))
+    ):
         raise BulkGenerationError(
-            "Reviewed-waveform publication items are not canonical"
+            f"Reviewed-waveform publication item changed for {queue_id!r}"
+        )
+    for field, label in (
+        ("text_sha256", "text SHA-256"), ("file_sha256", "WAV SHA-256"),
+        ("base_result_sha256", "base result SHA-256"),
+    ):
+        _required_sha256(ledger.get(field), f"Reviewed-waveform {queue_id!r} {label}")
+
+
+def _validate_reviewed_waveform_route(route: object, queue_id: str) -> None:
+    fields = {"source", "status", "effective_character", "reference_sha256s"}
+    if (
+        not isinstance(route, dict)
+        or set(route) != fields
+        or route.get("source") not in {"config_rebase", "historical_reviewed_waveform"}
+        or route.get("status") not in {"active", "not_reproducible"}
+    ):
+        raise BulkGenerationError(f"Reviewed-waveform route is invalid for {queue_id!r}")
+    _required_text(route.get("effective_character"), f"Reviewed-waveform {queue_id!r} effective character")
+    references = route.get("reference_sha256s")
+    if not isinstance(references, list) or references != sorted(set(references)):
+        raise BulkGenerationError(
+            f"Reviewed-waveform references are not canonical for {queue_id!r}"
+        )
+    valid_routes = {
+        "config_rebase": ("active", True),
+        "historical_reviewed_waveform": ("not_reproducible", False),
+    }
+    expected_status, references_required = valid_routes[route["source"]]
+    if route["status"] != expected_status or bool(references) != references_required:
+        raise BulkGenerationError(
+            f"Reviewed-waveform route is inconsistent for {queue_id!r}"
+        )
+    for digest in references:
+        _required_sha256(digest, f"Reviewed-waveform {queue_id!r} reference SHA-256")
+
+
+def _validate_reviewed_waveform_queue_identity(
+    ledger: StateObject, queue_id: str, queue_by_id: QueueById | None
+) -> None:
+    if queue_by_id is None:
+        return
+    queue_item = queue_by_id.get(queue_id)
+    if (
+        queue_item is None
+        or queue_item.line_id != ledger.get("line_id")
+        or queue_item.text_sha256 != ledger.get("text_sha256")
+        or queue_item.speaker != ledger.get("speaker")
+    ):
+        raise BulkGenerationError(
+            f"Reviewed-waveform queue identity changed for {queue_id!r}"
         )
 
 
@@ -2176,96 +2370,84 @@ def _validate_success_item(
         raise BulkGenerationError(
             f"Generation state identity does not match queue item {queue_id!r}"
         )
-    _required_text(result.get("provider"), f"State item {queue_id!r} provider")
-    _required_text(result.get("model"), f"State item {queue_id!r} model")
-    _required_sha256(
-        result.get("prompt_sha256"), f"State item {queue_id!r} prompt_sha256"
-    )
-    _integer(result.get("seed"), f"State item {queue_id!r} seed")
+    _validate_success_item_inputs(result, queue_id)
     _validate_synthesis_identity(result, queue_id, queue_item)
     if state_schema == STATE_SCHEMA:
-        _required_text(
-            result.get("generation_profile"),
-            f"State item {queue_id!r} generation_profile",
-        )
-        _required_text(
-            result.get("voice_character"),
-            f"State item {queue_id!r} voice_character",
-        )
-        _required_sha256(
-            result.get("synthesis_provenance_sha256"),
-            f"State item {queue_id!r} synthesis_provenance_sha256",
-        )
-        _required_sha256(
-            result.get("queue_annotations_sha256"),
-            f"State item {queue_id!r} queue_annotations_sha256",
-        )
-        _required_sha256(
-            result.get("synthesis_text_sha256"),
-            f"State item {queue_id!r} synthesis_text_sha256",
-        )
-        if result.get("text_transform") is not None:
-            _required_text(
-                result.get("text_transform"),
-                f"State item {queue_id!r} text_transform",
-            )
-        if result.get("prompt_applied") is not False:
-            raise BulkGenerationError(
-                f"State item {queue_id!r} prompt_applied must be false"
-            )
+        _validate_current_success_item(result, queue_id)
     relative = safe_generation_relative_path(
         result.get("path"), f"State item {queue_id!r} path"
     )
     audio = contained_generation_path(output_directory, relative, "Generated WAV")
     quality, samples = validate_success_file_with_samples(queue_id, result, audio)
     if state_schema == STATE_SCHEMA:
-        stored_speech_quality = result.get("speech_quality")
-        if not isinstance(stored_speech_quality, dict):
-            raise BulkGenerationError(
-                f"Generated WAV speech quality is missing for {queue_id!r}"
-            )
-        analysis_version = stored_speech_quality.get(
-            "analysis_version", LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION
-        )
-        if (
-            not isinstance(analysis_version, int)
-            or isinstance(analysis_version, bool)
-            or analysis_version
-            not in {
-                LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
-                SPEECH_QUALITY_ANALYSIS_VERSION,
-            }
-        ):
-            raise BulkGenerationError(
-                f"Generated WAV speech quality version is invalid for {queue_id!r}"
-            )
-        actual_speech_quality = asdict(
-            measure_generated_speech_samples(
-                samples,
-                sample_rate=quality.sample_rate,
-                duration_seconds=quality.duration_seconds,
-                analysis_version=analysis_version,
-            )
-        )
-        if analysis_version == LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION:
-            actual_speech_quality.pop("analysis_version")
-        if stored_speech_quality != actual_speech_quality:
-            raise BulkGenerationError(
-                f"Generated WAV speech quality mismatch for {queue_id!r}"
-            )
-    if (
-        result.get("provider") == "original-game-audio-event"
-        or "audio_event_composition" in result
+        _validate_success_speech_quality(result, queue_id, quality, samples)
+    _validate_success_audio_event_composition(result, queue_id, output_directory)
+
+
+def _validate_success_item_inputs(result: StateObject, queue_id: str) -> None:
+    _required_text(result.get("provider"), f"State item {queue_id!r} provider")
+    _required_text(result.get("model"), f"State item {queue_id!r} model")
+    _required_sha256(result.get("prompt_sha256"), f"State item {queue_id!r} prompt_sha256")
+    _integer(result.get("seed"), f"State item {queue_id!r} seed")
+
+
+def _validate_current_success_item(result: StateObject, queue_id: str) -> None:
+    for field in ("generation_profile", "voice_character"):
+        _required_text(result.get(field), f"State item {queue_id!r} {field}")
+    for field in (
+        "synthesis_provenance_sha256", "queue_annotations_sha256", "synthesis_text_sha256",
     ):
-        module = importlib.import_module("vntts.authoring.audio_event_workspace")
-        try:
-            module.validate_audio_event_composition_state_item(
-                output_directory.parent,
-                queue_id,
-                result,
-            )
-        except module.AudioEventWorkspaceError as error:
-            raise BulkGenerationError(str(error)) from error
+        _required_sha256(result.get(field), f"State item {queue_id!r} {field}")
+    if result.get("text_transform") is not None:
+        _required_text(result.get("text_transform"), f"State item {queue_id!r} text_transform")
+    if result.get("prompt_applied") is not False:
+        raise BulkGenerationError(f"State item {queue_id!r} prompt_applied must be false")
+
+
+def _validate_success_speech_quality(
+    result: StateObject, queue_id: str, quality: AudioQuality, samples: np.ndarray
+) -> None:
+    stored = result.get("speech_quality")
+    if not isinstance(stored, dict):
+        raise BulkGenerationError(f"Generated WAV speech quality is missing for {queue_id!r}")
+    version = stored.get("analysis_version", LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION)
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in {LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION, SPEECH_QUALITY_ANALYSIS_VERSION}
+    ):
+        raise BulkGenerationError(
+            f"Generated WAV speech quality version is invalid for {queue_id!r}"
+        )
+    actual = asdict(
+        measure_generated_speech_samples(
+            samples,
+            sample_rate=quality.sample_rate,
+            duration_seconds=quality.duration_seconds,
+            analysis_version=version,
+        )
+    )
+    if version == LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION:
+        actual.pop("analysis_version")
+    if stored != actual:
+        raise BulkGenerationError(f"Generated WAV speech quality mismatch for {queue_id!r}")
+
+
+def _validate_success_audio_event_composition(
+    result: StateObject, queue_id: str, output_directory: Path
+) -> None:
+    if (
+        result.get("provider") != "original-game-audio-event"
+        and "audio_event_composition" not in result
+    ):
+        return
+    module = importlib.import_module("vntts.authoring.audio_event_workspace")
+    try:
+        module.validate_audio_event_composition_state_item(
+            output_directory.parent, queue_id, result
+        )
+    except module.AudioEventWorkspaceError as error:
+        raise BulkGenerationError(str(error)) from error
 
 
 def _control_directory_digest(records: list[dict[str, str]]) -> str:
