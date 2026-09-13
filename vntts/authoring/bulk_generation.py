@@ -1687,13 +1687,18 @@ def _validate_offline_fallback_repair(
         not isinstance(carry, dict)
         or carry.get("mode") != "failed-outcome"
         or carry.get("source_provider") == provider
-        or _provider_repair_attempts(
-            result,
-            queue_id,
-            provider,
-            default_provider=result.get("provider"),
+        or (
+            # Attempt counters survive rebases; exhaustion requires the current
+            # outcome to belong to the fallback provider.
+            result.get("provider") == provider
+            and _provider_repair_attempts(
+                result,
+                queue_id,
+                provider,
+                default_provider=result.get("provider"),
+            )
+            >= 1
         )
-        >= 1
     ):
         raise BulkGenerationError(
             "Offline fallback lacks a different bound source backend or its single attempt is exhausted for "
