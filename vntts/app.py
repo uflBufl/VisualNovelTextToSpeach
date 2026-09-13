@@ -3960,6 +3960,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.set_live(running)
         self.compact_controller.set_live(running)
         self._apply_runtime_control_state(self._runtime_control_state())
+        dialog = self.pregeneration_dialog
+        if (
+            not running
+            and dialog is not None
+            and isinstance(dialog.pack_result(), OfflinePackResult)
+        ):
+            QTimer.singleShot(0, self._activate_ready_preparation)
 
     def set_speech_paused(self, paused):
         self._reported_speech_paused = bool(paused)

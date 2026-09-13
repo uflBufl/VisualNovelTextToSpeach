@@ -584,6 +584,33 @@ class TrayApplicationTest(unittest.TestCase):
         tray.narrator_dialog = None
         tray.shutdown()
 
+    def test_stopping_partial_reading_activates_the_completed_pack(self):
+        controller = Mock(is_ready=True, is_live_running=False)
+        tray = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        panel = Mock()
+        panel.pack_result.return_value = OfflinePackResult(
+            identity="b" * 64,
+            directory=Path("/tmp/saved-offline-pack"),
+            manifest=Path("/tmp/saved-offline-pack/game-pack.json"),
+            imported=Mock(),
+            approved=12,
+            live_fallbacks=0,
+            story_lines=12,
+        )
+        tray.pregeneration_dialog = panel
+
+        with patch.object(tray, "_activate_ready_preparation") as activate:
+            tray.set_live(False)
+            self.wait_until(lambda: activate.called)
+
+        activate.assert_called_once_with()
+        tray.pregeneration_dialog = None
+        tray.shutdown()
+
     def test_main_narrator_entry_reuses_preparation_settings(self):
         controller = Mock(is_ready=False, is_live_running=False)
         tray_application = TrayApplication(
