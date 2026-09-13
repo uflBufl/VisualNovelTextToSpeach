@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Callable, Literal, Protocol, TypeAlias, TypedDict, TypeGuard
 
 from PySide6.QtCore import QThreadPool
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
@@ -31,12 +32,15 @@ from PySide6.QtWidgets import (
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.failure_reference_audit import (
+    FailureReferenceAudio,
+    FailureReferenceAudit,
     load_failure_reference_audit,
     load_failure_reference_decisions,
     prepare_failure_reference_audio,
     record_failure_reference_decision,
 )
 from vntts.authoring.failure_reference_preview import (
+    FailureReferencePreview,
     FailureReferencePreviewCancelled,
     FailureReferencePreviewService,
 )
@@ -50,8 +54,131 @@ from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
 
-def _load_public_document(audit):
-    validated = load_failure_reference_audit(audit)
+class AuditCandidate(TypedDict):
+    candidate_id: str
+
+
+class AuditCase(TypedDict):
+    queue_id: str
+    line_id: str
+    speaker: str
+    text: str
+
+
+class AuditGroup(TypedDict):
+    group_id: str
+    synthesis_voice_character: str
+    case_count: int
+    candidates: list[AuditCandidate]
+    cases: list[AuditCase]
+
+
+class AuditDocument(TypedDict):
+    audit_id: str
+    workspace: str
+    workspace_id: str
+    groups: list[AuditGroup]
+
+
+class AuditDecision(TypedDict):
+    group_id: str
+    decision: str
+
+
+class AuditDecisions(TypedDict):
+    decisions: list[AuditDecision]
+    decision_set_id: str | None
+
+
+class _SignalConnector(Protocol):
+    def connect(self, slot: Callable[..., object]) -> object: ...
+
+
+class _AudioPlayer(Protocol):
+    mediaStatusChanged: _SignalConnector
+    errorOccurred: _SignalConnector
+
+    def stop(self) -> None: ...
+
+
+AuditLoader: TypeAlias = Callable[[str | Path], FailureReferenceAudit]
+DecisionLoader: TypeAlias = Callable[[Path], object]
+AudioPreparer: TypeAlias = Callable[[Path, str, str], FailureReferenceAudio]
+DecisionRecorder: TypeAlias = Callable[[Path, str, str], object]
+PreviewServiceFactory: TypeAlias = Callable[[Path], "_PreviewService"]
+AudioBytesPlayer: TypeAlias = Callable[[_AudioPlayer, QWidget, bytes, str], object | None]
+AudioBufferReleaser: TypeAlias = Callable[[_AudioPlayer, object | None], None]
+
+
+class _PreviewService(Protocol):
+    def generate(self, group_id: str, candidate_id: str, text: str) -> FailureReferencePreview: ...
+
+    def cancel(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+_audit_loader: AuditLoader = load_failure_reference_audit
+_decision_loader: DecisionLoader = load_failure_reference_decisions
+_default_audio_preparer: AudioPreparer = prepare_failure_reference_audio
+_default_decision_recorder: DecisionRecorder = record_failure_reference_decision
+_preview_service_factory: PreviewServiceFactory = FailureReferencePreviewService
+_audio_bytes_player: AudioBytesPlayer = play_audio_bytes
+_audio_buffer_releaser: AudioBufferReleaser = release_audio_buffer
+
+
+def _is_audit_document(value: object) -> TypeGuard[AuditDocument]:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("audit_id"), str)
+        and isinstance(value.get("workspace"), str)
+        and isinstance(value.get("workspace_id"), str)
+        and isinstance(value.get("groups"), list)
+        and all(
+            isinstance(group, dict)
+            and isinstance(group.get("group_id"), str)
+            and isinstance(group.get("synthesis_voice_character"), str)
+            and isinstance(group.get("case_count"), int)
+            and isinstance(group.get("candidates"), list)
+            and isinstance(group.get("cases"), list)
+            and all(
+                isinstance(candidate, dict)
+                and isinstance(candidate.get("candidate_id"), str)
+                for candidate in group["candidates"]
+            )
+            and all(
+                isinstance(case, dict)
+                and all(
+                    isinstance(case.get(field), str)
+                    for field in ("queue_id", "line_id", "speaker", "text")
+                )
+                for case in group["cases"]
+            )
+            for group in value["groups"]
+        )
+    )
+
+
+def _audit_decisions(value: object) -> AuditDecisions:
+    if not isinstance(value, dict) or not isinstance(value.get("decisions"), list):
+        raise RuntimeError("Reference audit decisions are malformed")
+    decisions: list[AuditDecision] = []
+    for decision in value["decisions"]:
+        if (
+            not isinstance(decision, dict)
+            or not isinstance(decision.get("group_id"), str)
+            or not isinstance(decision.get("decision"), str)
+        ):
+            raise RuntimeError("Reference audit decisions are malformed")
+        decisions.append({"group_id": decision["group_id"], "decision": decision["decision"]})
+    decision_set_id = value.get("decision_set_id")
+    if not isinstance(decision_set_id, (str, type(None))):
+        raise RuntimeError("Reference audit decisions are malformed")
+    return {"decisions": decisions, "decision_set_id": decision_set_id}
+
+
+def _load_public_document(audit: str | Path) -> tuple[FailureReferenceAudit, AuditDocument, AuditDecisions]:
+    validated = _audit_loader(audit)
     path = validated.directory / "audit.json"
     document = json.loads(path.read_text(encoding="utf-8"))
     actual = canonical_document_sha256(
@@ -59,7 +186,9 @@ def _load_public_document(audit):
     )
     if actual != validated.audit_id:
         raise RuntimeError("Reference audit changed while opening the interface")
-    return validated, document, load_failure_reference_decisions(validated.directory)
+    if not _is_audit_document(document):
+        raise RuntimeError("Reference audit document is malformed")
+    return validated, document, _audit_decisions(_decision_loader(validated.directory))
 
 
 class FailureReferenceAuditDialog(QDialog):
@@ -67,27 +196,27 @@ class FailureReferenceAuditDialog(QDialog):
 
     def __init__(
         self,
-        audit,
-        parent=None,
+        audit: str | Path,
+        parent: QWidget | None = None,
         *,
-        audio_preparer=prepare_failure_reference_audio,
-        decision_recorder=record_failure_reference_decision,
-        preview_service_factory=FailureReferencePreviewService,
-    ):
+        audio_preparer: AudioPreparer = _default_audio_preparer,
+        decision_recorder: DecisionRecorder = _default_decision_recorder,
+        preview_service_factory: PreviewServiceFactory = _preview_service_factory,
+    ) -> None:
         super().__init__(parent)
         self.audit, self.document, decisions = _load_public_document(audit)
-        self.audio_preparer = audio_preparer
-        self.decision_recorder = decision_recorder
-        self.preview_service = preview_service_factory(self.audit.directory)
+        self.audio_preparer: AudioPreparer = audio_preparer
+        self.decision_recorder: DecisionRecorder = decision_recorder
+        self.preview_service: _PreviewService = preview_service_factory(self.audit.directory)
         self.decisions = {value["group_id"]: value for value in decisions["decisions"]}
         self._playback_active = False
         self._save_active = False
         self._preview_active = False
-        self._preview_result = None
-        self._playback_buffer = None
-        self._playback_target = None
-        self._playback_kind = None
-        self._heard_candidates = {}
+        self._preview_result: FailureReferencePreview | None = None
+        self._playback_buffer: object | None = None
+        self._playback_target: tuple[str, str, str] | None = None
+        self._playback_kind: Literal["reference", "generated"] | None = None
+        self._heard_candidates: dict[str, set[str]] = {}
 
         self.setWindowTitle("VNTTS failed-reference audit")
         self.setMinimumSize(720, 460)
@@ -111,7 +240,12 @@ class FailureReferenceAuditDialog(QDialog):
                 encoding="utf-8"
             )
         )
-        self._run_config = workspace["run_config"]
+        run_config = workspace.get("run_config") if isinstance(workspace, dict) else None
+        if not isinstance(run_config, dict):
+            raise RuntimeError("Reference audit workspace configuration is malformed")
+        self._run_config: dict[str, object] = {
+            str(key): value for key, value in run_config.items() if isinstance(key, str)
+        }
         self.progress = QProgressBar()
         self.progress.setRange(0, len(self.document["groups"]))
         self.progress.setAccessibleName("Reference groups decided")
@@ -313,20 +447,12 @@ class FailureReferenceAuditDialog(QDialog):
         self._preview_runner = LatestTaskRunner(self, thread_pool=self.thread_pool)
         self._preview_runner.finished.connect(self._preview_finished)
 
-        QShortcut(QKeySequence("Ctrl+Alt+R"), self, activated=self.play_selected)
-        QShortcut(QKeySequence("Ctrl+Alt+S"), self, activated=self.stop_playback)
-        QShortcut(
-            QKeySequence("Ctrl+Alt+G"), self, activated=self.generate_selected_preview
-        )
-        QShortcut(
-            QKeySequence("Ctrl+Alt+P"), self, activated=self.replay_generated_preview
-        )
-        QShortcut(
-            QKeySequence("Ctrl+Alt+Left"), self, activated=lambda: self._move_group(-1)
-        )
-        QShortcut(
-            QKeySequence("Ctrl+Alt+Right"), self, activated=lambda: self._move_group(1)
-        )
+        QShortcut(QKeySequence("Ctrl+Alt+R"), self, self.play_selected)
+        QShortcut(QKeySequence("Ctrl+Alt+S"), self, self.stop_playback)
+        QShortcut(QKeySequence("Ctrl+Alt+G"), self, self.generate_selected_preview)
+        QShortcut(QKeySequence("Ctrl+Alt+P"), self, self.replay_generated_preview)
+        QShortcut(QKeySequence("Ctrl+Alt+Left"), self, lambda: self._move_group(-1))
+        QShortcut(QKeySequence("Ctrl+Alt+Right"), self, lambda: self._move_group(1))
 
         self.setTabOrder(self.decision_context.technical_toggle, self.group_choice)
         self.setTabOrder(self.group_choice, self.candidate_choice)
@@ -353,13 +479,13 @@ class FailureReferenceAuditDialog(QDialog):
             )
         self._show_group()
 
-    def _current_group(self):
+    def _current_group(self) -> AuditGroup | None:
         index = self.group_choice.currentIndex()
         if index < 0:
             return None
         return self.document["groups"][index]
 
-    def _show_group(self):
+    def _show_group(self) -> None:
         group = self._current_group()
         self.stop_playback()
         self.candidate_choice.blockSignals(True)
@@ -445,33 +571,33 @@ class FailureReferenceAuditDialog(QDialog):
         self._update_candidate_card()
         self._update_actions()
 
-    def _candidate_changed(self):
+    def _candidate_changed(self) -> None:
         self.stop_playback()
         self._update_candidate_card()
         self._update_actions()
 
-    def _preview_text_changed(self):
+    def _preview_text_changed(self) -> None:
         self.stop_playback()
         self._update_actions()
 
-    def _candidate_position(self):
+    def _candidate_position(self) -> tuple[int, int]:
         index = self.candidate_choice.currentIndex()
         return (index + 1, self.candidate_choice.count())
 
-    def _current_heard_candidates(self):
+    def _current_heard_candidates(self) -> set[str]:
         group = self._current_group()
         if group is None:
             return set()
         return self._heard_candidates.setdefault(group["group_id"], set())
 
-    def _all_current_candidates_heard(self):
+    def _all_current_candidates_heard(self) -> bool:
         group = self._current_group()
         if group is None:
             return False
         expected = {candidate["candidate_id"] for candidate in group["candidates"]}
         return expected.issubset(self._current_heard_candidates())
 
-    def _update_candidate_card(self):
+    def _update_candidate_card(self) -> None:
         group = self._current_group()
         candidate_id = self.candidate_choice.currentData()
         if group is None or not isinstance(candidate_id, str):
@@ -493,7 +619,7 @@ class FailureReferenceAuditDialog(QDialog):
             self.choose.setText(f"Use Candidate {position}")
             self.neither.setText("No suitable reference")
 
-    def play_selected(self):
+    def play_selected(self) -> None:
         group = self._current_group()
         candidate_id = self.candidate_choice.currentData()
         if group is None or not isinstance(candidate_id, str):
@@ -509,10 +635,14 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self._update_actions()
 
-    def _playback_finished(self, audio, error):
+    def _playback_finished(self, audio: object, error: Exception | None) -> None:
         self._playback_active = False
         if error is not None:
             self.status.setText(f"BLOCKED: {error}")
+            self._update_actions()
+            return
+        if not isinstance(audio, FailureReferenceAudio):
+            self.status.setText("BLOCKED: prepared reference audio is malformed")
             self._update_actions()
             return
         group = self._current_group()
@@ -552,7 +682,7 @@ class FailureReferenceAuditDialog(QDialog):
         self.status.setText(f"PLAYING: {candidate_label} (checksum verified)")
         self._update_actions()
 
-    def stop_playback(self):
+    def stop_playback(self) -> None:
         self.player.stop() if hasattr(self, "player") else None
         if hasattr(self, "player"):
             release_audio_buffer(self.player, self._playback_buffer)
@@ -562,7 +692,7 @@ class FailureReferenceAuditDialog(QDialog):
         if hasattr(self, "play"):
             self._update_actions()
 
-    def generate_selected_preview(self):
+    def generate_selected_preview(self) -> None:
         group = self._current_group()
         candidate_id = self.candidate_choice.currentData()
         text = self.preview_text_choice.currentData()
@@ -587,7 +717,7 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self._update_actions()
 
-    def cancel_preview_generation(self):
+    def cancel_preview_generation(self) -> None:
         if not self._preview_active:
             return
         self.preview_service.cancel()
@@ -596,7 +726,7 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self._update_actions()
 
-    def _preview_finished(self, preview, error):
+    def _preview_finished(self, preview: object, error: Exception | None) -> None:
         self._preview_active = False
         if error is not None:
             if isinstance(error, FailureReferencePreviewCancelled):
@@ -605,6 +735,10 @@ class FailureReferenceAuditDialog(QDialog):
                 )
             else:
                 self.status.setText(f"BLOCKED: generated preview failed: {error}")
+            self._update_actions()
+            return
+        if not isinstance(preview, FailureReferencePreview):
+            self.status.setText("BLOCKED: generated preview is malformed")
             self._update_actions()
             return
         self._preview_result = preview
@@ -623,11 +757,11 @@ class FailureReferenceAuditDialog(QDialog):
             return
         self._play_generated_preview(preview)
 
-    def replay_generated_preview(self):
+    def replay_generated_preview(self) -> None:
         if self._preview_matches_selection():
             self._play_generated_preview(self._preview_result)
 
-    def _play_generated_preview(self, preview):
+    def _play_generated_preview(self, preview: FailureReferencePreview) -> None:
         self.stop_playback()
         playback = play_audio_bytes(
             self.player, self, preview.payload, "memory:generated-preview.wav"
@@ -650,7 +784,7 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self._update_actions()
 
-    def _preview_matches_selection(self):
+    def _preview_matches_selection(self) -> bool:
         preview = self._preview_result
         group = self._current_group()
         return bool(
@@ -661,12 +795,12 @@ class FailureReferenceAuditDialog(QDialog):
             and preview.text == self.preview_text_choice.currentData()
         )
 
-    def choose_selected(self):
+    def choose_selected(self) -> None:
         candidate_id = self.candidate_choice.currentData()
         if isinstance(candidate_id, str):
             self.save_decision(candidate_id)
 
-    def save_decision(self, decision):
+    def save_decision(self, decision: str) -> None:
         group = self._current_group()
         if group is None or self._save_active:
             return
@@ -691,13 +825,14 @@ class FailureReferenceAuditDialog(QDialog):
         )
         self._update_actions()
 
-    def _save_finished(self, document, error):
+    def _save_finished(self, document: object, error: Exception | None) -> None:
         self._save_active = False
         if error is not None:
             self.status.setText(f"BLOCKED: decision was not saved: {error}")
             self._update_actions()
             return
-        self.decisions = {value["group_id"]: value for value in document["decisions"]}
+        decisions = _audit_decisions(document)
+        self.decisions = {value["group_id"]: value for value in decisions["decisions"]}
         self.status.setText(
             "SAVED: reference evidence recorded. No generation state was changed."
         )
@@ -713,14 +848,14 @@ class FailureReferenceAuditDialog(QDialog):
         else:
             self._show_group()
 
-    def _move_group(self, offset):
+    def _move_group(self, offset: int) -> None:
         count = self.group_choice.count()
         if count:
             self.group_choice.setCurrentIndex(
                 (self.group_choice.currentIndex() + offset) % count
             )
 
-    def _media_status_changed(self, status):
+    def _media_status_changed(self, status: object) -> None:
         if (
             status == QMediaPlayer.MediaStatus.EndOfMedia
             and self._playback_target is not None
@@ -746,7 +881,7 @@ class FailureReferenceAuditDialog(QDialog):
             self._update_candidate_card()
             self._update_actions()
 
-    def _media_error(self, _error, error_string):
+    def _media_error(self, _error: object, error_string: str) -> None:
         if error_string:
             self.status.setText(f"BLOCKED: audio playback failed: {error_string}")
         self._playback_buffer = None
@@ -754,7 +889,7 @@ class FailureReferenceAuditDialog(QDialog):
         self._playback_kind = None
         self._update_actions()
 
-    def _update_actions(self):
+    def _update_actions(self) -> None:
         has_group = self._current_group() is not None
         has_candidate = has_group and self.candidate_choice.currentIndex() >= 0
         all_heard = has_group and self._all_current_candidates_heard()
@@ -783,7 +918,10 @@ class FailureReferenceAuditDialog(QDialog):
             )
         elif has_group and not all_heard:
             heard = len(self._current_heard_candidates())
-            total = len(self._current_group()["candidates"])
+            group = self._current_group()
+            if group is None:
+                return
+            total = len(group["candidates"])
             self.action_reason.setText(
                 f"Decision locked: listen through every candidate ({heard}/{total} heard)."
             )
@@ -795,7 +933,7 @@ class FailureReferenceAuditDialog(QDialog):
         else:
             self.action_reason.setText("No reference group is available.")
 
-    def closeEvent(self, event: QCloseEvent):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._playback_active or self._save_active or self._preview_active:
             self.status.setText(
                 "Close deferred until the current checksum-bound task finishes."
@@ -807,7 +945,7 @@ class FailureReferenceAuditDialog(QDialog):
         event.accept()
 
 
-def launch_failure_reference_audit(audit_directory):
+def launch_failure_reference_audit(audit_directory: str | Path) -> int:
     application = QApplication.instance() or QApplication(sys.argv)
     try:
         dialog = FailureReferenceAuditDialog(audit_directory)
@@ -818,7 +956,7 @@ def launch_failure_reference_audit(audit_directory):
     return application.exec()
 
 
-def failure_reference_audit_status(audit_directory):
+def failure_reference_audit_status(audit_directory: str | Path) -> dict[str, str | int | None]:
     """Return validated progress without creating Qt state or writing decisions."""
     audit, document, decisions = _load_public_document(audit_directory)
     completed = len(decisions["decisions"])
@@ -833,7 +971,7 @@ def failure_reference_audit_status(audit_directory):
     }
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if any(value in {"-h", "--help"} for value in arguments):
         print("usage: vntts-reference-audit AUDIT_DIRECTORY [--status]")
