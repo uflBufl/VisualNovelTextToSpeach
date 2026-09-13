@@ -73,6 +73,9 @@ jobs:
       - name: Check runtime locks and binary wheels
         run: python scripts/dependency_report.py
 
+      - name: Audit locked dependencies
+        run: python scripts/dependency_audit.py
+
       - name: Install native dependencies
         run: brew install tesseract espeak-ng
 
