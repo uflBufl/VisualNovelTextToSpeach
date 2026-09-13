@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -105,7 +106,9 @@ class OfflineGenerationWorker:
         ordinary = (
             None
             if selected is None
-            else tuple(queue_id for queue_id in selected if queue_id not in projection_ids)
+            else tuple(
+                queue_id for queue_id in selected if queue_id not in projection_ids
+            )
         )
         result = None
         if ordinary is None or ordinary:
@@ -213,14 +216,10 @@ class OfflineGenerationWorker:
         ):
             raise OfflineGenerationError("Offline generation progress is invalid")
         generated = failed = other_terminal = 0
-        ready_line_ids = set(_static_ready_line_ids(generation_input.story_index))
         for item in state["items"].values():
             status = item.get("status") if isinstance(item, dict) else None
             if status in {"generated", "approved"}:
                 generated += 1
-                line_id = item.get("line_id")
-                if isinstance(line_id, str) and line_id:
-                    ready_line_ids.add(line_id)
             elif status == "failed":
                 failed += 1
             elif status in {"live_fallback", "omitted", "not_reproducible"}:
@@ -252,7 +251,10 @@ class OfflineGenerationWorker:
                 if isinstance(active, dict) and active.get("phase")
                 else None
             ),
-            ready_line_ids=tuple(sorted(ready_line_ids)),
+            ready_line_ids=_ready_line_ids(
+                generation_input.story_index,
+                state["items"],
+            ),
         )
 
     def _base_arguments(self, generation_input, voice_plan, output, *, retries=None):
@@ -413,13 +415,13 @@ def _generation_output(generation_input):
     )
 
 
-def runtime_progress_manifest_path(generation_input):
+def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path:
     """Return the temporary manifest published while this input is generating."""
     return _generation_output(generation_input) / RUNTIME_PROGRESS_MANIFEST_NAME
 
 
 @lru_cache(maxsize=16)
-def _static_ready_line_ids(story_index):
+def _static_ready_line_ids(story_index: Path) -> tuple[str, ...]:
     """Return immutable source/non-spoken routes that need no generated WAV."""
     try:
         story = load_story_index_document(story_index)
@@ -441,6 +443,23 @@ def _static_ready_line_ids(story_index):
             is not None
         )
     )
+
+
+def _ready_line_ids(
+    story_index: Path,
+    items: Mapping[object, object],
+) -> tuple[str, ...]:
+    ready_line_ids = set(_static_ready_line_ids(story_index))
+    for item in items.values():
+        if not isinstance(item, dict) or item.get("status") not in {
+            "generated",
+            "approved",
+        }:
+            continue
+        line_id = item.get("line_id")
+        if isinstance(line_id, str) and line_id:
+            ready_line_ids.add(line_id)
+    return tuple(sorted(ready_line_ids))
 
 
 def validate_offline_generation_result(
