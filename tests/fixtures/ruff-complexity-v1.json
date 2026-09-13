@@ -3940,12 +3940,6 @@
     {
       "code": "PLR0915",
       "path": "vntts/pregeneration_ui.py",
-      "scope": "OfflineAudioPreparationDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/pregeneration_ui.py",
       "scope": "OfflineAudioPreparationDialog._selection_changed",
       "count": 1
     },
