@@ -18,7 +18,9 @@ from vntts.authoring.publication import (
 )
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference_bytes
+from vntts.settings import AppSettings
 from vntts.voices import (
+    CharacterVoice,
     CharacterVoiceRegistry,
     find_default_voice_manifest,
     normalize_character_name,
@@ -38,8 +40,51 @@ class OriginalReference:
     rejection_reasons: tuple[str, ...]
 
 
-def load_original_reference(manifest, source_id):
+def _voice_manifest_document(
+    value: object,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    if not isinstance(value, dict):
+        raise ValueError("Voice manifest must be a JSON object")
+    document = {key: item for key, item in value.items() if isinstance(key, str)}
+    raw_voices = document.get("voices")
+    if not isinstance(raw_voices, list):
+        raise ValueError("Voice manifest must contain a voices list")
+    voices: list[dict[str, object]] = []
+    for item in raw_voices:
+        if not isinstance(item, dict):
+            raise ValueError("Voice manifest entries must be JSON objects")
+        entry = {key: field for key, field in item.items() if isinstance(key, str)}
+        _voice_character(entry)
+        voices.append(entry)
+    document["voices"] = voices
+    return document, voices
+
+
+def _voice_character(entry: dict[str, object]) -> str:
+    character = entry.get("character")
+    if not isinstance(character, str) or not character:
+        raise ValueError("Voice manifest entry requires a character")
+    return character
+
+
+def _candidate_evidence(value: object) -> tuple[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("Candidate evidence must be a JSON object")
+    report = value.get("candidate_report")
+    checksum = value.get("candidate_report_sha256")
+    if not isinstance(report, str) or not isinstance(checksum, str):
+        raise ValueError("Candidate evidence is incomplete")
+    return report, checksum
+
+
+def load_original_reference(
+    manifest: str | Path | None, source_id: str
+) -> OriginalReference:
     """Inspect and play the same bytes; cloning suitability does not gate listening."""
+    if manifest is None:
+        raise ValueError("The selected game reference is unavailable")
     voice = CharacterVoiceRegistry.from_file(manifest).resolve_source(source_id)
     if voice is None or not voice.references:
         raise ValueError("The selected game reference is unavailable")
@@ -67,18 +112,26 @@ def load_original_reference(manifest, source_id):
     )
 
 
-def narrator_preview_plan(settings, manifest, source_id, text):
+def narrator_preview_plan(
+    settings: AppSettings,
+    manifest: str | Path | None,
+    source_id: str,
+    text: str,
+) -> VoicePlan:
     preset = isinstance(source_id, str) and source_id.startswith("preset:")
     if preset and (
         settings.speech_backend != "pocket-tts"
         or source_id.removeprefix("preset:") not in pocket_tts_preset_voices
     ):
         raise ValueError("Choose a supported Pocket built-in voice")
-    registry = (
-        CharacterVoiceRegistry()
-        if preset
-        else CharacterVoiceRegistry.from_file(manifest)
-    )
+    if preset:
+        registry = CharacterVoiceRegistry()
+        identity = hashlib.sha256(source_id.encode()).hexdigest()
+    else:
+        if manifest is None:
+            raise ValueError("The selected game reference is unavailable")
+        registry = CharacterVoiceRegistry.from_file(manifest)
+        identity = sha256_file(manifest)
     voice = registry.resolve_source(source_id)
     if voice is None or (not preset and not voice.references):
         raise ValueError("The selected game reference is unavailable")
@@ -87,11 +140,6 @@ def narrator_preview_plan(settings, manifest, source_id, text):
         source_character=voice.character,
         source_speaker=voice.speaker,
         reference_sha256s=tuple(sha256_file(path) for path in voice.references),
-    )
-    identity = (
-        hashlib.sha256(source_id.encode()).hexdigest()
-        if preset
-        else sha256_file(manifest)
     )
     controls = hashlib.sha256(
         repr(
@@ -141,16 +189,18 @@ def narrator_preview_plan(settings, manifest, source_id, text):
 
 
 def bind_game_narrator(
-    settings,
-    manifest,
-    source_id,
-    character,
+    settings: AppSettings,
+    manifest: str | Path | None,
+    source_id: str,
+    character: str,
     *,
-    root=None,
-    additional_manifest=None,
-    target_character="Narrator",
-):
+    root: str | Path | None = None,
+    additional_manifest: str | Path | None = None,
+    target_character: str = "Narrator",
+) -> AppSettings:
     """Publish a new manifest snapshot; never rewrite the active pack or settings."""
+    if manifest is None:
+        raise ValueError("Choose an available game voice")
     target_character = target_character.strip()
     if not normalize_character_name(target_character):
         raise ValueError("Choose a narrator or character role")
@@ -174,26 +224,37 @@ def bind_game_narrator(
                 "Choose another spoken reference."
             ) from error
     base = settings.voice_manifest or find_default_voice_manifest()
-    document = load_voice_manifest(base)[0] if base else {"version": 2, "voices": []}
+    document, voices = _voice_manifest_document(
+        load_voice_manifest(base)[0] if base else {"version": 2, "voices": []}
+    )
     registry = (
         CharacterVoiceRegistry.from_file(base) if base else CharacterVoiceRegistry()
     )
-    sources = {
-        entry["character"]: registry.resolve_source(
-            f"character:{normalize_character_name(entry['character'])}"
+    sources: dict[str, CharacterVoice] = {}
+    for entry in voices:
+        entry_character = _voice_character(entry)
+        source = registry.resolve_source(
+            f"character:{normalize_character_name(entry_character)}"
         )
-        for entry in document["voices"]
-    }
+        if source is None:
+            raise ValueError("Voice manifest source is unavailable")
+        sources[entry_character] = source
     evidence_base = base
     if additional_manifest:
-        additional = load_voice_manifest(additional_manifest)[0]
+        additional, additional_voices = _voice_manifest_document(
+            load_voice_manifest(additional_manifest)[0]
+        )
         additional_registry = CharacterVoiceRegistry.from_file(additional_manifest)
-        for entry in additional["voices"]:
-            if entry["character"] not in sources:
-                document["voices"].append(entry)
-                sources[entry["character"]] = additional_registry.resolve_source(
-                    f"character:{normalize_character_name(entry['character'])}"
+        for entry in additional_voices:
+            entry_character = _voice_character(entry)
+            if entry_character not in sources:
+                source = additional_registry.resolve_source(
+                    f"character:{normalize_character_name(entry_character)}"
                 )
+                if source is None:
+                    raise ValueError("Voice manifest source is unavailable")
+                voices.append(entry)
+                sources[entry_character] = source
         if "vntts.player.voice_candidates" in additional:
             document["vntts.player.voice_candidates"] = additional[
                 "vntts.player.voice_candidates"
@@ -248,11 +309,12 @@ def bind_game_narrator(
         with staged_directory(root, prefix=".narrator-") as staging:
             references = staging / "references"
             references.mkdir()
-            for entry in document["voices"]:
-                voice = sources[entry["character"]]
+            for entry in voices:
+                entry_character = _voice_character(entry)
+                voice = sources[entry_character]
                 copied = []
                 for path, payload in zip(
-                    voice.references, source_payloads[entry["character"]], strict=True
+                    voice.references, source_payloads[entry_character], strict=True
                 ):
                     relative = (
                         f"references/{hashlib.sha256(payload).hexdigest()}{path.suffix}"
@@ -261,25 +323,32 @@ def bind_game_narrator(
                     copied.append(relative)
                 entry["references"] = copied
             # Candidate evidence belongs to the original story and remains intact.
-            evidence = document.get("vntts.player.voice_candidates")
+            evidence = _candidate_evidence(
+                document.get("vntts.player.voice_candidates")
+            )
             if evidence is not None:
-                relative = PurePosixPath(evidence["candidate_report"])
+                candidate_report, candidate_report_sha256 = evidence
+                candidate_relative = PurePosixPath(candidate_report)
                 if (
-                    relative.is_absolute()
-                    or ".." in relative.parts
-                    or "\\" in str(relative)
+                    candidate_relative.is_absolute()
+                    or ".." in candidate_relative.parts
+                    or "\\" in str(candidate_relative)
                 ):
                     raise ValueError("Unsafe candidate report path")
-                source = Path(evidence_base).parent / relative
-                source.resolve().relative_to(Path(evidence_base).parent.resolve())
+                if evidence_base is None:
+                    raise ValueError("Candidate evidence has no manifest")
+                candidate_source = Path(evidence_base).parent / candidate_relative
+                candidate_source.resolve().relative_to(
+                    Path(evidence_base).parent.resolve()
+                )
                 if (
-                    source.is_symlink()
-                    or sha256_file(source) != evidence["candidate_report_sha256"]
+                    candidate_source.is_symlink()
+                    or sha256_file(candidate_source) != candidate_report_sha256
                 ):
                     raise ValueError("Candidate report changed")
-                target = staging / relative
+                target = staging / candidate_relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
+                shutil.copyfile(candidate_source, target)
             copied = []
             for path, payload in zip(selected.references, payloads, strict=True):
                 relative = (
@@ -287,8 +356,8 @@ def bind_game_narrator(
                 )
                 (staging / relative).write_bytes(payload)
                 copied.append(relative)
-            if not any(entry["character"] == name for entry in document["voices"]):
-                document["voices"].append(
+            if not any(_voice_character(entry) == name for entry in voices):
+                voices.append(
                     {
                         "character": name,
                         "speaker": selected.speaker,
@@ -335,10 +404,13 @@ def bind_game_narrator(
         if normalize_character_name(name) != normalize_character_name(target_character)
     }
     assignments[target_character] = selected_id
+    if narrator:
+        return settings.updated(
+            voice_manifest=str(output),
+            tts_speaker_wav=None,
+            voice_assignments=assignments,
+        )
     return settings.updated(
         voice_manifest=str(output),
-        **({"tts_speaker_wav": None} if narrator else {}),
-        **{
-            "voice_assignments" if narrator else "character_voice_defaults": assignments
-        },
+        character_voice_defaults=assignments,
     )

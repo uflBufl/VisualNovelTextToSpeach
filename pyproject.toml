@@ -181,6 +181,7 @@ files = [
     "vntts/dialog.py",
     "vntts/document_identity.py",
     "vntts/game_pack.py",
+    "vntts/game_narrator.py",
     "vntts/game_narrator_ui.py",
     "vntts/hotkeys.py",
     "vntts/hotkey_ui.py",

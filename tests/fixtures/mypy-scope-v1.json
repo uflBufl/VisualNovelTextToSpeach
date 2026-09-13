@@ -50,6 +50,7 @@
     "vntts/diagnostics_ui.py",
     "vntts/dialog.py",
     "vntts/document_identity.py",
+    "vntts/game_narrator.py",
     "vntts/game_narrator_ui.py",
     "vntts/game_pack.py",
     "vntts/history.py",

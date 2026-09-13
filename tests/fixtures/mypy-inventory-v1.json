@@ -100,7 +100,6 @@
     "vntts/durable_settings.py": 10,
     "vntts/game_audio_decoder.py": 9,
     "vntts/game_content_importer.py": 17,
-    "vntts/game_narrator.py": 3,
     "vntts/generated_audio.py": 44,
     "vntts/macos.py": 9,
     "vntts/ocr.py": 34,

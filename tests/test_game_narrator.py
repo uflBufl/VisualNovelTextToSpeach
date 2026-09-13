@@ -1508,6 +1508,25 @@ class GameNarratorTest(unittest.TestCase):
                 "Centurion",
             )
 
+    def test_binding_rejects_incomplete_candidate_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self.narrator_manifest(root / "voices")
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            document["vntts.player.voice_candidates"] = {
+                "candidate_report": "candidate-report.json"
+            }
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "Candidate evidence is incomplete"):
+                bind_game_narrator(
+                    AppSettings(voice_manifest=str(manifest)),
+                    manifest,
+                    "character:centurion",
+                    "Centurion",
+                    root=root / "saved",
+                )
+
     def test_preparation_extracts_story_voices_after_fresh_narrator_selection(self):
         with (
             TemporaryDirectory() as directory,
