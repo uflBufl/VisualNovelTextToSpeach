@@ -2,9 +2,23 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Protocol
 
-from vntts.synthesis import SynthesisRequest
+import numpy as np
+from numpy.typing import NDArray
+
+from vntts.synthesis import (
+    SynthesisChunkStream,
+    SynthesisRequest,
+    SynthesisResult,
+)
+
+
+class SynchronousRenderer(Protocol):
+    name: str
+    generation_profile: str
+
+    def render(self, request: SynthesisRequest) -> SynthesisChunkStream: ...
 
 
 class PlaybackStatus(str, Enum):
@@ -16,7 +30,7 @@ class PlaybackStatus(str, Enum):
 
 @dataclass(frozen=True)
 class PreparedPlayback:
-    payload: Any
+    payload: object
     synthesis_ms: float | None
     first_audio_ms: float | None
     cache_source: str | None
@@ -49,7 +63,16 @@ class PlaybackOutcome:
         }
 
 
-def collect_synthesis(backend: Any, character: str, text: str) -> Any:
+class PreparedPlaybackBackend(Protocol):
+    last_synthesis_ms: float | None
+    last_first_audio_ms: float | None
+
+    def prepare_playback(self, character: str, text: str) -> PreparedPlayback: ...
+
+
+def collect_synthesis(
+    backend: SynchronousRenderer, character: str, text: str
+) -> SynthesisResult:
     return backend.render(
         SynthesisRequest(
             voice=character,
@@ -60,7 +83,7 @@ def collect_synthesis(backend: Any, character: str, text: str) -> Any:
 
 
 def prepared_playback_from_render(
-    backend: Any, character: str, text: str
+    backend: SynchronousRenderer, character: str, text: str
 ) -> PreparedPlayback:
     rendered = collect_synthesis(backend, character, text)
     return PreparedPlayback(
@@ -72,11 +95,15 @@ def prepared_playback_from_render(
     )
 
 
-def synthesized_mono_pcm(backend: Any, character: str, text: str) -> Any:
+def synthesized_mono_pcm(
+    backend: SynchronousRenderer, character: str, text: str
+) -> NDArray[np.generic]:
     return collect_synthesis(backend, character, text).pcm.reshape(-1)
 
 
-def prepare_playback_payload(backend: Any, character: str, text: str) -> Any:
+def prepare_playback_payload(
+    backend: PreparedPlaybackBackend, character: str, text: str
+) -> object:
     prepared = backend.prepare_playback(character, text)
     backend.last_synthesis_ms = prepared.synthesis_ms
     backend.last_first_audio_ms = prepared.first_audio_ms
