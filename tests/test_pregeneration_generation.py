@@ -8,6 +8,8 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
+from vntts_artifacts.story_index import write_story_index_document
+
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -85,6 +87,67 @@ def generation_inputs(root, *, backend="pocket-tts", model=None):
 
 
 class OfflineGenerationWorkerTest(unittest.TestCase):
+    def test_progress_reports_generated_and_already_playable_story_lines(self):
+        with TemporaryDirectory() as directory:
+            inputs, _plan = generation_inputs(Path(directory))
+            write_story_index_document(
+                inputs.story_index,
+                {
+                    "game": "Synthetic",
+                    "language": "en",
+                    "source_audio_completion": "duration-seconds",
+                },
+                [
+                    {
+                        "record_type": "line",
+                        "line_id": "original",
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker": "Ada",
+                        "text": "Already voiced.",
+                        "kind": "dialogue",
+                        "source_audio_status": "available",
+                        "source_audio_completeness": "full",
+                        "source_audio_duration_seconds": 1.0,
+                        "speakable": True,
+                    },
+                    {
+                        "record_type": "line",
+                        "line_id": "generated",
+                        "chapter": "1",
+                        "sequence": 2,
+                        "speaker": "Ada",
+                        "text": "Prepared now.",
+                        "kind": "dialogue",
+                        "source_audio_status": "absent",
+                        "speakable": True,
+                    },
+                ],
+            )
+            output = inputs.directory.parent / (
+                f"generation-output-{inputs.identity[:16]}"
+            )
+            output.mkdir()
+            (output / "generation-state.json").write_text(
+                json.dumps(
+                    {
+                        "queue_sha256": inputs.queue_sha256,
+                        "items": {
+                            "generated": {
+                                "status": "generated",
+                                "line_id": "generated",
+                            }
+                        },
+                        "active": None,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            progress = OfflineGenerationWorker().inspect_progress(inputs)
+
+        self.assertEqual(progress.ready_line_ids, ("generated", "original"))
+
     def test_missing_progress_is_not_a_report_of_zero_completed_work(self):
         with TemporaryDirectory() as directory:
             inputs, _plan = generation_inputs(Path(directory))

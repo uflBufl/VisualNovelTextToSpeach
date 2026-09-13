@@ -1945,7 +1945,26 @@ class OfflineAudioPreparationDialog(QDialog):
                     and selection_id in self._job.selected_story_ids
                     and self.has_pending_work()
                 ):
-                    status, detail = "preparing", self.progress_phase.text()
+                    ready = set(getattr(self._progress_snapshot, "ready_line_ids", ()))
+                    ready_count = sum(
+                        line_id in ready for line_id in selection.line_ids
+                    )
+                    ready_prefix = 0
+                    for line_id in selection.line_ids:
+                        if line_id not in ready:
+                            break
+                        ready_prefix += 1
+                    if ready_prefix == selection.line_count:
+                        status = "ready"
+                        detail = "all lines are playable while other chapters prepare"
+                    elif ready_count:
+                        status = "preparing"
+                        detail = (
+                            f"{ready_count}/{selection.line_count} lines ready; "
+                            f"{ready_prefix} consecutive from chapter start"
+                        )
+                    else:
+                        status, detail = "preparing", self.progress_phase.text()
                 label = {
                     "not_started": "Not prepared",
                     "preparing": "Preparing",
