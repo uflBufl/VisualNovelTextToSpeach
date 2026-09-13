@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Literal, Protocol, TypeAlias, TypedDict, TypeGuard
 
-from PySide6.QtCore import QObject, Qt, QThreadPool
+from PySide6.QtCore import QObject, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -36,7 +36,6 @@ from vntts.authoring.terminal_conflict_review import (
     record_terminal_conflict_decision,
 )
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
-from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
 
 class ReviewCandidate(TypedDict):
@@ -78,23 +77,41 @@ class _AudioPlayer(Protocol):
 
     def stop(self) -> None: ...
 
+    def play_bytes(self, payload: bytes, source: str) -> object | None: ...
+
+    def setSource(self, source: QUrl) -> None: ...
+
 
 CandidateLoader: TypeAlias = Callable[[Path, str, str], bytes]
 DecisionRecorder: TypeAlias = Callable[[Path, str, str], object]
 DecisionConfirmer: TypeAlias = Callable[[str], bool]
-AudioPlayerFactory: TypeAlias = Callable[[QObject], _AudioPlayer]
+AudioPlayerFactory: TypeAlias = Callable[[QObject | None], _AudioPlayer]
 CandidatePayload: TypeAlias = tuple[str, str, str, int, bytes]
 ReviewDocumentLoader: TypeAlias = Callable[[Path], object]
 ReviewProgressLoader: TypeAlias = Callable[[Path], object]
-AudioBytesPlayer: TypeAlias = Callable[[_AudioPlayer, QObject, bytes, str], object | None]
+AudioBytesPlayer: TypeAlias = Callable[
+    [_AudioPlayer, QObject | None, bytes, str], object | None
+]
 AudioBufferReleaser: TypeAlias = Callable[[_AudioPlayer, object | None], None]
 
 _review_document_loader: ReviewDocumentLoader = load_terminal_conflict_review_document
 _review_progress_loader: ReviewProgressLoader = load_terminal_conflict_review_progress
 _default_candidate_loader: CandidateLoader = load_terminal_conflict_candidate_audio
 _default_decision_recorder: DecisionRecorder = record_terminal_conflict_decision
-_audio_bytes_player: AudioBytesPlayer = play_audio_bytes
-_audio_buffer_releaser: AudioBufferReleaser = release_audio_buffer
+
+
+def _play_audio_bytes(
+    player: _AudioPlayer, _parent: QObject | None, payload: bytes, source: str
+) -> object | None:
+    return player.play_bytes(payload, source)
+
+
+def _release_audio_buffer(player: _AudioPlayer, _buffer: object | None) -> None:
+    player.setSource(QUrl())
+
+
+_audio_bytes_player: AudioBytesPlayer = _play_audio_bytes
+_audio_buffer_releaser: AudioBufferReleaser = _release_audio_buffer
 
 
 def _is_review_candidate(value: object) -> TypeGuard[ReviewCandidate]:
@@ -133,7 +150,9 @@ def _review_document(value: object) -> ReviewDocument:
         and isinstance(cases, list)
         and all(_is_review_case(case) for case in cases)
     ):
-        raise TerminalConflictReviewError("Terminal conflict review document is malformed")
+        raise TerminalConflictReviewError(
+            "Terminal conflict review document is malformed"
+        )
     return {"review_id": value["review_id"], "cases": cases}
 
 
@@ -148,7 +167,9 @@ def _review_progress(value: object) -> ReviewProgress:
             for decision in decisions
         )
     ):
-        raise TerminalConflictReviewError("Terminal conflict review progress is malformed")
+        raise TerminalConflictReviewError(
+            "Terminal conflict review progress is malformed"
+        )
     return {
         "decisions": [
             {"case_id": decision["case_id"], "decision": decision["decision"]}
