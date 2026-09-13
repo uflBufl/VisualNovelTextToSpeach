@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Callable, Literal, Protocol, TypeAlias, TypedDict
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QObject, Qt, QThreadPool, QUrl
 from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -39,33 +40,391 @@ from vntts.authoring.review_context_ui import (
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
 
 
+class ReviewSample(TypedDict):
+    queue_id: str
+    line_id: str
+    length_bucket: str
+    text: str
+
+
+class GeneratedReviewArm(TypedDict):
+    queue_id: str
+    status: Literal["generated"]
+    attempt_count: int
+    audio: str
+    quality: dict[str, object] | None
+    repair_strategy: str | None
+
+
+class FailedReviewArm(TypedDict):
+    queue_id: str
+    status: Literal["failed"]
+    attempt_count: int
+    failure_kind: str
+
+
+ReviewArm: TypeAlias = GeneratedReviewArm | FailedReviewArm
+
+
+class ReviewCandidate(TypedDict):
+    label: str
+    samples: list[ReviewArm]
+
+
+class ReviewCohort(TypedDict):
+    cohort_id: str
+    sample_count: int
+    samples: list[ReviewSample]
+    complete_candidate_labels: list[str]
+
+
+class ReviewContextTechnical(TypedDict):
+    plan_id: str
+    workspace_ids: list[str]
+
+
+class ReviewContext(TypedDict):
+    purpose: str
+    game_speaker: str
+    synthesis_voice: str
+    reference: str
+    backend: str
+    model: str
+    generation_profile: str
+    seed: str | int
+    controls: str
+    effect: str
+    technical: ReviewContextTechnical
+
+
+class ReviewBundle(TypedDict):
+    bundle_id: str
+    target_mode: Literal["missing", "failed"]
+    character: str
+    decision_context: ReviewContext | None
+    candidates: list[ReviewCandidate]
+    cohorts: list[ReviewCohort]
+
+
+class ReviewDecision(TypedDict):
+    cohort_id: str
+    decision: str | None
+    decision_origin: str | None
+
+
+class HeardRecord(TypedDict):
+    cohort_id: str
+    queue_id: str
+    label: str
+
+
+class ReviewSession(TypedDict):
+    decisions: list[ReviewDecision]
+    heard: list[HeardRecord]
+
+
+class _SignalConnector(Protocol):
+    def connect(self, slot: Callable[..., object]) -> object: ...
+
+
+class _AudioPlayer(Protocol):
+    playbackStateChanged: _SignalConnector
+    mediaStatusChanged: _SignalConnector
+    errorOccurred: _SignalConnector
+
+    def setSource(self, source: QUrl) -> None: ...
+
+    def play(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+
+HeardKey: TypeAlias = tuple[str, str, str]
+HeardRecorder: TypeAlias = Callable[[Path, str, str, str], object]
+DecisionRecorder: TypeAlias = Callable[[Path, str, str], object]
+DecisionConfirmer: TypeAlias = Callable[[str], bool]
+ReviewLoader: TypeAlias = Callable[[Path], tuple[object, object]]
+ReviewProgress: TypeAlias = Callable[[ReviewBundle, ReviewSession], tuple[int, int]]
+AudioPlayerFactory: TypeAlias = Callable[[QObject], _AudioPlayer]
+
+_review_loader: ReviewLoader = load_missing_voice_reuse_review
+_review_progress: ReviewProgress = missing_voice_reuse_review_progress
+_default_heard_recorder: HeardRecorder = record_missing_voice_reuse_heard
+_default_decision_recorder: DecisionRecorder = record_missing_voice_reuse_decision
+
+
+def _review_sample(value: object) -> ReviewSample | None:
+    if not isinstance(value, dict):
+        return None
+    queue_id = value.get("queue_id")
+    line_id = value.get("line_id")
+    length_bucket = value.get("length_bucket")
+    text = value.get("text")
+    if (
+        not isinstance(queue_id, str)
+        or not isinstance(line_id, str)
+        or not isinstance(length_bucket, str)
+        or not isinstance(text, str)
+    ):
+        return None
+    return {
+        "queue_id": queue_id,
+        "line_id": line_id,
+        "length_bucket": length_bucket,
+        "text": text,
+    }
+
+
+def _review_arm(value: object) -> ReviewArm | None:
+    if not isinstance(value, dict):
+        return None
+    queue_id = value.get("queue_id")
+    status = value.get("status")
+    attempts = value.get("attempt_count")
+    if not isinstance(queue_id, str) or not isinstance(attempts, int):
+        return None
+    if status == "generated":
+        audio = value.get("audio")
+        raw_quality = value.get("quality")
+        repair = value.get("repair_strategy")
+        if not isinstance(audio, str):
+            return None
+        if not isinstance(repair, (str, type(None))):
+            return None
+        if raw_quality is None:
+            quality: dict[str, object] | None = None
+        elif isinstance(raw_quality, dict):
+            quality = {
+                key: item
+                for key, item in raw_quality.items()
+                if isinstance(key, str)
+            }
+        else:
+            return None
+        return {
+            "queue_id": queue_id,
+            "status": "generated",
+            "attempt_count": attempts,
+            "audio": audio,
+            "quality": quality,
+            "repair_strategy": repair,
+        }
+    if status == "failed":
+        failure_kind = value.get("failure_kind")
+        if not isinstance(failure_kind, str):
+            return None
+        return {
+            "queue_id": queue_id,
+            "status": "failed",
+            "attempt_count": attempts,
+            "failure_kind": failure_kind,
+        }
+    return None
+
+
+def _review_candidate(value: object) -> ReviewCandidate | None:
+    if not isinstance(value, dict):
+        return None
+    label = value.get("label")
+    arms = value.get("samples")
+    if not isinstance(label, str) or not isinstance(arms, list):
+        return None
+    samples = [_review_arm(arm) for arm in arms]
+    if any(arm is None for arm in samples):
+        return None
+    return {"label": label, "samples": [arm for arm in samples if arm is not None]}
+
+
+def _review_cohort(value: object) -> ReviewCohort | None:
+    if not isinstance(value, dict):
+        return None
+    cohort_id = value.get("cohort_id")
+    sample_count = value.get("sample_count")
+    samples = value.get("samples")
+    complete = value.get("complete_candidate_labels")
+    if (
+        not isinstance(cohort_id, str)
+        or not isinstance(sample_count, int)
+        or not isinstance(samples, list)
+        or not isinstance(complete, list)
+        or any(not isinstance(label, str) for label in complete)
+    ):
+        return None
+    reviewed_samples = [_review_sample(sample) for sample in samples]
+    if any(sample is None for sample in reviewed_samples):
+        return None
+    return {
+        "cohort_id": cohort_id,
+        "sample_count": sample_count,
+        "samples": [sample for sample in reviewed_samples if sample is not None],
+        "complete_candidate_labels": complete,
+    }
+
+
+def _review_context(value: object) -> ReviewContext | None:
+    if not isinstance(value, dict):
+        return None
+    technical = value.get("technical")
+    if not isinstance(technical, dict):
+        return None
+    plan_id = technical.get("plan_id")
+    workspace_ids = technical.get("workspace_ids")
+    text_fields = (
+        "purpose",
+        "game_speaker",
+        "synthesis_voice",
+        "reference",
+        "backend",
+        "model",
+        "generation_profile",
+        "controls",
+        "effect",
+    )
+    seed = value.get("seed")
+    if not isinstance(plan_id, str) or not isinstance(workspace_ids, list):
+        return None
+    if any(not isinstance(workspace_id, str) for workspace_id in workspace_ids):
+        return None
+    context_values: dict[str, str] = {}
+    for field in text_fields:
+        field_value = value.get(field)
+        if not isinstance(field_value, str):
+            return None
+        context_values[field] = field_value
+    if not isinstance(seed, (str, int)) or isinstance(seed, bool):
+        return None
+    return {
+        "purpose": context_values["purpose"],
+        "game_speaker": context_values["game_speaker"],
+        "synthesis_voice": context_values["synthesis_voice"],
+        "reference": context_values["reference"],
+        "backend": context_values["backend"],
+        "model": context_values["model"],
+        "generation_profile": context_values["generation_profile"],
+        "seed": seed,
+        "controls": context_values["controls"],
+        "effect": context_values["effect"],
+        "technical": {"plan_id": plan_id, "workspace_ids": workspace_ids},
+    }
+
+
+def _review_decisions(value: list[object]) -> list[ReviewDecision]:
+    decisions: list[ReviewDecision] = []
+    for decision in value:
+        if not isinstance(decision, dict):
+            raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
+        cohort_id = decision.get("cohort_id")
+        selected = decision.get("decision")
+        origin = decision.get("decision_origin")
+        if not isinstance(cohort_id, str) or not isinstance(selected, (str, type(None))):
+            raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
+        if not isinstance(origin, (str, type(None))):
+            raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
+        decisions.append(
+            {"cohort_id": cohort_id, "decision": selected, "decision_origin": origin}
+        )
+    return decisions
+
+
+def _review_heard_records(value: list[object]) -> list[HeardRecord]:
+    heard: list[HeardRecord] = []
+    for record in value:
+        if not isinstance(record, dict):
+            raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
+        cohort_id = record.get("cohort_id")
+        queue_id = record.get("queue_id")
+        label = record.get("label")
+        if (
+            not isinstance(cohort_id, str)
+            or not isinstance(queue_id, str)
+            or not isinstance(label, str)
+        ):
+            raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
+        heard.append({"cohort_id": cohort_id, "queue_id": queue_id, "label": label})
+    return heard
+
+
+def _review_data(value: object) -> tuple[ReviewBundle, ReviewSession]:
+    if not isinstance(value, tuple) or len(value) != 2:
+        raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
+    raw_bundle, raw_session = value
+    if not isinstance(raw_bundle, dict) or not isinstance(raw_session, dict):
+        raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
+    candidates = raw_bundle.get("candidates")
+    cohorts = raw_bundle.get("cohorts")
+    decisions = raw_session.get("decisions")
+    heard = raw_session.get("heard")
+    if (
+        not isinstance(candidates, list)
+        or not isinstance(cohorts, list)
+        or not isinstance(decisions, list)
+        or not isinstance(heard, list)
+    ):
+        raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
+    reviewed_candidates = [_review_candidate(candidate) for candidate in candidates]
+    reviewed_cohorts = [_review_cohort(cohort) for cohort in cohorts]
+    if any(candidate is None for candidate in reviewed_candidates) or any(
+        cohort is None for cohort in reviewed_cohorts
+    ):
+        raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
+    bundle_id = raw_bundle.get("bundle_id")
+    character = raw_bundle.get("character")
+    target_mode = raw_bundle.get("target_mode", "missing")
+    if (
+        not isinstance(bundle_id, str)
+        or not isinstance(character, str)
+        or target_mode not in {"missing", "failed"}
+    ):
+        raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
+    return (
+        {
+            "bundle_id": bundle_id,
+            "target_mode": target_mode,
+            "character": character,
+            "decision_context": _review_context(raw_bundle.get("decision_context")),
+            "candidates": [
+                candidate
+                for candidate in reviewed_candidates
+                if candidate is not None
+            ],
+            "cohorts": [cohort for cohort in reviewed_cohorts if cohort is not None],
+        },
+        {"decisions": _review_decisions(decisions), "heard": _review_heard_records(heard)},
+    )
+
+
+def _create_audio_player(parent: QObject) -> _AudioPlayer:
+    factory: AudioPlayerFactory = QMediaPlayer
+    return factory(parent)
+
+
 class MissingVoiceReuseReviewDialog(QDialog):
     """Review exact cohort samples while keeping failed arms visible."""
 
     def __init__(
         self,
-        session_path,
-        parent=None,
+        session_path: str | Path,
+        parent: QWidget | None = None,
         *,
-        thread_pool=None,
-        heard_recorder=record_missing_voice_reuse_heard,
-        decision_recorder=record_missing_voice_reuse_decision,
-        confirmer=None,
-    ):
+        thread_pool: QThreadPool | None = None,
+        heard_recorder: HeardRecorder = _default_heard_recorder,
+        decision_recorder: DecisionRecorder = _default_decision_recorder,
+        confirmer: DecisionConfirmer | None = None,
+    ) -> None:
         super().__init__(parent)
         self.session_path = Path(session_path).expanduser().resolve()
-        self.heard_recorder = heard_recorder
-        self.decision_recorder = decision_recorder
-        self.confirmer = confirmer or self._confirm_decision
-        self.bundle, self.session = load_missing_voice_reuse_review(self.session_path)
+        self.heard_recorder: HeardRecorder = heard_recorder
+        self.decision_recorder: DecisionRecorder = decision_recorder
+        self.confirmer: DecisionConfirmer = confirmer or self._confirm_decision
+        self.bundle, self.session = _review_data(_review_loader(self.session_path))
         self.heard_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.heard_runner.finished.connect(self._heard_saved)
         self.decision_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.decision_runner.finished.connect(self._decision_saved)
-        self._pending_heard = []
-        self._saving_heard = None
-        self._playing_key = None
-        self._cohort = None
+        self._pending_heard: list[HeardKey] = []
+        self._saving_heard: HeardKey | None = None
+        self._playing_key: HeardKey | None = None
+        self._cohort: ReviewCohort | None = None
         self._sample_index = 0
         self._close_pending = False
 
@@ -149,8 +508,8 @@ class MissingVoiceReuseReviewDialog(QDialog):
 
         self.play_grid = review_form_layout()
         candidate_panels = []
-        self.play_buttons = {}
-        self.arm_statuses = {}
+        self.play_buttons: dict[str, QPushButton] = {}
+        self.arm_statuses: dict[str, QLabel] = {}
         for column, candidate in enumerate(self.bundle["candidates"]):
             label = candidate["label"]
             button = QPushButton(f"Play {label}")
@@ -201,7 +560,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.decision_reason = QLabel()
         self.decision_reason.setWordWrap(True)
         self.decision_reason.setAccessibleName("Missing voice decision availability")
-        self.decision_buttons = {}
+        self.decision_buttons: dict[str, QPushButton] = {}
         decisions = review_form_layout()
         for index, candidate in enumerate(self.bundle["candidates"]):
             label = candidate["label"]
@@ -276,7 +635,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         layout.addWidget(self.review_scroll, 1)
         layout.addWidget(close_buttons)
 
-        self.player = QMediaPlayer(self)
+        self.player = _create_audio_player(self)
         self.player.playbackStateChanged.connect(self._playback_state_changed)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._playback_error)
@@ -296,9 +655,9 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.setTabOrder(prior, self.neither)
         self.setTabOrder(self.neither, self.close_button)
 
-    def _show_decision_context(self):
-        context = self.bundle.get("decision_context")
-        if not isinstance(context, dict):
+    def _show_decision_context(self) -> None:
+        context = self.bundle["decision_context"]
+        if context is None:
             self.decision_context.set_context(
                 {
                     "purpose": (
@@ -306,7 +665,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
                         if self.failed_control_mode
                         else "Choose a reusable voice for an unvoiced family"
                     ),
-                    "game_speaker": self.bundle.get("character", "Unknown"),
+                    "game_speaker": self.bundle["character"],
                     "synthesis_voice": "Unknown (legacy review bundle)",
                     "reference": "Unknown (legacy review bundle)",
                     "backend": "Unknown (legacy review bundle)",
@@ -320,13 +679,13 @@ class MissingVoiceReuseReviewDialog(QDialog):
                     ),
                 },
                 technical=(
-                    f"Bundle: {self.bundle.get('bundle_id', 'Unknown')}\n"
+                    f"Bundle: {self.bundle['bundle_id']}\n"
                     "This bundle predates published synthesis context; mutable "
                     "workspace settings are not guessed."
                 ),
             )
             return
-        model = str(context["model"])
+        model = context["model"]
         model_label = review_model_label(model)
         controls = f"{context['controls']} | Seed: {context['seed']}"
         technical = context["technical"]
@@ -340,12 +699,10 @@ class MissingVoiceReuseReviewDialog(QDialog):
             ),
         )
 
-    def _load_next_cohort(self):
+    def _load_next_cohort(self) -> None:
         self._stop()
-        self.bundle, self.session = load_missing_voice_reuse_review(self.session_path)
-        completed, total = missing_voice_reuse_review_progress(
-            self.bundle, self.session
-        )
+        self.bundle, self.session = _review_data(_review_loader(self.session_path))
+        completed, total = _review_progress(self.bundle, self.session)
         self.progress.setText(
             f"Completed {completed} of {total} families | Remaining {total - completed}"
         )
@@ -405,14 +762,14 @@ class MissingVoiceReuseReviewDialog(QDialog):
         )
         self._refresh_sample()
 
-    def _select_sample(self, index):
+    def _select_sample(self, index: int) -> None:
         if self._cohort is None or index < 0:
             return
         self._stop()
         self._sample_index = index
         self._refresh_sample()
 
-    def _move_sample(self, delta):
+    def _move_sample(self, delta: int) -> None:
         if self._cohort is None:
             return
         index = max(
@@ -421,7 +778,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         )
         self.sample_selector.setCurrentIndex(index)
 
-    def _refresh_sample(self):
+    def _refresh_sample(self) -> None:
         if self._cohort is None:
             return
         sample = self._cohort["samples"][self._sample_index]
@@ -439,14 +796,14 @@ class MissingVoiceReuseReviewDialog(QDialog):
                 was_heard = (sample["queue_id"], label) in heard
                 button.setText(f"{'Replay' if was_heard else 'Play'} {label}")
                 button.setEnabled(True)
-                quality = arm.get("quality") or {}
+                quality = arm["quality"] or {}
                 duration = quality.get("duration_seconds")
                 duration_text = (
                     f"{float(duration):.2f}s"
                     if isinstance(duration, (int, float))
                     else "duration unknown"
                 )
-                repair = arm.get("repair_strategy") or "direct render"
+                repair = arm["repair_strategy"] or "direct render"
                 self.arm_statuses[label].setText(
                     f"AVAILABLE | {duration_text} | {repair}"
                 )
@@ -461,7 +818,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.stop.setEnabled(self._playing_key is not None)
         self._update_decisions()
 
-    def _play(self, label):
+    def _play(self, label: str) -> None:
         if self._cohort is None:
             return
         sample = self._cohort["samples"][self._sample_index]
@@ -481,7 +838,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         )
         self.player.play()
 
-    def _stop(self):
+    def _stop(self) -> None:
         if hasattr(self, "player"):
             self.player.stop()
             self.player.setSource(QUrl())
@@ -491,7 +848,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         if hasattr(self, "stop"):
             self.stop.setEnabled(False)
 
-    def _playback_state_changed(self, state):
+    def _playback_state_changed(self, state: object) -> None:
         if (
             state == QMediaPlayer.PlaybackState.PlayingState
             and self._playing_key is not None
@@ -499,7 +856,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
             self.now_playing.setText(f"PLAYING {self._playing_key[2]}")
             self.stop.setEnabled(True)
 
-    def _media_status_changed(self, status):
+    def _media_status_changed(self, status: object) -> None:
         if status != QMediaPlayer.MediaStatus.EndOfMedia or self._playing_key is None:
             return
         key = self._playing_key
@@ -511,7 +868,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
             self._start_next_heard_save()
         self._refresh_sample()
 
-    def _start_next_heard_save(self):
+    def _start_next_heard_save(self) -> None:
         if self.heard_runner.active or not self._pending_heard:
             return
         self._saving_heard = self._pending_heard.pop(0)
@@ -523,15 +880,15 @@ class MissingVoiceReuseReviewDialog(QDialog):
         )
         self._update_decisions()
 
-    def _heard_saved(self, _result, error):
+    def _heard_saved(self, _result: object, error: Exception | None) -> None:
         saved = self._saving_heard
         self._saving_heard = None
         if error is not None:
             self.status.setText(f"HEARD SAVE FAILED: {error}. Replay to retry.")
         else:
             try:
-                self.bundle, self.session = load_missing_voice_reuse_review(
-                    self.session_path
+                self.bundle, self.session = _review_data(
+                    _review_loader(self.session_path)
                 )
                 self.status.setText(
                     "Heard evidence saved. Playback and replay remain available."
@@ -552,7 +909,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def _heard_keys(self):
+    def _heard_keys(self) -> set[tuple[str, str]]:
         if self._cohort is None:
             return set()
         cohort_id = self._cohort["cohort_id"]
@@ -574,13 +931,13 @@ class MissingVoiceReuseReviewDialog(QDialog):
             )
         )
 
-    def _all_heard_records(self):
+    def _all_heard_records(self) -> set[HeardKey]:
         return {
             (value["cohort_id"], value["queue_id"], value["label"])
             for value in self.session["heard"]
         }
 
-    def _required_heard(self):
+    def _required_heard(self) -> set[tuple[str, str]]:
         if self._cohort is None:
             return set()
         queue_ids = {sample["queue_id"] for sample in self._cohort["samples"]}
@@ -591,7 +948,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
             if sample["queue_id"] in queue_ids and sample["status"] == "generated"
         }
 
-    def _update_decisions(self):
+    def _update_decisions(self) -> None:
         ready = (
             self._cohort is not None
             and not self.heard_runner.active
@@ -631,7 +988,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
                 f"Decision locked: finish {remaining} available sample(s)."
             )
 
-    def _save_decision(self, decision):
+    def _save_decision(self, decision: str) -> None:
         if self._cohort is None or self.decision_runner.active:
             return
         if not self.confirmer(decision):
@@ -649,21 +1006,19 @@ class MissingVoiceReuseReviewDialog(QDialog):
         )
         self._update_decisions()
 
-    def _confirm_decision(self, decision):
+    def _confirm_decision(self, decision: str) -> bool:
         label = "Neither" if decision == "neither" else f"candidate {decision}"
-        return (
-            QMessageBox.question(
-                self,
-                "Save irreversible review decision?",
-                f"Save {label} for this {self._decision_name}? "
-                "This review window cannot revise it afterward.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            == QMessageBox.StandardButton.Yes
+        answer = QMessageBox.question(
+            self,
+            "Save irreversible review decision?",
+            f"Save {label} for this {self._decision_name}? "
+            "This review window cannot revise it afterward.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
+        return bool(answer == QMessageBox.StandardButton.Yes)
 
-    def _decision_saved(self, _result, error):
+    def _decision_saved(self, _result: object, error: Exception | None) -> None:
         if error is not None:
             self.status.setText(
                 f"SAVE FAILED: {error}. Replay and retry remain available."
@@ -679,13 +1034,13 @@ class MissingVoiceReuseReviewDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def _playback_error(self, _error, error_string):
+    def _playback_error(self, _error: object, error_string: str) -> None:
         self._playing_key = None
         self.now_playing.setText("PLAYBACK FAILED")
         self.stop.setEnabled(False)
         self.status.setText(f"PLAYBACK FAILED: {error_string}. Replay is available.")
 
-    def _set_all_actions(self, enabled):
+    def _set_all_actions(self, enabled: bool) -> None:
         for button in self.play_buttons.values():
             button.setEnabled(enabled)
         for button in self.decision_buttons.values():
@@ -696,7 +1051,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         self.sample_selector.setEnabled(enabled)
         self.stop.setEnabled(enabled and self._playing_key is not None)
 
-    def closeEvent(self, event: QCloseEvent):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if (
             self.heard_runner.active
             or self._pending_heard
@@ -712,7 +1067,7 @@ class MissingVoiceReuseReviewDialog(QDialog):
         super().closeEvent(event)
 
 
-def launch_missing_voice_reuse_review(session_path):
+def launch_missing_voice_reuse_review(session_path: str | Path) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     try:
         dialog = MissingVoiceReuseReviewDialog(session_path)
