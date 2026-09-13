@@ -1266,6 +1266,19 @@ class OnboardingWizard(QDialog):
         parent=None,
     ):
         super().__init__(parent)
+        self._initialize_state(settings, auto_discover_windows, reading_setup)
+        self._build_pages(
+            settings,
+            diagnostics,
+            capture_target_factory,
+            window_loader,
+            reading_setup,
+        )
+        navigation = self._build_navigation(reading_setup)
+        self._build_layout(navigation)
+        self.show_page(0)
+
+    def _initialize_state(self, settings, auto_discover_windows, reading_setup):
         self.reading_setup = reading_setup
         self.setWindowTitle(
             "Set up Reading" if reading_setup else "Visual Novel Text to Speech setup"
@@ -1282,6 +1295,14 @@ class OnboardingWizard(QDialog):
             else bool(auto_discover_windows)
         )
 
+    def _build_pages(
+        self,
+        settings,
+        diagnostics,
+        capture_target_factory,
+        window_loader,
+        reading_setup,
+    ):
         welcome = QWizardPage()
         welcome.setTitle("Set up Visual Novel Text to Speech")
         welcome_text = QLabel(
@@ -1338,6 +1359,7 @@ class OnboardingWizard(QDialog):
                 self.stack.addWidget(page)
             page.completeChanged.connect(self.update_navigation)
 
+    def _build_navigation(self, reading_setup):
         self.step_label = QLabel()
         self.step_label.setAccessibleName("Onboarding progress")
         self.step_label.setStyleSheet("font-weight: 600;")
@@ -1365,13 +1387,15 @@ class OnboardingWizard(QDialog):
         navigation.addWidget(self.back_button)
         navigation.addWidget(self.next_button)
         navigation.addWidget(self.finish_button)
+        return navigation
+
+    def _build_layout(self, navigation):
         layout = QVBoxLayout(self)
         layout.addWidget(self.step_label)
         layout.addWidget(self.page_title)
         layout.addWidget(self.page_subtitle)
         layout.addWidget(self.stack, 1)
         layout.addLayout(navigation)
-        self.show_page(0)
 
     def show_page(self, index):
         previous = self.pages[self.current_page_index]

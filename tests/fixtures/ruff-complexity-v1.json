@@ -3861,12 +3861,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/onboarding_ui.py",
-      "scope": "OnboardingWizard.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/package_self_test.py",
       "scope": "run_package_self_test",
       "count": 1
