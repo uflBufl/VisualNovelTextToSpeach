@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import json
 import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,7 +18,7 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.authority import canonical_document_sha256
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.authoring.reference_composite import (
     COMPOSITE_EVALUATION_SCHEMA,
     COMPOSITE_EVALUATION_VERSION,
@@ -164,10 +163,7 @@ def publish_experimental_composite_voice_input(
         return _result(output, bundle, authority, created=False)
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=".experimental-composite-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=".experimental-composite-") as staging:
         inventory = []
         _copy_manifest_references(
             source_manifest.parent, source_voices, staging, inventory
@@ -228,11 +224,6 @@ def publish_experimental_composite_voice_input(
         atomic_write_json(staging / "bundle.json", bundle, sort_keys=True)
         _validate_experimental_composite_voice_input(staging, expected)
         rename_directory_no_replace(staging, output)
-        staging = None
-    except Exception:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-        raise
     return _result(output, bundle, authority, created=True)
 
 

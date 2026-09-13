@@ -7,7 +7,6 @@ import hashlib
 import io
 import math
 import re
-import shutil
 import tempfile
 import wave
 from collections import Counter
@@ -38,6 +37,7 @@ from vntts.authoring.cohort_review import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.speech_quality import measure_generated_speech_bytes
 from vntts.authoring.workbench import (
@@ -1133,12 +1133,7 @@ def publish_speech_robustness_corpus(
             len(failures),
             False,
         )
-    staging = Path(
-        tempfile.mkdtemp(
-            prefix=f".{output.name}.", suffix=".staging", dir=output.parent
-        )
-    )
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         for audio_sha256, payload in sorted(audio.items()):
             path = staging / "audio" / f"{audio_sha256}.wav"
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1171,9 +1166,6 @@ def publish_speech_robustness_corpus(
                 f"Unable to publish robustness corpus: {error}"
             ) from error
         load_speech_robustness_corpus(output)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
     return SpeechRobustnessCorpusResult(
         output,
         document["corpus_id"],

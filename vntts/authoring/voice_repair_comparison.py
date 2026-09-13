@@ -6,7 +6,6 @@ import copy
 import hashlib
 import json
 import re
-import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,8 +25,11 @@ from vntts.authoring.cohort_review import (
     _load_document,
     _write_document_no_replace,
 )
-from vntts.authoring.game_pack import FinalGamePackError
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
@@ -488,8 +490,7 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
     if destination.exists():
         _validate_candidate_input(destination, document, candidate)
         return destination, False
-    staging = Path(tempfile.mkdtemp(prefix=".voice-repair-staging-", dir=root))
-    try:
+    with staged_directory(root, prefix=".voice-repair-staging-") as staging:
         source_manifest = source_directory / "inputs/voice/manifest.json"
         source_payload = _read(source_manifest, "source voice manifest")
         if (
@@ -566,17 +567,13 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
         _require_fresh_plan(document)
         try:
             rename_directory_no_replace(staging, destination)
-        except (FinalGamePackError, OSError) as error:
+        except (AtomicPublicationError, OSError) as error:
             if destination.exists():
                 _validate_candidate_input(destination, document, candidate)
                 return destination, False
             raise VoiceRepairComparisonError(
                 f"Unable to publish voice repair candidate input: {error}"
             ) from error
-        staging = None
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
     return destination, True
 
 

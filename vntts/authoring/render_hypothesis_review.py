@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +25,7 @@ from vntts.authoring.failure_reference_audit import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.reference_render_comparison import (
     ReferenceRenderComparisonError,
@@ -216,10 +215,7 @@ def publish_render_hypothesis_review(
     }
     review_id = canonical_document_sha256(identity)
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         (staging / "audio").mkdir(parents=True)
         (staging / "comparison.json").write_bytes(comparison_snapshot.payload)
         (staging / "arm-report.json").write_bytes(report_snapshot.payload)
@@ -249,9 +245,6 @@ def publish_render_hypothesis_review(
         except (AtomicPublicationError, OSError) as error:
             raise RenderHypothesisReviewError(str(error)) from error
         return load_render_hypothesis_review(output)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
 
 
 def load_render_hypothesis_review(directory):
