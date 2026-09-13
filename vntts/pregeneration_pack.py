@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import os
 import shutil
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -44,6 +43,7 @@ from vntts.authoring.generation_state import (
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.chapter_voice_preload import _source_audio_duration_seconds
 from vntts.document_identity import is_lowercase_sha256
@@ -330,131 +330,130 @@ class OfflinePackPublisher:
             voices,
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
-        staging = Path(
-            tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent)
-        )
         try:
-            story_copy = staging / "story" / "story-index.jsonl"
-            voice_copy = staging / "voices" / "voice-manifest.json"
-            generated_copy = staging / "generated" / "manifest.json"
-            if base is None:
-                _copy_file(generation_input.story_index, story_copy)
-                _copy_file(generation_input.voice_manifest, voice_copy)
-                _copy_voice_references(
-                    generation_input.voice_manifest,
-                    voice_copy,
-                    voice_document,
-                    voices,
-                )
-                published_story = story
-            else:
-                published_story, semantic_copy, semantic_document = (
-                    _write_cumulative_story(
+            with staged_directory(
+                destination.parent, prefix=f".{destination.name}."
+            ) as staging:
+                story_copy = staging / "story" / "story-index.jsonl"
+                voice_copy = staging / "voices" / "voice-manifest.json"
+                generated_copy = staging / "generated" / "manifest.json"
+                if base is None:
+                    _copy_file(generation_input.story_index, story_copy)
+                    _copy_file(generation_input.voice_manifest, voice_copy)
+                    _copy_voice_references(
+                        generation_input.voice_manifest,
+                        voice_copy,
+                        voice_document,
+                        voices,
+                    )
+                    published_story = story
+                else:
+                    published_story, semantic_copy, semantic_document = (
+                        _write_cumulative_story(
+                            base,
+                            source_story,
+                            generation_input,
+                            story_copy,
+                        )
+                    )
+                    _write_cumulative_voices(
                         base,
-                        source_story,
+                        generation_input.voice_manifest,
+                        voice_document,
+                        voices,
+                        voice_copy,
+                    )
+                _raise_if_cancelled(cancel_event)
+                generated_records, live_fallbacks, omissions = _write_cumulative_routes(
+                    base,
+                    story,
+                    state,
+                    generation_result,
+                    generated_copy,
+                    current_omissions,
+                )
+                write_generated_audio_manifest(
+                    generated_copy,
+                    {
+                        "game": published_story.game,
+                        "language": published_story.language,
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "vntts.self-service.incremental": {
+                            "schema_version": 1,
+                            "base_pack_identity": base_identity,
+                            "current_queue_sha256": generation_input.queue_sha256,
+                        },
+                        "vntts.authoring.live_fallback": {
+                            "schema_version": 1,
+                            "mode": "explicit",
+                            "entries": live_fallbacks,
+                        },
+                        "vntts.authoring.audio_event_omission": {
+                            "schema_version": 1,
+                            "mode": "explicit",
+                            "entries": omissions,
+                        },
+                    },
+                    generated_records,
+                )
+                if base is None:
+                    semantic_copy, semantic_document = _copy_semantic_evidence(
                         generation_input,
+                        staging,
                         story_copy,
                     )
-                )
-                _write_cumulative_voices(
-                    base,
-                    generation_input.voice_manifest,
-                    voice_document,
-                    voices,
-                    voice_copy,
-                )
-            _raise_if_cancelled(cancel_event)
-            generated_records, live_fallbacks, omissions = _write_cumulative_routes(
-                base,
-                story,
-                state,
-                generation_result,
-                generated_copy,
-                current_omissions,
-            )
-            write_generated_audio_manifest(
-                generated_copy,
-                {
-                    "game": published_story.game,
-                    "language": published_story.language,
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                    "vntts.self-service.incremental": {
-                        "schema_version": 1,
-                        "base_pack_identity": base_identity,
-                        "current_queue_sha256": generation_input.queue_sha256,
-                    },
-                    "vntts.authoring.live_fallback": {
-                        "schema_version": 1,
-                        "mode": "explicit",
-                        "entries": live_fallbacks,
-                    },
-                    "vntts.authoring.audio_event_omission": {
-                        "schema_version": 1,
-                        "mode": "explicit",
-                        "entries": omissions,
-                    },
-                },
-                generated_records,
-            )
-            if base is None:
-                semantic_copy, semantic_document = _copy_semantic_evidence(
-                    generation_input,
-                    staging,
-                    story_copy,
-                )
-            components = {
-                "story_index": story_copy,
-                "voice_manifest": voice_copy,
-                "generated_audio": generated_copy,
-            }
-            pack_metadata = {
-                "game": {
-                    "id": published_story.game or job.game,
-                    "version": job.game_version or "local",
-                },
-                "producers": [{"name": "vntts-self-service", "version": "1"}],
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "vntts.self-service": {
-                    "schema_version": 1,
-                    "identity": identity,
-                    "job_id": job.job_id,
-                    "generation_input_identity": generation_input.identity,
-                    "source_queue_sha256": generation_input.queue_sha256,
-                    "source_state_sha256": state_sha256,
-                    "approved_count": len(generated_records),
-                    "live_fallback_count": len(live_fallbacks),
-                    "omission_count": len(omissions),
-                    "story_line_count": len(published_story.records),
-                    "base_pack_identity": base_identity,
-                },
-            }
-            if semantic_copy is not None:
-                pack_metadata["vntts.authoring"] = {
-                    "source_audio_semantic_evidence": {
-                        "path": "story/source-audio-semantic-evidence.json",
-                        "sha256": sha256_file(semantic_copy),
-                        "evidence_id": semantic_document["evidence_id"],
-                        "entry_count": len(semantic_document["entries"]),
-                    }
+                components = {
+                    "story_index": story_copy,
+                    "voice_manifest": voice_copy,
+                    "generated_audio": generated_copy,
                 }
-            pack_manifest = staging / "game-pack.json"
-            write_game_pack(pack_manifest, pack_metadata, components)
-            import_game_pack(pack_manifest)
-            GeneratedAudioLibrary(load_generated_audio_document(generated_copy))
-            _raise_if_cancelled(cancel_event)
-            try:
-                rename_directory_no_replace(staging, destination)
-            except AtomicPublicationError:
-                if destination.is_dir():
-                    return _load_existing(destination, identity)
-                raise
-            staging = None
-            result = _load_existing(destination, identity)
-            if result.approved != len(
-                generated_records
-            ) or result.live_fallbacks != len(live_fallbacks):
-                raise OfflinePackError("Published offline pack counts changed")
-            return result
+                pack_metadata = {
+                    "game": {
+                        "id": published_story.game or job.game,
+                        "version": job.game_version or "local",
+                    },
+                    "producers": [{"name": "vntts-self-service", "version": "1"}],
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "vntts.self-service": {
+                        "schema_version": 1,
+                        "identity": identity,
+                        "job_id": job.job_id,
+                        "generation_input_identity": generation_input.identity,
+                        "source_queue_sha256": generation_input.queue_sha256,
+                        "source_state_sha256": state_sha256,
+                        "approved_count": len(generated_records),
+                        "live_fallback_count": len(live_fallbacks),
+                        "omission_count": len(omissions),
+                        "story_line_count": len(published_story.records),
+                        "base_pack_identity": base_identity,
+                    },
+                }
+                if semantic_copy is not None:
+                    pack_metadata["vntts.authoring"] = {
+                        "source_audio_semantic_evidence": {
+                            "path": "story/source-audio-semantic-evidence.json",
+                            "sha256": sha256_file(semantic_copy),
+                            "evidence_id": semantic_document["evidence_id"],
+                            "entry_count": len(semantic_document["entries"]),
+                        }
+                    }
+                pack_manifest = staging / "game-pack.json"
+                write_game_pack(pack_manifest, pack_metadata, components)
+                import_game_pack(pack_manifest)
+                GeneratedAudioLibrary(load_generated_audio_document(generated_copy))
+                _raise_if_cancelled(cancel_event)
+                try:
+                    rename_directory_no_replace(staging, destination)
+                except AtomicPublicationError:
+                    if destination.is_dir():
+                        return _load_existing(destination, identity)
+                    raise
+                result = _load_existing(destination, identity)
+                if result.approved != len(
+                    generated_records
+                ) or result.live_fallbacks != len(live_fallbacks):
+                    raise OfflinePackError("Published offline pack counts changed")
+                return result
         except OfflineGenerationCancelled:
             raise
         except (
@@ -470,9 +469,6 @@ class OfflinePackPublisher:
             raise OfflinePackError(
                 f"Unable to publish offline pack: {error}"
             ) from error
-        finally:
-            if staging is not None:
-                shutil.rmtree(staging, ignore_errors=True)
 
 
 def load_saved_pack(manifest):

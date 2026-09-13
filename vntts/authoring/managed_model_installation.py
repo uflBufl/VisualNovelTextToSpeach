@@ -7,7 +7,6 @@ import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import mkdtemp
 from typing import Mapping
 
 from vntts_artifacts.atomic_io import atomic_write_json, atomic_write_text
@@ -16,6 +15,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 
 
@@ -141,9 +141,8 @@ def install_managed_model(
 
     installation = Path(installation)
     installation.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(mkdtemp(prefix=f".{model.model_id}-", dir=installation.parent))
     source = None if source is None else Path(source).expanduser().resolve()
-    try:
+    with staged_directory(installation.parent, prefix=f".{model.model_id}-") as staging:
         model_directory = staging / "model"
         model_directory.mkdir()
         for filename in model.files:
@@ -174,9 +173,6 @@ def install_managed_model(
             ):
                 raise error_type(str(error)) from error
         return managed_model_status(installation, model, **status_args)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
 
 
 __all__ = [

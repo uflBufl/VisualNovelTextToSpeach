@@ -6,8 +6,6 @@ import copy
 import hashlib
 import io
 import json
-import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +29,7 @@ from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.queue_builder import (
     GenerationQueueBuildError,
@@ -120,82 +119,81 @@ class PregenerationInputStore:
             return _load_existing(destination, identity)
         root = destination.parent
         root.mkdir(parents=True, exist_ok=True)
-        staging = Path(tempfile.mkdtemp(prefix=".generation-input-", dir=root))
         try:
-            story_path = staging / "story-index.jsonl"
-            voice_path = staging / "voice-manifest.json"
-            queue_path = staging / "queue.jsonl"
-            routed_records = _routed_story_records(
-                selected,
-                effective["line_voice_characters"],
-            )
-            story_metadata, selected_records, semantic_evidence = (
-                project_source_audio_semantics(
-                    Path(job.story_index).expanduser().resolve(),
-                    story.metadata,
-                    routed_records,
-                    staging,
+            with staged_directory(root, prefix=".generation-input-") as staging:
+                story_path = staging / "story-index.jsonl"
+                voice_path = staging / "voice-manifest.json"
+                queue_path = staging / "queue.jsonl"
+                routed_records = _routed_story_records(
+                    selected,
+                    effective["line_voice_characters"],
                 )
-            )
-            write_story_index_document(story_path, story_metadata, selected_records)
-            if semantic_evidence is not None:
-                validate_story_semantic_evidence(
+                story_metadata, selected_records, semantic_evidence = (
+                    project_source_audio_semantics(
+                        Path(job.story_index).expanduser().resolve(),
+                        story.metadata,
+                        routed_records,
+                        staging,
+                    )
+                )
+                write_story_index_document(story_path, story_metadata, selected_records)
+                if semantic_evidence is not None:
+                    validate_story_semantic_evidence(
+                        story_path,
+                        semantic_evidence,
+                        load_source_audio_semantic_evidence(semantic_evidence),
+                    )
+                _raise_if_cancelled(cancellation)
+                voices = _write_effective_voices(staging, effective)
+                write_voice_manifest(
+                    voice_path,
+                    {"version": 2, "voices": voices},
+                )
+                queue_plan = inspect_generation_queue(
                     story_path,
-                    semantic_evidence,
-                    load_source_audio_semantic_evidence(semantic_evidence),
+                    voice_path,
+                    unknown_action="resolve_audio",
+                    generated_at=job.created_at,
                 )
-            _raise_if_cancelled(cancellation)
-            voices = _write_effective_voices(staging, effective)
-            write_voice_manifest(
-                voice_path,
-                {"version": 2, "voices": voices},
-            )
-            queue_plan = inspect_generation_queue(
-                story_path,
-                voice_path,
-                unknown_action="resolve_audio",
-                generated_at=job.created_at,
-            )
-            publish_generation_queue(queue_plan, queue_path)
-            queue = VoiceGenerationQueue.load(queue_path)
-            projection_ids, omission_ids = _audio_event_routes(queue)
-            ready_items = _runnable_generation_items(
-                queue,
-                effective,
-                projection_ids=projection_ids,
-                omission_ids=omission_ids,
-            )
-            _raise_if_cancelled(cancellation)
-            fields = {
-                "identity": identity,
-                "job_id": job.job_id,
-                "source_story_index_sha256": job.story_index_sha256,
-                "voice_plan_controls_sha256": plan.synthesis_controls_sha256,
-                "story_index_sha256": sha256_file(story_path),
-                "voice_manifest_sha256": sha256_file(voice_path),
-                "queue_sha256": sha256_file(queue_path),
-                "queue_items": queue_plan.summary.queue_items,
-                "ready_items": ready_items,
-                "narrator_fallback_roles": list(effective["narrator_roles"]),
-                "audio_event_projection_queue_ids": list(projection_ids),
-                "audio_event_omission_queue_ids": list(omission_ids),
-                "source_audio_semantic_evidence_sha256": (
-                    None
-                    if semantic_evidence is None
-                    else sha256_file(semantic_evidence)
-                ),
-            }
-            write_versioned_json(
-                staging / "input.json", generation_input_schema_version, fields
-            )
-            try:
-                rename_directory_no_replace(staging, destination)
-            except AtomicPublicationError:
-                if destination.is_dir():
-                    return _load_existing(destination, identity)
-                raise
-            staging = None
-            return _load_existing(destination, identity)
+                publish_generation_queue(queue_plan, queue_path)
+                queue = VoiceGenerationQueue.load(queue_path)
+                projection_ids, omission_ids = _audio_event_routes(queue)
+                ready_items = _runnable_generation_items(
+                    queue,
+                    effective,
+                    projection_ids=projection_ids,
+                    omission_ids=omission_ids,
+                )
+                _raise_if_cancelled(cancellation)
+                fields = {
+                    "identity": identity,
+                    "job_id": job.job_id,
+                    "source_story_index_sha256": job.story_index_sha256,
+                    "voice_plan_controls_sha256": plan.synthesis_controls_sha256,
+                    "story_index_sha256": sha256_file(story_path),
+                    "voice_manifest_sha256": sha256_file(voice_path),
+                    "queue_sha256": sha256_file(queue_path),
+                    "queue_items": queue_plan.summary.queue_items,
+                    "ready_items": ready_items,
+                    "narrator_fallback_roles": list(effective["narrator_roles"]),
+                    "audio_event_projection_queue_ids": list(projection_ids),
+                    "audio_event_omission_queue_ids": list(omission_ids),
+                    "source_audio_semantic_evidence_sha256": (
+                        None
+                        if semantic_evidence is None
+                        else sha256_file(semantic_evidence)
+                    ),
+                }
+                write_versioned_json(
+                    staging / "input.json", generation_input_schema_version, fields
+                )
+                try:
+                    rename_directory_no_replace(staging, destination)
+                except AtomicPublicationError:
+                    if destination.is_dir():
+                        return _load_existing(destination, identity)
+                    raise
+                return _load_existing(destination, identity)
         except (
             AtomicPublicationError,
             GenerationQueueBuildError,
@@ -207,9 +205,6 @@ class PregenerationInputStore:
             raise PregenerationQueueError(
                 f"Unable to prepare offline generation inputs: {error}"
             ) from error
-        finally:
-            if staging is not None:
-                shutil.rmtree(staging, ignore_errors=True)
 
 
 def _load_story(job):

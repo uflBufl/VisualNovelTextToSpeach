@@ -6,6 +6,15 @@ from vntts.authoring.publication import staged_directory
 
 
 class StagedDirectoryTest(unittest.TestCase):
+    def test_cleans_unpublished_directory_after_base_exception(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaises(KeyboardInterrupt):
+                with staged_directory(root, prefix=".staging-") as staging:
+                    unpublished = staging
+                    raise KeyboardInterrupt
+            self.assertFalse(unpublished.exists())
+
     def test_cleans_unpublished_directory_and_keeps_renamed_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

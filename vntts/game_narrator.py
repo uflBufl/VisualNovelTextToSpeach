@@ -3,7 +3,6 @@
 import hashlib
 import json
 import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -15,6 +14,7 @@ from vntts.application_directories import get_local_data_directory
 from vntts.authoring.publication import (
     AtomicPublicationError,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference_bytes
@@ -245,8 +245,7 @@ def bind_game_narrator(
     destination = root / identity
     output = destination / "manifest.json"
     if not output.is_file():
-        staging = Path(tempfile.mkdtemp(prefix=".narrator-", dir=root))
-        try:
+        with staged_directory(root, prefix=".narrator-") as staging:
             references = staging / "references"
             references.mkdir()
             for entry in document["voices"]:
@@ -305,9 +304,6 @@ def bind_game_narrator(
             except AtomicPublicationError:
                 if not output.is_file():
                     raise
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging)
     saved_registry = CharacterVoiceRegistry.from_file(output)
     for character_name, expected in source_payloads.items():
         saved_voice = saved_registry.resolve_source(
