@@ -1361,7 +1361,8 @@ def generation_command(
         raise AuthoringWorkbenchError(
             "Workspace regeneration requires explicit queue IDs"
         )
-    directory, workspace = _load_workspace(workspace_directory)
+    read = _load_workbench_projection_read(workspace_directory)
+    directory, workspace = read.directory, read.workspace
     policy, repair_policy, projection_ids, queue_ids = _generation_scope(
         workspace, queue_ids, retries
     )
@@ -1371,9 +1372,22 @@ def generation_command(
         model=model,
         generation_profile=generation_profile,
     )
-    summary = inspect_workspace(directory, voice_manifest=voice_manifest)
-    readiness = inspect_generation_readiness(
-        workspace_directory,
+    summary = _inspect_workspace_from_read(
+        directory,
+        workspace,
+        read.queue_path,
+        read.output,
+        read.queue,
+        read.state_path,
+        read.state,
+        voice_manifest=voice_manifest,
+    )
+    readiness = _inspect_generation_readiness_from_read(
+        directory,
+        workspace,
+        summary,
+        read.queue,
+        read.state,
         queue_ids=queue_ids,
         regenerate_existing=regenerate_existing,
     )
