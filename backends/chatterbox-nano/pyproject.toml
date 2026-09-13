@@ -13,6 +13,7 @@ dependencies = [
 
 [tool.uv]
 package = false
+exclude-dependencies = ["gradio"]
 
 [tool.uv.sources]
 vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "dd0459df41d596d649a5a3e33fb03f93024d5af9" }
