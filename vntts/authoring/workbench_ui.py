@@ -2443,7 +2443,7 @@ class AuthoringWorkbenchDialog(QDialog):
         if text:
             self._append_process_log(text)
 
-    def _append_process_log(self, text):
+    def _append_process_log(self, text: str) -> None:
         self.process_log.moveCursor(QTextCursor.MoveOperation.End)
         self.process_log.insertPlainText(text)
         retained = self.process_log.toPlainText()
