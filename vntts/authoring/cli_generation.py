@@ -661,10 +661,14 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "specialist-failure-plan":
-        plan = build_specialist_failure_plan(arguments.workspace)
+        specialist_plan = build_specialist_failure_plan(arguments.workspace)
         if arguments.output is not None:
-            write_specialist_failure_plan(plan, arguments.output)
-        print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+            write_specialist_failure_plan(specialist_plan, arguments.output)
+        print(
+            json.dumps(
+                specialist_plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+            )
+        )
         return 0
     if arguments.command == "failure-repair-plan":
         print(
@@ -677,10 +681,14 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "pending-resolution-plan":
-        plan = build_pending_resolution_plan(arguments.workspace)
+        pending_plan = build_pending_resolution_plan(arguments.workspace)
         if arguments.output is not None:
-            write_pending_resolution_plan(plan, arguments.output)
-        print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+            write_pending_resolution_plan(pending_plan, arguments.output)
+        print(
+            json.dumps(
+                pending_plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+            )
+        )
         return 0
     if arguments.command == "pending-regeneration-command":
         result = build_pending_regeneration_command(
@@ -694,10 +702,14 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "failure-regeneration-plan":
-        plan = build_failure_regeneration_plan(arguments.workspace)
+        failure_plan = build_failure_regeneration_plan(arguments.workspace)
         if arguments.output is not None:
-            write_failure_regeneration_plan(plan, arguments.output)
-        print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+            write_failure_regeneration_plan(failure_plan, arguments.output)
+        print(
+            json.dumps(
+                failure_plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
+            )
+        )
         return 0
     if arguments.command == "failure-regeneration-command":
         result = build_failure_regeneration_command(

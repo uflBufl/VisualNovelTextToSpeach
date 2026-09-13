@@ -28,6 +28,7 @@ from vntts.authoring.missing_voice_reuse_review import (
 
 FAILED_PROMPT_SELECTION_SCHEMA = "vntts.authoring-failed-prompt-selection"
 FAILED_PROMPT_SELECTION_VERSION = 1
+JsonObject = dict[str, object]
 
 
 class FailedPromptHypothesisError(RuntimeError):
@@ -41,7 +42,7 @@ class FailedPromptHypothesisResult:
     selected_count: int
     unresolved_count: int
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "output": str(self.output),
             "selection_id": self.selection_id,
@@ -50,7 +51,11 @@ class FailedPromptHypothesisResult:
         }
 
 
-def publish_failed_prompt_hypothesis_selection(plan_path, session_path, output):
+def publish_failed_prompt_hypothesis_selection(
+    plan_path: str | Path,
+    session_path: str | Path,
+    output: str | Path,
+) -> FailedPromptHypothesisResult:
     """Publish selection authority only; never mutate a manifest or audio state."""
     plan_path = Path(plan_path).expanduser().resolve()
     session_path = Path(session_path).expanduser().resolve()
@@ -76,27 +81,23 @@ def publish_failed_prompt_hypothesis_selection(plan_path, session_path, output):
         raise FailedPromptHypothesisError(
             "Every failed-prompt cohort requires a completed decision"
         )
-    key_path = session_path.with_name(".blind-key.json")
-    try:
-        key = json.loads(key_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise FailedPromptHypothesisError(str(error)) from error
-    private_by_label = {
-        candidate["label"]: candidate for candidate in key.get("candidates", [])
-    }
+    private_by_label = _load_private_candidates(
+        session_path.with_name(".blind-key.json")
+    )
     planned_by_id = {
         candidate["candidate_id"]: candidate for candidate in document["candidates"]
     }
     cohort_by_id = {cohort["cohort_id"]: cohort for cohort in bundle["cohorts"]}
-    targets_by_cohort = {}
+    targets_by_cohort: dict[str, list[dict[str, object]]] = {}
     for target in document["targets"]:
         targets_by_cohort.setdefault(target["cohort_id"], []).append(target)
     decisions = []
-    for record in sorted(session["decisions"], key=lambda value: value["cohort_id"]):
-        cohort_id = record["cohort_id"]
+    for record in sorted(session["decisions"], key=_cohort_id):
+        cohort_id = _cohort_id(record)
         cohort = cohort_by_id.get(cohort_id)
         targets = sorted(
-            targets_by_cohort.get(cohort_id, []), key=lambda value: value["queue_id"]
+            targets_by_cohort.get(cohort_id, []),
+            key=lambda value: _record_text(value, "queue_id", "Prompt queue ID"),
         )
         if cohort is None or not targets:
             raise FailedPromptHypothesisError(
@@ -123,19 +124,7 @@ def publish_failed_prompt_hypothesis_selection(plan_path, session_path, output):
             raise FailedPromptHypothesisError(
                 "Prompt review selected an incomplete candidate"
             )
-        private = private_by_label.get(decision)
-        candidate = planned_by_id.get(
-            private.get("candidate_id") if isinstance(private, dict) else None
-        )
-        if (
-            candidate is None
-            or private.get("voice_character") != candidate["voice_character"]
-            or private.get("ordered_references") != candidate["ordered_references"]
-            or private.get("render_hypothesis") != candidate["render_hypothesis"]
-        ):
-            raise FailedPromptHypothesisError(
-                "Prompt candidate identity differs from the immutable plan"
-            )
+        candidate = _selected_candidate(private_by_label, planned_by_id, decision)
         decisions.append(
             {
                 "cohort_id": cohort_id,
@@ -148,9 +137,7 @@ def publish_failed_prompt_hypothesis_selection(plan_path, session_path, output):
                 "candidate_id": candidate["candidate_id"],
                 "voice_character": candidate["voice_character"],
                 "review_decision_origin": record.get("decision_origin", "human_review"),
-                "reference_sha256s": [
-                    reference["sha256"] for reference in candidate["ordered_references"]
-                ],
+                "reference_sha256s": _reference_sha256s(candidate),
                 "render_hypothesis": copy.deepcopy(candidate["render_hypothesis"]),
             }
         )
@@ -184,6 +171,75 @@ def publish_failed_prompt_hypothesis_selection(plan_path, session_path, output):
         sum(value["decision"] == "select_hypothesis" for value in decisions),
         sum(value["decision"] == "keep_unresolved" for value in decisions),
     )
+
+
+def _cohort_id(record: dict[str, object]) -> str:
+    return _record_text(record, "cohort_id", "Prompt review cohort ID")
+
+
+def _record_text(record: dict[str, object], field: str, label: str) -> str:
+    value = record.get(field)
+    if not isinstance(value, str) or not value:
+        raise FailedPromptHypothesisError(f"{label} is invalid")
+    return value
+
+
+def _load_private_candidates(path: Path) -> dict[object, object]:
+    try:
+        key = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise FailedPromptHypothesisError(str(error)) from error
+    if not isinstance(key, dict):
+        raise FailedPromptHypothesisError("Prompt review key must be an object")
+    candidates = key.get("candidates")
+    if not isinstance(candidates, list):
+        raise FailedPromptHypothesisError("Prompt review candidates must be a list")
+    result: dict[object, object] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or "label" not in candidate:
+            raise FailedPromptHypothesisError("Prompt review candidate is invalid")
+        result[candidate["label"]] = candidate
+    return result
+
+
+def _selected_candidate(
+    private_by_label: dict[object, object],
+    planned_by_id: dict[object, object],
+    decision: object,
+) -> JsonObject:
+    private = private_by_label.get(decision)
+    if not isinstance(private, dict):
+        raise FailedPromptHypothesisError(
+            "Prompt candidate identity differs from the immutable plan"
+        )
+    candidate = planned_by_id.get(private.get("candidate_id"))
+    if (
+        not isinstance(candidate, dict)
+        or private.get("voice_character") != candidate.get("voice_character")
+        or private.get("ordered_references") != candidate.get("ordered_references")
+        or private.get("render_hypothesis") != candidate.get("render_hypothesis")
+    ):
+        raise FailedPromptHypothesisError(
+            "Prompt candidate identity differs from the immutable plan"
+        )
+    return candidate
+
+
+def _reference_sha256s(candidate: JsonObject) -> list[str]:
+    references = candidate.get("ordered_references")
+    if not isinstance(references, list):
+        raise FailedPromptHypothesisError("Prompt candidate references are invalid")
+    checksums: list[str] = []
+    for reference in references:
+        if not isinstance(reference, dict):
+            raise FailedPromptHypothesisError("Prompt candidate reference is invalid")
+        checksum = reference.get("sha256")
+        if not isinstance(checksum, str):
+            raise FailedPromptHypothesisError(
+                "Prompt candidate reference checksum is invalid"
+            )
+        checksums.append(checksum)
+    return checksums
 
 
 __all__ = [
