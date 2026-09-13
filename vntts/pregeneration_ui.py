@@ -1446,7 +1446,7 @@ class OfflineAudioPreparationDialog(QDialog):
             runtime_progress_manifest_path(self._generation_input).with_name(
                 "generation-state.json"
             )
-            if self._generation_input is not None
+            if isinstance(self._generation_input, PregenerationInput)
             else None
         )
         record_pregeneration_failure(
