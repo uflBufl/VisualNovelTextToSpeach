@@ -994,6 +994,8 @@ class GameNarratorDialog(QDialog):
         with TemporaryDirectory(prefix="vntts-voice-choice-") as temporary:
             if proposed is None:
                 if source_id is None:
+                    if manifest is None:
+                        raise ValueError("Voice manifest is required")
                     choices = CharacterVoiceRegistry.from_file(manifest).choices()
                     if len(choices) != 1:
                         raise ValueError(
@@ -1316,6 +1318,8 @@ class GameNarratorDialog(QDialog):
         self, operation: str, settings: AppSettings, source_id: str, text: str
     ) -> AppSettings | OriginalReference | VoiceAuditionPreview:
         voice = self._catalog_registry.resolve_source(source_id)
+        if voice is None:
+            raise ValueError(f"Unknown voice source {source_id!r}")
         if operation == "save":
             return self._bind_selected_voice(
                 settings,
@@ -1352,12 +1356,10 @@ class GameNarratorDialog(QDialog):
                 if self.source.currentData() == "narrator"
                 else self.presets.currentData()
             )
-        result = settings.updated(
-            **{
-                "voice_assignments"
-                if narrator
-                else "character_voice_defaults": assignments
-            }
+        result = (
+            settings.updated(voice_assignments=assignments)
+            if narrator
+            else settings.updated(character_voice_defaults=assignments)
         )
         if narrator:
             result = result.updated(tts_speaker_wav=None)
