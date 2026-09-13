@@ -3,6 +3,8 @@
 # Re-exports preserve the historical vntts.main import surface.
 # ruff: noqa: F401
 
+from collections.abc import Callable
+
 from pynput import keyboard
 
 from vntts.cli import cli_error
@@ -57,21 +59,21 @@ from vntts.window_capture import enable_windows_dpi_awareness
 
 
 def listen_for_hotkeys(
-    hotkey,
-    live_hotkey,
-    pause_hotkey,
-    skip_hotkey,
-    repeat_hotkey,
-    clear_queue_hotkey,
-    emergency_stop_hotkey,
-    on_activate,
-    on_live_toggle,
-    on_pause_toggle,
-    on_skip,
-    on_repeat,
-    on_clear_queue,
-    on_emergency_stop,
-):
+    hotkey: str,
+    live_hotkey: str,
+    pause_hotkey: str,
+    skip_hotkey: str,
+    repeat_hotkey: str,
+    clear_queue_hotkey: str,
+    emergency_stop_hotkey: str,
+    on_activate: Callable[[], object],
+    on_live_toggle: Callable[[], object],
+    on_pause_toggle: Callable[[], object],
+    on_skip: Callable[[], object],
+    on_repeat: Callable[[], object],
+    on_clear_queue: Callable[[], object],
+    on_emergency_stop: Callable[[], object],
+) -> None:
     print(f"Press {hotkey} to read from screen once")
     print(f"Press {live_hotkey} to start or stop live reading")
     print(f"Press {pause_hotkey} to pause or resume speech")
@@ -93,7 +95,7 @@ def listen_for_hotkeys(
         listener.join()
 
 
-def main(tts_factory=TTSEngine):
+def main(tts_factory: Callable[..., object] = TTSEngine) -> int:
     enable_windows_dpi_awareness()
     settings = load_app_settings()
     controller = AppController(settings, tts_factory=tts_factory)
