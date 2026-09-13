@@ -334,7 +334,7 @@ class OfflineGenerationWorker:
                         terminate_process(process)
                         raise OfflineGenerationCancelled(
                             "Offline speech generation was cancelled"
-                        )
+                        ) from None
         finally:
             self._process = None
         if process.returncode:

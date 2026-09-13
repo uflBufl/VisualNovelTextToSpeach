@@ -437,13 +437,14 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             cancellation = Mock()
             cancellation.is_set.side_effect = (False, True)
 
-            with self.assertRaises(OfflineGenerationCancelled):
+            with self.assertRaises(OfflineGenerationCancelled) as raised:
                 OfflineGenerationWorker(
                     command=("worker",), popen_factory=Mock(return_value=process)
                 ).generate(generation_input, plan, cancellation)
 
         self.assertTrue(process.terminated)
         self.assertFalse(process.killed)
+        self.assertTrue(raised.exception.__suppress_context__)
 
     def test_frozen_app_uses_hidden_generation_worker(self):
         worker = OfflineGenerationWorker()
