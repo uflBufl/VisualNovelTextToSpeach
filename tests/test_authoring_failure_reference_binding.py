@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import vntts.authoring.workbench as workbench_module
+import vntts.authoring.workspace_creation as workspace_creation_module
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_bulk_generation import SyntheticRenderer
 from tests.test_authoring_failure_reference_audit import (
@@ -325,7 +326,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
             binding = root / "binding"
             publish_failure_reference_binding(audit, binding)
             state_path = workspace / "generated-audio/generation-state.json"
-            original_copy = workbench_module._copy_workspace_tree_snapshot
+            original_copy = workspace_creation_module._copy_workspace_tree_snapshot
 
             def copy_then_mutate(source, target, snapshots):
                 original_copy(source, target, snapshots)
@@ -335,7 +336,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
                     state_path.write_text(json.dumps(document, sort_keys=True))
 
             with patch.object(
-                workbench_module,
+                workspace_creation_module,
                 "_copy_workspace_tree_snapshot",
                 copy_then_mutate,
             ):
@@ -360,7 +361,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
             publish_failure_reference_binding(audit, binding)
             binding_document = load_failure_reference_binding_document(binding)
             reference = binding / binding_document["groups"][0]["reference"]
-            original_copy = workbench_module._copy_workspace_tree_snapshot
+            original_copy = workspace_creation_module._copy_workspace_tree_snapshot
 
             def copy_then_mutate(source, target, snapshots):
                 original_copy(source, target, snapshots)
@@ -368,7 +369,7 @@ class FailureReferenceBindingTest(unittest.TestCase):
                     reference.write_bytes(b"changed-during-copy")
 
             with patch.object(
-                workbench_module,
+                workspace_creation_module,
                 "_copy_workspace_tree_snapshot",
                 copy_then_mutate,
             ):

@@ -1059,25 +1059,25 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/workbench.py",
+      "path": "vntts/authoring/workspace_creation.py",
       "scope": "_workspace_generation_provenance",
       "count": 1
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/workbench.py",
+      "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_audio_event_composition_workspace",
       "count": 1
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/workbench.py",
+      "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_failure_reference_workspace",
       "count": 1
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/workbench.py",
+      "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_resume_workspace",
       "count": 1
     },
@@ -2439,19 +2439,19 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/workbench.py",
+      "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_audio_event_composition_workspace",
       "count": 1
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/workbench.py",
+      "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_failure_reference_workspace",
       "count": 1
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/workbench.py",
+      "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_resume_workspace",
       "count": 1
     },
@@ -3447,19 +3447,19 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/workbench.py",
+      "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_audio_event_composition_workspace",
       "count": 1
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/workbench.py",
+      "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_failure_reference_workspace",
       "count": 1
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/workbench.py",
+      "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_resume_workspace",
       "count": 1
     },

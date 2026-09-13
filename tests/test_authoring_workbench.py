@@ -28,6 +28,7 @@ import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_authority as workspace_authority_module
+import vntts.authoring.workspace_creation as workspace_creation_module
 import vntts.authoring.workspace_state as workspace_state_module
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_legacy_import import write_legacy_fixture
@@ -2655,7 +2656,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
 
             state_path = source.directory / "generated-audio/generation-state.json"
-            real_publish = workbench_module.publish_generated_manifest
+            real_publish = bulk_generation_module.publish_generated_manifest
 
             def mutate_source_after_staging(*args, **kwargs):
                 result = real_publish(*args, **kwargs)
@@ -2668,7 +2669,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
             with (
                 patch.object(
-                    workbench_module,
+                    workspace_creation_module,
                     "publish_generated_manifest",
                     side_effect=mutate_source_after_staging,
                 ),
@@ -2715,7 +2716,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 queue_item.text.encode("utf-8")
             ).hexdigest(),
             "text_transform": "short-trailing-ellipsis-v1",
-            "synthesis_provenance_sha256": workbench_module._workspace_generation_provenance(
+            "synthesis_provenance_sha256": workspace_creation_module._workspace_generation_provenance(
                 workspace_directory, workspace
             ),
             "generation_profile": "stable",
@@ -2770,9 +2771,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 fixture["job_directory"], root / "imports"
             ).destination
             import_path = imported / "import.json"
-            import vntts.authoring.workbench as workbench_module
-
-            original_validate = workbench_module._validated_import_inventory
+            original_validate = workspace_creation_module._validated_import_inventory
 
             def mutate_after_inventory(source, manifest):
                 inventory = original_validate(source, manifest)
@@ -2785,7 +2784,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.workbench._validated_import_inventory",
+                    "vntts.authoring.workspace_creation._validated_import_inventory",
                     side_effect=mutate_after_inventory,
                 ),
                 self.assertRaisesRegex(AuthoringWorkbenchError, "manifest changed"),
@@ -2827,7 +2826,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
 
             with (
                 patch(
-                    "vntts.authoring.workbench._rename_directory_no_replace",
+                    "vntts.authoring.workspace_creation._rename_directory_no_replace",
                     side_effect=publish_competitor,
                 ),
                 self.assertRaises(AuthoringWorkbenchError),
@@ -3814,7 +3813,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             state["items"][queue_id]["status"] = "generated"
             state["items"][queue_id]["review_status"] = "pending_review"
             state_path.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
-            workbench_module.publish_generated_manifest(state_path)
+            bulk_generation_module.publish_generated_manifest(state_path)
 
             ordinary = inspect_generation_readiness(
                 created.directory,

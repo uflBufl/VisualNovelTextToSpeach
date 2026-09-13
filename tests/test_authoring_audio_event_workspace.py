@@ -12,6 +12,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 import vntts.authoring.workbench as workbench_module
+import vntts.authoring.workspace_creation as workspace_creation_module
 from tests.test_authoring_audio_event_review import write_source_story
 from tests.test_authoring_workbench import create_test_workspace
 from vntts.authoring.audio_event_composition import (
@@ -325,7 +326,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
             root = Path(directory)
             base, _queue_item, composition = self._base_and_composition(root)
             state_path = base / "generated-audio/generation-state.json"
-            original_copy = workbench_module._copy_workspace_tree_snapshot
+            original_copy = workspace_creation_module._copy_workspace_tree_snapshot
 
             def copy_then_mutate(source, target, snapshots):
                 original_copy(source, target, snapshots)
@@ -335,7 +336,7 @@ class AudioEventWorkspaceTest(unittest.TestCase):
                     state_path.write_text(json.dumps(document, sort_keys=True))
 
             with patch.object(
-                workbench_module,
+                workspace_creation_module,
                 "_copy_workspace_tree_snapshot",
                 copy_then_mutate,
             ):
