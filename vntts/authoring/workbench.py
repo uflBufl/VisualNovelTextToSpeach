@@ -102,7 +102,7 @@ from vntts.authoring.offline_fallback_authority import (
     load_offline_fallback_authorities,
     validate_offline_fallback_authority_records,
 )
-from vntts.authoring.publication import generation_publication_leases
+from vntts.authoring.publication import generation_publication_leases, staged_directory
 from vntts.authoring.publication import (
     rename_directory_no_replace as _rename_directory_no_replace,
 )
@@ -611,9 +611,7 @@ def create_resume_workspace(
         for item in artifacts
         if item["path"] == "queue.jsonl" or item["path"].startswith("generated-audio/")
     ]
-    staging = Path(tempfile.mkdtemp(prefix=".resume-staging-", dir=root)).resolve()
-    _within(root, Path(staging.name), "Workspace staging directory")
-    try:
+    with staged_directory(root, prefix=".resume-staging-") as staging:
         import_snapshot = staging / "provenance" / "import.json"
         import_snapshot.parent.mkdir(parents=True)
         import_snapshot.write_bytes(import_payload)
@@ -836,10 +834,6 @@ def create_resume_workspace(
             raise AuthoringWorkbenchError(
                 f"Unable to publish authoring workspace: {error}"
             ) from error
-        staging = None
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
     return WorkspaceCreationResult(destination, True)
 
 
@@ -918,17 +912,13 @@ def create_failure_reference_workspace(
 
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=".reference-binding-staging-", dir=root)
-    ).resolve()
-    _within(root, Path(staging.name), "Failure-reference staging directory")
     base_snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
         (base_directory / "generated-audio/generation-state.json", state_sha256),
         (base_directory / "queue.jsonl", queue_sha256),
     ]
     binding_snapshots = []
-    try:
+    with staged_directory(root, prefix=".reference-binding-staging-") as staging:
         for tree_name in ("provenance", "inputs", "generated-audio"):
             _copy_workspace_tree_snapshot(
                 base_directory / tree_name,
@@ -1033,10 +1023,6 @@ def create_failure_reference_workspace(
             raise AuthoringWorkbenchError(
                 f"Unable to publish failure-reference workspace: {error}"
             ) from error
-        staging = None
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
     return WorkspaceCreationResult(destination, True)
 
 
@@ -1122,8 +1108,6 @@ def create_audio_event_composition_workspace(
 
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".audio-event-staging-", dir=root)).resolve()
-    _within(root, Path(staging.name), "Audio-event staging directory")
     base_snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
         (base_directory / "generated-audio/generation-state.json", state_sha256),
@@ -1131,7 +1115,7 @@ def create_audio_event_composition_workspace(
         (previous_audio, previous_audio_sha256),
     ]
     composition_snapshots = []
-    try:
+    with staged_directory(root, prefix=".audio-event-staging-") as staging:
         for tree_name in ("provenance", "inputs", "generated-audio"):
             _copy_workspace_tree_snapshot(
                 base_directory / tree_name,
@@ -1327,12 +1311,8 @@ def create_audio_event_composition_workspace(
                     ) from error
                 for lease in held_leases:
                     lease.mark_committed()
-                staging = None
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
     return WorkspaceCreationResult(destination, True)
 
 
@@ -1870,9 +1850,7 @@ def _merge_workspace_outcomes(
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     destination = _within(root, Path(workspace_id), "Outcome merge destination")
-    staging = Path(tempfile.mkdtemp(prefix=".merge-staging-", dir=root)).resolve()
-    _within(root, Path(staging.name), "Outcome merge staging directory")
-    try:
+    with staged_directory(root, prefix=".merge-staging-") as staging:
         output, target_state, path_owners, base_snapshots = _stage_outcome_merge_base(
             base, staging
         )
@@ -1895,9 +1873,6 @@ def _merge_workspace_outcomes(
             destination,
             outcome_merge,
         )
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
 
 
 def inspect_workspace(
