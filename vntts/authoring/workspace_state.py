@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import (
@@ -18,11 +20,16 @@ from vntts.authoring.generation_state import (
 from vntts.authoring.workspace_config import workspace_queue_sha256
 from vntts.authoring.workspace_foundation import read_regular_file
 
-_SHARED_STATE_READS = ContextVar("shared_workspace_state_reads", default=None)
+WorkspaceState = tuple[VoiceGenerationQueue, dict[str, object], bytes, str]
+WorkspaceStateCache = dict[tuple[str, object], WorkspaceState]
+
+_SHARED_STATE_READS: ContextVar[WorkspaceStateCache | None] = ContextVar(
+    "shared_workspace_state_reads", default=None
+)
 
 
 @contextmanager
-def shared_workspace_state_reads():
+def shared_workspace_state_reads() -> Iterator[None]:
     """Reuse one fully validated immutable state during a bounded UI read."""
     if _SHARED_STATE_READS.get() is not None:
         yield
@@ -34,26 +41,32 @@ def shared_workspace_state_reads():
         _SHARED_STATE_READS.reset(token)
 
 
-def cached_workspace_generation_state(directory, workspace):
+def cached_workspace_generation_state(
+    directory: str | Path, workspace: Mapping[str, object]
+) -> WorkspaceState | None:
     cache = _SHARED_STATE_READS.get()
     if cache is None:
         return None
     return cache.get(_state_cache_key(directory, workspace))
 
 
-def share_workspace_generation_state(directory, workspace, result):
+def share_workspace_generation_state(
+    directory: str | Path,
+    workspace: Mapping[str, object],
+    result: WorkspaceState,
+) -> None:
     cache = _SHARED_STATE_READS.get()
     if cache is not None:
         cache[_state_cache_key(directory, workspace)] = result
 
 
 def load_stable_workspace_generation_state(
-    directory,
-    workspace,
-    label,
+    directory: str | Path,
+    workspace: Mapping[str, object],
+    label: str,
     *,
-    error_type=ValueError,
-):
+    error_type: type[Exception] = ValueError,
+) -> WorkspaceState:
     """Capture one inactive queue-bound state and its exact payload identity."""
     directory = Path(directory).expanduser().resolve()
     cached = cached_workspace_generation_state(directory, workspace)
@@ -66,12 +79,19 @@ def load_stable_workspace_generation_state(
     return result
 
 
-def _load_stable_workspace_generation_state(directory, workspace, label, error_type):
+def _load_stable_workspace_generation_state(
+    directory: Path,
+    workspace: Mapping[str, object],
+    label: str,
+    error_type: type[Exception],
+) -> WorkspaceState:
     expected_queue_sha256 = workspace_queue_sha256(workspace, error_type=error_type)
     queue_path = directory / "queue.jsonl"
     if queue_path.is_symlink() or not queue_path.is_file():
         raise error_type("Workspace queue is missing or unsafe")
     try:
+        queue: VoiceGenerationQueue
+        queue_sha256: str
         queue, queue_sha256 = load_stable_generation_queue(queue_path)
     except BulkGenerationError as error:
         raise error_type(str(error)) from error
@@ -87,13 +107,14 @@ def _load_stable_workspace_generation_state(directory, workspace, label, error_t
     )
     digest = hashlib.sha256(payload).hexdigest()
     try:
-        parsed = json.loads(payload.decode("utf-8"))
+        parsed: object = json.loads(payload.decode("utf-8"))
         validated = validate_generation_state_document(
             parsed,
             output,
             queue,
             queue_sha256,
         )
+        assert isinstance(parsed, dict)
     except (UnicodeDecodeError, json.JSONDecodeError, BulkGenerationError) as error:
         raise error_type(f"Outcome merge {label} state is invalid: {error}") from error
     if parsed != validated or sha256_file(state_path) != digest:
@@ -107,7 +128,9 @@ def _load_stable_workspace_generation_state(directory, workspace, label, error_t
     return queue, parsed, payload, digest
 
 
-def _state_cache_key(directory, workspace):
+def _state_cache_key(
+    directory: str | Path, workspace: Mapping[str, object]
+) -> tuple[str, object]:
     return (
         str(Path(directory).expanduser().resolve()),
         workspace.get("config_fingerprint"),

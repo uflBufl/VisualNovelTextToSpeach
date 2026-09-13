@@ -139,6 +139,7 @@ files = [
     "vntts/authoring/queue_extension.py",
     "vntts/authoring/workspace_config.py",
     "vntts/authoring/workspace_foundation.py",
+    "vntts/authoring/workspace_state.py",
     "vntts/controller_components.py",
     "vntts/dialog.py",
     "vntts/document_identity.py",
