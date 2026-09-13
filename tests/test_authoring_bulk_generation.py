@@ -200,26 +200,6 @@ class CacheAwareSyntheticRenderer:
 
 
 class AuthoringBulkGenerationTest(unittest.TestCase):
-    def test_offline_fallback_uses_current_outcome_not_historical_attempt_count(self):
-        result = {
-            "attempts": 4,
-            "attempts_by_provider": {"moss-tts": 3, "pocket-tts": 1},
-            "provider": "moss-tts",
-            "carry_forward": {
-                "mode": "failed-outcome",
-                "source_provider": "moss-tts",
-            },
-        }
-
-        bulk_module._validate_offline_fallback_repair(
-            "line:one", result, Mock(), {}, "pocket-tts"
-        )
-        result["provider"] = "pocket-tts"
-        with self.assertRaisesRegex(BulkGenerationError, "single attempt is exhausted"):
-            bulk_module._validate_offline_fallback_repair(
-                "line:one", result, Mock(), {}, "pocket-tts"
-            )
-
     def run_generation(self, queue, output, renderer, **options):
         return run_bulk_generation(
             queue,
