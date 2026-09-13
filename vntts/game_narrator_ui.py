@@ -44,7 +44,9 @@ from vntts.pregeneration_audition import (
     VoiceAuditionPreview,
     VoiceAuditionPreviewService,
 )
+from vntts.pregeneration_setup import GameContent, PregenerationJobStore
 from vntts.pregeneration_voices import (
+    VoiceDecisionStore,
     VoicePlan,
     pregeneration_narrator_source_id,
     resolve_pregeneration_settings,
@@ -71,7 +73,7 @@ from vntts.voices import (
 )
 
 Binder = Callable[..., AppSettings]
-ImpactContext = tuple[object, object, object]
+ImpactContext = tuple[GameContent, PregenerationJobStore, VoiceDecisionStore]
 
 
 def _is_story_voice_impact(
@@ -510,7 +512,10 @@ class GameNarratorDialog(QDialog):
         self._role_changed()
 
     def set_story_impact_context(
-        self, content: object, jobs: object, decisions: object
+        self,
+        content: GameContent,
+        jobs: PregenerationJobStore,
+        decisions: VoiceDecisionStore,
     ) -> None:
         self._loading_impact_context = False
         self._impact_context = (content, jobs, decisions)

@@ -3,20 +3,43 @@
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Literal, Protocol
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import load_generated_audio_document
-from vntts_artifacts.story_index import load_story_index_document
+from vntts_artifacts.story_index import StoryIndexRecord, load_story_index_document
 
 from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
-from vntts.pregeneration_setup import PregenerationJobStore
+from vntts.pregeneration_setup import (
+    GameContent,
+    PregenerationJobStore,
+)
 from vntts.pregeneration_voices import (
     PregenerationVoiceError,
+    VoiceDecisionStore,
+    VoiceGroup,
     VoicePlanStore,
     _raise_if_cancelled,
 )
+from vntts.settings import AppSettings
 from vntts.voices import is_narrator, normalize_character_name
+
+
+class Cancellation(Protocol):
+    def is_set(self) -> bool: ...
+
+
+@dataclass(frozen=True)
+class _CompatiblePack:
+    selection_id: str
+    title: str
+    line_ids: tuple[str, ...]
+    records: dict[str, StoryIndexRecord]
+    library: GeneratedAudioLibrary | None
+
+
+SavedVoiceStatus = Literal["not-saved", "unknown", "matching", "changed"]
 
 
 @dataclass(frozen=True)
@@ -30,47 +53,60 @@ class StoryVoiceImpact:
     needs_choice: int = 0
 
 
-def inspect_voice_default_impact(
-    content, job_store, decisions, settings, proposed, role, *, cancellation=None
-):
-    """Use the real planner and saved decisions without changing durable work."""
-    _raise_if_cancelled(cancellation)
-    if sha256_file(content.story_index) != content.story_index_sha256:
-        raise PregenerationVoiceError(
-            "Story content changed. Refresh Stories and retry."
-        )
+def _verified_records(content: GameContent) -> dict[str, StoryIndexRecord]:
     story = load_story_index_document(content.story_index)
-    records = {record.line_id: record for record in story.records}
-    saved = {}
+    return {record.line_id: record for record in story.records}
+
+
+def _saved_packs(
+    content: GameContent,
+    job_store: PregenerationJobStore,
+    cancellation: Cancellation | None,
+) -> dict[str, list[Path]]:
+    saved: dict[str, list[Path]] = {}
     for job in job_store.jobs_for_content(content):
         _raise_if_cancelled(cancellation)
         for manifest in job_store.published_packs(job):
             for selection_id in job.selected_story_ids:
                 saved.setdefault(selection_id, []).append(manifest)
-    packs = {}
+    return saved
 
-    def load_pack(path):
+
+def _load_pack(
+    path: Path,
+    cache: dict[Path, tuple[dict[str, StoryIndexRecord], GeneratedAudioLibrary | None]],
+    cancellation: Cancellation | None,
+) -> tuple[dict[str, StoryIndexRecord], GeneratedAudioLibrary | None]:
+    _raise_if_cancelled(cancellation)
+    path = path.expanduser().resolve()
+    if path not in cache:
+        imported = import_game_pack(path)
         _raise_if_cancelled(cancellation)
-        path = Path(path).expanduser().resolve()
-        if path not in packs:
-            imported = import_game_pack(path)
-            _raise_if_cancelled(cancellation)
-            document = load_story_index_document(imported.story_index)
-            library = (
-                GeneratedAudioLibrary(
-                    load_generated_audio_document(imported.generated_audio_manifest),
-                    cache_size=1,
-                )
-                if imported.generated_audio_manifest
-                else None
+        document = load_story_index_document(imported.story_index)
+        library = (
+            GeneratedAudioLibrary(
+                load_generated_audio_document(imported.generated_audio_manifest),
+                cache_size=1,
             )
-            packs[path] = (
-                {record.line_id: record for record in document.records},
-                library,
-            )
-        return packs[path]
+            if imported.generated_audio_manifest
+            else None
+        )
+        cache[path] = ({record.line_id: record for record in document.records}, library)
+    return cache[path]
 
-    selected = []
+
+def _compatible_packs(
+    content: GameContent,
+    job_store: PregenerationJobStore,
+    settings: AppSettings,
+    records: dict[str, StoryIndexRecord],
+    cancellation: Cancellation | None,
+) -> tuple[_CompatiblePack, ...]:
+    saved = _saved_packs(content, job_store, cancellation)
+    cache: dict[
+        Path, tuple[dict[str, StoryIndexRecord], GeneratedAudioLibrary | None]
+    ] = {}
+    selected: list[_CompatiblePack] = []
     for selection in content.selections:
         _raise_if_cancelled(cancellation)
         candidates = sorted(
@@ -81,20 +117,152 @@ def inspect_voice_default_impact(
         if settings.game_pack:
             candidates.insert(0, Path(settings.game_pack))
         for candidate in candidates:
-            pack_records, library = load_pack(candidate)
+            pack_records, library = _load_pack(candidate, cache, cancellation)
             if all(
                 line_id in pack_records
                 and pack_records[line_id].text_sha256 == records[line_id].text_sha256
                 for line_id in selection.line_ids
             ):
-                selected.append((selection, pack_records, library))
+                selected.append(
+                    _CompatiblePack(
+                        selection.selection_id,
+                        selection.title,
+                        selection.line_ids,
+                        pack_records,
+                        library,
+                    )
+                )
                 break
+    return tuple(selected)
+
+
+def _impact_for_pack(
+    pack: _CompatiblePack,
+    records: dict[str, StoryIndexRecord],
+    old_groups: dict[str, VoiceGroup],
+    new_groups: dict[str, VoiceGroup],
+    proposed: AppSettings,
+    role: str,
+    narrator: bool,
+    cancellation: Cancellation | None,
+) -> StoryVoiceImpact:
+    changed: list[str] = []
+    matching = original = unknown = needs_choice = 0
+    for line_id in pack.line_ids:
+        _raise_if_cancelled(cancellation)
+        record = records[line_id]
+        if (
+            record.speakable
+            and pack.records[line_id].source_audio_status == "available"
+        ):
+            original += 1
+            continue
+        group = new_groups.get(line_id)
+        old_group = old_groups.get(line_id)
+        if group is None:
+            continue
+        if not _matches_role(group, old_group, role, narrator):
+            continue
+        if group.route == "needs-audition":
+            needs_choice += 1
+            continue
+        saved_voice = _saved_voice_status(
+            pack.library,
+            line_id,
+            record.text_sha256,
+            group,
+            proposed,
+        )
+        if saved_voice == "unknown":
+            unknown += 1
+        elif saved_voice == "matching":
+            matching += 1
+        elif saved_voice == "changed":
+            changed.append(line_id)
+    return StoryVoiceImpact(
+        pack.selection_id,
+        pack.title,
+        tuple(changed),
+        matching,
+        original,
+        unknown,
+        needs_choice,
+    )
+
+
+def _matches_role(
+    group: VoiceGroup,
+    old_group: VoiceGroup | None,
+    role: str,
+    narrator: bool,
+) -> bool:
+    return normalize_character_name(group.character) == role or (
+        narrator
+        and any(
+            value is not None and value.route == "narrator"
+            for value in (old_group, group)
+        )
+    )
+
+
+def _saved_voice_status(
+    library: GeneratedAudioLibrary | None,
+    line_id: str,
+    text_sha256: str,
+    group: VoiceGroup,
+    proposed: AppSettings,
+) -> SavedVoiceStatus:
+    if (
+        library is None
+        or library.index.find(line_id, text_sha256, verify_file=False) is None
+    ):
+        return "not-saved"
+    prepared = library.find(line_id, text_sha256)
+    if prepared is None:
+        raise PregenerationVoiceError(
+            f"Saved audio is missing or damaged for {line_id}."
+        )
+    identity = prepared.recorded_voice
+    if identity is None:
+        return "unknown"
+    references = group.reference_sha256s[:1]
+    speaker = group.source_speaker or (
+        "alba"
+        if proposed.speech_backend == "pocket-tts" and group.route == "narrator"
+        else None
+    )
+    return (
+        "matching"
+        if (identity["speaker"], tuple(identity["reference_sha256s"]))
+        == (speaker, references)
+        else "changed"
+    )
+
+
+def inspect_voice_default_impact(
+    content: GameContent,
+    job_store: PregenerationJobStore,
+    decisions: VoiceDecisionStore,
+    settings: AppSettings,
+    proposed: AppSettings,
+    role: str,
+    *,
+    cancellation: Cancellation | None = None,
+) -> tuple[StoryVoiceImpact, ...]:
+    """Use the real planner and saved decisions without changing durable work."""
+    _raise_if_cancelled(cancellation)
+    if sha256_file(content.story_index) != content.story_index_sha256:
+        raise PregenerationVoiceError(
+            "Story content changed. Refresh Stories and retry."
+        )
+    records = _verified_records(content)
+    selected = _compatible_packs(content, job_store, settings, records, cancellation)
     if not selected:
         return ()
     with TemporaryDirectory(prefix="vntts-voice-impact-") as temporary:
         preview_jobs = PregenerationJobStore(Path(temporary))
         job = preview_jobs.create_or_resume(
-            content, tuple(selection.selection_id for selection, _, _ in selected)
+            content, tuple(pack.selection_id for pack in selected)
         )
         planner = VoicePlanStore(preview_jobs, decisions=decisions)
         old_plan = planner.create(job, settings, cancellation=cancellation)
@@ -107,70 +275,16 @@ def inspect_voice_default_impact(
     }
     narrator = is_narrator(role)
     role = normalize_character_name(role)
-    results = []
-    for selection, pack_records, library in selected:
-        changed = []
-        matching = original = unknown = needs_choice = 0
-        for line_id in selection.line_ids:
-            _raise_if_cancelled(cancellation)
-            record = records[line_id]
-            if (
-                record.speakable
-                and pack_records[line_id].source_audio_status == "available"
-            ):
-                original += 1
-                continue
-            group = new_groups.get(line_id)
-            old_group = old_groups.get(line_id)
-            if group is None or not (
-                normalize_character_name(group.character) == role
-                or narrator
-                and any(
-                    value is not None and value.route == "narrator"
-                    for value in (old_group, group)
-                )
-            ):
-                continue
-            if group.route == "needs-audition":
-                needs_choice += 1
-                continue
-            if library is None:
-                continue
-            entry = library.index.find(line_id, record.text_sha256, verify_file=False)
-            if entry is None:
-                continue
-            prepared = library.find(line_id, record.text_sha256)
-            if prepared is None:
-                raise PregenerationVoiceError(
-                    f"Saved audio is missing or damaged for {line_id}."
-                )
-            identity = prepared.recorded_voice
-            if identity is None:
-                unknown += 1
-                continue
-            # These engines synthesize from the first selected reference only.
-            references = group.reference_sha256s[:1]
-            speaker = group.source_speaker or (
-                "alba"
-                if proposed.speech_backend == "pocket-tts" and group.route == "narrator"
-                else None
-            )
-            if (identity["speaker"], tuple(identity["reference_sha256s"])) == (
-                speaker,
-                references,
-            ):
-                matching += 1
-            else:
-                changed.append(line_id)
-        results.append(
-            StoryVoiceImpact(
-                selection.selection_id,
-                selection.title,
-                tuple(changed),
-                matching,
-                original,
-                unknown,
-                needs_choice,
-            )
+    return tuple(
+        _impact_for_pack(
+            pack,
+            records,
+            old_groups,
+            new_groups,
+            proposed,
+            role,
+            narrator,
+            cancellation,
         )
-    return tuple(results)
+        for pack in selected
+    )

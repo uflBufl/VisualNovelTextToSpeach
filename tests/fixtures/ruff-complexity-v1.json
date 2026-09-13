@@ -1485,12 +1485,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/voice_default_impact.py",
-      "scope": "inspect_voice_default_impact",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/voices.py",
       "scope": "_read_owned_voice_reference",
       "count": 1
@@ -2486,12 +2480,6 @@
       "count": 1
     },
     {
-      "code": "PLR0912",
-      "path": "vntts/voice_default_impact.py",
-      "scope": "inspect_voice_default_impact",
-      "count": 1
-    },
-    {
       "code": "PLR0915",
       "path": "examples/benchmark_tts_backends.py",
       "scope": "create_backend",
@@ -3377,12 +3365,6 @@
       "code": "PLR0915",
       "path": "vntts/tts_benchmark.py",
       "scope": "_benchmark_backend_staged",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/voice_default_impact.py",
-      "scope": "inspect_voice_default_impact",
       "count": 1
     },
     {

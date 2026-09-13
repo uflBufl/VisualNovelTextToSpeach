@@ -124,7 +124,6 @@
     "vntts/speech_presentation.py": 10,
     "vntts/support.py": 48,
     "vntts/tts_benchmark.py": 15,
-    "vntts/voice_default_impact.py": 2,
     "vntts/window_capture.py": 43
   }
 }

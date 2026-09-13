@@ -235,6 +235,7 @@ files = [
     "vntts/synthesis.py",
     "vntts/ui_text.py",
     "vntts/versioned_json.py",
+    "vntts/voice_default_impact.py",
     "vntts/voices.py",
     "vntts/voice_preview_ui.py",
 ]
