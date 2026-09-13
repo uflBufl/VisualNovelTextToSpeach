@@ -29,6 +29,7 @@ from vntts.authoring.audio_event_review import (
     record_audio_event_review_decision,
 )
 from vntts.authoring.workbench import (
+    WorkspaceCreationResult,
     create_audio_event_composition_workspace,
     default_workspaces_root,
 )
@@ -56,7 +57,9 @@ REVIEW_COMMANDS = frozenset(
 COMMANDS = WORKSPACE_COMMANDS | REVIEW_COMMANDS
 
 
-def configure_workspace_parsers(subparsers) -> None:
+def configure_workspace_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     event_omission = subparsers.add_parser(
         "audio-event-omission",
         help="Omit exact pure events with no validated audio source",
@@ -81,7 +84,9 @@ def configure_workspace_parsers(subparsers) -> None:
     )
 
 
-def configure_review_parsers(subparsers) -> None:
+def configure_review_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     audio_event_publish = subparsers.add_parser(
         "audio-event-review-publish",
         help="Publish one immutable source-backed non-verbal event review",
@@ -136,7 +141,7 @@ def configure_review_parsers(subparsers) -> None:
     audio_event_workspace.add_argument("--workspaces-root", type=Path)
 
 
-def _print_workspace_result(result) -> None:
+def _print_workspace_result(result: WorkspaceCreationResult) -> None:
     print(
         json.dumps(
             {

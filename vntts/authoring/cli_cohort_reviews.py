@@ -7,13 +7,17 @@ import json
 from pathlib import Path
 
 from vntts.authoring.cohort_bundle import (
+    CohortBundleProjection,
+    CohortReviewBundle,
     build_cohort_review_bundle,
     execute_cohort_bundle_decision,
     load_cohort_review_bundle,
     write_cohort_review_bundle,
 )
-from vntts.authoring.cohort_review import CohortReviewError as _CohortReviewError
 from vntts.authoring.cohort_review import (
+    CohortReviewDecision,
+    CohortReviewPlan,
+    CohortReviewProjection,
     apply_cohort_review_decision,
     build_cohort_review_decision,
     build_cohort_review_plan,
@@ -22,6 +26,7 @@ from vntts.authoring.cohort_review import (
     write_cohort_review_decision,
     write_cohort_review_plan,
 )
+from vntts.authoring.cohort_review import CohortReviewError as _CohortReviewError
 
 CohortReviewError = _CohortReviewError
 
@@ -41,7 +46,9 @@ DECISION_COMMANDS = frozenset(
 COMMANDS = PLANNING_COMMANDS | DECISION_COMMANDS
 
 
-def configure_planning_parsers(subparsers) -> None:
+def configure_planning_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     review = subparsers.add_parser(
         "cohort-review-plan",
         help="Plan checksum-bound technical-attention and clean review samples",
@@ -109,7 +116,9 @@ def configure_planning_parsers(subparsers) -> None:
     bundle_apply.add_argument("--next-clean-samples-per-bucket", type=int)
 
 
-def configure_decision_parsers(subparsers) -> None:
+def configure_decision_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     decision = subparsers.add_parser(
         "cohort-review-decision",
         help="Record an immutable human decision over one exact cohort sample",
@@ -142,10 +151,12 @@ def configure_decision_parsers(subparsers) -> None:
     apply_decision.add_argument("decision", type=Path)
 
 
-def _selected_queue_ids_by_workspace(arguments: argparse.Namespace):
+def _selected_queue_ids_by_workspace(
+    arguments: argparse.Namespace,
+) -> dict[Path, list[str]] | None:
     if not arguments.workspace_queue_id:
         return None
-    selections = {
+    selections: dict[Path, list[str]] = {
         Path(workspace).expanduser().resolve(): [] for workspace in arguments.workspace
     }
     for workspace_value, queue_id in arguments.workspace_queue_id:
@@ -174,8 +185,8 @@ def _selected_queue_ids_by_workspace(arguments: argparse.Namespace):
     return selections
 
 
-def _sample_assessments(arguments: argparse.Namespace):
-    bad = set(arguments.bad_queue_id)
+def _sample_assessments(arguments: argparse.Namespace) -> dict[str, str]:
+    bad: set[str] = set(arguments.bad_queue_id)
     unexpected = sorted(bad - set(arguments.reviewed_queue_id))
     if unexpected:
         raise CohortReviewError(f"Bad queue IDs were not reviewed: {unexpected}")
@@ -185,7 +196,13 @@ def _sample_assessments(arguments: argparse.Namespace):
     }
 
 
-def _print_document(value) -> None:
+def _print_document(
+    value: CohortReviewPlan
+    | CohortReviewBundle
+    | CohortBundleProjection
+    | CohortReviewDecision
+    | CohortReviewProjection,
+) -> None:
     print(json.dumps(value.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 from vntts.authoring.speaker_identity import (
@@ -38,7 +39,9 @@ COMMANDS = frozenset(
 )
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     inventory = subparsers.add_parser(
         "speaker-identity-inventory",
         help="Publish a checksum-bound inventory of voice references",
@@ -118,7 +121,7 @@ def handle(arguments: argparse.Namespace) -> int:
     raise SpeakerIdentityError(f"No speaker-identity handler for {arguments.command!r}")
 
 
-def _read_pair_draft(path):
+def _read_pair_draft(path: str | Path) -> list[object]:
     try:
         document = json.loads(Path(path).expanduser().resolve().read_text("utf-8"))
     except (OSError, ValueError) as error:
@@ -133,7 +136,7 @@ def _read_pair_draft(path):
     return pairs
 
 
-def _summary(document):
+def _summary(document: Mapping[str, object]) -> dict[str, object]:
     return {
         key: document[key]
         for key in (
@@ -149,7 +152,7 @@ def _summary(document):
     }
 
 
-def _print(document):
+def _print(document: object) -> None:
     print(json.dumps(document, indent=2, sort_keys=True))
 
 

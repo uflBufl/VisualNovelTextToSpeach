@@ -12,21 +12,23 @@ from vntts.authoring.game_pack import publish_final_game_pack
 COMMANDS = frozenset({"publish-pack"})
 
 
-def _producer_record(value):
+def _producer_record(value: str) -> dict[str, str]:
     name, separator, producer_version = value.partition("=")
     if not separator or not name.strip() or not producer_version.strip():
         raise argparse.ArgumentTypeError("producer must use NAME=VERSION")
     return {"name": name.strip(), "version": producer_version.strip()}
 
 
-def _vntts_version():
+def _vntts_version() -> str:
     try:
         return version("visual-novel-text-to-speech")
     except PackageNotFoundError:
         return "0.1.0"
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     pack = subparsers.add_parser(
         "publish-pack", help="Atomically publish a fully verified final game pack"
     )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+
 from vntts.authoring.bulk_generation import BulkGenerationError
 from vntts.authoring.failure_repair import FailureRepairPolicy, FailureRepairPolicyError
 from vntts.authoring.missing_voice_policy import (
@@ -12,7 +14,7 @@ from vntts.authoring.missing_voice_policy import (
 )
 
 
-def missing_voice_policy(arguments) -> MissingVoicePolicy:
+def missing_voice_policy(arguments: argparse.Namespace) -> MissingVoicePolicy:
     try:
         if arguments.narrator_fallback_all:
             return MissingVoicePolicy(NARRATOR_ALL_UNRESOLVED)
@@ -25,7 +27,7 @@ def missing_voice_policy(arguments) -> MissingVoicePolicy:
         raise BulkGenerationError(str(error)) from error
 
 
-def add_missing_voice_policy_arguments(parser) -> None:
+def add_missing_voice_policy_arguments(parser: argparse.ArgumentParser) -> None:
     fallback = parser.add_mutually_exclusive_group()
     fallback.add_argument(
         "--narrator-fallback-role",
@@ -43,7 +45,7 @@ def add_missing_voice_policy_arguments(parser) -> None:
     )
 
 
-def failure_repair_policy(arguments) -> FailureRepairPolicy:
+def failure_repair_policy(arguments: argparse.Namespace) -> FailureRepairPolicy:
     try:
         return FailureRepairPolicy(
             tuple(arguments.sentence_segment_failed or ()),
@@ -58,7 +60,7 @@ def failure_repair_policy(arguments) -> FailureRepairPolicy:
         raise BulkGenerationError(str(error)) from error
 
 
-def add_failure_repair_arguments(parser) -> None:
+def add_failure_repair_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--sentence-segment-failed",
         action="append",
