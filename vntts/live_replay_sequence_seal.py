@@ -361,17 +361,7 @@ def _map_dialogue(
                 )
         else:
             if previous_event is None:
-                initial_candidates: list[LiveSequenceEvent] = []
-                for candidate in plan.events.values():
-                    if not candidate.is_speech:
-                        continue
-                    candidate_line = resolver.line_for_id(candidate.line_id)
-                    assert candidate_line is not None
-                    if _normalized_exact(candidate_line.text) == _normalized_exact(
-                        text
-                    ):
-                        initial_candidates.append(candidate)
-                candidates: tuple[LiveSequenceEvent, ...] = tuple(initial_candidates)
+                candidates = _initial_text_candidates(plan, resolver, text)
             else:
                 candidates = frontier
             if previous_event is not None and len(candidates) != 1:
@@ -452,6 +442,26 @@ def _next_visible_events(
     return tuple(visible)
 
 
+def _initial_text_candidates(
+    plan: LiveSequencePlan, resolver: ChapterVoicePreloader, text: str
+) -> tuple[LiveSequenceEvent, ...]:
+    return tuple(
+        event
+        for event in plan.events.values()
+        if event.is_speech
+        and _normalized_exact(_canonical_line(resolver, event.line_id).text)
+        == _normalized_exact(text)
+    )
+
+
+def _canonical_line(
+    resolver: ChapterVoicePreloader, line_id: str | None
+) -> ChapterDialogue:
+    line: ChapterDialogue | None = resolver.line_for_id(line_id)
+    assert line is not None
+    return line
+
+
 def _copy_frames(
     capture_root: Path, staging: Path, raw_dialogue: Sequence[JSONDocument]
 ) -> list[list[JSONDocument]]:
@@ -514,15 +524,7 @@ def _snapshot_generated_audio(
         raise SequenceReplaySealError(
             "Generated audio manifest changed while it was being loaded"
         )
-    identities: set[tuple[str | None, str | None]] = set()
-    for mapping in mappings:
-        line_id = mapping["line_id"]
-        if line_id is None:
-            continue
-        assert isinstance(line_id, str)
-        line: ChapterDialogue | None = resolver.line_for_id(line_id)
-        assert line is not None
-        identities.add((line_id, line.text_sha256))
+    identities = _generated_audio_identities(mappings, resolver)
     selected = [
         record
         for record in document.records
@@ -578,6 +580,19 @@ def _snapshot_generated_audio(
         },
         {record.line_id for record in selected},
     )
+
+
+def _generated_audio_identities(
+    mappings: Sequence[JSONDocument], resolver: ChapterVoicePreloader
+) -> set[tuple[str, str | None]]:
+    identities: set[tuple[str, str | None]] = set()
+    for mapping in mappings:
+        line_id = mapping["line_id"]
+        if line_id is None:
+            continue
+        assert isinstance(line_id, str)
+        identities.add((line_id, _canonical_line(resolver, line_id).text_sha256))
+    return identities
 
 
 def _sealed_dialogue(
