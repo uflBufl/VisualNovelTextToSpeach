@@ -3790,12 +3790,6 @@
     {
       "code": "PLR0915",
       "path": "vntts/game_narrator_ui.py",
-      "scope": "GameNarratorDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/game_narrator_ui.py",
       "scope": "GameNarratorDialog._finished",
       "count": 1
     },

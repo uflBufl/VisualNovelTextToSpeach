@@ -78,6 +78,22 @@ class GameNarratorDialog(QDialog):
         binder=bind_game_narrator,
     ):
         super().__init__(parent)
+        self._initialize_state(
+            settings, importer, preview_service, binder, player, thread_pool
+        )
+        model_summary = self._build_status_and_engine_controls(settings)
+        self._build_voice_source_controls(settings)
+        self._build_game_reference_controls(settings)
+        self._build_preview_controls(model_summary)
+        layout = self._build_dialog_layout()
+        self._build_impact_controls(settings)
+        self._build_actions(layout)
+        self._connect_controls()
+        self._finish_setup()
+
+    def _initialize_state(
+        self, settings, importer, preview_service, binder, player, thread_pool
+    ):
         self.setWindowTitle("Narrator and character voices")
         self.resize(640, 560)
         self.settings_value = resolve_pregeneration_settings(settings)
@@ -119,6 +135,7 @@ class GameNarratorDialog(QDialog):
         self._game_reference_dirty = False
         self.select_affected_after_save = False
 
+    def _build_status_and_engine_controls(self, settings):
         self.status = QLabel("Choose a candidate. Nothing changes until you save.")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
@@ -176,6 +193,10 @@ class GameNarratorDialog(QDialog):
         self.role_summary.setTextFormat(Qt.TextFormat.PlainText)
         self.role_summary.setWordWrap(True)
         form.addRow("Current voice", self.role_summary)
+        return model_summary
+
+    def _build_voice_source_controls(self, settings):
+        form = self.form
         self.portrait = QLabel()
         self.portrait.setAccessibleName("Selected character portrait")
         form.addRow(self.portrait)
@@ -203,6 +224,9 @@ class GameNarratorDialog(QDialog):
         self.catalog_choice.setAccessibleName("Imported character voice candidate")
         self.catalog_choice.currentIndexChanged.connect(lambda: self._stop_audio())
         form.addRow("Candidate", self.catalog_choice)
+
+    def _build_game_reference_controls(self, settings):
+        form = self.form
         self.game_controls = QWidget()
         game_form = QFormLayout(self.game_controls)
         game_form.setContentsMargins(0, 0, 0, 0)
@@ -250,6 +274,9 @@ class GameNarratorDialog(QDialog):
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         form.addRow(separator)
+
+    def _build_preview_controls(self, model_summary):
+        form = self.form
         self.text = QLineEdit("The storm has passed. We can continue our journey.")
         form.addRow("Preview text", self.text)
         form.addRow("Engine", self.engine_choice)
@@ -268,6 +295,8 @@ class GameNarratorDialog(QDialog):
         self.stop_button.clicked.connect(self._stop_audio)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.reject)
+
+    def _build_dialog_layout(self):
         layout = QVBoxLayout(self)
         status_layout = QHBoxLayout()
         status_layout.addWidget(self.status)
@@ -293,6 +322,10 @@ class GameNarratorDialog(QDialog):
         transport.addWidget(self.preview_button)
         transport.addWidget(self.stop_button)
         layout.addLayout(transport)
+        return layout
+
+    def _build_impact_controls(self, settings):
+        form = self.form
         note = QLabel(
             "Defaults apply to future preparation and live fallback.\n\n"
             "Existing recordings keep their recorded voices. "
@@ -332,10 +365,14 @@ class GameNarratorDialog(QDialog):
             self.announcements.findData(settings.effective_speaker_announcement_mode)
         )
         form.addRow("Speaker names", self.announcements)
+
+    def _build_actions(self, layout):
         actions = QHBoxLayout()
         actions.addWidget(self.cancel_button)
         actions.addWidget(self.save_button)
         layout.addLayout(actions)
+
+    def _connect_controls(self):
         self.player.errorOccurred.connect(
             lambda _code, message: self.status.setText(f"Playback failed: {message}")
         )
@@ -350,6 +387,8 @@ class GameNarratorDialog(QDialog):
         self.engine_choice.currentIndexChanged.connect(self._engine_changed)
         self.model_choice.textChanged.connect(self._model_changed)
         self.role.currentTextChanged.connect(self._role_changed)
+
+    def _finish_setup(self):
         self._initializing = True
         self.set_voice_context()
         self._initializing = False
