@@ -112,7 +112,6 @@
     "vntts/live_replay_capture_recover.py": 22,
     "vntts/live_replay_coverage.py": 4,
     "vntts/live_replay_sequence_seal.py": 20,
-    "vntts/live_sequence.py": 30,
     "vntts/live_speaker_corpus.py": 2,
     "vntts/macos.py": 9,
     "vntts/main.py": 2,

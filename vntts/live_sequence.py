@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -59,31 +60,31 @@ class StoryCursorSnapshot:
 class StoryCursor:
     """Session-only cursor that fails closed on unexpected story transitions."""
 
-    def __init__(self, plan):
+    def __init__(self, plan: object) -> None:
         if not isinstance(plan, LiveSequencePlan):
             raise TypeError("StoryCursor requires a LiveSequencePlan")
-        self.plan = plan
-        self.state = StoryCursorState.UNSYNCHRONIZED
-        self.current_event_id = None
-        self.completed_playback_event_id = None
-        self.reason = None
-        self.occurrence_id = 0
+        self.plan: LiveSequencePlan = plan
+        self.state: StoryCursorState = StoryCursorState.UNSYNCHRONIZED
+        self.current_event_id: str | None = None
+        self.completed_playback_event_id: str | None = None
+        self.reason: str | None = None
+        self.occurrence_id: int = 0
 
     @property
-    def current_event(self):
+    def current_event(self) -> LiveSequenceEvent | None:
         if self.current_event_id is None:
             return None
         return self.plan.events[self.current_event_id]
 
     @property
-    def expected_successors(self):
+    def expected_successors(self) -> tuple[LiveSequenceEvent, ...]:
         event = self.current_event
         if event is None:
             return ()
         return tuple(self.plan.events[event_id] for event_id in event.successors)
 
     @property
-    def can_auto_advance(self):
+    def can_auto_advance(self) -> bool:
         event = self.current_event
         return bool(
             self.state == StoryCursorState.LOCKED
@@ -100,7 +101,7 @@ class StoryCursor:
         )
 
     @property
-    def can_confirm_visual_transition(self):
+    def can_confirm_visual_transition(self) -> bool:
         event = self.current_event
         return bool(
             event is not None
@@ -119,12 +120,12 @@ class StoryCursor:
             )
         )
 
-    def deterministic_manual_successor(self):
+    def deterministic_manual_successor(self) -> LiveSequenceEvent | None:
         """Return the unique upcoming manual boundary, if it precedes dialogue."""
         if self.state != StoryCursorState.WAITING_TRANSITION:
             return None
         current = self._require_current()
-        visited = {current.event_id}
+        visited: set[str] = {current.event_id}
         while len(current.successors) == 1:
             candidate = self.plan.events[current.successors[0]]
             if candidate.event_id in visited:
@@ -140,7 +141,7 @@ class StoryCursor:
             current = candidate
         return None
 
-    def snapshot(self):
+    def snapshot(self) -> StoryCursorSnapshot:
         event = self.current_event
         return StoryCursorSnapshot(
             state=self.state,
@@ -151,7 +152,7 @@ class StoryCursor:
             occurrence_id=self.occurrence_id,
         )
 
-    def reset(self, reason=None):
+    def reset(self, reason: object | None = None) -> StoryCursorSnapshot:
         self.occurrence_id += 1
         self.state = StoryCursorState.UNSYNCHRONIZED
         self.current_event_id = None
@@ -159,7 +160,7 @@ class StoryCursor:
         self.reason = _optional_text(reason)
         return self.snapshot()
 
-    def begin_anchoring(self, reason=None):
+    def begin_anchoring(self, reason: object | None = None) -> StoryCursorSnapshot:
         if self.state in {
             StoryCursorState.PLAYING,
             StoryCursorState.WAITING_TRANSITION,
@@ -170,7 +171,9 @@ class StoryCursor:
         self.reason = _optional_text(reason)
         return self.snapshot()
 
-    def anchor_event(self, event_id, reason=None):
+    def anchor_event(
+        self, event_id: object, reason: object | None = None
+    ) -> StoryCursorSnapshot:
         event = self._event(event_id)
         self.occurrence_id += 1
         self.current_event_id = event.event_id
@@ -179,13 +182,15 @@ class StoryCursor:
         self.reason = _optional_text(reason) or "explicit-anchor"
         return self.snapshot()
 
-    def anchor_line(self, line_id, reason=None):
+    def anchor_line(
+        self, line_id: object, reason: object | None = None
+    ) -> StoryCursorSnapshot:
         event = self.plan.event_for_line(str(line_id))
         if event is None:
             raise StoryCursorError(f"No live sequence event binds line {line_id!r}")
         return self.anchor_event(event.event_id, reason or "line-anchor")
 
-    def begin_playback(self):
+    def begin_playback(self) -> StoryCursorSnapshot:
         event = self._require_current()
         if self.state != StoryCursorState.LOCKED:
             raise StoryCursorError(f"Cannot play while cursor is {self.state.value}")
@@ -199,7 +204,7 @@ class StoryCursor:
         self.reason = "playback-started"
         return self.snapshot()
 
-    def finish_playback(self, *, successful=True):
+    def finish_playback(self, *, successful: bool = True) -> StoryCursorSnapshot:
         event = self._require_current()
         if self.state != StoryCursorState.PLAYING:
             raise StoryCursorError(
@@ -211,18 +216,18 @@ class StoryCursor:
         self.reason = "playback-completed" if successful else "playback-failed"
         return self.snapshot()
 
-    def deterministic_visual_successor(self):
+    def deterministic_visual_successor(self) -> LiveSequenceEvent | None:
         """Return one visible successor without guessing across a branch."""
         if not self.can_confirm_visual_transition:
             return None
         return self.deterministic_upcoming_visible_event()
 
-    def deterministic_upcoming_visible_event(self):
+    def deterministic_upcoming_visible_event(self) -> LiveSequenceEvent | None:
         """Return the unique next visible event without changing cursor state."""
         current = self.current_event
         if current is None:
             return None
-        visited = {current.event_id}
+        visited: set[str] = {current.event_id}
         while True:
             if len(current.successors) != 1:
                 return None
@@ -239,14 +244,14 @@ class StoryCursor:
                 return None
             current = candidate
 
-    def confirm_visual_transition(self):
+    def confirm_visual_transition(self) -> LiveSequenceEvent | None:
         candidate = self.deterministic_visual_successor()
         if candidate is None:
             return None
         self.anchor_event(candidate.event_id, "visual-transition-confirmed")
         return candidate
 
-    def dispatch_advance(self):
+    def dispatch_advance(self) -> StoryCursorSnapshot:
         event = self._require_current()
         if not self.can_auto_advance:
             raise StoryCursorError(
@@ -256,7 +261,7 @@ class StoryCursor:
         self.reason = "advance-dispatched"
         return self.snapshot()
 
-    def confirm_transition(self, event_id):
+    def confirm_transition(self, event_id: object) -> StoryCursorSnapshot:
         current = self._require_current()
         event_id = str(event_id)
         if self.state != StoryCursorState.WAITING_TRANSITION:
@@ -269,7 +274,7 @@ class StoryCursor:
             )
         return self.anchor_event(event_id, "transition-confirmed")
 
-    def confirm_passive_transition(self, event_id):
+    def confirm_passive_transition(self, event_id: object) -> StoryCursorSnapshot:
         current = self._require_current()
         event_id = str(event_id)
         if self.state != StoryCursorState.LOCKED or current.control != "passive":
@@ -282,7 +287,7 @@ class StoryCursor:
             )
         return self.anchor_event(event_id, "passive-transition-confirmed")
 
-    def observe_line(self, line_id):
+    def observe_line(self, line_id: object) -> StoryCursorSnapshot:
         """Update a cursor from an exact canonical line observation."""
         if self.state == StoryCursorState.DESYNCHRONIZED:
             return self.snapshot()
@@ -305,15 +310,19 @@ class StoryCursor:
             f"observation-unexpected:{current.event_id}->{event.event_id}"
         )
 
-    def bounded_visible_successors(self, *, maximum_visible_depth=3, maximum_nodes=24):
+    def bounded_visible_successors(
+        self, *, maximum_visible_depth: int = 3, maximum_nodes: int = 24
+    ) -> tuple[LiveSequenceEvent, ...]:
         """Return explicit visible lookahead without inferring undeclared edges."""
         current = self.current_event
         if current is None or maximum_visible_depth < 1 or maximum_nodes < 1:
             return ()
-        pending = [(event_id, 0) for event_id in current.successors]
-        visited_depth = {}
-        visible = []
-        emitted_event_ids = set()
+        pending: list[tuple[str, int]] = [
+            (event_id, 0) for event_id in current.successors
+        ]
+        visited_depth: dict[str, int] = {}
+        visible: list[LiveSequenceEvent] = []
+        emitted_event_ids: set[str] = set()
         while pending and len(visited_depth) < maximum_nodes:
             event_id, visible_depth = pending.pop(0)
             previous_depth = visited_depth.get(event_id)
@@ -338,7 +347,9 @@ class StoryCursor:
             )
         return tuple(visible)
 
-    def observe_bounded_line(self, line_id, allowed_event_ids):
+    def observe_bounded_line(
+        self, line_id: object, allowed_event_ids: Iterable[object]
+    ) -> StoryCursorSnapshot:
         """Recover only to a line proven to be in the supplied graph window."""
         event = self.plan.event_for_line(str(line_id))
         if event is None:
@@ -353,7 +364,7 @@ class StoryCursor:
             )
         return self.anchor_event(event.event_id, "observation-bounded-lookahead")
 
-    def _observe_current_event(self, event):
+    def _observe_current_event(self, event: LiveSequenceEvent) -> StoryCursorSnapshot:
         if self.state in {
             StoryCursorState.PLAYING,
             StoryCursorState.WAITING_TRANSITION,
@@ -367,13 +378,13 @@ class StoryCursor:
         )
         return self.snapshot()
 
-    def desynchronize(self, reason):
+    def desynchronize(self, reason: object) -> StoryCursorSnapshot:
         self.occurrence_id += 1
         self.state = StoryCursorState.DESYNCHRONIZED
         self.reason = _required_text(reason, "desynchronization reason")
         return self.snapshot()
 
-    def _event(self, event_id):
+    def _event(self, event_id: object) -> LiveSequenceEvent:
         event_id = str(event_id)
         try:
             return self.plan.events[event_id]
@@ -382,15 +393,17 @@ class StoryCursor:
                 f"Unknown live sequence event {event_id!r}"
             ) from error
 
-    def _require_current(self):
+    def _require_current(self) -> LiveSequenceEvent:
         event = self.current_event
         if event is None:
             raise StoryCursorError("Story cursor has no current event")
         return event
 
-    def _is_linear_observed_successor(self, current, target_event_id):
+    def _is_linear_observed_successor(
+        self, current: LiveSequenceEvent, target_event_id: str
+    ) -> bool:
         pending = current
-        visited = set()
+        visited: set[str] = set()
         while pending.event_id not in visited:
             visited.add(pending.event_id)
             if (
@@ -407,7 +420,7 @@ class StoryCursor:
         return False
 
     @staticmethod
-    def _resting_state(event):
+    def _resting_state(event: LiveSequenceEvent) -> StoryCursorState:
         return (
             StoryCursorState.MANUAL
             if event.control == "manual" or event.kind in {"choice", "wait"}
@@ -415,13 +428,13 @@ class StoryCursor:
         )
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise StoryCursorError(f"{label} must be non-empty text")
     return value.strip()
 
 
-def _optional_text(value):
+def _optional_text(value: object | None) -> str | None:
     if value is None:
         return None
     return str(value).strip() or None
