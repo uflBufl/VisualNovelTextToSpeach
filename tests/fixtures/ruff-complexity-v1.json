@@ -3214,12 +3214,6 @@
     {
       "code": "PLR0915",
       "path": "vntts/authoring/cohort_bundle_ui.py",
-      "scope": "CohortReviewBundleDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cohort_bundle_ui.py",
       "scope": "CohortReviewBundleDialog._update_actions",
       "count": 1
     },

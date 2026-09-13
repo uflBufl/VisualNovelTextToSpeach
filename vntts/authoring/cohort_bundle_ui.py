@@ -294,6 +294,36 @@ class CohortReviewBundleDialog(QDialog):
         quality_gate=None,
     ):
         super().__init__(parent)
+        self._initialize_session(
+            bundle,
+            sample_loader,
+            playback_preparer,
+            decision_executor,
+            observation_writer,
+            confirmer,
+            quality_gate,
+        )
+        self._build_status_widgets()
+        self._build_sample_widgets()
+        self._build_sample_table()
+        self._build_action_widgets()
+        navigation, defect_group, decisions = self._build_decision_controls()
+        groups = self._build_review_groups(navigation, defect_group, decisions)
+        self._build_layout(*groups)
+        self._initialize_workers()
+        self._configure_navigation()
+        self.reload_bundle()
+
+    def _initialize_session(
+        self,
+        bundle,
+        sample_loader,
+        playback_preparer,
+        decision_executor,
+        observation_writer,
+        confirmer,
+        quality_gate,
+    ):
         self.bundle_path = None
         self.original_bundle = None
         self.quality_gate_path = (
@@ -344,6 +374,7 @@ class CohortReviewBundleDialog(QDialog):
         self._playback_buffer = None
         self._initial_cohort_count = self.bundle.document["cohort_count"]
 
+    def _build_status_widgets(self):
         self.setWindowTitle("VNTTS specialist cohort review")
         self.resize(1280, 820)
         self.setMinimumSize(900, 820)
@@ -402,6 +433,7 @@ class CohortReviewBundleDialog(QDialog):
         )
         self.cohort_audit.hide()
 
+    def _build_sample_widgets(self):
         self.sample_position = QLabel("No sample selected")
         self.sample_position.setObjectName("samplePosition")
         self.sample_position.setAccessibleName("Selected sample position")
@@ -418,6 +450,7 @@ class CohortReviewBundleDialog(QDialog):
         self.sample_text.setAccessibleName("Selected sample text")
         self.sample_text.setMinimumHeight(48)
 
+    def _build_sample_table(self):
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
             [
@@ -451,6 +484,7 @@ class CohortReviewBundleDialog(QDialog):
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.doubleClicked.connect(lambda _index: self.play_selected())
 
+    def _build_action_widgets(self):
         self.previous = QPushButton("Previous sample")
         self.replay = QPushButton("Play selected sample")
         self.stop = QPushButton("Stop sample")
@@ -525,6 +559,7 @@ class CohortReviewBundleDialog(QDialog):
         self.reject.clicked.connect(lambda: self.apply_decision("rejected"))
         self.retry_load.clicked.connect(self.reload_bundle)
 
+    def _build_decision_controls(self):
         navigation = review_form_layout()
         navigation.addRow(self.previous, self.next)
         navigation.addRow(self.replay, self.stop)
@@ -563,7 +598,9 @@ class CohortReviewBundleDialog(QDialog):
         self.shortcuts_help.setWordWrap(True)
         self.shortcuts_help.setObjectName("shortcutHelp")
         self.shortcuts_help.setAccessibleName("Cohort review keyboard shortcuts")
+        return navigation, defect_group, decisions
 
+    def _build_review_groups(self, navigation, defect_group, decisions):
         progress_layout = QGridLayout()
         progress_layout.addWidget(self.summary, 0, 0)
         progress_layout.addWidget(self.quality_baseline, 1, 0)
@@ -602,7 +639,15 @@ class CohortReviewBundleDialog(QDialog):
         decision_layout.addWidget(self.shortcuts_help)
         decision_group = QGroupBox("Cohort decision")
         decision_group.setLayout(decision_layout)
+        return progress_group, cohort_group, sample_group, decision_group
 
+    def _build_layout(
+        self,
+        progress_group,
+        cohort_group,
+        sample_group,
+        decision_group,
+    ):
         review_content = QWidget()
         review_layout = QVBoxLayout(review_content)
         review_layout.setContentsMargins(0, 0, 0, 0)
@@ -643,6 +688,7 @@ class CohortReviewBundleDialog(QDialog):
             "QPushButton#rejectCohort { font-weight: 700; }"
         )
 
+    def _initialize_workers(self):
         self.player = QMediaPlayer(self)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._media_error)
@@ -661,6 +707,7 @@ class CohortReviewBundleDialog(QDialog):
         self._operation_timer.setInterval(250)
         self._operation_timer.timeout.connect(self._update_operation_status)
 
+    def _configure_navigation(self):
         focus_order = [
             self.decision_context.technical_toggle,
             self.retry_load,
@@ -715,7 +762,6 @@ class CohortReviewBundleDialog(QDialog):
             self,
             activated=lambda: self.apply_decision("rejected"),
         )
-        self.reload_bundle()
 
     def reload_bundle(self):
         if self._load_active or self._decision_active:
