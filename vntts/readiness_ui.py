@@ -266,7 +266,8 @@ class ReadinessDialog(QDialog):
             "calibration": "Open Calibration",
             "voices": "Open Voice mappings",
         }
-        label = actions.get(result.remediation)
+        remediation = result.remediation
+        label = actions.get(remediation) if remediation is not None else None
         if label is None:
             self.remediation_reason.setText(
                 f"No in-app fix is available for {result.name}. Follow the "
@@ -289,7 +290,8 @@ class ReadinessDialog(QDialog):
             "calibration": self.calibration_requested,
             "voices": self.voices_requested,
         }
-        signal = signals.get(result.remediation)
+        remediation = result.remediation
+        signal = signals.get(remediation) if remediation is not None else None
         if signal is not None:
             signal.emit()
 
