@@ -359,36 +359,62 @@ def _load_observations(
         raise LiveReplayCaptureRecoveryError("Raw capture authority is invalid")
     binding = capture_binding.get("observation_ledger")
     if binding is None:
-        observations: list[_Observation] = []
-        for index, record in enumerate(raw_dialogue, start=1):
-            raw_frames = record.get("frames")
-            if not isinstance(raw_frames, list) or not raw_frames:
-                raise LiveReplayCaptureRecoveryError(
-                    f"Raw replay dialogue {index} has no exact frames"
-                )
-            frames = _validate_frames(capture_path.parent, raw_frames)
-            dialog_visible, bright_dialog_pixels = _frame_visibility(
-                _validated_frame_payload(capture_path.parent, frames[0])
-            )
-            observations.append(
-                _Observation(
-                    index,
-                    tuple(frames),
-                    str(record.get("character") or "Narrator").strip() or "Narrator",
-                    " ".join(str(record.get("text") or "").split()) or None,
-                    str(record.get("line_id") or "").strip() or None,
-                    "legacy-dialogue",
-                    dialog_visible,
-                    bright_dialog_pixels,
-                )
-            )
-        return tuple(observations), None, None, []
+        return (
+            _load_legacy_observations(capture_path.parent, raw_dialogue),
+            None,
+            None,
+            [],
+        )
     if not isinstance(binding, dict):
         raise LiveReplayCaptureRecoveryError(
             "Raw capture observation ledger binding is invalid"
         )
-    _relative, payload = _read_contained(
+    observations, digest, payload, visual_ellipses = _load_ledger_observations(
         capture_path.parent,
+        capture_binding,
+        binding,
+        resolver,
+    )
+    return observations, digest, payload, visual_ellipses
+
+
+def _load_legacy_observations(
+    capture_root: Path, raw_dialogue: Sequence[JSONDocument]
+) -> tuple[_Observation, ...]:
+    observations: list[_Observation] = []
+    for index, record in enumerate(raw_dialogue, start=1):
+        raw_frames = record.get("frames")
+        if not isinstance(raw_frames, list) or not raw_frames:
+            raise LiveReplayCaptureRecoveryError(
+                f"Raw replay dialogue {index} has no exact frames"
+            )
+        frames = _validate_frames(capture_root, raw_frames)
+        dialog_visible, bright_dialog_pixels = _frame_visibility(
+            _validated_frame_payload(capture_root, frames[0])
+        )
+        observations.append(
+            _Observation(
+                index,
+                frames,
+                str(record.get("character") or "Narrator").strip() or "Narrator",
+                " ".join(str(record.get("text") or "").split()) or None,
+                str(record.get("line_id") or "").strip() or None,
+                "legacy-dialogue",
+                dialog_visible,
+                bright_dialog_pixels,
+            )
+        )
+    return tuple(observations)
+
+
+def _load_ledger_observations(
+    capture_root: Path,
+    capture_binding: JSONDocument,
+    binding: JSONDocument,
+    resolver: ChapterVoicePreloader,
+) -> tuple[tuple[_Observation, ...], str, bytes, list[JSONDocument]]:
+    _relative, payload = _read_contained(
+        capture_root,
         binding.get("path"),
         "Capture observation ledger",
     )
@@ -425,7 +451,7 @@ def _load_observations(
             raise LiveReplayCaptureRecoveryError(
                 "Capture observation frame must bind only path and sha256"
             )
-        frame_payload = _validated_frame_payload(capture_path.parent, frame)
+        frame_payload = _validated_frame_payload(capture_root, frame)
         dialog_visible, bright_dialog_pixels = _frame_visibility(frame_payload)
         character = _optional_text(entry.get("observed_character"))
         text = _optional_text(entry.get("observed_text"))
