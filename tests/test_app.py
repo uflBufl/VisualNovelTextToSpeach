@@ -698,6 +698,10 @@ class TrayApplicationTest(unittest.TestCase):
             backend.progress_wait_request,
             preparation.prioritize_line,
         )
+        self.assertIs(
+            backend.progress_line_observed,
+            preparation.readingLineObserved.emit,
+        )
         start_reading.assert_called_once_with()
         self.assertEqual(tray.settings, saved)
         tray.pregeneration_dialog = None

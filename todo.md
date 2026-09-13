@@ -5,8 +5,6 @@ measurements in agent memory and completed-work history in Git, not here.
 
 ## P0 - Play while offline audio is still preparing
 
-- [ ] Extend the existing per-chapter ready and ready-prefix counts from chapter
-      start to the current reading position when a sequence cursor is available.
 - [ ] Verify with one selected multi-chapter story: start after a partial chapter,
       continue generation while prepared WAVs play, cross a newly published
       boundary without duplicate speech, wait safely when catching the worker,

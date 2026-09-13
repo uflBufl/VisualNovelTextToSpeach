@@ -129,10 +129,12 @@ class GeneratedAudioTest(unittest.TestCase):
                 self.create_resolver(),
                 audio_output=output,
             )
-            route = backend.prepare_route("Ada", "Hello.")
             statuses = []
             requests = []
+            observed = []
             backend.progress_wait_request = lambda *identity: requests.append(identity)
+            backend.progress_line_observed = lambda *identity: observed.append(identity)
+            route = backend.prepare_route("Ada", "Hello.")
 
             def publish_on_wait(message):
                 statuses.append(message)
@@ -161,6 +163,7 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(outcome.audio_source, "generated")
         self.assertEqual(len(output.plays), 1)
         self.assertEqual(requests, [("game:1", text_sha256("Hello."))])
+        self.assertEqual(observed, [("game:1", text_sha256("Hello."))])
         self.assertEqual(statuses[0], "Preparing this line - attempt 2 of 3.")
         self.assertEqual(statuses[-1], "Prepared audio is ready; continuing reading.")
 

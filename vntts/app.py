@@ -2022,6 +2022,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 dialog = self.pregeneration_dialog
                 if backend is not None and dialog is not None:
                     backend.progress_wait_request = dialog.prioritize_line
+                    backend.progress_line_observed = dialog.readingLineObserved.emit
                 self._apply_controller_action_state()
                 self.set_status(
                     "Reading uses finished recordings while preparation continues. "

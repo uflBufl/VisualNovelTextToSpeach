@@ -103,6 +103,7 @@ class OfflineAudioPreparationDialog(QDialog):
     preparationRequested = Signal()
     packReady = Signal()
     readingRequested = Signal()
+    readingLineObserved = Signal(str, str)
 
     def __init__(
         self,
@@ -152,6 +153,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.game_narrator_chooser = game_narrator_chooser
         self._initialize_task_runners(audition_service, preview_player, thread_pool)
         self._initialize_state(preview_player)
+        self.readingLineObserved.connect(self._reading_line_observed)
         self._configure_window()
         narrator_row = self._build_voice_controls(game_narrator_chooser)
         source_row = self._build_source_controls()
@@ -215,6 +217,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _initialize_state(self, preview_player):
         self._progress_baseline = None
         self._progress_snapshot = None
+        self._reading_line_id = None
         self._progress_changed_at = monotonic()
         self._progress_error = None
         self.import_cancel_event = Event()
@@ -1353,6 +1356,12 @@ class OfflineAudioPreparationDialog(QDialog):
     def prioritize_line(self, line_id, text_sha256):
         return self.recovery.prioritize_line(line_id, text_sha256)
 
+    def _reading_line_observed(self, line_id, _text_sha256):
+        if line_id == self._reading_line_id:
+            return
+        self._reading_line_id = line_id
+        self._refresh_story_statuses()
+
     def generation_result(self):
         return self._generation_result
 
@@ -1953,18 +1962,28 @@ class OfflineAudioPreparationDialog(QDialog):
                         line_id in ready for line_id in selection.line_ids
                     )
                     ready_prefix = 0
-                    for line_id in selection.line_ids:
+                    start = (
+                        selection.line_ids.index(self._reading_line_id)
+                        if self._reading_line_id in selection.line_ids
+                        else 0
+                    )
+                    for line_id in selection.line_ids[start:]:
                         if line_id not in ready:
                             break
                         ready_prefix += 1
+                    remaining = selection.line_count - start
                     if ready_prefix == selection.line_count:
                         status = "ready"
                         detail = "all lines are playable while other chapters prepare"
+                    elif start and ready_prefix == remaining:
+                        status = "preparing"
+                        detail = "all remaining lines are playable from the current line"
                     elif ready_count:
                         status = "preparing"
                         detail = (
                             f"{ready_count}/{selection.line_count} lines ready; "
-                            f"{ready_prefix} consecutive from chapter start"
+                            f"{ready_prefix} consecutive from "
+                            f"{'current line' if start else 'chapter start'}"
                         )
                     else:
                         status, detail = "preparing", self.progress_phase.text()

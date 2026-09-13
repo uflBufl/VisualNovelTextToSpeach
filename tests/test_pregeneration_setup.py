@@ -957,6 +957,32 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.continue_button.text(), "Continue preparation")
             dialog.voice_runner.cancel()
 
+    def test_active_chapter_reports_playable_prefix_from_current_line(self):
+        with TemporaryDirectory() as directory:
+            content = inspect_story_index(write_story_index(Path(directory) / "content"))
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._job = SimpleNamespace(
+                story_index_sha256=content.story_index_sha256,
+                selected_story_ids=("main-1",),
+            )
+            dialog._generation_input = SimpleNamespace(ready_items=2)
+            dialog._progress_snapshot = OfflineGenerationProgress(
+                ready_line_ids=("reverse1999:2",)
+            )
+            dialog.generating = True
+
+            dialog.readingLineObserved.emit("reverse1999:2", "unused")
+            self.application.processEvents()
+
+            self.assertIn(
+                "all remaining lines are playable from the current line",
+                dialog.stories.item(0).text(),
+            )
+
     def test_scoped_regeneration_keeps_story_scope_and_reuses_voice_decisions(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

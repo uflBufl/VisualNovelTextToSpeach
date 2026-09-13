@@ -539,6 +539,7 @@ class GeneratedAudioFallbackBackend:
         self.voice_override = None
         self.progress_wait_status = lambda _message: None
         self.progress_wait_request = lambda _line_id, _text_sha256: None
+        self.progress_line_observed = lambda _line_id, _text_sha256: None
         self.set_volume(volume, delegate=False)
         self.set_speed(speed, delegate=False)
 
@@ -674,6 +675,14 @@ class GeneratedAudioFallbackBackend:
                 line, match_result = None, "line-id-mismatch"
         else:
             line, match_result = self._resolve_line(character, text, voice_overridden)
+        if (
+            line is not None
+            and line.line_id
+            and line.text_sha256
+            and self.library is not None
+            and self.library.runtime_progress
+        ):
+            self.progress_line_observed(line.line_id, line.text_sha256)
         omission_line = line
         if omission_line is None and voice_overridden:
             omission_line = self._resolve_without_advancing(character, text)
