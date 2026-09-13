@@ -97,6 +97,38 @@ def write_wav(path, samples, sample_rate=24_000):
 
 
 class GeneratedAudioTest(unittest.TestCase):
+    def test_library_reloads_an_atomically_replaced_manifest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library, _audio = self.create_library(root)
+            manifest = root / "generated-audio.json"
+            second_audio = root / "audio" / "second.wav"
+            write_wav(second_audio, [0.0, 0.2, -0.2, 0.0])
+            second_text_hash = text_sha256("Second line.")
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            write_generated_audio_manifest(
+                manifest,
+                {},
+                [
+                    *document["entries"],
+                    {
+                        "line_id": "game:2",
+                        "text_sha256": second_text_hash,
+                        "audio": "audio/second.wav",
+                        "audio_format": "wav-pcm16-mono",
+                        "audio_sha256": sha256_file(second_audio),
+                        "sample_rate": 24_000,
+                        "sample_count": 4,
+                    },
+                ],
+            )
+
+            prepared = library.find("game:2", second_text_hash)
+
+        self.assertIsNotNone(prepared)
+        self.assertEqual(prepared.line_id, "game:2")
+        self.assertEqual(len(library.index.entries), 2)
+
     def test_character_defaults_preserve_recordings_and_apply_only_to_live_synthesis(
         self,
     ):

@@ -249,11 +249,20 @@ def _validate_generated_audio_paths(index):
 
 class GeneratedAudioLibrary:
     def __init__(self, index, *, warn=None, cache_size=32):
-        _validate_generated_audio_paths(index)
-        self.index = index
         self.warn = warn or (lambda _message: None)
         self.cache = BoundedCache(cache_size)
         self.warned_entries = set()
+        self.reload_lock = Lock()
+        self.failed_reload_signature = None
+        self.manifest_path = (
+            getattr(index, "manifest_path", None) or getattr(index, "path")
+        ).resolve()
+        self.manifest_signature = _manifest_signature(self.manifest_path)
+        self._apply_index(index)
+
+    def _apply_index(self, index):
+        _validate_generated_audio_paths(index)
+        self.index = index
         self.live_fallbacks = _live_fallback_index(index.metadata)
         self.audio_event_omissions = _audio_event_omission_index(index.metadata)
         generated_identities = {
@@ -268,6 +277,35 @@ class GeneratedAudioLibrary:
             for entry in index.entries
             if (role := _narrator_fallback_role(entry)) is not None
         }
+
+    def _reload_if_changed(self):
+        signature = _manifest_signature(self.manifest_path)
+        if signature in {
+            None,
+            self.manifest_signature,
+            self.failed_reload_signature,
+        }:
+            return
+        with self.reload_lock:
+            signature = _manifest_signature(self.manifest_path)
+            if signature in {
+                None,
+                self.manifest_signature,
+                self.failed_reload_signature,
+            }:
+                return
+            try:
+                index = load_generated_audio_document(self.manifest_path)
+                if _manifest_signature(self.manifest_path) != signature:
+                    return
+                self._apply_index(index)
+            except (GeneratedAudioManifestError, OSError, ValueError) as error:
+                self.failed_reload_signature = signature
+                self.warn(f"Generated audio update ignored: {error}")
+                return
+            self.manifest_signature = signature
+            self.failed_reload_signature = None
+            self.warned_entries.clear()
 
     @classmethod
     def load_optional(cls, path, *, warn=None, cache_size=32):
@@ -286,6 +324,7 @@ class GeneratedAudioLibrary:
         return prepared
 
     def find_with_preflight(self, line_id, text_sha256):
+        self._reload_if_changed()
         entry = self.index.find(line_id, text_sha256, verify_file=False)
         if entry is None:
             return None, "generated-audio-entry-not-found"
@@ -339,9 +378,11 @@ class GeneratedAudioLibrary:
         return prepared, "generated-audio-entry-verified"
 
     def find_live_fallback(self, line_id, text_sha256):
+        self._reload_if_changed()
         return self.live_fallbacks.get((line_id, text_sha256))
 
     def find_audio_event_omission(self, line_id, text_sha256):
+        self._reload_if_changed()
         return self.audio_event_omissions.get((line_id, text_sha256))
 
     def _warn_once(self, entry, message):
@@ -350,6 +391,14 @@ class GeneratedAudioLibrary:
             return
         self.warned_entries.add(identity)
         self.warn(message)
+
+
+def _manifest_signature(path):
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
 
 
 def _narrator_fallback_role(entry):
