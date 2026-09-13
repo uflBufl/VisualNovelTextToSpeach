@@ -13,6 +13,13 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = REPOSITORY_ROOT / "tests" / "fixtures" / "mypy-inventory-v1.json"
 ERROR_PATTERN = re.compile(r"^(.*?\.py):\d+(?::\d+)?: error:")
+MYPY_COMMAND = (
+    "mypy",
+    "--no-incremental",
+    "--no-error-summary",
+    "--show-error-codes",
+    "vntts",
+)
 
 
 def error_counts(output: str) -> Counter[str]:
@@ -51,7 +58,7 @@ def check_counts(baseline: object, current: Counter[str]) -> list[str]:
 
 def mypy_output(root: Path) -> str:
     completed = subprocess.run(
-        ["mypy", "--no-error-summary", "--show-error-codes", "vntts"],
+        MYPY_COMMAND,
         cwd=root,
         check=False,
         capture_output=True,

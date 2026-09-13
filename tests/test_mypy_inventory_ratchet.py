@@ -1,10 +1,13 @@
 import unittest
 from collections import Counter
 
-from scripts.check_mypy_inventory import check_counts, error_counts
+from scripts.check_mypy_inventory import MYPY_COMMAND, check_counts, error_counts
 
 
 class MypyInventoryRatchetTest(unittest.TestCase):
+    def test_scan_ignores_incremental_cache_state(self):
+        self.assertIn("--no-incremental", MYPY_COMMAND)
+
     def test_counts_errors_by_production_file(self):
         output = "\n".join(
             (
