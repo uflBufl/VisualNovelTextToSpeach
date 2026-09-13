@@ -1717,6 +1717,28 @@ def _validate_inline_pause_repair(
         )
 
 
+def _silence_durations(
+    failure: JsonDocument,
+) -> tuple[float, float, float] | None:
+    quality = failure.get("speech_quality")
+    if not isinstance(quality, dict):
+        return None
+
+    def duration(name: str) -> float | None:
+        value = quality.get(name)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None
+        result = float(value)
+        return result if np.isfinite(result) and result >= 0 else None
+
+    leading = duration("leading_silence_seconds")
+    trailing = duration("trailing_silence_seconds")
+    longest_internal = duration("longest_internal_silence_seconds")
+    if leading is None or trailing is None or longest_internal is None:
+        return None
+    return leading, trailing, longest_internal
+
+
 def sentence_repair_matches_failure(failure: JsonDocument, text: str) -> bool:
     if len(safe_sentence_segments(text)) < 2:
         return False
@@ -1724,29 +1746,14 @@ def sentence_repair_matches_failure(failure: JsonDocument, text: str) -> bool:
         return True
     if failure.get("kind") != "speech_silence":
         return False
-    quality = failure.get("speech_quality")
-    if not isinstance(quality, dict):
+    durations = _silence_durations(failure)
+    if durations is None:
         return False
-    values = {
-        field: quality.get(field)
-        for field in (
-            "leading_silence_seconds",
-            "trailing_silence_seconds",
-            "longest_internal_silence_seconds",
-        )
-    }
-    if any(
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not np.isfinite(value)
-        or value < 0
-        for value in values.values()
-    ):
-        return False
+    leading, trailing, longest_internal = durations
     return bool(
-        values["longest_internal_silence_seconds"] > MAX_INTERNAL_SILENCE_SECONDS
-        and values["leading_silence_seconds"] <= MAX_LEADING_SILENCE_SECONDS
-        and values["trailing_silence_seconds"] <= MAX_TRAILING_SILENCE_SECONDS
+        longest_internal > MAX_INTERNAL_SILENCE_SECONDS
+        and leading <= MAX_LEADING_SILENCE_SECONDS
+        and trailing <= MAX_TRAILING_SILENCE_SECONDS
     )
 
 
@@ -1760,29 +1767,14 @@ def inline_pause_matches_failure(failure: JsonDocument, text: str) -> bool:
         _prompt, marker_count = inline_sentence_pause_prompt(text)
     except ValueError:
         return False
-    quality = failure.get("speech_quality")
-    if not isinstance(quality, dict) or marker_count < 1:
+    durations = _silence_durations(failure)
+    if durations is None or marker_count < 1:
         return False
-    values = {
-        field: quality.get(field)
-        for field in (
-            "leading_silence_seconds",
-            "trailing_silence_seconds",
-            "longest_internal_silence_seconds",
-        )
-    }
-    if any(
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not np.isfinite(value)
-        or value < 0
-        for value in values.values()
-    ):
-        return False
+    leading, trailing, longest_internal = durations
     return bool(
-        values["longest_internal_silence_seconds"] > MAX_INTERNAL_SILENCE_SECONDS
-        and values["leading_silence_seconds"] <= MAX_LEADING_SILENCE_SECONDS
-        and values["trailing_silence_seconds"] <= MAX_TRAILING_SILENCE_SECONDS
+        longest_internal > MAX_INTERNAL_SILENCE_SECONDS
+        and leading <= MAX_LEADING_SILENCE_SECONDS
+        and trailing <= MAX_TRAILING_SILENCE_SECONDS
     )
 
 
