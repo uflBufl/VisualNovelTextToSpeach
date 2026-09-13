@@ -970,12 +970,6 @@
     {
       "code": "C901",
       "path": "vntts/authoring/workspace_creation.py",
-      "scope": "_workspace_generation_provenance",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workspace_creation.py",
       "scope": "create_audio_event_composition_workspace",
       "count": 1
     },

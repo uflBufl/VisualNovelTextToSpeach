@@ -1820,26 +1820,76 @@ def _workspace_generation_provenance(directory, workspace):
     )
     narrator = _required_text(workspace.get("narrator_character"), "Narrator character")
     narrator_voice = registry.resolve(narrator)
+    synthesis_character_overrides = _narrator_fallback_overrides(
+        queue, registry, narrator_voice, missing_voice_policy
+    )
+    controls = _workspace_generation_controls(
+        directory,
+        workspace,
+        manifest,
+        model,
+        narrator,
+        narrator_voice,
+        registry,
+    )
+    try:
+        snapshots = snapshot_generation_control_files(controls)
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    synthesis_configuration = _workspace_synthesis_configuration(
+        missing_voice_policy,
+        failure_repair_policy,
+        synthesis_character_overrides,
+        projection_ids,
+        queue_overrides,
+    )
+    return canonical_document_sha256(
+        {
+            "provider": backend,
+            "model": model,
+            "generation_profile": profile,
+            "text_transform": (
+                "audio-event-spoken-projection-v1"
+                if projection_ids
+                else ("short-trailing-ellipsis-v1" if backend == "moss-tts" else None)
+            ),
+            **synthesis_configuration,
+            "controls": [
+                {"role": value["role"], "sha256": value["sha256"]}
+                for value in snapshots
+            ],
+        }
+    )
+
+
+def _narrator_fallback_overrides(queue, registry, narrator_voice, policy):
     narrator_ready = (
         narrator_voice is not None
         and bool(narrator_voice.references)
         and all(reference.is_file() for reference in narrator_voice.references)
     )
-    synthesis_character_overrides = {}
+    overrides = {}
     for item in queue.items:
         requested = synthesis_character_for_line(item.speaker, item.voice_character)
         voice = registry.resolve(requested)
+        missing = (
+            voice is None
+            or not voice.references
+            or any(not reference.is_file() for reference in voice.references)
+        )
         if (
             requested != "Narrator"
-            and (
-                voice is None
-                or not voice.references
-                or any(not reference.is_file() for reference in voice.references)
-            )
-            and missing_voice_policy.applies_to(requested)
+            and missing
+            and policy.applies_to(requested)
             and narrator_ready
         ):
-            synthesis_character_overrides[requested] = "Narrator"
+            overrides[requested] = "Narrator"
+    return overrides
+
+
+def _workspace_generation_controls(
+    directory, workspace, manifest, model, narrator, narrator_voice, registry
+):
     controls = {"voice_manifest": (manifest, sha256_control_path(manifest))}
     references = sorted(
         {
@@ -1883,11 +1933,17 @@ def _workspace_generation_provenance(directory, workspace):
             reference,
             sha256_control_path(reference),
         )
-    try:
-        snapshots = snapshot_generation_control_files(controls)
-    except BulkGenerationError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    synthesis_configuration = {
+    return controls
+
+
+def _workspace_synthesis_configuration(
+    missing_voice_policy,
+    failure_repair_policy,
+    synthesis_character_overrides,
+    projection_ids,
+    queue_overrides,
+):
+    configuration = {
         "missing_voice_policy": missing_voice_policy.to_document(),
         "synthesis_character_overrides": dict(
             sorted(synthesis_character_overrides.items())
@@ -1895,30 +1951,12 @@ def _workspace_generation_provenance(directory, workspace):
         "failure_repair_policy": failure_repair_policy.to_document(),
     }
     if projection_ids:
-        synthesis_configuration["audio_event_spoken_projection_queue_ids"] = list(
-            projection_ids
-        )
+        configuration["audio_event_spoken_projection_queue_ids"] = list(projection_ids)
     if queue_overrides:
-        synthesis_configuration["queue_voice_overrides_sha256"] = (
-            queue_voice_overrides_sha256(queue_overrides)
+        configuration["queue_voice_overrides_sha256"] = queue_voice_overrides_sha256(
+            queue_overrides
         )
-    return canonical_document_sha256(
-        {
-            "provider": backend,
-            "model": model,
-            "generation_profile": profile,
-            "text_transform": (
-                "audio-event-spoken-projection-v1"
-                if projection_ids
-                else ("short-trailing-ellipsis-v1" if backend == "moss-tts" else None)
-            ),
-            **synthesis_configuration,
-            "controls": [
-                {"role": value["role"], "sha256": value["sha256"]}
-                for value in snapshots
-            ],
-        }
-    )
+    return configuration
 
 
 def _workspace_voice_registry(directory, workspace):
