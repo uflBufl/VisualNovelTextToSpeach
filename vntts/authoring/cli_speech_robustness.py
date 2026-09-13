@@ -38,7 +38,9 @@ class SpeechRobustnessCommandError(RuntimeError):
     """A speech-robustness command failed its authoring contract."""
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     robustness_corpus = subparsers.add_parser(
         "speech-robustness-corpus",
         help="Publish immutable human-labelled WAV and typed failure evidence",

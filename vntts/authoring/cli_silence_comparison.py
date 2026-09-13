@@ -28,7 +28,9 @@ COMMANDS = frozenset(
 )
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     publish = subparsers.add_parser(
         "silence-comparison-publish",
         help="Publish a checksum-bound segmentation/compression comparison",

@@ -23,7 +23,7 @@ from vntts.authoring.reviewed_rejection_fallback import (
 from vntts.authoring.reviewed_waveform_publication import (
     create_reviewed_waveform_publication_workspace,
 )
-from vntts.authoring.workbench import default_workspaces_root
+from vntts.authoring.workbench import WorkspaceCreationResult, default_workspaces_root
 
 COMMANDS = frozenset(
     {
@@ -38,7 +38,9 @@ COMMANDS = frozenset(
 )
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     known_role_fallback = subparsers.add_parser(
         "known-role-live-fallback",
         help="Route exact exhausted lines to a bound known-role Pocket voice",
@@ -112,7 +114,7 @@ def configure_parsers(subparsers) -> None:
     failed_prompt_selection.add_argument("output", type=Path)
 
 
-def _print_workspace(result) -> None:
+def _print_workspace(result: WorkspaceCreationResult) -> None:
     print(
         json.dumps(
             {"directory": str(result.directory), "created": result.created},

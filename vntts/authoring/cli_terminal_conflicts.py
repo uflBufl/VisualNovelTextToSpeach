@@ -45,7 +45,9 @@ COMMANDS = frozenset(
 )
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     resolution = subparsers.add_parser(
         "terminal-conflict-resolution",
         help="Publish immutable completed terminal-conflict decisions",

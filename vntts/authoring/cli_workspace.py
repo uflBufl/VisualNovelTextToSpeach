@@ -15,6 +15,7 @@ from vntts.authoring.cli_generation_options import (
 from vntts.authoring.explicit_fallback_merge import merge_explicit_live_fallbacks
 from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.workbench import (
+    WorkspaceCreationResult,
     create_resume_workspace,
     default_workspaces_root,
     merge_workspace_outcomes,
@@ -30,7 +31,9 @@ COMMANDS = frozenset(
 )
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     workspace = subparsers.add_parser(
         "create-workspace",
         help="Create an immutable config-addressed resume workspace",
@@ -115,7 +118,7 @@ def configure_parsers(subparsers) -> None:
     )
 
 
-def _print_workspace_result(result, **extra) -> None:
+def _print_workspace_result(result: WorkspaceCreationResult, **extra: object) -> None:
     print(
         json.dumps(
             {

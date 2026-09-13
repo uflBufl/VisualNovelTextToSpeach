@@ -11,23 +11,27 @@ from vntts.authoring.cohort_review import (
     load_cohort_review_plan,
 )
 from vntts.authoring.voice_quality_gate import (
-    VoiceQualityGateError as _VoiceQualityGateError,
-)
-from vntts.authoring.voice_quality_gate import (
+    VoiceQualityCompatibility,
+    VoiceQualityGate,
     build_voice_quality_gate,
     inspect_voice_quality_gate,
     load_voice_quality_gate,
     write_voice_quality_gate,
 )
-from vntts.authoring.voice_repair_comparison import (
-    VoiceRepairComparisonError as _VoiceRepairComparisonError,
+from vntts.authoring.voice_quality_gate import (
+    VoiceQualityGateError as _VoiceQualityGateError,
 )
 from vntts.authoring.voice_repair_comparison import (
+    VoiceRepairCandidateWorkspace,
+    VoiceRepairComparisonPlan,
     build_voice_repair_candidate_command,
     build_voice_repair_comparison_plan,
     load_voice_repair_comparison_plan,
     prepare_voice_repair_candidate_workspace,
     write_voice_repair_comparison_plan,
+)
+from vntts.authoring.voice_repair_comparison import (
+    VoiceRepairComparisonError as _VoiceRepairComparisonError,
 )
 from vntts.authoring.workbench import default_workspaces_root
 
@@ -45,7 +49,9 @@ COMMANDS = frozenset(
 )
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     gate = subparsers.add_parser(
         "voice-quality-gate",
         help="Publish a reusable accepted voice-control quality gate",
@@ -94,7 +100,12 @@ def configure_parsers(subparsers) -> None:
     command.add_argument("workspace", type=Path)
 
 
-def _print_document(value) -> None:
+def _print_document(
+    value: VoiceQualityGate
+    | VoiceQualityCompatibility
+    | VoiceRepairComparisonPlan
+    | VoiceRepairCandidateWorkspace,
+) -> None:
     print(json.dumps(value.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
 
 

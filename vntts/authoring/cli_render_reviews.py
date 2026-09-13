@@ -46,7 +46,9 @@ REFERENCE_COMMANDS = frozenset(
 COMMANDS = HYPOTHESIS_COMMANDS | REFERENCE_COMMANDS
 
 
-def configure_hypothesis_parsers(subparsers) -> None:
+def configure_hypothesis_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     publish = subparsers.add_parser(
         "render-hypothesis-review-publish",
         help="Publish one immutable unmatched render/reference review",
@@ -76,7 +78,9 @@ def configure_hypothesis_parsers(subparsers) -> None:
     import_review.add_argument("queue_id")
 
 
-def configure_reference_parsers(subparsers) -> None:
+def configure_reference_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     render = subparsers.add_parser(
         "failure-reference-render-comparison",
         help="Render an immutable comparison from exact failed-reference arms",
