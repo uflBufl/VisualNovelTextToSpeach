@@ -120,6 +120,49 @@ def _load_workspace(workspace_directory):
 
 def _load_workspace_scoped(workspace_directory):
     directory = Path(workspace_directory).expanduser().resolve()
+    workspace, match, snapshot, expected_import_id, expected_seed = (
+        _load_workspace_identity(directory)
+    )
+    narrator, run_config = _validate_workspace_layout(
+        directory, workspace, snapshot, expected_import_id, expected_seed
+    )
+    state, state_sha256 = _load_workspace_validation_state(directory, workspace)
+    _validate_workspace_extensions(directory, workspace, snapshot, state)
+    _validate_workspace_config_identity(
+        workspace, match, expected_import_id, narrator, run_config
+    )
+    if (
+        state_sha256 is not None
+        and sha256_file(directory / "generated-audio/generation-state.json")
+        != state_sha256
+    ):
+        raise AuthoringWorkbenchError("Workspace generation state changed while loaded")
+    return directory, workspace
+
+
+def _load_workspace_identity(directory):
+    workspace, match, source, expected_import_id = _load_workspace_document(directory)
+    snapshot, snapshot_sha256 = _load_workspace_import_snapshot(
+        directory, source, expected_import_id
+    )
+    expected_seed = [
+        {"path": "provenance/import.json", "sha256": snapshot_sha256},
+        *(
+            {"path": value["path"], "sha256": value["sha256"]}
+            for value in snapshot.get("artifacts", [])
+            if isinstance(value, dict)
+            and (
+                value.get("path") == "queue.jsonl"
+                or str(value.get("path", "")).startswith("generated-audio/")
+            )
+        ),
+    ]
+    if workspace.get("seed_inventory") != expected_seed:
+        raise AuthoringWorkbenchError("Workspace seed inventory was modified")
+    return workspace, match, snapshot, expected_import_id, expected_seed
+
+
+def _load_workspace_document(directory):
     workspace_path = directory / "workspace.json"
     if workspace_path.is_symlink():
         raise AuthoringWorkbenchError("Workspace document must not be a symlink")
@@ -152,6 +195,10 @@ def _load_workspace_scoped(workspace_directory):
         or source.get("snapshot") != "provenance/import.json"
     ):
         raise AuthoringWorkbenchError("Workspace provenance path was modified")
+    return workspace, match, source, expected_import_id
+
+
+def _load_workspace_import_snapshot(directory, source, expected_import_id):
     snapshot_path = _within(
         directory, Path("provenance/import.json"), "Import snapshot"
     )
@@ -174,20 +221,12 @@ def _load_workspace_scoped(workspace_directory):
     ):
         raise AuthoringWorkbenchError("Workspace provenance identity is inconsistent")
     _validate_import_history(snapshot)
-    expected_seed = [
-        {"path": "provenance/import.json", "sha256": snapshot_sha256},
-        *(
-            {"path": value["path"], "sha256": value["sha256"]}
-            for value in snapshot.get("artifacts", [])
-            if isinstance(value, dict)
-            and (
-                value.get("path") == "queue.jsonl"
-                or str(value.get("path", "")).startswith("generated-audio/")
-            )
-        ),
-    ]
-    if workspace.get("seed_inventory") != expected_seed:
-        raise AuthoringWorkbenchError("Workspace seed inventory was modified")
+    return snapshot, snapshot_sha256
+
+
+def _validate_workspace_layout(
+    directory, workspace, snapshot, expected_import_id, expected_seed
+):
     _validate_workspace_carry_forward(directory, workspace)
     imported_queue_digest = next(
         (value["sha256"] for value in expected_seed if value["path"] == "queue.jsonl"),
@@ -223,27 +262,30 @@ def _load_workspace_scoped(workspace_directory):
     )
     run_config = workspace.get("run_config")
     _workspace_run_config_with_policy(run_config)
-    stable_state_extensions = (
+    return narrator, run_config
+
+
+def _load_workspace_validation_state(directory, workspace):
+    stable_extensions = (
         "known_role_live_fallback",
         "audio_event_omission",
         "audio_event_projection_fallback",
         "reviewed_waveform_publication",
         "reviewed_rejection_live_fallback",
     )
-    direct_state_extensions = (
+    direct_extensions = (
         "outcome_merge",
         "terminal_conflict_merge",
         "config_rebase",
         "explicit_fallback_merge",
     )
     carry = workspace.get("carry_forward")
-    state = None
-    state_sha256 = None
-    if any(workspace.get(field) is not None for field in stable_state_extensions):
+    if any(workspace.get(field) is not None for field in stable_extensions):
         _queue, state, _payload, state_sha256 = _stable_workspace_state(
             directory, workspace, "workspace validation"
         )
-    elif any(workspace.get(field) is not None for field in direct_state_extensions) or (
+        return state, state_sha256
+    if any(workspace.get(field) is not None for field in direct_extensions) or (
         isinstance(carry, dict) and carry.get("schema_version") in {2, 3, 4}
     ):
         state_path = directory / "generated-audio/generation-state.json"
@@ -254,18 +296,37 @@ def _load_workspace_scoped(workspace_directory):
         )
         state_sha256 = hashlib.sha256(payload).hexdigest()
         try:
-            state = load_generation_state(
-                state_path,
-                directory / "queue.jsonl",
-            )
+            state = load_generation_state(state_path, directory / "queue.jsonl")
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
         queue = _load_bound_workspace_queue(directory, workspace)
         share_workspace_generation_state(
-            directory,
-            workspace,
-            (queue, state, payload, state_sha256),
+            directory, workspace, (queue, state, payload, state_sha256)
         )
+        return state, state_sha256
+    return None, None
+
+
+def _validate_optional_workspace_extension(
+    directory,
+    workspace,
+    state,
+    field,
+    module_name,
+    validator_name,
+    *,
+    pass_state,
+):
+    if workspace.get(field) is None:
+        return
+    validator = getattr(importlib.import_module(module_name), validator_name)
+    if pass_state:
+        validator(directory, workspace, state=state)
+    else:
+        validator(directory, workspace)
+
+
+def _validate_workspace_extensions(directory, workspace, snapshot, state):
     _validate_workspace_input_config(directory, workspace, snapshot)
     _validate_workspace_failure_reference_binding(directory, workspace)
     _validate_workspace_offline_fallback_state(directory, workspace, state=state)
@@ -275,40 +336,65 @@ def _load_workspace_scoped(workspace_directory):
         validate_audio_event_composition_workspace(directory, workspace)
     except AudioEventWorkspaceError as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    config_rebase = workspace.get("config_rebase")
-    if config_rebase is not None:
-        module = importlib.import_module("vntts.authoring.config_rebase")
-        module.validate_config_rebase_workspace(directory, workspace, state=state)
-    explicit_fallback_merge = workspace.get("explicit_fallback_merge")
-    if explicit_fallback_merge is not None:
-        module = importlib.import_module("vntts.authoring.explicit_fallback_merge")
-        module.validate_explicit_fallback_merge_workspace(
-            directory, workspace, state=state
+    extensions = (
+        (
+            "config_rebase",
+            "vntts.authoring.config_rebase",
+            "validate_config_rebase_workspace",
+            True,
+        ),
+        (
+            "explicit_fallback_merge",
+            "vntts.authoring.explicit_fallback_merge",
+            "validate_explicit_fallback_merge_workspace",
+            True,
+        ),
+        (
+            "known_role_live_fallback",
+            "vntts.authoring.known_role_live_fallback",
+            "validate_known_role_live_fallback_workspace",
+            False,
+        ),
+        (
+            "audio_event_omission",
+            "vntts.authoring.audio_event_omission",
+            "validate_audio_event_omission_workspace",
+            False,
+        ),
+        (
+            "audio_event_projection_fallback",
+            "vntts.authoring.audio_event_projection_fallback",
+            "validate_audio_event_projection_fallback_workspace",
+            False,
+        ),
+        (
+            "reviewed_waveform_publication",
+            "vntts.authoring.reviewed_waveform_publication",
+            "validate_reviewed_waveform_publication_workspace",
+            False,
+        ),
+        (
+            "reviewed_rejection_live_fallback",
+            "vntts.authoring.reviewed_rejection_fallback",
+            "validate_reviewed_rejection_fallback_workspace",
+            False,
+        ),
+    )
+    for field, module_name, validator_name, pass_state in extensions:
+        _validate_optional_workspace_extension(
+            directory,
+            workspace,
+            state,
+            field,
+            module_name,
+            validator_name,
+            pass_state=pass_state,
         )
-    known_role_live_fallback = workspace.get("known_role_live_fallback")
-    if known_role_live_fallback is not None:
-        module = importlib.import_module("vntts.authoring.known_role_live_fallback")
-        module.validate_known_role_live_fallback_workspace(directory, workspace)
-    audio_event_omission = workspace.get("audio_event_omission")
-    if audio_event_omission is not None:
-        module = importlib.import_module("vntts.authoring.audio_event_omission")
-        module.validate_audio_event_omission_workspace(directory, workspace)
-    audio_event_projection_fallback = workspace.get("audio_event_projection_fallback")
-    if audio_event_projection_fallback is not None:
-        module = importlib.import_module(
-            "vntts.authoring.audio_event_projection_fallback"
-        )
-        module.validate_audio_event_projection_fallback_workspace(directory, workspace)
-    reviewed_waveform_publication = workspace.get("reviewed_waveform_publication")
-    if reviewed_waveform_publication is not None:
-        module = importlib.import_module(
-            "vntts.authoring.reviewed_waveform_publication"
-        )
-        module.validate_reviewed_waveform_publication_workspace(directory, workspace)
-    reviewed_rejection_live_fallback = workspace.get("reviewed_rejection_live_fallback")
-    if reviewed_rejection_live_fallback is not None:
-        module = importlib.import_module("vntts.authoring.reviewed_rejection_fallback")
-        module.validate_reviewed_rejection_fallback_workspace(directory, workspace)
+
+
+def _validate_workspace_config_identity(
+    workspace, match, expected_import_id, narrator, run_config
+):
     expected_config = _workspace_config_fingerprint(
         expected_import_id,
         workspace.get("story_index"),
@@ -319,14 +405,14 @@ def _load_workspace_scoped(workspace_directory):
         workspace.get("outcome_merge"),
         workspace.get("failure_reference_binding"),
         workspace.get("terminal_conflict_merge"),
-        config_rebase,
+        workspace.get("config_rebase"),
         workspace.get("audio_event_composition"),
-        explicit_fallback_merge,
-        known_role_live_fallback,
-        audio_event_omission,
-        audio_event_projection_fallback,
-        reviewed_waveform_publication,
-        reviewed_rejection_live_fallback,
+        workspace.get("explicit_fallback_merge"),
+        workspace.get("known_role_live_fallback"),
+        workspace.get("audio_event_omission"),
+        workspace.get("audio_event_projection_fallback"),
+        workspace.get("reviewed_waveform_publication"),
+        workspace.get("reviewed_rejection_live_fallback"),
         workspace.get("queue_extension"),
     )
     if (
@@ -334,13 +420,6 @@ def _load_workspace_scoped(workspace_directory):
         or match.group(2) != expected_config[:16]
     ):
         raise AuthoringWorkbenchError("Workspace configuration identity was modified")
-    if (
-        state_sha256 is not None
-        and sha256_file(directory / "generated-audio/generation-state.json")
-        != state_sha256
-    ):
-        raise AuthoringWorkbenchError("Workspace generation state changed while loaded")
-    return directory, workspace
 
 
 def _workspace_title(manifest, fallback):

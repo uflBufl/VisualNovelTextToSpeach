@@ -27,6 +27,7 @@ from vntts_artifacts.voice_generation_queue import (
 import vntts.authoring.bulk_generation as bulk_generation_module
 import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
+import vntts.authoring.workspace_authority as workspace_authority_module
 import vntts.authoring.workspace_state as workspace_state_module
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_legacy_import import write_legacy_fixture
@@ -2192,21 +2193,21 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 "next_action": "apply_selected_approved_outcome",
             }
             with patch.object(
-                workbench_module,
+                workspace_authority_module,
                 "load_generation_state",
                 return_value=overlaid_state,
             ):
                 with self.assertRaisesRegex(
                     AuthoringWorkbenchError, "merged source item changed"
                 ):
-                    workbench_module._validate_workspace_outcome_merge(
+                    workspace_authority_module._validate_workspace_outcome_merge(
                         merged.directory, workspace
                     )
                 stacked_workspace = json.loads(json.dumps(workspace))
                 stacked_workspace["terminal_conflict_merge"] = {
                     "items": [{"queue_id": fixture["queue_id"]}]
                 }
-                workbench_module._validate_workspace_outcome_merge(
+                workspace_authority_module._validate_workspace_outcome_merge(
                     merged.directory, stacked_workspace
                 )
 
@@ -2221,11 +2222,11 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     "items": [{"queue_id": fixture["queue_id"]}]
                 }
                 with patch.object(
-                    workbench_module,
+                    workspace_authority_module,
                     "load_generation_state",
                     return_value=fallback_state,
                 ):
-                    workbench_module._validate_workspace_outcome_merge(
+                    workspace_authority_module._validate_workspace_outcome_merge(
                         merged.directory, fallback_workspace
                     )
                     fallback_state["items"][fixture["queue_id"]]["provider"] = (
@@ -2234,7 +2235,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     with self.assertRaisesRegex(
                         AuthoringWorkbenchError, "fallback base changed"
                     ):
-                        workbench_module._validate_workspace_outcome_merge(
+                        workspace_authority_module._validate_workspace_outcome_merge(
                             merged.directory, fallback_workspace
                         )
             self.assertEqual(source_state_path.read_bytes(), source_state_before)
@@ -4047,7 +4048,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             _fixture, _imported, created = self.create_workspace(root)
             snapshot_path = created.directory / "provenance/import.json"
             original = snapshot_path.read_bytes()
-            original_loader = workbench_module._load_json_snapshot
+            original_loader = workspace_authority_module._load_json_snapshot
             calls = 0
 
             def swap_on_history_read(path, label):
@@ -4066,6 +4067,10 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                     snapshot_path.write_bytes(original)
 
             with (
+                patch(
+                    "vntts.authoring.workspace_authority._load_json_snapshot",
+                    side_effect=swap_on_history_read,
+                ),
                 patch(
                     "vntts.authoring.workbench._load_json_snapshot",
                     side_effect=swap_on_history_read,

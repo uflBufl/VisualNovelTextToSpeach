@@ -1047,12 +1047,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_load_workspace_scoped",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/workbench.py",
       "scope": "_runtime_status",
       "count": 1
@@ -2475,12 +2469,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_load_workspace_scoped",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/workbench.py",
       "scope": "_runtime_status",
       "count": 1
@@ -3521,12 +3509,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/voice_repair_comparison.py",
       "scope": "build_voice_repair_comparison_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_load_workspace_scoped",
       "count": 1
     },
     {
