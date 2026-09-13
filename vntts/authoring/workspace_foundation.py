@@ -116,15 +116,18 @@ def copy_workspace_tree_snapshot(
 def copy_generation_wavs(
     base_directory: str | Path,
     output: str | Path,
-    state: Mapping[str, Mapping[str, Mapping[str, object]]],
+    state: Mapping[str, object],
     snapshots: MutableSequence[tuple[Path, str]],
     target_label: str,
     error_type: type[Exception] = ValueError,
     source_label: str = "Base WAV",
 ) -> None:
     """Copy checksum-bound generated WAVs into an immutable successor."""
+    items = state.get("items")
+    if not isinstance(items, Mapping):
+        raise error_type("Base generation state items are invalid")
     owners: dict[str, str] = {}
-    for queue_id, result in state["items"].items():
+    for queue_id, result in items.items():
         if not isinstance(result, dict) or not isinstance(result.get("path"), str):
             continue
         relative = safe_relative_path(

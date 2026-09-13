@@ -5,17 +5,23 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from vntts_artifacts import VoiceGenerationQueue, VoiceGenerationQueueError
 from vntts_artifacts.atomic_io import atomic_write_json
-from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
+from vntts_artifacts.audio import (
+    Pcm16MonoWavError,
+    Pcm16MonoWavInfo,
+    probe_pcm16_mono_wav,
+)
 
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    AuthoritySnapshot,
     assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
@@ -48,7 +54,7 @@ class AudioEventReview:
     audio_sha256: str
     decision: str | None
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, str | None]:
         return {
             "directory": str(self.directory),
             "review_id": self.review_id,
@@ -60,19 +66,19 @@ class AudioEventReview:
 
 
 def publish_source_audio_event_review(
-    queue_path,
-    queue_id,
-    source_story_index,
-    source_audio,
-    output,
+    queue_path: str | Path,
+    queue_id: str,
+    source_story_index: str | Path,
+    source_audio: str | Path,
+    output: str | Path,
     *,
-    source_line_id,
-    source_speaker,
-    source_event,
-    source_bank,
-    source_media_id,
-    source_audio_id=None,
-):
+    source_line_id: str,
+    source_speaker: str,
+    source_event: str,
+    source_bank: str,
+    source_media_id: int,
+    source_audio_id: str | None = None,
+) -> AudioEventReview:
     """Snapshot one exact source clip without changing generation authority."""
     queue_path = Path(queue_path).expanduser().resolve()
     source_story_index = Path(source_story_index).expanduser().resolve()
@@ -184,7 +190,7 @@ def publish_source_audio_event_review(
         return load_audio_event_review(output)
 
 
-def load_audio_event_review(directory):
+def load_audio_event_review(directory: str | Path) -> AudioEventReview:
     """Load and verify every immutable byte in one audio-event review."""
     directory = Path(directory).expanduser().resolve()
     if directory.is_symlink() or not directory.is_dir():
@@ -222,26 +228,29 @@ def load_audio_event_review(directory):
             decision_document = decision_snapshot.json_document("audio-event decision")
         except AuthoringAuthorityError as error:
             raise AudioEventReviewError(str(error)) from error
-        decision = _validate_decision_document(
+        decision_document = _validate_decision_document(
             decision_document,
             review,
             review_snapshot.sha256,
-        )["decision"]
+        )
+        decision = _required_text(decision_document.get("decision"), "decision")
         assert_authority_snapshot(decision_snapshot, "audio-event decision")
     assert_authority_snapshot(review_snapshot, "audio-event review")
     assert_authority_snapshot(queue_snapshot, "review queue")
     assert_authority_snapshot(audio_snapshot, "review candidate audio")
     return AudioEventReview(
         directory=directory,
-        review_id=review["review_id"],
-        queue_id=review["queue_id"],
+        review_id=_required_text(review.get("review_id"), "review ID"),
+        queue_id=_required_text(review.get("queue_id"), "review queue ID"),
         audio=audio_snapshot.path,
         audio_sha256=audio_snapshot.sha256,
         decision=decision,
     )
 
 
-def record_audio_event_review_decision(directory, decision):
+def record_audio_event_review_decision(
+    directory: str | Path, decision: str
+) -> AudioEventReview:
     """Write exactly one terminal accept/reject decision with no replacement."""
     decision = str(decision).strip()
     if decision not in AUDIO_EVENT_DECISIONS:
@@ -269,10 +278,11 @@ def record_audio_event_review_decision(directory, decision):
             "review queue",
             root=review.directory,
         )
+        candidate = _review_candidate(review_document)
         audio_snapshot = capture_authority_file(
             _contained_file(
                 review.directory,
-                (review_document.get("candidate") or {}).get("audio"),
+                candidate.get("audio"),
                 "review candidate audio",
             ),
             "review candidate audio",
@@ -309,7 +319,11 @@ def record_audio_event_review_decision(directory, decision):
     return load_audio_event_review(review.directory)
 
 
-def _validate_review_document(review, queue_snapshot, audio_snapshot):
+def _validate_review_document(
+    review: dict[str, object],
+    queue_snapshot: AuthoritySnapshot,
+    audio_snapshot: AuthoritySnapshot,
+) -> None:
     if (
         review.get("schema") != AUDIO_EVENT_REVIEW_SCHEMA
         or review.get("schema_version") != AUDIO_EVENT_REVIEW_VERSION
@@ -339,7 +353,7 @@ def _validate_review_document(review, queue_snapshot, audio_snapshot):
     ):
         if review.get(field) != expected:
             raise AudioEventReviewError(f"Audio-event review {field} changed")
-    candidate = review.get("candidate")
+    candidate = _review_candidate(review)
     if candidate.get("audio_sha256") != audio_snapshot.sha256:
         raise AudioEventReviewError("Audio-event review audio changed")
     try:
@@ -379,7 +393,7 @@ def _validate_review_document(review, queue_snapshot, audio_snapshot):
     _aware_timestamp(review.get("created_at"), "audio-event review created_at")
 
 
-def _validate_source_evidence(value):
+def _validate_source_evidence(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or value.get("kind") != "original-game-line":
         raise AudioEventReviewError("Audio-event source evidence is invalid")
     for field in (
@@ -419,9 +433,16 @@ def _validate_source_evidence(value):
     return value
 
 
-def _source_story_record(payload, line_id):
+def _review_candidate(review: dict[str, object]) -> dict[str, object]:
+    candidate = review.get("candidate")
+    if not isinstance(candidate, dict):
+        raise AudioEventReviewError("Audio-event review candidate is invalid")
+    return candidate
+
+
+def _source_story_record(payload: bytes, line_id: str) -> dict[str, object]:
     expected = _required_text(line_id, "source line ID")
-    matches = []
+    matches: list[dict[str, object]] = []
     try:
         for raw_line in payload.splitlines():
             if not raw_line.strip():
@@ -440,7 +461,9 @@ def _source_story_record(payload, line_id):
     return matches[0]
 
 
-def _assert_source_record_matches(evidence, record):
+def _assert_source_record_matches(
+    evidence: Mapping[str, object], record: dict[str, object]
+) -> None:
     expected = {
         "line_id": evidence["source_line_id"],
         "text": evidence["source_text"],
@@ -459,7 +482,7 @@ def _assert_source_record_matches(evidence, record):
             )
 
 
-def _validate_effect_audio_info(info):
+def _validate_effect_audio_info(info: Pcm16MonoWavInfo) -> None:
     if not 0.02 <= info.duration_seconds <= 3.0:
         raise AudioEventReviewError(
             "Source event audio duration must be between 0.02 and 3.0 seconds"
@@ -468,7 +491,9 @@ def _validate_effect_audio_info(info):
         raise AudioEventReviewError("Source event audio is silent or has invalid peak")
 
 
-def _validate_decision_document(value, review, review_sha256):
+def _validate_decision_document(
+    value: dict[str, object], review: dict[str, object], review_sha256: str
+) -> dict[str, object]:
     if (
         value.get("schema") != AUDIO_EVENT_DECISION_SCHEMA
         or value.get("schema_version") != AUDIO_EVENT_DECISION_VERSION
@@ -480,7 +505,8 @@ def _validate_decision_document(value, review, review_sha256):
         raise AudioEventReviewError("Audio-event decision review authority changed")
     if value.get("queue_sha256") != review["queue_sha256"]:
         raise AudioEventReviewError("Audio-event decision queue authority changed")
-    if value.get("candidate_audio_sha256") != review["candidate"]["audio_sha256"]:
+    candidate = _review_candidate(review)
+    if value.get("candidate_audio_sha256") != candidate.get("audio_sha256"):
         raise AudioEventReviewError("Audio-event decision audio authority changed")
     if value.get("decision") not in AUDIO_EVENT_DECISIONS:
         raise AudioEventReviewError("Audio-event decision is invalid")
@@ -488,7 +514,9 @@ def _validate_decision_document(value, review, review_sha256):
     return value
 
 
-def _required_single_tongue_click_plan(document):
+def _required_single_tongue_click_plan(
+    document: dict[str, object],
+) -> dict[str, object]:
     try:
         plan = audio_event_plan_for_record(document)
     except ValueError as error:
@@ -496,13 +524,13 @@ def _required_single_tongue_click_plan(document):
     if not isinstance(plan, dict):
         raise AudioEventReviewError("Queue item does not require audio-event review")
     events = plan.get("events")
+    event = events[0] if isinstance(events, list) and len(events) == 1 else None
     if (
         document.get("text") != "Tsk!"
         or document.get("text_sha256") != hashlib.sha256(b"Tsk!").hexdigest()
         or plan.get("spoken_text") != ""
-        or not isinstance(events, list)
-        or len(events) != 1
-        or events[0].get("kind") != "tongue-click"
+        or not isinstance(event, dict)
+        or event.get("kind") != "tongue-click"
     ):
         raise AudioEventReviewError(
             "Source audio-event review currently requires one exact Tsk tongue-click"
@@ -510,32 +538,32 @@ def _required_single_tongue_click_plan(document):
     return plan
 
 
-def _load_queue_snapshot(payload):
+def _load_queue_snapshot(payload: bytes) -> VoiceGenerationQueue:
     with tempfile.TemporaryDirectory(prefix="vntts-audio-event-queue-") as directory:
         path = Path(directory) / "queue.jsonl"
         path.write_bytes(payload)
         return VoiceGenerationQueue.load(path)
 
 
-def _contained_file(root, relative, label):
+def _contained_file(root: Path, relative: object, label: str) -> Path:
     return contained_regular_file(
         root, relative, label, error_type=AudioEventReviewError
     )
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise AudioEventReviewError(f"{label.capitalize()} must be non-empty text")
     return value.strip()
 
 
-def _required_positive_int(value, label):
+def _required_positive_int(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise AudioEventReviewError(f"{label.capitalize()} must be a positive integer")
     return value
 
 
-def _aware_timestamp(value, label):
+def _aware_timestamp(value: object, label: str) -> datetime:
     if not isinstance(value, str) or not value.strip():
         raise AudioEventReviewError(f"{label.capitalize()} is invalid")
     try:
@@ -547,7 +575,7 @@ def _aware_timestamp(value, label):
     return parsed
 
 
-def _utc_now():
+def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -16,6 +17,9 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
     process_is_alive,
+)
+from vntts.authoring.bulk_generation import (
+    _state_items as _generation_state_items,
 )
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.generation_state import (
@@ -64,10 +68,10 @@ SYNTHESIS_CHARACTER = "Narrator"
 
 
 def create_audio_event_projection_fallback_workspace(
-    base_workspace,
-    queue_ids,
-    workspaces_root=None,
-):
+    base_workspace: str | Path,
+    queue_ids: Iterable[object],
+    workspaces_root: str | Path | None = None,
+) -> WorkspaceCreationResult:
     """Authorize Pocket synthesis of only the spoken projection of mixed events."""
     base_directory, base_document, base_workspace_sha256 = load_workspace_authority(
         base_workspace
@@ -85,6 +89,14 @@ def create_audio_event_projection_fallback_workspace(
     )
     if state.get("active") is not None:
         raise AuthoringWorkbenchError("Audio-event projection fallback base is active")
+    state_items = _generation_state_items(state)
+    source = base_document.get("source")
+    import_id = source.get("import_id") if isinstance(source, dict) else None
+    narrator_character = base_document.get("narrator_character")
+    if not isinstance(import_id, str) or not isinstance(narrator_character, str):
+        raise AuthoringWorkbenchError(
+            "Audio-event projection fallback base is malformed"
+        )
     queue_path = base_directory / "queue.jsonl"
     queue_sha256 = sha256_file(queue_path)
     queue_by_id = {item.queue_id: item for item in queue.items}
@@ -94,7 +106,7 @@ def create_audio_event_projection_fallback_workspace(
     ledgers = []
     for queue_id in selected:
         queue_item = queue_by_id.get(queue_id)
-        base_result = state["items"].get(queue_id)
+        base_result = state_items.get(queue_id)
         if queue_item is None or queue_item.action != "generate":
             raise AuthoringWorkbenchError(
                 f"Audio-event projection queue ID is unavailable: {queue_id!r}"
@@ -125,14 +137,15 @@ def create_audio_event_projection_fallback_workspace(
             plan = audio_event_plan_for_record(queue_item)
         except ValueError as error:
             raise AuthoringWorkbenchError(str(error)) from error
+        spoken_text = plan.get("spoken_text") if isinstance(plan, dict) else None
         if (
             not isinstance(plan, dict)
             or not plan.get("requires_composition")
             or not isinstance(plan.get("events"), list)
             or not plan["events"]
-            or not isinstance(plan.get("spoken_text"), str)
-            or not plan["spoken_text"].strip()
-            or plan["spoken_text"] == queue_item.text
+            or not isinstance(spoken_text, str)
+            or not spoken_text.strip()
+            or spoken_text == queue_item.text
         ):
             raise AuthoringWorkbenchError(
                 f"Audio-event projection requires mixed speech and events: {queue_id!r}"
@@ -168,10 +181,10 @@ def create_audio_event_projection_fallback_workspace(
     batch_id = canonical_document_sha256(batch_body)
     batch = {**batch_body, "batch_id": batch_id}
     config_fingerprint = workspace_config_fingerprint(
-        base_document["source"]["import_id"],
+        import_id,
         base_document.get("story_index"),
         base_document.get("voice_manifest"),
-        base_document["narrator_character"],
+        narrator_character,
         base_document["run_config"],
         base_document.get("carry_forward"),
         base_document.get("outcome_merge"),
@@ -188,8 +201,7 @@ def create_audio_event_projection_fallback_workspace(
         queue_extension=base_document.get("queue_extension"),
     )
     workspace_id = (
-        f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
-        f"{config_fingerprint[:16]}"
+        f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
     )
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -239,11 +251,12 @@ def create_audio_event_projection_fallback_workspace(
             output.mkdir()
             target_state = copy.deepcopy(state)
             _copy_base_wavs(base_directory, output, state, snapshots)
+            target_items = _generation_state_items(target_state)
             decided_at = datetime.now(timezone.utc).isoformat()
             for ledger in ledgers:
                 queue_id = ledger["queue_id"]
                 queue_item = queue_by_id[queue_id]
-                base_result = state["items"][queue_id]
+                base_result = state_items[queue_id]
                 evidence = {
                     "schema": AUDIO_EVENT_PROJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,
                     "schema_version": 1,
@@ -280,7 +293,7 @@ def create_audio_event_projection_fallback_workspace(
                 projected = copy.deepcopy(base_result)
                 projected["live_fallback"] = decision
                 projected["updated_at"] = decided_at
-                target_state["items"][queue_id] = projected
+                target_items[queue_id] = projected
             target_state["active"] = None
             atomic_write_json(
                 output / "generation-state.json", target_state, sort_keys=True
@@ -336,7 +349,9 @@ def create_audio_event_projection_fallback_workspace(
     return WorkspaceCreationResult(destination, True)
 
 
-def validate_audio_event_projection_fallback_workspace(directory, workspace):
+def validate_audio_event_projection_fallback_workspace(
+    directory: str | Path, workspace: Mapping[str, object]
+) -> None:
     """Validate the self-contained mixed-event fallback authority."""
     batch = workspace.get("audio_event_projection_fallback")
     if batch is None:
@@ -403,6 +418,7 @@ def validate_audio_event_projection_fallback_workspace(directory, workspace):
     base_state = load_workspace_json(
         snapshots["base_state_path"], "audio-event projection base state"
     )
+    base_state_items = base_state.get("items")
     queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
         root,
         workspace,
@@ -411,11 +427,12 @@ def validate_audio_event_projection_fallback_workspace(directory, workspace):
     )
     if sha256_file(root / "queue.jsonl") != batch["queue_sha256"]:
         raise AuthoringWorkbenchError("Audio-event projection queue changed")
+    state_items = _generation_state_items(state)
     queue_by_id = {item.queue_id: item for item in queue.items}
     items = batch.get("items")
     if not isinstance(items, list) or not items:
         raise AuthoringWorkbenchError("Audio-event projection ledger is empty")
-    observed = []
+    observed: list[str] = []
     for ledger in items:
         ledger_fields = {
             "queue_id",
@@ -430,15 +447,21 @@ def validate_audio_event_projection_fallback_workspace(directory, workspace):
         if not isinstance(ledger, dict) or set(ledger) != ledger_fields:
             raise AuthoringWorkbenchError("Audio-event projection item is malformed")
         queue_id = ledger.get("queue_id")
-        queue_item = queue_by_id.get(queue_id)
-        base_result = base_state.get("items", {}).get(queue_id)
-        result = state["items"].get(queue_id)
+        queue_item = queue_by_id.get(queue_id) if isinstance(queue_id, str) else None
+        base_result = (
+            base_state_items.get(queue_id)
+            if isinstance(base_state_items, dict) and isinstance(queue_id, str)
+            else None
+        )
+        result = state_items.get(queue_id) if isinstance(queue_id, str) else None
         decision = result.get("live_fallback") if isinstance(result, dict) else None
         evidence = decision.get("evidence") if isinstance(decision, dict) else None
         if (
-            queue_item is None
+            not isinstance(queue_id, str)
+            or queue_item is None
             or not isinstance(base_result, dict)
             or canonical_document_sha256(base_result) != ledger["base_result_sha256"]
+            or not isinstance(decision, dict)
             or not isinstance(evidence, dict)
             or evidence.get("base_result") != base_result
             or evidence.get("batch_id") != batch["batch_id"]

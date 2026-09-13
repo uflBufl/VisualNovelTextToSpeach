@@ -6,6 +6,7 @@ import ctypes
 import errno
 import os
 import sys
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,14 +19,18 @@ class AtomicPublicationError(RuntimeError):
 
 
 @contextmanager
-def staged_directory(parent, *, prefix):
+def staged_directory(parent: str | Path, *, prefix: str) -> Iterator[Path]:
     """Yield a temporary publication directory and always clean leftovers."""
     with TemporaryDirectory(prefix=prefix, dir=parent) as directory:
         yield Path(directory).resolve()
 
 
 @contextmanager
-def generation_publication_leases(sources, *, process_checker):
+def generation_publication_leases(
+    sources: Iterable[tuple[str | Path, str]],
+    *,
+    process_checker: Callable[[object], bool],
+) -> Iterator[tuple[GenerationLease, ...]]:
     """Hold generation leases for a stable, deadlock-free source set."""
     normalized = sorted(
         {(Path(output).resolve(), queue_sha256) for output, queue_sha256 in sources},
@@ -45,7 +50,7 @@ def generation_publication_leases(sources, *, process_checker):
         yield leases
 
 
-def rename_directory_no_replace(source, destination):
+def rename_directory_no_replace(source: str | Path, destination: str | Path) -> None:
     """Atomically rename a staged directory without replacing a destination."""
     source = Path(source)
     destination = Path(destination)

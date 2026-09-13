@@ -46,13 +46,13 @@ class AudioEventPlan:
 
     canonical_text: str
     spoken_text: str
-    events: tuple[dict, ...]
+    events: tuple[dict[str, object], ...]
 
     @property
-    def requires_composition(self):
+    def requires_composition(self) -> bool:
         return bool(self.events)
 
-    def to_document(self, *, story_audio_cues=_MISSING):
+    def to_document(self, *, story_audio_cues: object = _MISSING) -> dict[str, object]:
         body = {
             "schema": AUDIO_EVENT_PLAN_SCHEMA,
             "schema_version": AUDIO_EVENT_PLAN_VERSION,
@@ -70,7 +70,7 @@ class AudioEventPlan:
         return {**body, "plan_sha256": canonical_document_sha256(body)}
 
 
-def plan_inline_audio_events(text):
+def plan_inline_audio_events(text: object) -> AudioEventPlan:
     """Return a deterministic plan without changing canonical story text."""
     if not isinstance(text, str) or not text.strip():
         raise ValueError("Audio-event source text must be non-empty text")
@@ -112,7 +112,9 @@ def plan_inline_audio_events(text):
     return AudioEventPlan(text, spoken_text, tuple(events))
 
 
-def audio_event_plan_document(text, *, story_audio_cues=_MISSING):
+def audio_event_plan_document(
+    text: object, *, story_audio_cues: object = _MISSING
+) -> dict[str, object] | None:
     """Return an additive queue document only when composition is required."""
     if story_audio_cues is not _MISSING:
         story_audio_cues = validate_story_audio_cues(story_audio_cues)
@@ -124,7 +126,7 @@ def audio_event_plan_document(text, *, story_audio_cues=_MISSING):
     )
 
 
-def audio_event_plan_for_record(value):
+def audio_event_plan_for_record(value: object) -> dict[str, object] | None:
     """Plan from exact record text and optional producer-owned story cues."""
     document = value.document if hasattr(value, "document") else value
     if not isinstance(document, dict):
@@ -138,7 +140,7 @@ def audio_event_plan_for_record(value):
     return audio_event_plan_document(text)
 
 
-def requires_audio_event_composition(value):
+def requires_audio_event_composition(value: object) -> bool:
     """Recognize current plans and legacy queue text without trusting extensions."""
     document = value.document if hasattr(value, "document") else value
     if isinstance(document, dict):
@@ -150,7 +152,7 @@ def requires_audio_event_composition(value):
     return audio_event_plan_document(value) is not None
 
 
-def validate_story_audio_cues(value):
+def validate_story_audio_cues(value: object) -> tuple[dict[str, object], ...]:
     """Validate extractor cue provenance without assigning event semantics."""
     if not isinstance(value, (list, tuple)):
         raise ValueError("story_audio_cues must be a list")
@@ -225,7 +227,9 @@ def validate_story_audio_cues(value):
     return tuple(cues)
 
 
-def _cue_media_ids(cue, cue_index, field):
+def _cue_media_ids(
+    cue: dict[str, object], cue_index: int, field: str
+) -> tuple[int, ...]:
     value = cue.get(field)
     if not isinstance(value, list) or any(
         not isinstance(media_id, int) or isinstance(media_id, bool)
@@ -237,12 +241,12 @@ def _cue_media_ids(cue, cue_index, field):
     return tuple(value)
 
 
-def _normalize_spoken_text(text):
+def _normalize_spoken_text(text: str) -> str:
     value = " ".join(text.split())
     return re.sub(r"\s+([,.;:!?])", r"\1", value)
 
 
-def _sha256(value):
+def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 

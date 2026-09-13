@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -16,6 +17,9 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
     process_is_alive,
+)
+from vntts.authoring.bulk_generation import (
+    _state_items as _generation_state_items,
 )
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.generation_state import (
@@ -59,10 +63,10 @@ SCHEMA_VERSION = 1
 
 
 def create_audio_event_omission_workspace(
-    base_workspace,
-    queue_ids,
-    workspaces_root=None,
-):
+    base_workspace: str | Path,
+    queue_ids: Iterable[object],
+    workspaces_root: str | Path | None = None,
+) -> WorkspaceCreationResult:
     """Terminalize exact absent pure-event lines without producing audio."""
     base_directory, base_document, base_workspace_sha256 = load_workspace_authority(
         base_workspace
@@ -80,6 +84,12 @@ def create_audio_event_omission_workspace(
     )
     if state.get("active") is not None:
         raise AuthoringWorkbenchError("Audio-event omission base is active")
+    state_items = _generation_state_items(state)
+    source = base_document.get("source")
+    import_id = source.get("import_id") if isinstance(source, dict) else None
+    narrator_character = base_document.get("narrator_character")
+    if not isinstance(import_id, str) or not isinstance(narrator_character, str):
+        raise AuthoringWorkbenchError("Audio-event omission base is malformed")
     queue_path = base_directory / "queue.jsonl"
     queue_sha256 = sha256_file(queue_path)
     queue_by_id = {item.queue_id: item for item in queue.items}
@@ -90,7 +100,7 @@ def create_audio_event_omission_workspace(
             raise AuthoringWorkbenchError(
                 f"Audio-event omission queue ID is unavailable: {queue_id!r}"
             )
-        if state["items"].get(queue_id) is not None:
+        if state_items.get(queue_id) is not None:
             raise AuthoringWorkbenchError(
                 f"Audio-event omission base item is not absent: {queue_id!r}"
             )
@@ -134,10 +144,10 @@ def create_audio_event_omission_workspace(
     batch_id = canonical_document_sha256(batch_body)
     batch = {**batch_body, "batch_id": batch_id}
     config_fingerprint = workspace_config_fingerprint(
-        base_document["source"]["import_id"],
+        import_id,
         base_document.get("story_index"),
         base_document.get("voice_manifest"),
-        base_document["narrator_character"],
+        narrator_character,
         base_document["run_config"],
         base_document.get("carry_forward"),
         base_document.get("outcome_merge"),
@@ -154,8 +164,7 @@ def create_audio_event_omission_workspace(
         queue_extension=base_document.get("queue_extension"),
     )
     workspace_id = (
-        f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
-        f"{config_fingerprint[:16]}"
+        f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
     )
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -203,6 +212,7 @@ def create_audio_event_omission_workspace(
             output.mkdir()
             target_state = copy.deepcopy(state)
             _copy_base_wavs(base_directory, output, state, snapshots)
+            target_items = _generation_state_items(target_state)
             decided_at = datetime.now(timezone.utc).isoformat()
             authority = {
                 "batch_id": batch_id,
@@ -221,7 +231,7 @@ def create_audio_event_omission_workspace(
                     "decided_at": decided_at,
                     "authority": copy.deepcopy(authority),
                 }
-                target_state["items"][queue_id] = {
+                target_items[queue_id] = {
                     "status": "omitted",
                     "review_status": "omitted",
                     "attempts": 0,
@@ -286,7 +296,9 @@ def create_audio_event_omission_workspace(
     return WorkspaceCreationResult(destination, True)
 
 
-def validate_audio_event_omission_workspace(directory, workspace):
+def validate_audio_event_omission_workspace(
+    directory: str | Path, workspace: Mapping[str, object]
+) -> None:
     """Validate the self-contained exact omission authority."""
     batch = workspace.get("audio_event_omission")
     if batch is None:
@@ -346,11 +358,12 @@ def validate_audio_event_omission_workspace(directory, workspace):
     )
     if sha256_file(root / "queue.jsonl") != batch["queue_sha256"]:
         raise AuthoringWorkbenchError("Audio-event omission queue changed")
+    state_items = _generation_state_items(state)
     queue_by_id = {item.queue_id: item for item in queue.items}
     items = batch.get("items")
     if not isinstance(items, list) or not items:
         raise AuthoringWorkbenchError("Audio-event omission item ledger is empty")
-    observed = []
+    observed: list[str] = []
     for ledger in items:
         ledger_fields = {
             "queue_id",
@@ -363,12 +376,16 @@ def validate_audio_event_omission_workspace(directory, workspace):
         if not isinstance(ledger, dict) or set(ledger) != ledger_fields:
             raise AuthoringWorkbenchError("Audio-event omission item is malformed")
         queue_id = ledger.get("queue_id")
-        item = queue_by_id.get(queue_id)
-        result = state["items"].get(queue_id)
+        item = queue_by_id.get(queue_id) if isinstance(queue_id, str) else None
+        result = state_items.get(queue_id) if isinstance(queue_id, str) else None
         decision = (
             result.get("audio_event_omission") if isinstance(result, dict) else None
         )
-        if item is None or not isinstance(decision, dict):
+        if (
+            not isinstance(queue_id, str)
+            or item is None
+            or not isinstance(decision, dict)
+        ):
             raise AuthoringWorkbenchError(
                 f"Audio-event omission result changed for {queue_id!r}"
             )

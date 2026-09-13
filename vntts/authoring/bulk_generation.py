@@ -891,17 +891,17 @@ def audio_event_spoken_projection(text: str) -> str:
         plan = audio_event_plan_for_record({"text": text})
     except ValueError as error:
         raise BulkGenerationError(str(error)) from error
+    spoken_text = plan.get("spoken_text") if isinstance(plan, dict) else None
     if (
         not isinstance(plan, dict)
         or not plan.get("requires_composition")
-        or not isinstance(plan.get("spoken_text"), str)
-        or not plan["spoken_text"].strip()
-        or plan["spoken_text"] == text
+        or not isinstance(spoken_text, str)
+        or not spoken_text.strip()
+        or spoken_text == text
     ):
         raise BulkGenerationError(
             "Audio-event spoken projection requires mixed speech and events"
         )
-    spoken_text = plan["spoken_text"]
     if not isinstance(spoken_text, str):
         raise BulkGenerationError(
             "Audio-event spoken projection requires mixed speech and events"
@@ -2864,9 +2864,10 @@ def _validate_audio_event_projection(
             raise BulkGenerationError(
                 f"Audio-event projection item is not generated: {queue_id!r}"
             )
-        if audio_event_plan_for_record(item).get(
-            "spoken_text"
-        ) != audio_event_spoken_projection(item.text):
+        plan = audio_event_plan_for_record(item)
+        if plan is None or plan.get("spoken_text") != audio_event_spoken_projection(
+            item.text
+        ):
             raise BulkGenerationError(
                 f"Audio-event projection plan changed for {queue_id!r}"
             )

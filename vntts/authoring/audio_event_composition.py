@@ -10,11 +10,13 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.authoring.audio_event_review import (
+    AudioEventReview,
     AudioEventReviewError,
     load_audio_event_review,
 )
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    AuthoritySnapshot,
     assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
@@ -51,7 +53,7 @@ class AudioEventComposition:
     decision: str | None
     created: bool = False
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, str | bool | None]:
         return {
             "directory": str(self.directory),
             "composition_id": self.composition_id,
@@ -64,7 +66,9 @@ class AudioEventComposition:
         }
 
 
-def publish_audio_event_composition(review_directory, output_directory):
+def publish_audio_event_composition(
+    review_directory: str | Path, output_directory: str | Path
+) -> AudioEventComposition:
     """Publish one exact, no-transform event-only composition candidate."""
     review_root = _safe_directory(review_directory, "audio-event review")
     output = Path(output_directory).expanduser().resolve()
@@ -104,7 +108,9 @@ def publish_audio_event_composition(review_directory, output_directory):
         or decision_document.get("candidate_audio_sha256") != audio_snapshot.sha256
     ):
         raise AudioEventCompositionError("Accepted audio-event decision changed")
-    candidate = review_document["candidate"]
+    candidate = review_document.get("candidate")
+    if not isinstance(candidate, dict):
+        raise AudioEventCompositionError("Accepted audio-event review changed")
     identity = {
         "schema": AUDIO_EVENT_COMPOSITION_SCHEMA,
         "schema_version": AUDIO_EVENT_COMPOSITION_VERSION,
@@ -171,7 +177,7 @@ def publish_audio_event_composition(review_directory, output_directory):
         return AudioEventComposition(**{**result.__dict__, "created": True})
 
 
-def load_audio_event_composition(directory):
+def load_audio_event_composition(directory: str | Path) -> AudioEventComposition:
     """Load and revalidate every byte in one event-only composition."""
     root = _safe_directory(directory, "audio-event composition")
     try:
@@ -243,18 +249,29 @@ def load_audio_event_composition(directory):
         (audio_snapshot, "final event audio"),
     ):
         assert_authority_snapshot(snapshot, label)
+    composition_id = document.get("composition_id")
+    review_id = document.get("review_id")
+    queue_id = document.get("queue_id")
+    if (
+        not isinstance(composition_id, str)
+        or not isinstance(review_id, str)
+        or not isinstance(queue_id, str)
+    ):
+        raise AudioEventCompositionError("Audio-event composition authority changed")
     return AudioEventComposition(
         root,
-        document["composition_id"],
-        document["review_id"],
-        document["queue_id"],
+        composition_id,
+        review_id,
+        queue_id,
         audio_snapshot.path,
         audio_snapshot.sha256,
         decision,
     )
 
 
-def record_audio_event_composition_decision(directory, decision):
+def record_audio_event_composition_decision(
+    directory: str | Path, decision: str
+) -> AudioEventComposition:
     """Record the final exact production-composition approval or rejection."""
     if decision not in AUDIO_EVENT_COMPOSITION_DECISIONS:
         raise AudioEventCompositionError(
@@ -297,15 +314,15 @@ def record_audio_event_composition_decision(directory, decision):
 
 
 def _validate_composition_document(
-    document,
-    review,
-    review_document,
-    review_snapshot,
-    decision_snapshot,
-    decision_document,
-    queue_snapshot,
-    audio_snapshot,
-):
+    document: dict[str, object],
+    review: AudioEventReview,
+    review_document: dict[str, object],
+    review_snapshot: AuthoritySnapshot,
+    decision_snapshot: AuthoritySnapshot,
+    decision_document: dict[str, object],
+    queue_snapshot: AuthoritySnapshot,
+    audio_snapshot: AuthoritySnapshot,
+) -> None:
     required = {
         "schema",
         "schema_version",
@@ -413,7 +430,9 @@ def _validate_composition_document(
         raise AudioEventCompositionError("Audio-event composition ID changed")
 
 
-def _validate_composition_decision(value, composition, composition_sha256):
+def _validate_composition_decision(
+    value: dict[str, object], composition: dict[str, object], composition_sha256: str
+) -> str:
     if (
         not isinstance(value, dict)
         or set(value)
@@ -434,9 +453,14 @@ def _validate_composition_decision(value, composition, composition_sha256):
         or value.get("decision") not in AUDIO_EVENT_COMPOSITION_DECISIONS
     ):
         raise AudioEventCompositionError("Audio-event composition decision changed")
+    reviewed_at = value.get("reviewed_at")
+    if not isinstance(reviewed_at, str):
+        raise AudioEventCompositionError(
+            "Audio-event composition decision timestamp is invalid"
+        )
     try:
-        parsed = datetime.fromisoformat(value["reviewed_at"])
-    except (TypeError, ValueError) as error:
+        parsed = datetime.fromisoformat(reviewed_at)
+    except ValueError as error:
         raise AudioEventCompositionError(
             "Audio-event composition decision timestamp is invalid"
         ) from error
@@ -444,10 +468,13 @@ def _validate_composition_decision(value, composition, composition_sha256):
         raise AudioEventCompositionError(
             "Audio-event composition decision timestamp needs a timezone"
         )
-    return value["decision"]
+    decision = value.get("decision")
+    if not isinstance(decision, str):
+        raise AudioEventCompositionError("Audio-event composition decision changed")
+    return decision
 
 
-def _copy_review_snapshot(source, target):
+def _copy_review_snapshot(source: Path, target: Path) -> None:
     for path in sorted(source.rglob("*")):
         if path.is_symlink():
             raise AudioEventCompositionError("Audio-event review contains a symlink")
@@ -460,7 +487,7 @@ def _copy_review_snapshot(source, target):
             destination.write_bytes(path.read_bytes())
 
 
-def _safe_directory(value, label):
+def _safe_directory(value: str | Path, label: str) -> Path:
     supplied = Path(value).expanduser()
     if supplied.is_symlink():
         raise AudioEventCompositionError(f"{label.capitalize()} is a symlink")
@@ -470,14 +497,14 @@ def _safe_directory(value, label):
     return resolved
 
 
-def _contained_directory(root, relative, label):
+def _contained_directory(root: Path, relative: str, label: str) -> Path:
     path = Path(root) / relative
     if path.is_symlink() or not path.is_dir() or path.resolve().parent != Path(root):
         raise AudioEventCompositionError(f"{label.capitalize()} leaves its root")
     return path.resolve()
 
 
-def _contained_file(root, value, label):
+def _contained_file(root: Path, value: object, label: str) -> Path:
     if not isinstance(value, str) or not value or value != value.strip():
         raise AudioEventCompositionError(f"{label.capitalize()} path is invalid")
     return contained_regular_file(

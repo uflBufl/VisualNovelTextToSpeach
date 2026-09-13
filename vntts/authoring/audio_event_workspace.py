@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 from vntts.authoring.audio_event_composition import (
@@ -33,7 +34,7 @@ class AudioEventWorkspaceError(RuntimeError):
     """An audio-event workspace or projected state item is invalid."""
 
 
-def composition_item_ledger(config):
+def composition_item_ledger(config: Mapping[str, object]) -> dict[str, object]:
     """Return the exact additive state/manifest provenance for one composition."""
     return {
         "schema": AUDIO_EVENT_ITEM_SCHEMA,
@@ -51,7 +52,9 @@ def composition_item_ledger(config):
     }
 
 
-def validate_audio_event_composition_workspace(directory, workspace):
+def validate_audio_event_composition_workspace(
+    directory: str | Path, workspace: Mapping[str, object]
+) -> dict[str, object] | None:
     """Validate the copied composition and its config-addressed workspace ledger."""
     root = Path(directory).expanduser().resolve()
     config = workspace.get("audio_event_composition")
@@ -156,7 +159,10 @@ def validate_audio_event_composition_workspace(directory, workspace):
         raise AudioEventWorkspaceError(
             "Workspace audio-event composition authority changed"
         )
-    base_item = base_state.get("items", {}).get(config["queue_id"])
+    base_items = base_state.get("items")
+    if not isinstance(base_items, dict):
+        raise AudioEventWorkspaceError("Workspace audio-event base authority changed")
+    base_item = base_items.get(config["queue_id"])
     if (
         base_workspace.get("schema") != "vntts.authoring-workspace"
         or base_workspace.get("schema_version") != 1
@@ -191,7 +197,11 @@ def validate_audio_event_composition_workspace(directory, workspace):
     return config
 
 
-def validate_audio_event_composition_state_item(workspace_directory, queue_id, result):
+def validate_audio_event_composition_state_item(
+    workspace_directory: str | Path,
+    queue_id: str,
+    result: Mapping[str, object],
+) -> dict[str, object]:
     """Bind one generated state item to its canonical workspace composition."""
     root = Path(workspace_directory).expanduser().resolve()
     try:
@@ -225,12 +235,14 @@ def validate_audio_event_composition_state_item(workspace_directory, queue_id, r
     return ledger
 
 
-def _contained_file(root, value, label):
-    return contained_regular_file(
-        root,
-        value,
-        f"workspace audio-event {label}",
-        error_type=AudioEventWorkspaceError,
+def _contained_file(root: Path, value: object, label: str) -> Path:
+    return Path(
+        contained_regular_file(
+            root,
+            value,
+            f"workspace audio-event {label}",
+            error_type=AudioEventWorkspaceError,
+        )
     )
 
 

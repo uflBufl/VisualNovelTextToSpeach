@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -58,9 +60,9 @@ _copy_base_wavs = partial(
 
 
 def create_reviewed_waveform_publication_workspace(
-    base_workspace,
-    workspaces_root=None,
-):
+    base_workspace: str | Path,
+    workspaces_root: str | Path | None = None,
+) -> WorkspaceCreationResult:
     """Authorize packaging every exact already-approved base waveform."""
     base_directory, base_document, base_workspace_sha256 = load_workspace_authority(
         base_workspace
@@ -103,10 +105,11 @@ def create_reviewed_waveform_publication_workspace(
         story_binding.get("sha256"), "Selected story index SHA-256"
     ):
         raise AuthoringWorkbenchError("Selected story index changed")
-    narrator = base_document.get("narrator_character")
+    narrator = cast(str, base_document["narrator_character"])
     narrator_reference_sha256s = _character_reference_sha256s(voice_path, narrator)
+    state_items = _state_items(state)
     ledgers = []
-    for queue_id, result in sorted(state["items"].items()):
+    for queue_id, result in sorted(state_items.items()):
         if result.get("status") != "approved":
             continue
         if result.get("review_status") != "approved":
@@ -191,11 +194,17 @@ def create_reviewed_waveform_publication_workspace(
         "items": ledgers,
     }
     batch = {**batch_body, "batch_id": canonical_document_sha256(batch_body)}
+    source_document = base_document.get("source")
+    if not isinstance(source_document, dict) or not isinstance(
+        source_document.get("import_id"), str
+    ):
+        raise AuthoringWorkbenchError("Reviewed-waveform source authority is malformed")
+    import_id = source_document["import_id"]
     config_fingerprint = workspace_config_fingerprint(
-        base_document["source"]["import_id"],
+        import_id,
         base_document.get("story_index"),
         base_document.get("voice_manifest"),
-        base_document["narrator_character"],
+        narrator,
         base_document["run_config"],
         base_document.get("carry_forward"),
         base_document.get("outcome_merge"),
@@ -212,8 +221,7 @@ def create_reviewed_waveform_publication_workspace(
         queue_extension=base_document.get("queue_extension"),
     )
     workspace_id = (
-        f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
-        f"{config_fingerprint[:16]}"
+        f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
     )
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -318,11 +326,17 @@ def create_reviewed_waveform_publication_workspace(
     return WorkspaceCreationResult(destination, True)
 
 
-def validate_reviewed_waveform_publication_workspace(directory, workspace):
+def validate_reviewed_waveform_publication_workspace(
+    directory: str | Path, workspace: Mapping[str, object]
+) -> None:
     """Validate snapshots and exact result equality for one migration."""
     batch = workspace.get("reviewed_waveform_publication")
     if batch is None:
         return
+    if not isinstance(batch, dict):
+        raise AuthoringWorkbenchError(
+            "Reviewed-waveform publication authority is malformed"
+        )
     root = Path(directory)
     for path_field, hash_field, label in (
         ("base_workspace_path", "base_workspace_sha256", "base workspace"),
@@ -357,19 +371,21 @@ def validate_reviewed_waveform_publication_workspace(directory, workspace):
     if sha256_file(root / "queue.jsonl") != batch.get("queue_sha256"):
         raise AuthoringWorkbenchError("Reviewed-waveform queue changed")
     queue_ids = {item.queue_id for item in queue.items}
+    base_items = _state_items(base_state)
+    state_items = _state_items(state)
     for ledger in batch["items"]:
         queue_id = ledger["queue_id"]
         if (
             queue_id not in queue_ids
-            or base_state.get("items", {}).get(queue_id) != ledger["base_result"]
-            or state["items"].get(queue_id) != ledger["base_result"]
+            or base_items.get(queue_id) != ledger["base_result"]
+            or state_items.get(queue_id) != ledger["base_result"]
         ):
             raise AuthoringWorkbenchError(
                 f"Reviewed-waveform result changed for {queue_id!r}"
             )
 
 
-def _character_reference_sha256s(voice_path, character):
+def _character_reference_sha256s(voice_path: Path, character: str) -> list[str]:
     try:
         _document, entries = load_voice_manifest(voice_path)
     except Exception as error:
@@ -401,6 +417,18 @@ def _character_reference_sha256s(voice_path, character):
     if not digests:
         raise AuthoringWorkbenchError("Selected narrator has no voice references")
     return sorted(set(digests))
+
+
+def _state_items(state: Mapping[str, object]) -> dict[str, dict[str, object]]:
+    items = state.get("items")
+    if not isinstance(items, dict) or any(
+        not isinstance(queue_id, str) or not isinstance(result, dict)
+        for queue_id, result in items.items()
+    ):
+        raise AuthoringWorkbenchError(
+            "Reviewed-waveform generation items are malformed"
+        )
+    return items
 
 
 __all__ = [

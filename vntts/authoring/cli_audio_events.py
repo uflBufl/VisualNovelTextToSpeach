@@ -7,12 +7,13 @@ import json
 from pathlib import Path
 
 from vntts.authoring.audio_event_composition import (
-    AudioEventCompositionError as _AudioEventCompositionError,
-)
-from vntts.authoring.audio_event_composition import (
+    AudioEventComposition,
     load_audio_event_composition,
     publish_audio_event_composition,
     record_audio_event_composition_decision,
+)
+from vntts.authoring.audio_event_composition import (
+    AudioEventCompositionError as _AudioEventCompositionError,
 )
 from vntts.authoring.audio_event_omission import (
     create_audio_event_omission_workspace,
@@ -21,12 +22,13 @@ from vntts.authoring.audio_event_projection_fallback import (
     create_audio_event_projection_fallback_workspace,
 )
 from vntts.authoring.audio_event_review import (
-    AudioEventReviewError as _AudioEventReviewError,
-)
-from vntts.authoring.audio_event_review import (
+    AudioEventReview,
     load_audio_event_review,
     publish_source_audio_event_review,
     record_audio_event_review_decision,
+)
+from vntts.authoring.audio_event_review import (
+    AudioEventReviewError as _AudioEventReviewError,
 )
 from vntts.authoring.workbench import (
     WorkspaceCreationResult,
@@ -174,6 +176,7 @@ def handle(arguments: argparse.Namespace) -> int:
             )
         )
         return 0
+    result: AudioEventReview | AudioEventComposition
     if arguments.command == "audio-event-review-publish":
         result = publish_source_audio_event_review(
             arguments.queue,
@@ -203,7 +206,7 @@ def handle(arguments: argparse.Namespace) -> int:
     elif arguments.command == "audio-event-composition-status":
         result = load_audio_event_composition(arguments.directory)
     elif arguments.command == "audio-event-composition-workspace":
-        result = create_audio_event_composition_workspace(
+        workspace_result = create_audio_event_composition_workspace(
             arguments.base_workspace,
             arguments.composition,
             arguments.workspaces_root,
@@ -211,8 +214,8 @@ def handle(arguments: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "created": result.created,
-                    "workspace": str(result.directory),
+                    "created": workspace_result.created,
+                    "workspace": str(workspace_result.directory),
                 },
                 indent=2,
                 sort_keys=True,
