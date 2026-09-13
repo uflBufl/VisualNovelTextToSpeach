@@ -2473,6 +2473,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._onboarding_test_active = True
 
         def run_test():
+            started = preview_succeeded = False
+
             def cancelled():
                 if not cancel_event.is_set():
                     return False
@@ -2537,13 +2539,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     True,
                     f"Success. Recognized {character}: {preview}",
                 )
+                preview_succeeded = True
             except Exception as error:
                 self.signals.onboarding_test_finished.emit(
                     False, format_runtime_error(error)
                 )
             finally:
                 try:
-                    if cancel_event.is_set():
+                    if cancel_event.is_set() or (started and not preview_succeeded):
                         self.controller.shutdown()
                 except Exception as error:
                     self.report_controller_error(error)

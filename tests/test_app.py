@@ -3856,8 +3856,71 @@ class TrayApplicationTest(unittest.TestCase):
         controller.apply_settings.assert_called_once()
         controller.model_assets.download.assert_called_once()
         controller.test_current_dialog.assert_called_once_with()
+        controller.shutdown.assert_not_called()
         self.assertTrue(results[0][0])
         self.assertIn("Marcus", results[0][1])
+        tray_application.shutdown()
+
+    def test_onboarding_test_shuts_down_after_preview_error(self):
+        class ImmediateThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        controller = Mock()
+        controller.start.return_value = True
+        controller.test_current_dialog.side_effect = RuntimeError("preview failed")
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        results = []
+        tray_application.signals.onboarding_test_finished.connect(
+            lambda success, message: results.append((success, message))
+        )
+
+        with patch("vntts.app.Thread", ImmediateThread):
+            tray_application.run_onboarding_test(AppSettings())
+
+        controller.shutdown.assert_called_once_with()
+        self.assertEqual(
+            results,
+            [(False, "Unexpected dialog processing failure: preview failed")],
+        )
+        tray_application.shutdown()
+
+    def test_onboarding_test_shuts_down_when_cancelled_after_start(self):
+        class ImmediateThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        controller = Mock()
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        controller.start.side_effect = lambda: (
+            tray_application.cancel_onboarding_download(),
+            True,
+        )[1]
+        results = []
+        tray_application.signals.onboarding_test_finished.connect(
+            lambda success, message: results.append((success, message))
+        )
+
+        with patch("vntts.app.Thread", ImmediateThread):
+            tray_application.run_onboarding_test(AppSettings())
+
+        controller.shutdown.assert_called_once_with()
+        controller.test_current_dialog.assert_not_called()
+        self.assertEqual(results, [(False, "OCR-to-speech test cancelled.")])
         tray_application.shutdown()
 
     def test_onboarding_test_displays_the_controller_startup_error(self):
