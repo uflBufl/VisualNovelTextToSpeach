@@ -6,7 +6,6 @@ import copy
 import hashlib
 import json
 import shutil
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -33,7 +32,7 @@ from vntts.authoring.missing_voice_live_fallback import (
     _load_authority,
     _validated_targets,
 )
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.authoring.source_reference_bindings import (
     KNOWN_ROLE_REUSE_AUTHORITY,
     KNOWN_ROLE_REUSE_BINDING_FIELD,
@@ -384,52 +383,49 @@ def publish_known_role_reuse_binding(
         return result
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=".known-role-reuse-", dir=output.parent)
-    ).resolve()
     try:
-        for reference in all_reference_records:
-            source = reference["source"]
-            target = staging / reference["relative"]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
-            if sha256_file(target) != reference["sha256"]:
-                raise KnownRoleReuseError(
-                    "Known-role voice reference changed while copied"
-                )
-        manifest_path = staging / "manifest.json"
-        write_voice_manifest(manifest_path, successor)
-        queue_voice_overrides_from_manifest(
-            successor,
-            queue_ids=queue_by_id,
-            voices=load_voice_manifest(manifest_path, allow_legacy=False)[1],
-        )
-        decision = {**decision_body, "decision_id": decision_id}
-        atomic_write_json(staging / "decision.json", decision, sort_keys=True)
-        authority_target = staging / "authority" / "unresolved"
-        _copy_tree(unresolved_authority_directory, authority_target)
-        inventory = [
-            {
-                "path": path.relative_to(staging).as_posix(),
-                "sha256": sha256_file(path),
+        with staged_directory(output.parent, prefix=".known-role-reuse-") as staging:
+            for reference in all_reference_records:
+                source = reference["source"]
+                target = staging / reference["relative"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                if sha256_file(target) != reference["sha256"]:
+                    raise KnownRoleReuseError(
+                        "Known-role voice reference changed while copied"
+                    )
+            manifest_path = staging / "manifest.json"
+            write_voice_manifest(manifest_path, successor)
+            queue_voice_overrides_from_manifest(
+                successor,
+                queue_ids=queue_by_id,
+                voices=load_voice_manifest(manifest_path, allow_legacy=False)[1],
+            )
+            decision = {**decision_body, "decision_id": decision_id}
+            atomic_write_json(staging / "decision.json", decision, sort_keys=True)
+            authority_target = staging / "authority" / "unresolved"
+            _copy_tree(unresolved_authority_directory, authority_target)
+            inventory = [
+                {
+                    "path": path.relative_to(staging).as_posix(),
+                    "sha256": sha256_file(path),
+                }
+                for path in sorted(staging.rglob("*"))
+                if path.is_file()
+            ]
+            body = {
+                "schema": KNOWN_ROLE_REUSE_BUNDLE_SCHEMA,
+                "schema_version": KNOWN_ROLE_REUSE_BUNDLE_VERSION,
+                "decision_id": decision_id,
+                "inventory": inventory,
             }
-            for path in sorted(staging.rglob("*"))
-            if path.is_file()
-        ]
-        body = {
-            "schema": KNOWN_ROLE_REUSE_BUNDLE_SCHEMA,
-            "schema_version": KNOWN_ROLE_REUSE_BUNDLE_VERSION,
-            "decision_id": decision_id,
-            "inventory": inventory,
-        }
-        atomic_write_json(
-            staging / "bundle.json",
-            {**body, "bundle_id": canonical_document_sha256(body)},
-            sort_keys=True,
-        )
-        _validate_bundle(staging, known_binding, decision_body, queue_by_id)
-        rename_directory_no_replace(staging, output)
-        staging = None
+            atomic_write_json(
+                staging / "bundle.json",
+                {**body, "bundle_id": canonical_document_sha256(body)},
+                sort_keys=True,
+            )
+            _validate_bundle(staging, known_binding, decision_body, queue_by_id)
+            rename_directory_no_replace(staging, output)
     except (
         AuthoringWorkbenchError,
         BulkGenerationError,
@@ -437,9 +433,6 @@ def publish_known_role_reuse_binding(
         VoiceManifestError,
     ) as error:
         raise KnownRoleReuseError(str(error)) from error
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
     return KnownRoleReuseResult(**{**asdict(result), "created": True})
 
 

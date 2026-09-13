@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import shutil
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +23,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.queue_extension import (
     QueueExtensionError,
@@ -106,7 +105,6 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
 
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    staging = None
     try:
         with generation_publication_leases(
             (
@@ -405,192 +403,194 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             destination = contained_workspace_path(
                 root, Path(workspace_id), "Config rebase destination"
             )
-            staging = Path(
-                tempfile.mkdtemp(prefix=".config-rebase-staging-", dir=root)
-            ).resolve()
-            snapshots = []
-            snapshots.extend(
-                (
-                    (source_directory / "workspace.json", source_workspace_sha256),
-                    (source_state_path, source_state_sha256),
-                    (source_queue, source_queue_sha256),
-                    (target_directory / "workspace.json", target_workspace_sha256),
-                    (target_state_path, target_state_sha256),
+            with staged_directory(root, prefix=".config-rebase-staging-") as staging:
+                snapshots = []
+                snapshots.extend(
+                    (
+                        (source_directory / "workspace.json", source_workspace_sha256),
+                        (source_state_path, source_state_sha256),
+                        (source_queue, source_queue_sha256),
+                        (target_directory / "workspace.json", target_workspace_sha256),
+                        (target_state_path, target_state_sha256),
+                    )
                 )
-            )
-            _copy_tree(target_directory / "inputs", staging / "inputs", snapshots)
-            if (
-                audio_event_composition is not None
-                and target_document.get("audio_event_composition") is None
-            ):
-                _copy_audio_event_composition_inputs(
-                    source_directory,
-                    staging,
-                    audio_event_composition,
-                    snapshots,
+                _copy_tree(target_directory / "inputs", staging / "inputs", snapshots)
+                if (
+                    audio_event_composition is not None
+                    and target_document.get("audio_event_composition") is None
+                ):
+                    _copy_audio_event_composition_inputs(
+                        source_directory,
+                        staging,
+                        audio_event_composition,
+                        snapshots,
+                    )
+                _copy_tree(
+                    target_directory / "provenance", staging / "provenance", snapshots
                 )
-            _copy_tree(
-                target_directory / "provenance", staging / "provenance", snapshots
-            )
-            (staging / "queue.jsonl").write_bytes(target_queue_payload)
-            snapshots.append((target_queue, target_queue_sha256))
-            source_root = staging / "provenance" / "config-rebase" / "source-root"
-            _copy_tree(source_directory / "inputs", source_root / "inputs", snapshots)
-            (source_root / "queue.jsonl").parent.mkdir(parents=True, exist_ok=True)
-            (source_root / "queue.jsonl").write_bytes(source_queue_payload)
-            (source_root / "workspace.json").write_bytes(
-                read_workspace_file_bytes(
-                    source_directory / "workspace.json", "source workspace"
+                (staging / "queue.jsonl").write_bytes(target_queue_payload)
+                snapshots.append((target_queue, target_queue_sha256))
+                source_root = staging / "provenance" / "config-rebase" / "source-root"
+                _copy_tree(
+                    source_directory / "inputs", source_root / "inputs", snapshots
                 )
-            )
-            (source_root / "generated-audio").mkdir(parents=True)
-            (source_root / "generated-audio" / "generation-state.json").write_bytes(
-                source_state_payload
-            )
-            for record in records:
-                if record["successor_state"] != REBASE_PENDING_KNOWN_ROLE_REUSE:
-                    continue
-                source_item = source_state["items"][record["queue_id"]]
-                relative = safe_workspace_relative_path(
-                    source_item.get("path"),
-                    f"Config rebase pending-history {record['queue_id']!r} WAV",
+                (source_root / "queue.jsonl").parent.mkdir(parents=True, exist_ok=True)
+                (source_root / "queue.jsonl").write_bytes(source_queue_payload)
+                (source_root / "workspace.json").write_bytes(
+                    read_workspace_file_bytes(
+                        source_directory / "workspace.json", "source workspace"
+                    )
                 )
-                source_audio = contained_workspace_path(
-                    source_output, relative, "Config rebase pending-history WAV"
+                (source_root / "generated-audio").mkdir(parents=True)
+                (source_root / "generated-audio" / "generation-state.json").write_bytes(
+                    source_state_payload
                 )
-                history_audio = contained_workspace_path(
-                    source_root / "generated-audio",
-                    relative,
-                    "Config rebase pending-history WAV",
+                for record in records:
+                    if record["successor_state"] != REBASE_PENDING_KNOWN_ROLE_REUSE:
+                        continue
+                    source_item = source_state["items"][record["queue_id"]]
+                    relative = safe_workspace_relative_path(
+                        source_item.get("path"),
+                        f"Config rebase pending-history {record['queue_id']!r} WAV",
+                    )
+                    source_audio = contained_workspace_path(
+                        source_output, relative, "Config rebase pending-history WAV"
+                    )
+                    history_audio = contained_workspace_path(
+                        source_root / "generated-audio",
+                        relative,
+                        "Config rebase pending-history WAV",
+                    )
+                    history_audio.parent.mkdir(parents=True, exist_ok=True)
+                    payload = read_workspace_file_bytes(
+                        source_audio, "config rebase pending-history WAV"
+                    )
+                    history_audio.write_bytes(payload)
+                    snapshots.append((source_audio, record["audio_sha256"]))
+                target_root = staging / "provenance" / "config-rebase" / "target-root"
+                target_root.mkdir(parents=True)
+                (target_root / "workspace.json").write_bytes(
+                    read_workspace_file_bytes(
+                        target_directory / "workspace.json", "target workspace"
+                    )
                 )
-                history_audio.parent.mkdir(parents=True, exist_ok=True)
-                payload = read_workspace_file_bytes(
-                    source_audio, "config rebase pending-history WAV"
+                (target_root / "generation-state.json").write_bytes(
+                    target_state_payload
                 )
-                history_audio.write_bytes(payload)
-                snapshots.append((source_audio, record["audio_sha256"]))
-            target_root = staging / "provenance" / "config-rebase" / "target-root"
-            target_root.mkdir(parents=True)
-            (target_root / "workspace.json").write_bytes(
-                read_workspace_file_bytes(
-                    target_directory / "workspace.json", "target workspace"
-                )
-            )
-            (target_root / "generation-state.json").write_bytes(target_state_payload)
 
-            output = staging / "generated-audio"
-            output.mkdir()
-            path_owners = {}
-            rebased_queue_ids = {record["queue_id"] for record in records}
-            for queue_id, result in projected_state["items"].items():
-                if not isinstance(result, dict) or not isinstance(
-                    result.get("path"), str
+                output = staging / "generated-audio"
+                output.mkdir()
+                path_owners = {}
+                rebased_queue_ids = {record["queue_id"] for record in records}
+                for queue_id, result in projected_state["items"].items():
+                    if not isinstance(result, dict) or not isinstance(
+                        result.get("path"), str
+                    ):
+                        continue
+                    relative = safe_workspace_relative_path(
+                        result["path"], f"Config rebase state item {queue_id!r} WAV"
+                    )
+                    previous = path_owners.setdefault(relative.as_posix(), queue_id)
+                    if previous != queue_id:
+                        raise AuthoringWorkbenchError(
+                            f"Config rebase WAV path collides with {previous!r}"
+                        )
+                    authority_output = (
+                        source_output
+                        if queue_id in rebased_queue_ids
+                        else target_output
+                    )
+                    source_audio = contained_workspace_path(
+                        authority_output, relative, "Config rebase state WAV"
+                    )
+                    payload = read_workspace_file_bytes(
+                        source_audio, "config rebase state WAV"
+                    )
+                    digest = hashlib.sha256(payload).hexdigest()
+                    if digest != require_workspace_sha256(
+                        result.get("file_sha256"),
+                        f"Config rebase state item {queue_id!r} WAV SHA-256",
+                    ):
+                        raise AuthoringWorkbenchError(
+                            f"Config rebase state WAV changed for {queue_id!r}"
+                        )
+                    target = contained_workspace_path(
+                        output, relative, "Config rebase output WAV"
+                    )
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(payload)
+                    snapshots.append((source_audio, digest))
+                atomic_write_json(
+                    output / "generation-state.json", projected_state, sort_keys=True
+                )
+                workspace = copy.deepcopy(target_document)
+                for field in (
+                    "carry_forward",
+                    "outcome_merge",
+                    "terminal_conflict_merge",
+                    "failure_reference_binding",
                 ):
-                    continue
-                relative = safe_workspace_relative_path(
-                    result["path"], f"Config rebase state item {queue_id!r} WAV"
-                )
-                previous = path_owners.setdefault(relative.as_posix(), queue_id)
-                if previous != queue_id:
-                    raise AuthoringWorkbenchError(
-                        f"Config rebase WAV path collides with {previous!r}"
+                    workspace.pop(field, None)
+                if audio_event_composition is not None:
+                    workspace["audio_event_composition"] = copy.deepcopy(
+                        audio_event_composition
                     )
-                authority_output = (
-                    source_output if queue_id in rebased_queue_ids else target_output
+                workspace.update(
+                    {
+                        "workspace_id": workspace_id,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "config_rebase": rebase,
+                        "config_fingerprint": config_fingerprint,
+                    }
                 )
-                source_audio = contained_workspace_path(
-                    authority_output, relative, "Config rebase state WAV"
+                atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+                write_generated_manifest_from_state(
+                    projected_state, output, output / "manifest.json"
                 )
-                payload = read_workspace_file_bytes(
-                    source_audio, "config rebase state WAV"
+                validate_config_rebase_workspace(staging, workspace, projected_state)
+                # The focused projection validator accepts an in-memory state to
+                # avoid re-reading a concurrently changing source. Before
+                # publication, also load the complete state from disk so
+                # workspace-level item authorities (notably audio-event
+                # composition) cannot be omitted from an otherwise valid state.
+                load_generation_state(
+                    output / "generation-state.json", staging / "queue.jsonl"
                 )
-                digest = hashlib.sha256(payload).hexdigest()
-                if digest != require_workspace_sha256(
-                    result.get("file_sha256"),
-                    f"Config rebase state item {queue_id!r} WAV SHA-256",
-                ):
-                    raise AuthoringWorkbenchError(
-                        f"Config rebase state WAV changed for {queue_id!r}"
-                    )
-                target = contained_workspace_path(
-                    output, relative, "Config rebase output WAV"
-                )
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(payload)
-                snapshots.append((source_audio, digest))
-            atomic_write_json(
-                output / "generation-state.json", projected_state, sort_keys=True
-            )
-            workspace = copy.deepcopy(target_document)
-            for field in (
-                "carry_forward",
-                "outcome_merge",
-                "terminal_conflict_merge",
-                "failure_reference_binding",
-            ):
-                workspace.pop(field, None)
-            if audio_event_composition is not None:
-                workspace["audio_event_composition"] = copy.deepcopy(
-                    audio_event_composition
-                )
-            workspace.update(
-                {
-                    "workspace_id": workspace_id,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "config_rebase": rebase,
-                    "config_fingerprint": config_fingerprint,
-                }
-            )
-            atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-            write_generated_manifest_from_state(
-                projected_state, output, output / "manifest.json"
-            )
-            validate_config_rebase_workspace(staging, workspace, projected_state)
-            # The focused projection validator accepts an in-memory state to
-            # avoid re-reading a concurrently changing source. Before
-            # publication, also load the complete state from disk so
-            # workspace-level item authorities (notably audio-event
-            # composition) cannot be omitted from an otherwise valid state.
-            load_generation_state(
-                output / "generation-state.json", staging / "queue.jsonl"
-            )
-            for path, digest in snapshots:
-                if not path.is_file() or sha256_file(path) != digest:
-                    raise AuthoringWorkbenchError(
-                        f"Config rebase source changed during publication: {path}"
-                    )
-            for lease in leases:
-                lease.assert_owned()
-            if destination.exists():
-                _directory, existing, _digest = load_workspace_authority(destination)
-                if existing.get("config_rebase") != rebase:
-                    raise AuthoringWorkbenchError(
-                        "Config rebase destination contains different authority"
-                    )
-                return WorkspaceCreationResult(destination, False)
-            try:
-                rename_directory_no_replace(staging, destination)
-            except (AtomicPublicationError, OSError) as error:
+                for path, digest in snapshots:
+                    if not path.is_file() or sha256_file(path) != digest:
+                        raise AuthoringWorkbenchError(
+                            f"Config rebase source changed during publication: {path}"
+                        )
+                for lease in leases:
+                    lease.assert_owned()
                 if destination.exists():
                     _directory, existing, _digest = load_workspace_authority(
                         destination
                     )
-                    if existing.get("config_rebase") == rebase:
-                        for lease in leases:
-                            lease.mark_committed()
-                        return WorkspaceCreationResult(destination, False)
-                raise AuthoringWorkbenchError(
-                    f"Unable to publish config rebase workspace: {error}"
-                ) from error
-            for lease in leases:
-                lease.mark_committed()
-            staging = None
-            return WorkspaceCreationResult(destination, True)
+                    if existing.get("config_rebase") != rebase:
+                        raise AuthoringWorkbenchError(
+                            "Config rebase destination contains different authority"
+                        )
+                    return WorkspaceCreationResult(destination, False)
+                try:
+                    rename_directory_no_replace(staging, destination)
+                except (AtomicPublicationError, OSError) as error:
+                    if destination.exists():
+                        _directory, existing, _digest = load_workspace_authority(
+                            destination
+                        )
+                        if existing.get("config_rebase") == rebase:
+                            for lease in leases:
+                                lease.mark_committed()
+                            return WorkspaceCreationResult(destination, False)
+                    raise AuthoringWorkbenchError(
+                        f"Unable to publish config rebase workspace: {error}"
+                    ) from error
+                for lease in leases:
+                    lease.mark_committed()
+                return WorkspaceCreationResult(destination, True)
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
 
 
 def validate_config_rebase_workspace(directory, workspace, state=None):

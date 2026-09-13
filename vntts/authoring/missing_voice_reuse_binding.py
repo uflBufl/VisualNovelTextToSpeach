@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import json
 import shutil
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,7 +27,7 @@ from vntts.authoring.missing_voice_reuse_review import (
     MissingVoiceReuseReviewError,
     load_missing_voice_reuse_review,
 )
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.authoring.source_reference_bindings import (
     MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION,
     MISSING_VOICE_REUSE_BINDING_FIELD,
@@ -251,82 +250,81 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
             raise MissingVoiceReuseBindingError(str(error)) from error
         return _result(output, binding, created=False)
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=".missing-voice-binding-", dir=output.parent)
-    ).resolve()
     try:
-        inventory = []
-        source_root = source_manifest.parent.resolve()
-        seen = set()
-        for voice in source_voices:
-            for value in voice.references:
-                relative = safe_workspace_relative_path(
-                    value, "Missing-voice binding reference"
-                )
-                key_name = relative.as_posix()
-                if key_name in seen:
-                    continue
-                seen.add(key_name)
-                source = contained_workspace_path(
-                    source_root, relative, "Missing-voice binding reference"
-                )
-                if source.is_symlink() or not source.is_file():
-                    raise MissingVoiceReuseBindingError(
-                        f"Missing-voice binding reference is unsafe: {value!r}"
+        with staged_directory(
+            output.parent, prefix=".missing-voice-binding-"
+        ) as staging:
+            inventory = []
+            source_root = source_manifest.parent.resolve()
+            seen = set()
+            for voice in source_voices:
+                for value in voice.references:
+                    relative = safe_workspace_relative_path(
+                        value, "Missing-voice binding reference"
                     )
-                target = staging / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
-                digest = sha256_file(source)
-                if sha256_file(target) != digest:
-                    raise MissingVoiceReuseBindingError(
-                        "Missing-voice binding reference changed while copied"
+                    key_name = relative.as_posix()
+                    if key_name in seen:
+                        continue
+                    seen.add(key_name)
+                    source = contained_workspace_path(
+                        source_root, relative, "Missing-voice binding reference"
                     )
-                inventory.append({"path": key_name, "sha256": digest})
-        manifest_path = staging / "manifest.json"
-        write_voice_manifest(manifest_path, successor)
-        queue_voice_overrides_from_manifest(
-            successor,
-            voices=source_voices,
-        )
-        decision_body = {
-            "schema": MISSING_VOICE_REUSE_DECISION_SCHEMA,
-            "schema_version": MISSING_VOICE_REUSE_DECISION_VERSION,
-            "plan_path": str(plan_path),
-            "plan_sha256": sha256_file(plan_path),
-            "session_path": str(session_path),
-            "binding": binding,
-        }
-        decision = {
-            **decision_body,
-            "decision_id": canonical_document_sha256(decision_body),
-        }
-        atomic_write_json(staging / "decision.json", decision, sort_keys=True)
-        inventory = [
-            {"path": "decision.json", "sha256": sha256_file(staging / "decision.json")},
-            {"path": "manifest.json", "sha256": sha256_file(manifest_path)},
-            *sorted(inventory, key=lambda value: value["path"]),
-        ]
-        body = {
-            "schema": MISSING_VOICE_REUSE_BINDING_BUNDLE_SCHEMA,
-            "schema_version": MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION,
-            "plan_id": document["plan_id"],
-            "review_bundle_id": bundle["bundle_id"],
-            "inventory": inventory,
-        }
-        atomic_write_json(
-            staging / "bundle.json",
-            {**body, "bundle_id": canonical_document_sha256(body)},
-            sort_keys=True,
-        )
-        _validate_binding_bundle(staging, document, binding)
-        rename_directory_no_replace(staging, output)
-        staging = None
+                    if source.is_symlink() or not source.is_file():
+                        raise MissingVoiceReuseBindingError(
+                            f"Missing-voice binding reference is unsafe: {value!r}"
+                        )
+                    target = staging / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source, target)
+                    digest = sha256_file(source)
+                    if sha256_file(target) != digest:
+                        raise MissingVoiceReuseBindingError(
+                            "Missing-voice binding reference changed while copied"
+                        )
+                    inventory.append({"path": key_name, "sha256": digest})
+            manifest_path = staging / "manifest.json"
+            write_voice_manifest(manifest_path, successor)
+            queue_voice_overrides_from_manifest(
+                successor,
+                voices=source_voices,
+            )
+            decision_body = {
+                "schema": MISSING_VOICE_REUSE_DECISION_SCHEMA,
+                "schema_version": MISSING_VOICE_REUSE_DECISION_VERSION,
+                "plan_path": str(plan_path),
+                "plan_sha256": sha256_file(plan_path),
+                "session_path": str(session_path),
+                "binding": binding,
+            }
+            decision = {
+                **decision_body,
+                "decision_id": canonical_document_sha256(decision_body),
+            }
+            atomic_write_json(staging / "decision.json", decision, sort_keys=True)
+            inventory = [
+                {
+                    "path": "decision.json",
+                    "sha256": sha256_file(staging / "decision.json"),
+                },
+                {"path": "manifest.json", "sha256": sha256_file(manifest_path)},
+                *sorted(inventory, key=lambda value: value["path"]),
+            ]
+            body = {
+                "schema": MISSING_VOICE_REUSE_BINDING_BUNDLE_SCHEMA,
+                "schema_version": MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION,
+                "plan_id": document["plan_id"],
+                "review_bundle_id": bundle["bundle_id"],
+                "inventory": inventory,
+            }
+            atomic_write_json(
+                staging / "bundle.json",
+                {**body, "bundle_id": canonical_document_sha256(body)},
+                sort_keys=True,
+            )
+            _validate_binding_bundle(staging, document, binding)
+            rename_directory_no_replace(staging, output)
     except (AuthoringWorkbenchError, SourceReferenceBindingError) as error:
         raise MissingVoiceReuseBindingError(str(error)) from error
-    finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
     return _result(output, binding, created=True)
 
 

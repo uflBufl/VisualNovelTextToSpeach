@@ -6,7 +6,6 @@ import copy
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -22,6 +21,7 @@ from vntts.authoring.publication import (
     AtomicPublicationError,
     generation_publication_leases,
     rename_directory_no_replace,
+    staged_directory,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -209,8 +209,6 @@ def merge_explicit_live_fallbacks(
     destination = contained_workspace_path(
         root, Path(workspace_id), "Explicit fallback destination"
     )
-    staging_owner = TemporaryDirectory(prefix=".fallback-merge-staging-", dir=root)
-    staging = Path(staging_owner.name).resolve()
     base_snapshots = [
         (base_directory / "workspace.json", base_workspace_sha256),
         (
@@ -228,108 +226,111 @@ def merge_explicit_live_fallbacks(
         (source_queue_path, source_queue_sha256),
     ]
     try:
-        for tree_name in ("provenance", "inputs"):
-            copy_workspace_tree_snapshot(
-                base_directory / tree_name,
-                staging / tree_name,
-                base_snapshots,
-                error_type=AuthoringWorkbenchError,
+        with staged_directory(root, prefix=".fallback-merge-staging-") as staging:
+            for tree_name in ("provenance", "inputs"):
+                copy_workspace_tree_snapshot(
+                    base_directory / tree_name,
+                    staging / tree_name,
+                    base_snapshots,
+                    error_type=AuthoringWorkbenchError,
+                )
+            queue_payload = read_workspace_file_bytes(
+                base_queue_path, "explicit fallback base queue"
             )
-        queue_payload = read_workspace_file_bytes(
-            base_queue_path, "explicit fallback base queue"
-        )
-        (staging / "queue.jsonl").write_bytes(queue_payload)
-        output = staging / "generated-audio"
-        output.mkdir()
-        target_state = copy.deepcopy(base_state)
-        _copy_base_wavs(base_directory, output, base_state, base_snapshots)
-        for ledger in ledgers:
-            queue_id = ledger["queue_id"]
-            copied = copy.deepcopy(selected_items[queue_id])
-            if merge["schema_version"] == 1:
-                copied["explicit_fallback_merge"] = {
-                    key: value for key, value in ledger.items() if key != "queue_id"
+            (staging / "queue.jsonl").write_bytes(queue_payload)
+            output = staging / "generated-audio"
+            output.mkdir()
+            target_state = copy.deepcopy(base_state)
+            _copy_base_wavs(base_directory, output, base_state, base_snapshots)
+            for ledger in ledgers:
+                queue_id = ledger["queue_id"]
+                copied = copy.deepcopy(selected_items[queue_id])
+                if merge["schema_version"] == 1:
+                    copied["explicit_fallback_merge"] = {
+                        key: value for key, value in ledger.items() if key != "queue_id"
+                    }
+                target_state["items"][queue_id] = copied
+            target_state["active"] = None
+            atomic_write_json(
+                output / "generation-state.json", target_state, sort_keys=True
+            )
+            write_generated_manifest_from_state(
+                target_state,
+                output,
+                output / "manifest.json",
+            )
+            workspace = copy.deepcopy(base_document)
+            workspace.update(
+                {
+                    "workspace_id": workspace_id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "explicit_fallback_merge": merge,
+                    "config_fingerprint": config_fingerprint,
                 }
-            target_state["items"][queue_id] = copied
-        target_state["active"] = None
-        atomic_write_json(
-            output / "generation-state.json", target_state, sort_keys=True
-        )
-        write_generated_manifest_from_state(
-            target_state,
-            output,
-            output / "manifest.json",
-        )
-        workspace = copy.deepcopy(base_document)
-        workspace.update(
-            {
-                "workspace_id": workspace_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "explicit_fallback_merge": merge,
-                "config_fingerprint": config_fingerprint,
-            }
-        )
-        atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-        import_snapshot = load_workspace_json(
-            staging / "provenance/import.json",
-            "explicit fallback import snapshot",
-        )
-        validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
-        load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
+            )
+            atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+            import_snapshot = load_workspace_json(
+                staging / "provenance/import.json",
+                "explicit fallback import snapshot",
+            )
+            validate_workspace_provenance_extensions(
+                staging, workspace, import_snapshot
+            )
+            load_generation_state(
+                output / "generation-state.json", staging / "queue.jsonl"
+            )
 
-        try:
-            with generation_publication_leases(
-                (
-                    (base_directory / "generated-audio", base_queue_sha256),
-                    (source_directory / "generated-audio", source_queue_sha256),
-                ),
-                process_checker=process_is_alive,
-            ) as held_leases:
-                if any(
-                    any((directory / "generated-audio").rglob("*.partial.wav"))
-                    for directory in (base_directory, source_directory)
-                ):
-                    raise AuthoringWorkbenchError(
-                        "Explicit fallback source became active before publication"
-                    )
-                for path, digest in (*base_snapshots, *source_snapshots):
-                    if not path.is_file() or sha256_file(path) != digest:
+            try:
+                with generation_publication_leases(
+                    (
+                        (base_directory / "generated-audio", base_queue_sha256),
+                        (source_directory / "generated-audio", source_queue_sha256),
+                    ),
+                    process_checker=process_is_alive,
+                ) as held_leases:
+                    if any(
+                        any((directory / "generated-audio").rglob("*.partial.wav"))
+                        for directory in (base_directory, source_directory)
+                    ):
                         raise AuthoringWorkbenchError(
-                            "Explicit fallback authority changed before publication"
+                            "Explicit fallback source became active before publication"
                         )
-                for lease in held_leases:
-                    lease.assert_owned()
-                if destination.exists():
-                    _directory, existing, _sha256 = load_workspace_authority(
-                        destination
-                    )
-                    if existing.get("explicit_fallback_merge") != merge:
-                        raise AuthoringWorkbenchError(
-                            "Explicit fallback destination conflicts with another merge"
-                        )
-                    return WorkspaceCreationResult(destination, False)
-                try:
-                    rename_directory_no_replace(staging, destination)
-                except (AtomicPublicationError, OSError) as error:
+                    for path, digest in (*base_snapshots, *source_snapshots):
+                        if not path.is_file() or sha256_file(path) != digest:
+                            raise AuthoringWorkbenchError(
+                                "Explicit fallback authority changed before publication"
+                            )
+                    for lease in held_leases:
+                        lease.assert_owned()
                     if destination.exists():
                         _directory, existing, _sha256 = load_workspace_authority(
                             destination
                         )
-                        if existing.get("explicit_fallback_merge") == merge:
-                            for lease in held_leases:
-                                lease.mark_committed()
-                            return WorkspaceCreationResult(destination, False)
-                    raise AuthoringWorkbenchError(
-                        f"Unable to publish explicit fallback workspace: {error}"
-                    ) from error
-                for lease in held_leases:
-                    lease.mark_committed()
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
+                        if existing.get("explicit_fallback_merge") != merge:
+                            raise AuthoringWorkbenchError(
+                                "Explicit fallback destination conflicts with another merge"
+                            )
+                        return WorkspaceCreationResult(destination, False)
+                    try:
+                        rename_directory_no_replace(staging, destination)
+                    except (AtomicPublicationError, OSError) as error:
+                        if destination.exists():
+                            _directory, existing, _sha256 = load_workspace_authority(
+                                destination
+                            )
+                            if existing.get("explicit_fallback_merge") == merge:
+                                for lease in held_leases:
+                                    lease.mark_committed()
+                                return WorkspaceCreationResult(destination, False)
+                        raise AuthoringWorkbenchError(
+                            f"Unable to publish explicit fallback workspace: {error}"
+                        ) from error
+                    for lease in held_leases:
+                        lease.mark_committed()
+            except BulkGenerationError as error:
+                raise AuthoringWorkbenchError(str(error)) from error
     except (BulkGenerationError, OSError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    finally:
-        staging_owner.cleanup()
     return WorkspaceCreationResult(destination, True)
 
 
