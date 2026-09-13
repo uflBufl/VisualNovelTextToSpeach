@@ -1,11 +1,15 @@
 """Shared capture authority policy for auto-advance controls."""
 
+from vntts.settings import AppSettings
 
-def auto_advance_allowed(capture_mode, sequence_mode):
+
+def auto_advance_allowed(capture_mode: str, sequence_mode: str) -> bool:
     return capture_mode == "window" and sequence_mode != "audio-manual"
 
 
-def auto_advance_control_state(capture_mode, sequence_mode, checked):
+def auto_advance_control_state(
+    capture_mode: str, sequence_mode: str, checked: bool
+) -> tuple[bool, bool, str]:
     allowed = auto_advance_allowed(capture_mode, sequence_mode)
     if capture_mode != "window":
         tooltip = (
@@ -27,7 +31,7 @@ def auto_advance_control_state(capture_mode, sequence_mode, checked):
     return allowed, bool(checked and allowed), tooltip
 
 
-def guard_auto_advance_settings(settings):
+def guard_auto_advance_settings(settings: AppSettings) -> AppSettings:
     """Clear impossible auto-advance state at settings publication boundaries."""
     _allowed, enabled, _reason = auto_advance_control_state(
         settings.capture_mode,

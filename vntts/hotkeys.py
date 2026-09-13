@@ -1,4 +1,5 @@
 import sys
+from collections.abc import Mapping
 
 from pynput import keyboard
 
@@ -29,15 +30,17 @@ _modifier_keys = {
 }
 
 
-def default_hotkey(key, *, platform=None):
+def default_hotkey(key: str, *, platform: str | None = None) -> str:
     platform = sys.platform if platform is None else platform
     primary_modifier = "<cmd>" if platform == "darwin" else "<ctrl>"
     return f"{primary_modifier}+<shift>+{key}"
 
 
-def validate_hotkey_assignments(assignments, *, platform=None):
+def validate_hotkey_assignments(
+    assignments: Mapping[str, str], *, platform: str | None = None
+) -> None:
     platform = sys.platform if platform is None else platform
-    parsed_assignments = {}
+    parsed_assignments: dict[str, frozenset[object]] = {}
     for label, hotkey in assignments.items():
         try:
             parsed = keyboard.HotKey.parse(hotkey)
@@ -50,7 +53,7 @@ def validate_hotkey_assignments(assignments, *, platform=None):
             )
         parsed_assignments[label] = frozenset(parsed)
 
-    seen = {}
+    seen: dict[frozenset[object], str] = {}
     for label, parsed in parsed_assignments.items():
         if parsed in seen:
             raise HotkeyValidationError(
@@ -69,7 +72,7 @@ def validate_hotkey_assignments(assignments, *, platform=None):
             )
 
 
-def _reserved_hotkeys(platform):
+def _reserved_hotkeys(platform: str) -> tuple[str, ...]:
     if platform == "darwin":
         return (
             "<cmd>+q",

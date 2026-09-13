@@ -1,12 +1,23 @@
 {
   "schema_version": 1,
   "minimum_files": [
+    "vntts/application_directories.py",
+    "vntts/auto_advance_policy.py",
+    "vntts/authoring/authority.py",
     "vntts/authoring/cli_dispatch.py",
+    "vntts/authoring/import_paths.py",
+    "vntts/authoring/private_files.py",
+    "vntts/authoring/workspace_config.py",
+    "vntts/authoring/workspace_foundation.py",
     "vntts/controller_components.py",
+    "vntts/dialog.py",
+    "vntts/document_identity.py",
     "vntts/game_pack.py",
+    "vntts/hotkeys.py",
     "vntts/live_snapshot.py",
     "vntts/live_speech.py",
     "vntts/playback.py",
+    "vntts/path_safety.py",
     "vntts/profiles.py",
     "vntts/runtime_installation.py",
     "vntts/runtime_paths.py",
@@ -14,6 +25,7 @@
     "vntts/speech_worker_messages.py",
     "vntts/settings.py",
     "vntts/subprocess_utils.py",
-    "vntts/synthesis.py"
+    "vntts/synthesis.py",
+    "vntts/versioned_json.py"
   ]
 }

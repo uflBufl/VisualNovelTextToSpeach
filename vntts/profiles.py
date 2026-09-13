@@ -188,7 +188,7 @@ class GameProfileStore:
         path: PathInput | None = None,
         *,
         warn: WarningHandler | None = None,
-    ) -> Self:
+    ) -> GameProfileStore:
         report: WarningHandler = (lambda _message: None) if warn is None else warn
         store = cls(path)
 

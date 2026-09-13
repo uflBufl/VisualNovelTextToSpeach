@@ -130,6 +130,8 @@ select = ["E4", "E7", "E9", "F", "I"]
 [tool.mypy]
 python_version = "3.14"
 files = [
+    "vntts/application_directories.py",
+    "vntts/auto_advance_policy.py",
     "vntts/authoring/authority.py",
     "vntts/authoring/cli_dispatch.py",
     "vntts/authoring/import_paths.py",
@@ -137,10 +139,14 @@ files = [
     "vntts/authoring/workspace_config.py",
     "vntts/authoring/workspace_foundation.py",
     "vntts/controller_components.py",
+    "vntts/dialog.py",
+    "vntts/document_identity.py",
     "vntts/game_pack.py",
+    "vntts/hotkeys.py",
     "vntts/live_snapshot.py",
     "vntts/live_speech.py",
     "vntts/playback.py",
+    "vntts/path_safety.py",
     "vntts/profiles.py",
     "vntts/runtime_installation.py",
     "vntts/runtime_paths.py",
@@ -149,6 +155,7 @@ files = [
     "vntts/settings.py",
     "vntts/subprocess_utils.py",
     "vntts/synthesis.py",
+    "vntts/versioned_json.py",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true

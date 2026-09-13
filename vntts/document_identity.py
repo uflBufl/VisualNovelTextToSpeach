@@ -2,9 +2,10 @@
 
 import hashlib
 import json
+from typing import TypeGuard
 
 
-def canonical_document_sha256(document):
+def canonical_document_sha256(document: object) -> str:
     payload = json.dumps(
         document,
         ensure_ascii=False,
@@ -15,7 +16,7 @@ def canonical_document_sha256(document):
     return hashlib.sha256(payload).hexdigest()
 
 
-def is_lowercase_sha256(value):
+def is_lowercase_sha256(value: object) -> TypeGuard[str]:
     return (
         isinstance(value, str)
         and len(value) == 64

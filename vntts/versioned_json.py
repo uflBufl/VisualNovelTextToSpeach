@@ -13,13 +13,13 @@ Document = TypeVar("Document")
 
 
 def read_versioned_json(
-    path,
+    path: str | Path,
     *,
-    schema_version,
-    document_name,
-    allow_older=False,
-    allow_unversioned=False,
-):
+    schema_version: int,
+    document_name: str,
+    allow_older: bool = False,
+    allow_unversioned: bool = False,
+) -> dict[str, object]:
     """Read one JSON object and enforce its document compatibility policy."""
     path = Path(path)
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -36,16 +36,16 @@ def read_versioned_json(
 
 
 def load_versioned_json(
-    path,
+    path: str | Path,
     *,
-    schema_version,
-    document_name,
-    decode: Callable[[dict], Document],
+    schema_version: int,
+    document_name: str,
+    decode: Callable[[dict[str, object]], Document],
     fallback: Callable[[], Document],
-    warn=None,
-    allow_older=False,
-    allow_unversioned=False,
-):
+    warn: Callable[[str], object] | None = None,
+    allow_older: bool = False,
+    allow_unversioned: bool = False,
+) -> Document:
     """Load and decode a document, returning a fresh fallback on any damage."""
     path = Path(path)
     if not path.is_file():
@@ -72,7 +72,11 @@ def load_versioned_json(
         return fallback()
 
 
-def write_versioned_json(path, schema_version, fields: Mapping):
+def write_versioned_json(
+    path: str | Path,
+    schema_version: int,
+    fields: Mapping[str, object],
+) -> Path:
     """Atomically publish a JSON object with one authoritative schema version."""
     if (
         isinstance(schema_version, bool)

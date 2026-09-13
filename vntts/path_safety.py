@@ -3,7 +3,12 @@
 from pathlib import Path, PurePath, PurePosixPath
 
 
-def safe_relative_path(value, label, *, error_type=ValueError):
+def safe_relative_path(
+    value: object,
+    label: str,
+    *,
+    error_type: type[Exception] = ValueError,
+) -> Path:
     """Validate one canonical POSIX-relative path without touching the filesystem."""
     if not isinstance(value, str) or not value.strip() or "\\" in value:
         raise error_type(f"{label} must be a POSIX-relative path")
@@ -13,7 +18,13 @@ def safe_relative_path(value, label, *, error_type=ValueError):
     return Path(*pure.parts)
 
 
-def contained_path(root, relative, label, *, error_type=ValueError):
+def contained_path(
+    root: str | Path,
+    relative: str | PurePath,
+    label: str,
+    *,
+    error_type: type[Exception] = ValueError,
+) -> Path:
     """Resolve a relative path and require it to stay inside its canonical root."""
     root = Path(root).resolve()
     path = (root / relative).resolve()
@@ -24,7 +35,13 @@ def contained_path(root, relative, label, *, error_type=ValueError):
     return path
 
 
-def contained_regular_file(root, relative, label, *, error_type=ValueError):
+def contained_regular_file(
+    root: str | Path,
+    relative: object,
+    label: str,
+    *,
+    error_type: type[Exception] = ValueError,
+) -> Path:
     """Resolve one canonical relative path without accepting symlink components."""
     root = Path(root).resolve()
     if isinstance(relative, PurePath):
