@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from collections.abc import Iterable, Sequence
 from itertools import pairwise
 from pathlib import Path
 
@@ -14,7 +15,9 @@ from vntts.live_replay_sequence_seal import (
     _read_regular_file,
     _write_json,
 )
-from vntts.live_sequence import LiveSequencePlan
+from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
+
+CoverageReport = dict[str, object]
 
 
 class LiveReplayCoverageError(RuntimeError):
@@ -22,12 +25,12 @@ class LiveReplayCoverageError(RuntimeError):
 
 
 def audit_live_replay_coverage(
-    output,
+    output: str | Path,
     *,
-    story_index,
-    sequence_plan,
-    reviews,
-):
+    story_index: str | Path,
+    sequence_plan: str | Path,
+    reviews: Iterable[str | Path],
+) -> tuple[Path, CoverageReport]:
     """Publish a checksum-bound union report for immutable sealed reviews."""
     output_path = Path(output).expanduser()
     if output_path.exists() or output_path.is_symlink():
@@ -62,25 +65,25 @@ def audit_live_replay_coverage(
         )
     _validate_visible_path(plan, visible)
     expected_ids = tuple(event.event_id for event in visible)
-    covered = set()
-    review_required = set()
-    accepted_review = set()
-    sources = []
+    covered: set[str] = set()
+    review_required: set[str] = set()
+    accepted_review: set[str] = set()
+    sources: list[dict[str, object]] = []
     selected_reviews = tuple(reviews)
     if not selected_reviews:
         raise LiveReplayCoverageError("At least one sealed sequence review is required")
     for value in selected_reviews:
         review_path, payload = _read_regular_file(value, "Sealed sequence review")
-        document = _decode_json(payload, "Sealed sequence review")
+        review_document = _decode_json(payload, "Sealed sequence review")
         if (
-            document.get("schema") != "vntts.sequence-replay-seal-review"
-            or document.get("schema_version") != 1
-            or document.get("sealed_replay_successful") is not True
+            review_document.get("schema") != "vntts.sequence-replay-seal-review"
+            or review_document.get("schema_version") != 1
+            or review_document.get("sealed_replay_successful") is not True
         ):
             raise LiveReplayCoverageError(
                 f"Review is not successful sealed replay evidence: {review_path}"
             )
-        authority = document.get("authority")
+        authority = review_document.get("authority")
         if not isinstance(authority, dict):
             raise LiveReplayCoverageError(f"Review authority is missing: {review_path}")
         if authority.get("story_index_sha256") != story_sha256:
@@ -91,11 +94,11 @@ def audit_live_replay_coverage(
             raise LiveReplayCoverageError(
                 f"Review uses a different sequence plan: {review_path}"
             )
-        mappings = document.get("mappings")
+        mappings = review_document.get("mappings")
         if not isinstance(mappings, list) or not mappings:
             raise LiveReplayCoverageError(f"Review has no mappings: {review_path}")
-        event_ids = []
-        source_review_required = []
+        event_ids: list[str] = []
+        source_review_required: list[str] = []
         for mapping in mappings:
             if not isinstance(mapping, dict):
                 raise LiveReplayCoverageError(
@@ -124,10 +127,10 @@ def audit_live_replay_coverage(
                 f"Review mappings are duplicated or out of plan order: {review_path}"
             )
         covered.update(event_ids)
-        if document.get("capture_boundary_review_required") is True:
+        if review_document.get("capture_boundary_review_required") is True:
             source_review_required = list(event_ids)
         review_required.update(source_review_required)
-        human_accepted = document.get("human_acceptance_recorded") is True
+        human_accepted = review_document.get("human_acceptance_recorded") is True
         if human_accepted:
             accepted_review.update(source_review_required)
         sources.append(
@@ -147,7 +150,7 @@ def audit_live_replay_coverage(
         for event_id in expected_ids
         if event_id in review_required and event_id not in accepted_review
     ]
-    document = {
+    document: CoverageReport = {
         "schema": "vntts.live-replay-visible-chapter-coverage",
         "schema_version": 1,
         "authority": {
@@ -170,7 +173,9 @@ def audit_live_replay_coverage(
     return output_path, document
 
 
-def _validate_visible_path(plan, visible):
+def _validate_visible_path(
+    plan: LiveSequencePlan, visible: Sequence[LiveSequenceEvent]
+) -> None:
     for current, following in pairwise(visible):
         frontier = _next_visible_events(plan, current)
         if len(frontier) != 1 or frontier[0].event_id != following.event_id:
@@ -181,7 +186,7 @@ def _validate_visible_path(plan, visible):
             )
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Audit full visible-chapter coverage across sealed replays"
     )
@@ -198,7 +203,7 @@ def build_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
         path, report = audit_live_replay_coverage(
@@ -208,17 +213,19 @@ def main(argv=None):
             reviews=arguments.review,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        return cli_error(error)
-    return cli_messages(
-        (
+        return int(cli_error(error))
+    return int(
+        cli_messages(
             (
-                "Complete technical visible-chapter coverage"
-                if report["technical_coverage_complete"]
-                else "Visible-chapter coverage remains incomplete"
-            ),
-            f"Covered {report['covered_visible_event_count']}/"
-            f"{report['expected_visible_event_count']} visible events",
-            path,
+                (
+                    "Complete technical visible-chapter coverage"
+                    if report["technical_coverage_complete"]
+                    else "Visible-chapter coverage remains incomplete"
+                ),
+                f"Covered {report['covered_visible_event_count']}/"
+                f"{report['expected_visible_event_count']} visible events",
+                path,
+            )
         )
     )
 

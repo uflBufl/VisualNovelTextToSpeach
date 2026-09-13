@@ -108,7 +108,6 @@
     "vntts/game_content_importer.py": 17,
     "vntts/game_narrator.py": 3,
     "vntts/generated_audio.py": 44,
-    "vntts/live_replay_coverage.py": 4,
     "vntts/live_replay_sequence_seal.py": 20,
     "vntts/macos.py": 9,
     "vntts/main.py": 2,
