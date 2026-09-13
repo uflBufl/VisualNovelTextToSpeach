@@ -116,7 +116,8 @@ class _DialogReadExecutor(Protocol):
 
 
 class _LiveReaderState(Protocol):
-    is_running: bool
+    @property
+    def is_running(self) -> bool: ...
 
 
 class _Cancellation(Protocol):
@@ -149,7 +150,6 @@ class _Executor(Protocol):
     def shutdown(self, wait: bool = True) -> None: ...
 
 
-@runtime_checkable
 class _LiveReader(_LiveReaderState, Protocol):
     @property
     def active_generation(self) -> int: ...
