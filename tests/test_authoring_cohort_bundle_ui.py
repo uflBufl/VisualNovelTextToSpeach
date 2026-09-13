@@ -184,7 +184,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.play_selected()
             self.wait_for(lambda: dialog._playback_target is not None)
             self.assertTrue(dialog.replay.isEnabled())
-            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
 
             stop_calls = []
             original_stop = dialog.stop_playback
@@ -199,8 +199,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.wait_for(lambda: bool(stop_calls))
 
             self.assertTrue(dialog.replay.isEnabled())
-            self.assertTrue(dialog.accept.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.accept_button.isEnabled())
+            self.assertTrue(dialog.reject_button.isEnabled())
             self.assertTrue(dialog.mark_bad.isEnabled())
             self.assertTrue(dialog.leave_undecided.isVisible())
             self.assertEqual(dialog.table.item(0, 0).text(), "Heard")
@@ -267,8 +267,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             dialog.defect_checks["pause_or_pacing"].setChecked(True)
             dialog.defect_checks["repetition"].setChecked(True)
 
-            self.assertFalse(dialog.accept.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
+            self.assertTrue(dialog.reject_button.isEnabled())
             self.assertFalse(dialog.need_another.isEnabled())
             self.assertIn("Pause or pacing", dialog.table.item(0, 1).text())
             self.assertEqual(
@@ -432,7 +432,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIn("Other or unclear defect", dialog.table.item(0, 1).text())
             self.assertTrue(dialog.heading.isVisible())
             self.assertTrue(dialog.sample_text.isVisible())
-            self.assertTrue(dialog.reject.isVisible())
+            self.assertTrue(dialog.reject_button.isVisible())
             self.assertIn("press Space to play/replay", dialog.shortcuts_help.text())
             review_bottom = dialog.review_scroll.mapTo(
                 dialog, QPoint(0, dialog.review_scroll.height())
@@ -465,16 +465,16 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 widget.mapTo(dialog, QPoint(0, 0)).y()
                 for widget in (
                     dialog.repair_marked,
-                    dialog.accept,
-                    dialog.reject,
+                    dialog.accept_button,
+                    dialog.reject_button,
                 )
             )
             second_row_bottom = max(
                 widget.mapTo(dialog, QPoint(0, widget.height())).y()
                 for widget in (
                     dialog.repair_marked,
-                    dialog.accept,
-                    dialog.reject,
+                    dialog.accept_button,
+                    dialog.reject_button,
                 )
             )
             shortcut_top = dialog.shortcuts_help.mapTo(dialog, QPoint(0, 0)).y()
@@ -482,8 +482,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertLessEqual(first_row_bottom, second_row_top)
             self.assertLessEqual(second_row_bottom, shortcut_top)
             self.assertTrue(dialog.review_scroll.isVisible())
-            self.assertTrue(dialog.accept.isVisible())
-            self.assertTrue(dialog.reject.isVisible())
+            self.assertTrue(dialog.accept_button.isVisible())
+            self.assertTrue(dialog.reject_button.isVisible())
 
     def test_scaled_font_and_accessibility_keep_journey_reachable(self):
         with TemporaryDirectory() as directory:
@@ -527,8 +527,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
                 dialog.need_another,
                 dialog.leave_undecided,
                 dialog.repair_marked,
-                dialog.accept,
-                dialog.reject,
+                dialog.accept_button,
+                dialog.reject_button,
                 dialog.retry_load,
             ):
                 self.assertTrue(button.accessibleName(), button.text())
@@ -568,7 +568,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.wait_for(started.is_set)
             self.assertTrue(dialog._decision_active)
             self.assertTrue(dialog.replay.isEnabled())
-            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
             self.assertTrue(dialog.progress.isVisible())
             self.assertIn("Saving in background", dialog.operation.text())
             self.assertIn("approving all 1 cohort WAVs", dialog.operation.text())
@@ -912,7 +912,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIn(
                 "matched 2 remaining cohorts", dialog.quality_baseline.toolTip()
             )
-            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
             self.assertEqual(dialog.bundle.document["pending_item_count"], 2)
             self.assertTrue((Path(directory) / "bundle.progress.json").is_file())
 
@@ -942,7 +942,7 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
 
             self.assertIn("BLOCKED", dialog.status.text())
             self.assertFalse(dialog.quality_baseline.isVisible())
-            self.assertFalse(dialog.accept.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
             self.assertFalse((root / "bundle.progress.json").exists())
 
     def test_mismatched_quality_gate_blocks_every_cohort_decision(self):
@@ -961,8 +961,8 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
             self.assertIn("does not match every remaining cohort", dialog.status.text())
             self.assertIn("prompt_sha256", dialog.status.text())
             self.assertEqual(dialog.table.rowCount(), 0)
-            self.assertFalse(dialog.accept.isEnabled())
-            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.accept_button.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
             self.assertFalse((Path(directory) / "bundle.progress.json").exists())
 
 

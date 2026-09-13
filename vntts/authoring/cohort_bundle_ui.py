@@ -494,10 +494,10 @@ class CohortReviewBundleDialog(QDialog):
         self.leave_undecided = QPushButton("Leave undecided")
         self.repair_marked = QPushButton("Send marked WAVs to repair and continue")
         self.repair_marked.setObjectName("repairMarkedWavs")
-        self.accept = QPushButton("Accept cohort")
-        self.accept.setObjectName("acceptCohort")
-        self.reject = QPushButton("Reject cohort")
-        self.reject.setObjectName("rejectCohort")
+        self.accept_button = QPushButton("Accept cohort")
+        self.accept_button.setObjectName("acceptCohort")
+        self.reject_button = QPushButton("Reject cohort")
+        self.reject_button.setObjectName("rejectCohort")
         self.retry_load = QPushButton("Retry bundle load")
         self.retry_load.hide()
         for button, name, description in (
@@ -530,12 +530,12 @@ class CohortReviewBundleDialog(QDialog):
                 "Repair marked WAVs while leaving unsampled items pending",
             ),
             (
-                self.accept,
+                self.accept_button,
                 "Accept current cohort",
                 "Accept every fully heard acceptable sample in this exact cohort",
             ),
             (
-                self.reject,
+                self.reject_button,
                 "Reject current cohort",
                 "Reject every WAV in this exact cohort after required listening",
             ),
@@ -555,8 +555,8 @@ class CohortReviewBundleDialog(QDialog):
         self.need_another.clicked.connect(lambda: self.apply_decision("expand"))
         self.leave_undecided.clicked.connect(self.close)
         self.repair_marked.clicked.connect(lambda: self.apply_decision("split"))
-        self.accept.clicked.connect(lambda: self.apply_decision("accepted"))
-        self.reject.clicked.connect(lambda: self.apply_decision("rejected"))
+        self.accept_button.clicked.connect(lambda: self.apply_decision("accepted"))
+        self.reject_button.clicked.connect(lambda: self.apply_decision("rejected"))
         self.retry_load.clicked.connect(self.reload_bundle)
 
     def _build_decision_controls(self):
@@ -568,7 +568,7 @@ class CohortReviewBundleDialog(QDialog):
         evidence_actions.addRow(self.leave_undecided)
         terminal_actions = review_form_layout()
         terminal_actions.addRow(self.repair_marked)
-        terminal_actions.addRow(self.accept, self.reject)
+        terminal_actions.addRow(self.accept_button, self.reject_button)
         decisions = QVBoxLayout()
         decisions.addLayout(evidence_actions)
         decisions.addLayout(terminal_actions)
@@ -723,8 +723,8 @@ class CohortReviewBundleDialog(QDialog):
             self.need_another,
             self.leave_undecided,
             self.repair_marked,
-            self.accept,
-            self.reject,
+            self.accept_button,
+            self.reject_button,
         ]
         for current, following in zip(focus_order, focus_order[1:]):
             self.setTabOrder(current, following)
@@ -1565,8 +1565,8 @@ class CohortReviewBundleDialog(QDialog):
             else "Mark bad: other or unclear"
         )
         all_heard = bool(samples) and len(heard) == len(samples)
-        self.accept.setEnabled(authority_ready and all_heard and not bad)
-        self.reject.setEnabled(authority_ready and bool(heard))
+        self.accept_button.setEnabled(authority_ready and all_heard and not bad)
+        self.reject_button.setEnabled(authority_ready and bool(heard))
         current_clean = 5
         source = None
         if key is not None:
@@ -1642,10 +1642,10 @@ class CohortReviewBundleDialog(QDialog):
             if bad
             else "Send marked WAVs to repair and continue"
         )
-        self.accept.setText(
+        self.accept_button.setText(
             f"Accept all {item_count} WAVs" if item_count else "Accept cohort"
         )
-        self.reject.setText(
+        self.reject_button.setText(
             f"Reject all {item_count} WAVs" if item_count else "Reject cohort"
         )
         self.retry_load.setEnabled(
@@ -1718,10 +1718,10 @@ class CohortReviewBundleDialog(QDialog):
             else "Listen to the selected sample completely before marking it bad."
         )
         self._sync_defect_controls()
-        self.accept.setToolTip(
+        self.accept_button.setToolTip(
             "Accept is available after every required sample is heard and none is marked bad."
         )
-        self.reject.setToolTip(
+        self.reject_button.setToolTip(
             "Reject applies to every WAV in this exact cohort; hear at least one sample first."
         )
         self.repair_marked.setToolTip(
