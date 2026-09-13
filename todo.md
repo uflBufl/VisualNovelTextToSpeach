@@ -3,16 +3,6 @@
 Keep this file limited to actionable, unfinished work. Put durable decisions,
 measurements in agent memory and completed-work history in Git, not here.
 
-## P1 - Continue strict typing through model listening
-
-- [ ] Expand strict mypy coverage from 89/237 production modules through the
-      model-listening boundary: `authoring/listening.py`, `listening_import.py`
-      and `listening_cli.py` (41 inventoried errors). Preserve listening-session
-      records and legacy imports; add every clean module to the scope ratchet,
-      remove its inventory allowance, and pass the listening, listening-import,
-      import-graph, source-reference and silence-comparison tests plus the full
-      production inventory gate.
-
 ## P0 - Reduce OpenMOSS generation latency
 
 - [ ] Run the qualified GPU/8 profile beside Reverse: 1999 and confirm game-time
