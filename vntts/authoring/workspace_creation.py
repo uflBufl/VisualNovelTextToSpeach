@@ -161,6 +161,20 @@ def default_workspaces_root():
     )
 
 
+@dataclass(frozen=True)
+class _ResumeSource:
+    directory: Path
+    manifest: dict
+    import_path: Path
+    import_sha256: str
+    import_payload: bytes
+    import_id: str
+    source_fingerprint: str
+    queue_artifact: dict
+    state_artifact: dict
+    copied: tuple[dict, ...]
+
+
 def create_resume_workspace(
     import_directory,
     workspaces_root=None,
@@ -180,6 +194,33 @@ def create_resume_workspace(
     audio_event_spoken_projection_queue_ids=None,
 ):
     """Copy one immutable import into a separate mutable resume workspace."""
+    source = _load_resume_source(import_directory)
+    root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    with staged_directory(root, prefix=".resume-staging-") as staging:
+        return _stage_resume_workspace(
+            staging,
+            root,
+            source,
+            story_index=story_index,
+            voice_manifest=voice_manifest,
+            narrator_character=narrator_character,
+            backend=backend,
+            model=model,
+            generation_profile=generation_profile,
+            missing_voice_policy=missing_voice_policy,
+            failure_repair_policy=failure_repair_policy,
+            carry_forward_from=carry_forward_from,
+            carry_forward_characters=carry_forward_characters,
+            offline_fallback_authorities=offline_fallback_authorities,
+            generation_queue=generation_queue,
+            audio_event_spoken_projection_queue_ids=(
+                audio_event_spoken_projection_queue_ids
+            ),
+        )
+
+
+def _load_resume_source(import_directory):
     source = Path(import_directory).expanduser().resolve()
     import_path = source / "import.json"
     manifest, import_sha256, import_payload = _load_json_snapshot(
@@ -223,238 +264,342 @@ def create_resume_workspace(
         raise AuthoringWorkbenchError(
             "Resume requires an imported queue and authoritative generation state"
         )
-
-    root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    copied = [
+    copied = tuple(
         item
         for item in artifacts
         if item["path"] == "queue.jsonl" or item["path"].startswith("generated-audio/")
-    ]
-    with staged_directory(root, prefix=".resume-staging-") as staging:
-        import_snapshot = staging / "provenance" / "import.json"
-        import_snapshot.parent.mkdir(parents=True)
-        import_snapshot.write_bytes(import_payload)
-        if sha256_file(import_snapshot) != import_sha256:
-            raise AuthoringWorkbenchError("Unable to preserve exact import manifest")
-        for item in copied:
-            relative = _safe_relative(item["path"], "Imported artifact path")
-            source_path = _within(source, relative, "Imported artifact")
-            target = staging / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, target)
-            if sha256_file(target) != item["sha256"]:
-                raise AuthoringWorkbenchError(
-                    f"Imported artifact changed during workspace copy: {relative}"
-                )
-        seed_state = _preserve_seed_generation_state(staging, state_artifact)
-        queue_extension = None
-        selected_queue_source = None
-        if generation_queue is not None:
-            selected_queue_source = Path(generation_queue).expanduser().resolve()
-            queue_extension = _install_extended_generation_queue(
-                staging,
-                selected_queue_source,
-                imported_queue_sha256=queue_artifact["sha256"],
-            )
-        narrator = _required_text(
-            narrator_character or _legacy_narrator(manifest), "Narrator character"
-        )
-        try:
-            queue_snapshot = VoiceGenerationQueue.load(staging / "queue.jsonl")
-        except VoiceGenerationQueueError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
-        story_config, voice_config, selected_sources = _copy_input_snapshots(
-            staging,
-            story_index=story_index,
-            voice_manifest=voice_manifest,
-            import_manifest=manifest,
-            queue=queue_snapshot,
-        )
-        try:
-            policy = (
-                missing_voice_policy
-                if isinstance(missing_voice_policy, MissingVoicePolicy)
-                else MissingVoicePolicy.from_document(missing_voice_policy)
-            )
-        except MissingVoicePolicyError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
-        try:
-            repair_policy = (
-                failure_repair_policy
-                if isinstance(failure_repair_policy, FailureRepairPolicy)
-                else FailureRepairPolicy.from_document(failure_repair_policy)
-            )
-        except FailureRepairPolicyError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
-        projection_ids = tuple(
-            sorted(
-                _required_text(value, "Audio-event spoken projection queue ID")
-                for value in (audio_event_spoken_projection_queue_ids or ())
-            )
-        )
-        if len(projection_ids) != len(set(projection_ids)):
+    )
+    return _ResumeSource(
+        source,
+        manifest,
+        import_path,
+        import_sha256,
+        import_payload,
+        import_id,
+        source_fingerprint,
+        queue_artifact,
+        state_artifact,
+        copied,
+    )
+
+
+def _copy_resume_seed_inputs(staging, source):
+    import_snapshot = staging / "provenance" / "import.json"
+    import_snapshot.parent.mkdir(parents=True)
+    import_snapshot.write_bytes(source.import_payload)
+    if sha256_file(import_snapshot) != source.import_sha256:
+        raise AuthoringWorkbenchError("Unable to preserve exact import manifest")
+    for item in source.copied:
+        relative = _safe_relative(item["path"], "Imported artifact path")
+        source_path = _within(source.directory, relative, "Imported artifact")
+        target = staging / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target)
+        if sha256_file(target) != item["sha256"]:
             raise AuthoringWorkbenchError(
-                "Audio-event spoken projection queue IDs must be unique"
+                f"Imported artifact changed during workspace copy: {relative}"
             )
-        if projection_ids and not repair_policy.is_empty:
-            raise AuthoringWorkbenchError(
-                "Audio-event spoken projection cannot mix with failure repair"
-            )
-        queue_by_id = {item.queue_id: item for item in queue_snapshot.items}
-        for queue_id in projection_ids:
-            item = queue_by_id.get(queue_id)
-            if item is None or item.action != "generate":
-                raise AuthoringWorkbenchError(
-                    f"Audio-event spoken projection item is unavailable: {queue_id!r}"
-                )
-            try:
-                plan = audio_event_plan_for_record(item)
-            except ValueError as error:
-                raise AuthoringWorkbenchError(str(error)) from error
-            if (
-                not isinstance(plan, dict)
-                or not plan.get("requires_composition")
-                or not plan.get("events")
-                or not plan.get("spoken_text")
-            ):
-                raise AuthoringWorkbenchError(
-                    f"Audio-event spoken projection requires mixed speech: {queue_id!r}"
-                )
-        if projection_ids:
-            try:
-                seed_projection_state = load_generation_state(
-                    staging / "generated-audio/generation-state.json",
-                    staging / "queue.jsonl",
-                )
-            except BulkGenerationError as error:
-                raise AuthoringWorkbenchError(str(error)) from error
-            already_rendered = sorted(
-                set(projection_ids) & set(seed_projection_state["items"])
-            )
-            if already_rendered:
-                raise AuthoringWorkbenchError(
-                    "Audio-event spoken projection requires items without seed state: "
-                    + ", ".join(already_rendered)
-                )
-        run_config = {
-            "backend": _optional_text(backend),
-            "model": _optional_text(model),
-            "generation_profile": _optional_text(generation_profile),
-            "missing_voice_policy": policy.to_document(),
-            "failure_repair_policy": repair_policy.to_document(),
-        }
-        if projection_ids:
-            run_config["audio_event_spoken_projection_queue_ids"] = list(projection_ids)
-        failure_reference_binding, binding_sources = (
-            _copy_carry_forward_failure_reference_binding(
-                staging,
-                carry_forward_from,
-                repair_policy.queue_ids,
-            )
-        )
-        selected_sources = (*selected_sources, *binding_sources)
-        carry_forward, authority_sources = _carry_forward_review_outcomes(
-            carry_forward_from,
+
+
+def _resume_queue_inputs(staging, source, generation_queue):
+    seed_state = _preserve_seed_generation_state(staging, source.state_artifact)
+    queue_extension = None
+    selected_queue_source = None
+    if generation_queue is not None:
+        selected_queue_source = Path(generation_queue).expanduser().resolve()
+        queue_extension = _install_extended_generation_queue(
             staging,
-            queue_snapshot,
-            import_id=import_id,
-            voice_config=voice_config,
-            run_config=run_config,
-            characters=carry_forward_characters,
-            failure_repair_policy=repair_policy,
-            failure_reference_binding=failure_reference_binding,
-            offline_fallback_authorities=offline_fallback_authorities,
+            selected_queue_source,
+            imported_queue_sha256=source.queue_artifact["sha256"],
         )
-        selected_sources = (*selected_sources, *authority_sources)
-        if selected_queue_source is not None:
-            selected_sources = (
-                *selected_sources,
-                (
-                    selected_queue_source,
-                    queue_extension["queue_sha256"],
-                    "generation queue",
-                ),
+    try:
+        queue = VoiceGenerationQueue.load(staging / "queue.jsonl")
+    except VoiceGenerationQueueError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return seed_state, queue_extension, selected_queue_source, queue
+
+
+def _resume_policies(missing_voice_policy, failure_repair_policy):
+    try:
+        policy = (
+            missing_voice_policy
+            if isinstance(missing_voice_policy, MissingVoicePolicy)
+            else MissingVoicePolicy.from_document(missing_voice_policy)
+        )
+    except MissingVoicePolicyError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    try:
+        repair_policy = (
+            failure_repair_policy
+            if isinstance(failure_repair_policy, FailureRepairPolicy)
+            else FailureRepairPolicy.from_document(failure_repair_policy)
+        )
+    except FailureRepairPolicyError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return policy, repair_policy
+
+
+def _resume_projection_ids(staging, queue, values, repair_policy):
+    projection_ids = tuple(
+        sorted(
+            _required_text(value, "Audio-event spoken projection queue ID")
+            for value in (values or ())
+        )
+    )
+    if len(projection_ids) != len(set(projection_ids)):
+        raise AuthoringWorkbenchError(
+            "Audio-event spoken projection queue IDs must be unique"
+        )
+    if projection_ids and not repair_policy.is_empty:
+        raise AuthoringWorkbenchError(
+            "Audio-event spoken projection cannot mix with failure repair"
+        )
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    for queue_id in projection_ids:
+        item = queue_by_id.get(queue_id)
+        if item is None or item.action != "generate":
+            raise AuthoringWorkbenchError(
+                f"Audio-event spoken projection item is unavailable: {queue_id!r}"
             )
-        config_fingerprint = _workspace_config_fingerprint(
-            import_id,
-            story_config,
-            voice_config,
-            narrator,
-            run_config,
-            carry_forward,
-            failure_reference_binding=failure_reference_binding,
-            queue_extension=queue_extension,
+        try:
+            plan = audio_event_plan_for_record(item)
+        except ValueError as error:
+            raise AuthoringWorkbenchError(str(error)) from error
+        if (
+            not isinstance(plan, dict)
+            or not plan.get("requires_composition")
+            or not plan.get("events")
+            or not plan.get("spoken_text")
+        ):
+            raise AuthoringWorkbenchError(
+                f"Audio-event spoken projection requires mixed speech: {queue_id!r}"
+            )
+    _validate_unrendered_projections(staging, projection_ids)
+    return projection_ids
+
+
+def _validate_unrendered_projections(staging, projection_ids):
+    if not projection_ids:
+        return
+    try:
+        state = load_generation_state(
+            staging / "generated-audio/generation-state.json",
+            staging / "queue.jsonl",
         )
-        workspace_id = (
-            f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    already_rendered = sorted(set(projection_ids) & set(state["items"]))
+    if already_rendered:
+        raise AuthoringWorkbenchError(
+            "Audio-event spoken projection requires items without seed state: "
+            + ", ".join(already_rendered)
         )
-        destination = _within(root, Path(workspace_id), "Workspace destination")
-        for existing in root.iterdir():
-            if (
-                existing.name.casefold() == workspace_id.casefold()
-                and existing != destination
-            ):
-                raise AuthoringWorkbenchError(
-                    f"Workspace name collides by case with {existing.name!r}"
-                )
-        workspace = {
-            "schema": WORKSPACE_SCHEMA,
-            "schema_version": WORKSPACE_VERSION,
-            "workspace_id": workspace_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "title": _workspace_title(manifest, import_id),
-            "source": {
-                "kind": "legacy-import",
-                "import_id": import_id,
-                "import_sha256": import_sha256,
-                "source_fingerprint": source_fingerprint,
-                "snapshot": "provenance/import.json",
-            },
-            "queue": "queue.jsonl",
-            "output": "generated-audio",
-            "story_index": story_config,
-            "voice_manifest": voice_config,
-            "legacy_external_inputs": manifest.get("external_inputs", []),
-            "narrator_character": narrator,
-            "run_config": run_config,
-            "seed_generation_state": seed_state,
-            "carry_forward": carry_forward,
-            "failure_reference_binding": failure_reference_binding,
-            "queue_extension": queue_extension,
-            "config_fingerprint": config_fingerprint,
-            "seed_inventory": [
-                {"path": "provenance/import.json", "sha256": import_sha256},
-                *({"path": item["path"], "sha256": item["sha256"]} for item in copied),
-            ],
-        }
-        atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-        _validate_workspace_failure_reference_binding(staging, workspace)
-        _verify_import_sources(source, copied, import_path, import_sha256)
-        _verify_selected_sources(selected_sources)
+
+
+def _resume_run_config(
+    backend, model, generation_profile, policy, repair_policy, projection_ids
+):
+    config = {
+        "backend": _optional_text(backend),
+        "model": _optional_text(model),
+        "generation_profile": _optional_text(generation_profile),
+        "missing_voice_policy": policy.to_document(),
+        "failure_repair_policy": repair_policy.to_document(),
+    }
+    if projection_ids:
+        config["audio_event_spoken_projection_queue_ids"] = list(projection_ids)
+    return config
+
+
+def _resume_identity_and_document(
+    root,
+    source,
+    story_config,
+    voice_config,
+    narrator,
+    run_config,
+    seed_state,
+    carry_forward,
+    failure_reference_binding,
+    queue_extension,
+):
+    config_fingerprint = _workspace_config_fingerprint(
+        source.import_id,
+        story_config,
+        voice_config,
+        narrator,
+        run_config,
+        carry_forward,
+        failure_reference_binding=failure_reference_binding,
+        queue_extension=queue_extension,
+    )
+    workspace_id = (
+        f"resume-{source.import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
+    )
+    destination = _within(root, Path(workspace_id), "Workspace destination")
+    for existing in root.iterdir():
+        if (
+            existing.name.casefold() == workspace_id.casefold()
+            and existing != destination
+        ):
+            raise AuthoringWorkbenchError(
+                f"Workspace name collides by case with {existing.name!r}"
+            )
+    workspace = {
+        "schema": WORKSPACE_SCHEMA,
+        "schema_version": WORKSPACE_VERSION,
+        "workspace_id": workspace_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "title": _workspace_title(source.manifest, source.import_id),
+        "source": {
+            "kind": "legacy-import",
+            "import_id": source.import_id,
+            "import_sha256": source.import_sha256,
+            "source_fingerprint": source.source_fingerprint,
+            "snapshot": "provenance/import.json",
+        },
+        "queue": "queue.jsonl",
+        "output": "generated-audio",
+        "story_index": story_config,
+        "voice_manifest": voice_config,
+        "legacy_external_inputs": source.manifest.get("external_inputs", []),
+        "narrator_character": narrator,
+        "run_config": run_config,
+        "seed_generation_state": seed_state,
+        "carry_forward": carry_forward,
+        "failure_reference_binding": failure_reference_binding,
+        "queue_extension": queue_extension,
+        "config_fingerprint": config_fingerprint,
+        "seed_inventory": [
+            {"path": "provenance/import.json", "sha256": source.import_sha256},
+            *(
+                {"path": item["path"], "sha256": item["sha256"]}
+                for item in source.copied
+            ),
+        ],
+    }
+    return destination, workspace
+
+
+def _publish_resume_workspace(staging, destination, workspace, source):
+    if destination.exists():
+        _validate_existing_workspace(
+            destination,
+            import_id=source.import_id,
+            import_sha256=source.import_sha256,
+            source_fingerprint=source.source_fingerprint,
+        )
+        return WorkspaceCreationResult(destination, False)
+    try:
+        _rename_directory_no_replace(staging, destination)
+    except (OSError, FinalGamePackError) as error:
         if destination.exists():
             _validate_existing_workspace(
                 destination,
-                import_id=import_id,
-                import_sha256=import_sha256,
-                source_fingerprint=source_fingerprint,
+                import_id=source.import_id,
+                import_sha256=source.import_sha256,
+                source_fingerprint=source.source_fingerprint,
             )
             return WorkspaceCreationResult(destination, False)
-        try:
-            _rename_directory_no_replace(staging, destination)
-        except (OSError, FinalGamePackError) as error:
-            if destination.exists():
-                _validate_existing_workspace(
-                    destination,
-                    import_id=import_id,
-                    import_sha256=import_sha256,
-                    source_fingerprint=source_fingerprint,
-                )
-                return WorkspaceCreationResult(destination, False)
-            raise AuthoringWorkbenchError(
-                f"Unable to publish authoring workspace: {error}"
-            ) from error
+        raise AuthoringWorkbenchError(
+            f"Unable to publish authoring workspace: {error}"
+        ) from error
     return WorkspaceCreationResult(destination, True)
+
+
+def _stage_resume_workspace(
+    staging,
+    root,
+    source,
+    *,
+    story_index,
+    voice_manifest,
+    narrator_character,
+    backend,
+    model,
+    generation_profile,
+    missing_voice_policy,
+    failure_repair_policy,
+    carry_forward_from,
+    carry_forward_characters,
+    offline_fallback_authorities,
+    generation_queue,
+    audio_event_spoken_projection_queue_ids,
+):
+    _copy_resume_seed_inputs(staging, source)
+    seed_state, queue_extension, selected_queue_source, queue = _resume_queue_inputs(
+        staging, source, generation_queue
+    )
+    narrator = _required_text(
+        narrator_character or _legacy_narrator(source.manifest), "Narrator character"
+    )
+    story_config, voice_config, selected_sources = _copy_input_snapshots(
+        staging,
+        story_index=story_index,
+        voice_manifest=voice_manifest,
+        import_manifest=source.manifest,
+        queue=queue,
+    )
+    policy, repair_policy = _resume_policies(
+        missing_voice_policy, failure_repair_policy
+    )
+    projection_ids = _resume_projection_ids(
+        staging,
+        queue,
+        audio_event_spoken_projection_queue_ids,
+        repair_policy,
+    )
+    run_config = _resume_run_config(
+        backend, model, generation_profile, policy, repair_policy, projection_ids
+    )
+    failure_reference_binding, binding_sources = (
+        _copy_carry_forward_failure_reference_binding(
+            staging,
+            carry_forward_from,
+            repair_policy.queue_ids,
+        )
+    )
+    carry_forward, authority_sources = _carry_forward_review_outcomes(
+        carry_forward_from,
+        staging,
+        queue,
+        import_id=source.import_id,
+        voice_config=voice_config,
+        run_config=run_config,
+        characters=carry_forward_characters,
+        failure_repair_policy=repair_policy,
+        failure_reference_binding=failure_reference_binding,
+        offline_fallback_authorities=offline_fallback_authorities,
+    )
+    selected_sources = (*selected_sources, *binding_sources, *authority_sources)
+    if selected_queue_source is not None:
+        selected_sources = (
+            *selected_sources,
+            (
+                selected_queue_source,
+                queue_extension["queue_sha256"],
+                "generation queue",
+            ),
+        )
+    destination, workspace = _resume_identity_and_document(
+        root,
+        source,
+        story_config,
+        voice_config,
+        narrator,
+        run_config,
+        seed_state,
+        carry_forward,
+        failure_reference_binding,
+        queue_extension,
+    )
+    atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+    _validate_workspace_failure_reference_binding(staging, workspace)
+    _verify_import_sources(
+        source.directory, source.copied, source.import_path, source.import_sha256
+    )
+    _verify_selected_sources(selected_sources)
+    return _publish_resume_workspace(staging, destination, workspace, source)
 
 
 def create_failure_reference_workspace(
