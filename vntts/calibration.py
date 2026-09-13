@@ -1,15 +1,22 @@
+from __future__ import annotations
+
 import sys
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Protocol
 
 import mss
 from PIL import Image
-from PySide6.QtCore import QRect, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, Qt, QThreadPool, Signal
 from PySide6.QtGui import (
+    QCloseEvent,
     QColor,
     QImage,
     QKeyEvent,
     QKeySequence,
     QMouseEvent,
     QPainter,
+    QPaintEvent,
     QPen,
     QPixmap,
 )
@@ -27,13 +34,25 @@ from PySide6.QtWidgets import (
 from vntts.async_ui import LatestTaskRunner
 from vntts.ocr import (
     DialogRegion,
+    OCRResult,
     get_dialog_region_file,
     recognize_dialog_image_result,
     save_dialog_region,
 )
+from vntts.window_capture import WindowGeometry
 
 
-def capture_calibration_background(geometry=None):
+class _CalibrationReviewer(Protocol):
+    def exec(self) -> int: ...
+
+
+ReviewerFactory = Callable[[Image.Image], _CalibrationReviewer]
+_active_overlay: DialogRegionOverlay | None
+
+
+def capture_calibration_background(
+    geometry: WindowGeometry | None = None,
+) -> Image.Image:
     with mss.mss() as capture:
         monitor = (
             capture.monitors[1]
@@ -49,7 +68,7 @@ def capture_calibration_background(geometry=None):
     return Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
 
 
-def pixmap_from_pil(image):
+def pixmap_from_pil(image: Image.Image) -> QPixmap:
     image = image.convert("RGB")
     qimage = QImage(
         image.tobytes("raw", "RGB"),
@@ -58,7 +77,10 @@ def pixmap_from_pil(image):
         image.width * 3,
         QImage.Format.Format_RGB888,
     ).copy()
-    return QPixmap.fromImage(qimage)
+    pixmap = QPixmap.fromImage(qimage)
+    if not isinstance(pixmap, QPixmap):
+        raise TypeError("Qt did not create a calibration pixmap")
+    return pixmap
 
 
 class CalibrationReviewDialog(QDialog):
@@ -66,12 +88,12 @@ class CalibrationReviewDialog(QDialog):
 
     def __init__(
         self,
-        image,
-        parent=None,
+        image: Image.Image,
+        parent: QWidget | None = None,
         *,
-        recognizer=recognize_dialog_image_result,
-        thread_pool=None,
-    ):
+        recognizer: Callable[[Image.Image], OCRResult] = recognize_dialog_image_result,
+        thread_pool: QThreadPool | None = None,
+    ) -> None:
         super().__init__(parent)
         self.recognizer = recognizer
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -149,11 +171,18 @@ class CalibrationReviewDialog(QDialog):
         self.setTabOrder(self.retry_button, self.cancel_button)
         self.runner.start(self.recognizer, image.copy())
 
-    def _recognition_finished(self, result, error):
+    def _recognition_finished(
+        self, result: object, error: Exception | None
+    ) -> None:
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         if error is not None:
             self.result_text.setPlainText(f"OCR preview failed: {error}")
+            self.save_button.setText("Save region without OCR preview")
+            self.save_button.setEnabled(True)
+            return
+        if not isinstance(result, OCRResult):
+            self.result_text.setPlainText("OCR preview returned an invalid result")
             self.save_button.setText("Save region without OCR preview")
             self.save_button.setEnabled(True)
             return
@@ -165,7 +194,7 @@ class CalibrationReviewDialog(QDialog):
         self.save_button.setText("Save region")
         self.save_button.setEnabled(True)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.runner.cancel()
         super().closeEvent(event)
 
@@ -174,11 +203,18 @@ class DialogRegionOverlay(QWidget):
     selected = Signal(object)
     closed = Signal()
 
-    def __init__(self, output=None, *, platform=None, background=None, reviewer=None):
+    def __init__(
+        self,
+        output: str | Path | None = None,
+        *,
+        platform: str | None = None,
+        background: Image.Image | None = None,
+        reviewer: ReviewerFactory | None = None,
+    ) -> None:
         super().__init__()
         platform = sys.platform if platform is None else platform
-        self.origin = None
-        self.current = None
+        self.origin: QPoint | None = None
+        self.current: QPoint | None = None
         self.output = output or get_dialog_region_file()
         self.background = background
         self.background_pixmap = (
@@ -204,22 +240,22 @@ class DialogRegionOverlay(QWidget):
         )
         self.selected.connect(self.persist)
 
-    def persist(self, region):
+    def persist(self, region: DialogRegion) -> None:
         save_dialog_region(region, self.output)
         print(f"Saved dialog region to {self.output}")
 
-    def mousePressEvent(self, event: QMouseEvent):
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.origin = event.position().toPoint()
             self.current = self.origin
             self.update()
 
-    def mouseMoveEvent(self, event: QMouseEvent):
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self.origin is not None:
             self.current = event.position().toPoint()
             self.update()
 
-    def mouseReleaseEvent(self, event: QMouseEvent):
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton or self.origin is None:
             return
         self.current = event.position().toPoint()
@@ -231,7 +267,7 @@ class DialogRegionOverlay(QWidget):
             return
         self._review_rectangle(rectangle)
 
-    def _region_from_rectangle(self, rectangle):
+    def _region_from_rectangle(self, rectangle: QRect) -> DialogRegion:
         rectangle = rectangle.normalized().intersected(self.rect())
         if rectangle.width() < 20 or rectangle.height() < 20:
             raise ValueError("Calibration region must be at least 20 by 20 pixels")
@@ -242,7 +278,7 @@ class DialogRegionOverlay(QWidget):
             rectangle.height() / self.height(),
         )
 
-    def _review_rectangle(self, rectangle):
+    def _review_rectangle(self, rectangle: QRect) -> None:
         region = self._region_from_rectangle(rectangle)
         if self.background is None:
             # Keeps the overlay directly usable in tests and by callers that
@@ -268,7 +304,7 @@ class DialogRegionOverlay(QWidget):
         self.current = None
         self.update()
 
-    def _set_suggested_keyboard_region(self):
+    def _set_suggested_keyboard_region(self) -> None:
         left = round(self.width() * 0.08)
         top = round(self.height() * 0.62)
         right = max(left + 20, round(self.width() * 0.92))
@@ -280,7 +316,9 @@ class DialogRegionOverlay(QWidget):
         self.current = rectangle.bottomRight()
         self.update()
 
-    def _adjust_keyboard_region(self, key, modifiers):
+    def _adjust_keyboard_region(
+        self, key: Qt.Key, modifiers: Qt.KeyboardModifier
+    ) -> None:
         if self.origin is None or self.current is None:
             self._set_suggested_keyboard_region()
         rectangle = QRect(self.origin, self.current).normalized()
@@ -322,7 +360,7 @@ class DialogRegionOverlay(QWidget):
         self.current = rectangle.bottomRight()
         self.update()
 
-    def keyPressEvent(self, event: QKeyEvent):
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self.close()
             return
@@ -338,7 +376,7 @@ class DialogRegionOverlay(QWidget):
             Qt.Key.Key_Up,
             Qt.Key.Key_Down,
         ):
-            self._adjust_keyboard_region(event.key(), event.modifiers())
+            self._adjust_keyboard_region(Qt.Key(event.key()), event.modifiers())
             return
         if event.key() == Qt.Key.Key_R:
             self.origin = None
@@ -347,11 +385,11 @@ class DialogRegionOverlay(QWidget):
             return
         super().keyPressEvent(event)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.closed.emit()
         super().closeEvent(event)
 
-    def paintEvent(self, _event):
+    def paintEvent(self, _event: QPaintEvent) -> None:
         painter = QPainter(self)
         if self.background_pixmap is not None:
             painter.drawPixmap(self.rect(), self.background_pixmap)
@@ -389,7 +427,11 @@ class DialogRegionOverlay(QWidget):
         )
 
 
-def show_calibration_overlay(geometry=None, *, background=None):
+def show_calibration_overlay(
+    geometry: WindowGeometry | None = None,
+    *,
+    background: Image.Image | None = None,
+) -> DialogRegionOverlay:
     if background is None:
         background = capture_calibration_background(geometry)
     overlay = DialogRegionOverlay(background=background)
@@ -411,7 +453,7 @@ def show_calibration_overlay(geometry=None, *, background=None):
     return overlay
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if any(value in {"-h", "--help"} for value in arguments):
         print("usage: vntts-calibrate")
@@ -419,8 +461,11 @@ def main(argv=None):
     if arguments:
         print("usage: vntts-calibrate", file=sys.stderr)
         return 2
-    application = QApplication.instance() or QApplication(sys.argv)
-    application.calibration_overlay = show_calibration_overlay()
+    application = QApplication.instance()
+    if not isinstance(application, QApplication):
+        application = QApplication(sys.argv)
+    global _active_overlay
+    _active_overlay = show_calibration_overlay()
     return application.exec()
 
 
