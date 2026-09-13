@@ -78,6 +78,7 @@
     "vntts/ocr_review_ui.py",
     "vntts/onboarding.py",
     "vntts/onboarding_ui.py",
+    "vntts/package_self_test.py",
     "vntts/path_safety.py",
     "vntts/playback.py",
     "vntts/pregeneration_audition_ui.py",

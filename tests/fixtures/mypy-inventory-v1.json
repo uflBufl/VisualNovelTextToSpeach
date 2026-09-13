@@ -108,7 +108,6 @@
     "vntts/ocr.py": 34,
     "vntts/ocr_backend.py": 6,
     "vntts/ocr_benchmark.py": 8,
-    "vntts/package_self_test.py": 7,
     "vntts/pregeneration_acceptance.py": 3,
     "vntts/pregeneration_activation.py": 5,
     "vntts/pregeneration_audition.py": 27,

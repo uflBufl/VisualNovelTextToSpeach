@@ -4,9 +4,12 @@ import os
 import subprocess
 import sys
 import traceback
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import ModuleType
+from typing import TypeAlias
 
 from vntts_artifacts.atomic_io import atomic_write_json
 
@@ -41,6 +44,9 @@ required_modules = (
     "torchaudio",
 )
 
+ReportDocument: TypeAlias = dict[str, object]
+ReportChecks: TypeAlias = list[ReportDocument]
+
 _PUBLIC_POCKET_ARTIFACTS = {
     (
         "kyutai/pocket-tts-without-voice-cloning",
@@ -60,7 +66,18 @@ _PUBLIC_POCKET_ARTIFACTS = {
 }
 
 
-def probe_espeak(executable):
+def _json_object(payload: str, description: str) -> ReportDocument:
+    value: object = json.loads(payload)
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise RuntimeError(f"{description} must be a JSON object")
+    return {key: item for key, item in value.items() if isinstance(key, str)}
+
+
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def probe_espeak(executable: str | Path) -> str:
     completed = subprocess.run(
         [str(executable), "--version"],
         capture_output=True,
@@ -72,7 +89,10 @@ def probe_espeak(executable):
     return output.splitlines()[0] if output else "available"
 
 
-def probe_bundled_pocket_runtime(bundle_root=None, runner=subprocess.run):
+def probe_bundled_pocket_runtime(
+    bundle_root: str | Path | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> ReportDocument:
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
         raise RuntimeError("Pocket runtime provenance requires a frozen bundle")
@@ -89,13 +109,16 @@ def probe_bundled_pocket_runtime(bundle_root=None, runner=subprocess.run):
         text=True,
         timeout=120,
     )
-    report = json.loads(completed.stdout)
+    report = _json_object(completed.stdout, "Bundled Pocket runtime report")
+    modules = report.get("modules")
+    if not isinstance(modules, Mapping):
+        raise RuntimeError("Bundled Pocket runtime report is missing module origins")
     origins = {
-        "interpreter": report.get("executable"),
-        "prefix": report.get("prefix"),
-        "base_prefix": report.get("base_prefix"),
+        "interpreter": _optional_text(report.get("executable")),
+        "prefix": _optional_text(report.get("prefix")),
+        "base_prefix": _optional_text(report.get("base_prefix")),
         **{
-            f"module:{name}": report.get("modules", {}).get(name)
+            f"module:{name}": _optional_text(modules.get(name))
             for name in PROBE_MODULES
         },
     }
@@ -115,16 +138,18 @@ def probe_bundled_pocket_runtime(bundle_root=None, runner=subprocess.run):
     return report
 
 
-def _sha256(path):
+def _sha256(path: str | Path) -> str:
     import hashlib
 
     with Path(path).open("rb") as source:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def _huggingface_snapshot_inventory(cache_root):
+def _huggingface_snapshot_inventory(
+    cache_root: str | Path,
+) -> list[dict[str, str | int]]:
     hub = Path(cache_root) / "hub"
-    artifacts = []
+    artifacts: list[dict[str, str | int]] = []
     if not hub.is_dir():
         return artifacts
     for snapshot in sorted(hub.glob("models--*/snapshots/*")):
@@ -151,7 +176,7 @@ def _huggingface_snapshot_inventory(cache_root):
 
 
 @contextmanager
-def _clean_pocket_environment(cache_root):
+def _clean_pocket_environment(cache_root: str | Path) -> Iterator[None]:
     names = (
         "HF_HOME",
         "HF_HUB_CACHE",
@@ -177,11 +202,13 @@ def _clean_pocket_environment(cache_root):
 
 
 def probe_bundled_pocket_render(
-    bundle_root=None,
+    bundle_root: str | Path | None = None,
     *,
-    backend_factory=IsolatedSpeechBackend,
-    temporary_directory_factory=TemporaryDirectory,
-):
+    backend_factory: Callable[..., IsolatedSpeechBackend] = IsolatedSpeechBackend,
+    temporary_directory_factory: Callable[
+        ..., AbstractContextManager[str]
+    ] = TemporaryDirectory,
+) -> ReportDocument:
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
         raise RuntimeError("Pocket render provenance requires a frozen bundle")
@@ -224,7 +251,8 @@ def probe_bundled_pocket_render(
             )
         artifacts = _huggingface_snapshot_inventory(hf_cache)
         identities = {
-            (item["repository"], item["revision"], item["path"]) for item in artifacts
+            (str(item["repository"]), str(item["revision"]), str(item["path"]))
+            for item in artifacts
         }
         expected = set(_PUBLIC_POCKET_ARTIFACTS)
         if identities != expected:
@@ -247,28 +275,9 @@ def probe_bundled_pocket_render(
         }
 
 
-def run_package_self_test(
-    report_path=None,
-    *,
-    import_module=None,
-    tesseract_probe=None,
-    espeak_probe=None,
-    speech_runtime_probe=None,
-    speech_render_probe=None,
-    game_decoder_probe=None,
-):
-    import_module = import_module or importlib.import_module
-    tesseract_probe = tesseract_probe or probe_tesseract
-    espeak_probe = espeak_probe or probe_espeak
-    speech_runtime_probe = speech_runtime_probe or probe_bundled_pocket_runtime
-    speech_render_probe = speech_render_probe or probe_bundled_pocket_render
-    game_decoder_probe = game_decoder_probe or (
-        lambda: probe_game_decoder(find_game_decoder())
-    )
-    bundled_tesseract = configure_bundled_dependencies()
-    bundled_espeak = find_bundled_espeak()
-    checks = []
-
+def _append_import_checks(
+    checks: ReportChecks, import_module: Callable[[str], ModuleType]
+) -> None:
     for module_name in required_modules:
         try:
             import_module(module_name)
@@ -290,6 +299,10 @@ def run_package_self_test(
                 }
             )
 
+
+def _append_tesseract_check(
+    checks: ReportChecks, tesseract_probe: Callable[[], object]
+) -> None:
     try:
         version = str(tesseract_probe())
     except Exception as error:
@@ -309,8 +322,22 @@ def run_package_self_test(
             }
         )
 
-    frozen = bool(getattr(sys, "frozen", False))
-    if frozen and bundled_tesseract is None:
+
+def _runtime_report_message(report: ReportDocument) -> str:
+    executable = _optional_text(report.get("executable"))
+    modules = report.get("modules")
+    if executable is None or not isinstance(modules, Mapping):
+        raise RuntimeError("Bundled Pocket runtime report is missing runtime origins")
+    return f"{executable}; {len(modules)} modules contained"
+
+
+def _append_bundled_dependency_checks(
+    checks: ReportChecks,
+    bundled_tesseract: Path | None,
+    bundled_espeak: tuple[Path, Path] | None,
+    espeak_probe: Callable[[str | Path], str],
+) -> None:
+    if bundled_tesseract is None:
         checks.append(
             {
                 "name": "Bundled Tesseract",
@@ -318,7 +345,7 @@ def run_package_self_test(
                 "message": "Bundled Tesseract executable or English language data is missing",
             }
         )
-    elif frozen:
+    else:
         checks.append(
             {
                 "name": "Bundled Tesseract",
@@ -326,7 +353,7 @@ def run_package_self_test(
                 "message": str(bundled_tesseract),
             }
         )
-    if frozen and bundled_espeak is None:
+    if bundled_espeak is None:
         checks.append(
             {
                 "name": "Bundled eSpeak-NG",
@@ -334,7 +361,7 @@ def run_package_self_test(
                 "message": "Bundled eSpeak-NG executable or voice data is missing",
             }
         )
-    elif frozen:
+    else:
         try:
             espeak_version = espeak_probe(bundled_espeak[0])
         except Exception as error:
@@ -354,69 +381,118 @@ def run_package_self_test(
                 }
             )
 
+
+def _append_game_decoder_check(
+    checks: ReportChecks, game_decoder_probe: Callable[[], object]
+) -> None:
+    try:
+        decoder_report = game_decoder_probe()
+    except Exception as error:
+        checks.append(
+            {
+                "name": "Bundled game-audio decoder",
+                "status": "error",
+                "message": str(error),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "Bundled game-audio decoder",
+                "status": "ok",
+                "message": str(decoder_report),
+            }
+        )
+
+
+def _append_pocket_runtime_check(
+    checks: ReportChecks, speech_runtime_probe: Callable[[], ReportDocument]
+) -> None:
+    try:
+        runtime_report = speech_runtime_probe()
+        message = _runtime_report_message(runtime_report)
+    except Exception as error:
+        checks.append(
+            {
+                "name": "Bundled Pocket TTS runtime",
+                "status": "error",
+                "message": str(error),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "Bundled Pocket TTS runtime",
+                "status": "ok",
+                "message": message,
+                "details": runtime_report,
+            }
+        )
+
+
+def _append_pocket_render_check(
+    checks: ReportChecks, speech_render_probe: Callable[[], ReportDocument]
+) -> None:
+    try:
+        render_report = speech_render_probe()
+    except Exception as error:
+        checks.append(
+            {
+                "name": "Bundled Pocket TTS clean-cache render",
+                "status": "error",
+                "message": str(error),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "Bundled Pocket TTS clean-cache render",
+                "status": "ok",
+                "message": (
+                    f"{render_report['samples']} samples at "
+                    f"{render_report['sample_rate']} Hz"
+                ),
+                "details": render_report,
+            }
+        )
+
+
+def _probe_game_decoder() -> object:
+    return probe_game_decoder(find_game_decoder())
+
+
+def run_package_self_test(
+    report_path: str | Path | None = None,
+    *,
+    import_module: Callable[[str], ModuleType] | None = None,
+    tesseract_probe: Callable[[], object] | None = None,
+    espeak_probe: Callable[[str | Path], str] | None = None,
+    speech_runtime_probe: Callable[[], ReportDocument] | None = None,
+    speech_render_probe: Callable[[], ReportDocument] | None = None,
+    game_decoder_probe: Callable[[], object] | None = None,
+) -> CLIReportResult:
+    import_module = import_module or importlib.import_module
+    tesseract_probe = tesseract_probe or probe_tesseract
+    espeak_probe = espeak_probe or probe_espeak
+    speech_runtime_probe = speech_runtime_probe or probe_bundled_pocket_runtime
+    speech_render_probe = speech_render_probe or probe_bundled_pocket_render
+    game_decoder_probe = game_decoder_probe or _probe_game_decoder
+    bundled_tesseract = configure_bundled_dependencies()
+    bundled_espeak = find_bundled_espeak()
+    checks: ReportChecks = []
+    _append_import_checks(checks, import_module)
+    _append_tesseract_check(checks, tesseract_probe)
+    frozen = bool(getattr(sys, "frozen", False))
     if frozen:
-        try:
-            decoder_report = game_decoder_probe()
-        except Exception as error:
-            checks.append(
-                {
-                    "name": "Bundled game-audio decoder",
-                    "status": "error",
-                    "message": str(error),
-                }
-            )
-        else:
-            checks.append(
-                {
-                    "name": "Bundled game-audio decoder",
-                    "status": "ok",
-                    "message": str(decoder_report),
-                }
-            )
-        try:
-            runtime_report = speech_runtime_probe()
-        except Exception as error:
-            checks.append(
-                {
-                    "name": "Bundled Pocket TTS runtime",
-                    "status": "error",
-                    "message": str(error),
-                }
-            )
-        else:
-            checks.append(
-                {
-                    "name": "Bundled Pocket TTS runtime",
-                    "status": "ok",
-                    "message": (
-                        f"{runtime_report['executable']}; "
-                        f"{len(runtime_report['modules'])} modules contained"
-                    ),
-                    "details": runtime_report,
-                }
-            )
-        try:
-            render_report = speech_render_probe()
-        except Exception as error:
-            checks.append(
-                {
-                    "name": "Bundled Pocket TTS clean-cache render",
-                    "status": "error",
-                    "message": str(error),
-                }
-            )
-        else:
-            checks.append(
-                {
-                    "name": "Bundled Pocket TTS clean-cache render",
-                    "status": "ok",
-                    "message": (
-                        f"{render_report['samples']} samples at "
-                        f"{render_report['sample_rate']} Hz"
-                    ),
-                    "details": render_report,
-                }
-            )
+        _append_bundled_dependency_checks(
+            checks,
+            bundled_tesseract,
+            bundled_espeak,
+            espeak_probe,
+        )
+        _append_game_decoder_check(checks, game_decoder_probe)
+        _append_pocket_runtime_check(checks, speech_runtime_probe)
+        _append_pocket_render_check(checks, speech_render_probe)
 
     successful = all(check["status"] == "ok" for check in checks)
     report = {

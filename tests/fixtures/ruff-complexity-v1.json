@@ -1293,12 +1293,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/package_self_test.py",
-      "scope": "run_package_self_test",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/pregeneration_activation.py",
       "scope": "OfflinePackActivator.activate",
       "count": 1
@@ -2379,12 +2373,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/package_self_test.py",
-      "scope": "run_package_self_test",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/pregeneration_activation.py",
       "scope": "OfflinePackActivator.activate",
       "count": 1
@@ -3275,12 +3263,6 @@
       "code": "PLR0915",
       "path": "vntts/ocr_review_ui.py",
       "scope": "OCRReviewDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/package_self_test.py",
-      "scope": "run_package_self_test",
       "count": 1
     },
     {
