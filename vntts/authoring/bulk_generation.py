@@ -1636,14 +1636,20 @@ def _validate_edge_silence_repair(
 
 
 def _provider_repair_attempts(
-    result: JsonDocument, queue_id: str, provider: object
+    result: JsonDocument,
+    queue_id: str,
+    provider: object,
+    *,
+    default_provider: object | None = None,
 ) -> int:
     attempts = _nonnegative_int(
         result.get("attempts", 0), f"State item {queue_id!r} attempts"
     )
-    return _provider_attempts(result, attempts, default_provider=provider).get(
-        provider, 0
-    )
+    return _provider_attempts(
+        result,
+        attempts,
+        default_provider=provider if default_provider is None else default_provider,
+    ).get(provider, 0)
 
 
 def _validate_bounded_seed_repair(
@@ -1676,7 +1682,13 @@ def _validate_offline_fallback_repair(
         not isinstance(carry, dict)
         or carry.get("mode") != "failed-outcome"
         or carry.get("source_provider") == provider
-        or _provider_repair_attempts(result, queue_id, result.get("provider")) >= 1
+        or _provider_repair_attempts(
+            result,
+            queue_id,
+            provider,
+            default_provider=result.get("provider"),
+        )
+        >= 1
     ):
         raise BulkGenerationError(
             "Offline fallback lacks a different bound source backend or its single attempt is exhausted for "
