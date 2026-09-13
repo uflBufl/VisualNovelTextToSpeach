@@ -49,6 +49,7 @@ from vntts.voices import (
     normalize_character_name,
     pocket_tts_preset_voices,
 )
+from vntts.window_capture import WindowGeometry
 
 
 class _LiveToggle(Protocol):
@@ -1172,7 +1173,7 @@ class VoiceAssignmentComponent:
 class DiagnosticsComponent:
     controller: AppController
 
-    def capture_geometry(self) -> object:
+    def capture_geometry(self) -> WindowGeometry | None:
         target = self.controller.capture_target
         return None if target is None else target.get_geometry()
 

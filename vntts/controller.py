@@ -102,7 +102,7 @@ from vntts.voices import (
     normalize_character_name,
     synthesis_character,
 )
-from vntts.window_capture import WindowCaptureTarget
+from vntts.window_capture import WindowCaptureTarget, WindowGeometry
 
 
 class _DialogReadFuture(Protocol):
@@ -208,7 +208,7 @@ class _VoiceRouter(Protocol):
 
 
 class _CaptureTarget(Protocol):
-    def get_geometry(self) -> object: ...
+    def get_geometry(self) -> WindowGeometry: ...
     def is_focused(self) -> bool: ...
 
 
@@ -720,7 +720,7 @@ class AppController:
     def replay_dialog(self, character: str, text: str) -> object:
         return self.voice_assignments.replay(character, text)
 
-    def get_capture_geometry(self) -> object:
+    def get_capture_geometry(self) -> WindowGeometry | None:
         return self.diagnostics.capture_geometry()
 
     def get_latest_diagnostic(self) -> object:
