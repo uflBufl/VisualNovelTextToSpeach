@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,9 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
     process_is_alive,
+)
+from vntts.authoring.bulk_generation import (
+    _state_items as _generation_state_items,
 )
 from vntts.authoring.config_rebase import _route_reference_identity
 from vntts.authoring.publication import generation_publication_leases
@@ -46,7 +50,7 @@ class FailedControlCarryResult:
     carry_id: str
     item_count: int
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "target_workspace": str(self.target_workspace),
             "report": str(self.report),
@@ -56,7 +60,11 @@ class FailedControlCarryResult:
         }
 
 
-def carry_failed_controls(source_workspace, target_workspace, queue_ids):
+def carry_failed_controls(
+    source_workspace: str | Path,
+    target_workspace: str | Path,
+    queue_ids: object,
+) -> FailedControlCarryResult:
     """Copy exact failed state items when an additive config keeps their route."""
     requested = _queue_ids(queue_ids)
     try:
@@ -72,7 +80,19 @@ def carry_failed_controls(source_workspace, target_workspace, queue_ids):
         raise FailedControlCarryError(
             "Failed-control carry requires distinct workspaces"
         )
-    if source["source"]["import_id"] != target["source"]["import_id"]:
+    source_origin = source.get("source")
+    target_origin = target.get("source")
+    source_import_id = (
+        source_origin.get("import_id") if isinstance(source_origin, dict) else None
+    )
+    target_import_id = (
+        target_origin.get("import_id") if isinstance(target_origin, dict) else None
+    )
+    if (
+        not isinstance(source_import_id, str)
+        or not isinstance(target_import_id, str)
+        or source_import_id != target_import_id
+    ):
         raise FailedControlCarryError("Failed-control workspaces use different imports")
     source_queue = source_directory / "queue.jsonl"
     target_queue = target_directory / "queue.jsonl"
@@ -113,6 +133,8 @@ def carry_failed_controls(source_workspace, target_workspace, queue_ids):
                 )
             queue = VoiceGenerationQueue.load(source_queue)
             queue_by_id = {item.queue_id: item for item in queue.items}
+            source_items = _generation_state_items(source_state)
+            target_items = _generation_state_items(target_state)
             source_registry = load_workspace_voice_registry(
                 source_directory,
                 source,
@@ -146,10 +168,12 @@ def carry_failed_controls(source_workspace, target_workspace, queue_ids):
             records = []
             proposed = copy.deepcopy(target_state)
             base = copy.deepcopy(target_state)
+            proposed_items = _generation_state_items(proposed)
+            base_items = _generation_state_items(base)
             for queue_id in requested:
                 queue_item = queue_by_id.get(queue_id)
-                result = source_state["items"].get(queue_id)
-                target_result = target_state["items"].get(queue_id)
+                result = source_items.get(queue_id)
+                target_result = target_items.get(queue_id)
                 if queue_item is None:
                     raise FailedControlCarryError(
                         f"Failed-control queue ID is absent: {queue_id}"
@@ -190,8 +214,8 @@ def carry_failed_controls(source_workspace, target_workspace, queue_ids):
                     raise FailedControlCarryError(
                         f"Failed-control target item is already different: {queue_id}"
                     )
-                proposed["items"][queue_id] = copy.deepcopy(result)
-                base["items"].pop(queue_id, None)
+                proposed_items[queue_id] = copy.deepcopy(result)
+                base_items.pop(queue_id, None)
                 records.append(
                     {
                         "queue_id": queue_id,
@@ -226,9 +250,8 @@ def carry_failed_controls(source_workspace, target_workspace, queue_ids):
                 _validate_existing_report(report_path, report, proposed)
                 return _result(target_directory, report_path, report, created=False)
             if any(
-                target_state["items"].get(queue_id) is not None
-                and target_state["items"].get(queue_id)
-                != source_state["items"][queue_id]
+                target_items.get(queue_id) is not None
+                and target_items.get(queue_id) != source_items[queue_id]
                 for queue_id in requested
             ):
                 raise FailedControlCarryError(
@@ -248,7 +271,11 @@ def carry_failed_controls(source_workspace, target_workspace, queue_ids):
         raise FailedControlCarryError(str(error)) from error
 
 
-def _validate_existing_report(report_path, expected, expected_state):
+def _validate_existing_report(
+    report_path: Path,
+    expected: Mapping[str, object],
+    expected_state: Mapping[str, object],
+) -> None:
     try:
         observed = json.loads(report_path.read_text(encoding="utf-8"))
         state_path = report_path.parent / "generation-state.json"
@@ -261,7 +288,7 @@ def _validate_existing_report(report_path, expected, expected_state):
         raise FailedControlCarryError("Carried failed-control state changed")
 
 
-def _queue_ids(values):
+def _queue_ids(values: object) -> tuple[str, ...]:
     if not isinstance(values, (list, tuple)) or not values:
         raise FailedControlCarryError("Failed-control queue IDs must be non-empty")
     queue_ids = []
@@ -274,13 +301,23 @@ def _queue_ids(values):
     return tuple(sorted(queue_ids))
 
 
-def _result(target, report_path, report, *, created):
+def _result(
+    target: str | Path,
+    report_path: str | Path,
+    report: Mapping[str, object],
+    *,
+    created: bool,
+) -> FailedControlCarryResult:
+    carry_id = report.get("carry_id")
+    items = report.get("items")
+    if not isinstance(carry_id, str) or not isinstance(items, list):
+        raise FailedControlCarryError("Failed-control carry report is malformed")
     return FailedControlCarryResult(
         Path(target).resolve(),
         Path(report_path).resolve(),
         created,
-        report["carry_id"],
-        len(report["items"]),
+        carry_id,
+        len(items),
     )
 
 

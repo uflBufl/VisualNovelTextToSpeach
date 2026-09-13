@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.voice_manifest import load_voice_manifest, normalize_character_name
+from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
+    load_voice_manifest,
+    normalize_character_name,
+)
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
     process_is_alive,
+)
+from vntts.authoring.bulk_generation import (
+    _state_items as _generation_state_items,
 )
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.generation_state import (
@@ -67,9 +76,9 @@ REASON = "generated_audio_rejected"
 
 
 def create_reviewed_rejection_fallback_workspace(
-    base_workspace,
-    workspaces_root=None,
-):
+    base_workspace: str | Path,
+    workspaces_root: str | Path | None = None,
+) -> WorkspaceCreationResult:
     """Route every exact rejected result without an existing fallback."""
     base_directory, base_document, base_workspace_sha256 = load_workspace_authority(
         base_workspace
@@ -82,6 +91,8 @@ def create_reviewed_rejection_fallback_workspace(
     )
     if state.get("active") is not None:
         raise AuthoringWorkbenchError("Reviewed-rejection fallback base is active")
+    state_items = _generation_state_items(state)
+    import_id, narrator_character = _workspace_creation_fields(base_document)
     queue_path = base_directory / "queue.jsonl"
     queue_sha256 = sha256_file(queue_path)
     queue_by_id = {item.queue_id: item for item in queue.items}
@@ -105,7 +116,7 @@ def create_reviewed_rejection_fallback_workspace(
     reference_sha256s = _voice_reference_sha256s(voice_path, voice_entries)
 
     ledgers = []
-    for queue_id, base_result in sorted(state["items"].items()):
+    for queue_id, base_result in sorted(state_items.items()):
         if (
             base_result.get("status") != "generated"
             or base_result.get("review_status") != "rejected"
@@ -171,10 +182,10 @@ def create_reviewed_rejection_fallback_workspace(
     }
     batch = {**batch_body, "batch_id": canonical_document_sha256(batch_body)}
     config_fingerprint = workspace_config_fingerprint(
-        base_document["source"]["import_id"],
+        import_id,
         base_document.get("story_index"),
         base_document.get("voice_manifest"),
-        base_document["narrator_character"],
+        narrator_character,
         base_document["run_config"],
         base_document.get("carry_forward"),
         base_document.get("outcome_merge"),
@@ -191,8 +202,7 @@ def create_reviewed_rejection_fallback_workspace(
         queue_extension=base_document.get("queue_extension"),
     )
     workspace_id = (
-        f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
-        f"{config_fingerprint[:16]}"
+        f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
     )
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -241,11 +251,12 @@ def create_reviewed_rejection_fallback_workspace(
             output = staging / "generated-audio"
             output.mkdir()
             target_state = copy.deepcopy(state)
+            target_items = _generation_state_items(target_state)
             _copy_base_wavs(base_directory, output, state, snapshots)
             decided_at = datetime.now(timezone.utc).isoformat()
             for ledger in ledgers:
                 queue_id = ledger["queue_id"]
-                base_result = state["items"][queue_id]
+                base_result = state_items[queue_id]
                 evidence = {
                     "schema": REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,
                     "schema_version": 1,
@@ -282,7 +293,7 @@ def create_reviewed_rejection_fallback_workspace(
                 projected = copy.deepcopy(base_result)
                 projected["live_fallback"] = decision
                 projected["updated_at"] = decided_at
-                target_state["items"][queue_id] = projected
+                target_items[queue_id] = projected
             target_state["active"] = None
             atomic_write_json(
                 output / "generation-state.json", target_state, sort_keys=True
@@ -337,7 +348,9 @@ def create_reviewed_rejection_fallback_workspace(
     return WorkspaceCreationResult(destination, True)
 
 
-def validate_reviewed_rejection_fallback_workspace(directory, workspace):
+def validate_reviewed_rejection_fallback_workspace(
+    directory: str | Path, workspace: Mapping[str, object]
+) -> None:
     """Validate the self-contained rejected-result route batch."""
     batch = workspace.get("reviewed_rejection_live_fallback")
     if batch is None:
@@ -424,15 +437,17 @@ def validate_reviewed_rejection_fallback_workspace(directory, workspace):
     except (OSError, TypeError, ValueError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     reference_sha256s = _voice_reference_sha256s(manifest_path, voice_entries)
+    base_items = _generation_state_items(base_state)
+    state_items = _generation_state_items(state)
     expected = sorted(
         queue_id
-        for queue_id, result in base_state.get("items", {}).items()
+        for queue_id, result in base_items.items()
         if isinstance(result, dict)
         and result.get("status") == "generated"
         and result.get("review_status") == "rejected"
         and not isinstance(result.get("live_fallback"), dict)
     )
-    observed = []
+    observed: list[str] = []
     ledger_fields = {
         "queue_id",
         "line_id",
@@ -448,9 +463,9 @@ def validate_reviewed_rejection_fallback_workspace(directory, workspace):
             raise AuthoringWorkbenchError(
                 "Reviewed-rejection fallback item is malformed"
             )
-        queue_id = ledger.get("queue_id")
-        base_result = base_state.get("items", {}).get(queue_id)
-        result = state["items"].get(queue_id)
+        queue_id = _required_text(ledger.get("queue_id"), "Reviewed-rejection queue ID")
+        base_result = base_items.get(queue_id)
+        result = state_items.get(queue_id)
         decision = result.get("live_fallback") if isinstance(result, dict) else None
         evidence = decision.get("evidence") if isinstance(decision, dict) else None
         queue_item = queue_by_id.get(queue_id)
@@ -501,8 +516,8 @@ def validate_reviewed_rejection_fallback_workspace(directory, workspace):
         raise AuthoringWorkbenchError("Reviewed-rejection state metadata changed")
     observed_set = set(observed)
     downstream_queue_ids = _downstream_overlay_queue_ids(workspace)
-    for queue_id, result in state["items"].items():
-        base_result = base_state["items"].get(queue_id)
+    for queue_id, result in state_items.items():
+        base_result = base_items.get(queue_id)
         if queue_id not in observed_set:
             if queue_id in downstream_queue_ids:
                 continue
@@ -511,6 +526,10 @@ def validate_reviewed_rejection_fallback_workspace(directory, workspace):
                     f"Reviewed-rejection unrelated result changed for {queue_id!r}"
                 )
             continue
+        if base_result is None:
+            raise AuthoringWorkbenchError(
+                f"Reviewed-rejection base result is unavailable for {queue_id!r}"
+            )
         projected = copy.deepcopy(result)
         projected.pop("live_fallback", None)
         if "updated_at" in base_result:
@@ -523,7 +542,9 @@ def validate_reviewed_rejection_fallback_workspace(directory, workspace):
             )
 
 
-def _voice_reference_sha256s(voice_path, entries):
+def _voice_reference_sha256s(
+    voice_path: Path, entries: Sequence[VoiceManifestEntry]
+) -> dict[str, list[str]]:
     result = {}
     for entry in entries:
         digests = []
@@ -541,7 +562,12 @@ def _voice_reference_sha256s(voice_path, entries):
     return result
 
 
-def _manifest_route(queue_item, result, overrides, reference_sha256s):
+def _manifest_route(
+    queue_item: VoiceGenerationQueueItem,
+    result: Mapping[str, object],
+    overrides: Mapping[str, str],
+    reference_sha256s: Mapping[str, list[str]],
+) -> tuple[str, list[str]]:
     requested = synthesis_character_for_line(
         queue_item.speaker, queue_item.voice_character
     )
@@ -554,7 +580,7 @@ def _manifest_route(queue_item, result, overrides, reference_sha256s):
             else requested
         )
     synthesis_character = result.get("voice_character")
-    if synthesis_character != expected:
+    if not isinstance(synthesis_character, str) or synthesis_character != expected:
         raise AuthoringWorkbenchError(
             f"Reviewed-rejection manifest route changed: {queue_item.queue_id!r}"
         )
@@ -569,8 +595,8 @@ def _manifest_route(queue_item, result, overrides, reference_sha256s):
     return synthesis_character, references
 
 
-def _downstream_overlay_queue_ids(workspace):
-    result = set()
+def _downstream_overlay_queue_ids(workspace: Mapping[str, object]) -> set[str]:
+    result: set[str] = set()
     for field in ("explicit_fallback_merge", "audio_event_omission"):
         config = workspace.get(field)
         items = config.get("items") if isinstance(config, dict) else None
@@ -582,6 +608,23 @@ def _downstream_overlay_queue_ids(workspace):
             if isinstance(item, dict) and isinstance(item.get("queue_id"), str)
         )
     return result
+
+
+def _workspace_creation_fields(
+    workspace: Mapping[str, object],
+) -> tuple[str, str]:
+    source = workspace.get("source")
+    import_id = source.get("import_id") if isinstance(source, dict) else None
+    narrator = workspace.get("narrator_character")
+    if not isinstance(import_id, str) or not isinstance(narrator, str):
+        raise AuthoringWorkbenchError("Reviewed-rejection fallback base is malformed")
+    return import_id, narrator
+
+
+def _required_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise AuthoringWorkbenchError(f"{label} must be non-empty text")
+    return value.strip()
 
 
 __all__ = [

@@ -26,12 +26,12 @@ class MissingVoicePolicy:
     mode: str = BLOCK_MISSING_VOICE
     roles: tuple[str, ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.mode not in MISSING_VOICE_POLICY_MODES:
             raise MissingVoicePolicyError(
                 f"Unsupported missing-voice mode: {self.mode!r}"
             )
-        normalized = {}
+        normalized: dict[str, str] = {}
         for role in self.roles:
             if not isinstance(role, str) or not role.strip():
                 raise MissingVoicePolicyError(
@@ -61,7 +61,7 @@ class MissingVoicePolicy:
         object.__setattr__(self, "roles", canonical)
 
     @classmethod
-    def from_document(cls, value):
+    def from_document(cls, value: object) -> MissingVoicePolicy:
         if value is None:
             return cls()
         if not isinstance(value, dict) or set(value) != {
@@ -75,18 +75,21 @@ class MissingVoicePolicy:
                 f"Unsupported missing-voice policy version: {value.get('schema_version')!r}"
             )
         roles = value.get("roles")
+        mode = value.get("mode")
+        if not isinstance(mode, str):
+            raise MissingVoicePolicyError(f"Unsupported missing-voice mode: {mode!r}")
         if not isinstance(roles, list):
             raise MissingVoicePolicyError("Missing-voice policy roles must be a list")
-        return cls(mode=value.get("mode"), roles=tuple(roles))
+        return cls(mode=mode, roles=tuple(roles))
 
-    def to_document(self):
+    def to_document(self) -> dict[str, object]:
         return {
             "schema_version": MISSING_VOICE_POLICY_VERSION,
             "mode": self.mode,
             "roles": list(self.roles),
         }
 
-    def applies_to(self, role):
+    def applies_to(self, role: object) -> bool:
         key = normalize_character_name(str(role or ""))
         if self.mode == NARRATOR_ALL_UNRESOLVED:
             return bool(key) and key != "narrator"

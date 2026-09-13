@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -16,6 +17,9 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
     process_is_alive,
+)
+from vntts.authoring.bulk_generation import (
+    _state_items as _generation_state_items,
 )
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
@@ -67,10 +71,10 @@ SCHEMA_VERSION = 1
 
 
 def create_known_role_live_fallback_workspace(
-    base_workspace,
-    evidence_pairs,
-    workspaces_root=None,
-):
+    base_workspace: str | Path,
+    evidence_pairs: Iterable[tuple[object, str | Path]],
+    workspaces_root: str | Path | None = None,
+) -> WorkspaceCreationResult:
     """Publish live Pocket routing for exact absent IDs with failed evidence."""
     base_directory, base_document, base_workspace_sha256 = load_workspace_authority(
         base_workspace
@@ -94,12 +98,14 @@ def create_known_role_live_fallback_workspace(
     )
     if base_state.get("active") is not None:
         raise AuthoringWorkbenchError("Known-role fallback base is active")
+    base_items = _generation_state_items(base_state)
+    import_id, narrator_character, run_config = _workspace_creation_fields(
+        base_document
+    )
     base_queue_path = base_directory / "queue.jsonl"
     queue_sha256 = sha256_file(base_queue_path)
     queue_by_id = {item.queue_id: item for item in base_queue.items}
-    manifest_relative = safe_workspace_relative_path(
-        base_document["voice_manifest"]["path"], "Known-role voice manifest"
-    )
+    manifest_relative = _voice_manifest_relative_path(base_document)
     manifest_path = contained_workspace_path(
         base_directory, manifest_relative, "Known-role voice manifest"
     )
@@ -129,7 +135,7 @@ def create_known_role_live_fallback_workspace(
             raise AuthoringWorkbenchError(
                 f"Known-role fallback queue ID is unavailable: {queue_id!r}"
             )
-        if base_state["items"].get(queue_id) is not None:
+        if base_items.get(queue_id) is not None:
             raise AuthoringWorkbenchError(
                 f"Known-role fallback base item is not absent: {queue_id!r}"
             )
@@ -174,7 +180,7 @@ def create_known_role_live_fallback_workspace(
             )
         if source_state.get("active") is not None:
             raise AuthoringWorkbenchError("Known-role fallback evidence is active")
-        source_item = source_state["items"].get(queue_id)
+        source_item = _generation_state_items(source_state).get(queue_id)
         if (
             not isinstance(source_item, dict)
             or source_item.get("status") != "failed"
@@ -224,11 +230,11 @@ def create_known_role_live_fallback_workspace(
     batch_id = canonical_document_sha256(batch_body)
     batch = {**batch_body, "batch_id": batch_id}
     config_fingerprint = workspace_config_fingerprint(
-        base_document["source"]["import_id"],
+        import_id,
         base_document.get("story_index"),
         base_document.get("voice_manifest"),
-        base_document["narrator_character"],
-        base_document["run_config"],
+        narrator_character,
+        run_config,
         base_document.get("carry_forward"),
         base_document.get("outcome_merge"),
         base_document.get("failure_reference_binding"),
@@ -244,8 +250,7 @@ def create_known_role_live_fallback_workspace(
         queue_extension=base_document.get("queue_extension"),
     )
     workspace_id = (
-        f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
-        f"{config_fingerprint[:16]}"
+        f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
     )
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -258,7 +263,7 @@ def create_known_role_live_fallback_workspace(
         (base_queue_path, queue_sha256),
         (manifest_path, manifest_sha256),
     ]
-    evidence_snapshots = []
+    evidence_snapshots: list[tuple[Path, str]] = []
     for directory, digests in evidence_sources.items():
         evidence_snapshots.extend(
             (
@@ -282,13 +287,14 @@ def create_known_role_live_fallback_workspace(
             output = staging / "generated-audio"
             output.mkdir()
             target_state = copy.deepcopy(base_state)
+            target_items = _generation_state_items(target_state)
             _copy_base_wavs(base_directory, output, base_state, base_snapshots)
             decided_at = datetime.now(timezone.utc).isoformat()
             synthesis_configuration = _synthesis_configuration(
-                base_document["run_config"], combined_override_sha256
+                run_config, combined_override_sha256
             )
             for ledger in ledgers:
-                queue_id = ledger["queue_id"]
+                queue_id = _required_text(ledger.get("queue_id"), "Known-role queue ID")
                 queue_item = queue_by_id[queue_id]
                 evidence = {
                     "schema": KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
@@ -322,7 +328,7 @@ def create_known_role_live_fallback_workspace(
                     "decided_at": decided_at,
                     "evidence": evidence,
                 }
-                target_state["items"][queue_id] = {
+                target_items[queue_id] = {
                     "status": "live_fallback",
                     "review_status": "live_fallback",
                     "attempts": 0,
@@ -425,7 +431,9 @@ def create_known_role_live_fallback_workspace(
     return WorkspaceCreationResult(destination, True)
 
 
-def validate_known_role_live_fallback_workspace(directory, workspace):
+def validate_known_role_live_fallback_workspace(
+    directory: str | Path, workspace: Mapping[str, object]
+) -> None:
     """Validate the self-contained routed fallback batch."""
     batch = workspace.get("known_role_live_fallback")
     if batch is None:
@@ -469,9 +477,7 @@ def validate_known_role_live_fallback_workspace(directory, workspace):
     root = Path(directory)
     manifest_path = contained_workspace_path(
         root,
-        safe_workspace_relative_path(
-            workspace["voice_manifest"]["path"], "Known-role fallback manifest"
-        ),
+        _voice_manifest_relative_path(workspace),
         "Known-role fallback manifest",
     )
     manifest = load_workspace_json(manifest_path, "known-role fallback manifest")
@@ -504,7 +510,7 @@ def validate_known_role_live_fallback_workspace(directory, workspace):
     items = batch.get("items")
     if not isinstance(items, list) or not items:
         raise AuthoringWorkbenchError("Known-role fallback item ledger is empty")
-    observed = []
+    observed: list[str] = []
     for ledger in items:
         fields = {
             "queue_id",
@@ -517,7 +523,9 @@ def validate_known_role_live_fallback_workspace(directory, workspace):
         }
         if not isinstance(ledger, dict) or set(ledger) != fields:
             raise AuthoringWorkbenchError("Known-role fallback item is malformed")
-        queue_id = ledger.get("queue_id")
+        queue_id = _required_text(
+            ledger.get("queue_id"), "Known-role fallback queue ID"
+        )
         for field in (
             "evidence_workspace_sha256",
             "evidence_config_fingerprint",
@@ -525,12 +533,9 @@ def validate_known_role_live_fallback_workspace(directory, workspace):
             "evidence_item_sha256",
         ):
             require_workspace_sha256(ledger.get(field), f"Known-role fallback {field}")
-        result = queue["items"].get(queue_id)
-        evidence = (
-            result.get("live_fallback", {}).get("evidence")
-            if isinstance(result, dict)
-            else None
-        )
+        result = _generation_state_items(queue).get(queue_id)
+        fallback = result.get("live_fallback") if isinstance(result, dict) else None
+        evidence = fallback.get("evidence") if isinstance(fallback, dict) else None
         expected_evidence = {
             "schema": KNOWN_ROLE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
             "schema_version": 1,
@@ -560,7 +565,9 @@ def validate_known_role_live_fallback_workspace(directory, workspace):
         raise AuthoringWorkbenchError("Known-role fallback items are not canonical")
 
 
-def _synthesis_configuration(run_config, override_sha256):
+def _synthesis_configuration(
+    run_config: Mapping[str, object], override_sha256: str
+) -> dict[str, object]:
     policy = MissingVoicePolicy.from_document(run_config.get("missing_voice_policy"))
     repair = FailureRepairPolicy.from_document(run_config.get("failure_repair_policy"))
     overrides = {normalize_character_name(role): "Narrator" for role in policy.roles}
@@ -572,7 +579,32 @@ def _synthesis_configuration(run_config, override_sha256):
     }
 
 
-def _required_text(value, label):
+def _workspace_creation_fields(
+    workspace: Mapping[str, object],
+) -> tuple[str, str, Mapping[str, object]]:
+    source = workspace.get("source")
+    import_id = source.get("import_id") if isinstance(source, dict) else None
+    narrator = workspace.get("narrator_character")
+    run_config = workspace.get("run_config")
+    if (
+        not isinstance(import_id, str)
+        or not isinstance(narrator, str)
+        or not isinstance(run_config, dict)
+    ):
+        raise AuthoringWorkbenchError("Known-role fallback base is malformed")
+    return import_id, narrator, run_config
+
+
+def _voice_manifest_relative_path(workspace: Mapping[str, object]) -> Path:
+    manifest = workspace.get("voice_manifest")
+    if not isinstance(manifest, dict):
+        raise AuthoringWorkbenchError("Known-role fallback manifest is malformed")
+    return safe_workspace_relative_path(
+        manifest.get("path"), "Known-role fallback manifest"
+    )
+
+
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise AuthoringWorkbenchError(f"{label} must be non-empty text")
     return value.strip()

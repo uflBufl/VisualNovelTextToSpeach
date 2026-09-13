@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,7 +32,7 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 @dataclass(frozen=True)
 class FailureReferenceRuntimeBinding:
     directory: Path
-    document: dict
+    document: dict[str, object]
     voices: tuple[CharacterVoice, ...]
     queue_voice_overrides: dict[str, str]
     controls: dict[Path, str]
@@ -42,15 +43,17 @@ FailureReferenceRuntimeBinding.__module__ = "vntts.authoring.workbench"
 
 
 def load_failure_reference_runtime_binding(
-    directory,
-    workspace,
+    directory: str | Path,
+    workspace: Mapping[str, object],
     *,
-    error_type=ValueError,
-):
+    error_type: type[Exception] = ValueError,
+) -> FailureReferenceRuntimeBinding | None:
     """Load the exact synthetic voices bound to failed queue items."""
     config = workspace.get("failure_reference_binding")
     if config is None:
         return None
+    if not isinstance(config, dict):
+        raise error_type("Failure-reference binding is malformed")
     binding_path = contained_path(
         directory,
         safe_relative_path(
@@ -97,7 +100,12 @@ def load_failure_reference_runtime_binding(
     )
 
 
-def load_workspace_voice_registry(directory, workspace, *, error_type=ValueError):
+def load_workspace_voice_registry(
+    directory: str | Path,
+    workspace: Mapping[str, object],
+    *,
+    error_type: type[Exception] = ValueError,
+) -> CharacterVoiceRegistry:
     """Build the effective manifest plus failure-reference voice registry."""
     manifest = selected_voice_manifest_path(directory, workspace, error_type=error_type)
     if manifest is None:
@@ -120,11 +128,11 @@ def load_workspace_voice_registry(directory, workspace, *, error_type=ValueError
 
 
 def load_workspace_queue_voice_overrides(
-    directory,
-    workspace,
+    directory: str | Path,
+    workspace: Mapping[str, object],
     *,
-    error_type=ValueError,
-):
+    error_type: type[Exception] = ValueError,
+) -> dict[str, str]:
     """Load exact manifest and failure-reference queue voice overrides."""
     manifest = selected_voice_manifest_path(directory, workspace, error_type=error_type)
     if manifest is None:
@@ -144,7 +152,13 @@ def load_workspace_queue_voice_overrides(
     return {**overrides, **runtime_binding.queue_voice_overrides}
 
 
-def _read_bound_bytes(path, expected_sha256, label, *, error_type):
+def _read_bound_bytes(
+    path: str | Path,
+    expected_sha256: str,
+    label: str,
+    *,
+    error_type: type[Exception],
+) -> bytes:
     payload = read_regular_file(path, label, error_type=error_type)
     if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise error_type(f"{label} was modified")

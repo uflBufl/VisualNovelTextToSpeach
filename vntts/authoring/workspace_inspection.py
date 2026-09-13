@@ -1656,7 +1656,7 @@ def generation_control_bindings(
     policy = _missing_voice_policy(missing_voice_policy)
     repair_policy = _failure_repair_policy(failure_repair_policy)
     run_config = workspace["run_config"]
-    expected = {
+    expected: dict[str, object] = {
         "backend": backend,
         "model": model,
         "generation_profile": generation_profile,

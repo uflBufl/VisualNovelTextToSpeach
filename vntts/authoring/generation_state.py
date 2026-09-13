@@ -1512,7 +1512,7 @@ def _validate_synthesis_configuration(
     policy = _load_missing_voice_policy(configuration, queue_id)
     repair_policy = _load_failure_repair_policy(configuration, queue_id)
     canonical = _validate_synthesis_overrides(configuration, policy, queue_id)
-    validated = {
+    validated: StateObject = {
         "missing_voice_policy": policy.to_document(),
         "synthesis_character_overrides": canonical,
         "failure_repair_policy": repair_policy.to_document(),

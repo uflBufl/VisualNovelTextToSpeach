@@ -879,9 +879,11 @@ def _validate_carry_forward_authorities(
             carry.get("offline_fallback_authorities"),
             directory,
             {
-                item.get("queue_id"): item.get("source_item_sha256")
+                queue_id: item.get("source_item_sha256")
                 for item in items
                 if isinstance(item, dict) and item.get("mode") == "failed-outcome"
+                for queue_id in (item.get("queue_id"),)
+                if isinstance(queue_id, str)
             },
         )
     except OfflineFallbackAuthorityError as error:

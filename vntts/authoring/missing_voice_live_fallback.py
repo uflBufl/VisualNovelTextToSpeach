@@ -10,7 +10,9 @@ import secrets
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypedDict
 
+from vntts_artifacts import VoiceGenerationQueueItem
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -45,6 +47,16 @@ from vntts.authoring.workspace_foundation import load_json_object
 from vntts.voices import synthesis_character_for_line
 
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
+JsonObject = dict[str, object]
+
+
+class MissingVoiceAuthority(TypedDict):
+    decision: JsonObject
+    decision_sha256: str
+    bundle: JsonObject
+    bundle_sha256: str
+    plan: JsonObject
+    snapshots: tuple[tuple[Path, str], ...]
 
 
 class MissingVoiceLiveFallbackError(RuntimeError):
@@ -65,17 +77,17 @@ class MissingVoiceLiveFallbackResult:
     applied: bool
     created: bool
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {**asdict(self), "workspace": str(self.workspace)}
 
 
 def authorize_missing_voice_live_fallback(
-    workspace,
-    authority_directory,
-    character,
+    workspace: str | Path,
+    authority_directory: str | Path,
+    character: str,
     *,
-    accept_known_role_narrator_fallback=False,
-):
+    accept_known_role_narrator_fallback: bool = False,
+) -> MissingVoiceLiveFallbackResult:
     """Validate, then optionally commit, one exact zero-override cohort batch."""
     workspace = Path(workspace).expanduser().resolve()
     authority_directory = Path(authority_directory).expanduser().resolve()
@@ -90,7 +102,9 @@ def authorize_missing_voice_live_fallback(
         workspace_document.get("narrator_character"), "Configured narrator character"
     )
     queue, queue_sha256 = load_stable_generation_queue(queue_path)
-    queue_by_id = {item.queue_id: item for item in queue.items}
+    queue_by_id: dict[str, VoiceGenerationQueueItem] = {
+        item.queue_id: item for item in queue.items
+    }
     state_payload = state_path.read_bytes()
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
     state = _decode_state(state_payload)
@@ -102,23 +116,40 @@ def authorize_missing_voice_live_fallback(
 
     authority = _load_authority(authority_directory)
     plan = authority["plan"]
-    binding = authority["decision"]["binding"]
+    authority_decision = authority["decision"]
+    binding = _object_field(
+        authority_decision, "binding", "Missing-voice fallback binding"
+    )
+    plan_source = _object_field(plan, "source", "Missing-voice fallback plan source")
+    authority_bundle = authority["bundle"]
+    authority_decision_id = _text_field(
+        authority_decision, "decision_id", "Missing-voice fallback decision ID"
+    )
     targets = _validated_targets(plan, binding, character, queue_by_id)
-    source_workspace = Path(plan["source"]["workspace"]).resolve()
+    source_workspace = Path(
+        _text_field(plan_source, "workspace", "Missing-voice fallback source workspace")
+    ).resolve()
     source_document = _read_json(
         source_workspace / "workspace.json", "source workspace"
     )
     if (
         workspace_document.get("source") != source_document.get("source")
-        or queue_sha256 != plan["source"]["queue_sha256"]
-        or binding.get("source_workspace_id") != plan["source"]["workspace_id"]
-        or binding.get("source_workspace_sha256") != plan["source"]["workspace_sha256"]
+        or queue_sha256
+        != _text_field(plan_source, "queue_sha256", "Missing-voice fallback queue")
+        or binding.get("source_workspace_id")
+        != _text_field(plan_source, "workspace_id", "Missing-voice fallback source")
+        or binding.get("source_workspace_sha256")
+        != _text_field(plan_source, "workspace_sha256", "Missing-voice fallback source")
     ):
         raise MissingVoiceLiveFallbackError(
             "Missing-voice fallback workspace differs from its audited source"
         )
 
-    existing = [state["items"].get(target["queue_id"]) for target in targets]
+    state_items = _object_field(state, "items", "Generation state items")
+    existing = [
+        state_items.get(_text_field(target, "queue_id", "Fallback target queue ID"))
+        for target in targets
+    ]
     already_applied = _existing_batch_id(
         existing,
         targets,
@@ -134,7 +165,7 @@ def authorize_missing_voice_live_fallback(
             len(targets),
             len({target["cohort_id"] for target in targets}),
             already_applied,
-            authority["decision"]["decision_id"],
+            authority_decision_id,
             state_sha256,
             state_sha256,
             applied=True,
@@ -152,17 +183,22 @@ def authorize_missing_voice_live_fallback(
         "workspace_sha256": workspace_sha256,
         "state_sha256": state_sha256,
         "queue_sha256": queue_sha256,
-        "authority_bundle_id": authority["bundle"]["bundle_id"],
+        "authority_bundle_id": _text_field(
+            authority_bundle, "bundle_id", "Missing-voice fallback bundle ID"
+        ),
         "authority_bundle_sha256": authority["bundle_sha256"],
-        "authority_decision_id": authority["decision"]["decision_id"],
+        "authority_decision_id": authority_decision_id,
         "authority_decision_sha256": authority["decision_sha256"],
-        "plan_id": plan["plan_id"],
+        "plan_id": _text_field(plan, "plan_id", "Missing-voice fallback plan ID"),
         "character": character,
         "configured_narrator_character": narrator_character,
         "provider": "pocket-tts",
         "model": "pocket-tts",
         "generation_profile": "default",
-        "queue_ids": [target["queue_id"] for target in targets],
+        "queue_ids": [
+            _text_field(target, "queue_id", "Fallback target queue ID")
+            for target in targets
+        ],
     }
     batch_id = canonical_document_sha256(batch_body)
     if not accept_known_role_narrator_fallback:
@@ -173,7 +209,7 @@ def authorize_missing_voice_live_fallback(
             len(targets),
             len({target["cohort_id"] for target in targets}),
             batch_id,
-            authority["decision"]["decision_id"],
+            authority_decision_id,
             state_sha256,
             state_sha256,
             applied=False,
@@ -183,19 +219,25 @@ def authorize_missing_voice_live_fallback(
     decided_at = datetime.now(timezone.utc).isoformat()
     proposed = copy.deepcopy(state)
     for target in targets:
-        queue_id = target["queue_id"]
+        queue_id = _text_field(target, "queue_id", "Fallback target queue ID")
         queue_item = queue_by_id[queue_id]
         evidence = {
             "schema": MISSING_VOICE_LIVE_FALLBACK_EVIDENCE_SCHEMA,
             "schema_version": 1,
-            "authority_bundle_id": authority["bundle"]["bundle_id"],
+            "authority_bundle_id": _text_field(
+                authority_bundle, "bundle_id", "Missing-voice fallback bundle ID"
+            ),
             "authority_bundle_sha256": authority["bundle_sha256"],
-            "authority_decision_id": authority["decision"]["decision_id"],
+            "authority_decision_id": authority_decision_id,
             "authority_decision_sha256": authority["decision_sha256"],
-            "plan_id": plan["plan_id"],
-            "source_workspace_id": plan["source"]["workspace_id"],
-            "source_workspace_sha256": plan["source"]["workspace_sha256"],
-            "cohort_id": target["cohort_id"],
+            "plan_id": _text_field(plan, "plan_id", "Missing-voice fallback plan ID"),
+            "source_workspace_id": _text_field(
+                plan_source, "workspace_id", "Missing-voice fallback source"
+            ),
+            "source_workspace_sha256": _text_field(
+                plan_source, "workspace_sha256", "Missing-voice fallback source"
+            ),
+            "cohort_id": _text_field(target, "cohort_id", "Fallback target cohort ID"),
             "queue_id": queue_id,
             "decision_origin": AUTOMATIC_UNRESOLVED_ORIGIN,
             "requested_voice_character": character,
@@ -218,7 +260,8 @@ def authorize_missing_voice_live_fallback(
             "decided_at": decided_at,
             "evidence": evidence,
         }
-        proposed["items"][queue_id] = {
+        proposed_items = _object_field(proposed, "items", "Generation state items")
+        proposed_items[queue_id] = {
             "status": "live_fallback",
             "review_status": "live_fallback",
             "attempts": 0,
@@ -289,7 +332,7 @@ def authorize_missing_voice_live_fallback(
         len(targets),
         len({target["cohort_id"] for target in targets}),
         batch_id,
-        authority["decision"]["decision_id"],
+        authority_decision_id,
         state_sha256,
         sha256_file(state_path),
         applied=True,
@@ -297,7 +340,7 @@ def authorize_missing_voice_live_fallback(
     )
 
 
-def _load_authority(directory):
+def _load_authority(directory: Path) -> MissingVoiceAuthority:
     if not directory.is_dir():
         raise MissingVoiceLiveFallbackError(
             "Missing-voice fallback authority directory is missing"
@@ -326,9 +369,21 @@ def _load_authority(directory):
         raise MissingVoiceLiveFallbackError(
             "Missing-voice fallback decision identity is invalid"
         )
-    plan_path = Path(decision["plan_path"]).expanduser().resolve()
-    session_path = Path(decision["session_path"]).expanduser().resolve()
-    if not plan_path.is_file() or sha256_file(plan_path) != decision["plan_sha256"]:
+    plan_path = (
+        Path(_text_field(decision, "plan_path", "Missing-voice fallback plan path"))
+        .expanduser()
+        .resolve()
+    )
+    session_path = (
+        Path(
+            _text_field(decision, "session_path", "Missing-voice fallback session path")
+        )
+        .expanduser()
+        .resolve()
+    )
+    if not plan_path.is_file() or sha256_file(plan_path) != _text_field(
+        decision, "plan_sha256", "Missing-voice fallback plan checksum"
+    ):
         raise MissingVoiceLiveFallbackError(
             "Missing-voice fallback plan authority changed"
         )
@@ -347,10 +402,21 @@ def _load_authority(directory):
     except MissingVoiceReuseBindingError as error:
         raise MissingVoiceLiveFallbackError(str(error)) from error
     bundle = _read_json(bundle_path, "missing-voice binding bundle")
-    snapshots = []
-    for record in bundle.get("inventory", []):
-        path = directory / record["path"]
-        snapshots.append((path, record["sha256"]))
+    snapshots: list[tuple[Path, str]] = []
+    for record in _object_list(
+        bundle.get("inventory"), "Missing-voice binding inventory"
+    ):
+        path = directory / _text_field(
+            record, "path", "Missing-voice binding artifact path"
+        )
+        snapshots.append(
+            (
+                path,
+                _text_field(
+                    record, "sha256", "Missing-voice binding artifact checksum"
+                ),
+            )
+        )
     snapshots.append((bundle_path, sha256_file(bundle_path)))
     return {
         "decision": decision,
@@ -362,20 +428,28 @@ def _load_authority(directory):
     }
 
 
-def _validated_targets(plan, binding, character, queue_by_id):
+def _validated_targets(
+    plan: dict[str, object],
+    binding: dict[str, object],
+    character: str,
+    queue_by_id: dict[str, VoiceGenerationQueueItem],
+) -> list[JsonObject]:
     if (
         plan.get("target_mode") is not None
         or binding.get("mode") != "approved_cohort_reuse"
         or binding.get("queue_voice_overrides") != {}
         or binding.get("selected_candidates") != []
-        or binding.get("plan_id") != plan["plan_id"]
+        or binding.get("plan_id")
+        != _text_field(plan, "plan_id", "Missing-voice fallback plan ID")
     ):
         raise MissingVoiceLiveFallbackError(
             "Missing-voice fallback requires an unresolved missing-role authority"
         )
-    decision_by_cohort = {}
-    authority_ids = []
-    for decision in binding.get("decisions", []):
+    decision_by_cohort: dict[str, set[str]] = {}
+    authority_ids: list[str] = []
+    for decision in _object_list(
+        binding.get("decisions"), "Missing-voice fallback decisions"
+    ):
         if (
             not isinstance(decision, dict)
             or decision.get("decision") != "neither"
@@ -384,20 +458,32 @@ def _validated_targets(plan, binding, character, queue_by_id):
             raise MissingVoiceLiveFallbackError(
                 "Missing-voice fallback authority is not automatically unresolved"
             )
-        cohort_id = decision.get("cohort_id")
+        cohort_id = _text_field(
+            decision, "cohort_id", "Missing-voice fallback cohort ID"
+        )
         if cohort_id in decision_by_cohort:
             raise MissingVoiceLiveFallbackError(
                 "Missing-voice fallback authority cohort is duplicated"
             )
-        queue_ids = decision.get("queue_ids")
-        if queue_ids != sorted(set(queue_ids or [])) or not queue_ids:
+        queue_ids = _text_list(
+            decision.get("queue_ids"), "Missing-voice fallback cohort queue IDs"
+        )
+        if queue_ids != sorted(set(queue_ids)) or not queue_ids:
             raise MissingVoiceLiveFallbackError(
                 "Missing-voice fallback authority scope is malformed"
             )
         decision_by_cohort[cohort_id] = set(queue_ids)
         authority_ids.extend(queue_ids)
-    targets = sorted(plan["targets"], key=lambda value: value["queue_id"])
-    target_ids = [target["queue_id"] for target in targets]
+    targets = sorted(
+        _object_list(plan.get("targets"), "Missing-voice fallback targets"),
+        key=lambda value: _text_field(
+            value, "queue_id", "Missing-voice fallback target queue ID"
+        ),
+    )
+    target_ids = [
+        _text_field(target, "queue_id", "Missing-voice fallback target queue ID")
+        for target in targets
+    ]
     if (
         len(authority_ids) != len(set(authority_ids))
         or sorted(authority_ids) != target_ids
@@ -406,17 +492,30 @@ def _validated_targets(plan, binding, character, queue_by_id):
             "Missing-voice fallback authority does not cover the exact plan scope"
         )
     for target in targets:
-        queue_id = target["queue_id"]
+        queue_id = _text_field(
+            target, "queue_id", "Missing-voice fallback target queue ID"
+        )
         queue_item = queue_by_id.get(queue_id)
         if (
             target.get("state") != "absent"
             or target.get("voice_binding_status") != "missing"
             or target.get("declared_voice_character") != character
-            or queue_id not in decision_by_cohort.get(target["cohort_id"], set())
+            or queue_id
+            not in decision_by_cohort.get(
+                _text_field(
+                    target, "cohort_id", "Missing-voice fallback target cohort ID"
+                ),
+                set(),
+            )
             or queue_item is None
-            or queue_item.line_id != target["line_id"]
-            or queue_item.text_sha256 != target["text_sha256"]
-            or queue_item.speaker != target["speaker"]
+            or queue_item.line_id
+            != _text_field(target, "line_id", "Missing-voice fallback target line ID")
+            or queue_item.text_sha256
+            != _text_field(
+                target, "text_sha256", "Missing-voice fallback target text checksum"
+            )
+            or queue_item.speaker
+            != _text_field(target, "speaker", "Missing-voice fallback target speaker")
             or synthesis_character_for_line(
                 queue_item.speaker, queue_item.voice_character
             )
@@ -428,7 +527,13 @@ def _validated_targets(plan, binding, character, queue_by_id):
     return targets
 
 
-def _existing_batch_id(existing, targets, authority, character, narrator_character):
+def _existing_batch_id(
+    existing: list[object],
+    targets: list[JsonObject],
+    authority: MissingVoiceAuthority,
+    character: str,
+    narrator_character: str,
+) -> str | None:
     present = [value is not None for value in existing]
     if not any(present):
         return None
@@ -448,19 +553,45 @@ def _existing_batch_id(existing, targets, authority, character, narrator_charact
             or item.get("review_status") != "live_fallback"
             or decision.get("schema_version")
             != LIVE_FALLBACK_MISSING_VOICE_EVIDENCE_VERSION
-            or decision.get("queue_id") != target["queue_id"]
+            or decision.get("queue_id")
+            != _text_field(target, "queue_id", "Missing-voice fallback target queue ID")
             or decision.get("requested_voice_character") != character
-            or evidence.get("authority_bundle_id") != authority["bundle"]["bundle_id"]
+            or evidence.get("authority_bundle_id")
+            != _text_field(
+                authority["bundle"], "bundle_id", "Missing-voice fallback bundle ID"
+            )
             or evidence.get("authority_bundle_sha256") != authority["bundle_sha256"]
             or evidence.get("authority_decision_id")
-            != authority["decision"]["decision_id"]
+            != _text_field(
+                authority["decision"],
+                "decision_id",
+                "Missing-voice fallback decision ID",
+            )
             or evidence.get("authority_decision_sha256") != authority["decision_sha256"]
-            or evidence.get("plan_id") != authority["plan"]["plan_id"]
+            or evidence.get("plan_id")
+            != _text_field(
+                authority["plan"], "plan_id", "Missing-voice fallback plan ID"
+            )
             or evidence.get("source_workspace_id")
-            != authority["plan"]["source"]["workspace_id"]
+            != _text_field(
+                _object_field(
+                    authority["plan"], "source", "Missing-voice fallback plan source"
+                ),
+                "workspace_id",
+                "Missing-voice fallback source",
+            )
             or evidence.get("source_workspace_sha256")
-            != authority["plan"]["source"]["workspace_sha256"]
-            or evidence.get("cohort_id") != target["cohort_id"]
+            != _text_field(
+                _object_field(
+                    authority["plan"], "source", "Missing-voice fallback plan source"
+                ),
+                "workspace_sha256",
+                "Missing-voice fallback source",
+            )
+            or evidence.get("cohort_id")
+            != _text_field(
+                target, "cohort_id", "Missing-voice fallback target cohort ID"
+            )
             or evidence.get("decision_origin") != AUTOMATIC_UNRESOLVED_ORIGIN
             or evidence.get("requested_voice_character") != character
             or evidence.get("configured_narrator_character") != narrator_character
@@ -473,10 +604,15 @@ def _existing_batch_id(existing, targets, authority, character, narrator_charact
         raise MissingVoiceLiveFallbackError(
             "Missing-voice fallback target scope contains multiple batches"
         )
-    return next(iter(batch_ids))
+    batch_id = next(iter(batch_ids))
+    if not isinstance(batch_id, str):
+        raise MissingVoiceLiveFallbackError(
+            "Missing-voice fallback batch ID is invalid"
+        )
+    return batch_id
 
 
-def _decode_state(payload):
+def _decode_state(payload: bytes) -> dict[str, object]:
     try:
         value = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -486,14 +622,37 @@ def _decode_state(payload):
     return value
 
 
-def _read_json(path, label):
+def _read_json(path: str | Path, label: str) -> dict[str, object]:
     return load_json_object(path, label, error_type=MissingVoiceLiveFallbackError)
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise MissingVoiceLiveFallbackError(f"{label} must be non-empty text")
     return value.strip()
+
+
+def _object_field(document: JsonObject, field: str, label: str) -> JsonObject:
+    value = document.get(field)
+    if not isinstance(value, dict):
+        raise MissingVoiceLiveFallbackError(f"{label} is invalid")
+    return value
+
+
+def _object_list(value: object, label: str) -> list[JsonObject]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise MissingVoiceLiveFallbackError(f"{label} is invalid")
+    return value
+
+
+def _text_field(document: JsonObject, field: str, label: str) -> str:
+    return _required_text(document.get(field), label)
+
+
+def _text_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise MissingVoiceLiveFallbackError(f"{label} is invalid")
+    return value
 
 
 __all__ = [

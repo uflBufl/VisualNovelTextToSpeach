@@ -8,10 +8,13 @@ import json
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TypedDict
 
+from vntts_artifacts import VoiceGenerationQueueItem
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
     VoiceManifestError,
     load_voice_manifest,
     normalize_character_name,
@@ -28,6 +31,7 @@ from vntts.authoring.generation_state import (
     validate_generation_state_document,
 )
 from vntts.authoring.missing_voice_live_fallback import (
+    JsonObject,
     MissingVoiceLiveFallbackError,
     _load_authority,
     _validated_targets,
@@ -61,6 +65,28 @@ KNOWN_ROLE_REUSE_BUNDLE_SCHEMA = "vntts.authoring-known-role-reuse-bundle"
 KNOWN_ROLE_REUSE_BUNDLE_VERSION = 1
 
 
+class ReferenceRecord(TypedDict):
+    relative: Path
+    source: Path
+    sha256: str
+
+
+class TargetRecord(TypedDict):
+    queue_id: str
+    line_id: str
+    text_sha256: str
+    speaker: str
+    declared_voice_character: str
+    source_state: str
+    source_state_item_sha256: str | None
+
+
+class RetiredRecord(TypedDict):
+    variant_id: str
+    record_sha256: str
+    queue_ids: list[str]
+
+
 class KnownRoleReuseError(RuntimeError):
     """An explicit known-role reuse authority is missing or inconsistent."""
 
@@ -79,19 +105,19 @@ class KnownRoleReuseResult:
     applied: bool
     created: bool
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {**asdict(self), "directory": str(self.directory)}
 
 
 def publish_known_role_reuse_binding(
-    workspace,
-    unresolved_authority_directory,
-    source_character,
-    reuse_voice_character,
-    output_directory,
+    workspace: str | Path,
+    unresolved_authority_directory: str | Path,
+    source_character: str,
+    reuse_voice_character: str,
+    output_directory: str | Path,
     *,
-    accept_known_role_reuse=False,
-):
+    accept_known_role_reuse: bool = False,
+) -> KnownRoleReuseResult:
     """Preflight or publish one exact absent/rejected role-to-voice overlay."""
     workspace = Path(workspace).expanduser().resolve()
     unresolved_authority_directory = (
@@ -113,7 +139,9 @@ def publish_known_role_reuse_binding(
     workspace_sha256 = sha256_file(workspace_path)
     queue_path = workspace / "queue.jsonl"
     queue, queue_sha256 = load_stable_generation_queue(queue_path)
-    queue_by_id = {item.queue_id: item for item in queue.items}
+    queue_by_id: dict[str, VoiceGenerationQueueItem] = {
+        item.queue_id: item for item in queue.items
+    }
     state_path = workspace / "generated-audio/generation-state.json"
     state_payload = state_path.read_bytes()
     state_sha256 = hashlib.sha256(state_payload).hexdigest()
@@ -124,25 +152,35 @@ def publish_known_role_reuse_binding(
 
     try:
         unresolved = _load_authority(unresolved_authority_directory)
+        unresolved_decision = unresolved["decision"]
+        unresolved_binding = _object_field(
+            unresolved_decision, "binding", "Known-role unresolved binding"
+        )
         unresolved_targets = _validated_targets(
             unresolved["plan"],
-            unresolved["decision"]["binding"],
+            unresolved_binding,
             source_character,
             queue_by_id,
         )
     except MissingVoiceLiveFallbackError as error:
         raise KnownRoleReuseError(str(error)) from error
     plan = unresolved["plan"]
-    plan_source_workspace = Path(plan["source"]["workspace"]).resolve()
+    plan_source = _object_field(plan, "source", "Known-role unresolved plan source")
+    plan_source_workspace = Path(
+        _text_field(plan_source, "workspace", "Known-role unresolved source workspace")
+    ).resolve()
     plan_source_document = _read_json(
         plan_source_workspace / "workspace.json", "unresolved source workspace"
     )
-    binding = unresolved["decision"]["binding"]
+    binding = unresolved_binding
     if (
         workspace_document.get("source") != plan_source_document.get("source")
-        or queue_sha256 != plan["source"]["queue_sha256"]
-        or binding.get("source_workspace_id") != plan["source"]["workspace_id"]
-        or binding.get("source_workspace_sha256") != plan["source"]["workspace_sha256"]
+        or queue_sha256
+        != _text_field(plan_source, "queue_sha256", "Known-role unresolved queue")
+        or binding.get("source_workspace_id")
+        != _text_field(plan_source, "workspace_id", "Known-role unresolved source")
+        or binding.get("source_workspace_sha256")
+        != _text_field(plan_source, "workspace_sha256", "Known-role unresolved source")
     ):
         raise KnownRoleReuseError(
             "Known-role workspace differs from the unresolved source authority"
@@ -153,8 +191,15 @@ def publish_known_role_reuse_binding(
         workspace_document,
         error_type=AuthoringWorkbenchError,
     )
+    if selected_voice_manifest is None:
+        raise KnownRoleReuseError("Known-role selected voice manifest is unavailable")
     selected_voice_sha256 = sha256_file(selected_voice_manifest)
-    if selected_voice_sha256 != workspace_document["voice_manifest"]["sha256"]:
+    workspace_voice_manifest = _object_field(
+        workspace_document, "voice_manifest", "Known-role workspace voice manifest"
+    )
+    if selected_voice_sha256 != _text_field(
+        workspace_voice_manifest, "sha256", "Known-role workspace voice manifest"
+    ):
         raise KnownRoleReuseError("Known-role source voice manifest changed")
     authority_voice_manifest = unresolved_authority_directory / "manifest.json"
     try:
@@ -214,6 +259,10 @@ def publish_known_role_reuse_binding(
         successor_voice_manifest = authority_voice_manifest
         successor_voices = voices
     else:
+        if not isinstance(selected_reuse_binding, dict):
+            raise KnownRoleReuseError(
+                "Selected voice controls are not an additive reviewed reuse overlay"
+            )
         if (
             selected_reuse_binding.get("schema_version")
             != MISSING_VOICE_REUSE_APPROVED_BINDING_VERSION
@@ -234,13 +283,18 @@ def publish_known_role_reuse_binding(
     reuse_voice = _resolve_exact_voice(successor_voices, reuse_voice_character)
     all_reference_records = _reference_records(
         successor_voice_manifest.parent,
-        [reference for voice in successor_voices for reference in voice.references],
+        tuple(
+            reference for voice in successor_voices for reference in voice.references
+        ),
     )
     reuse_reference_records = _reference_records(
         successor_voice_manifest.parent, reuse_voice.references
     )
 
-    unresolved_ids = {target["queue_id"] for target in unresolved_targets}
+    unresolved_ids = {
+        _text_field(target, "queue_id", "Known-role unresolved target queue ID")
+        for target in unresolved_targets
+    }
     role_items = [
         item
         for item in queue.items
@@ -250,13 +304,14 @@ def publish_known_role_reuse_binding(
         )
         == normalize_character_name(source_character)
     ]
-    rejected = {}
-    approved = {}
-    target_records = []
+    state_items = _object_field(state, "items", "Generation state items")
+    rejected: dict[str, str] = {}
+    approved: dict[str, str] = {}
+    target_records: list[TargetRecord] = []
     for item in sorted(role_items, key=lambda value: value.queue_id):
         queue_id = item.queue_id
-        result = state["items"].get(queue_id)
-        source_state = None
+        result = state_items.get(queue_id)
+        source_state: str
         state_item_sha256 = None
         if queue_id in unresolved_ids:
             if result is not None:
@@ -304,7 +359,7 @@ def publish_known_role_reuse_binding(
         raise KnownRoleReuseError(
             "Known-role unresolved authority does not cover every absent role item"
         )
-    retired_records = []
+    retired_records: list[RetiredRecord] = []
     for record in retired_source_reference_variants_from_manifest(voice_document):
         queue_ids = sorted(record["queue_ids"])
         if set(queue_ids).issubset(rejected):
@@ -318,13 +373,20 @@ def publish_known_role_reuse_binding(
     retired_records.sort(key=lambda value: value["variant_id"])
 
     unresolved_queue_ids = sorted(unresolved_ids)
-    cohort_ids = sorted(decision["cohort_id"] for decision in binding["decisions"])
+    cohort_ids = sorted(
+        _text_field(decision, "cohort_id", "Known-role reuse cohort ID")
+        for decision in _object_list(
+            binding.get("decisions"), "Known-role reuse decisions"
+        )
+    )
     known_binding = {
         "schema": KNOWN_ROLE_REUSE_BINDING_SCHEMA,
         "schema_version": KNOWN_ROLE_REUSE_BINDING_VERSION,
         "mode": "explicit_role_reuse",
         "source_voice_manifest_sha256": selected_voice_sha256,
-        "source_workspace_id": workspace_document["workspace_id"],
+        "source_workspace_id": _text_field(
+            workspace_document, "workspace_id", "Known-role workspace ID"
+        ),
         "source_workspace_sha256": workspace_sha256,
         "source_state_sha256": state_sha256,
         "queue_sha256": queue_sha256,
@@ -334,11 +396,15 @@ def publish_known_role_reuse_binding(
             record["sha256"] for record in reuse_reference_records
         ),
         "unresolved_authority": {
-            "bundle_id": unresolved["bundle"]["bundle_id"],
+            "bundle_id": _text_field(
+                unresolved["bundle"], "bundle_id", "Known-role unresolved bundle ID"
+            ),
             "bundle_sha256": unresolved["bundle_sha256"],
-            "decision_id": unresolved["decision"]["decision_id"],
+            "decision_id": _text_field(
+                unresolved_decision, "decision_id", "Known-role unresolved decision ID"
+            ),
             "decision_sha256": unresolved["decision_sha256"],
-            "plan_id": plan["plan_id"],
+            "plan_id": _text_field(plan, "plan_id", "Known-role unresolved plan ID"),
             "cohort_ids": cohort_ids,
             "queue_ids": unresolved_queue_ids,
         },
@@ -436,7 +502,12 @@ def publish_known_role_reuse_binding(
     return KnownRoleReuseResult(**{**asdict(result), "created": True})
 
 
-def _validate_bundle(directory, expected_binding, decision_body, queue_by_id):
+def _validate_bundle(
+    directory: str | Path,
+    expected_binding: dict[str, object],
+    decision_body: dict[str, object],
+    queue_by_id: dict[str, VoiceGenerationQueueItem],
+) -> None:
     directory = Path(directory).resolve()
     bundle = _read_json(directory / "bundle.json", "known-role bundle")
     body = {key: value for key, value in bundle.items() if key != "bundle_id"}
@@ -508,7 +579,9 @@ def _validate_bundle(directory, expected_binding, decision_body, queue_by_id):
         raise KnownRoleReuseError("Known-role manifest binding changed")
 
 
-def _resolve_exact_voice(voices, character):
+def _resolve_exact_voice(
+    voices: list[VoiceManifestEntry], character: str
+) -> VoiceManifestEntry:
     matches = [
         voice
         for voice in voices
@@ -522,9 +595,11 @@ def _resolve_exact_voice(voices, character):
     return matches[0]
 
 
-def _reference_records(root, references):
-    records = []
-    seen = set()
+def _reference_records(
+    root: Path, references: tuple[str, ...]
+) -> list[ReferenceRecord]:
+    records: list[ReferenceRecord] = []
+    seen: set[str] = set()
     for value in references:
         relative = safe_workspace_relative_path(value, "Known-role voice reference")
         if relative.as_posix() in seen:
@@ -547,7 +622,7 @@ def _reference_records(root, references):
     return records
 
 
-def _copy_tree(source, destination):
+def _copy_tree(source: Path, destination: Path) -> None:
     if source.is_symlink() or not source.is_dir():
         raise KnownRoleReuseError("Known-role unresolved authority is unsafe")
     for path in sorted(source.rglob("*")):
@@ -563,7 +638,7 @@ def _copy_tree(source, destination):
             raise KnownRoleReuseError("Known-role authority changed while copied")
 
 
-def _decode_state(payload):
+def _decode_state(payload: bytes) -> dict[str, object]:
     try:
         value = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -573,14 +648,31 @@ def _decode_state(payload):
     return value
 
 
-def _read_json(path, label):
+def _read_json(path: str | Path, label: str) -> dict[str, object]:
     return load_json_object(path, label, error_type=KnownRoleReuseError)
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise KnownRoleReuseError(f"{label} must be non-empty text")
     return value.strip()
+
+
+def _object_field(document: JsonObject, field: str, label: str) -> JsonObject:
+    value = document.get(field)
+    if not isinstance(value, dict):
+        raise KnownRoleReuseError(f"{label} is invalid")
+    return value
+
+
+def _object_list(value: object, label: str) -> list[JsonObject]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise KnownRoleReuseError(f"{label} is invalid")
+    return value
+
+
+def _text_field(document: JsonObject, field: str, label: str) -> str:
+    return _required_text(document.get(field), label)
 
 
 __all__ = [

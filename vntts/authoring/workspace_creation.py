@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol, TypeAlias, TypeGuard
+from typing import TypeAlias, TypeGuard
 
 from platformdirs import user_data_path
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -84,6 +84,7 @@ from vntts.authoring.missing_voice_policy import (
     MissingVoicePolicyError,
 )
 from vntts.authoring.offline_fallback_authority import (
+    OfflineFallbackAuthority,
     OfflineFallbackAuthorityError,
     load_offline_fallback_authorities,
 )
@@ -171,18 +172,6 @@ SelectedSource: TypeAlias = tuple[Path, str, str]
 ArtifactRecord: TypeAlias = JsonDocument
 GenerationStateItems: TypeAlias = dict[str, JsonDocument]
 GenerationControls: TypeAlias = dict[str, tuple[Path, str]]
-
-
-class _OfflineFallbackAuthority(Protocol):
-    source: Path
-    payload: bytes
-    source_sha256: str
-    authority_id: str
-    queue_ids: tuple[str, ...]
-
-    def snapshot_record(self, path: str) -> JsonDocument: ...
-
-    def reference_record(self, queue_id: str) -> JsonDocument: ...
 
 
 def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
@@ -477,7 +466,7 @@ def _resume_run_config(
     repair_policy: FailureRepairPolicy,
     projection_ids: Sequence[str],
 ) -> JsonDocument:
-    config = {
+    config: JsonDocument = {
         "backend": _optional_text(backend),
         "model": _optional_text(model),
         "generation_profile": _optional_text(generation_profile),
@@ -1665,16 +1654,16 @@ def _stage_offline_fallback_authorities(
     selection: _CarryForwardSelection,
     authorities: Iterable[str | Path] | None,
 ) -> tuple[
-    tuple[_OfflineFallbackAuthority, ...],
-    dict[str, _OfflineFallbackAuthority],
+    tuple[OfflineFallbackAuthority, ...],
+    dict[str, OfflineFallbackAuthority],
     list[JsonDocument],
     tuple[SelectedSource, ...],
 ]:
     try:
-        loaded: tuple[_OfflineFallbackAuthority, ...] = (
+        loaded: tuple[OfflineFallbackAuthority, ...] = (
             load_offline_fallback_authorities(
                 authorities,
-                source.state.get("items", {}),
+                _state_items(source.state),
                 selection.offline_queue_ids,
             )
         )
@@ -1929,7 +1918,7 @@ def _validate_failed_carry_forward_source(
     source: _CarryForwardSource,
     selection: _CarryForwardSelection,
     queue_by_id: Mapping[str, VoiceGenerationQueueItem],
-    authority_by_queue_id: Mapping[str, _OfflineFallbackAuthority],
+    authority_by_queue_id: Mapping[str, OfflineFallbackAuthority],
     queue_id: str,
 ) -> tuple[
     JsonDocument,
@@ -1938,7 +1927,7 @@ def _validate_failed_carry_forward_source(
     str,
     str,
     str,
-    _OfflineFallbackAuthority | None,
+    OfflineFallbackAuthority | None,
     object,
     object,
     int | None,
@@ -2043,7 +2032,7 @@ def _carry_forward_failed_items(
     target_state: GenerationState,
     target_queue: VoiceGenerationQueue,
     selection: _CarryForwardSelection,
-    authority_by_queue_id: Mapping[str, _OfflineFallbackAuthority],
+    authority_by_queue_id: Mapping[str, OfflineFallbackAuthority],
     source_registry: CharacterVoiceRegistry,
 ) -> list[JsonDocument]:
     queue_by_id = {item.queue_id: item for item in target_queue.items}
@@ -2156,7 +2145,7 @@ def _carry_forward_document(
     source: _CarryForwardSource,
     selection: _CarryForwardSelection,
     carried: Sequence[JsonDocument],
-    authorities: Sequence[_OfflineFallbackAuthority],
+    authorities: Sequence[OfflineFallbackAuthority],
     authority_records: Sequence[JsonDocument],
 ) -> JsonDocument:
     document = {

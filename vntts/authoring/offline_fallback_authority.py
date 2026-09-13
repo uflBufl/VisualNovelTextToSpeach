@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,7 +37,7 @@ class OfflineFallbackAuthority:
     queue_ids: tuple[str, ...]
     source_item_sha256s: dict[str, str]
 
-    def snapshot_record(self, path):
+    def snapshot_record(self, path: str | Path) -> dict[str, object]:
         return {
             "schema": OFFLINE_FALLBACK_AUTHORITY_SCHEMA,
             "schema_version": OFFLINE_FALLBACK_AUTHORITY_VERSION,
@@ -48,7 +49,7 @@ class OfflineFallbackAuthority:
             "source_item_sha256s": dict(self.source_item_sha256s),
         }
 
-    def reference_record(self, queue_id):
+    def reference_record(self, queue_id: str) -> dict[str, object]:
         return {
             "schema": OFFLINE_FALLBACK_AUTHORITY_REFERENCE_SCHEMA,
             "schema_version": OFFLINE_FALLBACK_AUTHORITY_REFERENCE_VERSION,
@@ -60,7 +61,11 @@ class OfflineFallbackAuthority:
         }
 
 
-def load_offline_fallback_authorities(paths, source_items, selected_queue_ids):
+def load_offline_fallback_authorities(
+    paths: Iterable[str | Path] | None,
+    source_items: Mapping[str, object],
+    selected_queue_ids: Iterable[object],
+) -> tuple[OfflineFallbackAuthority, ...]:
     """Load exact automatic-unresolved artifacts for every selected source item."""
     selected = {
         _required_text(value, "Offline fallback queue ID")
@@ -109,7 +114,11 @@ def load_offline_fallback_authorities(paths, source_items, selected_queue_ids):
     return tuple(sorted(loaded, key=lambda value: value.authority_id))
 
 
-def validate_offline_fallback_authority_records(records, directory, source_items):
+def validate_offline_fallback_authority_records(
+    records: object,
+    directory: str | Path,
+    source_items: Mapping[str, object],
+) -> tuple[OfflineFallbackAuthority, ...]:
     """Revalidate copied authority snapshots bound into a workspace ledger."""
     if not isinstance(records, list) or not records:
         raise OfflineFallbackAuthorityError(
@@ -196,7 +205,7 @@ def validate_offline_fallback_authority_records(records, directory, source_items
     return loaded
 
 
-def _load_authority(path):
+def _load_authority(path: str | Path) -> OfflineFallbackAuthority:
     candidate = Path(path).expanduser()
     if candidate.is_symlink():
         raise OfflineFallbackAuthorityError(
@@ -253,7 +262,7 @@ def _load_authority(path):
             "Offline fallback authority decisions are empty"
         )
     queue_ids = []
-    decision_hashes = {}
+    decision_hashes: dict[str, str] = {}
     for decision in decisions:
         if (
             not isinstance(decision, dict)
@@ -287,7 +296,7 @@ def _load_authority(path):
             "Offline fallback authority queue IDs overlap or are not canonical"
         )
     if kind == "failed_voice_review":
-        decision_hashes = source_hashes
+        decision_hashes = source_hashes if isinstance(source_hashes, dict) else {}
     if (
         not isinstance(decision_hashes, dict)
         or set(decision_hashes) != set(queue_ids)
@@ -312,10 +321,15 @@ def _load_authority(path):
     )
 
 
-def _canonical_id(document, field):
+def _canonical_id(document: dict[str, object], field: str) -> str:
     claimed = document.get(field)
-    if not is_lowercase_sha256(claimed) or claimed != canonical_document_sha256(
-        {key: value for key, value in document.items() if key != field}
+    if (
+        not isinstance(claimed, str)
+        or not is_lowercase_sha256(claimed)
+        or claimed
+        != canonical_document_sha256(
+            {key: value for key, value in document.items() if key != field}
+        )
     ):
         raise OfflineFallbackAuthorityError(
             "Offline fallback authority identity changed"
@@ -323,7 +337,7 @@ def _canonical_id(document, field):
     return claimed
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise OfflineFallbackAuthorityError(f"{label} must be non-empty text")
     return value.strip()

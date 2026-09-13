@@ -48,6 +48,7 @@ MISSING_VOICE_REUSE_BINDING_BUNDLE_SCHEMA = (
     "vntts.authoring-missing-voice-reuse-binding-bundle"
 )
 MISSING_VOICE_REUSE_BINDING_BUNDLE_VERSION = 1
+JsonObject = dict[str, object]
 
 
 class MissingVoiceReuseBindingError(RuntimeError):
@@ -62,7 +63,7 @@ class MissingVoiceReuseBindingResult:
     neither_cohort_count: int
     bound_queue_count: int
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "directory": str(self.directory),
             "created": self.created,
@@ -72,7 +73,11 @@ class MissingVoiceReuseBindingResult:
         }
 
 
-def publish_missing_voice_reuse_binding(plan_path, session_path, output_directory):
+def publish_missing_voice_reuse_binding(
+    plan_path: str | Path,
+    session_path: str | Path,
+    output_directory: str | Path,
+) -> MissingVoiceReuseBindingResult:
     """Publish a full-cohort binding overlay from one completed blind review."""
     plan_path = Path(plan_path).expanduser().resolve()
     session_path = Path(session_path).expanduser().resolve()
@@ -106,7 +111,7 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
     planned_candidate_by_id = {
         value["candidate_id"]: value for value in document["candidates"]
     }
-    target_by_cohort = {}
+    target_by_cohort: dict[str, list[str]] = {}
     for target in document["targets"]:
         target_by_cohort.setdefault(target["cohort_id"], []).append(target["queue_id"])
 
@@ -328,7 +333,11 @@ def publish_missing_voice_reuse_binding(plan_path, session_path, output_director
     return _result(output, binding, created=True)
 
 
-def _validate_binding_bundle(directory, plan, expected_binding):
+def _validate_binding_bundle(
+    directory: str | Path,
+    plan: JsonObject,
+    expected_binding: JsonObject,
+) -> None:
     directory = Path(directory).resolve()
     try:
         bundle = json.loads((directory / "bundle.json").read_text(encoding="utf-8"))
@@ -418,23 +427,51 @@ def _validate_binding_bundle(directory, plan, expected_binding):
         raise MissingVoiceReuseBindingError(str(error)) from error
     if manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD) != expected_binding:
         raise MissingVoiceReuseBindingError("Missing-voice binding manifest changed")
-    expected_overrides = expected_binding["queue_voice_overrides"]
+    expected_overrides = _object_field(
+        expected_binding,
+        "queue_voice_overrides",
+        "Missing-voice binding overrides",
+    )
     if {
         queue_id: combined_overrides.get(queue_id) for queue_id in expected_overrides
     } != expected_overrides:
         raise MissingVoiceReuseBindingError("Missing-voice binding overrides changed")
 
 
-def _result(directory, binding, *, created):
-    selected = sum(value["decision"] == "candidate" for value in binding["decisions"])
-    neither = sum(value["decision"] == "neither" for value in binding["decisions"])
+def _result(
+    directory: str | Path,
+    binding: JsonObject,
+    *,
+    created: bool,
+) -> MissingVoiceReuseBindingResult:
+    decisions = _object_list(
+        binding.get("decisions"), "Missing-voice binding decisions"
+    )
+    overrides = _object_field(
+        binding, "queue_voice_overrides", "Missing-voice binding overrides"
+    )
+    selected = sum(value.get("decision") == "candidate" for value in decisions)
+    neither = sum(value.get("decision") == "neither" for value in decisions)
     return MissingVoiceReuseBindingResult(
         Path(directory).resolve(),
         created,
         selected,
         neither,
-        len(binding["queue_voice_overrides"]),
+        len(overrides),
     )
+
+
+def _object_field(document: JsonObject, field: str, label: str) -> JsonObject:
+    value = document.get(field)
+    if not isinstance(value, dict):
+        raise MissingVoiceReuseBindingError(f"{label} is invalid")
+    return value
+
+
+def _object_list(value: object, label: str) -> list[JsonObject]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise MissingVoiceReuseBindingError(f"{label} is invalid")
+    return value
 
 
 __all__ = [
