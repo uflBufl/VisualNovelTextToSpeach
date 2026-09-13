@@ -112,7 +112,7 @@
     "vntts/authoring/workbench.py": 112,
     "vntts/authoring/workbench_contracts.py": 3,
     "vntts/authoring/workbench_ui.py": 112,
-    "vntts/authoring/workspace_authority.py": 36,
+    "vntts/authoring/workspace_authority.py": 49,
     "vntts/authoring/workspace_voice_runtime.py": 4,
     "vntts/auto_advance.py": 4,
     "vntts/calibration.py": 19,

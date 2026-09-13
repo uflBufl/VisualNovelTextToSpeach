@@ -1054,12 +1054,6 @@
     {
       "code": "C901",
       "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_validate_workspace_carry_forward",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workspace_authority.py",
       "scope": "_validate_workspace_failure_reference_binding",
       "count": 1
     },
@@ -2476,12 +2470,6 @@
     {
       "code": "PLR0912",
       "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_validate_workspace_carry_forward",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/workspace_authority.py",
       "scope": "_validate_workspace_failure_reference_binding",
       "count": 1
     },
@@ -3509,12 +3497,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/voice_repair_comparison.py",
       "scope": "build_voice_repair_comparison_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/workspace_authority.py",
-      "scope": "_validate_workspace_carry_forward",
       "count": 1
     },
     {
