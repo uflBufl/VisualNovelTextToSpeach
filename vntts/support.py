@@ -387,6 +387,30 @@ class RuntimeSupportLog:
             return list(self.entries)
 
 
+def _read_bounded_json_lines(path, maximum_bytes):
+    if path is None:
+        return ()
+    try:
+        with path.open("rb") as source:
+            source.seek(0, 2)
+            offset = max(0, source.tell() - maximum_bytes)
+            source.seek(offset)
+            payload = source.read(maximum_bytes)
+    except OSError:
+        return ()
+    if offset:
+        payload = payload.split(b"\n", 1)[-1]
+    entries = []
+    for line in payload.splitlines():
+        try:
+            entry = json.loads(line)
+        except TypeError, ValueError, json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return tuple(entries)
+
+
 performance_fields = (
     "operation",
     "outcome",
@@ -531,23 +555,7 @@ class GameImportLog(RuntimeSupportLog):
         )
 
     def _load_previous(self):
-        if self.path is None:
-            return
-        try:
-            with self.path.open("rb") as source:
-                source.seek(0, 2)
-                offset = max(0, source.tell() - self.maximum_bytes)
-                source.seek(offset)
-                payload = source.read(self.maximum_bytes)
-        except OSError:
-            return
-        if offset:
-            payload = payload.split(b"\n", 1)[-1]
-        for line in payload.splitlines():
-            try:
-                entry = json.loads(line)
-            except TypeError, ValueError, json.JSONDecodeError:
-                continue
+        for entry in _read_bounded_json_lines(self.path, self.maximum_bytes):
             if not isinstance(entry, dict) or entry.get("level") != "game-import":
                 continue
             stage = entry.get("stage")
@@ -602,21 +610,31 @@ _native_fields = frozenset(
     "response_pcm_decode_s gen_backbone_s gen_frame_decoder_s "
     "gen_input_embedding_s".split()
 )
+_NATIVE_DROP = object()
 
 
 class NativeSpeechLog(RuntimeSupportLog):
     """Bounded detail with non-rolling counts; independent of preview ownership."""
 
-    def __init__(self, maximum_entries=200):
-        super().__init__(maximum_entries=maximum_entries)
+    def __init__(self, maximum_entries=200, *, path=None):
+        super().__init__(
+            maximum_entries=maximum_entries,
+            path=path,
+            detail_fields=("native",),
+        )
         self.started_at = self.clock().isoformat()
         self.total_events = 0
         self.outcomes = Counter()
         self.request_seconds = Counter()
         self.latest_runtime = None
         self.active_requests = OrderedDict()
+        try:
+            self._load_previous()
+        except Exception:
+            pass
 
     def record(self, details):
+        details = _sanitize_native_details(details)
         with self.lock:
             self.add(
                 "moss-native",
@@ -626,38 +644,61 @@ class NativeSpeechLog(RuntimeSupportLog):
                     for key, value in details.items()
                     if key not in {"resources", "sampling"}
                 ),
+                native=details,
             )
-            self.entries[-1]["native"] = details
-            self.total_events += 1
-            operation = details.get("operation", "unknown")
-            outcome = details.get("outcome", "unknown")
-            key = f"{operation}/{outcome}"
-            # ponytail: fixed-size aggregate labels; details retain new labels.
-            if key not in self.outcomes and len(self.outcomes) >= 64:
-                key = "other"
-            self.outcomes[key] += 1
-            seconds = details.get("request_s")
-            if isinstance(seconds, (int, float)) and math.isfinite(seconds):
-                self.request_seconds[key] += max(0, seconds)
-            if operation == "server-start":
-                self.latest_runtime = details
-            attempt_id = details.get("attempt_id")
-            if attempt_id and operation == "request-start":
-                self.active_requests[attempt_id] = {
-                    **details,
-                    "recorded_at": self.entries[-1]["recorded_at"],
-                }
-                if len(self.active_requests) > 64:
-                    self.active_requests.popitem(last=False)
-            elif attempt_id and operation == "fresh-generation":
-                self.active_requests.pop(attempt_id, None)
+            self._accumulate(details, self.entries[-1]["recorded_at"])
+
+    def _load_previous(self):
+        for entry in _read_bounded_json_lines(self.path, self.maximum_bytes):
+            if entry.get("level") != "moss-native":
+                continue
+            details = _sanitize_native_details(entry.get("native"))
+            if not details:
+                continue
+            restored = {
+                "recorded_at": str(entry.get("recorded_at", "")),
+                "level": "moss-native",
+                "message": self._bounded_message(
+                    _redact_game_import_text(entry.get("message", ""))
+                ),
+                "native": details,
+            }
+            self.entries.append(restored)
+            self._accumulate(details, restored["recorded_at"])
+        if self.entries:
+            self.started_at = self.entries[0]["recorded_at"]
+
+    def _accumulate(self, details, recorded_at):
+        self.total_events += 1
+        operation = details.get("operation", "unknown")
+        outcome = details.get("outcome", "unknown")
+        key = f"{operation}/{outcome}"
+        # ponytail: fixed-size aggregate labels; details retain new labels.
+        if key not in self.outcomes and len(self.outcomes) >= 64:
+            key = "other"
+        self.outcomes[key] += 1
+        seconds = details.get("request_s")
+        if isinstance(seconds, (int, float)) and math.isfinite(seconds):
+            self.request_seconds[key] += max(0, seconds)
+        if operation == "server-start":
+            self.latest_runtime = details
+        attempt_id = details.get("attempt_id")
+        if attempt_id and operation == "request-start":
+            self.active_requests[attempt_id] = {
+                **details,
+                "recorded_at": recorded_at,
+            }
+            if len(self.active_requests) > 64:
+                self.active_requests.popitem(last=False)
+        elif attempt_id and operation == "fresh-generation":
+            self.active_requests.pop(attempt_id, None)
 
     def report(self):
         with self.lock:
             events = self.snapshot()
             return {
-                "schema_version": 2,
-                "scope": "current application process; export before exit",
+                "schema_version": 3,
+                "scope": "bounded recent application processes",
                 "started_at": self.started_at,
                 "total_events": self.total_events,
                 "retained_events": len(events),
@@ -685,6 +726,12 @@ class NativeSpeechLog(RuntimeSupportLog):
 
 
 native_speech_log = NativeSpeechLog()
+
+
+def configure_native_speech_log(path=None):
+    global native_speech_log
+    native_speech_log = NativeSpeechLog(path=path)
+    return native_speech_log
 
 
 def record_native_speech(**details):
@@ -838,11 +885,7 @@ def sanitize_event(entry):
             if key in entry
         )
     if isinstance(entry.get("native"), dict):
-        sanitized["native"] = {
-            key: value
-            for key, value in entry["native"].items()
-            if key in _native_fields
-        }
+        sanitized["native"] = _sanitize_native_details(entry["native"])
     return sanitized
 
 
@@ -907,6 +950,44 @@ def _sanitize_game_import_structure(value, depth=0):
     if isinstance(value, (set, bytes, bytearray)):
         return None
     return _redact_game_import_text(value)
+
+
+def _sanitize_native_details(details):
+    if not isinstance(details, dict):
+        return {}
+    return {
+        key: sanitized
+        for key, value in details.items()
+        if key in _native_fields
+        and (sanitized := _sanitize_native_value(value)) is not _NATIVE_DROP
+    }
+
+
+def _sanitize_native_value(value, depth=0):
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        if _looks_like_local_path(value):
+            return "<path>"
+        return _redact_game_import_text(value)[:1024]
+    if depth >= 3:
+        return _NATIVE_DROP
+    if isinstance(value, (list, tuple)):
+        return [
+            item
+            for item in (_sanitize_native_value(item, depth + 1) for item in value[:32])
+            if item is not _NATIVE_DROP
+        ]
+    if isinstance(value, dict):
+        return {
+            str(key)[:80]: ("<redacted>" if _is_secret_name(key) else sanitized)
+            for key, item in list(value.items())[:32]
+            if (sanitized := _sanitize_native_value(item, depth + 1))
+            is not _NATIVE_DROP
+        }
+    return _NATIVE_DROP
 
 
 def _redact_game_import_text(value):

@@ -61,8 +61,8 @@ class SupportCenterDialog(QDialog):
             "audio artifact, missed speaker, or incorrect capture. The report excludes "
             "screenshots, recognized dialogue, voice recordings, models, and secret values."
             " MOSS native timings are included in Runtime log and the support report. "
-            "The last 20 native operations survive closing the preview, but not exiting "
-            "the application. Generate different texts with the same reference to "
+            "A bounded local history of native operations survives an application "
+            "restart. Generate different texts with the same reference to "
             "compare fresh and reused reference encoding; Replay may only play a cached WAV."
         )
         help_page = QWidget()

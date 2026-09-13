@@ -31,6 +31,36 @@ from vntts.support import (
 
 
 class NativeSpeechLogTest(unittest.TestCase):
+    def test_bounded_sanitized_log_survives_restart(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "native-speech.log"
+            log = NativeSpeechLog(maximum_entries=2, path=path)
+            log.record(
+                {
+                    "operation": "server-start",
+                    "outcome": "complete",
+                    "native_version": "0.3.0",
+                    "text": "PRIVATE",
+                }
+            )
+            log.record(
+                {
+                    "operation": "request-start",
+                    "attempt_id": "attempt-a",
+                    "request_key": "request-a",
+                    "reason": str(Path.home() / "private" / "server.log"),
+                }
+            )
+            restarted = NativeSpeechLog(maximum_entries=2, path=path)
+            persisted = path.read_text(encoding="utf-8")
+
+        report = restarted.report()
+        self.assertEqual(report["total_events"], 2)
+        self.assertEqual(report["latest_runtime"]["native_version"], "0.3.0")
+        self.assertEqual(report["active_requests"][0]["attempt_id"], "attempt-a")
+        self.assertNotIn("PRIVATE", json.dumps(report))
+        self.assertNotIn(str(Path.home()), persisted)
+
     def test_rollover_preserves_session_counts_and_runtime(self):
         log = NativeSpeechLog(maximum_entries=2)
         with patch("vntts.support.native_speech_log", log):

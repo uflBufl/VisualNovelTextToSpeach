@@ -41,12 +41,6 @@ measurements in agent memory and completed-work history in Git, not here.
       archive after every required Windows hardware profile passes the existing
       matrix validator without `--allow-unsigned`.
 
-## P1 - Preserve diagnostics across crashes
-
-- [ ] Persist the bounded, sanitized OpenMOSS native event log and reload it on
-      the next launch so an exported support bundle can explain a crash or forced
-      exit. Keep audio, dialogue text, local paths and unbounded logs excluded.
-
 ## P2 - Qualify the real desktop experience
 
 - [ ] On clean macOS and Windows installs, auto-detect the game (with folder

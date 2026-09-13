@@ -140,6 +140,7 @@ from vntts.support import (
     RuntimeSupportLog,
     SupportBundleBuilder,
     configure_game_import_log,
+    configure_native_speech_log,
     configure_performance_log,
     record_background_operation,
 )
@@ -1507,6 +1508,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         configure_game_import_log(
             get_local_data_directory() / "game-import.log"
+            if uses_saved_settings
+            else None
+        )
+        configure_native_speech_log(
+            get_local_data_directory() / "native-speech.log"
             if uses_saved_settings
             else None
         )
