@@ -325,7 +325,9 @@ class XTTSVoiceRouterBackend:
         concurrent_prepare_and_play=True,
     )
 
-    def __init__(self, voice_router: _XTTSVoiceRouter, *, clock: Clock = monotonic) -> None:
+    def __init__(
+        self, voice_router: _XTTSVoiceRouter, *, clock: Clock = monotonic
+    ) -> None:
         self.voice_router = voice_router
         self.clock = clock
         sample_rate = getattr(voice_router.tts, "sample_rate", 24_000)
@@ -834,13 +836,15 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
             f"{type(self.model).__module__}.{type(self.model).__qualname__}:"
             f"{getattr(self.model, 'model_label', 'nano')}:{self.sample_rate}"
         )
-        return Path(voice_artifact_cache_path(
-            self.conditioning_cache_directory,
-            voice_key=key,
-            source=reference,
-            model_identity=model_identity,
-            suffix=".pt",
-        ))
+        return Path(
+            voice_artifact_cache_path(
+                self.conditioning_cache_directory,
+                voice_key=key,
+                source=reference,
+                model_identity=model_identity,
+                suffix=".pt",
+            )
+        )
 
     def _load_conditionals(self, cache_path: Path) -> object | None:
         if not cache_path.is_file() or self.default_conditionals is None:
@@ -873,16 +877,16 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
         else:
             voice_key = voice.speaker
             source = voice.references[0] if voice.references else "missing-reference"
-        return str(self.persistent_cache_keys.key(
-            voice_key=voice_key,
-            source=source,
-            text=text,
-            speed=self.speed,
-        ))
+        return str(
+            self.persistent_cache_keys.key(
+                voice_key=voice_key,
+                source=source,
+                text=text,
+                speed=self.speed,
+            )
+        )
 
-    def _prepare_audio(
-        self, audio: object, fade_seconds: float = 0.01
-    ) -> AudioArray:
+    def _prepare_audio(self, audio: object, fade_seconds: float = 0.01) -> AudioArray:
         prepared = np.asarray(audio, dtype=np.float32).squeeze().copy()
         if prepared.ndim != 1 or len(prepared) < 4:
             prepared *= self.volume
@@ -962,7 +966,9 @@ def _install_pocket_generation_cancellation(
                 backbone_input = next_latent
         latents_queue.put(None)
 
-    setattr(model, "_autoregressive_generation", MethodType(cancellable_generation, model))
+    setattr(
+        model, "_autoregressive_generation", MethodType(cancellable_generation, model)
+    )
     return True
 
 
@@ -1583,13 +1589,15 @@ class PocketTTSVoiceRouterBackend:
             f"{type(self.model).__module__}.{type(self.model).__qualname__}:"
             f"{self.sample_rate}"
         )
-        return Path(voice_artifact_cache_path(
-            self.voice_state_cache_directory,
-            voice_key=voice_key,
-            source=source,
-            model_identity=model_identity,
-            suffix=".safetensors",
-        ))
+        return Path(
+            voice_artifact_cache_path(
+                self.voice_state_cache_directory,
+                voice_key=voice_key,
+                source=source,
+                model_identity=model_identity,
+                suffix=".safetensors",
+            )
+        )
 
     def _save_voice_state(self, state: object, cache_path: Path) -> bool:
         if not callable(self.state_exporter):
@@ -1604,12 +1612,14 @@ class PocketTTSVoiceRouterBackend:
     def _persistent_cache_key(
         self, voice_key: str, text: str, source: str | Path
     ) -> str:
-        return str(self.persistent_cache_keys.key(
-            voice_key=voice_key,
-            source=source,
-            text=text,
-            speed=self.speed,
-        ))
+        return str(
+            self.persistent_cache_keys.key(
+                voice_key=voice_key,
+                source=source,
+                text=text,
+                speed=self.speed,
+            )
+        )
 
     def _cached_chunks(self, audio: AudioArray) -> Iterator[AudioArray]:
         for start in range(0, len(audio), self.cached_stream_chunk_samples):
@@ -1741,9 +1751,9 @@ class MossTTSVoiceRouterBackend:
         self.last_audio_source: str | None = None
         self.last_generation_limited = False
         self.last_generated_audio: AudioArray | None = None
-        self.audio_cache: BoundedCache[
-            tuple[str, str, str, int | None], AudioArray
-        ] = BoundedCache(audio_cache_size)
+        self.audio_cache: BoundedCache[tuple[str, str, str, int | None], AudioArray] = (
+            BoundedCache(audio_cache_size)
+        )
         self.persistent_audio_cache = PersistentAudioCache(
             persistent_audio_cache_directory
             or get_local_data_directory() / "audio-cache" / self.name,
@@ -2443,13 +2453,15 @@ class MossTTSVoiceRouterBackend:
         return str(voice_key), Path(source)
 
     def _prompt_cache_path(self, voice_key: str, source: Path) -> Path:
-        return Path(voice_artifact_cache_path(
-            self.prompt_cache_directory,
-            voice_key=voice_key,
-            source=source,
-            model_identity=f"{self.model_name}:{self.sample_rate}",
-            suffix=".safetensors",
-        ))
+        return Path(
+            voice_artifact_cache_path(
+                self.prompt_cache_directory,
+                voice_key=voice_key,
+                source=source,
+                model_identity=f"{self.model_name}:{self.sample_rate}",
+                suffix=".safetensors",
+            )
+        )
 
     def _persistent_cache_key(
         self,
@@ -2464,20 +2476,22 @@ class MossTTSVoiceRouterBackend:
         profile = generation_profile or self.generation_profile
         options = generation_options or self.generation_options
         seed_identity = {} if seed is None else {"seed": seed}
-        return str(self.persistent_cache_keys.key(
-            voice_key=voice_key,
-            source=source,
-            text=text,
-            speed=self.speed,
-            language=self.language,
-            generation_profile=profile,
-            **options,
-            **seed_identity,
-            max_tokens=moss_generation_limits(text)[0],
-            max_audio_seconds=moss_generation_limits(text)[1],
-            streaming_first_chunk_frames=self.streaming_first_chunk_frames,
-            streaming_interval=self.streaming_interval,
-        ))
+        return str(
+            self.persistent_cache_keys.key(
+                voice_key=voice_key,
+                source=source,
+                text=text,
+                speed=self.speed,
+                language=self.language,
+                generation_profile=profile,
+                **options,
+                **seed_identity,
+                max_tokens=moss_generation_limits(text)[0],
+                max_audio_seconds=moss_generation_limits(text)[1],
+                streaming_first_chunk_frames=self.streaming_first_chunk_frames,
+                streaming_interval=self.streaming_interval,
+            )
+        )
 
     def _cached_chunks(self, audio: AudioArray) -> Iterator[AudioArray]:
         prepared = self._to_numpy_audio(audio)
@@ -2584,27 +2598,31 @@ def get_torch_thread_count(torch_module: _TorchModule) -> int | None:
 
 
 def activate_chatterbox_runtime(runtime_directory: str | Path | None = None) -> Path:
-    return Path(activate_backend_runtime(
-        runtime_directory,
-        environment_variable="VNTTS_CHATTERBOX_RUNTIME",
-        backend_directory="chatterbox-nano",
-        missing_message=(
-            "Chatterbox Nano is not installed. Run "
-            "`uv sync --project backends/chatterbox-nano`, then restart the app."
-        ),
-    ))
+    return Path(
+        activate_backend_runtime(
+            runtime_directory,
+            environment_variable="VNTTS_CHATTERBOX_RUNTIME",
+            backend_directory="chatterbox-nano",
+            missing_message=(
+                "Chatterbox Nano is not installed. Run "
+                "`uv sync --project backends/chatterbox-nano`, then restart the app."
+            ),
+        )
+    )
 
 
 def activate_pocket_tts_runtime(runtime_directory: str | Path | None = None) -> Path:
-    return Path(activate_backend_runtime(
-        runtime_directory,
-        environment_variable="VNTTS_POCKET_TTS_RUNTIME",
-        backend_directory="pocket-tts",
-        missing_message=(
-            "Pocket TTS is not installed. Run "
-            "`uv sync --project backends/pocket-tts`, then restart the app."
-        ),
-    ))
+    return Path(
+        activate_backend_runtime(
+            runtime_directory,
+            environment_variable="VNTTS_POCKET_TTS_RUNTIME",
+            backend_directory="pocket-tts",
+            missing_message=(
+                "Pocket TTS is not installed. Run "
+                "`uv sync --project backends/pocket-tts`, then restart the app."
+            ),
+        )
+    )
 
 
 def activate_moss_tts_runtime(runtime_directory: str | Path | None = None) -> Path:
@@ -2612,12 +2630,14 @@ def activate_moss_tts_runtime(runtime_directory: str | Path | None = None) -> Pa
         raise TTSConfigurationError(
             "MOSS-TTS with MLX requires macOS on Apple Silicon."
         )
-    return Path(activate_backend_runtime(
-        runtime_directory,
-        environment_variable="VNTTS_MOSS_RUNTIME",
-        backend_directory="moss-tts",
-        missing_message=(
-            "MOSS-TTS is not installed. Run "
-            "`uv sync --project backends/moss-tts`, then restart the app."
-        ),
-    ))
+    return Path(
+        activate_backend_runtime(
+            runtime_directory,
+            environment_variable="VNTTS_MOSS_RUNTIME",
+            backend_directory="moss-tts",
+            missing_message=(
+                "MOSS-TTS is not installed. Run "
+                "`uv sync --project backends/moss-tts`, then restart the app."
+            ),
+        )
+    )

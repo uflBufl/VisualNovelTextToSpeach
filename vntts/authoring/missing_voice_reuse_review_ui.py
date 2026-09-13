@@ -195,9 +195,7 @@ def _review_arm(value: object) -> ReviewArm | None:
             quality: dict[str, object] | None = None
         elif isinstance(raw_quality, dict):
             quality = {
-                key: item
-                for key, item in raw_quality.items()
-                if isinstance(key, str)
+                key: item for key, item in raw_quality.items() if isinstance(key, str)
             }
         else:
             return None
@@ -316,7 +314,9 @@ def _review_decisions(value: list[object]) -> list[ReviewDecision]:
         cohort_id = decision.get("cohort_id")
         selected = decision.get("decision")
         origin = decision.get("decision_origin")
-        if not isinstance(cohort_id, str) or not isinstance(selected, (str, type(None))):
+        if not isinstance(cohort_id, str) or not isinstance(
+            selected, (str, type(None))
+        ):
             raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
         if not isinstance(origin, (str, type(None))):
             raise MissingVoiceReuseReviewError("Missing-voice review data is malformed")
@@ -383,13 +383,14 @@ def _review_data(value: object) -> tuple[ReviewBundle, ReviewSession]:
             "character": character,
             "decision_context": _review_context(raw_bundle.get("decision_context")),
             "candidates": [
-                candidate
-                for candidate in reviewed_candidates
-                if candidate is not None
+                candidate for candidate in reviewed_candidates if candidate is not None
             ],
             "cohorts": [cohort for cohort in reviewed_cohorts if cohort is not None],
         },
-        {"decisions": _review_decisions(decisions), "heard": _review_heard_records(heard)},
+        {
+            "decisions": _review_decisions(decisions),
+            "heard": _review_heard_records(heard),
+        },
     )
 
 

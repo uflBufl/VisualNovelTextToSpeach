@@ -69,7 +69,9 @@ def resolve_audio_output(audio_output: AudioOutput | None) -> AudioOutput:
     return audio_output
 
 
-def playback_underflowed(audio_output: AudioOutput | None, playback_status: object = None) -> bool:
+def playback_underflowed(
+    audio_output: AudioOutput | None, playback_status: object = None
+) -> bool:
     """Read a reliable output-underflow flag without requiring a live stream."""
     value = getattr(playback_status, "output_underflow", None)
     if isinstance(value, (bool, np.bool_)):
@@ -219,9 +221,7 @@ class SynchronousPcmPlaybackMixin:
         self.audio_output = audio_output
         return audio_output
 
-    def _playback_underflowed(
-        self, playback_status: object = None
-    ) -> bool:
+    def _playback_underflowed(self, playback_status: object = None) -> bool:
         return playback_underflowed(self.audio_output, playback_status)
 
 

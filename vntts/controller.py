@@ -110,7 +110,9 @@ class _DialogReadFuture(Protocol):
 
 
 class _DialogReadExecutor(Protocol):
-    def submit(self, callback: Callable[..., object], /, *args: object, **kwargs: object) -> _DialogReadFuture: ...
+    def submit(
+        self, callback: Callable[..., object], /, *args: object, **kwargs: object
+    ) -> _DialogReadFuture: ...
 
 
 class _LiveReaderState(Protocol):
@@ -179,11 +181,15 @@ class _LiveReader(_LiveReaderState, Protocol):
     def tracker_options(self, value: object) -> None: ...
 
     def bind_current_frame_route(self) -> bool: ...
-    def block_auto_advance_for_generation(self, generation: int, reason: str) -> bool: ...
+    def block_auto_advance_for_generation(
+        self, generation: int, reason: str
+    ) -> bool: ...
     def clear_queue(self) -> bool: ...
     def confirm_pending_auto_advance(self) -> None: ...
     def emergency_stop(self) -> bool: ...
-    def enqueue(self, character: str, text: str, *, line_id: str | None = None) -> bool: ...
+    def enqueue(
+        self, character: str, text: str, *, line_id: str | None = None
+    ) -> bool: ...
     def frame_route_epoch_is_current(self, epoch: object) -> bool: ...
     def record_first_pcm(self, timestamp: float) -> None: ...
     def release_waiters(self) -> None: ...
@@ -486,20 +492,34 @@ class AppController:
         sequence_status_handler: Callable[[LiveSequenceStatus], object] | None = None,
         unknown_speaker_handler: Callable[[str], object] | None = None,
         error_handler: Callable[[Exception], object] = report_runtime_error,
-        capture_target_factory: Callable[[str | None], _CaptureTarget] = WindowCaptureTarget,
-        model_asset_manager_factory: Callable[[], ModelAssetManager] = ModelAssetManager,
-        chatterbox_backend_factory: Callable[..., object] = create_chatterbox_worker_backend,
+        capture_target_factory: Callable[
+            [str | None], _CaptureTarget
+        ] = WindowCaptureTarget,
+        model_asset_manager_factory: Callable[
+            [], ModelAssetManager
+        ] = ModelAssetManager,
+        chatterbox_backend_factory: Callable[
+            ..., object
+        ] = create_chatterbox_worker_backend,
         moss_backend_factory: Callable[..., object] = create_moss_worker_backend,
         pocket_backend_factory: Callable[..., object] = create_pocket_worker_backend,
-        speech_backpressure_factory: Callable[..., _SpeechBackpressure] = AdaptiveSpeechBackpressure,
+        speech_backpressure_factory: Callable[
+            ..., _SpeechBackpressure
+        ] = AdaptiveSpeechBackpressure,
         correction_store: OCRCorrectionStore | None = None,
         history: DialogueHistory | None = None,
         chapter_voice_preloader: ChapterVoicePreloader | None = None,
-        generated_audio_library_factory: Callable[..., GeneratedAudioLibrary | None] = GeneratedAudioLibrary.load_optional,
-        generated_audio_backend_factory: Callable[..., GeneratedAudioFallbackBackend] = GeneratedAudioFallbackBackend,
+        generated_audio_library_factory: Callable[
+            ..., GeneratedAudioLibrary | None
+        ] = GeneratedAudioLibrary.load_optional,
+        generated_audio_backend_factory: Callable[
+            ..., GeneratedAudioFallbackBackend
+        ] = GeneratedAudioFallbackBackend,
         route_trace_handler: Callable[[AudioRouteTrace], object] | None = None,
         pipeline_event_handler: Callable[..., object] | None = None,
-        live_sequence_plan_factory: Callable[[str, str], _LiveSequencePlanContract] = LiveSequencePlan.load,
+        live_sequence_plan_factory: Callable[
+            [str, str], _LiveSequencePlanContract
+        ] = LiveSequencePlan.load,
     ) -> None:
         self.settings = settings or AppSettings()
         self.capture_target_factory = capture_target_factory
@@ -898,7 +918,9 @@ class AppController:
             **backend_options,
         )
         if not isinstance(generated_backend, GeneratedAudioFallbackBackend):
-            raise TypeError("Generated audio backend factory returned an invalid backend")
+            raise TypeError(
+                "Generated audio backend factory returned an invalid backend"
+            )
         generated_backend.voice_override = self._has_manual_voice_override
         self.speech_backend = generated_backend
         if policy == "prefer-game-audio":
@@ -957,9 +979,7 @@ class AppController:
             self._refresh_diagnostic_metrics()
         return character, text
 
-    def _preview_voice_choice(
-        self, choice: VoiceChoice, text: str
-    ) -> tuple[str, str]:
+    def _preview_voice_choice(self, choice: VoiceChoice, text: str) -> tuple[str, str]:
         voice_router = self.voice_router
         if voice_router is None:
             raise RuntimeError("The speech engine is not ready")
@@ -1218,7 +1238,9 @@ class AppController:
             )
             cursor = StoryCursor(plan)
             if not _is_story_cursor(cursor):
-                raise TypeError("Live sequence cursor factory returned an invalid cursor")
+                raise TypeError(
+                    "Live sequence cursor factory returned an invalid cursor"
+                )
         except Exception as error:
             self.status_handler(f"Sequence-first rollout disabled: {error}")
             self._publish_live_sequence_status()
@@ -1429,11 +1451,7 @@ class AppController:
     ) -> tuple[StoryCursorSnapshot, ChapterDialogue | None, object] | None:
         cursor = self.story_cursor
         plan = self.live_sequence_plan
-        if (
-            cursor is None
-            or plan is None
-            or self.settings.live_sequence_mode == "off"
-        ):
+        if cursor is None or plan is None or self.settings.live_sequence_mode == "off":
             return None
         previous_event_id = cursor.current_event_id
         confirming_dispatch = cursor.state == StoryCursorState.WAITING_TRANSITION
@@ -1496,9 +1514,7 @@ class AppController:
                     character, text, candidate_line_ids
                 )
                 resolved_event = (
-                    None
-                    if line is None
-                    else plan.event_for_line(line.line_id)
+                    None if line is None else plan.event_for_line(line.line_id)
                 )
                 prefix_match = "prefix" in str(match_result)
                 pending_prefix_continuation = bool(
@@ -1814,7 +1830,9 @@ class AppController:
             "missing-canonical-line",
         )
         self._publish_live_sequence_status()
-        self.status_handler("Story event was not selected: its canonical line is unavailable")
+        self.status_handler(
+            "Story event was not selected: its canonical line is unavailable"
+        )
         return True
 
     def _defer_explicit_sequence_voice_decision(
@@ -2055,7 +2073,9 @@ class AppController:
         ):
             return None
         line = self._canonical_sequence_line_locked(event.event_id)
-        return line if line is not None and self._reserve_generated_prefix(line) else None
+        return (
+            line if line is not None and self._reserve_generated_prefix(line) else None
+        )
 
     def _has_unique_visible_successor(
         self,
@@ -2416,7 +2436,9 @@ class AppController:
                 else:
                     materialize = getattr(backend, "materialize_prepared", None)
                     if not callable(materialize):
-                        raise TypeError("Live backend cannot materialize prepared audio")
+                        raise TypeError(
+                            "Live backend cannot materialize prepared audio"
+                        )
                     materialized = materialize(
                         backend.prepare_playback(line.speaker, line.text),
                         cancellation=lambda: not self.game_focused,
@@ -3012,9 +3034,7 @@ class AppController:
             and sequence_lease is None
         ):
             generation = (
-                reader.active_generation
-                if reader is not None
-                else chunk.generation
+                reader.active_generation if reader is not None else chunk.generation
             )
             self.pipeline_event_handler(
                 "sequence-playback-suppressed",
@@ -3197,9 +3217,7 @@ class AppController:
             if isinstance(first_audio_ms, (int, float)) and not isinstance(
                 first_audio_ms, bool
             ):
-                reader.record_first_pcm(
-                    playback_started + first_audio_ms / 1000
-                )
+                reader.record_first_pcm(playback_started + first_audio_ms / 1000)
             return bool(result)
         finally:
             self._finish_sequence_playback(sequence_lease, outcome)
@@ -3442,7 +3460,9 @@ class AppController:
         name = getattr(backend, "name", self.settings.speech_backend)
         return f"Live TTS ({name})"
 
-    def _record_pipeline_route(self, chunk: SpeechChunk, trace: AudioRouteTrace) -> None:
+    def _record_pipeline_route(
+        self, chunk: SpeechChunk, trace: AudioRouteTrace
+    ) -> None:
         occurred_at = monotonic()
         try:
             self.pipeline_event_handler(
@@ -3544,7 +3564,9 @@ class AppController:
     def _resolve_trace_line(
         self, chunk: SpeechChunk
     ) -> tuple[ChapterDialogue | None, str]:
-        resolve = getattr(self.chapter_voice_preloader, "resolve_exact_with_result", None)
+        resolve = getattr(
+            self.chapter_voice_preloader, "resolve_exact_with_result", None
+        )
         if callable(resolve):
             resolved = resolve(chunk.character, chunk.text)
             if (

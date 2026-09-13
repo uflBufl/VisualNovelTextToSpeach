@@ -197,9 +197,7 @@ class VoicePreviewDialog(QDialog):
         self.runtime.setText(compact_runtime_label(message))
         self.runtime.setToolTip(message)
 
-    def _choose_game_narrator(
-        self, handler: Callable[[QDialog], bool]
-    ) -> None:
+    def _choose_game_narrator(self, handler: Callable[[QDialog], bool]) -> None:
         if handler(self):
             self.accept()
 

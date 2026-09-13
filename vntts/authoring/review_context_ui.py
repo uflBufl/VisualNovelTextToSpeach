@@ -108,9 +108,7 @@ class ReviewDecisionContext(QGroupBox):
         label.setAccessibleName(accessible_name)
         return label
 
-    def set_context(
-        self, values: Mapping[str, object], *, technical: str = ""
-    ) -> None:
+    def set_context(self, values: Mapping[str, object], *, technical: str = "") -> None:
         """Update every canonical field; absent values stay explicit."""
         for key, _label in self.FIELD_ORDER:
             value = values.get(key, "Unknown")

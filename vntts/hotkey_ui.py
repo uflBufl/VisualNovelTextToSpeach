@@ -18,6 +18,7 @@ def _first_combination(sequence: object) -> QKeyCombination:
         return sequence[0]
     raise HotkeyValidationError("this Qt build cannot inspect shortcuts")
 
+
 _special_keys = {
     Qt.Key.Key_Backspace.value: "<backspace>",
     Qt.Key.Key_Delete.value: "<delete>",

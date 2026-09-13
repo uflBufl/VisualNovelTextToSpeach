@@ -39,9 +39,7 @@ def make_text_copyable(root: QWidget) -> None:
             )
 
 
-def set_labeled_text(
-    label: QLabel, rows: Iterable[tuple[object, object]]
-) -> None:
+def set_labeled_text(label: QLabel, rows: Iterable[tuple[object, object]]) -> None:
     """Render semantic rows without treating names, paths or dialogue as markup."""
     label.setTextFormat(Qt.TextFormat.RichText)
     label.setWordWrap(True)

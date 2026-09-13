@@ -1542,9 +1542,7 @@ def _validate_failure_repair_selection(
     queue_by_id = {item.queue_id: item for item in queue.items}
     for queue_id in policy.queue_ids:
         _validate_failure_repair_item(
-            _generation_text(
-                policy.strategy_for(queue_id), "Failure-repair strategy"
-            ),
+            _generation_text(policy.strategy_for(queue_id), "Failure-repair strategy"),
             queue_id,
             _failed_repair_result(state, queue_id),
             queue_by_id[queue_id],

@@ -353,9 +353,7 @@ class RuntimeLifecycleComponent:
                 return False
             controller.status_handler("Warming speech model and voices...")
             try:
-                warmed = warmup_router.warm_up(
-                    progress=controller._warmup_progress
-                )
+                warmed = warmup_router.warm_up(progress=controller._warmup_progress)
             except Exception as error:
                 controller.error_handler(error)
                 controller.status_handler(
@@ -519,7 +517,9 @@ class RuntimeLifecycleComponent:
         controller._configure_generated_audio_backend()
         controller.refresh_corrections()
         controller.capture_target = controller._create_capture_target()
-        controller.uncertain_frame_recorder = controller._create_uncertain_frame_recorder()
+        controller.uncertain_frame_recorder = (
+            controller._create_uncertain_frame_recorder()
+        )
         self._apply_runtime_audio_settings()
 
     def _apply_runtime_audio_settings(self) -> None:
@@ -554,7 +554,9 @@ class RuntimeLifecycleComponent:
         reader.tracker_options = live_configuration["tracker_options"]
         reader.require_visible_auto_advance = controller._live_sequence_audio_active()
         reader.set_auto_advance(controller._live_auto_advance_callback())
-        reader.auto_advance_delay_seconds = controller.settings.auto_advance_delay_ms / 1000
+        reader.auto_advance_delay_seconds = (
+            controller.settings.auto_advance_delay_ms / 1000
+        )
         capture_executor = controller.capture_executor
         voice_router = controller.voice_router
         if capture_executor is None or voice_router is None:
@@ -654,7 +656,9 @@ class LiveSessionComponent:
             controller.live_scope_identification_failure = "no-dialog-text"
             return False
         observed_character = character
-        character = controller._canonical_observed_character(character or "Narrator", text)
+        character = controller._canonical_observed_character(
+            character or "Narrator", text
+        )
         line, match_result = controller._resolve_initial_live_sequence_line(
             character,
             text,
@@ -722,9 +726,7 @@ class LiveSessionComponent:
         running = reader.toggle()
         if running:
             controller.next_live_narrator_fallback_names.clear()
-            reader.max_speech_jobs = (
-                controller.live_speech_backpressure.reset()
-            )
+            reader.max_speech_jobs = controller.live_speech_backpressure.reset()
         elif not starting:
             controller.narrator_fallback_speakers.clear()
             controller.narrator_fallback_names.clear()
@@ -1048,7 +1050,9 @@ class VoiceAssignmentComponent:
                 force_live_narrator=False,
             )
         else:
-            updated_settings = controller.settings.updated(voice_assignments=assignments)
+            updated_settings = controller.settings.updated(
+                voice_assignments=assignments
+            )
         if commit_settings is not None:
             commit_settings(updated_settings)
         voice_router.registry.assignments.pop(character_key, None)
@@ -1133,7 +1137,9 @@ class VoiceAssignmentComponent:
             unresolved.append(character)
         return tuple(unresolved)
 
-    def approve_narrator_fallbacks(self, characters: Iterable[object]) -> tuple[str, ...]:
+    def approve_narrator_fallbacks(
+        self, characters: Iterable[object]
+    ) -> tuple[str, ...]:
         controller = self.controller
         if controller.is_live_running:
             raise RuntimeError("Stop live reading before approving narrator fallbacks")

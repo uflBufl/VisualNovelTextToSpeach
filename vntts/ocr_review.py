@@ -94,9 +94,7 @@ class OCRReviewStore:
                 character=str(payload.get("character") or "Narrator"),
                 text=str(payload.get("text") or ""),
                 confidence=_float_field(payload.get("confidence", 0)),
-                minimum_confidence=_float_field(
-                    payload.get("minimum_confidence", 0)
-                ),
+                minimum_confidence=_float_field(payload.get("minimum_confidence", 0)),
                 preprocessing_profile=str(
                     payload.get("preprocessing_profile") or "unknown"
                 ),

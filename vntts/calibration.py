@@ -171,9 +171,7 @@ class CalibrationReviewDialog(QDialog):
         self.setTabOrder(self.retry_button, self.cancel_button)
         self.runner.start(self.recognizer, image.copy())
 
-    def _recognition_finished(
-        self, result: object, error: Exception | None
-    ) -> None:
+    def _recognition_finished(self, result: object, error: Exception | None) -> None:
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         if error is not None:

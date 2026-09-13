@@ -35,9 +35,7 @@ class OnboardingDiagnostics:
         tesseract_probe: Callable[[], object] | None = None,
         audio_probe: Callable[[], object] | None = None,
         model_path_resolver: Callable[[str], str | Path] | None = None,
-        permission_status_provider: Callable[
-            [], Mapping[str, bool | None]
-        ]
+        permission_status_provider: Callable[[], Mapping[str, bool | None]]
         | None = None,
     ) -> None:
         self.tesseract_probe = tesseract_probe or probe_tesseract
