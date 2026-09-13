@@ -507,6 +507,143 @@ def _publish_resume_workspace(staging, destination, workspace, source):
     return WorkspaceCreationResult(destination, True)
 
 
+def _failure_reference_workspace_binding(
+    binding_directory,
+):
+    try:
+        binding = load_failure_reference_binding(binding_directory)
+        document = load_failure_reference_binding_document(binding.directory)
+    except FailureReferenceBindingError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return binding, document
+
+
+def _assert_failure_reference_workspace_base(base_document):
+    if base_document.get("failure_reference_binding") is not None:
+        raise AuthoringWorkbenchError(
+            "Failure-reference successor already has a selected-reference overlay"
+        )
+
+
+def _assert_failure_reference_generation_available(base_directory, state):
+    if state.get("active") is not None:
+        raise AuthoringWorkbenchError(
+            "Failure-reference successor cannot copy an active generation attempt"
+        )
+    if (base_directory / "generated-audio/.generation-lease.json").exists():
+        raise AuthoringWorkbenchError(
+            "Failure-reference successor cannot copy a leased workspace"
+        )
+
+
+def _assert_failure_reference_binding_authority(base_document, document, queue_sha256):
+    authority = document["source_authority"]
+    voice = base_document.get("voice_manifest")
+    if (
+        queue_sha256 != authority["queue_sha256"]
+        or not isinstance(voice, dict)
+        or voice.get("sha256") != authority["voice_manifest_sha256"]
+    ):
+        raise AuthoringWorkbenchError(
+            "Failure-reference binding belongs to different queue or voice controls"
+        )
+    if (
+        authority["workspace_id"].split("-")[1:2]
+        != base_document["workspace_id"].split("-")[1:2]
+    ):
+        raise AuthoringWorkbenchError(
+            "Failure-reference binding belongs to a different immutable import"
+        )
+
+
+def _assert_failure_reference_binding_items(queue, state, document):
+    queue_ids = {item.queue_id for item in queue.items}
+    selected_ids = set()
+    for group in document["groups"]:
+        for case in group["cases"]:
+            queue_id = case["queue_id"]
+            result = state["items"].get(queue_id)
+            if queue_id not in queue_ids or not isinstance(result, dict):
+                raise AuthoringWorkbenchError(
+                    f"Failure-reference base item is missing: {queue_id!r}"
+                )
+            if canonical_document_sha256(result) != case["failure_sha256"]:
+                raise AuthoringWorkbenchError(
+                    f"Failure-reference base authority is stale for {queue_id!r}"
+                )
+            if result.get("status") != "failed":
+                raise AuthoringWorkbenchError(
+                    f"Failure-reference base item is no longer failed: {queue_id!r}"
+                )
+            selected_ids.add(queue_id)
+    if selected_ids != set(document["queue_voice_overrides"]):
+        raise AuthoringWorkbenchError(
+            "Failure-reference binding selection inventory is inconsistent"
+        )
+
+
+def _failure_reference_workspace_document(
+    root, base, binding, document, target, binding_path, workspace_sha256, state_sha256
+):
+    controls = _failure_reference_controls(document, target)
+    config = {
+        "path": "inputs/failure-reference-binding/binding.json",
+        "sha256": sha256_file(binding_path),
+        "binding_id": binding.binding_id,
+        "controls": controls,
+        "base_workspace_id": base["workspace_id"],
+        "base_workspace_sha256": workspace_sha256,
+        "base_state_sha256": state_sha256,
+    }
+    fingerprint = _workspace_config_fingerprint(
+        base["source"]["import_id"],
+        base.get("story_index"),
+        base.get("voice_manifest"),
+        base["narrator_character"],
+        base["run_config"],
+        base.get("carry_forward"),
+        base.get("outcome_merge"),
+        config,
+        base.get("terminal_conflict_merge"),
+        base.get("config_rebase"),
+        base.get("audio_event_composition"),
+        base.get("explicit_fallback_merge"),
+        base.get("known_role_live_fallback"),
+        base.get("audio_event_omission"),
+        base.get("audio_event_projection_fallback"),
+        base.get("reviewed_waveform_publication"),
+        base.get("reviewed_rejection_live_fallback"),
+        queue_extension=base.get("queue_extension"),
+    )
+    workspace_id = f"resume-{base['source']['import_id'].removeprefix('legacy-')}-{fingerprint[:16]}"
+    workspace = copy.deepcopy(base)
+    workspace.update(
+        {
+            "workspace_id": workspace_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "failure_reference_binding": config,
+            "config_fingerprint": fingerprint,
+        }
+    )
+    return config, _within(root, Path(workspace_id), "Workspace destination"), workspace
+
+
+def _failure_reference_controls(document, target):
+    controls = []
+    for group in document["groups"]:
+        relative = _safe_relative(group["reference"], "Selected reference")
+        _within(target, relative, "Selected reference")
+        controls.append(
+            {
+                "path": (
+                    Path("inputs") / "failure-reference-binding" / relative
+                ).as_posix(),
+                "sha256": group["reference_sha256"],
+            }
+        )
+    return controls
+
+
 def _stage_resume_workspace(
     staging,
     root,
@@ -611,69 +748,17 @@ def create_failure_reference_workspace(
     base_directory, base_document, base_workspace_sha256 = _load_workspace_snapshot(
         base_workspace, "failure-reference base"
     )
-    if base_document.get("failure_reference_binding") is not None:
-        raise AuthoringWorkbenchError(
-            "Failure-reference successor already has a selected-reference overlay"
-        )
+    _assert_failure_reference_workspace_base(base_document)
     queue, state, _state_payload, state_sha256 = _stable_workspace_state(
         base_directory, base_document, "failure-reference base"
     )
-    if state.get("active") is not None:
-        raise AuthoringWorkbenchError(
-            "Failure-reference successor cannot copy an active generation attempt"
-        )
-    output = base_directory / "generated-audio"
-    if (output / ".generation-lease.json").exists():
-        raise AuthoringWorkbenchError(
-            "Failure-reference successor cannot copy a leased workspace"
-        )
-    try:
-        binding = load_failure_reference_binding(binding_directory)
-        binding_document = load_failure_reference_binding_document(binding.directory)
-    except FailureReferenceBindingError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    authority = binding_document["source_authority"]
+    _assert_failure_reference_generation_available(base_directory, state)
+    binding, binding_document = _failure_reference_workspace_binding(binding_directory)
     queue_sha256 = sha256_file(base_directory / "queue.jsonl")
-    voice = base_document.get("voice_manifest")
-    if (
-        queue_sha256 != authority["queue_sha256"]
-        or not isinstance(voice, dict)
-        or voice.get("sha256") != authority["voice_manifest_sha256"]
-    ):
-        raise AuthoringWorkbenchError(
-            "Failure-reference binding belongs to different queue or voice controls"
-        )
-    source_workspace_id = authority["workspace_id"]
-    if (
-        source_workspace_id.split("-")[1:2]
-        != base_document["workspace_id"].split("-")[1:2]
-    ):
-        raise AuthoringWorkbenchError(
-            "Failure-reference binding belongs to a different immutable import"
-        )
-    queue_ids = {item.queue_id for item in queue.items}
-    selected_ids = set()
-    for group in binding_document["groups"]:
-        for case in group["cases"]:
-            queue_id = case["queue_id"]
-            result = state["items"].get(queue_id)
-            if queue_id not in queue_ids or not isinstance(result, dict):
-                raise AuthoringWorkbenchError(
-                    f"Failure-reference base item is missing: {queue_id!r}"
-                )
-            if canonical_document_sha256(result) != case["failure_sha256"]:
-                raise AuthoringWorkbenchError(
-                    f"Failure-reference base authority is stale for {queue_id!r}"
-                )
-            if result.get("status") != "failed":
-                raise AuthoringWorkbenchError(
-                    f"Failure-reference base item is no longer failed: {queue_id!r}"
-                )
-            selected_ids.add(queue_id)
-    if selected_ids != set(binding_document["queue_voice_overrides"]):
-        raise AuthoringWorkbenchError(
-            "Failure-reference binding selection inventory is inconsistent"
-        )
+    _assert_failure_reference_binding_authority(
+        base_document, binding_document, queue_sha256
+    )
+    _assert_failure_reference_binding_items(queue, state, binding_document)
 
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -702,60 +787,15 @@ def create_failure_reference_workspace(
             binding_snapshots,
         )
         binding_path = target_binding / "binding.json"
-        controls = []
-        for group in binding_document["groups"]:
-            relative = _safe_relative(group["reference"], "Selected reference")
-            _within(target_binding, relative, "Selected reference")
-            controls.append(
-                {
-                    "path": (
-                        Path("inputs") / "failure-reference-binding" / relative
-                    ).as_posix(),
-                    "sha256": group["reference_sha256"],
-                }
-            )
-        binding_config = {
-            "path": "inputs/failure-reference-binding/binding.json",
-            "sha256": sha256_file(binding_path),
-            "binding_id": binding.binding_id,
-            "controls": controls,
-            "base_workspace_id": base_document["workspace_id"],
-            "base_workspace_sha256": base_workspace_sha256,
-            "base_state_sha256": state_sha256,
-        }
-        config_fingerprint = _workspace_config_fingerprint(
-            base_document["source"]["import_id"],
-            base_document.get("story_index"),
-            base_document.get("voice_manifest"),
-            base_document["narrator_character"],
-            base_document["run_config"],
-            base_document.get("carry_forward"),
-            base_document.get("outcome_merge"),
-            binding_config,
-            base_document.get("terminal_conflict_merge"),
-            base_document.get("config_rebase"),
-            base_document.get("audio_event_composition"),
-            base_document.get("explicit_fallback_merge"),
-            base_document.get("known_role_live_fallback"),
-            base_document.get("audio_event_omission"),
-            base_document.get("audio_event_projection_fallback"),
-            base_document.get("reviewed_waveform_publication"),
-            base_document.get("reviewed_rejection_live_fallback"),
-            queue_extension=base_document.get("queue_extension"),
-        )
-        workspace_id = (
-            f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
-            f"{config_fingerprint[:16]}"
-        )
-        destination = _within(root, Path(workspace_id), "Workspace destination")
-        workspace = copy.deepcopy(base_document)
-        workspace.update(
-            {
-                "workspace_id": workspace_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "failure_reference_binding": binding_config,
-                "config_fingerprint": config_fingerprint,
-            }
+        binding_config, destination, workspace = _failure_reference_workspace_document(
+            root,
+            base_document,
+            binding,
+            binding_document,
+            target_binding,
+            binding_path,
+            base_workspace_sha256,
+            state_sha256,
         )
         atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
         import_snapshot = _load_json(
