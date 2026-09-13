@@ -139,9 +139,11 @@ from vntts.support import (
     GenerationTimelineLog,
     RuntimeSupportLog,
     SupportBundleBuilder,
+    collect_active_content_identity,
     configure_game_import_log,
     configure_native_speech_log,
     configure_performance_log,
+    configure_pregeneration_support,
     record_background_operation,
 )
 from vntts.support_ui import SupportCenterDialog
@@ -1517,6 +1519,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             if uses_saved_settings
             else None
         )
+        configure_pregeneration_support(
+            get_local_data_directory() / "pregeneration-support.json"
+            if uses_saved_settings
+            else None
+        )
         if not uses_saved_settings:
             configure_performance_log()
         self.generation_timelines = GenerationTimelineLog(
@@ -2321,6 +2328,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     "live-scope",
                     f"Initial story matcher result: {match_result}",
                     **details,
+                    **collect_active_content_identity(self.settings),
                 )
             if failure == "no-dialog-text":
                 message = (

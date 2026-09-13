@@ -5,6 +5,7 @@ from dataclasses import fields
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
@@ -16,8 +17,10 @@ from vntts.support import (
     GenerationTimelineLog,
     NativeSpeechLog,
     PerformanceLog,
+    PregenerationSupportState,
     RuntimeSupportLog,
     SupportBundleBuilder,
+    collect_active_content_identity,
     collect_build_identity,
     collect_ocr_metrics,
     native_speech_context,
@@ -710,6 +713,8 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 {
                     "manifest.json",
                     "sanitized-settings.json",
+                    "active-content.json",
+                    "pregeneration.json",
                     "runtime-events.json",
                     "game-import.json",
                     "performance.json",
@@ -728,6 +733,103 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertEqual(metrics["sample_count"], 1)
         self.assertEqual(metrics["average_confidence"], 42)
         self.assertEqual(imports["events"][0]["missing"], ["game configuration"])
+
+    def test_support_correlates_active_pack_with_bounded_preparation_failure(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            pack = directory / "game-pack.json"
+            pack.write_text(
+                json.dumps(
+                    {
+                        "components": {
+                            "story_index": {"sha256": "a" * 64},
+                        },
+                        "vntts.self-service": {
+                            "identity": "b" * 64,
+                            "job_id": "c" * 24,
+                            "source_queue_sha256": "d" * 64,
+                            "source_state_sha256": "e" * 64,
+                            "story_line_count": 493,
+                            "approved_count": 489,
+                            "live_fallback_count": 0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state = directory / "generation-state.json"
+            state.write_text(
+                json.dumps(
+                    {
+                        "queue_sha256": "f" * 64,
+                        "items": {
+                            "reverse1999:314605:113:04d5e08b450a8d7a": {
+                                "status": "failed",
+                                "line_id": "reverse1999:314605:113",
+                                "speaker": "Aderyn",
+                                "provider": "moss-tts",
+                                "model": str(Path.home() / "private-model"),
+                                "attempts": 4,
+                                "attempts_by_provider": {
+                                    "moss-tts": 3,
+                                    "pocket-tts": 1,
+                                },
+                                "failure": {
+                                    "kind": "speech_silence",
+                                    "error_type": "SpeechQualityError",
+                                },
+                                "failure_repair": {
+                                    "strategy": "offline_fallback_backend",
+                                    "source_failure": {
+                                        "source_provider": "moss-tts",
+                                        "source_failure_kind": "speech_silence",
+                                    },
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            support = PregenerationSupportState(directory / "pregeneration.json")
+            support.record(
+                "Unable to recover offline audio",
+                "Offline fallback attempt is exhausted",
+                job=SimpleNamespace(
+                    job_id="c" * 24,
+                    status="planned",
+                    provider_id="reverse1999",
+                    story_index_sha256="1" * 64,
+                    selected_story_ids=("story-one",),
+                    selected_line_ids=tuple(str(value) for value in range(493)),
+                ),
+                generation_input=SimpleNamespace(
+                    identity="2" * 64,
+                    queue_sha256="f" * 64,
+                    queue_items=490,
+                    ready_items=490,
+                ),
+                voice_plan=SimpleNamespace(
+                    synthesis_backend="moss-tts",
+                    synthesis_model=str(Path.home() / "private-model"),
+                    synthesis_profile="stable",
+                    synthesis_controls_sha256="3" * 64,
+                ),
+                state_path=state,
+            )
+
+            active = collect_active_content_identity(AppSettings(game_pack=str(pack)))
+            report = support.report()
+
+        self.assertEqual(active["active_pregeneration_job_id"], "c" * 24)
+        self.assertEqual(active["active_story_line_count"], 493)
+        self.assertEqual(report["job"]["selected_story_ids"], ["story-one"])
+        failure = report["generation_state"]["failed_items"][0]
+        self.assertEqual(
+            failure["attempts_by_provider"], {"moss-tts": 3, "pocket-tts": 1}
+        )
+        self.assertEqual(failure["repair_strategy"], "offline_fallback_backend")
+        self.assertNotIn(str(Path.home()), json.dumps(report))
 
     def test_ocr_metrics_report_resolved_pending_and_invalid_counts(self):
         with TemporaryDirectory() as temporary_directory:

@@ -13,6 +13,7 @@ from collections import Counter, OrderedDict, deque
 from contextvars import ContextVar
 from dataclasses import asdict, fields
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from threading import RLock
 
@@ -54,6 +55,14 @@ live_scope_fields = (
     "best_candidate_line_id",
     "best_bounded_similarity",
     "best_bounded_coverage",
+    "active_pack_identity",
+    "active_pregeneration_job_id",
+    "active_story_index_sha256",
+    "active_source_queue_sha256",
+    "active_source_state_sha256",
+    "active_story_line_count",
+    "active_approved_count",
+    "active_live_fallback_count",
 )
 
 runtime_event_fields = (*audio_route_fields, *live_scope_fields)
@@ -745,6 +754,313 @@ def record_native_speech(**details):
         pass
 
 
+class PregenerationSupportState:
+    """Persist the latest bounded preparation failure for a later support export."""
+
+    def __init__(self, path=None):
+        self.path = Path(path).expanduser() if path is not None else None
+        self.lock = RLock()
+        self.latest = self._load()
+
+    def record(
+        self,
+        operation,
+        error,
+        *,
+        job=None,
+        generation_input=None,
+        voice_plan=None,
+        state_path=None,
+    ):
+        snapshot = {
+            "schema_version": 1,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "operation": str(operation)[:160],
+            "error": _redact_game_import_text(error),
+            "job": _pregeneration_job_summary(job),
+            "input": _pregeneration_input_summary(generation_input),
+            "voice": _pregeneration_voice_summary(voice_plan),
+            "generation_state": _pregeneration_state_summary(state_path),
+        }
+        with self.lock:
+            self.latest = snapshot
+            if self.path is not None:
+                try:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    with atomic_output_path(self.path) as temporary_path:
+                        temporary_path.write_text(
+                            json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                except OSError:
+                    pass
+        return snapshot
+
+    def report(self):
+        with self.lock:
+            return self.latest or {"available": False}
+
+    def _load(self):
+        if self.path is None:
+            return None
+        try:
+            document = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        return document if isinstance(document, dict) else None
+
+
+pregeneration_support = PregenerationSupportState()
+
+
+def configure_pregeneration_support(path=None):
+    global pregeneration_support
+    pregeneration_support = PregenerationSupportState(path)
+    return pregeneration_support
+
+
+def record_pregeneration_failure(*args, **kwargs):
+    try:
+        return pregeneration_support.record(*args, **kwargs)
+    except Exception:
+        # Support evidence must never replace the user-facing preparation error.
+        return None
+
+
+def _pregeneration_job_summary(job):
+    if job is None:
+        return {"available": False}
+    return {
+        "available": True,
+        "job_id": _plain_support_value(getattr(job, "job_id", None)),
+        "status": _plain_support_value(getattr(job, "status", None)),
+        "provider_id": _plain_support_value(getattr(job, "provider_id", None)),
+        "story_index_sha256": _sha256_support_value(
+            getattr(job, "story_index_sha256", None)
+        ),
+        "selected_story_ids": [
+            _plain_support_value(value)
+            for value in tuple(getattr(job, "selected_story_ids", ()))[:64]
+        ],
+        "selected_line_count": len(tuple(getattr(job, "selected_line_ids", ()))),
+    }
+
+
+def _pregeneration_input_summary(generation_input):
+    if generation_input is None:
+        return {"available": False}
+    return {
+        "available": True,
+        "identity": _sha256_support_value(getattr(generation_input, "identity", None)),
+        "queue_sha256": _sha256_support_value(
+            getattr(generation_input, "queue_sha256", None)
+        ),
+        "queue_items": _nonnegative_support_int(
+            getattr(generation_input, "queue_items", None)
+        ),
+        "ready_items": _nonnegative_support_int(
+            getattr(generation_input, "ready_items", None)
+        ),
+    }
+
+
+def _pregeneration_voice_summary(voice_plan):
+    if voice_plan is None:
+        return {"available": False}
+    return {
+        "available": True,
+        "backend": _plain_support_value(
+            getattr(voice_plan, "synthesis_backend", None)
+        ),
+        "model": _plain_support_value(getattr(voice_plan, "synthesis_model", None)),
+        "profile": _plain_support_value(
+            getattr(voice_plan, "synthesis_profile", None)
+        ),
+        "controls_sha256": _sha256_support_value(
+            getattr(voice_plan, "synthesis_controls_sha256", None)
+        ),
+    }
+
+
+def _pregeneration_state_summary(path):
+    if path is None:
+        return {"available": False}
+    path = Path(path)
+    try:
+        if path.stat().st_size > 32 * 1024 * 1024:
+            return {"available": False, "reason": "state exceeds support read limit"}
+        payload = path.read_bytes()
+        document = json.loads(payload)
+    except FileNotFoundError:
+        return {"available": False, "reason": "state is not present"}
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"available": False, "reason": "state could not be read"}
+    items = document.get("items") if isinstance(document, dict) else None
+    if not isinstance(items, dict):
+        return {"available": False, "reason": "state items are invalid"}
+    statuses = Counter(
+        item.get("status")
+        for item in items.values()
+        if isinstance(item, dict) and isinstance(item.get("status"), str)
+    )
+    failures = [
+        _pregeneration_failure_summary(queue_id, item)
+        for queue_id, item in sorted(items.items())
+        if isinstance(queue_id, str)
+        and isinstance(item, dict)
+        and item.get("status") == "failed"
+    ]
+    return {
+        "available": True,
+        "state_sha256": hashlib.sha256(payload).hexdigest(),
+        "queue_sha256": _sha256_support_value(document.get("queue_sha256")),
+        "status_counts": dict(sorted(statuses.items())),
+        "failed_items": failures[:64],
+        "failed_items_truncated": max(0, len(failures) - 64),
+    }
+
+
+def _pregeneration_failure_summary(queue_id, item):
+    failure = item.get("failure") if isinstance(item.get("failure"), dict) else {}
+    repair = (
+        item.get("failure_repair")
+        if isinstance(item.get("failure_repair"), dict)
+        else {}
+    )
+    source = (
+        repair.get("source_failure")
+        if isinstance(repair.get("source_failure"), dict)
+        else {}
+    )
+    carry = (
+        item.get("carry_forward")
+        if isinstance(item.get("carry_forward"), dict)
+        else {}
+    )
+    attempts = item.get("attempts_by_provider")
+    return {
+        "queue_id": _plain_support_value(queue_id),
+        "line_id": _plain_support_value(item.get("line_id")),
+        "speaker": _plain_support_value(item.get("speaker")),
+        "requested_voice": _plain_support_value(
+            item.get("requested_voice_character")
+        ),
+        "effective_voice": _plain_support_value(item.get("voice_character")),
+        "provider": _plain_support_value(item.get("provider")),
+        "model": _plain_support_value(item.get("model")),
+        "profile": _plain_support_value(item.get("generation_profile")),
+        "attempts": _nonnegative_support_int(item.get("attempts")),
+        "attempts_by_provider": {
+            _plain_support_value(provider): _nonnegative_support_int(count)
+            for provider, count in sorted(attempts.items())
+            if isinstance(provider, str)
+        }
+        if isinstance(attempts, dict)
+        else {},
+        "failure_kind": _plain_support_value(failure.get("kind")),
+        "failure_completion": _plain_support_value(failure.get("completion")),
+        "failure_error_type": _plain_support_value(failure.get("error_type")),
+        "repair_strategy": _plain_support_value(repair.get("strategy")),
+        "source_provider": _plain_support_value(source.get("source_provider")),
+        "source_failure_kind": _plain_support_value(
+            source.get("source_failure_kind")
+        ),
+        "source_repair_strategy": _plain_support_value(
+            source.get("source_repair_strategy")
+        ),
+        "carry_source_provider": _plain_support_value(
+            carry.get("source_provider")
+        ),
+        "carry_source_failure_kind": _plain_support_value(
+            carry.get("source_failure_kind")
+        ),
+    }
+
+
+def _plain_support_value(value):
+    if value is None:
+        return None
+    value = str(value)
+    return "<path>" if _looks_like_local_path(value) else _redact_game_import_text(value)[:1024]
+
+
+def _sha256_support_value(value):
+    value = str(value or "")
+    return value if re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+
+def _nonnegative_support_int(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def collect_active_content_identity(settings):
+    """Describe the active prepared content without exporting its local paths."""
+    pack_path = getattr(settings, "game_pack", None)
+    if pack_path:
+        try:
+            path = Path(pack_path).expanduser()
+            stat = path.stat()
+            return _active_pack_identity(str(path), stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            pass
+    story_path = getattr(settings, "story_index", None)
+    if story_path:
+        try:
+            path = Path(story_path).expanduser()
+            return {
+                "available": True,
+                "active_story_index_sha256": _file_sha256(path),
+            }
+        except OSError:
+            pass
+    return {"available": False}
+
+
+@lru_cache(maxsize=16)
+def _active_pack_identity(path, _modified_ns, size):
+    if size > 64 * 1024 * 1024:
+        return {"available": False, "reason": "pack manifest exceeds support read limit"}
+    try:
+        document = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"available": False, "reason": "pack manifest could not be read"}
+    extension = document.get("vntts.self-service")
+    extension = extension if isinstance(extension, dict) else {}
+    components = document.get("components")
+    components = components if isinstance(components, dict) else {}
+    story = components.get("story_index")
+    story = story if isinstance(story, dict) else {}
+    return {
+        "available": True,
+        "active_pack_identity": _sha256_support_value(extension.get("identity")),
+        "active_pregeneration_job_id": _plain_support_value(extension.get("job_id")),
+        "active_story_index_sha256": _sha256_support_value(story.get("sha256")),
+        "active_source_queue_sha256": _sha256_support_value(
+            extension.get("source_queue_sha256")
+        ),
+        "active_source_state_sha256": _sha256_support_value(
+            extension.get("source_state_sha256")
+        ),
+        "active_story_line_count": _nonnegative_support_int(
+            extension.get("story_line_count")
+        ),
+        "active_approved_count": _nonnegative_support_int(
+            extension.get("approved_count")
+        ),
+        "active_live_fallback_count": _nonnegative_support_int(
+            extension.get("live_fallback_count")
+        ),
+    }
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class SupportBundleBuilder:
     def __init__(
         self,
@@ -780,6 +1096,8 @@ class SupportBundleBuilder:
                 ),
             },
             "sanitized-settings.json": sanitize_settings(self.settings),
+            "active-content.json": collect_active_content_identity(self.settings),
+            "pregeneration.json": pregeneration_support.report(),
             "runtime-events.json": {
                 "events": [sanitize_event(entry) for entry in self.event_log.snapshot()]
             },

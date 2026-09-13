@@ -1440,6 +1440,23 @@ class OfflineAudioPreparationDialog(QDialog):
         self.selection_status.setText(self._resume_error_details)
         self.selection_status.show()
         self.copy_resume_error.show()
+        from vntts.support import record_pregeneration_failure
+
+        state_path = (
+            runtime_progress_manifest_path(self._generation_input).with_name(
+                "generation-state.json"
+            )
+            if self._generation_input is not None
+            else None
+        )
+        record_pregeneration_failure(
+            prefix,
+            error,
+            job=self._job,
+            generation_input=self._generation_input,
+            voice_plan=self._voice_plan,
+            state_path=state_path,
+        )
 
     def _clear_resume_error(self):
         self._resume_error_details = ""
