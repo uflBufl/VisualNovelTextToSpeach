@@ -547,6 +547,8 @@ class ConfigurationPage(QWizardPage):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.result_settings
+        if candidate is None:
+            raise RuntimeError("Narrator dialog accepted without settings")
         self.speech_backend.setCurrentIndex(
             self.speech_backend.findData(candidate.speech_backend)
         )
@@ -1108,8 +1110,11 @@ class DiagnosticsPage(QWizardPage):
                 labels["settings"] = "Open Settings"
             elif result.name == "Capture source":
                 labels["settings"] = "Choose game window"
+        remediation = result.remediation
         self.remediation_button.setText(
-            labels.get(result.remediation, "Show installation help")
+            labels.get(remediation, "Show installation help")
+            if remediation is not None
+            else "Show installation help"
         )
         self.remediation_button.setEnabled(True)
 
