@@ -3753,12 +3753,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/dashboard_ui.py",
-      "scope": "CompactController.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/diagnostics_ui.py",
       "scope": "DiagnosticsDialog.__init__",
       "count": 1

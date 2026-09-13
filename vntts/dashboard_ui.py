@@ -937,6 +937,13 @@ class CompactController(QWidget):
 
     def __init__(self, parent=None, *, platform=None):
         super().__init__(parent)
+        self._configure_window(platform)
+        self._build_status_labels()
+        self._build_buttons()
+        self._build_layout()
+        self.set_ready(False)
+
+    def _configure_window(self, platform):
         platform = sys.platform if platform is None else platform
         self._live = False
         self._ready = False
@@ -952,6 +959,7 @@ class CompactController(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setMinimumWidth(540)
 
+    def _build_status_labels(self):
         self.mode = QLabel("Starting")
         self.mode.setStyleSheet("font-weight: 600;")
         self.mode.setSizePolicy(
@@ -987,6 +995,7 @@ class CompactController(QWidget):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
+    def _build_buttons(self):
         self.read_button = QPushButton("Read")
         self.live_button = QPushButton("Start reading")
         self.pause_button = QPushButton("Pause")
@@ -1032,6 +1041,7 @@ class CompactController(QWidget):
         )
         self.full_button.clicked.connect(self.full_requested.emit)
 
+    def _build_layout(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(4)
@@ -1057,7 +1067,6 @@ class CompactController(QWidget):
         layout.addLayout(information)
         layout.addWidget(self.action_reason)
         layout.addLayout(controls)
-        self.set_ready(False)
 
     def set_sequence_status(self, status):
         manual = is_live_sequence_audio_mode(getattr(status, "mode", "off"))
