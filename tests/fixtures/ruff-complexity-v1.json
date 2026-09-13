@@ -969,24 +969,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/workspace_creation.py",
-      "scope": "create_audio_event_composition_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workspace_creation.py",
-      "scope": "create_failure_reference_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/workspace_creation.py",
-      "scope": "create_resume_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._apply_review_filters",
       "count": 1
@@ -2277,24 +2259,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/workspace_creation.py",
-      "scope": "create_audio_event_composition_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/workspace_creation.py",
-      "scope": "create_failure_reference_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/workspace_creation.py",
-      "scope": "create_resume_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/workbench_ui.py",
       "scope": "AuthoringWorkbenchDialog._populate_recent_choices",
       "count": 1
@@ -3239,24 +3203,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/voice_repair_comparison.py",
       "scope": "build_voice_repair_comparison_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/workspace_creation.py",
-      "scope": "create_audio_event_composition_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/workspace_creation.py",
-      "scope": "create_failure_reference_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/workspace_creation.py",
-      "scope": "create_resume_workspace",
       "count": 1
     },
     {
