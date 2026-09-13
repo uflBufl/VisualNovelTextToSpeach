@@ -785,8 +785,9 @@ class FailureReferenceAuditDialog(QDialog):
         self._play_generated_preview(preview)
 
     def replay_generated_preview(self) -> None:
-        if self._preview_matches_selection():
-            self._play_generated_preview(self._preview_result)
+        preview = self._preview_result
+        if preview is not None and self._preview_matches_selection():
+            self._play_generated_preview(preview)
 
     def _play_generated_preview(self, preview: FailureReferencePreview) -> None:
         self.stop_playback()
