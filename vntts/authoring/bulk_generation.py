@@ -30,6 +30,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueueItem,
 )
 from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
     VoiceManifestError,
     load_voice_manifest,
     normalize_character_name,
@@ -641,18 +642,34 @@ def _assert_review_authorities(
     queue_path: str | Path,
 ) -> tuple[JsonDocument, dict[str, tuple[JsonDocument, bytes]]]:
     """Validate one cohort against one shared state and queue snapshot."""
+    state_sha256, queue_sha256 = _cohort_review_snapshot(authorities)
+    state_path = Path(state_path).expanduser().resolve()
+    queue_path = Path(queue_path).expanduser().resolve()
+    state = _read_review_state(state_path, queue_path, state_sha256, queue_sha256)
+    snapshots, audio_paths = _cohort_review_audio_snapshots(
+        state, state_path, authorities
+    )
+    _assert_cohort_review_snapshot_stable(
+        state_path, queue_path, state_sha256, queue_sha256, authorities, audio_paths
+    )
+    return state, snapshots
+
+
+def _cohort_review_snapshot(authorities: object) -> tuple[str, str]:
     if not isinstance(authorities, dict) or not authorities:
         raise BulkGenerationError("Cohort review authorities must be a non-empty map")
     if any(not isinstance(value, ReviewAuthority) for value in authorities.values()):
         raise BulkGenerationError("Cohort review authority snapshot is invalid")
-    expected_state = {value.state_sha256 for value in authorities.values()}
-    expected_queue = {value.queue_sha256 for value in authorities.values()}
-    if len(expected_state) != 1 or len(expected_queue) != 1:
+    state = {value.state_sha256 for value in authorities.values()}
+    queue = {value.queue_sha256 for value in authorities.values()}
+    if len(state) != 1 or len(queue) != 1:
         raise BulkGenerationError("Cohort review authorities do not share one snapshot")
-    state_sha256 = next(iter(expected_state))
-    queue_sha256 = next(iter(expected_queue))
-    state_path = Path(state_path).expanduser().resolve()
-    queue_path = Path(queue_path).expanduser().resolve()
+    return next(iter(state)), next(iter(queue))
+
+
+def _read_review_state(
+    state_path: Path, queue_path: Path, state_sha256: str, queue_sha256: str
+) -> JsonDocument:
     try:
         state_payload = state_path.read_bytes()
         queue_payload = queue_path.read_bytes()
@@ -668,48 +685,82 @@ def _assert_review_authorities(
         raise BulkGenerationError(
             "Review queue changed after the cohort was displayed; refresh before deciding"
         )
+    return _review_state_document(state_payload, state_path, queue_sha256)
+
+
+def _review_state_document(
+    payload: bytes, state_path: Path, queue_sha256: str
+) -> JsonDocument:
     try:
-        state = json.loads(state_payload.decode("utf-8"))
+        state = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BulkGenerationError(
             f"Unable to read generation state {state_path}: {error}"
         ) from error
     if (
-        not isinstance(state, dict)
+        not _is_json_document(state)
         or not isinstance(state.get("items"), dict)
         or state.get("queue_sha256") != queue_sha256
     ):
         raise BulkGenerationError("Generation state items or queue identity changed")
+    return state
+
+
+def _cohort_review_audio_snapshots(
+    state: JsonDocument, state_path: Path, authorities: Mapping[object, ReviewAuthority]
+) -> tuple[dict[str, tuple[JsonDocument, bytes]], dict[str, Path]]:
     snapshots: dict[str, tuple[JsonDocument, bytes]] = {}
-    audio_paths: dict[str, Path] = {}
-    for queue_id, authority in authorities.items():
-        queue_id = _generation_text(queue_id, "Cohort review queue ID")
-        item = _state_items(state).get(queue_id)
-        if item is None or item.get("status") not in {
-            "generated",
-            "approved",
-        }:
-            raise BulkGenerationError(
-                f"Generated queue item does not exist: {queue_id}"
-            )
-        if _canonical_sha256(item) != authority.item_sha256:
-            raise BulkGenerationError(
-                "Review authority changed after the cohort was displayed; refresh before deciding"
-            )
-        relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
-        audio = _within(state_path.parent, relative, "Generated WAV")
-        try:
-            audio_bytes = audio.read_bytes()
-        except OSError as error:
-            raise BulkGenerationError(
-                f"Generated WAV is unreadable for {queue_id!r}: {error}"
-            ) from error
-        if hashlib.sha256(audio_bytes).hexdigest() != authority.audio_sha256:
-            raise BulkGenerationError(
-                "Review authority changed after the cohort was displayed; refresh before deciding"
-            )
-        snapshots[queue_id] = (item, audio_bytes)
-        audio_paths[queue_id] = audio
+    paths: dict[str, Path] = {}
+    for raw_queue_id, authority in authorities.items():
+        queue_id = _generation_text(raw_queue_id, "Cohort review queue ID")
+        item = _review_snapshot_item(state, queue_id, authority)
+        audio = _within(
+            state_path.parent,
+            _safe_relative(item.get("path"), f"State item {queue_id!r} path"),
+            "Generated WAV",
+        )
+        audio_bytes = _review_snapshot_audio(audio, queue_id, authority)
+        snapshots[queue_id], paths[queue_id] = (item, audio_bytes), audio
+    return snapshots, paths
+
+
+def _review_snapshot_item(
+    state: JsonDocument, queue_id: str, authority: ReviewAuthority
+) -> JsonDocument:
+    item = _state_items(state).get(queue_id)
+    if item is None or item.get("status") not in {"generated", "approved"}:
+        raise BulkGenerationError(f"Generated queue item does not exist: {queue_id}")
+    if _canonical_sha256(item) != authority.item_sha256:
+        raise BulkGenerationError(
+            "Review authority changed after the cohort was displayed; refresh before deciding"
+        )
+    return item
+
+
+def _review_snapshot_audio(
+    audio: Path, queue_id: str, authority: ReviewAuthority
+) -> bytes:
+    try:
+        payload = audio.read_bytes()
+    except OSError as error:
+        raise BulkGenerationError(
+            f"Generated WAV is unreadable for {queue_id!r}: {error}"
+        ) from error
+    if hashlib.sha256(payload).hexdigest() != authority.audio_sha256:
+        raise BulkGenerationError(
+            "Review authority changed after the cohort was displayed; refresh before deciding"
+        )
+    return payload
+
+
+def _assert_cohort_review_snapshot_stable(
+    state_path: Path,
+    queue_path: Path,
+    state_sha256: str,
+    queue_sha256: str,
+    authorities: Mapping[object, ReviewAuthority],
+    audio_paths: Mapping[str, Path],
+) -> None:
     if (
         sha256_file(state_path) != state_sha256
         or sha256_file(queue_path) != queue_sha256
@@ -717,12 +768,12 @@ def _assert_review_authorities(
         raise BulkGenerationError(
             "Review authority changed while the cohort was being validated"
         )
-    for queue_id, authority in authorities.items():
+    for raw_queue_id, authority in authorities.items():
+        queue_id = _generation_text(raw_queue_id, "Cohort review queue ID")
         if sha256_file(audio_paths[queue_id]) != authority.audio_sha256:
             raise BulkGenerationError(
                 "Review authority changed while the cohort was being validated"
             )
-    return state, snapshots
 
 
 def _load_review_snapshot(
@@ -738,55 +789,33 @@ def _load_review_snapshot(
         raise BulkGenerationError("Review authority snapshot is invalid")
     state_path = Path(state_path).expanduser().resolve()
     queue_path = None if queue_path is None else Path(queue_path).expanduser().resolve()
+    state = _load_displayed_review_state(state_path, queue_path, expected_authority)
+    item = _review_snapshot_item(state, queue_id, expected_authority)
+    relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
+    audio = _within(state_path.parent, relative, "Generated WAV")
+    audio_bytes = _review_snapshot_audio(audio, queue_id, expected_authority)
+    return state, item, audio_bytes if capture_audio else b""
+
+
+def _load_displayed_review_state(
+    state_path: Path, queue_path: Path | None, authority: ReviewAuthority
+) -> JsonDocument:
     try:
-        state_payload = state_path.read_bytes()
+        payload = state_path.read_bytes()
     except OSError as error:
         raise BulkGenerationError(
             f"Unable to read generation state {state_path}: {error}"
         ) from error
-    if hashlib.sha256(state_payload).hexdigest() != expected_authority.state_sha256:
+    if hashlib.sha256(payload).hexdigest() != authority.state_sha256:
         raise BulkGenerationError(
             "Review authority changed after the item was displayed; refresh before deciding"
         )
-    try:
-        state = json.loads(state_payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise BulkGenerationError(
-            f"Unable to read generation state {state_path}: {error}"
-        ) from error
-    if not _is_json_document(state):
-        raise BulkGenerationError("Generation state items must be an object")
-    if state.get("queue_sha256") != expected_authority.queue_sha256:
-        raise BulkGenerationError(
-            "Review authority changed after the item was displayed; refresh before deciding"
-        )
-    if queue_path is None or sha256_file(queue_path) != expected_authority.queue_sha256:
+    state = _review_state_document(payload, state_path, authority.queue_sha256)
+    if queue_path is None or sha256_file(queue_path) != authority.queue_sha256:
         raise BulkGenerationError(
             "Review queue changed after the item was displayed; refresh before deciding"
         )
-    item = _state_items(state).get(queue_id)
-    if item is None or item.get("status") not in {
-        "generated",
-        "approved",
-    }:
-        raise BulkGenerationError(f"Generated queue item does not exist: {queue_id}")
-    if _canonical_sha256(item) != expected_authority.item_sha256:
-        raise BulkGenerationError(
-            "Review authority changed after the item was displayed; refresh before deciding"
-        )
-    relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
-    audio = _within(state_path.parent, relative, "Generated WAV")
-    try:
-        audio_bytes = audio.read_bytes()
-    except OSError as error:
-        raise BulkGenerationError(
-            f"Generated WAV is unreadable for {queue_id!r}: {error}"
-        ) from error
-    if hashlib.sha256(audio_bytes).hexdigest() != expected_authority.audio_sha256:
-        raise BulkGenerationError(
-            "Review authority changed after the item was displayed; refresh before deciding"
-        )
-    return state, item, audio_bytes if capture_audio else b""
+    return state
 
 
 def load_review_audio_bytes(
@@ -974,21 +1003,35 @@ def _generation_voice_overrides(
     *,
     narrator_character: str | None,
 ) -> tuple[MissingVoicePolicy, dict[str, str]]:
+    policy = _missing_voice_policy(policy_document)
+    overrides = (
+        {} if synthesis_character_overrides is None else synthesis_character_overrides
+    )
+    if not isinstance(overrides, dict):
+        raise BulkGenerationError("Synthesis character overrides must be an object")
+    normalized = _normalized_narrator_overrides(overrides, policy)
+    if normalized or narrator_character is not None:
+        _required_text(narrator_character, "Narrator character")
+    return policy, normalized
+
+
+def _missing_voice_policy(policy_document: object) -> MissingVoicePolicy:
     try:
-        policy = (
+        return (
             policy_document
             if isinstance(policy_document, MissingVoicePolicy)
             else MissingVoicePolicy.from_document(policy_document)
         )
     except MissingVoicePolicyError as error:
         raise BulkGenerationError(str(error)) from error
-    if synthesis_character_overrides is None:
-        synthesis_character_overrides = {}
-    if not isinstance(synthesis_character_overrides, dict):
-        raise BulkGenerationError("Synthesis character overrides must be an object")
+
+
+def _normalized_narrator_overrides(
+    overrides: Mapping[object, object], policy: MissingVoicePolicy
+) -> dict[str, str]:
     normalized: dict[str, str] = {}
     source_names: dict[str, str] = {}
-    for requested, effective in synthesis_character_overrides.items():
+    for requested, effective in overrides.items():
         requested = _required_text(requested, "Requested synthesis character")
         effective = _required_text(effective, "Effective synthesis character")
         key = normalize_character_name(requested)
@@ -1012,11 +1055,7 @@ def _generation_voice_overrides(
             )
         source_names[key] = requested
         normalized[key] = "Narrator"
-    if normalized:
-        _required_text(narrator_character, "Narrator character")
-    elif narrator_character is not None:
-        _required_text(narrator_character, "Narrator character")
-    return policy, normalized
+    return normalized
 
 
 def _validated_queue_voice_overrides(
@@ -1085,14 +1124,23 @@ def _assert_missing_voice_overrides_match_manifest(
         raise BulkGenerationError(
             "Narrator fallback requires a bound voice_manifest control"
         )
-    path = manifest_control["path"]
+    entries = _fallback_manifest_entries(manifest_control)
+    indexed = _voice_manifest_entries_by_name(entries)
+    _assert_fallback_roles_have_no_references(character_overrides, indexed)
+    _assert_fallback_narrator_has_reference(narrator_character, provider, indexed)
+
+
+def _fallback_manifest_entries(
+    control: _GenerationControl,
+) -> Sequence[VoiceManifestEntry]:
+    path = control["path"]
     try:
         payload = path.read_bytes()
     except OSError as error:
         raise BulkGenerationError(
             f"Unable to read fallback voice manifest: {error}"
         ) from error
-    if hashlib.sha256(payload).hexdigest() != manifest_control["sha256"]:
+    if hashlib.sha256(payload).hexdigest() != control["sha256"]:
         raise BulkGenerationSourceChangedError(
             "Voice manifest changed while fallback roles were validated"
         )
@@ -1103,18 +1151,37 @@ def _assert_missing_voice_overrides_match_manifest(
             _manifest, entries = load_voice_manifest(snapshot)
     except (OSError, VoiceManifestError) as error:
         raise BulkGenerationError(str(error)) from error
+    return entries
+
+
+def _voice_manifest_entries_by_name(
+    entries: Sequence[VoiceManifestEntry],
+) -> dict[str, VoiceManifestEntry]:
     indexed = {}
     for entry in entries:
         for name in (entry.character, entry.speaker, *entry.aliases):
             key = normalize_character_name(name)
             if key:
                 indexed[key] = entry
+    return indexed
+
+
+def _assert_fallback_roles_have_no_references(
+    character_overrides: Mapping[str, str], indexed: Mapping[str, VoiceManifestEntry]
+) -> None:
     for requested in character_overrides:
         entry = indexed.get(requested)
         if entry is not None and entry.references:
             raise BulkGenerationError(
                 f"Narrator fallback role {requested!r} still has configured references"
             )
+
+
+def _assert_fallback_narrator_has_reference(
+    narrator_character: str | None,
+    provider: str,
+    indexed: Mapping[str, VoiceManifestEntry],
+) -> None:
     narrator = indexed.get(normalize_character_name(narrator_character))
     if narrator is None or not (
         narrator.references
@@ -1262,129 +1329,7 @@ def generation_failure_repair_plan(
     report = generation_failure_report(state_path, queue_path)
     planned: list[JsonDocument] = []
     for record in report["records"]:
-        failure = record["failure"]
-        kind = failure["kind"]
-        attempts = record["attempts"]
-        previous_repair = record.get("failure_repair")
-        previous_strategy = (
-            previous_repair.get("strategy")
-            if isinstance(previous_repair, dict)
-            else None
-        )
-        repair_history = record.get("failure_repair_history", [])
-        if not _failure_has_bound_synthesis_controls(record):
-            action = "provenance_recovery_or_regeneration"
-            reason = (
-                "legacy failure lacks exact provider, model, generation profile or "
-                "synthesis-control provenance; recover immutable evidence or regenerate "
-                "under current controls before selecting a repair"
-            )
-        elif (
-            previous_strategy == BOUNDED_SEED_RETRY and kind == "missed_eos_audio_limit"
-        ):
-            provider_attempts = record["attempts_by_provider"].get(
-                _failure_report_provider(record), attempts
-            )
-            if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
-                action = "bounded_seed_retry"
-                reason = "the current-provider bounded repair still has an attempt"
-            else:
-                action = "offline_fallback_backend"
-                reason = "the current-provider bounded repair is exhausted"
-        elif previous_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
-            if kind == "missed_eos_audio_limit":
-                provider_attempts = record["attempts_by_provider"].get(
-                    _failure_report_provider(record), attempts
-                )
-                if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
-                    action = "bounded_seed_retry"
-                    reason = (
-                        "sentence segmentation failed, but one bounded "
-                        "current-provider attempt remains"
-                    )
-                else:
-                    action = "offline_fallback_backend"
-                    reason = (
-                        "bounded sentence segmentation failed and current-provider "
-                        "attempts are exhausted"
-                    )
-            elif kind == "speech_silence":
-                action = "reference_comparison"
-                reason = (
-                    "segmented output still failed the speech-silence gate and "
-                    "requires listening and reference audit"
-                )
-            else:
-                action = "backend_diagnosis"
-                reason = (
-                    "sentence segmentation already failed with an unrelated typed "
-                    "backend outcome"
-                )
-        elif kind == "missed_eos_audio_limit":
-            provider_attempts = record["attempts_by_provider"].get(
-                _failure_report_provider(record), attempts
-            )
-            if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
-                action = "bounded_seed_retry"
-                reason = "fewer than three completed attempts for the current provider"
-            else:
-                action = "offline_fallback_backend"
-                reason = "current-provider bounded attempts are exhausted"
-        elif kind == "speech_silence":
-            quality = failure.get("speech_quality")
-            edge_only = bool(
-                isinstance(quality, dict)
-                and (
-                    quality.get("leading_silence_seconds", 0)
-                    > MAX_LEADING_SILENCE_SECONDS
-                    or quality.get("trailing_silence_seconds", 0)
-                    > MAX_TRAILING_SILENCE_SECONDS
-                )
-                and quality.get("longest_internal_silence_seconds", 0)
-                <= MAX_INTERNAL_SILENCE_SECONDS
-            )
-            if (
-                SENTENCE_BOUNDARY_SEGMENTATION in repair_history
-                and _sentence_repair_matches_failure(failure, record["text"])
-            ):
-                action = "reference_comparison"
-                reason = (
-                    "speech-silence remained after an earlier sentence-boundary "
-                    "repair and requires listening or reference audit"
-                )
-            elif _sentence_repair_matches_failure(failure, record["text"]):
-                action = "sentence_boundary_segmentation"
-                reason = "internal silence between multiple complete sentences"
-            elif _inline_pause_matches_failure(failure, record["text"]):
-                provider_attempts = record["attempts_by_provider"].get(
-                    _failure_report_provider(record), attempts
-                )
-                if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
-                    action = "inline_pause_marker_comparison"
-                    reason = (
-                        "sentence-boundary silence cannot use safe independent "
-                        "segments and bounded attempts remain"
-                    )
-                else:
-                    action = "offline_fallback_backend"
-                    reason = "bounded inline-pause attempts are exhausted"
-            elif edge_only:
-                action = "edge_silence_trim"
-                reason = "only measured boundary silence exceeds the speech gate"
-            else:
-                action = "reference_comparison"
-                reason = (
-                    "internal or untyped silence requires listening and reference audit"
-                )
-        elif kind == "reference_unavailable":
-            action = "reference_discovery"
-            reason = "no exact synthesis reference was available"
-        elif kind in {"cancelled", "interrupted"}:
-            action = "safe_resume"
-            reason = "the attempt did not reach a terminal synthesis result"
-        else:
-            action = "backend_diagnosis"
-            reason = "the typed backend failure has no safe automatic repair"
+        action, reason, previous_strategy = _failure_repair_action(record)
         planned.append(
             {
                 "queue_id": record["queue_id"],
@@ -1392,9 +1337,9 @@ def generation_failure_repair_plan(
                 "speaker": record["speaker"],
                 "requested_voice_character": record["requested_voice_character"],
                 "synthesis_voice_character": record["synthesis_voice_character"],
-                "failure_kind": kind,
+                "failure_kind": record["failure"]["kind"],
                 "provider": record["provider"],
-                "attempts": attempts,
+                "attempts": record["attempts"],
                 "seed": record["seed"],
                 "attempted_repair_strategy": previous_strategy,
                 "action": action,
@@ -1416,6 +1361,130 @@ def generation_failure_repair_plan(
         "action_counts": dict(sorted(action_counts.items())),
         "records": planned,
     }
+
+
+def _failure_repair_action(record: _FailureReportRecord) -> tuple[str, str, object]:
+    previous_repair = record.get("failure_repair")
+    previous_strategy = (
+        previous_repair.get("strategy") if isinstance(previous_repair, dict) else None
+    )
+    if not _failure_has_bound_synthesis_controls(record):
+        return (
+            "provenance_recovery_or_regeneration",
+            "legacy failure lacks exact provider, model, generation profile or synthesis-control provenance; recover immutable evidence or regenerate under current controls before selecting a repair",
+            previous_strategy,
+        )
+    action, reason = _bound_failure_repair_action(record, previous_strategy)
+    return action, reason, previous_strategy
+
+
+def _bound_failure_repair_action(
+    record: _FailureReportRecord, previous_strategy: object
+) -> tuple[str, str]:
+    kind = record["failure"]["kind"]
+    if previous_strategy == BOUNDED_SEED_RETRY and kind == "missed_eos_audio_limit":
+        return _bounded_repair_action(
+            record,
+            "the current-provider bounded repair still has an attempt",
+            "the current-provider bounded repair is exhausted",
+        )
+    if previous_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+        return _segmented_failure_repair_action(record, kind)
+    if kind == "missed_eos_audio_limit":
+        return _bounded_repair_action(
+            record,
+            "fewer than three completed attempts for the current provider",
+            "current-provider bounded attempts are exhausted",
+        )
+    if kind == "speech_silence":
+        return _silence_failure_repair_action(record)
+    if kind == "reference_unavailable":
+        return "reference_discovery", "no exact synthesis reference was available"
+    if kind in {"cancelled", "interrupted"}:
+        return "safe_resume", "the attempt did not reach a terminal synthesis result"
+    return "backend_diagnosis", "the typed backend failure has no safe automatic repair"
+
+
+def _bounded_repair_action(
+    record: _FailureReportRecord,
+    available: str,
+    exhausted: str,
+    *,
+    action: str = "bounded_seed_retry",
+) -> tuple[str, str]:
+    attempts = record["attempts_by_provider"].get(
+        _failure_report_provider(record), record["attempts"]
+    )
+    return (
+        (action, available)
+        if attempts < MAX_BOUNDED_TOTAL_ATTEMPTS
+        else ("offline_fallback_backend", exhausted)
+    )
+
+
+def _segmented_failure_repair_action(
+    record: _FailureReportRecord, kind: object
+) -> tuple[str, str]:
+    if kind == "missed_eos_audio_limit":
+        return _bounded_repair_action(
+            record,
+            "sentence segmentation failed, but one bounded current-provider attempt remains",
+            "bounded sentence segmentation failed and current-provider attempts are exhausted",
+        )
+    if kind == "speech_silence":
+        return (
+            "reference_comparison",
+            "segmented output still failed the speech-silence gate and requires listening and reference audit",
+        )
+    return (
+        "backend_diagnosis",
+        "sentence segmentation already failed with an unrelated typed backend outcome",
+    )
+
+
+def _silence_failure_repair_action(record: _FailureReportRecord) -> tuple[str, str]:
+    failure, text = record["failure"], record["text"]
+    if SENTENCE_BOUNDARY_SEGMENTATION in record.get(
+        "failure_repair_history", []
+    ) and _sentence_repair_matches_failure(failure, text):
+        return (
+            "reference_comparison",
+            "speech-silence remained after an earlier sentence-boundary repair and requires listening or reference audit",
+        )
+    if _sentence_repair_matches_failure(failure, text):
+        return (
+            "sentence_boundary_segmentation",
+            "internal silence between multiple complete sentences",
+        )
+    if _inline_pause_matches_failure(failure, text):
+        return _bounded_repair_action(
+            record,
+            "sentence-boundary silence cannot use safe independent segments and bounded attempts remain",
+            "bounded inline-pause attempts are exhausted",
+            action="inline_pause_marker_comparison",
+        )
+    if _edge_silence_only(failure):
+        return (
+            "edge_silence_trim",
+            "only measured boundary silence exceeds the speech gate",
+        )
+    return (
+        "reference_comparison",
+        "internal or untyped silence requires listening and reference audit",
+    )
+
+
+def _edge_silence_only(failure: JsonDocument) -> bool:
+    quality = failure.get("speech_quality")
+    return bool(
+        isinstance(quality, dict)
+        and (
+            quality.get("leading_silence_seconds", 0) > MAX_LEADING_SILENCE_SECONDS
+            or quality.get("trailing_silence_seconds", 0) > MAX_TRAILING_SILENCE_SECONDS
+        )
+        and quality.get("longest_internal_silence_seconds", 0)
+        <= MAX_INTERNAL_SILENCE_SECONDS
+    )
 
 
 def _failure_repair_history(result: JsonDocument) -> list[str]:
@@ -1470,113 +1539,167 @@ def _validate_failure_repair_selection(
         raise BulkGenerationError("Failure-repair selection changed unexpectedly")
     queue_by_id = {item.queue_id: item for item in queue.items}
     for queue_id in policy.queue_ids:
-        result = _state_items(state).get(queue_id)
-        if result is None or result.get("status") != "failed":
-            raise BulkGenerationError(
-                f"Failure repair requires a current failed outcome for {queue_id!r}"
-            )
-        if not isinstance(result.get("failure"), dict):
-            raise BulkGenerationError(
-                f"Failure repair requires typed failure provenance for {queue_id!r}"
-            )
-        item = queue_by_id[queue_id]
-        failure = normalized_failure_record(result, text=item.text)
-        strategy = policy.strategy_for(queue_id)
-        if strategy == SENTENCE_BOUNDARY_SEGMENTATION:
-            previous_repair = result.get("failure_repair")
-            if (
-                isinstance(previous_repair, dict)
-                and previous_repair.get("strategy") == SENTENCE_BOUNDARY_SEGMENTATION
-            ):
-                raise BulkGenerationError(
-                    f"Sentence repair already failed for {queue_id!r}"
-                )
-            if not _sentence_repair_matches_failure(failure, item.text):
-                raise BulkGenerationError(
-                    f"Sentence repair no longer matches failure {queue_id!r}"
-                )
-        elif strategy == EDGE_SILENCE_TRIM:
-            quality = failure.get("speech_quality")
-            if not isinstance(quality, dict):
-                raise BulkGenerationError(
-                    f"Edge-silence repair requires typed speech metrics for {queue_id!r}"
-                )
+        _validate_failure_repair_item(
+            policy.strategy_for(queue_id),
+            queue_id,
+            _failed_repair_result(state, queue_id),
+            queue_by_id[queue_id],
+            provider,
+        )
+
+
+def _failed_repair_result(state: JsonDocument, queue_id: str) -> JsonDocument:
+    result = _state_items(state).get(queue_id)
+    if result is None or result.get("status") != "failed":
+        raise BulkGenerationError(
+            f"Failure repair requires a current failed outcome for {queue_id!r}"
+        )
+    if not isinstance(result.get("failure"), dict):
+        raise BulkGenerationError(
+            f"Failure repair requires typed failure provenance for {queue_id!r}"
+        )
+    return result
+
+
+def _validate_failure_repair_item(
+    strategy: str,
+    queue_id: str,
+    result: JsonDocument,
+    item: VoiceGenerationQueueItem,
+    provider: str,
+) -> None:
+    failure = normalized_failure_record(result, text=item.text)
+    validators = {
+        SENTENCE_BOUNDARY_SEGMENTATION: _validate_sentence_repair,
+        EDGE_SILENCE_TRIM: _validate_edge_silence_repair,
+        BOUNDED_SEED_RETRY: _validate_bounded_seed_repair,
+        OFFLINE_FALLBACK_BACKEND: _validate_offline_fallback_repair,
+        INLINE_PAUSE_MARKER: _validate_inline_pause_repair,
+    }
+    validator = validators.get(strategy)
+    if validator is not None:
+        validator(queue_id, result, item, failure, provider)
+
+
+def _validate_sentence_repair(
+    queue_id: str,
+    result: JsonDocument,
+    item: VoiceGenerationQueueItem,
+    failure: JsonDocument,
+    _provider: str,
+) -> None:
+    previous_repair = result.get("failure_repair")
+    if (
+        isinstance(previous_repair, dict)
+        and previous_repair.get("strategy") == SENTENCE_BOUNDARY_SEGMENTATION
+    ):
+        raise BulkGenerationError(f"Sentence repair already failed for {queue_id!r}")
+    if not _sentence_repair_matches_failure(failure, item.text):
+        raise BulkGenerationError(
+            f"Sentence repair no longer matches failure {queue_id!r}"
+        )
+
+
+def _validate_edge_silence_repair(
+    queue_id: str,
+    _result: JsonDocument,
+    _item: VoiceGenerationQueueItem,
+    failure: JsonDocument,
+    _provider: str,
+) -> None:
+    quality = failure.get("speech_quality")
+    if not isinstance(quality, dict):
+        raise BulkGenerationError(
+            f"Edge-silence repair requires typed speech metrics for {queue_id!r}"
+        )
+    if any(
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not np.isfinite(value)
+        or value < 0
+        for value in (
+            quality.get(field)
             for field in (
                 "leading_silence_seconds",
                 "trailing_silence_seconds",
                 "longest_internal_silence_seconds",
-            ):
-                value = quality.get(field)
-                if (
-                    not isinstance(value, (int, float))
-                    or isinstance(value, bool)
-                    or not np.isfinite(value)
-                    or value < 0
-                ):
-                    raise BulkGenerationError(
-                        f"Edge-silence repair metrics are invalid for {queue_id!r}"
-                    )
-            edge_exceeded = (
-                quality.get("leading_silence_seconds", 0) > MAX_LEADING_SILENCE_SECONDS
-                or quality.get("trailing_silence_seconds", 0)
-                > MAX_TRAILING_SILENCE_SECONDS
             )
-            if (
-                not edge_exceeded
-                or quality.get("longest_internal_silence_seconds", 0)
-                > MAX_INTERNAL_SILENCE_SECONDS
-            ):
-                raise BulkGenerationError(
-                    f"Edge-silence repair no longer matches failure {queue_id!r}"
-                )
-        elif strategy == BOUNDED_SEED_RETRY:
-            attempts = _nonnegative_int(
-                result.get("attempts", 0), f"State item {queue_id!r} attempts"
-            )
-            provider_attempts = _provider_attempts(
-                result, attempts, default_provider=provider
-            ).get(provider, 0)
-            if (
-                failure.get("kind") != "missed_eos_audio_limit"
-                or result.get("provider") != provider
-                or provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
-            ):
-                raise BulkGenerationError(
-                    f"Bounded seed repair no longer matches failure {queue_id!r}"
-                )
-        elif strategy == OFFLINE_FALLBACK_BACKEND:
-            carry = _offline_fallback_source(result)
-            attempts = _nonnegative_int(
-                result.get("attempts", 0), f"State item {queue_id!r} attempts"
-            )
-            provider_attempts = _provider_attempts(
-                result, attempts, default_provider=result.get("provider")
-            ).get(provider, 0)
-            if (
-                not isinstance(carry, dict)
-                or carry.get("mode") != "failed-outcome"
-                or carry.get("source_provider") == provider
-                or provider_attempts >= 1
-            ):
-                raise BulkGenerationError(
-                    "Offline fallback lacks a different bound source backend or "
-                    f"its single attempt is exhausted for {queue_id!r}"
-                )
-        elif strategy == INLINE_PAUSE_MARKER:
-            attempts = _nonnegative_int(
-                result.get("attempts", 0), f"State item {queue_id!r} attempts"
-            )
-            provider_attempts = _provider_attempts(
-                result, attempts, default_provider=provider
-            ).get(provider, 0)
-            if (
-                not _inline_pause_matches_failure(failure, item.text)
-                or result.get("provider") != provider
-                or provider_attempts >= MAX_BOUNDED_TOTAL_ATTEMPTS
-            ):
-                raise BulkGenerationError(
-                    f"Inline pause repair no longer matches failure {queue_id!r}"
-                )
+        )
+    ):
+        raise BulkGenerationError(
+            f"Edge-silence repair metrics are invalid for {queue_id!r}"
+        )
+    if not _edge_silence_only(failure):
+        raise BulkGenerationError(
+            f"Edge-silence repair no longer matches failure {queue_id!r}"
+        )
+
+
+def _provider_repair_attempts(
+    result: JsonDocument, queue_id: str, provider: object
+) -> int:
+    attempts = _nonnegative_int(
+        result.get("attempts", 0), f"State item {queue_id!r} attempts"
+    )
+    return _provider_attempts(result, attempts, default_provider=provider).get(
+        provider, 0
+    )
+
+
+def _validate_bounded_seed_repair(
+    queue_id: str,
+    result: JsonDocument,
+    _item: VoiceGenerationQueueItem,
+    failure: JsonDocument,
+    provider: str,
+) -> None:
+    if (
+        failure.get("kind") != "missed_eos_audio_limit"
+        or result.get("provider") != provider
+        or _provider_repair_attempts(result, queue_id, provider)
+        >= MAX_BOUNDED_TOTAL_ATTEMPTS
+    ):
+        raise BulkGenerationError(
+            f"Bounded seed repair no longer matches failure {queue_id!r}"
+        )
+
+
+def _validate_offline_fallback_repair(
+    queue_id: str,
+    result: JsonDocument,
+    _item: VoiceGenerationQueueItem,
+    _failure: JsonDocument,
+    provider: str,
+) -> None:
+    carry = _offline_fallback_source(result)
+    if (
+        not isinstance(carry, dict)
+        or carry.get("mode") != "failed-outcome"
+        or carry.get("source_provider") == provider
+        or _provider_repair_attempts(result, queue_id, result.get("provider")) >= 1
+    ):
+        raise BulkGenerationError(
+            "Offline fallback lacks a different bound source backend or its single attempt is exhausted for "
+            f"{queue_id!r}"
+        )
+
+
+def _validate_inline_pause_repair(
+    queue_id: str,
+    result: JsonDocument,
+    item: VoiceGenerationQueueItem,
+    failure: JsonDocument,
+    provider: str,
+) -> None:
+    if (
+        not _inline_pause_matches_failure(failure, item.text)
+        or result.get("provider") != provider
+        or _provider_repair_attempts(result, queue_id, provider)
+        >= MAX_BOUNDED_TOTAL_ATTEMPTS
+    ):
+        raise BulkGenerationError(
+            f"Inline pause repair no longer matches failure {queue_id!r}"
+        )
 
 
 def sentence_repair_matches_failure(failure: JsonDocument, text: str) -> bool:
@@ -2926,6 +3049,87 @@ def run_bulk_generation(
     manifest_path = output_directory / "manifest.json"
     output_directory.mkdir(parents=True, exist_ok=True)
 
+    return _run_generation_execution(
+        output_directory=output_directory,
+        queue_sha256=queue_sha256,
+        process_checker=process_checker,
+        workspace_output_identity=workspace_output_identity,
+        output_argument=output_argument,
+        state_path=state_path,
+        queue=queue,
+        repair_policy=repair_policy,
+        selected_queue_ids=selected_queue_ids,
+        provenance_sha256=provenance_sha256,
+        control_records=control_records,
+        queue_path=queue_path,
+        controls=controls,
+        include_prefer_source=include_prefer_source,
+        include_characters=include_characters,
+        item_filter=item_filter,
+        limit=limit,
+        regenerate_existing=regenerate_existing,
+        queue_voice_overrides=queue_voice_overrides,
+        character_overrides=character_overrides,
+        policy=policy,
+        narrator_character=narrator_character,
+        synthesis_configuration=synthesis_configuration,
+        text_transform=text_transform,
+        text_transform_id=text_transform_id,
+        provider=provider,
+        model=model,
+        generation_profile=generation_profile,
+        backend=backend,
+        render=render,
+        seed=seed,
+        retries=retries,
+        cancellation=cancellation,
+        synthesis_cache_policy=synthesis_cache_policy,
+        recorded_voices=recorded_voices,
+        evidence_directory=evidence_directory,
+        manifest_path=manifest_path,
+    )
+
+
+def _run_generation_execution(
+    *,
+    output_directory: Path,
+    queue_sha256: str,
+    process_checker: Callable[[object], bool] | None,
+    workspace_output_identity: object,
+    output_argument: Path,
+    state_path: Path,
+    queue: VoiceGenerationQueue,
+    repair_policy: FailureRepairPolicy,
+    selected_queue_ids: set[str] | None,
+    provenance_sha256: str,
+    control_records: list[JsonDocument],
+    queue_path: Path,
+    controls: Sequence[_GenerationControl],
+    include_prefer_source: bool,
+    include_characters: Sequence[str] | None,
+    item_filter: Callable[[VoiceGenerationQueueItem], bool] | None,
+    limit: int | None,
+    regenerate_existing: bool,
+    queue_voice_overrides: dict[str, str],
+    character_overrides: dict[str, str],
+    policy: MissingVoicePolicy,
+    narrator_character: str | None,
+    synthesis_configuration: JsonDocument,
+    text_transform: Callable[[str], str] | None,
+    text_transform_id: str | None,
+    provider: str,
+    model: str,
+    generation_profile: str,
+    backend: object,
+    render: GenerationRenderer,
+    seed: int,
+    retries: int,
+    cancellation: object,
+    synthesis_cache_policy: SynthesisCachePolicy,
+    recorded_voices: Mapping[str, str],
+    evidence_directory: Path | None,
+    manifest_path: Path,
+) -> BulkGenerationResult:
     with (
         _GenerationLease(
             output_directory,
@@ -2933,80 +3137,38 @@ def run_bulk_generation(
             process_checker=process_checker or process_is_alive,
         ) as lease,
         ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="moss-generation-prefetch",
+            max_workers=1, thread_name_prefix="moss-generation-prefetch"
         ) as render_prefetch,
     ):
-        if workspace_output_identity is not None:
-            _assert_workspace_output_identity(
-                output_argument, workspace_output_identity
-            )
+        _assert_generation_workspace_identity(
+            workspace_output_identity, output_argument
+        )
         interrupted_job = _guard_job_process(
             output_directory, process_checker or process_is_alive
         )
         state = _load_or_create_state(state_path, output_directory, queue, queue_sha256)
         _validate_failure_repair_selection(
-            repair_policy,
-            selected_queue_ids,
-            state,
-            queue,
-            provider=provider,
+            repair_policy, selected_queue_ids, state, queue, provider=provider
         )
-        if state["schema"] == STATE_SCHEMA:
-            registry_value = state.get("synthesis_controls")
-            if registry_value is None:
-                registry: JsonDocument = {}
-                state["synthesis_controls"] = registry
-            elif _is_json_document(registry_value):
-                registry = registry_value
-            else:
-                raise BulkGenerationProvenanceError(
-                    "Stored synthesis controls conflict with this run"
-                )
-            existing_controls = registry.get(provenance_sha256)
-            if existing_controls is not None and existing_controls != control_records:
-                raise BulkGenerationProvenanceError(
-                    "Stored synthesis controls conflict with this run"
-                )
-            if existing_controls is None:
-                registry[provenance_sha256] = control_records
-                atomic_write_json(state_path, state, sort_keys=True)
-        if interrupted_job is not None:
-            interrupted_processes_value = state.get("interrupted_processes")
-            if interrupted_processes_value is None:
-                interrupted_processes: list[object] = []
-                state["interrupted_processes"] = interrupted_processes
-            elif _is_object_list(interrupted_processes_value):
-                interrupted_processes = interrupted_processes_value
-            else:
-                raise BulkGenerationError("Interrupted processes are malformed")
-            if not any(
-                isinstance(value, dict)
-                and value.get("job_sha256") == interrupted_job["job_sha256"]
-                for value in interrupted_processes
-            ):
-                interrupted_processes.append(interrupted_job)
-                atomic_write_json(state_path, state, sort_keys=True)
+        _record_generation_controls(
+            state, state_path, provenance_sha256, control_records
+        )
+        _record_interrupted_generation_job(state, state_path, interrupted_job)
         _reconcile_interrupted_attempt(state_path, state, queue)
         state.setdefault("game", queue.metadata.get("game"))
         state.setdefault("language", queue.metadata.get("language"))
-
-        (
-            candidates,
-            skipped_actions,
-            skipped_characters,
-            skipped_items,
-        ) = _select_generation_candidates(
-            queue,
-            state,
-            include_prefer_source=include_prefer_source,
-            include_characters=include_characters,
-            selected_queue_ids=selected_queue_ids,
-            item_filter=item_filter,
-            limit=limit,
-            regenerate_existing=regenerate_existing,
+        candidates, skipped_actions, skipped_characters, skipped_items = (
+            _select_generation_candidates(
+                queue,
+                state,
+                include_prefer_source=include_prefer_source,
+                include_characters=include_characters,
+                selected_queue_ids=selected_queue_ids,
+                item_filter=item_filter,
+                limit=limit,
+                regenerate_existing=regenerate_existing,
+            )
         )
-
         execution = _execute_generation_candidates(
             _GenerationExecutionContext(
                 state_path=state_path,
@@ -3041,7 +3203,6 @@ def run_bulk_generation(
                 regenerate_existing=regenerate_existing,
             )
         )
-
         return _finalize_generation_run(
             queue_path=queue_path,
             queue_sha256=queue_sha256,
@@ -3059,6 +3220,63 @@ def run_bulk_generation(
             skipped_characters=skipped_characters,
             skipped_items=skipped_items,
         )
+
+
+def _assert_generation_workspace_identity(
+    identity: object, output_argument: Path
+) -> None:
+    if identity is not None:
+        _assert_workspace_output_identity(output_argument, identity)
+
+
+def _record_generation_controls(
+    state: JsonDocument,
+    state_path: Path,
+    provenance_sha256: str,
+    controls: list[JsonDocument],
+) -> None:
+    if state["schema"] != STATE_SCHEMA:
+        return
+    registry_value = state.get("synthesis_controls")
+    if registry_value is None:
+        registry: JsonDocument = {}
+        state["synthesis_controls"] = registry
+    elif _is_json_document(registry_value):
+        registry = registry_value
+    else:
+        raise BulkGenerationProvenanceError(
+            "Stored synthesis controls conflict with this run"
+        )
+    existing = registry.get(provenance_sha256)
+    if existing is not None and existing != controls:
+        raise BulkGenerationProvenanceError(
+            "Stored synthesis controls conflict with this run"
+        )
+    if existing is None:
+        registry[provenance_sha256] = controls
+        atomic_write_json(state_path, state, sort_keys=True)
+
+
+def _record_interrupted_generation_job(
+    state: JsonDocument, state_path: Path, interrupted_job: JsonDocument | None
+) -> None:
+    if interrupted_job is None:
+        return
+    value = state.get("interrupted_processes")
+    if value is None:
+        processes: list[object] = []
+        state["interrupted_processes"] = processes
+    elif _is_object_list(value):
+        processes = value
+    else:
+        raise BulkGenerationError("Interrupted processes are malformed")
+    if not any(
+        isinstance(item, dict)
+        and item.get("job_sha256") == interrupted_job["job_sha256"]
+        for item in processes
+    ):
+        processes.append(interrupted_job)
+        atomic_write_json(state_path, state, sort_keys=True)
 
 
 def publish_generated_manifest(
@@ -3202,6 +3420,17 @@ def review_generation_cohort(
     provenance: object,
 ) -> tuple[ReviewCommit, ...]:
     """Commit one exact cohort decision in a single state transaction."""
+    decisions = _cohort_review_decisions(authorities, decision)
+    provenance = _cohort_review_provenance(provenance)
+    state_path = Path(state_path).expanduser().resolve()
+    queue_path = Path(queue_path).expanduser().resolve()
+    authority_values = _cohort_review_authority_values(authorities)
+    return _commit_review_generation_cohort(
+        state_path, queue_path, authorities, decisions, provenance, authority_values
+    )
+
+
+def _cohort_review_decisions(authorities: object, decision: object) -> dict[str, str]:
     if not _is_review_authorities(authorities):
         raise BulkGenerationError("Cohort review authorities must be a non-empty map")
     if isinstance(decision, str):
@@ -3222,15 +3451,34 @@ def review_generation_cohort(
         )
     if set(decisions.values()) == {"pending_review"}:
         raise BulkGenerationError("Cohort review decision does not change any item")
+    return decisions
+
+
+def _cohort_review_provenance(provenance: object) -> JsonDocument:
     if not _is_json_document(provenance):
         raise BulkGenerationError("Cohort review provenance must be an object")
-    state_path = Path(state_path).expanduser().resolve()
-    queue_path = Path(queue_path).expanduser().resolve()
+    return provenance
+
+
+def _cohort_review_authority_values(
+    authorities: Mapping[str, ReviewAuthority],
+) -> list[ReviewAuthority]:
     authority_values = list(authorities.values())
     if len({value.queue_sha256 for value in authority_values}) != 1:
         raise BulkGenerationError("Cohort review queue authorities do not match")
     if len({value.state_sha256 for value in authority_values}) != 1:
         raise BulkGenerationError("Cohort review state authorities do not match")
+    return authority_values
+
+
+def _commit_review_generation_cohort(
+    state_path: Path,
+    queue_path: Path,
+    authorities: Mapping[str, ReviewAuthority],
+    decisions: Mapping[str, str],
+    provenance: JsonDocument,
+    authority_values: Sequence[ReviewAuthority],
+) -> tuple[ReviewCommit, ...]:
     with _GenerationLease(
         state_path.parent,
         authority_values[0].queue_sha256,
@@ -3239,36 +3487,13 @@ def review_generation_cohort(
         state, snapshots = _assert_review_authorities(
             state_path, authorities, queue_path
         )
-        for queue_id, (item, _audio) in snapshots.items():
-            if (item.get("status"), item.get("review_status")) != (
-                "generated",
-                "pending_review",
-            ):
-                raise BulkGenerationError(
-                    f"Cohort item is no longer pending review: {queue_id}"
-                )
-        proposed = copy.deepcopy(state)
-        updated_at = _now()
-        for queue_id, authority in authorities.items():
-            item_decision = decisions[queue_id]
-            if item_decision == "pending_review":
-                continue
-            proposed_item = _state_items(proposed)[queue_id]
-            proposed_item["review_status"] = item_decision
-            proposed_item["status"] = (
-                "approved" if item_decision == "approved" else "generated"
-            )
-            proposed_item["updated_at"] = updated_at
-            proposed_item["cohort_review"] = {
-                **copy.deepcopy(provenance),
-                "projection_review_status": item_decision,
-                "target_audio_sha256": authority.audio_sha256,
-            }
+        _assert_cohort_items_pending(snapshots)
+        proposed, updated_at = _cohort_review_proposed_state(
+            state, authorities, decisions, provenance
+        )
         manifest_path = state_path.parent / "manifest.json"
         entries = _approved_manifest_entries(
-            proposed,
-            state_path.parent,
-            validate_files=False,
+            proposed, state_path.parent, validate_files=False
         )
         _validate_cohort_approved_wavs(proposed, state_path.parent, decisions)
         transaction_id = secrets.token_hex(16)
@@ -3290,116 +3515,28 @@ def review_generation_cohort(
                 entries=entries,
                 validate_files=False,
             )
-            if is_mixed:
-                conservative_entries = _approved_manifest_entries(
-                    state,
-                    state_path.parent,
-                    validate_files=False,
-                )
-                _write_generated_manifest_from_state(
-                    state,
-                    state_path.parent,
-                    staged_conservative_manifest,
-                    entries=conservative_entries,
-                    validate_files=False,
-                )
-            _assert_review_authorities(state_path, authorities, queue_path)
-            validated_entries = _approved_manifest_entries(
-                proposed,
-                state_path.parent,
-                validate_files=False,
+            _write_conservative_cohort_manifest(
+                is_mixed, state, state_path.parent, staged_conservative_manifest
             )
-            if validated_entries != entries:
-                raise BulkGenerationError(
-                    "Approved cohort manifest authority changed before the final commit"
-                )
-            if sha256_file(state_path) != authority_values[0].state_sha256:
-                raise BulkGenerationError(
-                    "Cohort review state changed before the final commit"
-                )
-            if sha256_file(queue_path) != authority_values[0].queue_sha256:
-                raise BulkGenerationError(
-                    "Cohort review queue changed before the final commit"
-                )
-            lease.assert_owned()
-            if is_mixed:
-                # A mixed projection first publishes the conservative manifest,
-                # then the exact per-item state, then its approved-only manifest.
-                # A crash or ownership loss at either boundary can omit a new
-                # approval temporarily, but can never publish a rejected WAV.
-                try:
-                    os.replace(staged_conservative_manifest, manifest_path)
-                    lease.assert_owned()
-                    _assert_review_authorities(state_path, authorities, queue_path)
-                    lease.assert_owned()
-                    os.replace(staged_state, state_path)
-                    lease.assert_owned()
-                    if sha256_file(state_path) != proposed_state_sha256:
-                        raise BulkGenerationError(
-                            "Mixed cohort state changed before manifest publication"
-                        )
-                    if sha256_file(queue_path) != authority_values[0].queue_sha256:
-                        raise BulkGenerationError(
-                            "Cohort review queue changed before manifest publication"
-                        )
-                    _validate_cohort_approved_wavs(
-                        proposed, state_path.parent, decisions
-                    )
-                    current_entries = _approved_manifest_entries(
-                        proposed,
-                        state_path.parent,
-                        validate_files=False,
-                    )
-                    if current_entries != entries:
-                        raise BulkGenerationError(
-                            "Mixed cohort manifest authority changed before publication"
-                        )
-                    lease.assert_owned()
-                    os.replace(staged_manifest, manifest_path)
-                except OSError as error:
-                    raise BulkGenerationError(
-                        "Mixed cohort review did not fully commit; the published "
-                        f"manifest remains fail-closed: {error}"
-                    ) from error
-            elif next(iter(decisions.values())) == "rejected":
-                # Revocation must reach the derived manifest before authority is
-                # committed. A later state failure leaves a conservative
-                # pending item, never a rejected WAV that is still published.
-                try:
-                    os.replace(staged_manifest, manifest_path)
-                    lease.assert_owned()
-                    os.replace(staged_state, state_path)
-                except OSError as error:
-                    raise BulkGenerationError(
-                        "Cohort rejection did not fully commit; the published "
-                        f"manifest remains fail-closed: {error}"
-                    ) from error
-            else:
-                # Approval becomes authoritative before it is projected. If the
-                # projection fails, the manifest remains conservative.
-                try:
-                    os.replace(staged_state, state_path)
-                except OSError as error:
-                    raise BulkGenerationError(
-                        f"Unable to save cohort review decision: {error}"
-                    ) from error
-                try:
-                    lease.assert_owned()
-                    _validate_cohort_approved_wavs(
-                        proposed, state_path.parent, decisions
-                    )
-                except BulkGenerationError as error:
-                    raise BulkGenerationError(
-                        "Cohort review decision was saved, but manifest rebuild was "
-                        f"blocked: {error}"
-                    ) from error
-                try:
-                    os.replace(staged_manifest, manifest_path)
-                except OSError as error:
-                    raise BulkGenerationError(
-                        "Cohort review decision was saved, but manifest rebuild failed: "
-                        f"{error}"
-                    ) from error
+            _assert_cohort_commit_authority(
+                state_path, queue_path, authorities, authority_values, proposed, entries
+            )
+            _publish_cohort_review(
+                is_mixed,
+                decisions,
+                staged_conservative_manifest,
+                staged_state,
+                staged_manifest,
+                manifest_path,
+                state_path,
+                queue_path,
+                authorities,
+                authority_values,
+                proposed_state_sha256,
+                proposed,
+                entries,
+                lease,
+            )
         finally:
             for staged in (
                 staged_state,
@@ -3429,6 +3566,228 @@ def review_generation_cohort(
         for queue_id, authority in authorities.items()
         if decisions[queue_id] != "pending_review"
     )
+
+
+def _assert_cohort_items_pending(
+    snapshots: Mapping[str, tuple[JsonDocument, bytes]],
+) -> None:
+    for queue_id, (item, _audio) in snapshots.items():
+        if (item.get("status"), item.get("review_status")) != (
+            "generated",
+            "pending_review",
+        ):
+            raise BulkGenerationError(
+                f"Cohort item is no longer pending review: {queue_id}"
+            )
+
+
+def _cohort_review_proposed_state(
+    state: JsonDocument,
+    authorities: Mapping[str, ReviewAuthority],
+    decisions: Mapping[str, str],
+    provenance: JsonDocument,
+) -> tuple[JsonDocument, str]:
+    proposed, updated_at = copy.deepcopy(state), _now()
+    for queue_id, authority in authorities.items():
+        decision = decisions[queue_id]
+        if decision == "pending_review":
+            continue
+        item = _state_items(proposed)[queue_id]
+        item["review_status"] = decision
+        item["status"] = "approved" if decision == "approved" else "generated"
+        item["updated_at"] = updated_at
+        item["cohort_review"] = {
+            **copy.deepcopy(provenance),
+            "projection_review_status": decision,
+            "target_audio_sha256": authority.audio_sha256,
+        }
+    return proposed, updated_at
+
+
+def _write_conservative_cohort_manifest(
+    is_mixed: bool, state: JsonDocument, output_directory: Path, path: Path
+) -> None:
+    if is_mixed:
+        _write_generated_manifest_from_state(
+            state,
+            output_directory,
+            path,
+            entries=_approved_manifest_entries(
+                state, output_directory, validate_files=False
+            ),
+            validate_files=False,
+        )
+
+
+def _assert_cohort_commit_authority(
+    state_path: Path,
+    queue_path: Path,
+    authorities: Mapping[str, ReviewAuthority],
+    authority_values: Sequence[ReviewAuthority],
+    proposed: JsonDocument,
+    entries: object,
+) -> None:
+    _assert_review_authorities(state_path, authorities, queue_path)
+    if (
+        _approved_manifest_entries(proposed, state_path.parent, validate_files=False)
+        != entries
+    ):
+        raise BulkGenerationError(
+            "Approved cohort manifest authority changed before the final commit"
+        )
+    if sha256_file(state_path) != authority_values[0].state_sha256:
+        raise BulkGenerationError("Cohort review state changed before the final commit")
+    if sha256_file(queue_path) != authority_values[0].queue_sha256:
+        raise BulkGenerationError("Cohort review queue changed before the final commit")
+
+
+def _publish_cohort_review(
+    is_mixed: bool,
+    decisions: Mapping[str, str],
+    conservative_manifest: Path,
+    staged_state: Path,
+    staged_manifest: Path,
+    manifest_path: Path,
+    state_path: Path,
+    queue_path: Path,
+    authorities: Mapping[str, ReviewAuthority],
+    authority_values: Sequence[ReviewAuthority],
+    proposed_state_sha256: str,
+    proposed: JsonDocument,
+    entries: object,
+    lease: GenerationLease,
+) -> None:
+    lease.assert_owned()
+    if is_mixed:
+        _publish_mixed_cohort_review(
+            conservative_manifest,
+            staged_state,
+            staged_manifest,
+            manifest_path,
+            state_path,
+            queue_path,
+            authorities,
+            authority_values,
+            proposed_state_sha256,
+            proposed,
+            decisions,
+            entries,
+            lease,
+        )
+    elif next(iter(decisions.values())) == "rejected":
+        _publish_rejected_cohort_review(
+            staged_manifest, staged_state, manifest_path, state_path, lease
+        )
+    else:
+        _publish_approved_cohort_review(
+            staged_state,
+            staged_manifest,
+            manifest_path,
+            state_path,
+            proposed,
+            decisions,
+            state_path.parent,
+            lease,
+        )
+
+
+def _publish_mixed_cohort_review(
+    conservative_manifest: Path,
+    staged_state: Path,
+    staged_manifest: Path,
+    manifest_path: Path,
+    state_path: Path,
+    queue_path: Path,
+    authorities: Mapping[str, ReviewAuthority],
+    authority_values: Sequence[ReviewAuthority],
+    proposed_state_sha256: str,
+    proposed: JsonDocument,
+    decisions: Mapping[str, str],
+    entries: object,
+    lease: GenerationLease,
+) -> None:
+    try:
+        os.replace(conservative_manifest, manifest_path)
+        lease.assert_owned()
+        _assert_review_authorities(state_path, authorities, queue_path)
+        lease.assert_owned()
+        os.replace(staged_state, state_path)
+        lease.assert_owned()
+        if sha256_file(state_path) != proposed_state_sha256:
+            raise BulkGenerationError(
+                "Mixed cohort state changed before manifest publication"
+            )
+        if sha256_file(queue_path) != authority_values[0].queue_sha256:
+            raise BulkGenerationError(
+                "Cohort review queue changed before manifest publication"
+            )
+        _validate_cohort_approved_wavs(proposed, state_path.parent, decisions)
+        if (
+            _approved_manifest_entries(
+                proposed, state_path.parent, validate_files=False
+            )
+            != entries
+        ):
+            raise BulkGenerationError(
+                "Mixed cohort manifest authority changed before publication"
+            )
+        lease.assert_owned()
+        os.replace(staged_manifest, manifest_path)
+    except OSError as error:
+        raise BulkGenerationError(
+            "Mixed cohort review did not fully commit; the published manifest remains fail-closed: "
+            f"{error}"
+        ) from error
+
+
+def _publish_rejected_cohort_review(
+    staged_manifest: Path,
+    staged_state: Path,
+    manifest_path: Path,
+    state_path: Path,
+    lease: GenerationLease,
+) -> None:
+    try:
+        os.replace(staged_manifest, manifest_path)
+        lease.assert_owned()
+        os.replace(staged_state, state_path)
+    except OSError as error:
+        raise BulkGenerationError(
+            "Cohort rejection did not fully commit; the published manifest remains fail-closed: "
+            f"{error}"
+        ) from error
+
+
+def _publish_approved_cohort_review(
+    staged_state: Path,
+    staged_manifest: Path,
+    manifest_path: Path,
+    state_path: Path,
+    proposed: JsonDocument,
+    decisions: Mapping[str, str],
+    output_directory: Path,
+    lease: GenerationLease,
+) -> None:
+    try:
+        os.replace(staged_state, state_path)
+    except OSError as error:
+        raise BulkGenerationError(
+            f"Unable to save cohort review decision: {error}"
+        ) from error
+    try:
+        lease.assert_owned()
+        _validate_cohort_approved_wavs(proposed, output_directory, decisions)
+    except BulkGenerationError as error:
+        raise BulkGenerationError(
+            "Cohort review decision was saved, but manifest rebuild was blocked: "
+            f"{error}"
+        ) from error
+    try:
+        os.replace(staged_manifest, manifest_path)
+    except OSError as error:
+        raise BulkGenerationError(
+            f"Cohort review decision was saved, but manifest rebuild failed: {error}"
+        ) from error
 
 
 def _validate_cohort_approved_wavs(
@@ -3462,19 +3821,9 @@ def authorize_live_fallback(
     evidence_reviews: Sequence[str | Path] = (),
 ) -> JsonDocument:
     """Record one exact terminal live-Pocket decision without publishing audio."""
-    if reason not in LIVE_FALLBACK_REASONS:
-        raise BulkGenerationError("Live fallback reason is unsupported")
-    if provider != "pocket-tts":
-        raise BulkGenerationError("Live fallback currently requires Pocket TTS")
-    provider = _required_text(provider, "Live fallback provider")
-    model = _required_text(model, "Live fallback model")
-    generation_profile = _required_text(
-        generation_profile, "Live fallback generation profile"
+    provider, model, generation_profile = _live_fallback_backend(
+        reason, provider, model, generation_profile
     )
-    if model != "pocket-tts" or generation_profile != "default":
-        raise BulkGenerationError(
-            "Live fallback requires the exact Pocket TTS default model/profile"
-        )
     state_path = Path(state_path).expanduser().resolve()
     queue_path = Path(queue_path).expanduser().resolve()
     queue, queue_sha256 = _load_stable_queue(queue_path)
@@ -3487,16 +3836,7 @@ def authorize_live_fallback(
         queue_sha256,
         process_checker=process_is_alive,
     ) as lease:
-        try:
-            state_payload = state_path.read_bytes()
-            state = json.loads(state_payload.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise BulkGenerationError(
-                f"Unable to read generation state {state_path}: {error}"
-            ) from error
-        if not _is_json_document(state):
-            raise BulkGenerationError("Generation state must be a JSON object")
-        state_sha256 = hashlib.sha256(state_payload).hexdigest()
+        state, state_sha256 = _live_fallback_state(state_path)
         _validate_state_document(state, state_path.parent, queue, queue_sha256)
         existing = _state_items(state).get(queue_id)
         _validate_live_fallback_source(existing, queue_item, reason)
@@ -3512,54 +3852,18 @@ def authorize_live_fallback(
                 "Recovery fallback requires an inactive generation state"
             )
         previous_sha256 = None if existing is None else _canonical_sha256(existing)
-        evidence: JsonDocument | None = None
-        evidence_sources: tuple[tuple[Path, str], ...] = ()
-        if reason == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
-            if tuple(evidence_workspaces) and tuple(evidence_reviews):
-                raise BulkGenerationError(
-                    "Live fallback cannot mix repair-workspace and render-review evidence"
-                )
-            if tuple(evidence_reviews):
-                evidence, evidence_sources = _capture_render_review_fallback_evidence(
-                    state_path,
-                    queue_path,
-                    queue_sha256,
-                    queue_item,
-                    existing,
-                    evidence_reviews,
-                )
-            else:
-                evidence, evidence_sources = _capture_live_fallback_evidence(
-                    state_path,
-                    queue_path,
-                    queue_sha256,
-                    queue_item,
-                    existing,
-                    evidence_workspaces,
-                )
-        elif reason == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
-            if tuple(evidence_workspaces) or tuple(evidence_reviews):
-                raise BulkGenerationError(
-                    "Automatic-recovery fallback derives its evidence from the "
-                    "current generation state"
-                )
-            if existing is None:
-                raise BulkGenerationError(
-                    "Automatic-recovery fallback requires an exact terminal Pocket failure"
-                )
-            evidence = _automatic_recovery_fallback_evidence(
-                state_path,
-                queue_path,
-                state_sha256,
-                queue_sha256,
-                queue_id,
-                existing,
-            )
-        elif tuple(evidence_workspaces) or tuple(evidence_reviews):
-            raise BulkGenerationError(
-                "Live fallback evidence sources require the "
-                "generation_hypotheses_exhausted reason"
-            )
+        evidence, evidence_sources = _live_fallback_evidence(
+            reason,
+            state_path,
+            queue_path,
+            state_sha256,
+            queue_sha256,
+            queue_id,
+            queue_item,
+            existing,
+            evidence_workspaces,
+            evidence_reviews,
+        )
         requested = synthesis_character_for_line(
             queue_item.speaker, queue_item.voice_character
         )
@@ -3593,37 +3897,9 @@ def authorize_live_fallback(
         }
         if evidence is not None:
             decision["evidence"] = evidence
-        proposed = copy.deepcopy(state)
-        proposed_item: JsonDocument = copy.deepcopy(existing) if existing else {}
-        if reason == "generated_audio_rejected":
-            proposed_item["live_fallback"] = decision
-            proposed_item["updated_at"] = _now()
-        else:
-            for field in (
-                "path",
-                "file_sha256",
-                "quality",
-                "speech_quality",
-                "review_status",
-            ):
-                proposed_item.pop(field, None)
-            proposed_item.update(
-                {
-                    "status": "live_fallback",
-                    "review_status": "live_fallback",
-                    "attempts": _nonnegative_int(
-                        proposed_item.get("attempts", 0), "Live fallback attempts"
-                    ),
-                    "line_id": queue_item.line_id,
-                    "text_sha256": queue_item.text_sha256,
-                    "speaker": queue_item.speaker,
-                    "requested_voice_character": requested,
-                    "voice_character": proposed_item.get("voice_character", requested),
-                    "live_fallback": decision,
-                    "updated_at": _now(),
-                }
-            )
-        _state_items(proposed)[queue_id] = proposed_item
+        proposed = _live_fallback_proposed_state(
+            state, existing, queue_id, queue_item, requested, reason, decision
+        )
         _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
         entries = _approved_manifest_entries(proposed, state_path.parent)
         transaction_id = secrets.token_hex(16)
@@ -3632,58 +3908,208 @@ def authorize_live_fallback(
         staged_manifest = manifest_path.with_name(
             f".{manifest_path.name}.{transaction_id}.tmp"
         )
-        try:
-            atomic_write_json(staged_state, proposed, sort_keys=True)
-            _write_generated_manifest_from_state(
-                proposed,
-                state_path.parent,
-                staged_manifest,
-                entries=entries,
-            )
-            if sha256_file(queue_path) != queue_sha256:
-                raise BulkGenerationSourceChangedError(
-                    "Generation queue changed before live fallback commit"
-                )
-            if sha256_file(state_path) != state_sha256:
-                raise BulkGenerationSourceChangedError(
-                    "Generation state changed before live fallback commit"
-                )
-            for source_path, source_sha256 in evidence_sources:
-                if (
-                    not source_path.is_file()
-                    or sha256_file(source_path) != source_sha256
-                ):
-                    raise BulkGenerationSourceChangedError(
-                        "Live fallback evidence changed before commit"
-                    )
-            for source_path, _source_sha256 in evidence_sources:
-                if source_path.name != "generation-state.json":
-                    continue
-                output = source_path.parent
-                if any(output.rglob("*.partial.wav")):
-                    raise BulkGenerationSourceChangedError(
-                        "Live fallback evidence became active before commit"
-                    )
-            _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
-            lease.assert_owned()
-            os.replace(staged_state, state_path)
-            try:
-                lease.assert_owned()
-            except BulkGenerationError as error:
-                raise BulkGenerationError(
-                    "Live fallback was saved, but manifest rebuild was blocked: "
-                    f"{error}"
-                ) from error
-            os.replace(staged_manifest, manifest_path)
-            lease.mark_committed()
-        finally:
-            for path in (staged_state, staged_manifest):
-                try:
-                    if path.exists():
-                        path.unlink()
-                except OSError:
-                    pass
+        _commit_live_fallback(
+            staged_state,
+            staged_manifest,
+            state_path,
+            queue_path,
+            queue_sha256,
+            state_sha256,
+            evidence_sources,
+            proposed,
+            queue,
+            lease,
+            entries,
+        )
     return decision
+
+
+def _live_fallback_backend(
+    reason: str, provider: str, model: object, profile: object
+) -> tuple[str, str, str]:
+    if reason not in LIVE_FALLBACK_REASONS:
+        raise BulkGenerationError("Live fallback reason is unsupported")
+    if provider != "pocket-tts":
+        raise BulkGenerationError("Live fallback currently requires Pocket TTS")
+    provider, model, profile = (
+        _required_text(provider, "Live fallback provider"),
+        _required_text(model, "Live fallback model"),
+        _required_text(profile, "Live fallback generation profile"),
+    )
+    if model != "pocket-tts" or profile != "default":
+        raise BulkGenerationError(
+            "Live fallback requires the exact Pocket TTS default model/profile"
+        )
+    return provider, model, profile
+
+
+def _live_fallback_state(path: Path) -> tuple[JsonDocument, str]:
+    try:
+        payload = path.read_bytes()
+        state = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BulkGenerationError(
+            f"Unable to read generation state {path}: {error}"
+        ) from error
+    if not _is_json_document(state):
+        raise BulkGenerationError("Generation state must be a JSON object")
+    return state, hashlib.sha256(payload).hexdigest()
+
+
+def _live_fallback_evidence(
+    reason: str,
+    state_path: Path,
+    queue_path: Path,
+    state_sha256: str,
+    queue_sha256: str,
+    queue_id: str,
+    queue_item: VoiceGenerationQueueItem,
+    existing: JsonDocument | None,
+    workspaces: Sequence[str | Path],
+    reviews: Sequence[str | Path],
+) -> tuple[JsonDocument | None, tuple[tuple[Path, str], ...]]:
+    if reason == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
+        if tuple(workspaces) and tuple(reviews):
+            raise BulkGenerationError(
+                "Live fallback cannot mix repair-workspace and render-review evidence"
+            )
+        if tuple(reviews):
+            return _capture_render_review_fallback_evidence(
+                state_path, queue_path, queue_sha256, queue_item, existing, reviews
+            )
+        return _capture_live_fallback_evidence(
+            state_path, queue_path, queue_sha256, queue_item, existing, workspaces
+        )
+    if reason == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
+        if tuple(workspaces) or tuple(reviews):
+            raise BulkGenerationError(
+                "Automatic-recovery fallback derives its evidence from the current generation state"
+            )
+        if existing is None:
+            raise BulkGenerationError(
+                "Automatic-recovery fallback requires an exact terminal Pocket failure"
+            )
+        return _automatic_recovery_fallback_evidence(
+            state_path, queue_path, state_sha256, queue_sha256, queue_id, existing
+        ), ()
+    if tuple(workspaces) or tuple(reviews):
+        raise BulkGenerationError(
+            "Live fallback evidence sources require the generation_hypotheses_exhausted reason"
+        )
+    return None, ()
+
+
+def _live_fallback_proposed_state(
+    state: JsonDocument,
+    existing: JsonDocument | None,
+    queue_id: str,
+    item: VoiceGenerationQueueItem,
+    requested: str,
+    reason: str,
+    decision: JsonDocument,
+) -> JsonDocument:
+    proposed, proposed_item = (
+        copy.deepcopy(state),
+        copy.deepcopy(existing) if existing else {},
+    )
+    if reason == "generated_audio_rejected":
+        proposed_item["live_fallback"], proposed_item["updated_at"] = decision, _now()
+    else:
+        for field in (
+            "path",
+            "file_sha256",
+            "quality",
+            "speech_quality",
+            "review_status",
+        ):
+            proposed_item.pop(field, None)
+        proposed_item.update(
+            {
+                "status": "live_fallback",
+                "review_status": "live_fallback",
+                "attempts": _nonnegative_int(
+                    proposed_item.get("attempts", 0), "Live fallback attempts"
+                ),
+                "line_id": item.line_id,
+                "text_sha256": item.text_sha256,
+                "speaker": item.speaker,
+                "requested_voice_character": requested,
+                "voice_character": proposed_item.get("voice_character", requested),
+                "live_fallback": decision,
+                "updated_at": _now(),
+            }
+        )
+    _state_items(proposed)[queue_id] = proposed_item
+    return proposed
+
+
+def _commit_live_fallback(
+    staged_state: Path,
+    staged_manifest: Path,
+    state_path: Path,
+    queue_path: Path,
+    queue_sha256: str,
+    state_sha256: str,
+    evidence_sources: Sequence[tuple[Path, str]],
+    proposed: JsonDocument,
+    queue: VoiceGenerationQueue,
+    lease: GenerationLease,
+    entries: object,
+) -> None:
+    try:
+        atomic_write_json(staged_state, proposed, sort_keys=True)
+        _write_generated_manifest_from_state(
+            proposed, state_path.parent, staged_manifest, entries=entries
+        )
+        _assert_live_fallback_commit_sources(
+            state_path, queue_path, state_sha256, queue_sha256, evidence_sources
+        )
+        _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
+        lease.assert_owned()
+        os.replace(staged_state, state_path)
+        try:
+            lease.assert_owned()
+        except BulkGenerationError as error:
+            raise BulkGenerationError(
+                f"Live fallback was saved, but manifest rebuild was blocked: {error}"
+            ) from error
+        os.replace(staged_manifest, state_path.parent / "manifest.json")
+        lease.mark_committed()
+    finally:
+        for path in (staged_state, staged_manifest):
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+
+
+def _assert_live_fallback_commit_sources(
+    state_path: Path,
+    queue_path: Path,
+    state_sha256: str,
+    queue_sha256: str,
+    evidence_sources: Sequence[tuple[Path, str]],
+) -> None:
+    if sha256_file(queue_path) != queue_sha256:
+        raise BulkGenerationSourceChangedError(
+            "Generation queue changed before live fallback commit"
+        )
+    if sha256_file(state_path) != state_sha256:
+        raise BulkGenerationSourceChangedError(
+            "Generation state changed before live fallback commit"
+        )
+    for path, digest in evidence_sources:
+        if not path.is_file() or sha256_file(path) != digest:
+            raise BulkGenerationSourceChangedError(
+                "Live fallback evidence changed before commit"
+            )
+        if path.name == "generation-state.json" and any(
+            path.parent.rglob("*.partial.wav")
+        ):
+            raise BulkGenerationSourceChangedError(
+                "Live fallback evidence became active before commit"
+            )
 
 
 def _validate_live_fallback_source(
@@ -3692,54 +4118,81 @@ def _validate_live_fallback_source(
     reason: str,
 ) -> None:
     failure = existing.get("failure") if existing is not None else None
-    if reason == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
-        if (
-            not isinstance(existing, dict)
-            or existing.get("status") != "failed"
-            or existing.get("provider") != "pocket-tts"
-            or existing.get("model") != "pocket-tts"
-            or existing.get("generation_profile") != "default"
-            or not _is_json_document(failure)
-            or failure.get("kind") in {"cancelled", "interrupted"}
-        ):
-            raise BulkGenerationError(
-                "Automatic-recovery fallback requires an exact terminal Pocket failure"
-            )
-        return
-    if reason == "reference_unavailable_after_audit":
-        if existing is not None and (
-            existing.get("status") != "failed"
-            or not _is_json_document(failure)
-            or failure.get("kind") != "reference_unavailable"
-        ):
-            raise BulkGenerationError(
-                "Reference-unavailable fallback requires no result or an exact "
-                "reference-unavailable failure"
-            )
-        return
+    validators = {
+        LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED: _validate_automatic_recovery_fallback_source,
+        "reference_unavailable_after_audit": _validate_reference_unavailable_fallback_source,
+        LIVE_FALLBACK_HYPOTHESES_EXHAUSTED: _validate_hypotheses_fallback_source,
+        "generated_audio_rejected": _validate_rejected_audio_fallback_source,
+    }
+    validator = validators.get(reason, _validate_offline_exhausted_fallback_source)
+    validator(existing, failure)
+
+
+def _validate_automatic_recovery_fallback_source(
+    existing: JsonDocument | None, failure: object
+) -> None:
+    if (
+        not isinstance(existing, dict)
+        or existing.get("status") != "failed"
+        or existing.get("provider") != "pocket-tts"
+        or existing.get("model") != "pocket-tts"
+        or existing.get("generation_profile") != "default"
+        or not _is_json_document(failure)
+        or failure.get("kind") in {"cancelled", "interrupted"}
+    ):
+        raise BulkGenerationError(
+            "Automatic-recovery fallback requires an exact terminal Pocket failure"
+        )
+
+
+def _validate_reference_unavailable_fallback_source(
+    existing: JsonDocument | None, failure: object
+) -> None:
+    if existing is not None and (
+        existing.get("status") != "failed"
+        or not _is_json_document(failure)
+        or failure.get("kind") != "reference_unavailable"
+    ):
+        raise BulkGenerationError(
+            "Reference-unavailable fallback requires no result or an exact reference-unavailable failure"
+        )
+
+
+def _validate_hypotheses_fallback_source(
+    existing: JsonDocument | None, failure: object
+) -> None:
     if not isinstance(existing, dict):
         raise BulkGenerationError("Live fallback requires an existing outcome")
-    if reason == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
-        if (
-            existing.get("status") != "failed"
-            or existing.get("provider") != "moss-tts"
-            or not _is_json_document(failure)
-            or failure.get("kind") not in {"missed_eos_audio_limit", "speech_silence"}
-        ):
-            raise BulkGenerationError(
-                "Exhausted-hypothesis fallback requires an exact typed failed "
-                "MOSS current-control outcome"
-            )
-        return
-    if reason == "generated_audio_rejected":
-        if (existing.get("status"), existing.get("review_status")) != (
-            "generated",
-            "rejected",
-        ):
-            raise BulkGenerationError(
-                "Rejected-audio fallback requires a reviewed rejected WAV"
-            )
-        return
+    if (
+        existing.get("status") != "failed"
+        or existing.get("provider") != "moss-tts"
+        or not _is_json_document(failure)
+        or failure.get("kind") not in {"missed_eos_audio_limit", "speech_silence"}
+    ):
+        raise BulkGenerationError(
+            "Exhausted-hypothesis fallback requires an exact typed failed MOSS current-control outcome"
+        )
+
+
+def _validate_rejected_audio_fallback_source(
+    existing: JsonDocument | None, _failure: object
+) -> None:
+    if not isinstance(existing, dict):
+        raise BulkGenerationError("Live fallback requires an existing outcome")
+    if (existing.get("status"), existing.get("review_status")) != (
+        "generated",
+        "rejected",
+    ):
+        raise BulkGenerationError(
+            "Rejected-audio fallback requires a reviewed rejected WAV"
+        )
+
+
+def _validate_offline_exhausted_fallback_source(
+    existing: JsonDocument | None, _failure: object
+) -> None:
+    if not isinstance(existing, dict):
+        raise BulkGenerationError("Live fallback requires an existing outcome")
     repair = existing.get("failure_repair")
     if (
         existing.get("status") != "failed"
@@ -3843,114 +4296,16 @@ def _capture_live_fallback_evidence(
             raise BulkGenerationError(
                 "Live fallback evidence must differ from the current workspace"
             )
-        workspace_path = directory / "workspace.json"
-        source_queue_path = directory / "queue.jsonl"
-        source_state_path = directory / "generated-audio" / "generation-state.json"
-        try:
-            workspace_payload = workspace_path.read_bytes()
-            source_queue_payload = source_queue_path.read_bytes()
-            source_state_payload = source_state_path.read_bytes()
-            workspace = json.loads(workspace_payload.decode("utf-8"))
-            source_state = json.loads(source_state_payload.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise BulkGenerationError(
-                f"Unable to read live fallback evidence workspace {directory}: {error}"
-            ) from error
-        workspace_id, source_import = _live_fallback_workspace_import(
-            workspace, "evidence"
+        hypothesis, source_snapshots = _live_fallback_workspace_hypothesis(
+            directory,
+            base_root,
+            base_import,
+            queue_sha256,
+            queue_item,
+            base_result_sha256,
         )
-        if source_import != base_import:
-            raise BulkGenerationError(
-                "Live fallback evidence immutable import differs from its base"
-            )
-        source_queue_sha256 = hashlib.sha256(source_queue_payload).hexdigest()
-        if source_queue_sha256 != queue_sha256:
-            raise BulkGenerationError(
-                "Live fallback evidence queue differs from its base"
-            )
-        source_queue, stable_queue_sha256 = _load_stable_queue(source_queue_path)
-        if stable_queue_sha256 != source_queue_sha256:
-            raise BulkGenerationSourceChangedError(
-                "Live fallback evidence queue changed while it was read"
-            )
-        if not _is_json_document(source_state):
-            raise BulkGenerationError(
-                "Live fallback evidence generation state is malformed"
-            )
-        if (
-            (source_state.get("schema"), source_state.get("schema_version"))
-            not in {
-                (STATE_SCHEMA, STATE_VERSION),
-                (LEGACY_STATE_SCHEMA, LEGACY_STATE_VERSION),
-            }
-            or source_state.get("queue_sha256") != source_queue_sha256
-            or not isinstance(source_state.get("items"), dict)
-        ):
-            raise BulkGenerationError(
-                "Live fallback evidence generation state is malformed"
-            )
-        if source_state.get("active") is not None or any(
-            source_state_path.parent.rglob("*.partial.wav")
-        ):
-            raise BulkGenerationError(
-                "Live fallback evidence workspace is active or incomplete"
-            )
-        source_result = _state_items(source_state).get(queue_item.queue_id)
-        if (
-            not isinstance(source_result, dict)
-            or source_result.get("status") != "failed"
-        ):
-            raise BulkGenerationError(
-                "Live fallback evidence must contain the exact failed queue item"
-            )
-        source_queue_item = next(
-            item for item in source_queue.items if item.queue_id == queue_item.queue_id
-        )
-        _validate_failure_record(
-            source_result.get("failure"),
-            queue_item.queue_id,
-            result=source_result,
-        )
-        _validate_synthesis_identity(
-            source_result, queue_item.queue_id, source_queue_item
-        )
-        _validate_failure_repair_record(
-            source_result, queue_item.queue_id, source_queue_item
-        )
-        _validate_seed_application(source_result, queue_item.queue_id)
-        repair = source_result.get("failure_repair")
-        carry = source_result.get("carry_forward")
-        if (
-            not isinstance(repair, dict)
-            or repair.get("strategy") != SENTENCE_BOUNDARY_SEGMENTATION
-            or not isinstance(carry, dict)
-            or carry.get("source_item_sha256") != base_result_sha256
-        ):
-            raise BulkGenerationError(
-                "Live fallback evidence must be a completed sentence-boundary "
-                "repair carried from the exact current item"
-            )
-        workspace_sha256 = hashlib.sha256(workspace_payload).hexdigest()
-        state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
-        result_sha256 = _canonical_sha256(source_result)
-        hypotheses.append(
-            {
-                "workspace_id": workspace_id,
-                "workspace_sha256": workspace_sha256,
-                "state_sha256": state_sha256,
-                "queue_sha256": source_queue_sha256,
-                "result_sha256": result_sha256,
-                "strategy": SENTENCE_BOUNDARY_SEGMENTATION,
-                "result": copy.deepcopy(source_result),
-            }
-        )
-        snapshots.extend(
-            (
-                (workspace_path, workspace_sha256),
-                (source_queue_path, source_queue_sha256),
-                (source_state_path, state_sha256),
-            )
-        )
+        hypotheses.append(hypothesis)
+        snapshots.extend(source_snapshots)
     hypotheses.sort(
         key=lambda value: (
             _generation_text(value.get("workspace_id"), "Evidence workspace ID"),
@@ -3967,14 +4322,115 @@ def _capture_live_fallback_evidence(
     _validate_live_fallback_evidence(evidence, base_result_sha256)
     snapshots.extend(
         (
-            (
-                base_workspace_path,
-                hashlib.sha256(base_workspace_payload).hexdigest(),
-            ),
+            (base_workspace_path, hashlib.sha256(base_workspace_payload).hexdigest()),
             (queue_path, queue_sha256),
         )
     )
     return evidence, tuple(snapshots)
+
+
+def _live_fallback_workspace_hypothesis(
+    directory: Path,
+    base_root: Path,
+    base_import: str,
+    queue_sha256: str,
+    queue_item: VoiceGenerationQueueItem,
+    base_result_sha256: str,
+) -> tuple[JsonDocument, tuple[tuple[Path, str], ...]]:
+    workspace_path = directory / "workspace.json"
+    source_queue_path = directory / "queue.jsonl"
+    source_state_path = directory / "generated-audio" / "generation-state.json"
+    try:
+        workspace_payload = workspace_path.read_bytes()
+        source_queue_payload = source_queue_path.read_bytes()
+        source_state_payload = source_state_path.read_bytes()
+        workspace = json.loads(workspace_payload.decode("utf-8"))
+        source_state = json.loads(source_state_payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise BulkGenerationError(
+            f"Unable to read live fallback evidence workspace {directory}: {error}"
+        ) from error
+    workspace_id, source_import = _live_fallback_workspace_import(workspace, "evidence")
+    if source_import != base_import:
+        raise BulkGenerationError(
+            "Live fallback evidence immutable import differs from its base"
+        )
+    source_queue_sha256 = hashlib.sha256(source_queue_payload).hexdigest()
+    if source_queue_sha256 != queue_sha256:
+        raise BulkGenerationError("Live fallback evidence queue differs from its base")
+    source_queue, stable_queue_sha256 = _load_stable_queue(source_queue_path)
+    if stable_queue_sha256 != source_queue_sha256:
+        raise BulkGenerationSourceChangedError(
+            "Live fallback evidence queue changed while it was read"
+        )
+    if not _is_json_document(source_state):
+        raise BulkGenerationError(
+            "Live fallback evidence generation state is malformed"
+        )
+    if (
+        (source_state.get("schema"), source_state.get("schema_version"))
+        not in {
+            (STATE_SCHEMA, STATE_VERSION),
+            (LEGACY_STATE_SCHEMA, LEGACY_STATE_VERSION),
+        }
+        or source_state.get("queue_sha256") != source_queue_sha256
+        or not isinstance(source_state.get("items"), dict)
+    ):
+        raise BulkGenerationError(
+            "Live fallback evidence generation state is malformed"
+        )
+    if source_state.get("active") is not None or any(
+        source_state_path.parent.rglob("*.partial.wav")
+    ):
+        raise BulkGenerationError(
+            "Live fallback evidence workspace is active or incomplete"
+        )
+    source_result = _state_items(source_state).get(queue_item.queue_id)
+    if not isinstance(source_result, dict) or source_result.get("status") != "failed":
+        raise BulkGenerationError(
+            "Live fallback evidence must contain the exact failed queue item"
+        )
+    source_queue_item = next(
+        item for item in source_queue.items if item.queue_id == queue_item.queue_id
+    )
+    _validate_failure_record(
+        source_result.get("failure"),
+        queue_item.queue_id,
+        result=source_result,
+    )
+    _validate_synthesis_identity(source_result, queue_item.queue_id, source_queue_item)
+    _validate_failure_repair_record(
+        source_result, queue_item.queue_id, source_queue_item
+    )
+    _validate_seed_application(source_result, queue_item.queue_id)
+    repair = source_result.get("failure_repair")
+    carry = source_result.get("carry_forward")
+    if (
+        not isinstance(repair, dict)
+        or repair.get("strategy") != SENTENCE_BOUNDARY_SEGMENTATION
+        or not isinstance(carry, dict)
+        or carry.get("source_item_sha256") != base_result_sha256
+    ):
+        raise BulkGenerationError(
+            "Live fallback evidence must be a completed sentence-boundary "
+            "repair carried from the exact current item"
+        )
+    workspace_sha256 = hashlib.sha256(workspace_payload).hexdigest()
+    state_sha256 = hashlib.sha256(source_state_payload).hexdigest()
+    result_sha256 = _canonical_sha256(source_result)
+    return {
+        "workspace_id": workspace_id,
+        "workspace_sha256": workspace_sha256,
+        "state_sha256": state_sha256,
+        "queue_sha256": source_queue_sha256,
+        "result_sha256": result_sha256,
+        "strategy": SENTENCE_BOUNDARY_SEGMENTATION,
+        "result": copy.deepcopy(source_result),
+    }, (
+        (workspace_path, workspace_sha256),
+        (source_queue_path, source_queue_sha256),
+        (source_state_path, state_sha256),
+    )
 
 
 def _capture_render_review_fallback_evidence(
@@ -4095,39 +4551,67 @@ def _review_generation_item_locked(
     queue_path: str | Path | None = None,
     lease: GenerationLease | None = None,
 ) -> ReviewCommit | JsonDocument:
-    if expected_authority is None:
-        state = load_generation_state(state_path)
-    else:
-        state, _displayed_item, _audio_bytes = _load_review_snapshot(
-            state_path,
-            queue_id,
-            expected_authority,
-            queue_path,
-            capture_audio=False,
-        )
+    state = _review_locked_state(state_path, queue_id, expected_authority, queue_path)
     if expected_authority is not None and not isinstance(
         expected_authority, ReviewAuthority
     ):
         raise BulkGenerationError("Review authority snapshot is invalid")
+    item, audio = _review_locked_item(state, state_path, queue_id)
+    _validate_review_locked_authority(
+        state_path, queue_id, expected_authority, queue_path, item, audio
+    )
+    if lease is not None:
+        lease.assert_owned()
+    return _commit_review_item_decision(
+        state_path, state, queue_id, decision, expected_authority, queue_path, lease
+    )
+
+
+def _review_locked_state(
+    state_path: Path, queue_id: str, authority: object, queue_path: str | Path | None
+) -> JsonDocument:
+    if authority is None:
+        return load_generation_state(state_path)
+    state, _item, _audio = _load_review_snapshot(
+        state_path, queue_id, authority, queue_path, capture_audio=False
+    )
+    return state
+
+
+def _review_locked_item(
+    state: JsonDocument, state_path: Path, queue_id: str
+) -> tuple[JsonDocument, Path]:
     item = _state_items(state).get(queue_id)
-    if item is None or item.get("status") not in {
-        "generated",
-        "approved",
-    }:
+    if item is None or item.get("status") not in {"generated", "approved"}:
         raise BulkGenerationError(f"Generated queue item does not exist: {queue_id}")
     relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
     audio = _within(state_path.parent, relative, "Generated WAV")
-    if expected_authority is None:
+    return item, audio
+
+
+def _validate_review_locked_authority(
+    state_path: Path,
+    queue_id: str,
+    authority: object,
+    queue_path: str | Path | None,
+    item: JsonDocument,
+    audio: Path,
+) -> None:
+    if authority is None:
         _validate_success_file(queue_id, item, audio)
-    if expected_authority is not None:
-        _assert_review_authority(
-            state_path,
-            queue_id,
-            expected_authority,
-            queue_path,
-        )
-    if lease is not None:
-        lease.assert_owned()
+    else:
+        _assert_review_authority(state_path, queue_id, authority, queue_path)
+
+
+def _commit_review_item_decision(
+    state_path: Path,
+    state: JsonDocument,
+    queue_id: str,
+    decision: str,
+    expected_authority: object,
+    queue_path: str | Path | None,
+    lease: GenerationLease | None,
+) -> ReviewCommit | JsonDocument:
     proposed = copy.deepcopy(state)
     proposed_item = _state_items(proposed)[queue_id]
     proposed_item["review_status"] = decision
@@ -4144,6 +4628,35 @@ def _review_generation_item_locked(
     staged_manifest = manifest_path.with_name(
         f".{manifest_path.name}.{transaction_id}.tmp"
     )
+    _write_review_item_transaction(
+        staged_state,
+        staged_manifest,
+        state_path,
+        manifest_path,
+        proposed,
+        entries,
+        queue_id,
+        expected_authority,
+        queue_path,
+        lease,
+    )
+    if lease is not None:
+        lease.mark_committed()
+    return _review_commit_result(proposed, state_path, queue_id, expected_authority)
+
+
+def _write_review_item_transaction(
+    staged_state: Path,
+    staged_manifest: Path,
+    state_path: Path,
+    manifest_path: Path,
+    proposed: JsonDocument,
+    entries: object,
+    queue_id: str,
+    authority: object,
+    queue_path: str | Path | None,
+    lease: GenerationLease | None,
+) -> None:
     try:
         atomic_write_json(staged_state, proposed, sort_keys=True)
         _write_generated_manifest_from_state(
@@ -4151,50 +4664,54 @@ def _review_generation_item_locked(
             state_path.parent,
             staged_manifest,
             entries=entries,
-            validate_files=expected_authority is None,
+            validate_files=authority is None,
         )
-        if expected_authority is not None:
-            _assert_review_authority(
-                state_path,
-                queue_id,
-                expected_authority,
-                queue_path,
-            )
+        if authority is not None:
+            _assert_review_authority(state_path, queue_id, authority, queue_path)
         if lease is not None:
             lease.assert_owned()
-        try:
-            os.replace(staged_state, state_path)
-        except OSError as error:
-            raise BulkGenerationError(
-                f"Unable to save review decision: {error}"
-            ) from error
-        try:
-            if lease is not None:
-                try:
-                    lease.assert_owned()
-                except BulkGenerationError as error:
-                    raise BulkGenerationError(
-                        "Review decision was saved, but manifest rebuild was blocked: "
-                        f"{error}"
-                    ) from error
-            os.replace(staged_manifest, manifest_path)
-        except OSError as error:
-            raise BulkGenerationError(
-                f"Review decision was saved, but manifest rebuild failed: {error}"
-            ) from error
+        _replace_review_state(staged_state, state_path)
+        _replace_review_manifest(staged_manifest, manifest_path, lease)
     finally:
         for staged in (staged_state, staged_manifest):
             try:
                 staged.unlink()
-            except FileNotFoundError:
+            except FileNotFoundError, OSError:
                 pass
-            except OSError:
-                pass
-    if lease is not None:
-        lease.mark_committed()
-    committed_item = _state_items(proposed)[queue_id]
-    if expected_authority is None:
+
+
+def _replace_review_state(staged_state: Path, state_path: Path) -> None:
+    try:
+        os.replace(staged_state, state_path)
+    except OSError as error:
+        raise BulkGenerationError(f"Unable to save review decision: {error}") from error
+
+
+def _replace_review_manifest(
+    staged_manifest: Path, manifest_path: Path, lease: GenerationLease | None
+) -> None:
+    try:
+        if lease is not None:
+            try:
+                lease.assert_owned()
+            except BulkGenerationError as error:
+                raise BulkGenerationError(
+                    "Review decision was saved, but manifest rebuild was blocked: "
+                    f"{error}"
+                ) from error
+        os.replace(staged_manifest, manifest_path)
+    except OSError as error:
+        raise BulkGenerationError(
+            f"Review decision was saved, but manifest rebuild failed: {error}"
+        ) from error
+
+
+def _review_commit_result(
+    proposed: JsonDocument, state_path: Path, queue_id: str, authority: object
+) -> ReviewCommit | JsonDocument:
+    if authority is None:
         return proposed
+    committed_item = _state_items(proposed)[queue_id]
     return ReviewCommit(
         queue_id=queue_id,
         status=_generation_text(committed_item.get("status"), "Review status"),
@@ -4208,7 +4725,7 @@ def _review_generation_item_locked(
             ),
             state_sha256=sha256_file(state_path),
             item_sha256=_canonical_sha256(committed_item),
-            audio_sha256=expected_authority.audio_sha256,
+            audio_sha256=authority.audio_sha256,
         ),
     )
 

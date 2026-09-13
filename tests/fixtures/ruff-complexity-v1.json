@@ -111,78 +111,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_assert_missing_voice_overrides_match_manifest",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_assert_review_authorities",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_capture_live_fallback_evidence",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_generation_voice_overrides",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_load_review_snapshot",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_review_generation_item_locked",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_validate_failure_repair_selection",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_validate_live_fallback_source",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "authorize_live_fallback",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "generation_failure_repair_plan",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "review_generation_cohort",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "run_bulk_generation",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/cli_generation.py",
       "scope": "handle",
       "count": 1
@@ -1707,54 +1635,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_assert_review_authorities",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_capture_live_fallback_evidence",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_review_generation_item_locked",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_validate_failure_repair_selection",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "authorize_live_fallback",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "generation_failure_repair_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "review_generation_cohort",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "run_bulk_generation",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/cli_generation.py",
       "scope": "handle",
       "count": 1
@@ -2897,42 +2777,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/audio_event_review.py",
       "scope": "publish_source_audio_event_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_capture_live_fallback_evidence",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "_review_generation_item_locked",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "authorize_live_fallback",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "generation_failure_repair_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "review_generation_cohort",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/bulk_generation.py",
-      "scope": "run_bulk_generation",
       "count": 1
     },
     {
