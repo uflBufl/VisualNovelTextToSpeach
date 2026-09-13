@@ -1,6 +1,8 @@
-from concurrent.futures import CancelledError
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import CancelledError, Future
 
 from PySide6.QtCore import QObject, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -11,10 +13,14 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.speech_presentation import compact_runtime_label, speech_runtime_label
 from vntts.ui_text import copy_text_button, make_text_copyable
+from vntts.voices import VoiceChoice
+
+PreviewResult = tuple[str, str]
 
 
 class VoicePreviewSignals(QObject):
@@ -24,24 +30,24 @@ class VoicePreviewSignals(QObject):
 class VoicePreviewDialog(QDialog):
     def __init__(
         self,
-        characters,
-        choices,
-        preview_handler,
-        assignment_handler,
-        current_assignment_handler,
-        clear_assignment_handler=None,
+        characters: Sequence[str],
+        choices: Iterable[VoiceChoice],
+        preview_handler: Callable[[str, str], Future[PreviewResult]],
+        assignment_handler: Callable[[str, str], None],
+        current_assignment_handler: Callable[[str], str | None],
+        clear_assignment_handler: Callable[[str], None] | None = None,
         *,
-        force_live_handler=None,
-        current_force_live_handler=None,
-        preview_stop_handler=None,
-        initial_character=None,
-        fixed_character=None,
-        engine_description=None,
-        engine_details=None,
-        runtime_status_handler=None,
-        game_narrator_handler=None,
-        parent=None,
-    ):
+        force_live_handler: Callable[[bool], None] | None = None,
+        current_force_live_handler: Callable[[], bool] | None = None,
+        preview_stop_handler: Callable[[], object] | None = None,
+        initial_character: str | None = None,
+        fixed_character: str | None = None,
+        engine_description: str | None = None,
+        engine_details: str | None = None,
+        runtime_status_handler: Callable[[], str] | None = None,
+        game_narrator_handler: Callable[[QDialog], bool] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.preview_handler = preview_handler
         self.assignment_handler = assignment_handler
@@ -51,8 +57,8 @@ class VoicePreviewDialog(QDialog):
         self.current_force_live_handler = current_force_live_handler
         self.preview_stop_handler = preview_stop_handler
         self.runtime_status_handler = runtime_status_handler
-        self._preview_future = None
-        self._preview_target = None
+        self._preview_future: Future[PreviewResult] | None = None
+        self._preview_target: tuple[str, str, str, str] | None = None
         self._stop_requested = False
         self._close_pending = False
         self.fixed_character = (fixed_character or "").strip() or None
@@ -167,10 +173,10 @@ class VoicePreviewDialog(QDialog):
         self.target_changed()
         make_text_copyable(self)
 
-    def update_description(self):
+    def update_description(self) -> None:
         self.description.setText(self.voice.currentData(3) or "")
 
-    def _copy_details(self):
+    def _copy_details(self) -> str:
         return "\n\n".join(
             value
             for value in (
@@ -182,7 +188,7 @@ class VoicePreviewDialog(QDialog):
             if value
         )
 
-    def _refresh_runtime(self):
+    def _refresh_runtime(self) -> None:
         message = (
             self.runtime_status_handler()
             if self.runtime_status_handler is not None
@@ -191,17 +197,19 @@ class VoicePreviewDialog(QDialog):
         self.runtime.setText(compact_runtime_label(message))
         self.runtime.setToolTip(message)
 
-    def _choose_game_narrator(self, handler):
+    def _choose_game_narrator(
+        self, handler: Callable[[QDialog], bool]
+    ) -> None:
         if handler(self):
             self.accept()
 
-    def select_current_assignment(self):
+    def select_current_assignment(self) -> None:
         source_id = self.current_assignment_handler(self.character.currentText())
         index = self.voice.findData(source_id)
         if index >= 0:
             self.voice.setCurrentIndex(index)
 
-    def target_changed(self):
+    def target_changed(self) -> None:
         narrator = self.character.currentText().strip().casefold() == "narrator"
         if narrator:
             self.routing_note.setText(
@@ -234,13 +242,16 @@ class VoicePreviewDialog(QDialog):
             self.force_live.setVisible(False)
         self.select_current_assignment()
 
-    def preview(self):
+    def preview(self) -> None:
         if self._preview_future is not None:
             return
         target = (
             self.fixed_character or self.character.currentText().strip() or "Narrator"
         )
         voice_id = self.voice.currentData()
+        if not isinstance(voice_id, str):
+            self.preview_finished(False, "Selected voice has no valid identity")
+            return
         voice_label = self.voice.currentText()
         text = self.text.toPlainText()
         try:
@@ -263,7 +274,7 @@ class VoicePreviewDialog(QDialog):
         self._refresh_runtime()
         future.add_done_callback(self._future_finished)
 
-    def _future_finished(self, future):
+    def _future_finished(self, future: Future[PreviewResult]) -> None:
         if future is not self._preview_future:
             return
         try:
@@ -278,7 +289,7 @@ class VoicePreviewDialog(QDialog):
         else:
             self.signals.finished.emit(True, f"Played {voice} preview")
 
-    def preview_finished(self, successful, message):
+    def preview_finished(self, successful: bool, message: str) -> None:
         self._preview_future = None
         self._stop_requested = False
         self._set_preview_controls(True)
@@ -295,7 +306,7 @@ class VoicePreviewDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def stop_preview(self):
+    def stop_preview(self) -> None:
         future = self._preview_future
         if future is None or self._stop_requested:
             return
@@ -310,7 +321,7 @@ class VoicePreviewDialog(QDialog):
                     f"Stop request failed: {error}. Waiting for preview completion."
                 )
 
-    def _set_preview_controls(self, enabled):
+    def _set_preview_controls(self, enabled: bool) -> None:
         self.character.setEnabled(enabled and not self.fixed_character)
         self.voice.setEnabled(enabled)
         self.text.setEnabled(enabled)
@@ -320,7 +331,7 @@ class VoicePreviewDialog(QDialog):
         self.preview_button.setEnabled(enabled)
         self.game_narrator_button.setEnabled(enabled)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._preview_future is not None:
             self._close_pending = True
             self.stop_preview()
@@ -332,12 +343,15 @@ class VoicePreviewDialog(QDialog):
             return
         super().closeEvent(event)
 
-    def assign(self):
+    def assign(self) -> None:
         if self._assignment_completed:
             return
         try:
             character = self.fixed_character or self.character.currentText().strip()
-            self.assignment_handler(character, self.voice.currentData())
+            voice_id = self.voice.currentData()
+            if not isinstance(voice_id, str):
+                raise ValueError("Selected voice has no valid identity")
+            self.assignment_handler(character, voice_id)
         except Exception as error:
             self.status.setText(f"Voice assignment failed: {error}")
             return
@@ -355,7 +369,7 @@ class VoicePreviewDialog(QDialog):
             self._assignment_completed = True
             self.accept()
 
-    def set_force_live(self, enabled):
+    def set_force_live(self, enabled: bool) -> None:
         if (
             self.force_live_handler is None
             or self.character.currentText().strip().casefold() != "narrator"
@@ -381,7 +395,7 @@ class VoicePreviewDialog(QDialog):
             else "Pregenerated Narrator tracks restored with live fallback."
         )
 
-    def clear_assignment(self):
+    def clear_assignment(self) -> None:
         if self.clear_assignment_handler is None:
             return
         character = self.character.currentText().strip()
