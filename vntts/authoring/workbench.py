@@ -242,14 +242,14 @@ _workspace_config_fingerprint = workspace_config_fingerprint
 
 def load_workspace_json(path: str | Path, description: str) -> dict[str, object]:
     """Load one workspace JSON object with workbench error semantics."""
-    return _load_json(path, description)
+    return _load_json(Path(path), description)
 
 
 def load_workspace_json_snapshot(
     path: str | Path, description: str
 ) -> tuple[dict[str, object], str, bytes]:
     """Load one exact workspace JSON object and its payload identity."""
-    return _load_json_snapshot(path, description)
+    return _load_json_snapshot(Path(path), description)
 
 
 def safe_workspace_relative_path(value: object, label: str) -> Path:
