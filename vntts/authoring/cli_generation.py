@@ -8,12 +8,17 @@ import json
 from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Callable, Sequence
 
-from vntts_artifacts import VoiceGenerationQueue, VoiceGenerationQueueError
+from vntts_artifacts import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueError,
+    VoiceGenerationQueueItem,
+)
 from vntts_artifacts.voice_manifest import load_voice_manifest
 
 from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
+    BulkGenerationResult,
     audio_event_spoken_projection,
     authorize_live_fallback,
     generation_failure_repair_plan,
@@ -38,6 +43,7 @@ from vntts.authoring.failure_regeneration import (
     load_failure_regeneration_plan,
     write_failure_regeneration_plan,
 )
+from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import LIVE_FALLBACK_REASONS
 from vntts.authoring.pending_resolution import (
     build_pending_regeneration_command,
@@ -86,7 +92,9 @@ COMMANDS = frozenset(
 )
 
 
-def configure_parsers(subparsers) -> None:
+def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     generate = subparsers.add_parser(
         "generate", help="Resume typed device-independent generation from a queue"
     )
@@ -272,7 +280,9 @@ def configure_parsers(subparsers) -> None:
     failure_command.add_argument("--batch-size", type=int, default=10)
 
 
-def _load_stable_voice_registry(manifest_path):
+def _load_stable_voice_registry(
+    manifest_path: str | Path,
+) -> tuple[CharacterVoiceRegistry, str, object, Sequence[object]]:
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
         payload = manifest_path.read_bytes()
@@ -303,10 +313,10 @@ def _load_stable_voice_registry(manifest_path):
 def run_generation(
     arguments: argparse.Namespace,
     *,
-    backend_factory=None,
-    cancellation=None,
-    startup_progress=None,
-):
+    backend_factory: Callable[..., object] | None = None,
+    cancellation: object = None,
+    startup_progress: object = None,
+) -> BulkGenerationResult:
     backend_factory = backend_factory or create_backend
     missing_policy = missing_voice_policy(arguments)
     repair_policy = failure_repair_policy(arguments)
@@ -448,16 +458,17 @@ def run_generation(
         )
     )
     if narrator_voice is not None and narrator_voice.references:
+        narrator_reference_path = narrator_voice.references[0]
         control_files[f"narrator_selection:{arguments.narrator_character}"] = (
-            narrator_reference,
-            sha256_control_path(narrator_reference),
+            narrator_reference_path,
+            sha256_control_path(narrator_reference_path),
         )
     if arguments.backend == "moss-tts" and narrator_reference is None:
         raise BulkGenerationError(
             f"Narrator voice {arguments.narrator_character!r} has no reference"
         )
 
-    def ready_spoken_item(item):
+    def ready_spoken_item(item: VoiceGenerationQueueItem) -> bool:
         if not (is_spoken_queue_item(item) or item.queue_id in set(projection_ids)):
             return False
         requested = synthesis_character_for_line(item.speaker, item.voice_character)
@@ -606,13 +617,24 @@ def handle(arguments: argparse.Namespace) -> int:
         return 0
     if arguments.command == "status":
         state = load_generation_state(arguments.state, arguments.queue)
-        counts = {"failed": 0, "generated": 0, "approved": 0, "omitted": 0}
-        for item in state["items"].values():
-            if item["status"] != "live_fallback":
-                counts[item["status"]] += 1
+        items = state.get("items")
+        if not isinstance(items, dict) or not all(
+            isinstance(queue_id, str) and isinstance(item, dict)
+            for queue_id, item in items.items()
+        ):
+            raise BulkGenerationError("Generation state items are malformed")
+        counts: dict[str, int] = {
+            "failed": 0,
+            "generated": 0,
+            "approved": 0,
+            "omitted": 0,
+        }
+        for item in items.values():
+            status = item.get("status")
+            if isinstance(status, str) and status != "live_fallback":
+                counts[status] += 1
         counts["live_fallback"] = sum(
-            isinstance(item.get("live_fallback"), dict)
-            for item in state["items"].values()
+            isinstance(item.get("live_fallback"), dict) for item in items.values()
         )
         print(
             json.dumps(

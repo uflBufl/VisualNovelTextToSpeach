@@ -10,13 +10,16 @@ import os
 import re
 import secrets
 import stat
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TypeAlias, TypedDict, TypeGuard
 
 import numpy as np
+from numpy.typing import NDArray
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
@@ -24,6 +27,7 @@ from vntts_artifacts.text_utils import slugify
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
+    VoiceGenerationQueueItem,
 )
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
@@ -60,6 +64,7 @@ from vntts.authoring.generation_lease import (
     process_started_at,
 )
 from vntts.authoring.generation_manifest import AudioQuality as AudioQuality
+from vntts.authoring.generation_manifest import RecordedVoice as RecordedVoice
 from vntts.authoring.generation_manifest import (
     approved_manifest_entries,
     inspect_generated_wav,
@@ -217,8 +222,10 @@ from vntts.authoring.workspace_foundation import load_json_object
 from vntts.speech_presentation import speech_runtime_label
 from vntts.synthesis import (
     SynthesisCachePolicy,
+    SynthesisChunkStream,
     SynthesisCompletion,
     SynthesisRequest,
+    SynthesisResult,
 )
 from vntts.synthesis import (
     normalize_short_trailing_ellipsis as normalize_short_trailing_ellipsis,
@@ -240,6 +247,117 @@ AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS = frozenset(
 )
 
 
+class _GenerationControl(TypedDict):
+    role: str
+    path: Path
+    sha256: str
+    kind: str
+    files: list[dict[str, str]]
+
+
+JsonDocument: TypeAlias = dict[str, object]
+StateItems: TypeAlias = dict[str, JsonDocument]
+GenerationRenderer: TypeAlias = Callable[[SynthesisRequest], SynthesisChunkStream]
+PrefetchedRender: TypeAlias = tuple[str, SynthesisRequest, Future[SynthesisResult]]
+
+
+class _FailureReportRecord(TypedDict):
+    queue_id: str
+    line_id: str
+    speaker: str
+    text: str
+    requested_voice_character: object
+    synthesis_voice_character: object
+    provider: object
+    model: object
+    generation_profile: object
+    synthesis_control_digest: object
+    attempts: int
+    attempts_by_provider: dict[str, int]
+    seed: object
+    last_error: object
+    failure: JsonDocument
+    failure_repair: object
+    failure_repair_history: list[str]
+
+
+class _CohortCount(TypedDict):
+    value: object
+    count: int
+
+
+class _GenerationFailureReport(TypedDict):
+    schema: str
+    schema_version: int
+    state: str
+    state_sha256: str
+    queue: str
+    queue_sha256: str
+    failure_count: int
+    cohorts: dict[str, list[_CohortCount]]
+    records: list[_FailureReportRecord]
+
+
+def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _is_object_list(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
+def _is_generation_renderer(value: object) -> TypeGuard[GenerationRenderer]:
+    return callable(value)
+
+
+def _is_text_transform(value: object) -> TypeGuard[Callable[[str], str]]:
+    return callable(value)
+
+
+def _is_review_authorities(
+    value: object,
+) -> TypeGuard[dict[str, ReviewAuthority]]:
+    return (
+        isinstance(value, dict)
+        and bool(value)
+        and all(
+            isinstance(queue_id, str) and isinstance(authority, ReviewAuthority)
+            for queue_id, authority in value.items()
+        )
+    )
+
+
+def _is_review_decisions(value: object) -> TypeGuard[dict[str, str]]:
+    return isinstance(value, dict) and all(
+        isinstance(queue_id, str) and isinstance(decision, str)
+        for queue_id, decision in value.items()
+    )
+
+
+def _generation_text(value: object, label: str) -> str:
+    parsed = _required_text(value, label)
+    if not isinstance(parsed, str):
+        raise BulkGenerationError(f"{label} must be non-empty text")
+    return parsed
+
+
+def _generation_integer(value: object, label: str) -> int:
+    parsed = _integer(value, label)
+    if not isinstance(parsed, int) or isinstance(parsed, bool):
+        raise BulkGenerationError(f"{label} must be an integer")
+    return parsed
+
+
+def _state_items(state: JsonDocument) -> StateItems:
+    items = state.get("items")
+    if not isinstance(items, dict) or not all(
+        isinstance(queue_id, str) and _is_json_document(record)
+        for queue_id, record in items.items()
+    ):
+        raise BulkGenerationError("Generation state items are malformed")
+    return items
+
+
 class BulkGenerationSourceChangedError(BulkGenerationError):
     """A queue or synthesis control changed during a generation snapshot."""
 
@@ -251,7 +369,7 @@ class BulkGenerationProvenanceError(BulkGenerationError):
 class IncompleteSynthesisError(BulkGenerationError):
     """A typed renderer stopped without producing a publishable completion."""
 
-    def __init__(self, result):
+    def __init__(self, result: SynthesisResult) -> None:
         self.result = result
         super().__init__(
             "Typed render completed as "
@@ -275,7 +393,7 @@ class BulkGenerationResult:
     state: Path
     manifest: Path
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["state"] = str(self.state)
         payload["manifest"] = str(self.manifest)
@@ -287,68 +405,68 @@ class _GenerationExecutionResult:
     generated: int
     skipped_existing: int
     cancelled: bool
-    captured_silence_failure: dict | None
+    captured_silence_failure: dict[str, object] | None
 
 
 @dataclass(frozen=True)
 class _GenerationItemExecutionResult:
     generated: bool
     cancelled: bool
-    captured_silence_failure: dict | None
-    prefetched_render: object | None
+    captured_silence_failure: dict[str, object] | None
+    prefetched_render: PrefetchedRender | None
 
 
 @dataclass(frozen=True)
 class _GenerationFailureResult:
     last_error: str
     cancelled: bool
-    captured_silence_failure: dict | None
+    captured_silence_failure: dict[str, object] | None
 
 
 @dataclass
 class _GenerationAttempt:
     attempts: int
     provider_attempts: int
-    attempts_by_provider: dict
+    attempts_by_provider: dict[str, int]
     run_attempts: int
     attempt_seed: int
     request_seed: int | None
-    attempt_repair: dict | None
+    attempt_repair: JsonDocument | None
     partial: Path
     request: SynthesisRequest
-    rendered: object | None = None
+    rendered: SynthesisResult | None = None
 
 
 @dataclass(frozen=True)
 class _GenerationExecutionContext:
     state_path: Path
-    state: dict
+    state: JsonDocument
     output_directory: Path
     output_argument: Path
     workspace_output_identity: object
-    candidates: tuple
-    queue_voice_overrides: dict
-    character_overrides: dict
+    candidates: Sequence[VoiceGenerationQueueItem]
+    queue_voice_overrides: dict[str, str]
+    character_overrides: dict[str, str]
     repair_policy: FailureRepairPolicy
     policy: MissingVoicePolicy
     narrator_character: str | None
-    synthesis_configuration: dict
-    text_transform: object
+    synthesis_configuration: JsonDocument
+    text_transform: Callable[[str], str] | None
     text_transform_id: str | None
     provider: str
     model: str
     generation_profile: str
     provenance_sha256: str
     backend: object
-    render: object
-    controls: tuple
+    render: GenerationRenderer
+    controls: list[_GenerationControl]
     lease: GenerationLease
     render_prefetch: ThreadPoolExecutor
     seed: int
     retries: int
     cancellation: object
     synthesis_cache_policy: SynthesisCachePolicy
-    recorded_voices: dict
+    recorded_voices: dict[str, RecordedVoice]
     evidence_directory: Path | None
     regenerate_existing: bool
 
@@ -363,12 +481,12 @@ class _GenerationConfiguration:
     generation_profile: str
     synthesis_cache_policy: SynthesisCachePolicy
     policy: MissingVoicePolicy
-    character_overrides: dict
+    character_overrides: dict[str, str]
     projection_queue_ids: tuple[str, ...]
     repair_policy: FailureRepairPolicy
-    text_transform: object | None
+    text_transform: Callable[[str], str] | None
     text_transform_id: str | None
-    render: object
+    render: GenerationRenderer
 
 
 @dataclass(frozen=True)
@@ -378,22 +496,22 @@ class _GenerationInputs:
     output_directory: Path
     queue: VoiceGenerationQueue
     queue_sha256: str
-    queue_voice_overrides: dict
+    queue_voice_overrides: dict[str, str]
     selected_queue_ids: set[str] | None
     evidence_directory: Path | None
 
 
 @dataclass
 class _PreparedGenerationItem:
-    item: object
-    existing: dict
+    item: VoiceGenerationQueueItem
+    existing: JsonDocument
     queue_id: str
     repair_strategy: str | None
-    repair_document: dict | None
+    repair_document: JsonDocument | None
     requested_voice: str
     voice: str
-    synthesis_fallback: dict | None
-    source_reference_binding: dict | None
+    synthesis_fallback: JsonDocument | None
+    source_reference_binding: JsonDocument | None
     queue_annotations_sha256: str
     prompt_sha256: str
     synthesis_text: str
@@ -428,12 +546,14 @@ class ReviewCommit:
     authority: ReviewAuthority
 
 
-def generation_review_authority(state_path, queue_id):
+def generation_review_authority(
+    state_path: str | Path, queue_id: str
+) -> ReviewAuthority:
     """Snapshot one reviewable state item and its exact validated WAV."""
     state_path = Path(state_path).expanduser().resolve()
     state = load_generation_state(state_path)
-    item = state.get("items", {}).get(queue_id)
-    if not isinstance(item, dict) or item.get("status") not in {
+    item = _state_items(state).get(queue_id)
+    if item is None or item.get("status") not in {
         "generated",
         "approved",
     }:
@@ -442,27 +562,29 @@ def generation_review_authority(state_path, queue_id):
     audio = _within(state_path.parent, relative, "Generated WAV")
     _validate_success_file(queue_id, item, audio)
     return ReviewAuthority(
-        queue_sha256=state["queue_sha256"],
+        queue_sha256=_generation_text(state.get("queue_sha256"), "Queue SHA-256"),
         state_sha256=sha256_file(state_path),
         item_sha256=_canonical_sha256(item),
         audio_sha256=sha256_file(audio),
     )
 
 
-def generation_review_authorities(state_path, queue_ids):
+def generation_review_authorities(
+    state_path: str | Path, queue_ids: Sequence[object]
+) -> dict[str, ReviewAuthority]:
     """Snapshot several generated WAV authorities from one immutable state read."""
     state_path = Path(state_path).expanduser().resolve()
-    queue_ids = tuple(
-        sorted({_required_text(value, "Queue ID") for value in queue_ids})
+    selected_queue_ids = tuple(
+        sorted({_generation_text(value, "Queue ID") for value in queue_ids})
     )
-    if not queue_ids:
+    if not selected_queue_ids:
         return {}
     state = load_generation_state(state_path)
     state_sha256 = sha256_file(state_path)
-    authorities = {}
-    for queue_id in queue_ids:
-        item = state.get("items", {}).get(queue_id)
-        if not isinstance(item, dict) or item.get("status") not in {
+    authorities: dict[str, ReviewAuthority] = {}
+    for queue_id in selected_queue_ids:
+        item = _state_items(state).get(queue_id)
+        if item is None or item.get("status") not in {
             "generated",
             "approved",
         }:
@@ -473,7 +595,7 @@ def generation_review_authorities(state_path, queue_ids):
         audio = _within(state_path.parent, relative, "Generated WAV")
         _validate_success_file(queue_id, item, audio)
         authorities[queue_id] = ReviewAuthority(
-            queue_sha256=state["queue_sha256"],
+            queue_sha256=_generation_text(state.get("queue_sha256"), "Queue SHA-256"),
             state_sha256=state_sha256,
             item_sha256=_canonical_sha256(item),
             audio_sha256=sha256_file(audio),
@@ -486,11 +608,11 @@ def generation_review_authorities(state_path, queue_ids):
 
 
 def _assert_review_authority(
-    state_path,
-    queue_id,
-    expected_authority,
-    queue_path,
-):
+    state_path: str | Path,
+    queue_id: str,
+    expected_authority: object,
+    queue_path: str | Path | None,
+) -> tuple[JsonDocument, JsonDocument, bytes]:
     if not isinstance(expected_authority, ReviewAuthority):
         raise BulkGenerationError("Review authority snapshot is invalid")
     state, item, audio_bytes = _load_review_snapshot(
@@ -501,7 +623,7 @@ def _assert_review_authority(
         capture_audio=True,
     )
     actual = ReviewAuthority(
-        queue_sha256=state["queue_sha256"],
+        queue_sha256=_generation_text(state.get("queue_sha256"), "Queue SHA-256"),
         state_sha256=expected_authority.state_sha256,
         item_sha256=_canonical_sha256(item),
         audio_sha256=hashlib.sha256(audio_bytes).hexdigest(),
@@ -513,7 +635,11 @@ def _assert_review_authority(
     return state, item, audio_bytes
 
 
-def _assert_review_authorities(state_path, authorities, queue_path):
+def _assert_review_authorities(
+    state_path: str | Path,
+    authorities: object,
+    queue_path: str | Path,
+) -> tuple[JsonDocument, dict[str, tuple[JsonDocument, bytes]]]:
     """Validate one cohort against one shared state and queue snapshot."""
     if not isinstance(authorities, dict) or not authorities:
         raise BulkGenerationError("Cohort review authorities must be a non-empty map")
@@ -554,12 +680,12 @@ def _assert_review_authorities(state_path, authorities, queue_path):
         or state.get("queue_sha256") != queue_sha256
     ):
         raise BulkGenerationError("Generation state items or queue identity changed")
-    snapshots = {}
-    audio_paths = {}
+    snapshots: dict[str, tuple[JsonDocument, bytes]] = {}
+    audio_paths: dict[str, Path] = {}
     for queue_id, authority in authorities.items():
-        queue_id = _required_text(queue_id, "Cohort review queue ID")
-        item = state["items"].get(queue_id)
-        if not isinstance(item, dict) or item.get("status") not in {
+        queue_id = _generation_text(queue_id, "Cohort review queue ID")
+        item = _state_items(state).get(queue_id)
+        if item is None or item.get("status") not in {
             "generated",
             "approved",
         }:
@@ -600,13 +726,13 @@ def _assert_review_authorities(state_path, authorities, queue_path):
 
 
 def _load_review_snapshot(
-    state_path,
-    queue_id,
-    expected_authority,
-    queue_path,
+    state_path: str | Path,
+    queue_id: str,
+    expected_authority: object,
+    queue_path: str | Path | None,
     *,
-    capture_audio,
-):
+    capture_audio: bool,
+) -> tuple[JsonDocument, JsonDocument, bytes]:
     """Revalidate only the exact state/item/WAV snapshot displayed by the UI."""
     if not isinstance(expected_authority, ReviewAuthority):
         raise BulkGenerationError("Review authority snapshot is invalid")
@@ -628,7 +754,7 @@ def _load_review_snapshot(
         raise BulkGenerationError(
             f"Unable to read generation state {state_path}: {error}"
         ) from error
-    if not isinstance(state, dict) or not isinstance(state.get("items"), dict):
+    if not _is_json_document(state):
         raise BulkGenerationError("Generation state items must be an object")
     if state.get("queue_sha256") != expected_authority.queue_sha256:
         raise BulkGenerationError(
@@ -638,8 +764,8 @@ def _load_review_snapshot(
         raise BulkGenerationError(
             "Review queue changed after the item was displayed; refresh before deciding"
         )
-    item = state["items"].get(queue_id)
-    if not isinstance(item, dict) or item.get("status") not in {
+    item = _state_items(state).get(queue_id)
+    if item is None or item.get("status") not in {
         "generated",
         "approved",
     }:
@@ -663,7 +789,12 @@ def _load_review_snapshot(
     return state, item, audio_bytes if capture_audio else b""
 
 
-def load_review_audio_bytes(state_path, queue_path, queue_id, expected_authority):
+def load_review_audio_bytes(
+    state_path: str | Path,
+    queue_path: str | Path,
+    queue_id: str,
+    expected_authority: object,
+) -> bytes:
     """Read the exact selected WAV bytes without rescanning unrelated outcomes."""
     _state, _item, audio_bytes = _load_review_snapshot(
         state_path,
@@ -675,12 +806,15 @@ def load_review_audio_bytes(state_path, queue_path, queue_id, expected_authority
     return audio_bytes
 
 
-def sha256_control_path(path):
+def sha256_control_path(path: str | Path) -> str:
     """Hash one immutable synthesis control file or complete directory tree."""
     try:
         path = Path(path).expanduser().resolve()
         if path.is_file():
-            return sha256_file(path)
+            digest = sha256_file(path)
+            if not isinstance(digest, str):
+                raise BulkGenerationError(f"Unable to read generation control {path}")
+            return digest
         if not path.is_dir():
             raise BulkGenerationError(f"Generation control does not exist: {path}")
         digest = hashlib.sha256()
@@ -700,9 +834,11 @@ def sha256_control_path(path):
         ) from error
 
 
-def is_spoken_queue_item(item):
+def is_spoken_queue_item(item: VoiceGenerationQueueItem | JsonDocument) -> bool:
     """Skip pure or inline audio events until a typed composition is approved."""
-    document = item.document if hasattr(item, "document") else item
+    document: object = item.document if hasattr(item, "document") else item
+    if not _is_json_document(document):
+        raise BulkGenerationError("Queue item document must be an object")
     if document.get("speakable") is False:
         return False
     text = str(document.get("text") or "")
@@ -715,7 +851,7 @@ def is_spoken_queue_item(item):
     )
 
 
-def audio_event_spoken_projection(text):
+def audio_event_spoken_projection(text: str) -> str:
     """Remove typed inline events while preserving the record's spoken text."""
     try:
         plan = audio_event_plan_for_record({"text": text})
@@ -731,10 +867,15 @@ def audio_event_spoken_projection(text):
         raise BulkGenerationError(
             "Audio-event spoken projection requires mixed speech and events"
         )
-    return plan["spoken_text"]
+    spoken_text = plan["spoken_text"]
+    if not isinstance(spoken_text, str):
+        raise BulkGenerationError(
+            "Audio-event spoken projection requires mixed speech and events"
+        )
+    return spoken_text
 
 
-def _failure_kind(error, completion=None):
+def _failure_kind(error: object, completion: SynthesisCompletion | None = None) -> str:
     if completion is SynthesisCompletion.CANCELLED:
         return "cancelled"
     if isinstance(error, IncompleteSynthesisError):
@@ -759,8 +900,14 @@ def _failure_kind(error, completion=None):
     return "backend_error"
 
 
-def _failure_record(error, *, text, completion=None, attempt_binding=None):
-    record = {
+def _failure_record(
+    error: object,
+    *,
+    text: str,
+    completion: SynthesisCompletion | None = None,
+    attempt_binding: object | None = None,
+) -> dict[str, object]:
+    record: dict[str, object] = {
         "schema_version": 1,
         "kind": _failure_kind(error, completion),
         "error_type": error.__class__.__name__,
@@ -799,19 +946,19 @@ def _failure_record(error, *, text, completion=None, attempt_binding=None):
         record["speech_quality"] = asdict(error.quality)
         record["silence_failures"] = list(error.failures)
         if error.diagnosis is not None:
-            record["pause_diagnosis"] = asdict(error.diagnosis)
-            record["pause_diagnosis"]["attempt_binding"] = copy.deepcopy(
-                attempt_binding
-            )
+            pause_diagnosis: JsonDocument = asdict(error.diagnosis)
+            pause_diagnosis["attempt_binding"] = copy.deepcopy(attempt_binding)
+            record["pause_diagnosis"] = pause_diagnosis
     return record
 
 
-def normalized_failure_record(item, *, text=""):
+def normalized_failure_record(item: object, *, text: str = "") -> JsonDocument:
     """Return a typed failure record, inferring legacy string-only outcomes."""
-    stored = item.get("failure") if isinstance(item, dict) else None
-    if isinstance(stored, dict) and stored.get("kind") in FAILURE_KINDS:
+    document = item if _is_json_document(item) else {}
+    stored = document.get("failure")
+    if _is_json_document(stored) and stored.get("kind") in FAILURE_KINDS:
         return copy.deepcopy(stored)
-    error = str(item.get("last_error") or "Unknown generation failure")
+    error = str(document.get("last_error") or "Unknown generation failure")
     return {
         "schema_version": 1,
         "kind": _failure_kind(error),
@@ -822,8 +969,11 @@ def normalized_failure_record(item, *, text=""):
 
 
 def _generation_voice_overrides(
-    policy_document, synthesis_character_overrides, *, narrator_character
-):
+    policy_document: object,
+    synthesis_character_overrides: object,
+    *,
+    narrator_character: str | None,
+) -> tuple[MissingVoicePolicy, dict[str, str]]:
     try:
         policy = (
             policy_document
@@ -836,8 +986,8 @@ def _generation_voice_overrides(
         synthesis_character_overrides = {}
     if not isinstance(synthesis_character_overrides, dict):
         raise BulkGenerationError("Synthesis character overrides must be an object")
-    normalized = {}
-    source_names = {}
+    normalized: dict[str, str] = {}
+    source_names: dict[str, str] = {}
     for requested, effective in synthesis_character_overrides.items():
         requested = _required_text(requested, "Requested synthesis character")
         effective = _required_text(effective, "Effective synthesis character")
@@ -869,13 +1019,15 @@ def _generation_voice_overrides(
     return policy, normalized
 
 
-def _validated_queue_voice_overrides(value, queue):
+def _validated_queue_voice_overrides(
+    value: object, queue: VoiceGenerationQueue
+) -> dict[str, str]:
     if value is None:
         return {}
     if not isinstance(value, dict):
         raise BulkGenerationError("Queue voice overrides must be an object")
     known = {item.queue_id for item in queue.items}
-    parsed = {}
+    parsed: dict[str, str] = {}
     for queue_id, character in value.items():
         queue_id = _required_text(queue_id, "Queue voice override ID")
         character = _required_text(character, f"Queue voice override {queue_id!r}")
@@ -892,8 +1044,12 @@ def _validated_queue_voice_overrides(value, queue):
 
 
 def _synthesis_fallback_document(
-    requested_voice, effective_voice, *, policy, narrator_character
-):
+    requested_voice: str,
+    effective_voice: str,
+    *,
+    policy: MissingVoicePolicy,
+    narrator_character: str | None,
+) -> JsonDocument | None:
     if normalize_character_name(requested_voice) == normalize_character_name(
         effective_voice
     ):
@@ -915,8 +1071,11 @@ def _synthesis_fallback_document(
 
 
 def _assert_missing_voice_overrides_match_manifest(
-    controls, character_overrides, narrator_character, provider
-):
+    controls: Sequence[_GenerationControl],
+    character_overrides: Mapping[str, str],
+    narrator_character: str | None,
+    provider: str,
+) -> None:
     if not character_overrides:
         return
     manifest_control = next(
@@ -967,12 +1126,15 @@ def _assert_missing_voice_overrides_match_manifest(
         )
 
 
-def load_generation_state(state_path, queue_path=None):
+def load_generation_state(
+    state_path: str | Path, queue_path: str | Path | None = None
+) -> JsonDocument:
     """Load either VNTTS-owned or preserved legacy state and verify its files."""
     state_path = Path(state_path).expanduser().resolve()
     state = _load_json(state_path, "generation state")
     queue = None
-    queue_sha256 = state.get("queue_sha256")
+    stored_queue_sha256 = state.get("queue_sha256")
+    queue_sha256 = stored_queue_sha256 if isinstance(stored_queue_sha256, str) else None
     if queue_path is not None:
         queue_path = Path(queue_path).expanduser().resolve()
         try:
@@ -984,7 +1146,9 @@ def load_generation_state(state_path, queue_path=None):
     return state
 
 
-def generation_failure_report(state_path, queue_path):
+def generation_failure_report(
+    state_path: str | Path, queue_path: str | Path
+) -> _GenerationFailureReport:
     """Project current and legacy failures into stable, actionable cohorts."""
     state_path = Path(state_path).expanduser().resolve()
     queue_path = Path(queue_path).expanduser().resolve()
@@ -994,9 +1158,9 @@ def generation_failure_report(state_path, queue_path):
     except VoiceGenerationQueueError as error:
         raise BulkGenerationError(str(error)) from error
     queue_by_id = {item.queue_id: item for item in queue.items}
-    records = []
-    for queue_id, result in state["items"].items():
-        if not isinstance(result, dict) or result.get("status") != "failed":
+    records: list[_FailureReportRecord] = []
+    for queue_id, result in _state_items(state).items():
+        if result.get("status") != "failed":
             continue
         item = queue_by_id[queue_id]
         requested = synthesis_character_for_line(item.speaker, item.voice_character)
@@ -1031,8 +1195,10 @@ def generation_failure_report(state_path, queue_path):
         )
     records.sort(key=lambda value: value["queue_id"])
 
-    def counts(key):
-        grouped = {}
+    def counts(
+        key: Callable[[_FailureReportRecord], object],
+    ) -> list[_CohortCount]:
+        grouped: dict[str, _CohortCount] = {}
         for record in records:
             value = key(record)
             serialized = json.dumps(
@@ -1053,7 +1219,7 @@ def generation_failure_report(state_path, queue_path):
         "state": str(state_path),
         "state_sha256": sha256_file(state_path),
         "queue": str(queue_path),
-        "queue_sha256": state["queue_sha256"],
+        "queue_sha256": _generation_text(state.get("queue_sha256"), "Queue SHA-256"),
         "failure_count": len(records),
         "cohorts": {
             "kind": counts(lambda value: value["failure"]["kind"]),
@@ -1089,10 +1255,12 @@ def generation_failure_report(state_path, queue_path):
     }
 
 
-def generation_failure_repair_plan(state_path, queue_path):
+def generation_failure_repair_plan(
+    state_path: str | Path, queue_path: str | Path
+) -> JsonDocument:
     """Return deterministic exact-ID repair candidates without changing state."""
     report = generation_failure_report(state_path, queue_path)
-    planned = []
+    planned: list[JsonDocument] = []
     for record in report["records"]:
         failure = record["failure"]
         kind = failure["kind"]
@@ -1115,7 +1283,7 @@ def generation_failure_repair_plan(state_path, queue_path):
             previous_strategy == BOUNDED_SEED_RETRY and kind == "missed_eos_audio_limit"
         ):
             provider_attempts = record["attempts_by_provider"].get(
-                record["provider"], attempts
+                _failure_report_provider(record), attempts
             )
             if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
                 action = "bounded_seed_retry"
@@ -1126,7 +1294,7 @@ def generation_failure_repair_plan(state_path, queue_path):
         elif previous_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
             if kind == "missed_eos_audio_limit":
                 provider_attempts = record["attempts_by_provider"].get(
-                    record["provider"], attempts
+                    _failure_report_provider(record), attempts
                 )
                 if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
                     action = "bounded_seed_retry"
@@ -1154,7 +1322,7 @@ def generation_failure_repair_plan(state_path, queue_path):
                 )
         elif kind == "missed_eos_audio_limit":
             provider_attempts = record["attempts_by_provider"].get(
-                record["provider"], attempts
+                _failure_report_provider(record), attempts
             )
             if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
                 action = "bounded_seed_retry"
@@ -1189,7 +1357,7 @@ def generation_failure_repair_plan(state_path, queue_path):
                 reason = "internal silence between multiple complete sentences"
             elif _inline_pause_matches_failure(failure, record["text"]):
                 provider_attempts = record["attempts_by_provider"].get(
-                    record["provider"], attempts
+                    _failure_report_provider(record), attempts
                 )
                 if provider_attempts < MAX_BOUNDED_TOTAL_ATTEMPTS:
                     action = "inline_pause_marker_comparison"
@@ -1233,9 +1401,10 @@ def generation_failure_repair_plan(state_path, queue_path):
                 "reason": reason,
             }
         )
-    action_counts = {}
-    for record in planned:
-        action_counts[record["action"]] = action_counts.get(record["action"], 0) + 1
+    action_counts: dict[str, int] = {}
+    for planned_record in planned:
+        action = _generation_text(planned_record.get("action"), "Repair action")
+        action_counts[action] = action_counts.get(action, 0) + 1
     return {
         "schema": "vntts.authoring-generation-failure-repair-plan",
         "schema_version": 1,
@@ -1249,20 +1418,20 @@ def generation_failure_repair_plan(state_path, queue_path):
     }
 
 
-def _failure_repair_history(result):
+def _failure_repair_history(result: JsonDocument) -> list[str]:
     """Return newest-first repair strategies proven by one outcome chain."""
-    observed = []
+    observed: list[str] = []
 
-    def remember(value):
+    def remember(value: object) -> None:
         if isinstance(value, str) and value and value not in observed:
             observed.append(value)
 
     repair = result.get("failure_repair")
-    if isinstance(repair, dict):
+    if _is_json_document(repair):
         remember(repair.get("strategy"))
     carry = result.get("carry_forward")
-    visited = set()
-    while isinstance(carry, dict):
+    visited: set[str] = set()
+    while _is_json_document(carry):
         digest = _canonical_sha256(carry)
         if digest in visited:
             break
@@ -1272,7 +1441,7 @@ def _failure_repair_history(result):
     return observed
 
 
-def _failure_has_bound_synthesis_controls(record):
+def _failure_has_bound_synthesis_controls(record: Mapping[str, object]) -> bool:
     for field in ("provider", "model", "generation_profile"):
         value = record.get(field)
         if not isinstance(value, str) or not value.strip() or value != value.strip():
@@ -1281,9 +1450,19 @@ def _failure_has_bound_synthesis_controls(record):
     return isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
 
 
+def _failure_report_provider(record: _FailureReportRecord) -> str:
+    provider = record["provider"]
+    return provider if isinstance(provider, str) else "legacy-unbound"
+
+
 def _validate_failure_repair_selection(
-    policy, selected_queue_ids, state, queue, *, provider
-):
+    policy: FailureRepairPolicy,
+    selected_queue_ids: set[str] | None,
+    state: JsonDocument,
+    queue: VoiceGenerationQueue,
+    *,
+    provider: str,
+) -> None:
     if policy.is_empty:
         return
     expected = set(policy.queue_ids)
@@ -1291,8 +1470,8 @@ def _validate_failure_repair_selection(
         raise BulkGenerationError("Failure-repair selection changed unexpectedly")
     queue_by_id = {item.queue_id: item for item in queue.items}
     for queue_id in policy.queue_ids:
-        result = state["items"].get(queue_id)
-        if not isinstance(result, dict) or result.get("status") != "failed":
+        result = _state_items(state).get(queue_id)
+        if result is None or result.get("status") != "failed":
             raise BulkGenerationError(
                 f"Failure repair requires a current failed outcome for {queue_id!r}"
             )
@@ -1400,7 +1579,7 @@ def _validate_failure_repair_selection(
                 )
 
 
-def sentence_repair_matches_failure(failure, text):
+def sentence_repair_matches_failure(failure: JsonDocument, text: str) -> bool:
     if len(safe_sentence_segments(text)) < 2:
         return False
     if failure.get("kind") == "missed_eos_audio_limit":
@@ -1436,7 +1615,7 @@ def sentence_repair_matches_failure(failure, text):
 _sentence_repair_matches_failure = sentence_repair_matches_failure
 
 
-def inline_pause_matches_failure(failure, text):
+def inline_pause_matches_failure(failure: JsonDocument, text: str) -> bool:
     if failure.get("kind") != "speech_silence":
         return False
     try:
@@ -1472,7 +1651,13 @@ def inline_pause_matches_failure(failure, text):
 _inline_pause_matches_failure = inline_pause_matches_failure
 
 
-def _failure_repair_document(policy, queue_id, text, *, existing=None):
+def _failure_repair_document(
+    policy: FailureRepairPolicy,
+    queue_id: str,
+    text: str,
+    *,
+    existing: JsonDocument | None = None,
+) -> JsonDocument | None:
     strategy = policy.strategy_for(queue_id)
     if strategy is None:
         return None
@@ -1513,33 +1698,34 @@ def _failure_repair_document(policy, queue_id, text, *, existing=None):
     return document
 
 
-def _offline_fallback_source(result):
-    if not isinstance(result, dict):
+def _offline_fallback_source(result: object) -> JsonDocument | None:
+    if not _is_json_document(result):
         return None
     carry = result.get("carry_forward")
-    if isinstance(carry, dict) and carry.get("mode") == "failed-outcome":
+    if _is_json_document(carry) and carry.get("mode") == "failed-outcome":
         return carry
     repair = result.get("failure_repair")
+    source_failure = repair.get("source_failure") if _is_json_document(repair) else None
     if (
-        isinstance(repair, dict)
+        _is_json_document(repair)
         and repair.get("strategy") == OFFLINE_FALLBACK_BACKEND
-        and isinstance(repair.get("source_failure"), dict)
+        and _is_json_document(source_failure)
     ):
-        return repair["source_failure"]
+        return source_failure
     return None
 
 
 def _select_generation_candidates(
-    queue,
-    state,
+    queue: VoiceGenerationQueue,
+    state: JsonDocument,
     *,
-    include_prefer_source,
-    include_characters,
-    selected_queue_ids,
-    item_filter,
-    limit,
-    regenerate_existing,
-):
+    include_prefer_source: bool,
+    include_characters: Sequence[str] | None,
+    selected_queue_ids: set[str] | None,
+    item_filter: Callable[[VoiceGenerationQueueItem], bool] | None,
+    limit: int | None,
+    regenerate_existing: bool,
+) -> tuple[list[VoiceGenerationQueueItem], int, int, int]:
     eligible_actions = {"generate"}
     if include_prefer_source:
         eligible_actions.add("prefer_source_audio")
@@ -1571,12 +1757,13 @@ def _select_generation_candidates(
         candidates = candidates[:limit]
 
     if regenerate_existing:
+        items = _state_items(state)
         protected = [
             item.queue_id
             for item in candidates
-            if state["items"].get(item.queue_id, {}).get("status")
+            if items.get(item.queue_id, {}).get("status")
             in {"generated", "approved", "live_fallback"}
-            and state["items"][item.queue_id].get("review_status") != "pending_review"
+            and items[item.queue_id].get("review_status") != "pending_review"
         ]
         if protected:
             raise BulkGenerationError(
@@ -1587,7 +1774,11 @@ def _select_generation_candidates(
     return candidates, skipped_actions, skipped_characters, skipped_items
 
 
-def _skip_existing_generation_item(run, item, existing):
+def _skip_existing_generation_item(
+    run: _GenerationExecutionContext,
+    item: VoiceGenerationQueueItem,
+    existing: JsonDocument,
+) -> bool:
     queue_id = item.queue_id
     if existing.get("status") == "live_fallback":
         if run.regenerate_existing:
@@ -1614,7 +1805,9 @@ def _skip_existing_generation_item(run, item, existing):
     return False
 
 
-def _generation_item_voice(run, item):
+def _generation_item_voice(
+    run: _GenerationExecutionContext, item: VoiceGenerationQueueItem
+) -> tuple[str, str, JsonDocument | None, JsonDocument | None]:
     queue_id = item.queue_id
     requested_voice = _required_text(
         synthesis_character_for_line(item.speaker, item.voice_character),
@@ -1636,7 +1829,7 @@ def _generation_item_voice(run, item):
             narrator_character=run.narrator_character,
         )
     )
-    source_reference_binding = (
+    source_reference_binding: JsonDocument | None = (
         {
             "schema_version": 1,
             "queue_id": queue_id,
@@ -1652,7 +1845,12 @@ def _generation_item_voice(run, item):
     return requested_voice, voice, synthesis_fallback, source_reference_binding
 
 
-def _generation_item_text(run, item, repair_strategy, repair_document):
+def _generation_item_text(
+    run: _GenerationExecutionContext,
+    item: VoiceGenerationQueueItem,
+    repair_strategy: str | None,
+    repair_document: JsonDocument | None,
+) -> str:
     queue_id = item.queue_id
     synthesis_text = (
         item.text if run.text_transform is None else run.text_transform(item.text)
@@ -1661,7 +1859,7 @@ def _generation_item_text(run, item, repair_strategy, repair_document):
         raise BulkGenerationError(
             f"Text transform returned no speech for queue item {queue_id!r}"
         )
-    if repair_strategy == INLINE_PAUSE_MARKER:
+    if repair_strategy == INLINE_PAUSE_MARKER and repair_document is not None:
         if synthesis_text != item.text:
             raise BulkGenerationError(
                 "Inline pause comparison requires unchanged source text before "
@@ -1681,7 +1879,11 @@ def _generation_item_text(run, item, repair_strategy, repair_document):
     return synthesis_text
 
 
-def _generation_item_attempts(run, existing, repair_strategy):
+def _generation_item_attempts(
+    run: _GenerationExecutionContext,
+    existing: JsonDocument,
+    repair_strategy: str | None,
+) -> tuple[int, dict[str, int], int, int]:
     attempts = _nonnegative_int(existing.get("attempts", 0), "Attempts")
     default_attempt_provider = run.provider
     if (
@@ -1704,9 +1906,11 @@ def _generation_item_attempts(run, existing, repair_strategy):
     return attempts, attempts_by_provider, provider_attempts, attempt_limit
 
 
-def _prepare_generation_item(run, item):
+def _prepare_generation_item(
+    run: _GenerationExecutionContext, item: VoiceGenerationQueueItem
+) -> _PreparedGenerationItem | None:
     queue_id = item.queue_id
-    existing = run.state["items"].get(queue_id, {})
+    existing = _state_items(run.state).get(queue_id, {})
     repair_strategy = run.repair_policy.strategy_for(queue_id)
     repair_document = _failure_repair_document(
         run.repair_policy, queue_id, item.text, existing=existing
@@ -1760,8 +1964,10 @@ def _prepare_generation_item(run, item):
     )
 
 
-def _next_generation_request(run, candidate):
-    existing = run.state["items"].get(candidate.queue_id, {})
+def _next_generation_request(
+    run: _GenerationExecutionContext, candidate: VoiceGenerationQueueItem
+) -> SynthesisRequest | None:
+    existing = _state_items(run.state).get(candidate.queue_id, {})
     if existing.get("status") in {"generated", "approved", "live_fallback"}:
         return None
     requested = _required_text(
@@ -1787,20 +1993,20 @@ def _next_generation_request(run, candidate):
 
 
 def _store_successful_generation_attempt(
-    run,
-    plan,
+    run: _GenerationExecutionContext,
+    plan: _PreparedGenerationItem,
     *,
-    attempts,
-    attempts_by_provider,
-    attempt_seed,
-    request_seed,
-    attempt_repair,
-    file_sha256,
-    quality,
-    speech_quality,
-):
+    attempts: int,
+    attempts_by_provider: Mapping[str, int],
+    attempt_seed: int,
+    request_seed: int | None,
+    attempt_repair: JsonDocument | None,
+    file_sha256: str,
+    quality: AudioQuality,
+    speech_quality: SpeechQuality,
+) -> None:
     item = plan.item
-    value = {
+    value: JsonDocument = {
         "status": "generated",
         "review_status": "pending_review",
         "attempts": attempts,
@@ -1846,6 +2052,7 @@ def _store_successful_generation_attempt(
         value["source_reference_binding"] = plan.source_reference_binding
     if attempt_repair is not None:
         value["failure_repair"] = attempt_repair
+    carry_forward = plan.existing.get("carry_forward")
     if (
         plan.repair_strategy
         in {
@@ -1853,31 +2060,32 @@ def _store_successful_generation_attempt(
             INLINE_PAUSE_MARKER,
             BOUNDED_SEED_RETRY,
         }
-        and isinstance(plan.existing.get("carry_forward"), dict)
-        and plan.existing["carry_forward"].get("mode") == "failed-outcome"
+        and _is_json_document(carry_forward)
+        and carry_forward.get("mode") == "failed-outcome"
     ):
-        value["carry_forward"] = copy.deepcopy(plan.existing["carry_forward"])
-    run.state["items"][plan.queue_id] = value
+        value["carry_forward"] = copy.deepcopy(carry_forward)
+    _state_items(run.state)[plan.queue_id] = value
     run.state["active"] = None
     atomic_write_json(run.state_path, run.state, sort_keys=True)
 
 
 def _store_failed_generation_attempt(
-    run,
-    plan,
+    run: _GenerationExecutionContext,
+    plan: _PreparedGenerationItem,
     *,
-    error,
-    completion,
-    request,
-    partial,
-    attempts,
-    attempts_by_provider,
-    attempt_seed,
-    request_seed,
-    attempt_repair,
-    run_attempts,
-):
-    captured_partial = None
+    error: Exception,
+    completion: SynthesisCompletion | None,
+    request: SynthesisRequest,
+    partial: Path,
+    attempts: int,
+    attempts_by_provider: Mapping[str, int],
+    attempt_seed: int,
+    request_seed: int | None,
+    attempt_repair: JsonDocument | None,
+    run_attempts: int,
+) -> _GenerationFailureResult:
+    captured_partial: bytes | None = None
+    carry_forward = plan.existing.get("carry_forward")
     if (
         run.evidence_directory is not None
         and isinstance(error, SpeechSilenceValidationError)
@@ -1891,7 +2099,7 @@ def _store_failed_generation_attempt(
         completion is SynthesisCompletion.CANCELLED or request.cancellation_requested()
     )
     last_error = str(error) or error.__class__.__name__
-    value = {
+    value: JsonDocument = {
         "status": "failed",
         "attempts": attempts,
         "attempts_by_provider": dict(sorted(attempts_by_provider.items())),
@@ -1932,6 +2140,7 @@ def _store_failed_generation_attempt(
         value["source_reference_binding"] = plan.source_reference_binding
     if attempt_repair is not None:
         value["failure_repair"] = attempt_repair
+    carry_forward = plan.existing.get("carry_forward")
     if (
         plan.repair_strategy
         in {
@@ -1939,11 +2148,11 @@ def _store_failed_generation_attempt(
             INLINE_PAUSE_MARKER,
             BOUNDED_SEED_RETRY,
         }
-        and isinstance(plan.existing.get("carry_forward"), dict)
-        and plan.existing["carry_forward"].get("mode") == "failed-outcome"
+        and _is_json_document(carry_forward)
+        and carry_forward.get("mode") == "failed-outcome"
     ):
-        value["carry_forward"] = copy.deepcopy(plan.existing["carry_forward"])
-    run.state["items"][plan.queue_id] = value
+        value["carry_forward"] = copy.deepcopy(carry_forward)
+    _state_items(run.state)[plan.queue_id] = value
     if run_attempts < plan.attempt_limit and not is_cancelled:
         _write_active_phase(
             run.state_path, run.state, "retrying", last_error=last_error
@@ -1951,7 +2160,7 @@ def _store_failed_generation_attempt(
     else:
         run.state["active"] = None
         atomic_write_json(run.state_path, run.state, sort_keys=True)
-    captured = None
+    captured: JsonDocument | None = None
     if captured_partial is not None:
         captured = {
             "wav_payload": captured_partial,
@@ -1969,26 +2178,29 @@ def _store_failed_generation_attempt(
 
 
 def _begin_generation_attempt(
-    run,
-    plan,
+    run: _GenerationExecutionContext,
+    plan: _PreparedGenerationItem,
     *,
-    attempts,
-    provider_attempts,
-    run_attempts,
-    last_error,
-):
+    attempts: int,
+    provider_attempts: int,
+    run_attempts: int,
+    last_error: str | None,
+) -> _GenerationAttempt:
     attempts += 1
     provider_attempts += 1
     plan.attempts_by_provider[run.provider] = provider_attempts
     run_attempts += 1
     attempt_seed = run.seed + provider_attempts - 1
     request_seed = None if run.provider == "pocket-tts" else attempt_seed
-    attempt_repair = None
+    attempt_repair: JsonDocument | None = None
     if plan.repair_document is not None:
         attempt_repair = copy.deepcopy(plan.repair_document)
         if plan.repair_strategy == SENTENCE_BOUNDARY_SEGMENTATION:
+            segments = attempt_repair.get("segments")
+            if not isinstance(segments, list):
+                raise BulkGenerationError("Sentence repair segments are malformed")
             attempt_repair["planned_segment_seeds"] = [
-                attempt_seed + index for index in range(len(attempt_repair["segments"]))
+                attempt_seed + index for index in range(len(segments))
             ]
     partial = plan.destination.with_suffix(".partial.wav")
     if partial.exists():
@@ -2042,7 +2254,11 @@ def _begin_generation_attempt(
     )
 
 
-def _prefetch_next_generation(run, item_index, prefetched_render):
+def _prefetch_next_generation(
+    run: _GenerationExecutionContext,
+    item_index: int,
+    prefetched_render: PrefetchedRender | None,
+) -> PrefetchedRender | None:
     if prefetched_render is not None or item_index + 1 >= len(run.candidates):
         return prefetched_render
     try:
@@ -2051,25 +2267,29 @@ def _prefetch_next_generation(run, item_index, prefetched_render):
         return None
     if prepared_next is None:
         return None
+
     # ponytail: one speculative render may finish after the current WAV fails
     # validation; add per-request cancellation only if waste is measured.
+    def collect_prefetched(
+        request: SynthesisRequest = prepared_next,
+    ) -> SynthesisResult:
+        return run.render(request).collect()
+
     return (
         run.candidates[item_index + 1].queue_id,
         prepared_next,
-        run.render_prefetch.submit(
-            lambda request=prepared_next: run.render(request).collect()
-        ),
+        run.render_prefetch.submit(collect_prefetched),
     )
 
 
 def _render_and_publish_generation_attempt(
-    run,
-    item_index,
-    plan,
-    attempt,
-    prefetched_render,
-    pipeline_enabled,
-):
+    run: _GenerationExecutionContext,
+    item_index: int,
+    plan: _PreparedGenerationItem,
+    attempt: _GenerationAttempt,
+    prefetched_render: PrefetchedRender | None,
+    pipeline_enabled: bool,
+) -> PrefetchedRender | None:
     if prefetched_render is not None and prefetched_render[0] == plan.queue_id:
         prefetched_request, future = prefetched_render[1:]
         prefetched_render = None
@@ -2102,7 +2322,7 @@ def _render_and_publish_generation_attempt(
         trimmed = trim_excess_edge_silence(output_pcm, attempt.rendered.sample_rate)
         output_pcm = trimmed.pcm
         attempt.attempt_repair = {
-            **attempt.attempt_repair,
+            **(attempt.attempt_repair or {}),
             "leading_trimmed_samples": trimmed.leading_trimmed_samples,
             "trailing_trimmed_samples": trimmed.trailing_trimmed_samples,
         }
@@ -2132,13 +2352,17 @@ def _render_and_publish_generation_attempt(
 
 
 def _execute_generation_item(
-    run, item_index, plan, prefetched_render, pipeline_enabled
-):
+    run: _GenerationExecutionContext,
+    item_index: int,
+    plan: _PreparedGenerationItem,
+    prefetched_render: PrefetchedRender | None,
+    pipeline_enabled: bool,
+) -> _GenerationItemExecutionResult:
     attempts = plan.attempts
     provider_attempts = plan.provider_attempts
     run_attempts = 0
     last_error = plan.last_error
-    captured_silence_failure = None
+    captured_silence_failure: JsonDocument | None = None
 
     while run_attempts < plan.attempt_limit:
         attempt = _begin_generation_attempt(
@@ -2179,7 +2403,11 @@ def _execute_generation_item(
                 run,
                 plan,
                 error=error,
-                completion=getattr(attempt.rendered, "completion", None),
+                completion=(
+                    attempt.rendered.completion
+                    if attempt.rendered is not None
+                    else None
+                ),
                 request=attempt.request,
                 partial=attempt.partial,
                 attempts=attempt.attempts,
@@ -2207,13 +2435,15 @@ def _execute_generation_item(
     )
 
 
-def _execute_generation_candidates(run):
+def _execute_generation_candidates(
+    run: _GenerationExecutionContext,
+) -> _GenerationExecutionResult:
     candidates = run.candidates
     generated = 0
     skipped_existing = 0
     cancelled = False
-    captured_silence_failure = None
-    prefetched_render = None
+    captured_silence_failure: JsonDocument | None = None
+    prefetched_render: PrefetchedRender | None = None
     pipeline_enabled = (
         run.provider == "moss-tts"
         and run.repair_policy.is_empty
@@ -2247,22 +2477,22 @@ def _execute_generation_candidates(run):
 
 def _finalize_generation_run(
     *,
-    queue_path,
-    queue_sha256,
-    controls,
-    workspace_output_identity,
-    output_argument,
-    lease,
-    state,
-    state_path,
-    manifest_path,
-    evidence_directory,
-    provenance_sha256,
-    execution,
-    skipped_actions,
-    skipped_characters,
-    skipped_items,
-):
+    queue_path: Path,
+    queue_sha256: str,
+    controls: Sequence[_GenerationControl],
+    workspace_output_identity: object,
+    output_argument: Path,
+    lease: GenerationLease,
+    state: JsonDocument,
+    state_path: Path,
+    manifest_path: Path,
+    evidence_directory: Path | None,
+    provenance_sha256: str,
+    execution: _GenerationExecutionResult,
+    skipped_actions: int,
+    skipped_characters: int,
+    skipped_items: int,
+) -> BulkGenerationResult:
     _assert_sources_unchanged(queue_path, queue_sha256, controls)
     if workspace_output_identity is not None:
         _assert_workspace_output_identity(output_argument, workspace_output_identity)
@@ -2289,7 +2519,9 @@ def _finalize_generation_run(
                 "synthesis_controls_sha256": provenance_sha256,
             },
         )
-    failed = sum(value.get("status") == "failed" for value in state["items"].values())
+    failed = sum(
+        value.get("status") == "failed" for value in _state_items(state).values()
+    )
     return BulkGenerationResult(
         generated=execution.generated,
         failed=failed,
@@ -2303,9 +2535,15 @@ def _finalize_generation_run(
     )
 
 
-def _validated_generation_backend(backend, provider, model, retries, repair_policy):
+def _validated_generation_backend(
+    backend: object,
+    provider: str,
+    model: str,
+    retries: int,
+    repair_policy: FailureRepairPolicy,
+) -> GenerationRenderer:
     render = getattr(backend, "render", None)
-    if not callable(render):
+    if not _is_generation_renderer(render):
         raise BulkGenerationError(
             "Generation backend must implement render(SynthesisRequest)"
         )
@@ -2345,29 +2583,31 @@ def _validated_generation_backend(backend, provider, model, retries, repair_poli
 
 
 def _prepare_generation_configuration(
-    backend,
+    backend: object,
     *,
-    provider,
-    model,
-    generation_profile,
-    limit,
-    retries,
-    seed,
-    synthesis_cache_policy,
-    missing_voice_policy,
-    synthesis_character_overrides,
-    narrator_character,
-    audio_event_spoken_projection_queue_ids,
-    failure_repair_policy,
-    text_transform,
-    text_transform_id,
-):
+    provider: object,
+    model: object,
+    generation_profile: object,
+    limit: object,
+    retries: object,
+    seed: object,
+    synthesis_cache_policy: object,
+    missing_voice_policy: object,
+    synthesis_character_overrides: object,
+    narrator_character: str | None,
+    audio_event_spoken_projection_queue_ids: Sequence[object] | None,
+    failure_repair_policy: object,
+    text_transform: object,
+    text_transform_id: object,
+) -> _GenerationConfiguration:
     limit = _nonnegative_optional_int(limit, "Generation limit")
-    retries = _nonnegative_int(retries, "Retry count")
-    seed = _integer(seed, "Base seed")
-    provider = _required_text(provider, "Provider")
-    model = _required_text(model, "Model")
-    generation_profile = _required_text(generation_profile, "Generation profile")
+    retries = _nonnegative_optional_int(retries, "Retry count")
+    if retries is None:
+        raise BulkGenerationError("Retry count must be nonnegative")
+    seed = _generation_integer(seed, "Base seed")
+    provider = _generation_text(provider, "Provider")
+    model = _generation_text(model, "Model")
+    generation_profile = _generation_text(generation_profile, "Generation profile")
     try:
         synthesis_cache_policy = SynthesisCachePolicy(synthesis_cache_policy)
     except ValueError as error:
@@ -2382,7 +2622,7 @@ def _prepare_generation_configuration(
     projection_queue_ids = tuple(
         sorted(
             {
-                _required_text(value, "Audio-event spoken projection queue ID")
+                _generation_text(value, "Audio-event spoken projection queue ID")
                 for value in (audio_event_spoken_projection_queue_ids or ())
             }
         )
@@ -2395,10 +2635,12 @@ def _prepare_generation_configuration(
         )
     except FailureRepairPolicyError as error:
         raise BulkGenerationError(str(error)) from error
-    if text_transform is not None and not callable(text_transform):
+    if text_transform is not None and not _is_text_transform(text_transform):
         raise BulkGenerationError("Text transform must be callable")
     if text_transform is not None:
-        text_transform_id = _required_text(text_transform_id, "Text transform identity")
+        text_transform_id = _generation_text(
+            text_transform_id, "Text transform identity"
+        )
     elif text_transform_id is not None:
         raise BulkGenerationError("Text transform identity requires a text transform")
     render = _validated_generation_backend(
@@ -2422,11 +2664,13 @@ def _prepare_generation_configuration(
     )
 
 
-def _selected_generation_queue_ids(queue, include_queue_ids):
+def _selected_generation_queue_ids(
+    queue: VoiceGenerationQueue, include_queue_ids: Sequence[object] | None
+) -> set[str] | None:
     if include_queue_ids is None:
         return None
     selected = {
-        _required_text(value, "Selected queue ID") for value in include_queue_ids
+        _generation_text(value, "Selected queue ID") for value in include_queue_ids
     }
     unknown = selected - {item.queue_id for item in queue.items}
     if unknown:
@@ -2437,7 +2681,11 @@ def _selected_generation_queue_ids(queue, include_queue_ids):
     return selected
 
 
-def _validate_audio_event_projection(queue, selected_queue_ids, configuration):
+def _validate_audio_event_projection(
+    queue: VoiceGenerationQueue,
+    selected_queue_ids: set[str] | None,
+    configuration: _GenerationConfiguration,
+) -> None:
     projection_queue_ids = configuration.projection_queue_ids
     if not projection_queue_ids:
         return
@@ -2467,10 +2715,15 @@ def _validate_audio_event_projection(queue, selected_queue_ids, configuration):
 
 
 def _silence_failure_evidence_directory(
-    value, output_directory, selected_queue_ids, retries
-):
+    value: object,
+    output_directory: Path,
+    selected_queue_ids: set[str] | None,
+    retries: int,
+) -> Path | None:
     if value is None:
         return None
+    if not isinstance(value, (str, Path)):
+        raise BulkGenerationError("Silence-failure evidence requires a directory name")
     directory = Path(value).expanduser()
     if not directory.name or directory.name in {".", ".."}:
         raise BulkGenerationError("Silence-failure evidence requires a directory name")
@@ -2497,17 +2750,17 @@ def _silence_failure_evidence_directory(
 
 
 def _prepare_generation_inputs(
-    queue_path,
-    output_directory,
+    queue_path: str | Path,
+    output_directory: str | Path,
     *,
-    workspace_output_identity,
-    queue_voice_overrides,
-    include_queue_ids,
-    include_characters,
-    regenerate_existing,
-    silence_failure_evidence,
-    configuration,
-):
+    workspace_output_identity: object,
+    queue_voice_overrides: object,
+    include_queue_ids: Sequence[object] | None,
+    include_characters: Sequence[str] | None,
+    regenerate_existing: bool,
+    silence_failure_evidence: object,
+    configuration: _GenerationConfiguration,
+) -> _GenerationInputs:
     queue_path = Path(queue_path).expanduser().resolve()
     output_argument = Path(output_directory).expanduser()
     if workspace_output_identity is not None:
@@ -2552,36 +2805,36 @@ def _prepare_generation_inputs(
 
 
 def run_bulk_generation(
-    queue_path,
-    output_directory,
-    backend,
+    queue_path: str | Path,
+    output_directory: str | Path,
+    backend: object,
     *,
-    provider,
-    model,
-    generation_profile="stable",
-    limit=None,
-    retries=2,
-    include_prefer_source=False,
-    include_characters=None,
-    include_queue_ids=None,
-    regenerate_existing=False,
-    item_filter=None,
-    seed=0,
-    cancellation=None,
-    control_files=None,
-    text_transform=None,
-    text_transform_id=None,
-    process_checker=None,
-    workspace_output_identity=None,
-    synthesis_character_overrides=None,
-    queue_voice_overrides=None,
-    missing_voice_policy=None,
-    narrator_character=None,
-    failure_repair_policy=None,
-    silence_failure_evidence=None,
-    audio_event_spoken_projection_queue_ids=None,
-    synthesis_cache_policy=SynthesisCachePolicy.BYPASS,
-):
+    provider: object,
+    model: object,
+    generation_profile: object = "stable",
+    limit: object = None,
+    retries: object = 2,
+    include_prefer_source: bool = False,
+    include_characters: Sequence[str] | None = None,
+    include_queue_ids: Sequence[object] | None = None,
+    regenerate_existing: bool = False,
+    item_filter: Callable[[VoiceGenerationQueueItem], bool] | None = None,
+    seed: object = 0,
+    cancellation: object = None,
+    control_files: Mapping[str, str | Path | tuple[str | Path, str]] | None = None,
+    text_transform: Callable[[str], str] | None = None,
+    text_transform_id: object = None,
+    process_checker: Callable[[object], bool] | None = None,
+    workspace_output_identity: object = None,
+    synthesis_character_overrides: object = None,
+    queue_voice_overrides: object = None,
+    missing_voice_policy: object = None,
+    narrator_character: str | None = None,
+    failure_repair_policy: object = None,
+    silence_failure_evidence: object = None,
+    audio_event_spoken_projection_queue_ids: Sequence[object] | None = None,
+    synthesis_cache_policy: object = SynthesisCachePolicy.BYPASS,
+) -> BulkGenerationResult:
     """Render selected queue items with no device playback and resumable state."""
     configuration = _prepare_generation_configuration(
         backend,
@@ -2700,7 +2953,16 @@ def run_bulk_generation(
             provider=provider,
         )
         if state["schema"] == STATE_SCHEMA:
-            registry = state.setdefault("synthesis_controls", {})
+            registry_value = state.get("synthesis_controls")
+            if registry_value is None:
+                registry: JsonDocument = {}
+                state["synthesis_controls"] = registry
+            elif _is_json_document(registry_value):
+                registry = registry_value
+            else:
+                raise BulkGenerationProvenanceError(
+                    "Stored synthesis controls conflict with this run"
+                )
             existing_controls = registry.get(provenance_sha256)
             if existing_controls is not None and existing_controls != control_records:
                 raise BulkGenerationProvenanceError(
@@ -2710,7 +2972,14 @@ def run_bulk_generation(
                 registry[provenance_sha256] = control_records
                 atomic_write_json(state_path, state, sort_keys=True)
         if interrupted_job is not None:
-            interrupted_processes = state.setdefault("interrupted_processes", [])
+            interrupted_processes_value = state.get("interrupted_processes")
+            if interrupted_processes_value is None:
+                interrupted_processes: list[object] = []
+                state["interrupted_processes"] = interrupted_processes
+            elif _is_object_list(interrupted_processes_value):
+                interrupted_processes = interrupted_processes_value
+            else:
+                raise BulkGenerationError("Interrupted processes are malformed")
             if not any(
                 isinstance(value, dict)
                 and value.get("job_sha256") == interrupted_job["job_sha256"]
@@ -2792,7 +3061,12 @@ def run_bulk_generation(
         )
 
 
-def publish_generated_manifest(state_path, *, manifest_path=None, _lease_held=False):
+def publish_generated_manifest(
+    state_path: str | Path,
+    *,
+    manifest_path: str | Path | None = None,
+    _lease_held: bool = False,
+) -> Path:
     """Rebuild the approved-only manifest from authoritative state."""
     state_path = Path(state_path).expanduser().resolve()
     output_directory = state_path.parent
@@ -2800,7 +3074,7 @@ def publish_generated_manifest(state_path, *, manifest_path=None, _lease_held=Fa
     if not _lease_held:
         with _GenerationLease(
             output_directory,
-            state["queue_sha256"],
+            _generation_text(state.get("queue_sha256"), "Queue SHA-256"),
             process_checker=process_is_alive,
         ):
             return publish_generated_manifest(
@@ -2819,14 +3093,17 @@ def publish_generated_manifest(state_path, *, manifest_path=None, _lease_held=Fa
 _write_generated_manifest_from_state = write_generated_manifest_from_state
 
 
-def validate_terminal_conflict_publication_authority(state_path, state):
+def validate_terminal_conflict_publication_authority(
+    state_path: str | Path, state: JsonDocument
+) -> None:
     """Bind marked state to one fully validated canonical workspace ledger."""
     marked = any(
         isinstance(result, dict) and "terminal_conflict_resolution" in result
-        for result in state.get("items", {}).values()
+        for result in _state_items(state).values()
     )
     if not marked:
         return
+    state_path = Path(state_path).expanduser().resolve()
     workspace_path = state_path.parent.parent / "workspace.json"
     if workspace_path.is_symlink() or not workspace_path.is_file():
         raise BulkGenerationError(
@@ -2862,7 +3139,9 @@ def validate_terminal_conflict_publication_authority(state_path, state):
         raise BulkGenerationError(str(error)) from error
 
 
-def validate_authoring_publication_authority(state_path, state):
+def validate_authoring_publication_authority(
+    state_path: str | Path, state: JsonDocument
+) -> None:
     """Validate every reserved authoring provenance extension before projection."""
     validate_terminal_conflict_publication_authority(state_path, state)
     config_rebase = importlib.import_module("vntts.authoring.config_rebase")
@@ -2878,13 +3157,13 @@ _approved_manifest_entries = approved_manifest_entries
 
 
 def review_generation_item(
-    state_path,
-    queue_id,
-    decision,
+    state_path: str | Path,
+    queue_id: str,
+    decision: str,
     *,
-    expected_authority=None,
-    queue_path=None,
-):
+    expected_authority: object = None,
+    queue_path: str | Path | None = None,
+) -> ReviewCommit | JsonDocument:
     """Persist approval/rejection, then rebuild the derived manifest."""
     if decision not in {"approved", "rejected"}:
         raise BulkGenerationError("Review decision must be approved or rejected")
@@ -2901,7 +3180,7 @@ def review_generation_item(
         )
     with _GenerationLease(
         state_path.parent,
-        initial["queue_sha256"],
+        _generation_text(initial.get("queue_sha256"), "Queue SHA-256"),
         process_checker=process_is_alive,
     ) as lease:
         return _review_generation_item_locked(
@@ -2915,19 +3194,19 @@ def review_generation_item(
 
 
 def review_generation_cohort(
-    state_path,
-    queue_path,
-    authorities,
-    decision,
+    state_path: str | Path,
+    queue_path: str | Path,
+    authorities: object,
+    decision: object,
     *,
-    provenance,
-):
+    provenance: object,
+) -> tuple[ReviewCommit, ...]:
     """Commit one exact cohort decision in a single state transaction."""
-    if not isinstance(authorities, dict) or not authorities:
+    if not _is_review_authorities(authorities):
         raise BulkGenerationError("Cohort review authorities must be a non-empty map")
     if isinstance(decision, str):
         decisions = {queue_id: decision for queue_id in authorities}
-    elif isinstance(decision, dict):
+    elif _is_review_decisions(decision):
         decisions = dict(decision)
     else:
         raise BulkGenerationError(
@@ -2943,13 +3222,11 @@ def review_generation_cohort(
         )
     if set(decisions.values()) == {"pending_review"}:
         raise BulkGenerationError("Cohort review decision does not change any item")
-    if not isinstance(provenance, dict):
+    if not _is_json_document(provenance):
         raise BulkGenerationError("Cohort review provenance must be an object")
     state_path = Path(state_path).expanduser().resolve()
     queue_path = Path(queue_path).expanduser().resolve()
     authority_values = list(authorities.values())
-    if any(not isinstance(value, ReviewAuthority) for value in authority_values):
-        raise BulkGenerationError("Cohort review authority snapshot is invalid")
     if len({value.queue_sha256 for value in authority_values}) != 1:
         raise BulkGenerationError("Cohort review queue authorities do not match")
     if len({value.state_sha256 for value in authority_values}) != 1:
@@ -2976,7 +3253,7 @@ def review_generation_cohort(
             item_decision = decisions[queue_id]
             if item_decision == "pending_review":
                 continue
-            proposed_item = proposed["items"][queue_id]
+            proposed_item = _state_items(proposed)[queue_id]
             proposed_item["review_status"] = item_decision
             proposed_item["status"] = (
                 "approved" if item_decision == "approved" else "generated"
@@ -3135,13 +3412,17 @@ def review_generation_cohort(
     return tuple(
         ReviewCommit(
             queue_id=queue_id,
-            status=proposed["items"][queue_id]["status"],
+            status=_generation_text(
+                _state_items(proposed)[queue_id].get("status"), "Review status"
+            ),
             review_status=decisions[queue_id],
             updated_at=updated_at,
             authority=ReviewAuthority(
-                queue_sha256=proposed["queue_sha256"],
+                queue_sha256=_generation_text(
+                    proposed.get("queue_sha256"), "Queue SHA-256"
+                ),
                 state_sha256=committed_state_sha256,
-                item_sha256=_canonical_sha256(proposed["items"][queue_id]),
+                item_sha256=_canonical_sha256(_state_items(proposed)[queue_id]),
                 audio_sha256=authority.audio_sha256,
             ),
         )
@@ -3150,12 +3431,16 @@ def review_generation_cohort(
     )
 
 
-def _validate_cohort_approved_wavs(state, output_directory, decisions):
+def _validate_cohort_approved_wavs(
+    state: JsonDocument,
+    output_directory: Path,
+    decisions: Mapping[str, str],
+) -> None:
     """Validate only WAVs whose approval is introduced by this transaction."""
     for queue_id, decision in decisions.items():
         if decision != "approved":
             continue
-        item = state["items"][queue_id]
+        item = _state_items(state)[queue_id]
         relative = _safe_relative(item.get("path"), f"State item {queue_id!r} path")
         audio = _within(output_directory, relative, "Generated WAV")
         _validate_success_file(queue_id, item, audio)
@@ -3165,17 +3450,17 @@ _review_generation_cohort = review_generation_cohort
 
 
 def authorize_live_fallback(
-    state_path,
-    queue_path,
-    queue_id,
+    state_path: str | Path,
+    queue_path: str | Path,
+    queue_id: str,
     *,
-    reason,
-    provider="pocket-tts",
-    model,
-    generation_profile="default",
-    evidence_workspaces=(),
-    evidence_reviews=(),
-):
+    reason: str,
+    provider: str = "pocket-tts",
+    model: object,
+    generation_profile: object = "default",
+    evidence_workspaces: Sequence[str | Path] = (),
+    evidence_reviews: Sequence[str | Path] = (),
+) -> JsonDocument:
     """Record one exact terminal live-Pocket decision without publishing audio."""
     if reason not in LIVE_FALLBACK_REASONS:
         raise BulkGenerationError("Live fallback reason is unsupported")
@@ -3209,11 +3494,11 @@ def authorize_live_fallback(
             raise BulkGenerationError(
                 f"Unable to read generation state {state_path}: {error}"
             ) from error
-        if not isinstance(state, dict):
+        if not _is_json_document(state):
             raise BulkGenerationError("Generation state must be a JSON object")
         state_sha256 = hashlib.sha256(state_payload).hexdigest()
         _validate_state_document(state, state_path.parent, queue, queue_sha256)
-        existing = state["items"].get(queue_id)
+        existing = _state_items(state).get(queue_id)
         _validate_live_fallback_source(existing, queue_item, reason)
         if (
             reason
@@ -3227,8 +3512,8 @@ def authorize_live_fallback(
                 "Recovery fallback requires an inactive generation state"
             )
         previous_sha256 = None if existing is None else _canonical_sha256(existing)
-        evidence = None
-        evidence_sources = ()
+        evidence: JsonDocument | None = None
+        evidence_sources: tuple[tuple[Path, str], ...] = ()
         if reason == LIVE_FALLBACK_HYPOTHESES_EXHAUSTED:
             if tuple(evidence_workspaces) and tuple(evidence_reviews):
                 raise BulkGenerationError(
@@ -3258,6 +3543,10 @@ def authorize_live_fallback(
                     "Automatic-recovery fallback derives its evidence from the "
                     "current generation state"
                 )
+            if existing is None:
+                raise BulkGenerationError(
+                    "Automatic-recovery fallback requires an exact terminal Pocket failure"
+                )
             evidence = _automatic_recovery_fallback_evidence(
                 state_path,
                 queue_path,
@@ -3274,7 +3563,7 @@ def authorize_live_fallback(
         requested = synthesis_character_for_line(
             queue_item.speaker, queue_item.voice_character
         )
-        decision = {
+        decision: JsonDocument = {
             "schema": LIVE_FALLBACK_SCHEMA,
             "schema_version": (
                 LIVE_FALLBACK_AUTOMATIC_RECOVERY_VERSION
@@ -3305,7 +3594,7 @@ def authorize_live_fallback(
         if evidence is not None:
             decision["evidence"] = evidence
         proposed = copy.deepcopy(state)
-        proposed_item = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+        proposed_item: JsonDocument = copy.deepcopy(existing) if existing else {}
         if reason == "generated_audio_rejected":
             proposed_item["live_fallback"] = decision
             proposed_item["updated_at"] = _now()
@@ -3334,7 +3623,7 @@ def authorize_live_fallback(
                     "updated_at": _now(),
                 }
             )
-        proposed["items"][queue_id] = proposed_item
+        _state_items(proposed)[queue_id] = proposed_item
         _validate_state_document(proposed, state_path.parent, queue, queue_sha256)
         entries = _approved_manifest_entries(proposed, state_path.parent)
         transaction_id = secrets.token_hex(16)
@@ -3397,7 +3686,12 @@ def authorize_live_fallback(
     return decision
 
 
-def _validate_live_fallback_source(existing, queue_item, reason):
+def _validate_live_fallback_source(
+    existing: JsonDocument | None,
+    queue_item: VoiceGenerationQueueItem,
+    reason: str,
+) -> None:
+    failure = existing.get("failure") if existing is not None else None
     if reason == LIVE_FALLBACK_AUTOMATIC_RECOVERY_EXHAUSTED:
         if (
             not isinstance(existing, dict)
@@ -3405,8 +3699,8 @@ def _validate_live_fallback_source(existing, queue_item, reason):
             or existing.get("provider") != "pocket-tts"
             or existing.get("model") != "pocket-tts"
             or existing.get("generation_profile") != "default"
-            or not isinstance(existing.get("failure"), dict)
-            or existing["failure"].get("kind") in {"cancelled", "interrupted"}
+            or not _is_json_document(failure)
+            or failure.get("kind") in {"cancelled", "interrupted"}
         ):
             raise BulkGenerationError(
                 "Automatic-recovery fallback requires an exact terminal Pocket failure"
@@ -3415,8 +3709,8 @@ def _validate_live_fallback_source(existing, queue_item, reason):
     if reason == "reference_unavailable_after_audit":
         if existing is not None and (
             existing.get("status") != "failed"
-            or not isinstance(existing.get("failure"), dict)
-            or existing["failure"].get("kind") != "reference_unavailable"
+            or not _is_json_document(failure)
+            or failure.get("kind") != "reference_unavailable"
         ):
             raise BulkGenerationError(
                 "Reference-unavailable fallback requires no result or an exact "
@@ -3429,9 +3723,8 @@ def _validate_live_fallback_source(existing, queue_item, reason):
         if (
             existing.get("status") != "failed"
             or existing.get("provider") != "moss-tts"
-            or not isinstance(existing.get("failure"), dict)
-            or existing["failure"].get("kind")
-            not in {"missed_eos_audio_limit", "speech_silence"}
+            or not _is_json_document(failure)
+            or failure.get("kind") not in {"missed_eos_audio_limit", "speech_silence"}
         ):
             raise BulkGenerationError(
                 "Exhausted-hypothesis fallback requires an exact typed failed "
@@ -3461,13 +3754,13 @@ def _validate_live_fallback_source(existing, queue_item, reason):
 
 
 def _automatic_recovery_fallback_evidence(
-    state_path,
-    queue_path,
-    state_sha256,
-    queue_sha256,
-    queue_id,
-    existing,
-):
+    state_path: Path,
+    queue_path: Path,
+    state_sha256: str,
+    queue_sha256: str,
+    queue_id: str,
+    existing: JsonDocument,
+) -> JsonDocument:
     plan = generation_failure_repair_plan(state_path, queue_path)
     if (
         plan.get("state_sha256") != state_sha256
@@ -3476,18 +3769,26 @@ def _automatic_recovery_fallback_evidence(
         raise BulkGenerationSourceChangedError(
             "Generation evidence changed while automatic fallback was planned"
         )
+    records = plan.get("records")
+    if not _is_object_list(records):
+        raise BulkGenerationError("Automatic recovery evidence records are malformed")
     record = next(
         (
             value
-            for value in plan.get("records", ())
-            if isinstance(value, dict) and value.get("queue_id") == queue_id
+            for value in records
+            if _is_json_document(value) and value.get("queue_id") == queue_id
         ),
         None,
     )
-    action = record.get("action") if isinstance(record, dict) else None
+    action = record.get("action") if record is not None else None
     if action not in AUTOMATIC_RECOVERY_LIVE_FALLBACK_ACTIONS:
         raise BulkGenerationError(
             "Automatic live fallback cannot replace a remaining safe repair"
+        )
+    existing_failure = existing.get("failure")
+    if not _is_json_document(existing_failure):
+        raise BulkGenerationError(
+            "Automatic-recovery fallback requires an exact terminal Pocket failure"
         )
     return {
         "schema": AUTOMATIC_RECOVERY_LIVE_FALLBACK_EVIDENCE_SCHEMA,
@@ -3497,18 +3798,20 @@ def _automatic_recovery_fallback_evidence(
         "base_result_sha256": _canonical_sha256(existing),
         "base_result": copy.deepcopy(existing),
         "recovery_action": action,
-        "failure_kind": existing["failure"]["kind"],
+        "failure_kind": _generation_text(existing_failure.get("kind"), "Failure kind"),
     }
 
 
 def _capture_live_fallback_evidence(
-    state_path,
-    queue_path,
-    queue_sha256,
-    queue_item,
-    existing,
-    evidence_workspaces,
-):
+    state_path: Path,
+    queue_path: Path,
+    queue_sha256: str,
+    queue_item: VoiceGenerationQueueItem,
+    existing: JsonDocument | None,
+    evidence_workspaces: Sequence[str | Path],
+) -> tuple[JsonDocument, tuple[tuple[Path, str], ...]]:
+    if existing is None:
+        raise BulkGenerationError("Live fallback requires an existing outcome")
     values = tuple(Path(value).expanduser().resolve() for value in evidence_workspaces)
     if not values:
         raise BulkGenerationError(
@@ -3533,8 +3836,8 @@ def _capture_live_fallback_evidence(
             "Live fallback queue must belong to its base workspace"
         )
     base_result_sha256 = _canonical_sha256(existing)
-    hypotheses = []
-    snapshots = []
+    hypotheses: list[JsonDocument] = []
+    snapshots: list[tuple[Path, str]] = []
     for directory in values:
         if directory == base_root:
             raise BulkGenerationError(
@@ -3570,6 +3873,10 @@ def _capture_live_fallback_evidence(
             raise BulkGenerationSourceChangedError(
                 "Live fallback evidence queue changed while it was read"
             )
+        if not _is_json_document(source_state):
+            raise BulkGenerationError(
+                "Live fallback evidence generation state is malformed"
+            )
         if (
             (source_state.get("schema"), source_state.get("schema_version"))
             not in {
@@ -3588,7 +3895,7 @@ def _capture_live_fallback_evidence(
             raise BulkGenerationError(
                 "Live fallback evidence workspace is active or incomplete"
             )
-        source_result = source_state["items"].get(queue_item.queue_id)
+        source_result = _state_items(source_state).get(queue_item.queue_id)
         if (
             not isinstance(source_result, dict)
             or source_result.get("status") != "failed"
@@ -3644,8 +3951,13 @@ def _capture_live_fallback_evidence(
                 (source_state_path, state_sha256),
             )
         )
-    hypotheses.sort(key=lambda value: (value["workspace_id"], value["result_sha256"]))
-    evidence = {
+    hypotheses.sort(
+        key=lambda value: (
+            _generation_text(value.get("workspace_id"), "Evidence workspace ID"),
+            _generation_text(value.get("result_sha256"), "Evidence result SHA-256"),
+        )
+    )
+    evidence: JsonDocument = {
         "schema": LIVE_FALLBACK_EVIDENCE_SCHEMA,
         "schema_version": 1,
         "queue_sha256": queue_sha256,
@@ -3666,18 +3978,20 @@ def _capture_live_fallback_evidence(
 
 
 def _capture_render_review_fallback_evidence(
-    state_path,
-    queue_path,
-    queue_sha256,
-    queue_item,
-    existing,
-    evidence_reviews,
-):
+    state_path: Path,
+    queue_path: Path,
+    queue_sha256: str,
+    queue_item: VoiceGenerationQueueItem,
+    existing: JsonDocument | None,
+    evidence_reviews: Sequence[str | Path],
+) -> tuple[JsonDocument, tuple[tuple[Path, str], ...]]:
     from vntts.authoring.render_hypothesis_records import (
         RenderHypothesisRecordError,
         load_render_hypothesis_record,
     )
 
+    if existing is None:
+        raise BulkGenerationError("Live fallback requires an existing outcome")
     values = tuple(Path(value).expanduser().resolve() for value in evidence_reviews)
     if not values:
         raise BulkGenerationError(
@@ -3691,8 +4005,8 @@ def _capture_render_review_fallback_evidence(
             "Live fallback queue must belong to its base workspace"
         )
     base_result_sha256 = _canonical_sha256(existing)
-    hypotheses = []
-    snapshots = [(queue_path, queue_sha256)]
+    hypotheses: list[JsonDocument] = []
+    snapshots: list[tuple[Path, str]] = [(queue_path, queue_sha256)]
     for directory in values:
         try:
             record = load_render_hypothesis_record(directory)
@@ -3738,8 +4052,13 @@ def _capture_render_review_fallback_evidence(
             }
         )
         snapshots.extend(source_files)
-    hypotheses.sort(key=lambda value: (value["kind"], value["review_id"]))
-    evidence = {
+    hypotheses.sort(
+        key=lambda value: (
+            _generation_text(value.get("kind"), "Render review kind"),
+            _generation_text(value.get("review_id"), "Render review ID"),
+        )
+    )
+    evidence: JsonDocument = {
         "schema": LIVE_FALLBACK_EVIDENCE_SCHEMA,
         "schema_version": 2,
         "queue_sha256": queue_sha256,
@@ -3750,7 +4069,7 @@ def _capture_render_review_fallback_evidence(
     return evidence, tuple(snapshots)
 
 
-def _live_fallback_workspace_import(workspace, label):
+def _live_fallback_workspace_import(workspace: object, label: str) -> tuple[str, str]:
     if (
         not isinstance(workspace, dict)
         or workspace.get("schema") != "vntts.authoring-workspace"
@@ -3768,14 +4087,14 @@ def _live_fallback_workspace_import(workspace, label):
 
 
 def _review_generation_item_locked(
-    state_path,
-    queue_id,
-    decision,
+    state_path: Path,
+    queue_id: str,
+    decision: str,
     *,
-    expected_authority=None,
-    queue_path=None,
-    lease=None,
-):
+    expected_authority: object = None,
+    queue_path: str | Path | None = None,
+    lease: GenerationLease | None = None,
+) -> ReviewCommit | JsonDocument:
     if expected_authority is None:
         state = load_generation_state(state_path)
     else:
@@ -3786,8 +4105,12 @@ def _review_generation_item_locked(
             queue_path,
             capture_audio=False,
         )
-    item = state.get("items", {}).get(queue_id)
-    if not isinstance(item, dict) or item.get("status") not in {
+    if expected_authority is not None and not isinstance(
+        expected_authority, ReviewAuthority
+    ):
+        raise BulkGenerationError("Review authority snapshot is invalid")
+    item = _state_items(state).get(queue_id)
+    if item is None or item.get("status") not in {
         "generated",
         "approved",
     }:
@@ -3806,7 +4129,7 @@ def _review_generation_item_locked(
     if lease is not None:
         lease.assert_owned()
     proposed = copy.deepcopy(state)
-    proposed_item = proposed["items"][queue_id]
+    proposed_item = _state_items(proposed)[queue_id]
     proposed_item["review_status"] = decision
     proposed_item["status"] = "approved" if decision == "approved" else "generated"
     proposed_item["updated_at"] = _now()
@@ -3869,16 +4192,20 @@ def _review_generation_item_locked(
                 pass
     if lease is not None:
         lease.mark_committed()
-    committed_item = proposed["items"][queue_id]
+    committed_item = _state_items(proposed)[queue_id]
     if expected_authority is None:
         return proposed
     return ReviewCommit(
         queue_id=queue_id,
-        status=committed_item["status"],
-        review_status=committed_item["review_status"],
-        updated_at=committed_item["updated_at"],
+        status=_generation_text(committed_item.get("status"), "Review status"),
+        review_status=_generation_text(
+            committed_item.get("review_status"), "Review status"
+        ),
+        updated_at=_generation_text(committed_item.get("updated_at"), "Review time"),
         authority=ReviewAuthority(
-            queue_sha256=proposed["queue_sha256"],
+            queue_sha256=_generation_text(
+                proposed.get("queue_sha256"), "Queue SHA-256"
+            ),
             state_sha256=sha256_file(state_path),
             item_sha256=_canonical_sha256(committed_item),
             audio_sha256=expected_authority.audio_sha256,
@@ -3890,7 +4217,12 @@ _GenerationLease = GenerationLease
 _process_started_at = process_started_at
 
 
-def _load_or_create_state(state_path, output_directory, queue, queue_sha256):
+def _load_or_create_state(
+    state_path: Path,
+    output_directory: Path,
+    queue: VoiceGenerationQueue,
+    queue_sha256: str,
+) -> JsonDocument:
     if state_path.is_file():
         state = _load_json(state_path, "generation state")
         _validate_state_document(state, output_directory, queue, queue_sha256)
@@ -3912,19 +4244,33 @@ def _load_or_create_state(state_path, output_directory, queue, queue_sha256):
 _validate_success_file = validate_success_file
 
 
-def _reconcile_interrupted_attempt(state_path, state, queue):
+def _reconcile_interrupted_attempt(
+    state_path: Path, state: JsonDocument, queue: VoiceGenerationQueue
+) -> None:
     active = state.get("active")
-    if not isinstance(active, dict):
+    if not _is_json_document(active):
         return
     queue_id = active.get("queue_id")
-    if queue_id not in {item.queue_id for item in queue.items}:
+    if not isinstance(queue_id, str) or queue_id not in {
+        item.queue_id for item in queue.items
+    }:
         raise BulkGenerationError(
             "Interrupted attempt references an unknown queue item"
         )
     interrupted = dict(active)
     interrupted["detected_at"] = _now()
-    state.setdefault("interrupted_attempts", []).append(interrupted)
-    existing = state["items"].get(queue_id, {})
+    interrupted_attempts = state.get("interrupted_attempts")
+    if interrupted_attempts is None:
+        interrupted_attempts = []
+        state["interrupted_attempts"] = interrupted_attempts
+    if not _is_object_list(interrupted_attempts):
+        raise BulkGenerationError("Interrupted generation attempts are malformed")
+    interrupted_attempts.append(interrupted)
+    items = state.get("items")
+    if not _is_json_document(items):
+        raise BulkGenerationError("Generation state items are malformed")
+    existing_value = items.get(queue_id, {})
+    existing = existing_value if _is_json_document(existing_value) else {}
     if existing.get("status") not in {"generated", "approved"}:
         attempts = max(
             _nonnegative_int(existing.get("attempts", 0), "Attempts"),
@@ -3939,7 +4285,9 @@ def _reconcile_interrupted_attempt(state_path, state, queue):
                 "schema_version": 1,
                 "kind": "interrupted",
                 "error_type": "InterruptedGenerationAttempt",
-                "text_features": _text_failure_features(active.get("text") or ""),
+                "text_features": _text_failure_features(
+                    active["text"] if isinstance(active.get("text"), str) else ""
+                ),
             },
             "updated_at": _now(),
         }
@@ -3968,42 +4316,42 @@ def _reconcile_interrupted_attempt(state_path, state, queue):
             interrupted_result["voice_character"] = interrupted_result.pop(
                 "synthesis_voice_character"
             )
-        state["items"][queue_id] = interrupted_result
+        items[queue_id] = interrupted_result
     state["active"] = None
     atomic_write_json(state_path, state, sort_keys=True)
 
 
 def _write_active(
-    state_path,
-    state,
-    item,
+    state_path: Path,
+    state: JsonDocument,
+    item: VoiceGenerationQueueItem,
     *,
-    provider,
-    model,
-    generation_profile,
-    prompt_sha256,
-    queue_annotations_sha256,
-    synthesis_text_sha256,
-    text_transform_id,
-    synthesis_provenance_sha256,
-    synthesis_configuration,
-    synthesis_voice_character,
-    synthesis_fallback,
-    source_reference_binding,
-    failure_repair,
-    phase,
-    attempt,
-    attempt_limit,
-    total_attempts,
-    provider_attempt,
-    attempts_by_provider,
-    seed,
-    seed_applied,
-    started_at,
-    last_error,
-    runtime_status=None,
-):
-    state["active"] = {
+    provider: str,
+    model: str,
+    generation_profile: str,
+    prompt_sha256: str,
+    queue_annotations_sha256: str,
+    synthesis_text_sha256: str,
+    text_transform_id: str | None,
+    synthesis_provenance_sha256: str,
+    synthesis_configuration: JsonDocument,
+    synthesis_voice_character: str,
+    synthesis_fallback: JsonDocument | None,
+    source_reference_binding: JsonDocument | None,
+    failure_repair: JsonDocument | None,
+    phase: str,
+    attempt: int,
+    attempt_limit: int,
+    total_attempts: int,
+    provider_attempt: int,
+    attempts_by_provider: Mapping[str, int],
+    seed: int,
+    seed_applied: bool,
+    started_at: str,
+    last_error: str | None,
+    runtime_status: str | None = None,
+) -> None:
+    active: JsonDocument = {
         "queue_id": item.queue_id,
         "line_id": item.line_id,
         "text_sha256": item.text_sha256,
@@ -4038,19 +4386,26 @@ def _write_active(
         "updated_at": _now(),
         "last_error": last_error,
     }
+    state["active"] = active
     if synthesis_fallback is not None:
-        state["active"]["synthesis_fallback"] = synthesis_fallback
-        state["active"]["narrator_character"] = synthesis_fallback["narrator_character"]
+        active["synthesis_fallback"] = synthesis_fallback
+        active["narrator_character"] = synthesis_fallback["narrator_character"]
     if source_reference_binding is not None:
-        state["active"]["source_reference_binding"] = source_reference_binding
+        active["source_reference_binding"] = source_reference_binding
     if failure_repair is not None:
-        state["active"]["failure_repair"] = failure_repair
+        active["failure_repair"] = failure_repair
     atomic_write_json(state_path, state, sort_keys=True)
 
 
-def _write_active_phase(state_path, state, phase, *, last_error=None):
+def _write_active_phase(
+    state_path: Path,
+    state: JsonDocument,
+    phase: str,
+    *,
+    last_error: str | None = None,
+) -> None:
     active = state.get("active")
-    if not isinstance(active, dict):
+    if not _is_json_document(active):
         raise BulkGenerationError("Generation active attempt was lost")
     active["phase"] = phase
     active["updated_at"] = _now()
@@ -4059,7 +4414,9 @@ def _write_active_phase(state_path, state, phase, *, last_error=None):
     atomic_write_json(state_path, state, sort_keys=True)
 
 
-def _validate_render_result(result, request, provider):
+def _validate_render_result(
+    result: SynthesisResult, request: SynthesisRequest, provider: str
+) -> None:
     if result.completion is not SynthesisCompletion.COMPLETE:
         raise IncompleteSynthesisError(result)
     if not isinstance(result.sample_rate, int) or result.sample_rate <= 0:
@@ -4077,7 +4434,7 @@ def _validate_render_result(result, request, provider):
         )
 
 
-def generated_mono_pcm(pcm):
+def generated_mono_pcm(pcm: object) -> NDArray[np.float32]:
     """Normalize typed renderer PCM without flattening channels into time."""
     samples = np.asarray(pcm, dtype=np.float32)
     if samples.ndim == 1:
@@ -4090,13 +4447,15 @@ def generated_mono_pcm(pcm):
         )
     if not np.isfinite(mono).all():
         raise BulkGenerationError("Typed render PCM contains non-finite samples")
-    return mono
+    return np.asarray(mono, dtype=np.float32)
 
 
 _generated_mono_pcm = generated_mono_pcm
 
 
-def _guard_job_process(output_directory, process_checker):
+def _guard_job_process(
+    output_directory: Path, process_checker: Callable[[object], bool]
+) -> dict[str, object] | None:
     job_path = output_directory.parent / "job.json"
     if not job_path.is_file():
         return None
@@ -4117,9 +4476,9 @@ def _guard_job_process(output_directory, process_checker):
     }
 
 
-def _audio_relative_path(voice, queue_id):
+def _audio_relative_path(voice: str, queue_id: str) -> Path:
     voice_slug = slugify(voice)
-    if not voice_slug:
+    if not isinstance(voice_slug, str) or not voice_slug:
         raise BulkGenerationError(
             f"Voice cannot form a safe audio directory: {voice!r}"
         )
@@ -4133,12 +4492,14 @@ _archive_interrupted_artifact = archive_interrupted_artifact
 _load_stable_queue = load_stable_generation_queue
 
 
-def snapshot_generation_control_files(control_files):
+def snapshot_generation_control_files(
+    control_files: Mapping[str, str | Path | tuple[str | Path, str]],
+) -> list[_GenerationControl]:
     if not isinstance(control_files, dict):
         raise BulkGenerationError(
             "Generation control files must be a role/path mapping"
         )
-    snapshots = []
+    snapshots: list[_GenerationControl] = []
     for role, configured in sorted(control_files.items()):
         role = _required_text(role, "Control-file role")
         expected = None
@@ -4156,7 +4517,7 @@ def snapshot_generation_control_files(control_files):
             raise BulkGenerationSourceChangedError(
                 f"Generation control {role!r} changed before the run started"
             )
-        directory_files = _control_directory_files(path) if path.is_dir() else ()
+        directory_files = _control_directory_files(path) if path.is_dir() else []
         if directory_files and _control_directory_digest(directory_files) != digest:
             raise BulkGenerationSourceChangedError(
                 f"Generation control {role!r} changed while it was inventoried"
@@ -4170,14 +4531,14 @@ def snapshot_generation_control_files(control_files):
                 "files": directory_files,
             }
         )
-    return tuple(snapshots)
+    return snapshots
 
 
 _snapshot_control_files = snapshot_generation_control_files
 
 
-def _control_directory_files(path):
-    records = []
+def _control_directory_files(path: Path) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
     try:
         candidates = sorted(path.rglob("*"), key=lambda value: value.as_posix())
         for candidate in candidates:
@@ -4193,11 +4554,11 @@ def _control_directory_files(path):
         raise BulkGenerationError(
             f"Unable to inventory generation control directory {path}: {error}"
         ) from error
-    return tuple(records)
+    return records
 
 
-def _stored_control(control):
-    record = {
+def _stored_control(control: _GenerationControl) -> dict[str, object]:
+    record: dict[str, object] = {
         "role": control["role"],
         "kind": control["kind"],
         "path": str(control["path"]),
@@ -4208,7 +4569,9 @@ def _stored_control(control):
     return record
 
 
-def _assert_sources_unchanged(queue_path, queue_sha256, controls):
+def _assert_sources_unchanged(
+    queue_path: Path, queue_sha256: str, controls: Sequence[_GenerationControl]
+) -> None:
     try:
         current_queue = sha256_file(queue_path)
     except OSError as error:
@@ -4222,12 +4585,17 @@ def _assert_sources_unchanged(queue_path, queue_sha256, controls):
     _assert_control_files_unchanged(controls)
 
 
-def _assert_workspace_output_identity(output_directory, identity):
+def _assert_workspace_output_identity(
+    output_directory: str | Path, identity: object
+) -> None:
     if not isinstance(identity, dict) or set(identity) != {"path", "device", "inode"}:
         raise BulkGenerationSourceChangedError("Workspace output identity is malformed")
     path = Path(output_directory).expanduser()
     absolute = Path(os.path.abspath(os.fspath(path)))
-    expected = Path(identity["path"])
+    expected_path = identity["path"]
+    if not isinstance(expected_path, str):
+        raise BulkGenerationSourceChangedError("Workspace output identity is malformed")
+    expected = Path(expected_path)
     if absolute != expected or path.is_symlink():
         raise BulkGenerationSourceChangedError(
             "Workspace output directory changed or leaves its workspace"
@@ -4248,7 +4616,7 @@ def _assert_workspace_output_identity(output_directory, identity):
         )
 
 
-def _assert_control_files_unchanged(controls):
+def _assert_control_files_unchanged(controls: Sequence[_GenerationControl]) -> None:
     for control in controls:
         try:
             digest = sha256_control_path(control["path"])
@@ -4262,23 +4630,27 @@ def _assert_control_files_unchanged(controls):
             )
 
 
-def _load_json(path, description):
-    return load_json_object(
+def _load_json(path: str | Path, description: str) -> dict[str, object]:
+    document = load_json_object(
         path,
         description,
         error_type=BulkGenerationError,
         object_label=description.capitalize(),
     )
+    return dict(document)
 
 
 _canonical_sha256 = canonical_document_sha256
 
 
-def _nonnegative_optional_int(value, label):
+def _nonnegative_optional_int(value: object, label: str) -> int | None:
     if value is None:
         return None
-    return _nonnegative_int(value, label)
+    parsed = _nonnegative_int(value, label)
+    if not isinstance(parsed, int) or isinstance(parsed, bool):
+        raise BulkGenerationError(f"{label} must be nonnegative")
+    return parsed
 
 
-def _now():
+def _now() -> str:
     return datetime.now(timezone.utc).isoformat()

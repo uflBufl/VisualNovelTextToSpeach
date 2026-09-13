@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol, TypeAlias, TypedDict, TypeGuard
 
+import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import (
     PCM16_MONO_WAV_FORMAT,
@@ -40,14 +42,14 @@ class AudioQuality:
     peak: float
 
 
-class _ControlSnapshot(TypedDict):
+class GenerationControlSnapshot(TypedDict):
     role: str
     kind: str
     path: Path
     sha256: str
 
 
-class _RecordedVoice(TypedDict):
+class RecordedVoice(TypedDict):
     source_character: str
     speaker: str
     reference_sha256s: list[str]
@@ -80,8 +82,10 @@ def _generation_items(state: _GenerationState) -> dict[str, _GenerationResult]:
 
 
 def snapshot_recorded_voices(
-    controls: list[_ControlSnapshot], *, narrator_character: str | None = None
-) -> dict[str, _RecordedVoice]:
+    controls: Sequence[GenerationControlSnapshot],
+    *,
+    narrator_character: str | None = None,
+) -> dict[str, RecordedVoice]:
     """Keep display identities from the same immutable inputs used for synthesis."""
     manifest = next(
         (control for control in controls if control["role"] == "voice_manifest"), None
@@ -100,7 +104,7 @@ def snapshot_recorded_voices(
             if control["kind"] == "file"
             and control["role"].startswith(("voice_reference:", "narrator_selection:"))
         }
-        result: dict[str, _RecordedVoice] = {}
+        result: dict[str, RecordedVoice] = {}
         reference_paths: dict[str, tuple[Path, ...]] = {}
         for raw, voice in zip(document["voices"], voices, strict=True):
             # All current cloning backends use the first reference, not the pool.
@@ -117,7 +121,7 @@ def snapshot_recorded_voices(
             source = raw.get("vntts.source_character", voice.character)
             if not isinstance(source, str) or not source.strip():
                 continue
-            identity: _RecordedVoice = {
+            identity: RecordedVoice = {
                 "source_character": source.strip(),
                 "speaker": voice.speaker,
                 "reference_sha256s": [digest] if digest else [],
@@ -327,7 +331,7 @@ def validate_success_file(
 
 def validate_success_file_with_samples(
     queue_id: str, result: _GenerationResult, audio: Path
-) -> tuple[AudioQuality, object]:
+) -> tuple[AudioQuality, np.ndarray]:
     """Validate one WAV and retain its already-read samples for deeper checks."""
     if not audio.is_file():
         raise BulkGenerationError(f"Generated WAV is missing for {queue_id!r}: {audio}")
