@@ -108,7 +108,7 @@ def build_voice_repair_comparison_plan(
         directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_directory
         )
-        queue, state, state_payload, state_sha256 = (
+        queue, state, _state_payload, state_sha256 = (
             load_stable_workspace_generation_state(
                 directory,
                 workspace,

@@ -116,7 +116,7 @@ def recover_live_replay_capture(
         or any(not isinstance(record, dict) for record in raw_dialogue)
     ):
         raise LiveReplayCaptureRecoveryError("Raw replay corpus has no dialogue")
-    report_path, report_payload = _read_regular_file(
+    _report_path, report_payload = _read_regular_file(
         capture_path.with_name("capture-report.json"), "Capture review report"
     )
     report_document = _decode_json(report_payload, "Capture review report")

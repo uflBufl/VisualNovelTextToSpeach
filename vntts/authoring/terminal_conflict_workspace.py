@@ -185,7 +185,7 @@ def merge_terminal_conflict_resolution(
         raise AuthoringWorkbenchError(
             "Terminal conflict base workspace differs from its reconciliation"
         )
-    base_queue, base_state, _base_payload, base_state_sha256 = (
+    _base_queue, base_state, _base_payload, base_state_sha256 = (
         load_stable_workspace_generation_state(
             base_directory,
             base_document,

@@ -314,7 +314,7 @@ class OfflinePackPublisher:
         )
         if destination.is_dir():
             return _load_existing(destination, identity)
-        state, queue, voice_document, voices, current_omissions = (
+        state, _queue, voice_document, voices, current_omissions = (
             _load_terminal_generation(
                 job, generation_input, generation_result, state_sha256
             )

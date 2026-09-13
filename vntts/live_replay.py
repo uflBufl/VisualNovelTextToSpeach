@@ -755,7 +755,7 @@ class LiveReplayRunner:
             self.corpus.dialogue,
             focus_probes=binding.focus_probes,
         )
-        live_backend, library, audio_output, router = self._create_audio_stack(
+        live_backend, _library, audio_output, router = self._create_audio_stack(
             generated_audio_index,
             resolver,
             require_source_audio_completion=mode == "shadow",

@@ -178,7 +178,7 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
             state = json.loads(state_path.read_text())
             state["items"][queue_id]["voice_character"] = "Narrator"
             state_path.write_text(json.dumps(state, sort_keys=True))
-            workspace, _state, _queue_id, plan, decision = (
+            workspace, _state, _queue_id, plan, _decision = (
                 self.create_review_from_workspace(workspace, state_path, queue_id)
             )
             workspace_path = Path(workspace) / "workspace.json"
@@ -213,7 +213,7 @@ class AuthoringVoiceQualityGateTest(unittest.TestCase):
             )
             gate = build_voice_quality_gate(workspace, plan, decision)
 
-            fixture, imported, created = create_test_workspace(root / "later")
+            fixture, imported, _created = create_test_workspace(root / "later")
             manifest_path = Path(fixture["job"]["voice_manifest"])
             manifest = json.loads(manifest_path.read_text())
             manifest["voices"][0]["references"].reverse()

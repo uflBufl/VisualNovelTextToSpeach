@@ -889,7 +889,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             ),
         ):
             root = Path(temporary_directory)
-            content, jobs, dialog, generator, visible_text = (
+            _content, _jobs, dialog, generator, visible_text = (
                 self._prepared_synthetic_live_fallback_pack(root)
             )
 
