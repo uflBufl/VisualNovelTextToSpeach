@@ -29,6 +29,7 @@ import vntts.authoring.reconciliation_merge as reconciliation_merge_module
 import vntts.authoring.workbench as workbench_module
 import vntts.authoring.workspace_authority as workspace_authority_module
 import vntts.authoring.workspace_creation as workspace_creation_module
+import vntts.authoring.workspace_outcome_merge as workspace_outcome_merge_module
 import vntts.authoring.workspace_state as workspace_state_module
 from tests.symlink_support import symlink_or_skip
 from tests.test_authoring_legacy_import import write_legacy_fixture
@@ -2411,7 +2412,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 )
             live_lease.unlink()
 
-            original_rename = workbench_module._rename_directory_no_replace
+            original_rename = workspace_outcome_merge_module._rename_directory_no_replace
 
             def rename_while_source_is_locked(staging, destination):
                 with self.assertRaisesRegex(
@@ -2427,7 +2428,7 @@ class AuthoringWorkbenchTest(unittest.TestCase):
                 return original_rename(staging, destination)
 
             with patch.object(
-                workbench_module,
+                workspace_outcome_merge_module,
                 "_rename_directory_no_replace",
                 side_effect=rename_while_source_is_locked,
             ):
