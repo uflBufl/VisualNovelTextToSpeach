@@ -1,5 +1,8 @@
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from collections.abc import Callable, Mapping
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QThreadPool
+from PySide6.QtGui import QCloseEvent, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -13,24 +16,25 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.ocr_corrections import OCRCorrectionStore
-from vntts.ocr_review import OCRReviewStore
+from vntts.ocr_review import OCRReviewSample, OCRReviewStore
 
 
 class OCRReviewDialog(QDialog):
     def __init__(
         self,
-        directory,
-        correction_store=None,
-        profile_id=None,
-        profile_name=None,
-        corrections_changed=None,
-        thread_pool=None,
-        parent=None,
-    ):
+        directory: str | Path,
+        correction_store: OCRCorrectionStore | None = None,
+        profile_id: str | None = None,
+        profile_name: str | None = None,
+        corrections_changed: Callable[[], object] | None = None,
+        thread_pool: QThreadPool | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.review_store = OCRReviewStore(directory)
         self.correction_store = correction_store or OCRCorrectionStore.load()
@@ -41,8 +45,8 @@ class OCRReviewDialog(QDialog):
         self._write_active = False
         self._close_pending = False
         self._write_applies_corrections = False
-        self._resolve_confirmation_sample = None
-        self.samples = []
+        self._resolve_confirmation_sample: Path | None = None
+        self.samples: list[OCRReviewSample] = []
         self.setWindowTitle("Review uncertain OCR")
         self.resize(960, 620)
 
@@ -120,8 +124,8 @@ class OCRReviewDialog(QDialog):
         layout.addWidget(buttons)
         self.reload_samples()
 
-    def reload_samples(self):
-        selected_metadata = None
+    def reload_samples(self) -> None:
+        selected_metadata: Path | None = None
         sample = self.current_sample()
         if sample is not None:
             selected_metadata = sample.metadata_path
@@ -148,11 +152,11 @@ class OCRReviewDialog(QDialog):
         )
         self.sample_list.setCurrentRow(selected_index)
 
-    def current_sample(self):
+    def current_sample(self) -> OCRReviewSample | None:
         row = self.sample_list.currentRow()
         return self.samples[row] if 0 <= row < len(self.samples) else None
 
-    def show_sample(self, row):
+    def show_sample(self, row: int) -> None:
         sample = self.samples[row] if 0 <= row < len(self.samples) else None
         self._reset_resolve_confirmation()
         enabled = sample is not None
@@ -190,7 +194,7 @@ class OCRReviewDialog(QDialog):
         self.corrected_text.setPlainText(sample.text)
         self._update_save_enabled()
 
-    def _update_save_enabled(self, *_args):
+    def _update_save_enabled(self, *_args: object) -> None:
         sample = self.current_sample()
         changed = bool(
             sample is not None
@@ -201,14 +205,14 @@ class OCRReviewDialog(QDialog):
         )
         self.save_button.setEnabled(changed and not self._write_active)
 
-    def save_correction(self):
+    def save_correction(self) -> None:
         sample = self.current_sample()
         if sample is None or self._write_active:
             return
         self._reset_resolve_confirmation()
         corrected_character = self.corrected_character.text().strip()
         corrected_text = self.corrected_text.toPlainText().strip()
-        entries = {}
+        entries: dict[str, str] = {}
         if corrected_character and corrected_character != sample.character.strip():
             entries[sample.character] = corrected_character
         if corrected_text and corrected_text != sample.text.strip():
@@ -220,7 +224,7 @@ class OCRReviewDialog(QDialog):
                 "Change the detected speaker or text, or mark this sample resolved.",
             )
             return
-        profile_id = self.scope.currentData()
+        profile_id = self._selected_profile_id()
         self._start_write(
             self._save_and_resolve,
             self.correction_store,
@@ -231,7 +235,7 @@ class OCRReviewDialog(QDialog):
             applies_corrections=True,
         )
 
-    def resolve_without_correction(self):
+    def resolve_without_correction(self) -> None:
         sample = self.current_sample()
         if sample is None or self._write_active:
             return
@@ -251,7 +255,7 @@ class OCRReviewDialog(QDialog):
             applies_corrections=False,
         )
 
-    def _reset_resolve_confirmation(self):
+    def _reset_resolve_confirmation(self) -> None:
         had_confirmation = self._resolve_confirmation_sample is not None
         self._resolve_confirmation_sample = None
         self.resolve_button.setText("Resolve without correction")
@@ -259,16 +263,31 @@ class OCRReviewDialog(QDialog):
             self.status.clear()
 
     @staticmethod
-    def _save_and_resolve(correction_store, review_store, sample, entries, profile_id):
+    def _save_and_resolve(
+        correction_store: OCRCorrectionStore,
+        review_store: OCRReviewStore,
+        sample: OCRReviewSample,
+        entries: Mapping[str, str],
+        profile_id: str | None,
+    ) -> None:
         correction_store.upsert_entries(entries, profile_id)
         scope = str(profile_id) if profile_id else "global"
-        return review_store.mark_resolved(
+        review_store.mark_resolved(
             sample,
             scope=scope,
             corrections=entries,
         )
 
-    def _start_write(self, operation, *arguments, applies_corrections):
+    def _selected_profile_id(self) -> str | None:
+        value = self.scope.currentData()
+        return value if isinstance(value, str) else None
+
+    def _start_write(
+        self,
+        operation: Callable[..., object],
+        *arguments: object,
+        applies_corrections: bool,
+    ) -> None:
         self._write_active = True
         self._write_applies_corrections = applies_corrections
         self.save_button.setEnabled(False)
@@ -277,7 +296,7 @@ class OCRReviewDialog(QDialog):
         self.status.setText("Saving OCR review authority in the background...")
         self.write_runner.start(operation, *arguments)
 
-    def _write_finished(self, _result, error):
+    def _write_finished(self, _result: object, error: Exception | None) -> None:
         self._write_active = False
         self.sample_list.setEnabled(True)
         if error is not None:
@@ -294,7 +313,7 @@ class OCRReviewDialog(QDialog):
             self._close_pending = False
             self.close()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._write_active:
             self._close_pending = True
             self.status.setText(
