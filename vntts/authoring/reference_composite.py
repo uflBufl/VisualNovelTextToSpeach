@@ -6,8 +6,6 @@ import argparse
 import hashlib
 import io
 import json
-import shutil
-import tempfile
 import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,7 +23,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import load_voice_manifest, write_voice_manifest
 
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.authoring.source_reference_quality_records import (
     QUALITY_REVIEW_SCHEMA,
     QUALITY_REVIEW_VERSION,
@@ -164,9 +162,6 @@ def publish_composite_quality_review(composite_directory, state_path, output):
         raise ReferenceCompositeError("Composite affected story-line count is invalid")
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
     snapshots = [
         (ledger_path, ledger_sha256),
         (evaluation_path, evaluation_sha256),
@@ -175,7 +170,7 @@ def publish_composite_quality_review(composite_directory, state_path, output):
         (composite_source, composite_sha256),
         (report_path, report_sha256),
     ]
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         reference_relative = Path("audio") / "hotel-composite" / "reference.wav"
         reference = _copy_audio(
             composite_source, composite_sha256, staging / reference_relative
@@ -273,10 +268,6 @@ def publish_composite_quality_review(composite_directory, state_path, output):
                 )
         rename_directory_no_replace(staging, output)
         return SourceReferenceQualityResult(output, 1, len(generated), len(excluded))
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
 
 
 def publish_exact_bank_reference_composite(
@@ -370,11 +361,8 @@ def publish_exact_bank_reference_composite(
         raise ReferenceCompositeError("Composite clips disagree on source bank bytes")
     source_bank_sha256 = next(iter(source_bank_sha256s))
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
     snapshots = []
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         sample_rate = None
         clip_records = []
         trimmed_clips = []
@@ -586,10 +574,6 @@ def publish_exact_bank_reference_composite(
             len(composite) / sample_rate,
             composite_sha256,
         )
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
 
 
 def _read_pcm16_mono(payload, media_id):

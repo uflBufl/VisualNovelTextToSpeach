@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import shutil
 import tempfile
 from pathlib import Path, PurePosixPath
 
@@ -17,7 +16,7 @@ from vntts.authoring.bulk_generation import (
     BulkGenerationError,
 )
 from vntts.authoring.generation_state import validate_generation_state_document
-from vntts.authoring.publication import rename_directory_no_replace
+from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.authoring.source_reference_quality_records import (
     QUALITY_DECISIONS,
     QUALITY_REVIEW_SCHEMA,
@@ -136,16 +135,13 @@ def publish_source_reference_quality_review(
         )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    ).resolve()
     snapshots = [
         (plan_path, plan_sha256),
         (comparison_path, comparison_sha256),
         (queue_path, queue_sha256),
         (state_path, state_sha256),
     ]
-    try:
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         cards = []
         seen_variants = set()
         generated_count = 0
@@ -374,10 +370,6 @@ def publish_source_reference_quality_review(
         return SourceReferenceQualityResult(
             output, len(cards), generated_count, excluded_count
         )
-    except Exception:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
 
 
 def create_parser():
