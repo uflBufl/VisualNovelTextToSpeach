@@ -171,6 +171,7 @@ files = [
     "vntts/authoring/workspace_state.py",
     "vntts/controller.py",
     "vntts/controller_components.py",
+    "vntts/cuda_probe.py",
     "vntts/asset_ui.py",
     "vntts/async_ui.py",
     "vntts/calibration.py",

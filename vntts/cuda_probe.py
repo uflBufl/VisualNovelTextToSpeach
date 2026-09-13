@@ -6,7 +6,9 @@ import argparse
 import json
 import platform
 import sys
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 CUDA_PROBE_SCHEMA = "vntts.cuda-probe"
 SCHEMA_VERSION = 1
@@ -16,7 +18,27 @@ class CudaProbeError(RuntimeError):
     """The selected runtime cannot safely start a CUDA experiment."""
 
 
-def inspect_cuda(torch_module=None):
+class _CudaDeviceProperties(Protocol):
+    name: object
+
+
+@runtime_checkable
+class _CudaAvailability(Protocol):
+    def is_available(self) -> bool: ...
+
+
+@runtime_checkable
+class _CudaInspection(Protocol):
+    def current_device(self) -> int: ...
+
+    def get_device_properties(self, index: int) -> _CudaDeviceProperties: ...
+
+    def mem_get_info(self, index: int) -> tuple[int, int]: ...
+
+    def get_device_capability(self, index: int) -> tuple[int, ...]: ...
+
+
+def inspect_cuda(torch_module: object | None = None) -> dict[str, object]:
     """Return stable CUDA provenance without loading model weights."""
     if torch_module is None:
         try:
@@ -25,7 +47,7 @@ def inspect_cuda(torch_module=None):
             raise CudaProbeError("PyTorch is not installed in this runtime") from error
         torch_module = torch
     cuda = getattr(torch_module, "cuda", None)
-    if cuda is None or not callable(getattr(cuda, "is_available", None)):
+    if not isinstance(cuda, _CudaAvailability):
         raise CudaProbeError("This PyTorch build does not expose CUDA")
     version = getattr(torch_module, "version", None)
     cuda_runtime = getattr(version, "cuda", None)
@@ -42,6 +64,8 @@ def inspect_cuda(torch_module=None):
             "runtime. Model weights were not loaded"
         )
     try:
+        if not isinstance(cuda, _CudaInspection):
+            raise AttributeError("CUDA device inspection is unavailable")
         device_index = int(cuda.current_device())
         properties = cuda.get_device_properties(device_index)
         free_memory, total_memory = cuda.mem_get_info(device_index)
@@ -50,15 +74,12 @@ def inspect_cuda(torch_module=None):
         )
     except (AttributeError, RuntimeError, TypeError, ValueError) as error:
         raise CudaProbeError(f"Unable to inspect the CUDA device: {error}") from error
-    cudnn = getattr(getattr(torch_module, "backends", None), "cudnn", None)
-    cudnn_version = (
-        cudnn.version() if callable(getattr(cudnn, "version", None)) else None
-    )
-    bf16_supported = (
-        bool(cuda.is_bf16_supported())
-        if callable(getattr(cuda, "is_bf16_supported", None))
-        else None
-    )
+    backends: object = getattr(torch_module, "backends", None)
+    cudnn: object = getattr(backends, "cudnn", None)
+    cudnn_version_probe = getattr(cudnn, "version", None)
+    cudnn_version = cudnn_version_probe() if callable(cudnn_version_probe) else None
+    bf16_probe = getattr(cuda, "is_bf16_supported", None)
+    bf16_supported = bool(bf16_probe()) if callable(bf16_probe) else None
     return {
         "schema": CUDA_PROBE_SCHEMA,
         "schema_version": SCHEMA_VERSION,
@@ -76,7 +97,7 @@ def inspect_cuda(torch_module=None):
     }
 
 
-def create_parser():
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Verify CUDA before downloading or loading model weights"
     )
@@ -84,7 +105,7 @@ def create_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = create_parser().parse_args(argv)
     try:
         report = inspect_cuda()

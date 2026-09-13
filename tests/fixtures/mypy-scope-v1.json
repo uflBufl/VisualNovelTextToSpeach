@@ -44,6 +44,7 @@
     "vntts/calibration.py",
     "vntts/controller.py",
     "vntts/controller_components.py",
+    "vntts/cuda_probe.py",
     "vntts/dashboard_ui.py",
     "vntts/diagnostics.py",
     "vntts/diagnostics_ui.py",

@@ -60,6 +60,14 @@ class CudaProbeTest(unittest.TestCase):
         with self.assertRaisesRegex(CudaProbeError, "includes CUDA 12.8"):
             inspect_cuda(FakeTorch(available=False))
 
+    def test_accepts_cuda_without_optional_bf16_probe(self):
+        torch = FakeTorch()
+        torch.cuda.is_bf16_supported = None
+
+        report = inspect_cuda(torch)
+
+        self.assertIsNone(report["bf16_supported"])
+
     def test_cli_returns_failure_without_traceback(self):
         with patch(
             "vntts.cuda_probe.inspect_cuda", side_effect=CudaProbeError("no GPU")

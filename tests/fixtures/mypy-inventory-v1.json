@@ -96,7 +96,6 @@
     "vntts/chapter_voice_preload.py": 30,
     "vntts/cli.py": 6,
     "vntts/configuration_apply.py": 9,
-    "vntts/cuda_probe.py": 3,
     "vntts/dialog_capture.py": 21,
     "vntts/durable_settings.py": 10,
     "vntts/game_audio_decoder.py": 9,
