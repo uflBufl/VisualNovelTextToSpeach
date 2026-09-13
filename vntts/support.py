@@ -22,7 +22,10 @@ from vntts_artifacts.atomic_io import atomic_output_path
 from vntts.diagnostics import macos_permission_warnings
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
 from vntts.onboarding import probe_audio_output, probe_tesseract
+from vntts.settings import AppSettings
 from vntts.versioned_json import read_versioned_json
+
+SupportDocument = dict[str, object]
 
 audio_route_fields = (
     "generation",
@@ -757,22 +760,22 @@ def record_native_speech(**details):
 class PregenerationSupportState:
     """Persist the latest bounded preparation failure for a later support export."""
 
-    def __init__(self, path=None):
+    def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path).expanduser() if path is not None else None
         self.lock = RLock()
-        self.latest = self._load()
+        self.latest: SupportDocument | None = self._load()
 
     def record(
         self,
-        operation,
-        error,
+        operation: object,
+        error: object,
         *,
-        job=None,
-        generation_input=None,
-        voice_plan=None,
-        state_path=None,
-    ):
-        snapshot = {
+        job: object | None = None,
+        generation_input: object | None = None,
+        voice_plan: object | None = None,
+        state_path: str | Path | None = None,
+    ) -> SupportDocument:
+        snapshot: SupportDocument = {
             "schema_version": 1,
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "operation": str(operation)[:160],
@@ -796,38 +799,72 @@ class PregenerationSupportState:
                     pass
         return snapshot
 
-    def report(self):
+    def report(self) -> SupportDocument:
         with self.lock:
             return self.latest or {"available": False}
 
-    def _load(self):
+    def _load(self) -> SupportDocument | None:
         if self.path is None:
             return None
         try:
             document = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+        except OSError, UnicodeError, json.JSONDecodeError:
             return None
-        return document if isinstance(document, dict) else None
+        return _loaded_pregeneration_support(document)
 
 
 pregeneration_support = PregenerationSupportState()
 
 
-def configure_pregeneration_support(path=None):
+def configure_pregeneration_support(
+    path: str | Path | None = None,
+) -> PregenerationSupportState:
     global pregeneration_support
     pregeneration_support = PregenerationSupportState(path)
     return pregeneration_support
 
 
-def record_pregeneration_failure(*args, **kwargs):
+def record_pregeneration_failure(
+    *args: object, **kwargs: object
+) -> SupportDocument | None:
+    fields = {
+        "operation",
+        "error",
+        "job",
+        "generation_input",
+        "voice_plan",
+        "state_path",
+    }
+    if len(args) > 2 or set(kwargs) - fields:
+        return None
+    missing = object()
+    operation = args[0] if args else kwargs.get("operation", missing)
+    error = args[1] if len(args) == 2 else kwargs.get("error", missing)
+    if (
+        operation is missing
+        or error is missing
+        or (args and "operation" in kwargs)
+        or (len(args) == 2 and "error" in kwargs)
+    ):
+        return None
+    state_path = kwargs.get("state_path")
+    if state_path is not None and not isinstance(state_path, (str, Path)):
+        return None
     try:
-        return pregeneration_support.record(*args, **kwargs)
+        return pregeneration_support.record(
+            operation,
+            error,
+            job=kwargs.get("job"),
+            generation_input=kwargs.get("generation_input"),
+            voice_plan=kwargs.get("voice_plan"),
+            state_path=state_path,
+        )
     except Exception:
         # Support evidence must never replace the user-facing preparation error.
         return None
 
 
-def _pregeneration_job_summary(job):
+def _pregeneration_job_summary(job: object | None) -> SupportDocument:
     if job is None:
         return {"available": False}
     return {
@@ -846,7 +883,9 @@ def _pregeneration_job_summary(job):
     }
 
 
-def _pregeneration_input_summary(generation_input):
+def _pregeneration_input_summary(
+    generation_input: object | None,
+) -> SupportDocument:
     if generation_input is None:
         return {"available": False}
     return {
@@ -864,25 +903,21 @@ def _pregeneration_input_summary(generation_input):
     }
 
 
-def _pregeneration_voice_summary(voice_plan):
+def _pregeneration_voice_summary(voice_plan: object | None) -> SupportDocument:
     if voice_plan is None:
         return {"available": False}
     return {
         "available": True,
-        "backend": _plain_support_value(
-            getattr(voice_plan, "synthesis_backend", None)
-        ),
+        "backend": _plain_support_value(getattr(voice_plan, "synthesis_backend", None)),
         "model": _plain_support_value(getattr(voice_plan, "synthesis_model", None)),
-        "profile": _plain_support_value(
-            getattr(voice_plan, "synthesis_profile", None)
-        ),
+        "profile": _plain_support_value(getattr(voice_plan, "synthesis_profile", None)),
         "controls_sha256": _sha256_support_value(
             getattr(voice_plan, "synthesis_controls_sha256", None)
         ),
     }
 
 
-def _pregeneration_state_summary(path):
+def _pregeneration_state_summary(path: str | Path | None) -> SupportDocument:
     if path is None:
         return {"available": False}
     path = Path(path)
@@ -893,7 +928,7 @@ def _pregeneration_state_summary(path):
         document = json.loads(payload)
     except FileNotFoundError:
         return {"available": False, "reason": "state is not present"}
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except OSError, UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "state could not be read"}
     items = document.get("items") if isinstance(document, dict) else None
     if not isinstance(items, dict):
@@ -920,31 +955,19 @@ def _pregeneration_state_summary(path):
     }
 
 
-def _pregeneration_failure_summary(queue_id, item):
-    failure = item.get("failure") if isinstance(item.get("failure"), dict) else {}
-    repair = (
-        item.get("failure_repair")
-        if isinstance(item.get("failure_repair"), dict)
-        else {}
-    )
-    source = (
-        repair.get("source_failure")
-        if isinstance(repair.get("source_failure"), dict)
-        else {}
-    )
-    carry = (
-        item.get("carry_forward")
-        if isinstance(item.get("carry_forward"), dict)
-        else {}
-    )
+def _pregeneration_failure_summary(
+    queue_id: str, item: SupportDocument
+) -> SupportDocument:
+    failure = _support_mapping(item.get("failure"))
+    repair = _support_mapping(item.get("failure_repair"))
+    source = _support_mapping(repair.get("source_failure"))
+    carry = _support_mapping(item.get("carry_forward"))
     attempts = item.get("attempts_by_provider")
     return {
         "queue_id": _plain_support_value(queue_id),
         "line_id": _plain_support_value(item.get("line_id")),
         "speaker": _plain_support_value(item.get("speaker")),
-        "requested_voice": _plain_support_value(
-            item.get("requested_voice_character")
-        ),
+        "requested_voice": _plain_support_value(item.get("requested_voice_character")),
         "effective_voice": _plain_support_value(item.get("voice_character")),
         "provider": _plain_support_value(item.get("provider")),
         "model": _plain_support_value(item.get("model")),
@@ -962,38 +985,169 @@ def _pregeneration_failure_summary(queue_id, item):
         "failure_error_type": _plain_support_value(failure.get("error_type")),
         "repair_strategy": _plain_support_value(repair.get("strategy")),
         "source_provider": _plain_support_value(source.get("source_provider")),
-        "source_failure_kind": _plain_support_value(
-            source.get("source_failure_kind")
-        ),
+        "source_failure_kind": _plain_support_value(source.get("source_failure_kind")),
         "source_repair_strategy": _plain_support_value(
             source.get("source_repair_strategy")
         ),
-        "carry_source_provider": _plain_support_value(
-            carry.get("source_provider")
-        ),
+        "carry_source_provider": _plain_support_value(carry.get("source_provider")),
         "carry_source_failure_kind": _plain_support_value(
             carry.get("source_failure_kind")
         ),
     }
 
 
-def _plain_support_value(value):
+def _plain_support_value(value: object) -> str | None:
     if value is None:
         return None
     value = str(value)
-    return "<path>" if _looks_like_local_path(value) else _redact_game_import_text(value)[:1024]
+    return (
+        "<path>"
+        if _looks_like_local_path(value)
+        else _redact_game_import_text(value)[:1024]
+    )
 
 
-def _sha256_support_value(value):
+def _sha256_support_value(value: object) -> str | None:
     value = str(value or "")
     return value if re.fullmatch(r"[0-9a-f]{64}", value) else None
 
 
-def _nonnegative_support_int(value):
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+def _nonnegative_support_int(value: object) -> int | None:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else None
+    )
 
 
-def collect_active_content_identity(settings):
+def _support_mapping(value: object) -> SupportDocument:
+    if not isinstance(value, dict):
+        return {}
+    return {key: item for key, item in value.items() if isinstance(key, str)}
+
+
+def _loaded_pregeneration_support(document: object) -> SupportDocument | None:
+    source = _support_mapping(document)
+    if source.get("schema_version") != 1:
+        return None
+    return {
+        "schema_version": 1,
+        "recorded_at": _plain_support_value(source.get("recorded_at")),
+        "operation": _plain_support_value(source.get("operation")),
+        "error": _plain_support_value(source.get("error")),
+        "job": _loaded_pregeneration_section(
+            source.get("job"),
+            strings=("job_id", "status", "provider_id"),
+            hashes=("story_index_sha256",),
+            integers=("selected_line_count",),
+            lists=("selected_story_ids",),
+        ),
+        "input": _loaded_pregeneration_section(
+            source.get("input"),
+            hashes=("identity", "queue_sha256"),
+            integers=("queue_items", "ready_items"),
+        ),
+        "voice": _loaded_pregeneration_section(
+            source.get("voice"),
+            strings=("backend", "model", "profile"),
+            hashes=("controls_sha256",),
+        ),
+        "generation_state": _loaded_pregeneration_state(source.get("generation_state")),
+    }
+
+
+def _loaded_pregeneration_section(
+    value: object,
+    *,
+    strings: tuple[str, ...] = (),
+    hashes: tuple[str, ...] = (),
+    integers: tuple[str, ...] = (),
+    lists: tuple[str, ...] = (),
+) -> SupportDocument:
+    source = _support_mapping(value)
+    if not source:
+        return {"available": False}
+    result: SupportDocument = {"available": source.get("available") is True}
+    result.update({field: _plain_support_value(source.get(field)) for field in strings})
+    result.update({field: _sha256_support_value(source.get(field)) for field in hashes})
+    result.update(
+        {field: _nonnegative_support_int(source.get(field)) for field in integers}
+    )
+    for field in lists:
+        values = source.get(field)
+        result[field] = (
+            [_plain_support_value(item) for item in values[:64]]
+            if isinstance(values, list)
+            else []
+        )
+    return result
+
+
+def _loaded_pregeneration_state(value: object) -> SupportDocument:
+    source = _support_mapping(value)
+    if not source:
+        return {"available": False}
+    result = _loaded_pregeneration_section(
+        source,
+        strings=("reason",),
+        hashes=("state_sha256", "queue_sha256"),
+        integers=("failed_items_truncated",),
+    )
+    raw_counts = source.get("status_counts")
+    status_counts: dict[str, int] = {}
+    for key, count in _support_mapping(raw_counts).items():
+        safe_key = _plain_support_value(key)
+        if (
+            safe_key is not None
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and count >= 0
+        ):
+            status_counts[safe_key] = count
+    result["status_counts"] = status_counts
+    raw_failures = source.get("failed_items")
+    result["failed_items"] = (
+        [_loaded_pregeneration_failure(item) for item in raw_failures[:64]]
+        if isinstance(raw_failures, list)
+        else []
+    )
+    return result
+
+
+def _loaded_pregeneration_failure(value: object) -> SupportDocument:
+    source = _support_mapping(value)
+    fields = (
+        "queue_id",
+        "line_id",
+        "speaker",
+        "requested_voice",
+        "effective_voice",
+        "provider",
+        "model",
+        "profile",
+        "failure_kind",
+        "failure_completion",
+        "failure_error_type",
+        "repair_strategy",
+        "source_provider",
+        "source_failure_kind",
+        "source_repair_strategy",
+        "carry_source_provider",
+        "carry_source_failure_kind",
+    )
+    result: SupportDocument = {
+        field: _plain_support_value(source.get(field)) for field in fields
+    }
+    result["attempts"] = _nonnegative_support_int(source.get("attempts"))
+    raw_attempts = source.get("attempts_by_provider")
+    result["attempts_by_provider"] = {
+        _plain_support_value(provider): _nonnegative_support_int(count)
+        for provider, count in _support_mapping(raw_attempts).items()
+    }
+    return result
+
+
+def collect_active_content_identity(settings: AppSettings) -> SupportDocument:
     """Describe the active prepared content without exporting its local paths."""
     pack_path = getattr(settings, "game_pack", None)
     if pack_path:
@@ -1016,7 +1170,9 @@ def collect_active_content_identity(settings):
     return {"available": False}
 
 
-def correlate_active_preparation(active, preparation):
+def correlate_active_preparation(
+    active: SupportDocument, preparation: SupportDocument
+) -> SupportDocument:
     """Explain whether the saved pack came from the preparation that failed."""
     job = preparation.get("job") if isinstance(preparation, dict) else None
     generation_input = (
@@ -1024,12 +1180,18 @@ def correlate_active_preparation(active, preparation):
     )
     if not active.get("available") or not isinstance(job, dict):
         return {"classification": "insufficient-evidence"}
-    comparisons = {
+    selected_story_ids = job.get("selected_story_ids")
+    active_story_ids = active.get("active_story_ids")
+    generation_state = preparation.get("generation_state")
+    comparisons: dict[str, bool | None] = {
         "selected_stories_present": (
-            set(job.get("selected_story_ids", ())).issubset(
-                active.get("active_story_ids", ())
-            )
-            if job.get("selected_story_ids") and active.get("active_story_ids")
+            set(selected_story_ids).issubset(active_story_ids)
+            if isinstance(selected_story_ids, list)
+            and all(isinstance(value, str) for value in selected_story_ids)
+            and isinstance(active_story_ids, list)
+            and all(isinstance(value, str) for value in active_story_ids)
+            and selected_story_ids
+            and active_story_ids
             else None
         ),
         "same_job": (
@@ -1047,10 +1209,10 @@ def correlate_active_preparation(active, preparation):
         ),
         "same_source_state": (
             active.get("active_source_state_sha256")
-            == preparation.get("generation_state", {}).get("state_sha256")
-            if isinstance(preparation.get("generation_state"), dict)
+            == generation_state.get("state_sha256")
+            if isinstance(generation_state, dict)
             and active.get("active_source_state_sha256")
-            and preparation["generation_state"].get("state_sha256")
+            and generation_state.get("state_sha256")
             else None
         ),
     }
@@ -1066,12 +1228,15 @@ def correlate_active_preparation(active, preparation):
 
 
 @lru_cache(maxsize=16)
-def _active_pack_identity(path, _modified_ns, size):
+def _active_pack_identity(path: str, _modified_ns: int, size: int) -> SupportDocument:
     if size > 64 * 1024 * 1024:
-        return {"available": False, "reason": "pack manifest exceeds support read limit"}
+        return {
+            "available": False,
+            "reason": "pack manifest exceeds support read limit",
+        }
     try:
         document = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except OSError, UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "pack manifest could not be read"}
     extension = document.get("vntts.self-service")
     extension = extension if isinstance(extension, dict) else {}
@@ -1104,7 +1269,7 @@ def _active_pack_identity(path, _modified_ns, size):
     }
 
 
-def _active_story_ids(root, component):
+def _active_story_ids(root: Path, component: SupportDocument) -> SupportDocument:
     relative = component.get("path")
     if not isinstance(relative, str) or not relative:
         return {"active_story_ids_available": False}
@@ -1113,13 +1278,18 @@ def _active_story_ids(root, component):
         path.relative_to(root)
         if path.stat().st_size > 64 * 1024 * 1024:
             raise ValueError("story index exceeds support read limit")
-        story_ids = {
-            record["collection_id"]
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if (record := json.loads(line)).get("record_type") != "metadata"
-            and isinstance(record.get("collection_id"), str)
-            and record["collection_id"]
-        }
+        story_ids: set[str] = set()
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record: object = json.loads(line)
+            if not isinstance(record, dict):
+                continue
+            collection_id = record.get("collection_id")
+            if (
+                record.get("record_type") != "metadata"
+                and isinstance(collection_id, str)
+                and collection_id
+            ):
+                story_ids.add(collection_id)
     except OSError, UnicodeError, json.JSONDecodeError, ValueError:
         return {"active_story_ids_available": False}
     values = sorted(story_ids)
@@ -1130,7 +1300,7 @@ def _active_story_ids(root, component):
     }
 
 
-def _file_sha256(path):
+def _file_sha256(path: str | Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):

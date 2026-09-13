@@ -849,6 +849,50 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertEqual(failure["repair_strategy"], "offline_fallback_backend")
         self.assertNotIn(str(Path.home()), json.dumps(report))
 
+    def test_persisted_pregeneration_support_is_whitelisted_on_reload(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "pregeneration.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "operation": "retry generation",
+                        "error": str(Path.home() / "private-token"),
+                        "job": {
+                            "available": True,
+                            "job_id": "job-one",
+                            "unexpected": "secret",
+                        },
+                        "unexpected": "secret",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = PregenerationSupportState(path).report()
+
+        self.assertNotIn("unexpected", report)
+        self.assertNotIn("unexpected", report["job"])
+        self.assertNotIn("secret", json.dumps(report))
+        self.assertNotIn(str(Path.home()), json.dumps(report))
+
+    def test_active_pack_ignores_non_object_story_index_records(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "story-index.jsonl").write_text(
+                '1\n[]\n{"record_type":"story_line","collection_id":"story-one"}\n',
+                encoding="utf-8",
+            )
+            pack = directory / "game-pack.json"
+            pack.write_text(
+                json.dumps(
+                    {"components": {"story_index": {"path": "story-index.jsonl"}}}
+                ),
+                encoding="utf-8",
+            )
+            active = collect_active_content_identity(AppSettings(game_pack=str(pack)))
+
+        self.assertEqual(active["active_story_ids"], ["story-one"])
+
     def test_ocr_metrics_report_resolved_pending_and_invalid_counts(self):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
