@@ -840,70 +840,24 @@ def create_audio_event_composition_workspace(
     base_directory, base_document, base_workspace_sha256 = _load_workspace_snapshot(
         base_workspace, "audio-event base"
     )
-    if base_document.get("audio_event_composition") is not None:
-        raise AuthoringWorkbenchError(
-            "Audio-event successor already contains a composition"
-        )
+    _assert_audio_event_workspace_base(base_document)
     queue, state, state_payload, state_sha256 = _stable_workspace_state(
         base_directory, base_document, "audio-event base"
     )
-    try:
-        composition = load_audio_event_composition(composition_directory)
-    except AudioEventCompositionError as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    if composition.decision != "approved":
-        raise AuthoringWorkbenchError(
-            "Audio-event workspace requires an approved composition"
-        )
-    composition_root = composition.directory
-    composition_document, composition_sha256, _composition_payload = (
-        _load_json_snapshot(
-            composition_root / "composition.json", "audio-event composition"
-        )
-    )
-    decision_document, decision_sha256, _decision_payload = _load_json_snapshot(
-        composition_root / "composition-decision.json",
-        "audio-event composition decision",
-    )
-    queue_sha256 = sha256_file(base_directory / "queue.jsonl")
-    queue_by_id = {item.queue_id: item for item in queue.items}
-    queue_item = queue_by_id.get(composition.queue_id)
-    previous = state["items"].get(composition.queue_id)
-    if (
-        composition_document.get("queue_sha256") != queue_sha256
-        or queue_item is None
-        or composition_document.get("line_id") != queue_item.line_id
-        or composition_document.get("text_sha256") != queue_item.text_sha256
-        or composition_document.get("text") != queue_item.text
-    ):
-        raise AuthoringWorkbenchError(
-            "Audio-event composition belongs to a different queue item"
-        )
-    if not isinstance(previous, dict) or (
-        previous.get("status"),
-        previous.get("review_status"),
-    ) != ("generated", "rejected"):
-        raise AuthoringWorkbenchError(
-            "Audio-event successor can replace only an explicitly rejected rendition"
-        )
-    previous_relative = _safe_relative(
-        previous.get("path"), "Rejected audio-event rendition"
-    )
-    previous_audio = _within(
-        base_directory / "generated-audio",
+    (
+        composition,
+        composition_root,
+        composition_sha256,
+        decision_sha256,
+        queue_sha256,
+        queue_item,
+        previous,
         previous_relative,
-        "Rejected audio-event rendition",
+        previous_audio,
+        previous_audio_sha256,
+    ) = _audio_event_workspace_inputs(
+        base_directory, queue, state, composition_directory
     )
-    previous_audio_sha256 = _require_sha256(
-        previous.get("file_sha256"), "Rejected audio-event rendition SHA-256"
-    )
-    if (
-        not previous_audio.is_file()
-        or sha256_file(previous_audio) != previous_audio_sha256
-    ):
-        raise AuthoringWorkbenchError(
-            "Rejected audio-event rendition changed before successor publication"
-        )
     base_workspace_payload = _read_file_bytes(
         base_directory / "workspace.json", "audio-event base workspace"
     )
@@ -941,134 +895,34 @@ def create_audio_event_composition_workspace(
         (copied_base / "workspace.json").write_bytes(base_workspace_payload)
         (copied_base / "generation-state.json").write_bytes(state_payload)
         (copied_base / "rejected.wav").write_bytes(previous_audio_payload)
-        composition_config = {
-            "schema": AUDIO_EVENT_WORKSPACE_SCHEMA,
-            "schema_version": AUDIO_EVENT_WORKSPACE_VERSION,
-            "path": "inputs/audio-event-composition/composition.json",
-            "decision_path": (
-                "inputs/audio-event-composition/composition-decision.json"
-            ),
-            "composition_id": composition.composition_id,
-            "composition_sha256": composition_sha256,
-            "decision_sha256": decision_sha256,
-            "final_audio_sha256": composition.audio_sha256,
-            "queue_id": composition.queue_id,
-            "base_workspace_id": base_document["workspace_id"],
-            "base_workspace_path": "inputs/audio-event-base/workspace.json",
-            "base_workspace_sha256": base_workspace_sha256,
-            "base_state_path": "inputs/audio-event-base/generation-state.json",
-            "base_state_sha256": state_sha256,
-            "base_item_sha256": canonical_document_sha256(previous),
-            "base_audio_path": "inputs/audio-event-base/rejected.wav",
-            "base_audio_sha256": previous_audio_sha256,
-        }
-        config_fingerprint = _workspace_config_fingerprint(
-            base_document["source"]["import_id"],
-            base_document.get("story_index"),
-            base_document.get("voice_manifest"),
-            base_document["narrator_character"],
-            base_document["run_config"],
-            base_document.get("carry_forward"),
-            base_document.get("outcome_merge"),
-            base_document.get("failure_reference_binding"),
-            base_document.get("terminal_conflict_merge"),
-            base_document.get("config_rebase"),
-            composition_config,
-            base_document.get("explicit_fallback_merge"),
-            base_document.get("known_role_live_fallback"),
-            base_document.get("audio_event_omission"),
-            base_document.get("audio_event_projection_fallback"),
-            base_document.get("reviewed_waveform_publication"),
-            base_document.get("reviewed_rejection_live_fallback"),
-            queue_extension=base_document.get("queue_extension"),
-        )
-        workspace_id = (
-            f"resume-{base_document['source']['import_id'].removeprefix('legacy-')}-"
-            f"{config_fingerprint[:16]}"
-        )
-        destination = _within(root, Path(workspace_id), "Workspace destination")
-        workspace = copy.deepcopy(base_document)
-        workspace.update(
-            {
-                "workspace_id": workspace_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "audio_event_composition": composition_config,
-                "config_fingerprint": config_fingerprint,
-            }
+        composition_config, destination, workspace = _audio_event_workspace_document(
+            root,
+            base_document,
+            composition,
+            composition_sha256,
+            decision_sha256,
+            base_workspace_sha256,
+            state_sha256,
+            previous,
+            previous_audio_sha256,
         )
         atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
 
-        output = staging / "generated-audio"
-        obsolete_audio = _within(
-            output, previous_relative, "Replaced audio-event rendition"
+        target_state = _install_audio_event_composition(
+            staging,
+            state,
+            previous,
+            previous_relative,
+            composition,
+            composition_config,
+            queue_item,
         )
-        if obsolete_audio.is_file():
-            obsolete_audio.unlink()
-        target_relative = Path("audio/audio-events") / (
-            f"{composition.composition_id[:24]}.wav"
-        )
-        target_audio = _within(output, target_relative, "Composed audio-event WAV")
-        target_audio.parent.mkdir(parents=True, exist_ok=True)
-        target_audio.write_bytes(composition.audio.read_bytes())
-        if sha256_file(target_audio) != composition.audio_sha256:
-            raise AuthoringWorkbenchError(
-                "Audio-event composition changed while copied into its successor"
-            )
-        ledger = composition_item_ledger(composition_config)
-        attempts = int(previous.get("attempts", 0))
-        attempts_by_provider = copy.deepcopy(previous.get("attempts_by_provider"))
-        if attempts_by_provider is None:
-            attempts_by_provider = (
-                {previous["provider"]: attempts}
-                if attempts and isinstance(previous.get("provider"), str)
-                else {}
-            )
-        try:
-            quality = asdict(
-                inspect_generated_wav(target_audio, allow_short_audio_event=True)
-            )
-            speech_quality = asdict(
-                measure_generated_speech_bytes(target_audio.read_bytes())
-            )
-        except BulkGenerationError as error:
-            raise AuthoringWorkbenchError(str(error)) from error
-        target_state = copy.deepcopy(state)
-        target_item = {
-            "status": "generated",
-            "review_status": "pending_review",
-            "attempts": attempts,
-            "attempts_by_provider": attempts_by_provider,
-            "path": target_relative.as_posix(),
-            "line_id": queue_item.line_id,
-            "text_sha256": queue_item.text_sha256,
-            "file_sha256": composition.audio_sha256,
-            "provider": AUDIO_EVENT_PROVIDER,
-            "model": AUDIO_EVENT_MODEL,
-            "prompt_sha256": NO_PROMPT_SHA256,
-            "prompt_applied": False,
-            "queue_annotations_sha256": canonical_document_sha256(
-                queue_item.document.get("prompt_adapters") or {}
-            ),
-            "synthesis_text_sha256": queue_item.text_sha256,
-            "text_transform": "audio-event-composition-v1",
-            "synthesis_provenance_sha256": canonical_document_sha256(ledger),
-            "seed": 0,
-            "generation_profile": AUDIO_EVENT_PROFILE,
-            "speaker": queue_item.speaker,
-            "voice_character": AUDIO_EVENT_VOICE,
-            "quality": quality,
-            "speech_quality": speech_quality,
-            "audio_event_composition": ledger,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        target_state["items"][composition.queue_id] = target_item
-        target_state["active"] = None
-        target_state_path = output / "generation-state.json"
+        target_state_path = staging / "generated-audio/generation-state.json"
         atomic_write_json(target_state_path, target_state, sort_keys=True)
         write_generated_manifest_from_state(
             target_state,
-            output,
-            output / "manifest.json",
+            staging / "generated-audio",
+            staging / "generated-audio/manifest.json",
         )
         try:
             validate_audio_event_composition_workspace(staging, workspace)
@@ -1081,44 +935,132 @@ def create_audio_event_composition_workspace(
                 ((base_directory / "generated-audio", queue_sha256),),
                 process_checker=process_is_alive,
             ) as held_leases:
-                if any((base_directory / "generated-audio").rglob("*.partial.wav")):
-                    raise AuthoringWorkbenchError(
-                        "Audio-event base became active before publication"
-                    )
-                for path, digest in (*base_snapshots, *composition_snapshots):
-                    if not path.is_file() or sha256_file(path) != digest:
-                        raise AuthoringWorkbenchError(
-                            "Audio-event source changed before workspace publication"
-                        )
-                for lease in held_leases:
-                    lease.assert_owned()
-                if destination.exists():
-                    _directory, existing = _load_workspace(destination)
-                    if existing.get("audio_event_composition") != composition_config:
-                        raise AuthoringWorkbenchError(
-                            "Audio-event destination conflicts with another composition"
-                        )
-                    return WorkspaceCreationResult(destination, False)
-                try:
-                    _rename_directory_no_replace(staging, destination)
-                except (OSError, FinalGamePackError) as error:
-                    if destination.exists():
-                        _directory, existing = _load_workspace(destination)
-                        if (
-                            existing.get("audio_event_composition")
-                            == composition_config
-                        ):
-                            for lease in held_leases:
-                                lease.mark_committed()
-                            return WorkspaceCreationResult(destination, False)
-                    raise AuthoringWorkbenchError(
-                        f"Unable to publish audio-event workspace: {error}"
-                    ) from error
-                for lease in held_leases:
-                    lease.mark_committed()
+                return _publish_audio_event_workspace(
+                    staging,
+                    destination,
+                    base_directory,
+                    base_snapshots,
+                    composition_snapshots,
+                    composition_config,
+                    held_leases,
+                )
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
     return WorkspaceCreationResult(destination, True)
+
+
+def _install_audio_event_composition(
+    staging, state, previous, previous_relative, composition, config, queue_item
+):
+    output = staging / "generated-audio"
+    obsolete = _within(output, previous_relative, "Replaced audio-event rendition")
+    if obsolete.is_file():
+        obsolete.unlink()
+    relative = Path("audio/audio-events") / f"{composition.composition_id[:24]}.wav"
+    audio = _within(output, relative, "Composed audio-event WAV")
+    audio.parent.mkdir(parents=True, exist_ok=True)
+    audio.write_bytes(composition.audio.read_bytes())
+    if sha256_file(audio) != composition.audio_sha256:
+        raise AuthoringWorkbenchError(
+            "Audio-event composition changed while copied into its successor"
+        )
+    attempts = int(previous.get("attempts", 0))
+    providers = copy.deepcopy(previous.get("attempts_by_provider"))
+    if providers is None:
+        providers = (
+            {previous["provider"]: attempts}
+            if attempts and isinstance(previous.get("provider"), str)
+            else {}
+        )
+    try:
+        quality = asdict(inspect_generated_wav(audio, allow_short_audio_event=True))
+        speech_quality = asdict(measure_generated_speech_bytes(audio.read_bytes()))
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    target_state = copy.deepcopy(state)
+    ledger = composition_item_ledger(config)
+    target_item = {
+        "status": "generated",
+        "review_status": "pending_review",
+        "attempts": attempts,
+        "attempts_by_provider": providers,
+        "path": relative.as_posix(),
+        "line_id": queue_item.line_id,
+        "text_sha256": queue_item.text_sha256,
+        "file_sha256": composition.audio_sha256,
+        "provider": AUDIO_EVENT_PROVIDER,
+        "model": AUDIO_EVENT_MODEL,
+        "prompt_sha256": NO_PROMPT_SHA256,
+        "prompt_applied": False,
+        "queue_annotations_sha256": canonical_document_sha256(
+            queue_item.document.get("prompt_adapters") or {}
+        ),
+        "synthesis_text_sha256": queue_item.text_sha256,
+        "text_transform": "audio-event-composition-v1",
+        "synthesis_provenance_sha256": canonical_document_sha256(ledger),
+        "seed": 0,
+        "generation_profile": AUDIO_EVENT_PROFILE,
+        "speaker": queue_item.speaker,
+        "voice_character": AUDIO_EVENT_VOICE,
+        "quality": quality,
+        "speech_quality": speech_quality,
+        "audio_event_composition": ledger,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    target_state["items"][composition.queue_id] = target_item
+    target_state["active"] = None
+    return target_state
+
+
+def _publish_audio_event_workspace(
+    staging,
+    destination,
+    base_directory,
+    base_snapshots,
+    composition_snapshots,
+    config,
+    leases,
+):
+    if any((base_directory / "generated-audio").rglob("*.partial.wav")):
+        raise AuthoringWorkbenchError(
+            "Audio-event base became active before publication"
+        )
+    _verify_audio_event_publication_sources((*base_snapshots, *composition_snapshots))
+    for lease in leases:
+        lease.assert_owned()
+    if destination.exists():
+        return _existing_audio_event_workspace(destination, config)
+    try:
+        _rename_directory_no_replace(staging, destination)
+    except (OSError, FinalGamePackError) as error:
+        if destination.exists():
+            existing = _existing_audio_event_workspace(destination, config)
+            for lease in leases:
+                lease.mark_committed()
+            return existing
+        raise AuthoringWorkbenchError(
+            f"Unable to publish audio-event workspace: {error}"
+        ) from error
+    for lease in leases:
+        lease.mark_committed()
+    return WorkspaceCreationResult(destination, True)
+
+
+def _verify_audio_event_publication_sources(snapshots):
+    for path, digest in snapshots:
+        if not path.is_file() or sha256_file(path) != digest:
+            raise AuthoringWorkbenchError(
+                "Audio-event source changed before workspace publication"
+            )
+
+
+def _existing_audio_event_workspace(destination, config):
+    _directory, existing = _load_workspace(destination)
+    if existing.get("audio_event_composition") != config:
+        raise AuthoringWorkbenchError(
+            "Audio-event destination conflicts with another composition"
+        )
+    return WorkspaceCreationResult(destination, False)
 
 
 def _failure_reference_runtime_binding(directory, workspace):
@@ -1127,6 +1069,141 @@ def _failure_reference_runtime_binding(directory, workspace):
         workspace,
         error_type=AuthoringWorkbenchError,
     )
+
+
+def _assert_audio_event_workspace_base(base):
+    if base.get("audio_event_composition") is not None:
+        raise AuthoringWorkbenchError(
+            "Audio-event successor already contains a composition"
+        )
+
+
+def _audio_event_workspace_inputs(directory, queue, state, composition_directory):
+    try:
+        composition = load_audio_event_composition(composition_directory)
+    except AudioEventCompositionError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    if composition.decision != "approved":
+        raise AuthoringWorkbenchError(
+            "Audio-event workspace requires an approved composition"
+        )
+    root = composition.directory
+    document, composition_sha256, _payload = _load_json_snapshot(
+        root / "composition.json", "audio-event composition"
+    )
+    _decision, decision_sha256, _payload = _load_json_snapshot(
+        root / "composition-decision.json", "audio-event composition decision"
+    )
+    queue_sha256 = sha256_file(directory / "queue.jsonl")
+    queue_item = {item.queue_id: item for item in queue.items}.get(composition.queue_id)
+    previous = state["items"].get(composition.queue_id)
+    _assert_audio_event_composition_matches(document, queue_sha256, queue_item)
+    if not isinstance(previous, dict) or (
+        previous.get("status"),
+        previous.get("review_status"),
+    ) != ("generated", "rejected"):
+        raise AuthoringWorkbenchError(
+            "Audio-event successor can replace only an explicitly rejected rendition"
+        )
+    relative = _safe_relative(previous.get("path"), "Rejected audio-event rendition")
+    audio = _within(
+        directory / "generated-audio", relative, "Rejected audio-event rendition"
+    )
+    digest = _require_sha256(
+        previous.get("file_sha256"), "Rejected audio-event rendition SHA-256"
+    )
+    if not audio.is_file() or sha256_file(audio) != digest:
+        raise AuthoringWorkbenchError(
+            "Rejected audio-event rendition changed before successor publication"
+        )
+    return (
+        composition,
+        root,
+        composition_sha256,
+        decision_sha256,
+        queue_sha256,
+        queue_item,
+        previous,
+        relative,
+        audio,
+        digest,
+    )
+
+
+def _assert_audio_event_composition_matches(document, queue_sha256, queue_item):
+    if (
+        queue_item is None
+        or document.get("queue_sha256") != queue_sha256
+        or document.get("line_id") != queue_item.line_id
+        or document.get("text_sha256") != queue_item.text_sha256
+        or document.get("text") != queue_item.text
+    ):
+        raise AuthoringWorkbenchError(
+            "Audio-event composition belongs to a different queue item"
+        )
+
+
+def _audio_event_workspace_document(
+    root,
+    base,
+    composition,
+    composition_sha256,
+    decision_sha256,
+    workspace_sha256,
+    state_sha256,
+    previous,
+    audio_sha256,
+):
+    config = {
+        "schema": AUDIO_EVENT_WORKSPACE_SCHEMA,
+        "schema_version": AUDIO_EVENT_WORKSPACE_VERSION,
+        "path": "inputs/audio-event-composition/composition.json",
+        "decision_path": "inputs/audio-event-composition/composition-decision.json",
+        "composition_id": composition.composition_id,
+        "composition_sha256": composition_sha256,
+        "decision_sha256": decision_sha256,
+        "final_audio_sha256": composition.audio_sha256,
+        "queue_id": composition.queue_id,
+        "base_workspace_id": base["workspace_id"],
+        "base_workspace_path": "inputs/audio-event-base/workspace.json",
+        "base_workspace_sha256": workspace_sha256,
+        "base_state_path": "inputs/audio-event-base/generation-state.json",
+        "base_state_sha256": state_sha256,
+        "base_item_sha256": canonical_document_sha256(previous),
+        "base_audio_path": "inputs/audio-event-base/rejected.wav",
+        "base_audio_sha256": audio_sha256,
+    }
+    fingerprint = _workspace_config_fingerprint(
+        base["source"]["import_id"],
+        base.get("story_index"),
+        base.get("voice_manifest"),
+        base["narrator_character"],
+        base["run_config"],
+        base.get("carry_forward"),
+        base.get("outcome_merge"),
+        base.get("failure_reference_binding"),
+        base.get("terminal_conflict_merge"),
+        base.get("config_rebase"),
+        config,
+        base.get("explicit_fallback_merge"),
+        base.get("known_role_live_fallback"),
+        base.get("audio_event_omission"),
+        base.get("audio_event_projection_fallback"),
+        base.get("reviewed_waveform_publication"),
+        base.get("reviewed_rejection_live_fallback"),
+        queue_extension=base.get("queue_extension"),
+    )
+    workspace_id = f"resume-{base['source']['import_id'].removeprefix('legacy-')}-{fingerprint[:16]}"
+    workspace = copy.deepcopy(base)
+    workspace.update(
+        {
+            "workspace_id": workspace_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "audio_event_composition": config,
+            "config_fingerprint": fingerprint,
+        }
+    )
+    return config, _within(root, Path(workspace_id), "Workspace destination"), workspace
 
 
 def _preserve_seed_generation_state(staging, state_artifact):
