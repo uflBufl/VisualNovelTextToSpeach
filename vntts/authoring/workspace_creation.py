@@ -195,16 +195,21 @@ def _json_document(value: object, label: str) -> JsonDocument:
     return value
 
 
+def _is_generation_state_items(value: object) -> TypeGuard[GenerationStateItems]:
+    return (
+        isinstance(value, dict)
+        and all(isinstance(key, str) for key in value)
+        and all(_is_json_document(item) for item in value.values())
+    )
+
+
 def _state_items(state: GenerationState) -> GenerationStateItems:
-    items = _json_document(state.get("items"), "Generation state items")
-    result: GenerationStateItems = {}
-    for key, value in items.items():
-        if not _is_json_document(value):
-            raise AuthoringWorkbenchError(
-                "Generation state items must contain JSON objects"
-            )
-        result[key] = value
-    return result
+    items = state.get("items")
+    if not _is_generation_state_items(items):
+        raise AuthoringWorkbenchError(
+            "Generation state items must contain JSON objects"
+        )
+    return items
 
 
 def default_workspaces_root() -> Path:
@@ -320,7 +325,10 @@ def _load_resume_source(import_directory: str | Path) -> _ResumeSource:
     copied = tuple(
         item
         for item in artifacts
-        if item["path"] == "queue.jsonl" or item["path"].startswith("generated-audio/")
+        if (
+            (path := item.get("path")) == "queue.jsonl"
+            or (isinstance(path, str) and path.startswith("generated-audio/"))
+        )
     )
     return _ResumeSource(
         source,
@@ -453,7 +461,7 @@ def _validate_unrendered_projections(
         )
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    already_rendered = sorted(set(projection_ids) & set(state["items"]))
+    already_rendered = sorted(set(projection_ids) & set(_state_items(state)))
     if already_rendered:
         raise AuthoringWorkbenchError(
             "Audio-event spoken projection requires items without seed state: "
@@ -620,18 +628,28 @@ def _assert_failure_reference_binding_authority(
         document.get("source_authority"), "Failure-reference binding authority"
     )
     voice = base_document.get("voice_manifest")
+    authority_queue_sha256 = _required_text(
+        authority.get("queue_sha256"), "Failure-reference binding queue SHA-256"
+    )
+    authority_voice_sha256 = _required_text(
+        authority.get("voice_manifest_sha256"),
+        "Failure-reference binding voice manifest SHA-256",
+    )
+    authority_workspace_id = _required_text(
+        authority.get("workspace_id"), "Failure-reference binding workspace ID"
+    )
+    base_workspace_id = _required_text(
+        base_document.get("workspace_id"), "Base workspace ID"
+    )
     if (
-        queue_sha256 != authority["queue_sha256"]
+        queue_sha256 != authority_queue_sha256
         or not isinstance(voice, dict)
-        or voice.get("sha256") != authority["voice_manifest_sha256"]
+        or voice.get("sha256") != authority_voice_sha256
     ):
         raise AuthoringWorkbenchError(
             "Failure-reference binding belongs to different queue or voice controls"
         )
-    if (
-        authority["workspace_id"].split("-")[1:2]
-        != base_document["workspace_id"].split("-")[1:2]
-    ):
+    if authority_workspace_id.split("-")[1:2] != base_workspace_id.split("-")[1:2]:
         raise AuthoringWorkbenchError(
             "Failure-reference binding belongs to a different immutable import"
         )
@@ -654,7 +672,9 @@ def _assert_failure_reference_binding_items(
             )
         for case_value in cases:
             case = _json_document(case_value, "Failure-reference binding case")
-            queue_id = case["queue_id"]
+            queue_id = _required_text(
+                case.get("queue_id"), "Failure-reference queue ID"
+            )
             result = _state_items(state).get(queue_id)
             if queue_id not in queue_ids or not isinstance(result, dict):
                 raise AuthoringWorkbenchError(
@@ -838,7 +858,10 @@ def _stage_resume_workspace(
             *selected_sources,
             (
                 selected_queue_source,
-                queue_extension["queue_sha256"],
+                _require_sha256(
+                    queue_extension.get("queue_sha256"),
+                    "Extended generation queue SHA-256",
+                ),
                 "generation queue",
             ),
         )
@@ -1094,7 +1117,10 @@ def _install_audio_event_composition(
         raise AuthoringWorkbenchError(
             "Audio-event composition changed while copied into its successor"
         )
-    attempts = int(previous.get("attempts", 0))
+    attempts_value = previous.get("attempts", 0)
+    if not isinstance(attempts_value, (str, bytes, bytearray, int, float)):
+        raise TypeError("Audio-event attempts must be numeric")
+    attempts = int(attempts_value)
     providers = copy.deepcopy(previous.get("attempts_by_provider"))
     if providers is None:
         providers = (
@@ -1137,7 +1163,7 @@ def _install_audio_event_composition(
         "audio_event_composition": ledger,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    target_state["items"][composition.queue_id] = target_item
+    _state_items(target_state)[composition.queue_id] = target_item
     target_state["active"] = None
     return target_state
 
@@ -1310,6 +1336,10 @@ def _audio_event_workspace_document(
     previous: JsonDocument,
     audio_sha256: str,
 ) -> tuple[JsonDocument, Path, WorkspaceDocument]:
+    base_source = _json_document(base.get("source"), "Workspace source")
+    import_id = _required_text(base_source.get("import_id"), "Workspace import ID")
+    narrator = _required_text(base.get("narrator_character"), "Narrator character")
+    run_config = _json_document(base.get("run_config"), "Workspace run config")
     config = {
         "schema": AUDIO_EVENT_WORKSPACE_SCHEMA,
         "schema_version": AUDIO_EVENT_WORKSPACE_VERSION,
@@ -1330,11 +1360,11 @@ def _audio_event_workspace_document(
         "base_audio_sha256": audio_sha256,
     }
     fingerprint = _workspace_config_fingerprint(
-        base["source"]["import_id"],
+        import_id,
         base.get("story_index"),
         base.get("voice_manifest"),
-        base["narrator_character"],
-        base["run_config"],
+        narrator,
+        run_config,
         base.get("carry_forward"),
         base.get("outcome_merge"),
         base.get("failure_reference_binding"),
@@ -1349,7 +1379,7 @@ def _audio_event_workspace_document(
         base.get("reviewed_rejection_live_fallback"),
         queue_extension=base.get("queue_extension"),
     )
-    workspace_id = f"resume-{base['source']['import_id'].removeprefix('legacy-')}-{fingerprint[:16]}"
+    workspace_id = f"resume-{import_id.removeprefix('legacy-')}-{fingerprint[:16]}"
     workspace = copy.deepcopy(base)
     workspace.update(
         {
@@ -1396,10 +1426,14 @@ def _install_extended_generation_queue(
         raise AuthoringWorkbenchError(
             "Selected generation queue changed while it was validated"
         )
-    snapshot = staging / config["queue_path"]
+    snapshot = staging / _required_text(
+        config.get("queue_path"), "Extended queue snapshot"
+    )
     snapshot.parent.mkdir(parents=True, exist_ok=True)
     snapshot.write_bytes(payload)
-    base_snapshot = staging / config["base_queue_path"]
+    base_snapshot = staging / _required_text(
+        config.get("base_queue_path"), "Base queue snapshot"
+    )
     base_snapshot.parent.mkdir(parents=True, exist_ok=True)
     base_snapshot.write_bytes(base_queue.read_bytes())
     base_queue.write_bytes(payload)
@@ -1743,11 +1777,12 @@ def _carry_forward_reviewed_items(
     target_queue_overrides: Mapping[str, str],
 ) -> tuple[list[JsonDocument], list[WorkspaceSnapshot]]:
     source_provenance = None
-    snapshots = []
-    carried = []
+    snapshots: list[WorkspaceSnapshot] = []
+    carried: list[JsonDocument] = []
+    source_items = _state_items(source.state)
     for queue_item in target_queue.items:
-        result = source.state["items"].get(queue_item.queue_id)
-        if not isinstance(result, dict) or not _terminal_review_outcome(result):
+        result = source_items.get(queue_item.queue_id)
+        if result is None or not _terminal_review_outcome(result):
             continue
         character = synthesis_character_for_line(
             queue_item.speaker, queue_item.voice_character
@@ -1788,7 +1823,8 @@ def _carry_forward_reviewed_item(
     target_queue_overrides: Mapping[str, str],
 ) -> tuple[JsonDocument, WorkspaceSnapshot, str | None]:
     mode = "review-only"
-    if not _same_seed_generation(target_seed["items"].get(queue_item.queue_id), result):
+    target_seed_items = _state_items(target_seed)
+    if not _same_seed_generation(target_seed_items.get(queue_item.queue_id), result):
         mode = "full-outcome"
         if source_provenance is None:
             source_provenance = _workspace_generation_provenance(
@@ -1813,7 +1849,7 @@ def _carry_forward_reviewed_item(
     relative = _safe_relative(
         result.get("path"), f"Carry-forward item {queue_item.queue_id!r} path"
     )
-    for other_queue_id, other_result in target_seed["items"].items():
+    for other_queue_id, other_result in target_seed_items.items():
         if (
             other_queue_id != queue_item.queue_id
             and isinstance(other_result, dict)
@@ -1852,7 +1888,7 @@ def _carry_forward_reviewed_item(
     }
     copied_result = copy.deepcopy(result)
     copied_result["carry_forward"] = carry_record
-    target_state["items"][queue_item.queue_id] = copied_result
+    _state_items(target_state)[queue_item.queue_id] = copied_result
     return carry_record, (source_audio, audio_sha256), source_provenance
 
 
@@ -1911,8 +1947,8 @@ def _validate_failed_carry_forward_source(
         raise AuthoringWorkbenchError(
             f"Failure repair references unknown queue item {queue_id!r}"
         )
-    result = source.state["items"].get(queue_id)
-    if not isinstance(result, dict) or result.get("status") != "failed":
+    result = _state_items(source.state).get(queue_id)
+    if result is None or result.get("status") != "failed":
         raise AuthoringWorkbenchError(
             f"Failure repair requires a current failed source outcome for {queue_id!r}"
         )
@@ -1926,17 +1962,21 @@ def _validate_failed_carry_forward_source(
         result.get("generation_profile"),
         f"Offline fallback source profile for {queue_id!r}",
     )
-    strategy = selection.repair_policy.strategy_for(queue_id)
+    strategy = _required_text(
+        selection.repair_policy.strategy_for(queue_id),
+        f"Failure repair strategy for {queue_id!r}",
+    )
     fallback_authority = authority_by_queue_id.get(queue_id)
     attempts_by_provider = result.get("attempts_by_provider")
+    provider = result.get("provider")
     source_provider_attempts = (
-        attempts_by_provider.get(result.get("provider"), attempts)
-        if isinstance(attempts_by_provider, dict)
+        attempts_by_provider.get(provider, attempts)
+        if _is_json_document(attempts_by_provider) and isinstance(provider, str)
         else attempts
     )
     source_repair = result.get("failure_repair")
     source_repair_strategy = (
-        source_repair.get("strategy") if isinstance(source_repair, dict) else None
+        source_repair.get("strategy") if _is_json_document(source_repair) else None
     )
     minimum_attempts = (
         MAX_BOUNDED_TOTAL_ATTEMPTS
@@ -1968,19 +2008,22 @@ def _validate_failed_carry_forward_source(
         raise AuthoringWorkbenchError(
             f"Failure-repair source is not a compatible typed backend failure for {queue_id!r}"
         )
-    provider_attempts = None
+    provider_attempts: int | None = None
     if strategy in {BOUNDED_SEED_RETRY, INLINE_PAUSE_MARKER}:
-        provider_attempts = result.get("attempts_by_provider", {}).get(
-            result.get("provider"), attempts
+        provider_attempts_value = (
+            attempts_by_provider.get(provider, attempts)
+            if _is_json_document(attempts_by_provider) and isinstance(provider, str)
+            else attempts
         )
         if (
-            not isinstance(provider_attempts, int)
-            or isinstance(provider_attempts, bool)
-            or not 1 <= provider_attempts < 3
+            not isinstance(provider_attempts_value, int)
+            or isinstance(provider_attempts_value, bool)
+            or not 1 <= provider_attempts_value < 3
         ):
             raise AuthoringWorkbenchError(
                 f"Bounded repair source attempts are exhausted for {queue_id!r}"
             )
+        provider_attempts = provider_attempts_value
     return (
         result,
         failure,
@@ -2067,7 +2110,7 @@ def _carry_forward_failed_items(
             carry_record["source_parent_carry_forward"] = copy.deepcopy(parent_carry)
         copied_result = copy.deepcopy(result)
         copied_result["carry_forward"] = carry_record
-        target_state["items"][queue_id] = copied_result
+        _state_items(target_state)[queue_id] = copied_result
         carried.append({"queue_id": queue_id, **carry_record})
     return carried
 
@@ -2255,7 +2298,12 @@ def _validate_full_carry_forward_item(
         ),
         "synthesis_provenance_sha256": source_provenance,
     }
-    projection_ids = set(run_config.get("audio_event_spoken_projection_queue_ids", ()))
+    projection_values = run_config.get("audio_event_spoken_projection_queue_ids")
+    projection_ids = (
+        {value for value in projection_values if isinstance(value, str)}
+        if isinstance(projection_values, (list, tuple))
+        else set()
+    )
     synthesis_text = queue_item.text
     text_transform = None
     if queue_item.queue_id in projection_ids:
