@@ -1,5 +1,9 @@
+import argparse
+import os
+from collections.abc import Callable
 from pathlib import Path
 from time import monotonic, sleep
+from typing import Protocol, TypeAlias
 
 from PIL import Image
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -17,9 +21,46 @@ from vntts.window_capture import WindowCaptureTarget
 
 default_smoke_test_model = "tts_models/en/vctk/vits"
 default_auto_advance_timeout_seconds = 8.0
+PathInput: TypeAlias = str | os.PathLike[str]
+SmokeReport: TypeAlias = dict[str, object]
 
 
-def configure_release_smoke_arguments(parser):
+class _Recognition(Protocol):
+    character: str
+    text: str
+    confidence: float
+
+    def is_confident(self, minimum: float) -> bool: ...
+
+
+class _Recognizer(Protocol):
+    def __call__(
+        self,
+        image: Image.Image,
+        voice_registry: CharacterVoiceRegistry | None,
+        *,
+        minimum_confidence: float,
+    ) -> _Recognition: ...
+
+
+class _Capture(Protocol):
+    def __call__(
+        self,
+        *,
+        save_screenshot: bool,
+        capture_target: WindowCaptureTarget,
+    ) -> tuple[Image.Image, object]: ...
+
+
+class _SpeechEngine(Protocol):
+    def speak(self, text: str) -> object: ...
+
+
+class _EngineFactory(Protocol):
+    def __call__(self, *, model_name: str) -> _SpeechEngine: ...
+
+
+def configure_release_smoke_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--release-smoke-test-image")
     parser.add_argument("--release-smoke-test-window-title")
     parser.add_argument("--release-smoke-test-report")
@@ -28,7 +69,7 @@ def configure_release_smoke_arguments(parser):
     parser.add_argument("--release-smoke-test-auto-advance-expected-text")
 
 
-def _write_report(report, report_path):
+def _write_report(report: SmokeReport, report_path: PathInput | None) -> Path:
     report_path = (
         get_local_data_directory() / "release-smoke-test.json"
         if report_path is None
@@ -40,20 +81,20 @@ def _write_report(report, report_path):
 
 def run_release_smoke_test(
     *,
-    image_path=None,
-    window_title=None,
-    report_path=None,
-    model_name=default_smoke_test_model,
-    expected_speaker=None,
-    minimum_confidence=default_minimum_ocr_confidence,
-    recognize=None,
-    engine_factory=None,
-    capture=None,
-    auto_advance_expected_text=None,
-    auto_advance=None,
-    auto_advance_timeout_seconds=default_auto_advance_timeout_seconds,
-):
-    checks = []
+    image_path: PathInput | None = None,
+    window_title: str | None = None,
+    report_path: PathInput | None = None,
+    model_name: str = default_smoke_test_model,
+    expected_speaker: str | None = None,
+    minimum_confidence: float = default_minimum_ocr_confidence,
+    recognize: _Recognizer | None = None,
+    engine_factory: _EngineFactory | None = None,
+    capture: _Capture | None = None,
+    auto_advance_expected_text: str | None = None,
+    auto_advance: Callable[[], bool] | None = None,
+    auto_advance_timeout_seconds: float = default_auto_advance_timeout_seconds,
+) -> CLIReportResult:
+    checks: list[SmokeReport] = []
     recognized_text = ""
     recognized_speaker = ""
     confidence = 0.0
@@ -88,13 +129,15 @@ def run_release_smoke_test(
             }
         )
 
-        recognize = recognize or recognize_dialog_image_result
+        recognizer: _Recognizer = (
+            recognize_dialog_image_result if recognize is None else recognize
+        )
         voice_registry = None
         if expected_speaker:
             voice_registry = CharacterVoiceRegistry(
                 [CharacterVoice(expected_speaker, "release-smoke-test")]
             )
-        result = recognize(
+        result = recognizer(
             image,
             voice_registry,
             minimum_confidence=minimum_confidence,
@@ -126,8 +169,10 @@ def run_release_smoke_test(
             }
         )
 
-        engine_factory = engine_factory or TTSEngine
-        engine = engine_factory(model_name=model_name)
+        selected_engine_factory: _EngineFactory = (
+            TTSEngine if engine_factory is None else engine_factory
+        )
+        engine = selected_engine_factory(model_name=model_name)
         engine.speak(recognized_text)
         checks.append(
             {
@@ -137,10 +182,12 @@ def run_release_smoke_test(
             }
         )
         if auto_advance_expected_text:
-            auto_advance = auto_advance or (
+            assert window_title is not None
+            assert capture is not None
+            selected_auto_advance = auto_advance or (
                 lambda: _production_auto_advance(window_title)
             )
-            if auto_advance() is not True:
+            if selected_auto_advance() is not True:
                 raise RuntimeError(
                     "Production controller did not dispatch auto advance"
                 )
@@ -151,7 +198,7 @@ def run_release_smoke_test(
                     save_screenshot=False,
                     capture_target=WindowCaptureTarget(window_title),
                 )
-                advanced = recognize(
+                advanced = recognizer(
                     image,
                     voice_registry,
                     minimum_confidence=minimum_confidence,
@@ -206,7 +253,7 @@ def run_release_smoke_test(
     return CLIReportResult(successful, _write_report(report, report_path))
 
 
-def _production_auto_advance(window_title):
+def _production_auto_advance(window_title: str) -> bool:
     from vntts.controller import AppController
     from vntts.settings import AppSettings
 
@@ -219,6 +266,6 @@ def _production_auto_advance(window_title):
         )
     )
     try:
-        return controller._auto_advance_dialog()
+        return bool(controller._auto_advance_dialog())
     finally:
         controller.shutdown()

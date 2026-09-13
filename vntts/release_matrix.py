@@ -1,18 +1,34 @@
 import json
+import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
+from typing import TypeAlias
+
+PathInput: TypeAlias = str | os.PathLike[str]
+ReleaseDocument: TypeAlias = dict[str, object]
+ReleaseEvidence: TypeAlias = tuple[Path, ReleaseDocument]
 
 
-def load_release_matrix(path):
-    values = json.loads(Path(path).read_text(encoding="utf-8"))
-    profiles = values.get("required_profiles")
+def _report_integer(value: object) -> int:
+    if not isinstance(value, (str, int, float)):
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def load_release_matrix(path: PathInput) -> list[ReleaseDocument]:
+    values: ReleaseDocument = json.loads(Path(path).read_text(encoding="utf-8"))
+    profiles: object = values.get("required_profiles")
     if not isinstance(profiles, list) or not profiles:
         raise ValueError("Release matrix must contain required_profiles")
     return profiles
 
 
-def load_evidence(directory):
-    reports = []
+def load_evidence(directory: PathInput) -> list[ReleaseEvidence]:
+    reports: list[ReleaseEvidence] = []
     for path in sorted(Path(directory).rglob("*.json")):
         try:
             report = json.loads(path.read_text(encoding="utf-8"))
@@ -23,8 +39,13 @@ def load_evidence(directory):
     return reports
 
 
-def validate_release_evidence(profiles, reports, *, allow_unsigned=False):
-    errors = []
+def validate_release_evidence(
+    profiles: Sequence[ReleaseDocument],
+    reports: Sequence[ReleaseEvidence],
+    *,
+    allow_unsigned: bool = False,
+) -> list[str]:
+    errors: list[str] = []
     required = {profile["name"]: profile for profile in profiles}
     evidence = {}
     artifact_bindings = set()
@@ -48,10 +69,7 @@ def validate_release_evidence(profiles, reports, *, allow_unsigned=False):
             errors.append(f"{prefix} release test did not succeed")
         if "Windows 11" not in str(report.get("operating_system", "")):
             errors.append(f"{prefix} test did not run on Windows 11")
-        try:
-            build_number = int(report.get("build_number", 0))
-        except TypeError, ValueError:
-            build_number = 0
+        build_number = _report_integer(report.get("build_number", 0))
         if build_number < 22000:
             errors.append(f"{prefix} Windows build is older than 22000")
 
@@ -67,11 +85,10 @@ def validate_release_evidence(profiles, reports, *, allow_unsigned=False):
                     f"{prefix} {report_field} is {report.get(report_field)!r}, "
                     f"expected {profile.get(profile_field)!r}"
                 )
-        try:
-            display_count = int(report.get("display_count", 0))
-        except TypeError, ValueError:
-            display_count = 0
-        if display_count < int(profile["minimum_displays"]):
+        display_count = _report_integer(report.get("display_count", 0))
+        minimum_displays = profile["minimum_displays"]
+        assert isinstance(minimum_displays, (str, int, float))
+        if display_count < int(minimum_displays):
             errors.append(
                 f"{prefix} display_count is {display_count}, expected at least "
                 f"{profile['minimum_displays']}"

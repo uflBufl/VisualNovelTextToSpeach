@@ -4,7 +4,11 @@ import os
 import platform
 import sys
 
-from vntts.runtime_paths import find_bundled_speech_runtime, get_bundle_root
+from vntts.runtime_paths import (
+    PathInput,
+    find_bundled_speech_runtime,
+    get_bundle_root,
+)
 
 SPEECH_BACKEND_LABELS = {
     "pocket-tts": "Pocket TTS (recommended)",
@@ -15,13 +19,15 @@ SPEECH_BACKEND_LABELS = {
 _SOURCE_BACKENDS = tuple(SPEECH_BACKEND_LABELS)
 
 
-def _frozen_moss_backend_available():
+def _frozen_moss_backend_available() -> bool:
     if sys.platform == "win32" and platform.machine().casefold() in {"amd64", "x86_64"}:
         return True  # Windows x64 provisions the native runtime during setup.
     return bool(os.environ.get("VNTTS_MOSS_CPP_EXECUTABLE"))
 
 
-def packaged_speech_backend_available(backend, bundle_root=None):
+def packaged_speech_backend_available(
+    backend: str, bundle_root: PathInput | None = None
+) -> bool:
     bundle_root = get_bundle_root() if bundle_root is None else bundle_root
     if bundle_root is None:
         return backend in _SOURCE_BACKENDS
@@ -34,7 +40,9 @@ def packaged_speech_backend_available(backend, bundle_root=None):
     return False
 
 
-def speech_backend_options(current_backend, bundle_root=None):
+def speech_backend_options(
+    current_backend: str | None, bundle_root: PathInput | None = None
+) -> tuple[tuple[str, str, bool], ...]:
     bundle_root = get_bundle_root() if bundle_root is None else bundle_root
     if bundle_root is None:
         return tuple(

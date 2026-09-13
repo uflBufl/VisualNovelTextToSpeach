@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -153,7 +154,13 @@ def _sha256(path: Path) -> str:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def _run_checked(run, command, *, environment=None, capture_output=False):
+def _run_checked(
+    run: Callable[..., object],
+    command: Sequence[object],
+    *,
+    environment: Mapping[str, str] | None = None,
+    capture_output: bool = False,
+) -> object:
     return run(
         [str(value) for value in command],
         check=True,
@@ -184,8 +191,8 @@ def _probe_relocated_runtime(
     speech_runtimes: Path,
     *,
     platform_name: str,
-    run,
-) -> dict:
+    run: Callable[..., object],
+) -> dict[str, object]:
     with TemporaryDirectory(prefix="vntts-runtime-relocation-") as directory:
         relocated = Path(directory) / "speech-runtimes"
         shutil.copytree(speech_runtimes, relocated, symlinks=True)
@@ -196,16 +203,34 @@ def _probe_relocated_runtime(
             (interpreter, "-I", "-B", "-c", _probe_script()),
             capture_output=True,
         )
-        report = json.loads(completed.stdout)
+        stdout = getattr(completed, "stdout", None)
+        if not isinstance(stdout, str):
+            raise RuntimeError("Runtime probe did not return JSON on stdout")
+        parsed: object = json.loads(stdout)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Runtime probe returned a non-object JSON value")
+        report: dict[str, object] = parsed
+        executable = report.get("executable")
+        prefix = report.get("prefix")
+        base_prefix = report.get("base_prefix")
+        modules = report.get("modules")
+        if not (
+            isinstance(executable, str)
+            and isinstance(prefix, str)
+            and isinstance(base_prefix, str)
+        ):
+            raise RuntimeError("Runtime probe returned invalid path data")
+        if not isinstance(modules, dict):
+            raise RuntimeError("Runtime probe returned invalid module data")
         allowed_root = relocated.resolve()
         origins = {
-            "interpreter": Path(report["executable"]),
-            "prefix": Path(report["prefix"]),
-            "base_prefix": Path(report["base_prefix"]),
+            "interpreter": Path(executable),
+            "prefix": Path(prefix),
+            "base_prefix": Path(base_prefix),
             **{
                 f"module:{name}": Path(origin)
-                for name, origin in report["modules"].items()
-                if origin
+                for name, origin in modules.items()
+                if isinstance(name, str) and isinstance(origin, str) and origin
             },
         }
         escaped = {
@@ -222,13 +247,13 @@ def _probe_relocated_runtime(
 
 
 def stage_pocket_runtime(
-    project_root,
-    destination,
+    project_root: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
     *,
-    uv_executable="uv",
-    python_version=PYTHON_VERSION,
-    platform_name=sys.platform,
-    run=subprocess.run,
+    uv_executable: str | os.PathLike[str] = "uv",
+    python_version: str = PYTHON_VERSION,
+    platform_name: str = sys.platform,
+    run: Callable[..., object] = subprocess.run,
 ) -> Path:
     project_root = Path(project_root).resolve()
     destination = Path(destination).resolve()
@@ -367,7 +392,7 @@ def stage_pocket_runtime(
     return manifest_path
 
 
-def main(argv=None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Stage the locked Pocket TTS runtime for a release bundle."
     )
