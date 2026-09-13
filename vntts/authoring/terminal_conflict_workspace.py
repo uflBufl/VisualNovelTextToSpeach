@@ -16,6 +16,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    AuthoritySnapshot,
     assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
@@ -35,6 +36,10 @@ from vntts.authoring.publication import (
 from vntts.authoring.reconciliation_schema import (
     AuthoringReconciliationSchemaError,
     validate_authoring_reconciliation_document,
+)
+from vntts.authoring.terminal_conflict_records import (
+    TerminalConflictWorkspaceLedger,
+    TerminalConflictWorkspaceSource,
 )
 from vntts.authoring.terminal_conflict_resolution import (
     TerminalConflictResolutionError,
@@ -70,10 +75,10 @@ from vntts.authoring.workspace_state import load_stable_workspace_generation_sta
 
 
 def merge_terminal_conflict_resolution(
-    base_workspace,
-    successor_directory,
-    workspaces_root=None,
-):
+    base_workspace: str | Path,
+    successor_directory: str | Path,
+    workspaces_root: str | Path | None = None,
+) -> WorkspaceCreationResult:
     """Create one immutable-config workspace from completed conflict choices."""
     successor_root = Path(successor_directory).expanduser().resolve()
     try:
@@ -141,7 +146,10 @@ def merge_terminal_conflict_resolution(
         )
     records = successor["resolved_terminal_conflicts"]
     resolution_by_id = {item["queue_id"]: item for item in resolution["resolutions"]}
-    report_conflicts = {item["queue_id"]: item for item in report["terminal_conflicts"]}
+    report_conflicts = {
+        item["queue_id"]: item
+        for item in _object_records(report["terminal_conflicts"], "terminal conflicts")
+    }
     if (
         {item["queue_id"] for item in records} != set(resolution_by_id)
         or set(resolution_by_id) != set(report_conflicts)
@@ -165,11 +173,14 @@ def merge_terminal_conflict_resolution(
         raise AuthoringWorkbenchError(
             "Terminal conflict merge must use the reconciled primary workspace"
         )
-    report_workspaces = {item["workspace_id"]: item for item in report["workspaces"]}
+    report_workspaces = {
+        item["workspace_id"]: item
+        for item in _object_records(report["workspaces"], "workspaces")
+    }
     base_report = report_workspaces.get(base_document["workspace_id"])
     if (
         base_report is None
-        or Path(base_report["workspace"]).resolve() != base_directory
+        or Path(_record_text(base_report, "workspace")).resolve() != base_directory
     ):
         raise AuthoringWorkbenchError(
             "Terminal conflict base workspace differs from its reconciliation"
@@ -195,11 +206,11 @@ def merge_terminal_conflict_resolution(
     resolution_records = {item["queue_id"]: item for item in resolution["resolutions"]}
     selected_items = {}
     selected_audio = {}
-    selected_snapshots = []
+    selected_snapshots: list[AuthoritySnapshot | tuple[Path, str]] = []
     source_directories = {base_directory}
-    source_records = {}
-    source_counts = Counter()
-    ledgers = []
+    source_records: dict[str, TerminalConflictWorkspaceSource] = {}
+    source_counts: Counter[str] = Counter()
+    ledgers: list[TerminalConflictWorkspaceLedger] = []
     for projected in records:
         queue_id = projected["queue_id"]
         resolved = resolution_records[queue_id]
@@ -331,7 +342,7 @@ def merge_terminal_conflict_resolution(
             raise AuthoringWorkbenchError(
                 f"Terminal conflict source was already resolved: {queue_id}"
             )
-        ledger = {
+        ledger: TerminalConflictWorkspaceLedger = {
             "queue_id": queue_id,
             "source_workspace_id": source_document["workspace_id"],
             "source_state_sha256": state_snapshot.sha256,
@@ -435,8 +446,8 @@ def merge_terminal_conflict_resolution(
         output = staging / "generated-audio"
         output.mkdir()
         target_state = copy.deepcopy(base_state)
-        path_owners = {}
-        for queue_id, result in base_state["items"].items():
+        path_owners: dict[str, str] = {}
+        for queue_id, result in _generation_state_items(base_state).items():
             if not isinstance(result, dict) or not isinstance(result.get("path"), str):
                 continue
             relative = safe_workspace_relative_path(
@@ -469,13 +480,13 @@ def merge_terminal_conflict_resolution(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(payload)
             base_snapshots.append((source_audio_path, digest))
-        for ledger in ledgers:
-            queue_id = ledger["queue_id"]
+        for merge_ledger in ledgers:
+            queue_id = merge_ledger["queue_id"]
             source_item = selected_items[queue_id]
             relative = safe_workspace_relative_path(
                 source_item["path"], f"Conflict result {queue_id!r} path"
             )
-            previous = target_state["items"].get(queue_id)
+            previous = _generation_state_items(target_state).get(queue_id)
             previous_path = previous.get("path") if isinstance(previous, dict) else None
             if previous_path and previous_path != relative.as_posix():
                 previous_target = contained_workspace_path(
@@ -487,10 +498,10 @@ def merge_terminal_conflict_resolution(
                 )
                 if previous_target.is_file():
                     previous_target.unlink()
-            owner = path_owners.get(relative.as_posix())
-            if owner not in {None, queue_id}:
+            conflict_owner = path_owners.get(relative.as_posix())
+            if conflict_owner not in {None, queue_id}:
                 raise AuthoringWorkbenchError(
-                    f"Terminal conflict WAV path collides with {owner!r}"
+                    f"Terminal conflict WAV path collides with {conflict_owner!r}"
                 )
             target = contained_workspace_path(
                 output, relative, "Resolved terminal conflict WAV"
@@ -499,9 +510,9 @@ def merge_terminal_conflict_resolution(
             target.write_bytes(selected_audio[queue_id].payload)
             copied = copy.deepcopy(source_item)
             copied["terminal_conflict_resolution"] = {
-                key: value for key, value in ledger.items() if key != "queue_id"
+                key: value for key, value in merge_ledger.items() if key != "queue_id"
             }
-            target_state["items"][queue_id] = copied
+            _generation_state_items(target_state)[queue_id] = copied
         atomic_write_json(
             output / "generation-state.json", target_state, sort_keys=True
         )
@@ -548,7 +559,7 @@ def merge_terminal_conflict_resolution(
                             "Terminal conflict base changed before workspace publication"
                         )
                 for snapshot in selected_snapshots:
-                    if hasattr(snapshot, "payload"):
+                    if isinstance(snapshot, AuthoritySnapshot):
                         assert_authority_snapshot(snapshot, "terminal conflict source")
                     else:
                         path, digest = snapshot
@@ -604,7 +615,6 @@ def merge_terminal_conflict_resolution(
                     ) from error
                 for lease in held_leases:
                     lease.mark_committed()
-                staging = None
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(
                 f"Terminal conflict source became active before publication: {error}"
@@ -612,9 +622,29 @@ def merge_terminal_conflict_resolution(
     except (AuthoringAuthorityError, OSError) as error:
         raise AuthoringWorkbenchError(str(error)) from error
     finally:
-        if staging is not None and staging.exists():
+        if staging.exists():
             shutil.rmtree(staging)
     return WorkspaceCreationResult(destination, True)
+
+
+def _object_records(value: object, label: str) -> list[dict[str, object]]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise AuthoringWorkbenchError(f"Terminal conflict {label} are malformed")
+    return value
+
+
+def _generation_state_items(state: dict[str, object]) -> dict[str, object]:
+    items = state.get("items")
+    if not isinstance(items, dict):
+        raise AuthoringWorkbenchError("Generation state items are malformed")
+    return items
+
+
+def _record_text(record: dict[str, object], field: str) -> str:
+    value = record.get(field)
+    if not isinstance(value, str):
+        raise AuthoringWorkbenchError(f"Terminal conflict record {field} is malformed")
+    return value
 
 
 __all__ = ["merge_terminal_conflict_resolution"]
