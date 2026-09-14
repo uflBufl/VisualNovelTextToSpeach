@@ -3612,6 +3612,7 @@ class MainTest(unittest.TestCase):
 
     def test_unsynchronized_sequence_miss_does_not_enqueue_empty_tts(self):
         canonical = "A complete canonical line that is still being rendered."
+        pipeline = []
         preloader = ChapterVoicePreloader(
             (
                 ChapterDialogue(
@@ -3634,6 +3635,9 @@ class MainTest(unittest.TestCase):
             tts_factory=Mock(),
             chapter_voice_preloader=preloader,
             live_sequence_plan_factory=Mock(return_value=plan),
+            pipeline_event_handler=lambda *args, **kwargs: pipeline.append(
+                (args, kwargs)
+            ),
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock()
@@ -3646,6 +3650,15 @@ class MainTest(unittest.TestCase):
         self.assertFalse(accepted)
         controller.live_reader.enqueue.assert_not_called()
         self.assertEqual(controller.story_cursor.state, StoryCursorState.UNSYNCHRONIZED)
+        miss = next(
+            event for event in pipeline if event[0][0] == "sequence-candidate-miss"
+        )
+        self.assertEqual(
+            miss[1]["candidate_rejection_reason"],
+            "incomplete-typewriter-text",
+        )
+        self.assertRegex(miss[1]["normalized_text_sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn("A complete canonical", repr(miss))
 
     def test_stable_completion_cue_closes_current_prefix_without_advancing(self):
         canonical = "Sharpodonties, sir."

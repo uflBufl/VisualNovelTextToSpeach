@@ -522,6 +522,16 @@ class ChapterVoicePreloaderTest(unittest.TestCase):
         self.assertEqual(ambiguous_result, "expected-ambiguous")
         self.assertIsNone(short)
         self.assertEqual(short_result, "expected-no-match")
+        diagnostics = preloader.last_resolution_diagnostics
+        self.assertEqual(
+            diagnostics["normalized_text_sha256"],
+            hashlib.sha256(b"the").hexdigest(),
+        )
+        self.assertEqual(diagnostics["speaker_candidate_count"], 1)
+        self.assertEqual(
+            diagnostics["candidate_rejection_reason"],
+            "bounded-threshold-not-met",
+        )
 
     def test_bounded_resolution_does_not_select_short_line_before_longer_prefix(self):
         rows = []

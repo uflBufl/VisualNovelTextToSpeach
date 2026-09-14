@@ -744,8 +744,9 @@ class AppController:
             "similarity" in normalized_result and coverage < 0.9
         ):
             self.chapter_voice_preloader.current_match = previous_match
-            self.chapter_voice_preloader.last_resolution_diagnostics["match_result"] = (
-                "expected-incomplete"
+            self.chapter_voice_preloader.last_resolution_diagnostics.update(
+                match_result="expected-incomplete",
+                candidate_rejection_reason="incomplete-typewriter-text",
             )
             return None, "expected-incomplete"
         return line, match_result
@@ -1565,6 +1566,8 @@ class AppController:
         if line is not None and line.line_id is not None:
             return False
         generation = self.live_reader.active_generation if self.live_reader else 0
+        diagnostics = dict(self.chapter_voice_preloader.last_resolution_diagnostics)
+        diagnostics.pop("match_result", None)
         self.pipeline_event_handler(
             "sequence-candidate-miss",
             generation,
@@ -1573,6 +1576,7 @@ class AppController:
             event_id=previous_event_id,
             candidate_event_ids=tuple(event.event_id for event in candidate_events),
             match_result=match_result,
+            **diagnostics,
         )
         self._publish_live_sequence_status()
         return True
@@ -3091,9 +3095,9 @@ class AppController:
             if outcome is None:
                 raise TypeError("Speech backend does not implement typed playback")
             result = outcome.successful
-            audible = isinstance(outcome.first_audio_ms, (int, float)) and not isinstance(
-                outcome.first_audio_ms, bool
-            )
+            audible = isinstance(
+                outcome.first_audio_ms, (int, float)
+            ) and not isinstance(outcome.first_audio_ms, bool)
             if not result and not chunk.explicit_replay:
                 reader.block_auto_advance_for_generation(
                     chunk.generation,

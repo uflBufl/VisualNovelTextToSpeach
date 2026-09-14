@@ -41,13 +41,13 @@ Planned implementation order after approval:
       outcome, manual mode dispatches no key, and `Wait...` remains speech. If the
       failure recurs, collect the support archive to identify which already logged
       boundary rejected the silent event before changing code.
-- [ ] **Investigate after session logging:** classify and eliminate avoidable
-      `story-line-no-match` live fallbacks. The
-      captured timeline contains ten fresh-MOSS no-match routes while the prepared
-      story was active. Record the normalized-text hash and length, speaker match,
-      cursor candidates and rejection reasons; use the prepared WAV whenever a
-      candidate is valid, and reserve live TTS for a proven out-of-pack line. Do not
-      loosen matching heuristics until every captured miss has a rejection reason.
+- [ ] **Investigate from one fresh support archive:** `story-line-no-match` now
+      records normalized OCR text/speaker hashes, lengths, eligible and
+      speaker-matching candidate counts, missing identities, best bounded evidence
+      and a concrete rejection reason without storing dialogue. Reproduce the ten
+      prepared-story misses, classify each rejection, then fix only the proven
+      boundary. Gate: every captured miss has a reason, valid candidates use the
+      prepared WAV, and only proven out-of-pack lines reach live TTS.
 - [ ] **Validate on Windows:** resume the supplied 682-line story with the recovery
       fix and confirm that the two short `I ...` lines are repaired while the two
       exhausted MOSS lines become live fallbacks without aborting pack publication. The latest

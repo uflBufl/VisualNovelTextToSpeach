@@ -5,6 +5,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from hashlib import sha256
 from os.path import commonprefix
 from pathlib import Path
 
@@ -348,9 +349,16 @@ class ChapterVoicePreloader:
         self.last_resolution_diagnostics = {
             "indexed_line_count": len(self.dialogue),
             "indexed_chapter_count": len(self.by_chapter),
+            "allowed_line_count": len(allowed),
             "eligible_line_count": len(valid),
             "normalized_text_characters": len(normalized_text),
             "normalized_text_tokens": len(normalized_text.split()),
+            "normalized_text_sha256": sha256(normalized_text.encode()).hexdigest(),
+            "normalized_speaker_sha256": sha256(speaker_key.encode()).hexdigest(),
+            "speaker_candidate_count": sum(
+                _normalize(candidate.speaker) == speaker_key for candidate in valid
+            ),
+            "missing_identity_candidate_count": len(allowed) - len(valid),
             "exact_speaker_candidate_count": sum(
                 _normalize(candidate.speaker) == speaker_key
                 and _normalize_exact_text(candidate.text) == exact_text
@@ -369,6 +377,10 @@ class ChapterVoicePreloader:
         line, match_result = self.resolve_exact_among(character, text, allowed)
         if line is not None or not allowed:
             self.last_resolution_diagnostics["match_result"] = match_result
+            if line is None:
+                self.last_resolution_diagnostics["candidate_rejection_reason"] = (
+                    "no-expected-candidates"
+                )
             return line, match_result
         ranked = []
         best_evidence = None
@@ -410,12 +422,18 @@ class ChapterVoicePreloader:
                 best_bounded_coverage=round(best_evidence["coverage"], 4),
             )
         if not ranked:
-            self.last_resolution_diagnostics["match_result"] = "expected-no-match"
+            self.last_resolution_diagnostics.update(
+                match_result="expected-no-match",
+                candidate_rejection_reason="bounded-threshold-not-met",
+            )
             return None, "expected-no-match"
         ranked.sort(reverse=True, key=lambda item: (item[0], item[1]))
         best = ranked[0]
         if len(ranked) > 1 and best[0] - ranked[1][0] < 0.08:
-            self.last_resolution_diagnostics["match_result"] = "expected-ambiguous"
+            self.last_resolution_diagnostics.update(
+                match_result="expected-ambiguous",
+                candidate_rejection_reason="competing-candidates",
+            )
             return None, "expected-ambiguous"
         selected = best[2]
         self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)

@@ -594,6 +594,10 @@ class RuntimeSupportLogTest(unittest.TestCase):
             match_result="expected-no-match",
             eligible_line_count=42,
             normalized_text_characters=25,
+            normalized_text_sha256="a" * 64,
+            normalized_speaker_sha256="b" * 64,
+            speaker_candidate_count=3,
+            candidate_rejection_reason="bounded-threshold-not-met",
             best_candidate_line_id="reverse1999:314605:87",
             best_bounded_similarity=0.73,
             raw_text="private dialogue",
@@ -604,6 +608,12 @@ class RuntimeSupportLogTest(unittest.TestCase):
 
         self.assertEqual(entry["eligible_line_count"], 42)
         self.assertEqual(entry["best_bounded_similarity"], 0.73)
+        self.assertEqual(entry["normalized_text_sha256"], "a" * 64)
+        self.assertEqual(entry["speaker_candidate_count"], 3)
+        self.assertEqual(
+            entry["candidate_rejection_reason"],
+            "bounded-threshold-not-met",
+        )
         self.assertNotIn("raw_text", entry)
         self.assertNotIn("private dialogue", repr(entry))
 
