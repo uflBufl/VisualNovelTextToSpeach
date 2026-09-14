@@ -1405,7 +1405,7 @@ class GeneratedAudioTest(unittest.TestCase):
             [10.0, 10.0, 10.0],
         )
 
-    def test_stop_aborts_active_explicit_generated_stream(self):
+    def test_stop_leaves_explicit_stream_teardown_to_owner(self):
         entered = Event()
         released = Event()
         audio_output = ExplicitStreamAudioOutput()
@@ -1420,12 +1420,7 @@ class GeneratedAudioTest(unittest.TestCase):
                 released.wait(1)
                 return False
 
-            def abort():
-                stream.aborted = True
-                released.set()
-
             stream.write = write
-            stream.abort = abort
             return stream
 
         audio_output.OutputStream = blocking_stream
@@ -1447,10 +1442,11 @@ class GeneratedAudioTest(unittest.TestCase):
         worker.start()
         self.assertTrue(entered.wait(1))
         self.assertTrue(backend.stop())
+        self.assertFalse(audio_output.streams[0].aborted)
+        released.set()
         worker.join(1)
 
         self.assertFalse(worker.is_alive())
-        self.assertTrue(audio_output.streams[0].aborted)
         self.assertIs(outcomes[0].status, PlaybackStatus.INTERRUPTED)
 
     def test_generated_guard_change_during_wait_returns_interrupted(self):

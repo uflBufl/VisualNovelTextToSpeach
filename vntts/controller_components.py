@@ -630,7 +630,7 @@ class RuntimeLifecycleComponent:
         if controller.live_reader is not None:
             controller.live_reader.emergency_stop()
             try:
-                controller.live_reader.wait()
+                controller.live_reader.wait(timeout_seconds=5.0)
             except Exception as error:
                 controller.error_handler(error)
             controller.live_reader = None

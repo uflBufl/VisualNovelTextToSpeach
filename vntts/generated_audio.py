@@ -21,7 +21,11 @@ from vntts_artifacts.generated_audio import (
     load_generated_audio_document,
 )
 
-from vntts.audio_output import match_output_sample_rate, resolve_audio_output
+from vntts.audio_output import (
+    match_output_sample_rate,
+    resolve_audio_output,
+    write_pcm_chunks,
+)
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.playback import PlaybackOutcome, PlaybackStatus
 from vntts.settings import audio_source_policies
@@ -1106,7 +1110,16 @@ class GeneratedAudioFallbackBackend:
                         latency=self.playback_latency,
                     ) as stream:
                         self.active_generated_stream = stream
-                        underflowed = bool(stream.write(samples.reshape(-1, 1)))
+                        completed, underflowed = write_pcm_chunks(
+                            stream,
+                            samples,
+                            sample_rate,
+                            lambda: self.generated_audio_stop.is_set()
+                            or (
+                                playback_guard is not None
+                                and not playback_guard()
+                            ),
+                        )
                 else:
                     self.audio_output.play(
                         samples,
@@ -1115,10 +1128,11 @@ class GeneratedAudioFallbackBackend:
                     )
                     status = self.audio_output.wait()
                     underflowed = bool(getattr(status, "output_underflow", False))
+                    completed = not self.generated_audio_stop.is_set()
                 playable = playback_guard is None or bool(playback_guard())
                 playback_status = (
                     PlaybackStatus.INTERRUPTED
-                    if self.generated_audio_stop.is_set() or not playable
+                    if not completed or not playable
                     else PlaybackStatus.COMPLETED
                 )
                 return _route_outcome(
@@ -1228,15 +1242,6 @@ class GeneratedAudioFallbackBackend:
             self.source_audio_completion_stop.set()
         elif self.active_playback_source == "generated":
             self.generated_audio_stop.set()
-            stream = self.active_generated_stream
-            if stream is not None:
-                abort = getattr(stream, "abort", None)
-                if callable(abort):
-                    abort()
-                else:
-                    stream.stop()
-            else:
-                self.audio_output.stop()
         return bool(self.live_backend.stop()) or was_playing
 
 

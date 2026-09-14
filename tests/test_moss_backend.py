@@ -610,7 +610,7 @@ class MossTTSBackendTest(unittest.TestCase):
         ):
             backend.prepare("Narrator", "Once upon a time.")
 
-    def test_stop_aborts_active_stream(self):
+    def test_stop_does_not_touch_stream_owned_by_playback_thread(self):
         backend, _model, output = self.create_backend()
         backend.playback_active = True
         stream = output.OutputStream()
@@ -618,9 +618,9 @@ class MossTTSBackendTest(unittest.TestCase):
 
         self.assertTrue(backend.stop())
 
-        self.assertTrue(stream.aborted)
+        self.assertFalse(stream.aborted)
 
-    def test_stop_aborts_and_joins_the_owned_blocked_stream(self):
+    def test_stop_waits_for_the_owner_to_close_a_blocked_stream(self):
         output = BlockingAudioOutput()
         backend, _model, _output = self.create_backend(audio_output=output)
         prepared = backend.prepare_playback("Narrator", "Stop this stream.")
@@ -630,15 +630,16 @@ class MossTTSBackendTest(unittest.TestCase):
         self.assertTrue(output.write_started.wait(timeout=1))
 
         self.assertTrue(backend.stop())
+        self.assertFalse(output.streams[0].aborted)
+        output.release_write.set()
         thread.join(timeout=1)
 
         self.assertFalse(thread.is_alive())
         self.assertEqual(outcomes[0].status, PlaybackStatus.INTERRUPTED)
-        self.assertTrue(output.streams[0].aborted)
         self.assertIsNone(backend.active_stream)
         self.assertFalse(backend.playback_active)
 
-    def test_ignored_abort_fails_but_retains_stream_ownership(self):
+    def test_ignored_cancellation_fails_but_retains_stream_ownership(self):
         output = BlockingAudioOutput(abort_unblocks=False)
         backend, _model, _output = self.create_backend(
             audio_output=output,

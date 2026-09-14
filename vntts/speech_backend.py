@@ -1492,13 +1492,6 @@ class PocketTTSVoiceRouterBackend:
         generation_cancel = self.active_generation_cancel
         if generation_cancel is not None:
             generation_cancel.set()
-        with self.active_stream_lock:
-            stream = self.active_stream
-        if stream is not None:
-            try:
-                stream.abort()
-            except Exception:
-                pass
         return was_playing
 
     def _write_chunks(
@@ -2310,17 +2303,10 @@ class MossTTSVoiceRouterBackend:
             consumer.join(timeout=self.playback_consumer_join_timeout)
             if consumer.is_alive():
                 self.playback_stop.set()
-                with self.active_stream_lock:
-                    stream = self.active_stream
-                if stream is not None:
-                    try:
-                        stream.abort()
-                    except Exception:
-                        pass
                 consumer.join(timeout=self.playback_consumer_join_timeout)
                 if consumer.is_alive():
                     raise AudioPlaybackError(
-                        "MOSS playback stream ignored abort and remains active"
+                        "MOSS playback stream ignored cancellation and remains active"
                     )
         error = playback_result["error"]
         if error is not None:
@@ -2393,13 +2379,6 @@ class MossTTSVoiceRouterBackend:
         self.playback_cancel_requested.set()
         self.playback_stop.set()
         self._close_active_generation()
-        with self.active_stream_lock:
-            stream = self.active_stream
-        if stream is not None:
-            try:
-                stream.abort()
-            except Exception:
-                pass
         return was_playing
 
     def _cancelled(self, playback_guard: PlaybackGuard) -> bool:

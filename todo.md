@@ -128,21 +128,13 @@ Planned implementation order after approval:
 
 ## P0 - Stabilize Windows audio and the OpenMOSS runtime
 
-- [ ] **Investigate, then fix one device-quiescence boundary:** fix the Windows native audio
-      teardown crash captured on 2026-09-14. The host
-      `python.exe` failed with access violation `0xc0000005` in
-      `msvcrt.dll+0x74452`; the dump places `wdmaud.drv` on the crashing stack and
-      loads PortAudio. The last MOSS request completed successfully before the
-      crash, after which a short playback was interrupted and live reading restarted
-      in the same second. Both prepared-audio and live-TTS stop paths may call
-      PortAudio from a non-owner thread. The caller may only request cancellation;
-      the worker that owns the device performs stop/abort/close. First record
-      owner/reason events and make `LiveDialogReader.wait` include all speech and
-      playback futures. Then expose one bounded quiesce wait used before reader
-      replacement across both backends. Do not paper over ownership with a shared
-      lock that can deadlock against callbacks. Stress focus loss plus stop/restart
-      at short-stream completion. Gate: no native
-      crash, stale audio or overlapping output stream on Windows.
+- [ ] **Validate on Windows:** the captured `wdmaud.drv`/PortAudio teardown race
+      now has owner-thread-only stream teardown, cancellable 50 ms PCM writes and a
+      bounded reader quiescence barrier covering capture, OCR, synthesis and
+      playback before restart or shutdown. Stress focus loss plus stop/restart at
+      short-stream completion. Gate: no native crash, stale audio or overlapping
+      output stream; the support archive records matching stream owner and lifecycle
+      events.
 - [ ] **Ready, with Windows verification:** ensure a managed OpenMOSS server cannot
       survive an application crash. On Windows, launch it in an owned Job Object
       with kill-on-close semantics so normal exit, fatal Python/Qt failure and

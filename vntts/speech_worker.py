@@ -1583,12 +1583,6 @@ class IsolatedSpeechBackend:
     def stop(self) -> bool:
         was_active = self._active_stream is not None or self._request_lock.locked()
         self._stop_requested.set()
-        stream = self._active_stream
-        if stream is not None:
-            try:
-                stream.abort()
-            except Exception:
-                pass
         if self._request_lock.locked():
             self._terminate_process(self.process)
         return was_active

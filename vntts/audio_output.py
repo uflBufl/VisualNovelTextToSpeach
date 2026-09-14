@@ -322,6 +322,29 @@ def match_output_sample_rate(
     return resampled, target_sample_rate
 
 
+def write_pcm_chunks(
+    stream: StreamingAudioStream,
+    audio: AudioData,
+    sample_rate: int,
+    cancelled: Callable[[], bool],
+) -> tuple[bool, bool]:
+    """Write short blocks so only the owner thread ever stops the device."""
+    samples = np.asarray(audio, dtype=np.float32)
+    if samples.ndim == 1:
+        samples = samples.reshape(-1, 1)
+    block_frames = max(1, sample_rate // 20)
+    underflowed = False
+    wrote = False
+    for offset in range(0, len(samples), block_frames):
+        if cancelled():
+            return False, underflowed
+        underflowed = (
+            bool(stream.write(samples[offset : offset + block_frames])) or underflowed
+        )
+        wrote = True
+    return wrote and not cancelled(), underflowed
+
+
 class SynchronousPcmPlaybackMixin:
     """Shared locking, cancellation and metrics for blocking PCM output."""
 
@@ -366,23 +389,26 @@ class SynchronousPcmPlaybackMixin:
                     self._prepare_audio(prepared.payload),
                     self.sample_rate,
                 )
-                # Live guards may wait for Resume; never hold the lock needed by Stop.
-                guard_allows_playback = playback_guard is None or playback_guard()
-                with self.playback_state_lock:
-                    interrupted = stop_requested.is_set() or not guard_allows_playback
-                    if not interrupted:
-                        audio_output.play(
-                            audio,
-                            playback_sample_rate,
-                            latency=self.playback_latency,
+                with audio_output.OutputStream(
+                    samplerate=playback_sample_rate,
+                    channels=1,
+                    dtype="float32",
+                    latency=self.playback_latency,
+                ) as stream:
+                    def cancelled() -> bool:
+                        return stop_requested.is_set() or (
+                            playback_guard is not None and not playback_guard()
                         )
+
+                    if len(audio) and not cancelled():
                         first_audio_ms = (self.clock() - started) * 1000
-                if not interrupted:
-                    playback_status = audio_output.wait()
-                    underflowed = self._playback_underflowed(playback_status)
-                    interrupted = stop_requested.is_set() or (
-                        playback_guard is not None and not playback_guard()
+                    completed, underflowed = write_pcm_chunks(
+                        stream,
+                        audio,
+                        playback_sample_rate,
+                        cancelled,
                     )
+                interrupted = not completed
             except Exception as error:
                 if stop_requested.is_set():
                     return outcome_for_prepared(
@@ -417,8 +443,6 @@ class SynchronousPcmPlaybackMixin:
             stop_requested = self.active_playback_stop
             if was_playing and stop_requested is not None:
                 stop_requested.set()
-            if was_playing and self.audio_output is not None:
-                self.audio_output.stop()
         return was_playing
 
     def _resolve_audio_output(self) -> AudioOutput:
@@ -437,4 +461,5 @@ __all__ = [
     "match_output_sample_rate",
     "playback_underflowed",
     "resolve_audio_output",
+    "write_pcm_chunks",
 ]

@@ -149,7 +149,7 @@ class FakeOutputStream:
 
     def write(self, audio):
         self.writes.append(np.asarray(audio))
-        return False
+        return self.owner.write_results.pop(0) if self.owner.write_results else False
 
     def abort(self):
         self.aborted = True
@@ -158,6 +158,16 @@ class FakeOutputStream:
 class FakeStreamingAudioOutput:
     def __init__(self):
         self.streams = []
+        self.write_results = []
+        self.sample_rate = 24_000
+
+    def query_devices(self, *, kind):
+        del kind
+        return {"default_samplerate": self.sample_rate}
+
+    def get_stream(self):
+        status = Mock(output_underflow=any(self.write_results))
+        return Mock(status=status)
 
     def OutputStream(self, **options):
         return FakeOutputStream(self, **options)
@@ -165,20 +175,27 @@ class FakeStreamingAudioOutput:
 
 class BlockingAudioOutput:
     def __init__(self):
-        self.entered_wait = Event()
-        self.release_wait = Event()
-        self.play_calls = []
-        self.stop_calls = 0
+        self.entered_write = Event()
+        self.release_write = Event()
+        self.streams = []
+        self.write_results = []
+        self.sample_rate = 24_000
 
-    def play(self, *arguments, **options):
-        self.play_calls.append((arguments, options))
+    def query_devices(self, *, kind):
+        del kind
+        return {"default_samplerate": self.sample_rate}
 
-    def wait(self):
-        self.entered_wait.set()
-        self.release_wait.wait(timeout=1)
+    def OutputStream(self, **options):
+        stream = FakeOutputStream(self, **options)
+        original_write = stream.write
 
-    def stop(self):
-        self.stop_calls += 1
+        def write(audio):
+            self.entered_write.set()
+            self.release_write.wait(timeout=1)
+            return original_write(audio)
+
+        stream.write = write
+        return stream
 
 
 class ChatterboxNanoBackendTest(unittest.TestCase):
@@ -311,8 +328,8 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         )
 
     def test_output_underflow_disables_concurrent_prefetch(self):
-        audio_output = Mock()
-        audio_output.get_stream.return_value.status.output_underflow = True
+        audio_output = FakeStreamingAudioOutput()
+        audio_output.write_results = [True]
         backend, _model = self.create_backend(
             CharacterVoiceRegistry(),
             audio_output=audio_output,
@@ -547,20 +564,19 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
         outcomes = []
         thread = Thread(target=lambda: outcomes.append(backend.play_prepared(prepared)))
         thread.start()
-        self.assertTrue(audio_output.entered_wait.wait(timeout=1))
+        self.assertTrue(audio_output.entered_write.wait(timeout=1))
 
         self.assertTrue(backend.stop())
-        audio_output.release_wait.set()
+        self.assertFalse(audio_output.streams[0].aborted)
+        audio_output.release_write.set()
         thread.join(timeout=1)
 
         self.assertFalse(thread.is_alive())
         self.assertEqual(outcomes[0].status, PlaybackStatus.INTERRUPTED)
-        self.assertEqual(audio_output.stop_calls, 1)
         self.assertFalse(backend.stop())
-        self.assertEqual(audio_output.stop_calls, 1)
 
     def test_play_uses_backend_sample_rate_and_volume(self):
-        audio_output = Mock()
+        audio_output = FakeStreamingAudioOutput()
         backend, _model = self.create_backend(
             CharacterVoiceRegistry(),
             audio_output=audio_output,
@@ -569,14 +585,14 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
 
         self.assertTrue(backend.play(np.array([0.0, 1.0, 1.0, 0.0])))
 
-        played_audio, sample_rate = audio_output.play.call_args.args
-        self.assertEqual(sample_rate, 24_000)
+        stream = audio_output.streams[0]
+        played_audio = np.concatenate(stream.writes)
+        self.assertEqual(stream.options["samplerate"], 24_000)
         self.assertLessEqual(float(np.max(played_audio)), 0.5)
-        audio_output.wait.assert_called_once_with()
 
     def test_play_resamples_nano_audio_to_the_native_output_rate(self):
-        audio_output = Mock()
-        audio_output.query_devices.return_value = {"default_samplerate": 48_000.0}
+        audio_output = FakeStreamingAudioOutput()
+        audio_output.sample_rate = 48_000
         backend, _model = self.create_backend(
             CharacterVoiceRegistry(),
             audio_output=audio_output,
@@ -584,8 +600,9 @@ class ChatterboxNanoBackendTest(unittest.TestCase):
 
         backend.play(np.linspace(-0.5, 0.5, 24_000, dtype=np.float32))
 
-        played_audio, sample_rate = audio_output.play.call_args.args
-        self.assertEqual(sample_rate, 48_000)
+        stream = audio_output.streams[0]
+        played_audio = np.concatenate(stream.writes)
+        self.assertEqual(stream.options["samplerate"], 48_000)
         self.assertGreaterEqual(len(played_audio), 47_999)
         self.assertLessEqual(float(np.max(np.abs(played_audio))), 0.95)
 
@@ -1099,7 +1116,7 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(prepared)))
         self.assertLessEqual(float(np.max(np.abs(prepared))), 0.95)
 
-    def test_stop_cancels_active_generation_and_aborts_stream(self):
+    def test_stop_cancels_generation_without_touching_owner_stream(self):
         backend, _model, audio_output = self.create_backend()
         backend.playback_active = True
         backend.active_generation_cancel = Event()
@@ -1109,7 +1126,7 @@ class PocketTTSBackendTest(unittest.TestCase):
         self.assertTrue(backend.stop())
 
         self.assertTrue(backend.active_generation_cancel.is_set())
-        self.assertTrue(stream.aborted)
+        self.assertFalse(stream.aborted)
 
     def test_cancelled_stream_is_drained_without_writing_later_chunks(self):
         backend, _model, audio_output = self.create_backend()

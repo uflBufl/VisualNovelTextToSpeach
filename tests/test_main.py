@@ -1247,7 +1247,7 @@ class MainTest(unittest.TestCase):
         controller.shutdown()
 
         reader.emergency_stop.assert_called_once_with()
-        reader.wait.assert_called_once_with()
+        reader.wait.assert_called_once_with(timeout_seconds=5.0)
         reader.stop.assert_not_called()
         reader.clear_queue.assert_not_called()
 

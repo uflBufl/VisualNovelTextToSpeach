@@ -1292,6 +1292,41 @@ class LiveDialogReaderTest(unittest.TestCase):
         reader.suppressed_generation = 3
         self.assertFalse(reader.runtime_control_snapshot()["replayable"])
 
+    def test_wait_includes_pending_playback_futures(self):
+        reader = self.create_reader()
+        pending = Future()
+        reader.speech_futures[pending] = SpeechChunk(1, "Alice", "Hello.")
+        pending.add_done_callback(reader._speech_finished)
+        completed = Event()
+
+        worker = Thread(target=lambda: (reader.wait(timeout_seconds=1), completed.set()))
+        worker.start()
+        self.assertFalse(completed.wait(0.02))
+        pending.set_result(None)
+        worker.join(1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(completed.is_set())
+
+    def test_restart_waits_for_previous_playback_to_quiesce(self):
+        reader = self.create_reader()
+        reader.capture_future = Future()
+        reader.capture_future.set_result(None)
+        pending = Future()
+        pending.set_running_or_notify_cancel()
+        reader.speech_futures[pending] = SpeechChunk(1, "Alice", "Hello.")
+        pending.add_done_callback(reader._speech_finished)
+        started = Event()
+
+        worker = Thread(target=lambda: (reader.start(), started.set()))
+        worker.start()
+        self.assertFalse(started.wait(0.02))
+        pending.set_result(None)
+        worker.join(1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(started.is_set())
+
     def test_explicit_resync_binds_latest_frame_for_locked_routing(self):
         reader = self.create_reader()
 

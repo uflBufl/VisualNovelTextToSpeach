@@ -2,6 +2,7 @@ import os
 from collections import deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from hashlib import sha256
@@ -788,7 +789,14 @@ class LiveDialogReader:
         with self.state_lock:
             if self.capture_future is not None and not self.capture_future.done():
                 return False
+            restarting = self.capture_future is not None
         self.clear_queue()
+        if restarting:
+            try:
+                self.wait(timeout_seconds=5.0)
+            except FutureTimeoutError as error:
+                self.report_error(error)
+                return False
         with self.state_lock:
             self.emergency_stopped = False
             self.stop_event = Event()
@@ -1096,14 +1104,36 @@ class LiveDialogReader:
             future.cancel()
         return True
 
-    def wait(self) -> None:
+    def wait(self, *, timeout_seconds: float | None = None) -> None:
+        deadline = (
+            None
+            if timeout_seconds is None
+            else monotonic() + max(0.0, float(timeout_seconds))
+        )
+
+        def wait_for(future: Future[object]) -> None:
+            if deadline is None:
+                future.result()
+                return
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise FutureTimeoutError("Live reader did not quiesce before timeout")
+            future.result(timeout=remaining)
+
         with self.state_lock:
             capture_future = self.capture_future
             ocr_future = self.ocr_future
         if capture_future is not None:
-            capture_future.result()
+            wait_for(capture_future)
         if ocr_future is not None:
-            ocr_future.result()
+            wait_for(ocr_future)
+        while True:
+            with self.state_lock:
+                speech_futures = tuple(self.speech_futures)
+            if not speech_futures:
+                return
+            for future in speech_futures:
+                wait_for(future)
 
     def get_pipeline_metrics(self) -> LivePipelineMetrics:
         with self.state_lock:
@@ -1673,11 +1703,12 @@ class LiveDialogReader:
 
     def _preparation_finished(self, future: Future[object | None]) -> None:
         with self.state_lock:
-            chunk = self.speech_futures.pop(future, None)
+            chunk = self.speech_futures.get(future)
             self._record_speech_metrics_locked(
                 synthesis=True,
                 first_pcm=self.first_pcm_on_prepare,
             )
+        replaced = False
         try:
             if chunk is None or future.cancelled():
                 return
@@ -1694,10 +1725,15 @@ class LiveDialogReader:
                 prepared,
             )
             with self.state_lock:
+                self.speech_futures.pop(future, None)
                 self.speech_futures[playback_future] = chunk
                 self._record_speech_metrics_locked()
+                replaced = True
             playback_future.add_done_callback(self._speech_finished)
         finally:
+            if not replaced:
+                with self.state_lock:
+                    self.speech_futures.pop(future, None)
             # A rapidly advancing game can replace a dialogue while its audio
             # is still being prepared. The old result is then intentionally
             # discarded, but the newest deferred dialogue must still be
