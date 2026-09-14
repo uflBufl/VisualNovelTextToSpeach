@@ -99,17 +99,15 @@ Planned implementation order after approval:
 
 ## P1 - Reduce preparation and post-generation saving latency
 
-- [ ] **Investigate first:** profile unchanged pre-generation planning before
-      selecting an optimization.
-      The captured run spent 23.65 seconds creating its voice plan and 20.16 seconds
-      preparing generation input before rendering. Add phase timings around index
-      reads, reference checks, hashing, copying and the existing identity lookup
-      before introducing a cache. Then move the identity check ahead of expensive
-      work and reuse unchanged story/voice/backend input without decoding or copying
-      the same reference twice within one immutable planning transaction. Keep deep
+- [ ] **Collect one fresh preparation profile:** run cold and unchanged preparation
+      and inspect the recorded `pregeneration-voice-plan-*` and
+      `pregeneration-input-*` phases. The earlier run spent 23.65 seconds creating
+      its voice plan and 20.16 seconds preparing generation input, but did not show
+      which index read, reference check/hash/copy, identity lookup or queue build
+      caused it. Select an optimization only from measured repeated work. Keep deep
       validation at trust and activation boundaries; file mtime/size is not proof of
-      integrity. Gate: a cold and unchanged run produce identical plans, and
-      telemetry proves which repeated work was actually removed.
+      integrity. Gate: cold and unchanged runs produce identical plans and the
+      support archive identifies the dominant phase and cache/reuse state.
 - [ ] **Investigate first:** profile the complete path from the last generated line
       to the usable saved game pack on representative Windows and macOS stories.
       Record wall time, bytes read and hashed, WAV decode count, repeated manifest/state loads,

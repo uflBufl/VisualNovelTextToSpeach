@@ -395,6 +395,32 @@ class VoicePlanStoreTest(unittest.TestCase):
         job = jobs.create_or_resume(content, ("story",))
         return job, jobs
 
+    def test_voice_plan_records_bounded_phase_timings(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            with patch(
+                "vntts.pregeneration_voices.record_background_operation"
+            ) as record:
+                VoicePlanStore(jobs).create(
+                    job,
+                    AppSettings(pocket_gated_model_accepted=True),
+                    manifest_path=write_manifest(root / "voices"),
+                )
+
+            self.assertEqual(
+                [call.args[0] for call in record.call_args_list],
+                [
+                    "pregeneration-voice-plan-story",
+                    "pregeneration-voice-plan-voice-inventory",
+                    "pregeneration-voice-plan-routing",
+                    "pregeneration-voice-plan-write",
+                ],
+            )
+            self.assertTrue(
+                all("cpu_ms" in call.kwargs for call in record.call_args_list)
+            )
+
     def test_self_service_preserves_selected_backend_and_normalizes_profile(self):
         with patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=False):
             unsupported_moss = resolve_pregeneration_settings(

@@ -8,6 +8,7 @@ import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter, process_time
 
 import numpy as np
 import soundfile as sf
@@ -44,6 +45,7 @@ from vntts.source_audio_semantics import (
     load_source_audio_semantic_evidence,
     validate_story_semantic_evidence,
 )
+from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 from vntts.voices import (
     CharacterVoiceRegistry,
@@ -91,8 +93,18 @@ class PregenerationInputStore:
         if plan.story_index_sha256 != job.story_index_sha256:
             raise PregenerationQueueError("Voice plan dialogue identity changed")
         _raise_if_cancelled(cancellation)
+        phase_started, cpu_started = perf_counter(), process_time()
         story = _load_story(job)
         registry = _load_source_registry(plan)
+        _record_input_phase(
+            "load",
+            phase_started,
+            cpu_started,
+            files_examined=1 + (1 if plan.voice_manifest else 0),
+            bytes_examined=_file_size(job.story_index)
+            + _file_size(plan.voice_manifest),
+        )
+        phase_started, cpu_started = perf_counter(), process_time()
         selected = _selected_records(story, job.selected_line_ids)
         effective = _effective_voice_routes(plan, registry)
         identity = _digest(
@@ -112,11 +124,15 @@ class PregenerationInputStore:
                 ],
             }
         )
+        _record_input_phase("identity", phase_started, cpu_started)
         destination = self.job_store.path_for(job.job_id).parent / (
             f"generation-input-{identity[:16]}"
         )
         if destination.is_dir():
-            return _load_existing(destination, identity)
+            phase_started, cpu_started = perf_counter(), process_time()
+            result = _load_existing(destination, identity)
+            _record_input_phase("reuse", phase_started, cpu_started, cache_state="disk")
+            return result
         root = destination.parent
         root.mkdir(parents=True, exist_ok=True)
         try:
@@ -124,6 +140,7 @@ class PregenerationInputStore:
                 story_path = staging / "story-index.jsonl"
                 voice_path = staging / "voice-manifest.json"
                 queue_path = staging / "queue.jsonl"
+                phase_started, cpu_started = perf_counter(), process_time()
                 routed_records = _routed_story_records(
                     selected,
                     effective["line_voice_characters"],
@@ -143,12 +160,36 @@ class PregenerationInputStore:
                         semantic_evidence,
                         load_source_audio_semantic_evidence(semantic_evidence),
                     )
+                _record_input_phase(
+                    "story-projection",
+                    phase_started,
+                    cpu_started,
+                    files_examined=1 + (1 if semantic_evidence is not None else 0),
+                    bytes_examined=_file_size(story_path)
+                    + _file_size(semantic_evidence),
+                )
                 _raise_if_cancelled(cancellation)
+                phase_started, cpu_started = perf_counter(), process_time()
                 voices = _write_effective_voices(staging, effective)
                 write_voice_manifest(
                     voice_path,
                     {"version": 2, "voices": voices},
                 )
+                _record_input_phase(
+                    "voice-copy",
+                    phase_started,
+                    cpu_started,
+                    files_examined=sum(
+                        len(value[1]) for value in effective["routes"].values()
+                    ),
+                    bytes_examined=sum(
+                        _file_size(path)
+                        for voice, _hashes, _speaker in effective["routes"].values()
+                        if voice is not None
+                        for path in voice.references
+                    ),
+                )
+                phase_started, cpu_started = perf_counter(), process_time()
                 queue_plan = inspect_generation_queue(
                     story_path,
                     voice_path,
@@ -164,7 +205,17 @@ class PregenerationInputStore:
                     projection_ids=projection_ids,
                     omission_ids=omission_ids,
                 )
+                _record_input_phase(
+                    "queue-build",
+                    phase_started,
+                    cpu_started,
+                    files_examined=3,
+                    bytes_examined=_file_size(story_path)
+                    + _file_size(voice_path)
+                    + _file_size(queue_path),
+                )
                 _raise_if_cancelled(cancellation)
+                phase_started, cpu_started = perf_counter(), process_time()
                 fields = {
                     "identity": identity,
                     "job_id": job.job_id,
@@ -193,7 +244,23 @@ class PregenerationInputStore:
                     if destination.is_dir():
                         return _load_existing(destination, identity)
                     raise
-                return _load_existing(destination, identity)
+                result = _load_existing(destination, identity)
+                _record_input_phase(
+                    "publish",
+                    phase_started,
+                    cpu_started,
+                    files_examined=4,
+                    bytes_examined=sum(
+                        _file_size(destination / name)
+                        for name in (
+                            "story-index.jsonl",
+                            "voice-manifest.json",
+                            "queue.jsonl",
+                            "input.json",
+                        )
+                    ),
+                )
+                return result
         except (
             AtomicPublicationError,
             GenerationQueueBuildError,
@@ -609,6 +676,25 @@ def project_source_audio_semantics(
         ),
     }
     return projected_metadata, projected_records, destination
+
+
+def _file_size(path):
+    if path is None:
+        return 0
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return 0
+
+
+def _record_input_phase(name, started, cpu_started, **details):
+    record_background_operation(
+        f"pregeneration-input-{name}",
+        (perf_counter() - started) * 1000,
+        "complete",
+        cpu_ms=(process_time() - cpu_started) * 1000,
+        **details,
+    )
 
 
 __all__ = [

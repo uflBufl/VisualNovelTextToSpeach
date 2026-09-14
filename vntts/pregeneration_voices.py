@@ -8,6 +8,7 @@ import wave
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from time import perf_counter, process_time
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import StoryIndexError
@@ -28,6 +29,7 @@ from vntts.chapter_voice_preload import (
 )
 from vntts.pregeneration_setup import load_verified_story_index_document
 from vntts.services.tts_engine import default_tts_profile, get_tts_profile
+from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 from vntts.voices import (
     CharacterVoiceRegistry,
@@ -313,12 +315,21 @@ class VoicePlanStore:
         ignore_decisions=False,
     ):
         _raise_if_cancelled(cancellation)
+        phase_started, cpu_started = perf_counter(), process_time()
         document = _load_bound_story(job)
         source_completion = document.metadata.get("source_audio_completion")
         authoritative_source_lines = _validated_source_audio_line_ids(
             job.story_index, document
         )
+        _record_plan_phase(
+            "story",
+            phase_started,
+            cpu_started,
+            files_examined=1,
+            bytes_examined=_file_size(job.story_index),
+        )
         _raise_if_cancelled(cancellation)
+        phase_started, cpu_started = perf_counter(), process_time()
         manifest_path = _selected_manifest(settings, manifest_path)
         registry, manifest_sha256, manifest_document = _load_registry(manifest_path)
         queue_bindings = _manifest_queue_bindings(manifest_document, registry)
@@ -327,6 +338,14 @@ class VoicePlanStore:
             registry,
             manifest_path,
             job.story_index_sha256,
+        )
+        reference_files, reference_bytes = _voice_reference_stats(registry)
+        _record_plan_phase(
+            "voice-inventory",
+            phase_started,
+            cpu_started,
+            files_examined=reference_files + (1 if manifest_path else 0),
+            bytes_examined=reference_bytes + _file_size(manifest_path),
         )
         controls = _synthesis_controls(settings)
         saved_groups = (
@@ -383,6 +402,7 @@ class VoicePlanStore:
                 )
             )
 
+        phase_started, cpu_started = perf_counter(), process_time()
         groups = tuple(
             self._resolve_group(
                 group_id,
@@ -395,6 +415,13 @@ class VoicePlanStore:
                 saved_groups,
             )
             for group_id, values in grouped.items()
+        )
+        _record_plan_phase(
+            "routing",
+            phase_started,
+            cpu_started,
+            files_examined=reference_files,
+            bytes_examined=reference_bytes,
         )
         _raise_if_cancelled(cancellation)
         plan = VoicePlan(
@@ -411,9 +438,17 @@ class VoicePlanStore:
             synthesis_controls_sha256=controls_sha256,
             groups=groups,
         )
+        phase_started, cpu_started = perf_counter(), process_time()
         path = self.path_for(job)
         path.parent.mkdir(parents=True, exist_ok=True)
         write_versioned_json(path, voice_plan_schema_version, plan.to_document())
+        _record_plan_phase(
+            "write",
+            phase_started,
+            cpu_started,
+            files_examined=1,
+            bytes_examined=_file_size(path),
+        )
         return plan
 
     def path_for(self, job):
@@ -877,6 +912,34 @@ def _reference_duration_seconds(references):
     except EOFError, OSError, ValueError, wave.Error, ZeroDivisionError:
         return None
     return round(total, 3) if references else None
+
+
+def _voice_reference_stats(registry):
+    references = {
+        path.resolve()
+        for voice in registry.unique_voices()
+        for path in voice.references
+    }
+    return len(references), sum(_file_size(path) for path in references)
+
+
+def _file_size(path):
+    if path is None:
+        return 0
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return 0
+
+
+def _record_plan_phase(name, started, cpu_started, **details):
+    record_background_operation(
+        f"pregeneration-voice-plan-{name}",
+        (perf_counter() - started) * 1000,
+        "complete",
+        cpu_ms=(process_time() - cpu_started) * 1000,
+        **details,
+    )
 
 
 def _candidate_decision_identity(candidate):

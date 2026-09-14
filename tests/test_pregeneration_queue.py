@@ -275,6 +275,36 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     probe_pcm16_mono_wav(result.directory / relative)
             self.assertNotIn("not-selected", result.story_index.read_text())
 
+    def test_materialization_records_build_and_reuse_phase_timings(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs, voice_plan, _manifest = self.fixture(root)
+            store = PregenerationInputStore(jobs)
+            with patch(
+                "vntts.pregeneration_queue.record_background_operation"
+            ) as record:
+                store.materialize(job, voice_plan)
+                store.materialize(job, voice_plan)
+
+            operations = [call.args[0] for call in record.call_args_list]
+            self.assertEqual(
+                operations,
+                [
+                    "pregeneration-input-load",
+                    "pregeneration-input-identity",
+                    "pregeneration-input-story-projection",
+                    "pregeneration-input-voice-copy",
+                    "pregeneration-input-queue-build",
+                    "pregeneration-input-publish",
+                    "pregeneration-input-load",
+                    "pregeneration-input-identity",
+                    "pregeneration-input-reuse",
+                ],
+            )
+            self.assertTrue(
+                all("cpu_ms" in call.kwargs for call in record.call_args_list)
+            )
+
     def test_classifies_mixed_and_pure_audio_events(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
