@@ -20,6 +20,48 @@ from vntts.synthesis import SynthesisCachePolicy
 _default_audio_output = object()
 
 
+class FakeOutputStream:
+    def __init__(self, owner, **options):
+        self.owner = owner
+        self.options = options
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _type, _value, _traceback):
+        return False
+
+    def write(self, audio):
+        if self.owner.entered_write is not None:
+            self.owner.entered_write.set()
+            self.owner.release_write.wait(timeout=1)
+        if self.owner.error is not None:
+            raise self.owner.error
+        self.owner.writes.append(np.asarray(audio))
+        return self.owner.write_results.pop(0) if self.owner.write_results else False
+
+
+class FakeAudioOutput:
+    def __init__(self, sample_rate=24_000):
+        self.sample_rate = sample_rate
+        self.streams = []
+        self.writes = []
+        self.write_results = []
+        self.error = None
+        self.entered_write = None
+        self.release_write = Event()
+        self.release_write.set()
+
+    def query_devices(self, *, kind):
+        del kind
+        return {"default_samplerate": self.sample_rate}
+
+    def OutputStream(self, **options):
+        stream = FakeOutputStream(self, **options)
+        self.streams.append(stream)
+        return stream
+
+
 class TTSEngineTest(unittest.TestCase):
     def create_engine(
         self,
@@ -56,7 +98,7 @@ class TTSEngineTest(unittest.TestCase):
         torch_module.device.return_value = "cpu"
 
         if audio_output is _default_audio_output:
-            audio_output = Mock()
+            audio_output = FakeAudioOutput(sample_rate)
         options = {}
         if clock is not None:
             options["clock"] = clock
@@ -125,12 +167,10 @@ class TTSEngineTest(unittest.TestCase):
         engine.speak("Hello")
 
         tts.tts.assert_called_once_with(text="Hello", speaker="p225")
-        audio_output.play.assert_called_once_with(
-            tts.tts.return_value,
-            48000,
-            latency="high",
+        self.assertEqual(audio_output.streams[0].options["samplerate"], 48000)
+        np.testing.assert_array_equal(
+            np.concatenate(audio_output.writes).reshape(-1), tts.tts.return_value
         )
-        audio_output.wait.assert_called_once_with()
 
     def test_speak_records_synthesis_and_playback_latency(self):
         clock = iter((0.0, 0.15, 1.0, 1.005, 1.4)).__next__
@@ -148,8 +188,7 @@ class TTSEngineTest(unittest.TestCase):
 
         self.assertIs(audio, tts.tts.return_value)
         tts.tts.assert_called_once_with(text="Voice ready.")
-        audio_output.play.assert_not_called()
-        audio_output.wait.assert_not_called()
+        self.assertFalse(audio_output.writes)
 
     def test_repeated_line_reuses_generated_audio(self):
         engine, tts, audio_output = self.create_engine()
@@ -158,7 +197,7 @@ class TTSEngineTest(unittest.TestCase):
         engine.speak("Same line")
 
         tts.tts.assert_called_once_with(text="Same line")
-        self.assertEqual(audio_output.play.call_count, 2)
+        self.assertEqual(len(audio_output.writes), 2)
         self.assertEqual(engine.last_synthesis_ms, 0.0)
         self.assertEqual(engine.last_cache_source, "memory-cache")
 
@@ -278,10 +317,8 @@ class TTSEngineTest(unittest.TestCase):
 
         engine.speak("Hello")
 
-        audio_output.play.assert_called_once_with(
-            [0.0, 0.2, 0.0],
-            24000,
-            latency="high",
+        np.testing.assert_allclose(
+            np.concatenate(audio_output.writes).reshape(-1), [0.0, 0.2, 0.0]
         )
         self.assertEqual(tts.tts.call_count, 1)
 
@@ -291,19 +328,18 @@ class TTSEngineTest(unittest.TestCase):
 
         engine.speak("Hello")
 
-        prepared = audio_output.play.call_args.args[0]
+        prepared = np.concatenate(audio_output.writes).reshape(-1)
         self.assertEqual(prepared[0], 0.0)
         self.assertEqual(prepared[-1], 0.0)
         self.assertEqual(prepared[10], 1.0)
 
     def test_playback_reports_and_resets_output_underflow(self):
         engine, _tts, audio_output = self.create_engine()
-        audio_output.wait.return_value.output_underflow = True
+        audio_output.write_results.append(True)
 
         engine.play([0.0, 0.5, 0.0])
         self.assertTrue(engine.last_playback_underrun)
 
-        audio_output.wait.return_value.output_underflow = False
         engine.play([0.0, 0.5, 0.0])
         self.assertFalse(engine.last_playback_underrun)
 
@@ -429,7 +465,7 @@ class TTSEngineTest(unittest.TestCase):
             engine.speak("Hello")
 
         tts.tts.assert_not_called()
-        audio_output.play.assert_not_called()
+        self.assertFalse(audio_output.writes)
 
     def test_unsupported_speaker_is_rejected_before_synthesis(self):
         engine, tts, _ = self.create_engine(
@@ -449,11 +485,11 @@ class TTSEngineTest(unittest.TestCase):
         with self.assertRaisesRegex(TTSSynthesisError, "model crashed"):
             engine.speak("Hello")
 
-        audio_output.play.assert_not_called()
+        self.assertFalse(audio_output.writes)
 
     def test_audio_failure_identifies_playback_stage(self):
         engine, _, audio_output = self.create_engine()
-        audio_output.play.side_effect = RuntimeError("device unavailable")
+        audio_output.error = RuntimeError("device unavailable")
 
         with self.assertRaisesRegex(AudioPlaybackError, "device unavailable"):
             engine.speak("Hello")
@@ -464,7 +500,7 @@ class TTSEngineTest(unittest.TestCase):
         result = engine.speak("Old line", playback_guard=Mock(return_value=False))
 
         tts.tts.assert_called_once_with(text="Old line")
-        audio_output.play.assert_not_called()
+        self.assertFalse(audio_output.writes)
         self.assertFalse(result)
 
     def test_inactive_stop_does_not_claim_the_audio_output(self):
@@ -472,19 +508,15 @@ class TTSEngineTest(unittest.TestCase):
 
         result = engine.stop()
 
-        audio_output.stop.assert_not_called()
+        self.assertFalse(audio_output.writes)
         self.assertFalse(result)
 
     def test_stop_interrupts_only_the_active_typed_playback(self):
         entered_wait = Event()
         release_wait = Event()
         engine, _, audio_output = self.create_engine()
-
-        def wait():
-            entered_wait.set()
-            release_wait.wait(timeout=1)
-
-        audio_output.wait.side_effect = wait
+        audio_output.entered_write = entered_wait
+        audio_output.release_write = release_wait
         outcomes = []
         thread = Thread(
             target=lambda: outcomes.append(
@@ -508,7 +540,7 @@ class TTSEngineTest(unittest.TestCase):
 
         self.assertFalse(thread.is_alive())
         self.assertEqual(outcomes[0].status, PlaybackStatus.INTERRUPTED)
-        audio_output.stop.assert_called_once_with()
+        self.assertEqual(len(audio_output.writes), 1)
 
     def test_stop_returns_while_live_guard_waits_for_resume(self):
         engine, _, audio_output = self.create_engine()
@@ -541,8 +573,7 @@ class TTSEngineTest(unittest.TestCase):
             if stopping.ident is not None:
                 stopping.join(timeout=2)
         self.assertEqual(outcomes[0].status, PlaybackStatus.INTERRUPTED)
-        audio_output.play.assert_not_called()
-        audio_output.stop.assert_called_once_with()
+        self.assertFalse(audio_output.writes)
 
     def test_typed_playback_keeps_synthesis_and_first_device_write_separate(self):
         clock = iter((1.0, 1.005, 1.4)).__next__
