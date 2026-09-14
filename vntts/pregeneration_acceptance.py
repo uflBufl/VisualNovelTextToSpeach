@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from time import perf_counter, process_time
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -17,6 +18,7 @@ from vntts.pregeneration_generation import (
     OfflineGenerationWorker,
     validate_offline_generation_result,
 )
+from vntts.support import record_background_operation
 
 
 class OfflineAcceptanceError(OfflineGenerationError):
@@ -34,15 +36,18 @@ class OfflineAcceptanceWorker:
         self.generator = generator or OfflineGenerationWorker()
 
     def accept(self, generation_input, generation_result, cancel_event=None):
+        phase_started, cpu_started = perf_counter(), process_time()
         validate_offline_generation_result(
             generation_input,
             generation_result,
             "acceptance",
             error_type=OfflineAcceptanceError,
         )
+        _record_acceptance_phase("validation", phase_started, cpu_started)
         _raise_if_cancelled(cancel_event)
         if generation_result.pending_review == 0:
             return OfflineAcceptanceResult(generation_result, 0)
+        phase_started, cpu_started = perf_counter(), process_time()
         try:
             state = load_generation_state(
                 generation_result.state,
@@ -52,6 +57,7 @@ class OfflineAcceptanceWorker:
             raise OfflineAcceptanceError(
                 f"Unable to inspect generated audio: {error}"
             ) from error
+        _record_acceptance_phase("state-load", phase_started, cpu_started)
         pending = tuple(
             sorted(
                 queue_id
@@ -65,11 +71,19 @@ class OfflineAcceptanceWorker:
             return OfflineAcceptanceResult(generation_result, 0)
         _raise_if_cancelled(cancel_event)
         try:
+            phase_started, cpu_started = perf_counter(), process_time()
             authorities = generation_review_authorities(
                 generation_result.state,
                 pending,
             )
+            _record_acceptance_phase(
+                "authority-snapshot",
+                phase_started,
+                cpu_started,
+                item_count=len(pending),
+            )
             _raise_if_cancelled(cancel_event)
+            phase_started, cpu_started = perf_counter(), process_time()
             review_generation_cohort(
                 generation_result.state,
                 generation_input.queue,
@@ -81,6 +95,12 @@ class OfflineAcceptanceWorker:
                     "decision_source": "generation-technical-gates",
                     "human_reviewed": False,
                 },
+            )
+            _record_acceptance_phase(
+                "decision-commit",
+                phase_started,
+                cpu_started,
+                item_count=len(pending),
             )
         except OfflineGenerationCancelled:
             raise
@@ -97,6 +117,16 @@ class OfflineAcceptanceWorker:
 def _raise_if_cancelled(cancel_event):
     if cancel_event is not None and cancel_event.is_set():
         raise OfflineGenerationCancelled("Automatic audio acceptance was cancelled")
+
+
+def _record_acceptance_phase(name, started, cpu_started, **details):
+    record_background_operation(
+        f"pregeneration-acceptance-{name}",
+        (perf_counter() - started) * 1000,
+        "complete",
+        cpu_ms=(process_time() - cpu_started) * 1000,
+        **details,
+    )
 
 
 __all__ = [

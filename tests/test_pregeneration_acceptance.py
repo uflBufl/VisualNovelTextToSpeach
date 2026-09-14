@@ -99,6 +99,9 @@ class OfflineAcceptanceWorkerTest(unittest.TestCase):
                 patch(
                     "vntts.pregeneration_acceptance.review_generation_cohort"
                 ) as commit,
+                patch(
+                    "vntts.pregeneration_acceptance.record_background_operation"
+                ) as record,
             ):
                 result = OfflineAcceptanceWorker(generator).accept(
                     generation_input,
@@ -110,6 +113,15 @@ class OfflineAcceptanceWorkerTest(unittest.TestCase):
         self.assertEqual(commit.call_args.kwargs["provenance"]["human_reviewed"], False)
         self.assertEqual(result.approved, 2)
         self.assertEqual(result.generation.pending_review, 0)
+        self.assertEqual(
+            [call.args[0] for call in record.call_args_list],
+            [
+                "pregeneration-acceptance-validation",
+                "pregeneration-acceptance-state-load",
+                "pregeneration-acceptance-authority-snapshot",
+                "pregeneration-acceptance-decision-commit",
+            ],
+        )
 
     def test_cancelled_acceptance_does_not_snapshot_or_commit(self):
         with TemporaryDirectory() as temporary_directory:

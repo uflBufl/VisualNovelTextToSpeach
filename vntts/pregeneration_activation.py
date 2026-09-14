@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter, process_time
 
 from vntts_artifacts.story_index import load_story_index_document
 
@@ -12,6 +13,7 @@ from vntts.game_narrator import bind_game_narrator
 from vntts.game_pack import GamePackError, import_game_pack
 from vntts.pregeneration_pack import OfflinePackResult
 from vntts.settings import AppSettings
+from vntts.support import record_background_operation
 from vntts.voices import (
     CharacterVoiceRegistry,
     find_default_voice_manifest,
@@ -61,6 +63,7 @@ class OfflinePackActivator:
             raise OfflinePackActivationError("Generation settings are invalid")
         if not isinstance(pack_result, OfflinePackResult):
             raise OfflinePackActivationError("Offline game pack result is invalid")
+        phase_started, cpu_started = perf_counter(), process_time()
         try:
             imported = import_game_pack(pack_result.manifest)
         except (GamePackError, OSError, ValueError) as error:
@@ -73,6 +76,8 @@ class OfflinePackActivator:
             or extension.get("identity") != pack_result.identity
         ):
             raise OfflinePackActivationError("Offline game pack identity changed")
+        _record_activation_phase("pack-preflight", phase_started, cpu_started)
+        phase_started, cpu_started = perf_counter(), process_time()
         source_settings = generation_settings or current_settings
         records = load_story_index_document(imported.story_index).records
         source_dialogue = ChapterVoicePreloader.load_optional(
@@ -138,10 +143,12 @@ class OfflinePackActivator:
                 raise OfflinePackActivationError(
                     f"Unable to retain saved character voices: {error}"
                 ) from error
+        _record_activation_phase("settings-build", phase_started, cpu_started)
         _raise_if_cancelled(cancellation)
         was_ready = bool(controller.is_ready)
         runtime_changed = False
         try:
+            phase_started, cpu_started = perf_counter(), process_time()
             if was_ready:
                 controller.shutdown()
             _raise_if_cancelled(cancellation)
@@ -159,8 +166,11 @@ class OfflinePackActivator:
                     raise OfflinePackActivationError(
                         "The speech runtime could not start with the offline game pack"
                     )
+            _record_activation_phase("runtime-apply", phase_started, cpu_started)
             _raise_if_cancelled(cancellation)
+            phase_started, cpu_started = perf_counter(), process_time()
             settings_path = Path(self.save_settings(candidate)).expanduser()
+            _record_activation_phase("settings-save", phase_started, cpu_started)
         except Exception as error:
             if runtime_changed or was_ready:
                 rollback_error = _restore_runtime(
@@ -203,6 +213,15 @@ def _raise_if_cancelled(cancellation):
         raise OfflinePackActivationCancelled(
             "Offline game pack activation was cancelled"
         )
+
+
+def _record_activation_phase(name, started, cpu_started):
+    record_background_operation(
+        f"pregeneration-activation-{name}",
+        (perf_counter() - started) * 1000,
+        "complete",
+        cpu_ms=(process_time() - cpu_started) * 1000,
+    )
 
 
 __all__ = [

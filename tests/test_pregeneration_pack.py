@@ -463,12 +463,30 @@ class OfflinePackPublisherTest(unittest.TestCase):
             )
             publisher = OfflinePackPublisher()
 
-            first = publisher.publish(job, generation_input, generation_result)
             with patch(
-                "vntts.pregeneration_pack.load_generation_state",
-                side_effect=AssertionError("published pack must be reused"),
-            ):
-                second = publisher.publish(job, generation_input, generation_result)
+                "vntts.pregeneration_pack.record_background_operation"
+            ) as record:
+                first = publisher.publish(job, generation_input, generation_result)
+                with patch(
+                    "vntts.pregeneration_pack.load_generation_state",
+                    side_effect=AssertionError("published pack must be reused"),
+                ):
+                    second = publisher.publish(job, generation_input, generation_result)
+            self.assertEqual(
+                [call.args[0] for call in record.call_args_list],
+                [
+                    "pregeneration-publication-identity",
+                    "pregeneration-publication-terminal-load",
+                    "pregeneration-publication-disk-preflight",
+                    "pregeneration-publication-story-and-voices",
+                    "pregeneration-publication-audio-routes",
+                    "pregeneration-publication-staged-validation",
+                    "pregeneration-publication-atomic-publish",
+                    "pregeneration-publication-published-validation",
+                    "pregeneration-publication-identity",
+                    "pregeneration-publication-reuse",
+                ],
+            )
             library = GeneratedAudioLibrary.load_optional(
                 first.imported.generated_audio_manifest
             )

@@ -108,15 +108,19 @@ Planned implementation order after approval:
       validation at trust and activation boundaries; file mtime/size is not proof of
       integrity. Gate: cold and unchanged runs produce identical plans and the
       support archive identifies the dominant phase and cache/reuse state.
-- [ ] **Investigate first:** profile the complete path from the last generated line
-      to the usable saved game pack on representative Windows and macOS stories.
-      Record wall time, bytes read and hashed, WAV decode count, repeated manifest/state loads,
-      copying, validation and activation so the UI names the actual current phase.
+- [ ] **Collect one fresh finalization profile:** inspect the recorded
+      `pregeneration-acceptance-*`, `pregeneration-publication-*`,
+      `pregeneration-activation-*` and existing `game-pack-validation` phases from
+      the last generated line to the usable saved game pack on representative
+      Windows and macOS stories. Compare wall/CPU time, copied audio bytes and
+      cache reuse; use the last completed phase to identify a failed or stalled
+      boundary.
       The captured Windows baseline took 73.8 seconds after recovery: acceptance
       33.14 seconds, publication 38.09 seconds and activation 2.29 seconds. Three
       adjacent full validations each rescanned 1,071 files / 382.5 MB in about two
-      seconds, so instrument the unaccounted acceptance/publication time separately
-      from validation.
+      seconds. Gate: the support archive identifies the dominant internal phase;
+      then expose that phase in the UI and optimize it from evidence rather than
+      hiding the wait behind a generic saving message.
 - [ ] **Ready after the profile:** classify every finalization check by the invariant
       it protects. Remove checks already proven by an unchanged checksum-bound
       generation state; retain trust-boundary and corruption checks. Reuse one

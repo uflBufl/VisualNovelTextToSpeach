@@ -8,6 +8,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from time import perf_counter, process_time
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError, write_game_pack
@@ -70,6 +71,7 @@ from vntts.source_audio_semantics import (
     canonical_document_sha256,
     load_source_audio_semantic_evidence,
 )
+from vntts.support import record_background_operation
 
 
 class OfflinePackError(OfflineGenerationError):
@@ -309,6 +311,7 @@ class OfflinePackPublisher:
     ):
         _validate_inputs(job, generation_input, generation_result)
         _raise_if_cancelled(cancel_event)
+        phase_started, cpu_started = perf_counter(), process_time()
         try:
             story = load_story_index_document(generation_input.story_index)
             state_sha256 = sha256_file(generation_result.state)
@@ -330,13 +333,22 @@ class OfflinePackPublisher:
         destination = (
             generation_input.directory.parent / "game-packs" / (f"pack-{identity[:24]}")
         )
+        _record_publication_phase("identity", phase_started, cpu_started)
         if destination.is_dir():
-            return _load_existing(destination, identity)
+            phase_started, cpu_started = perf_counter(), process_time()
+            result = _load_existing(destination, identity)
+            _record_publication_phase(
+                "reuse", phase_started, cpu_started, cache_state="disk"
+            )
+            return result
+        phase_started, cpu_started = perf_counter(), process_time()
         state, _queue, voice_document, voices, current_omissions = (
             _load_terminal_generation(
                 job, generation_input, generation_result, state_sha256
             )
         )
+        _record_publication_phase("terminal-load", phase_started, cpu_started)
+        phase_started, cpu_started = perf_counter(), process_time()
         _ensure_pack_disk_space(
             destination.parent,
             base,
@@ -347,6 +359,7 @@ class OfflinePackPublisher:
             voice_document,
             voices,
         )
+        _record_publication_phase("disk-preflight", phase_started, cpu_started)
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             with staged_directory(
@@ -355,6 +368,7 @@ class OfflinePackPublisher:
                 story_copy = staging / "story" / "story-index.jsonl"
                 voice_copy = staging / "voices" / "voice-manifest.json"
                 generated_copy = staging / "generated" / "manifest.json"
+                phase_started, cpu_started = perf_counter(), process_time()
                 if base is None:
                     _copy_file(generation_input.story_index, story_copy)
                     _copy_file(generation_input.voice_manifest, voice_copy)
@@ -381,7 +395,11 @@ class OfflinePackPublisher:
                         voices,
                         voice_copy,
                     )
+                _record_publication_phase(
+                    "story-and-voices", phase_started, cpu_started
+                )
                 _raise_if_cancelled(cancel_event)
+                phase_started, cpu_started = perf_counter(), process_time()
                 generated_records, live_fallbacks, omissions = _write_cumulative_routes(
                     base,
                     story,
@@ -414,6 +432,17 @@ class OfflinePackPublisher:
                     },
                     generated_records,
                 )
+                _record_publication_phase(
+                    "audio-routes",
+                    phase_started,
+                    cpu_started,
+                    files_examined=len(generated_records),
+                    bytes_examined=sum(
+                        _file_size(generated_copy.parent / record["audio"])
+                        for record in generated_records
+                    ),
+                )
+                phase_started, cpu_started = perf_counter(), process_time()
                 if base is None:
                     semantic_copy, semantic_document = _copy_semantic_evidence(
                         generation_input,
@@ -459,18 +488,27 @@ class OfflinePackPublisher:
                 write_game_pack(pack_manifest, pack_metadata, components)
                 import_game_pack(pack_manifest)
                 GeneratedAudioLibrary(load_generated_audio_document(generated_copy))
+                _record_publication_phase(
+                    "staged-validation", phase_started, cpu_started
+                )
                 _raise_if_cancelled(cancel_event)
+                phase_started, cpu_started = perf_counter(), process_time()
                 try:
                     rename_directory_no_replace(staging, destination)
                 except AtomicPublicationError:
                     if destination.is_dir():
                         return _load_existing(destination, identity)
                     raise
+                _record_publication_phase("atomic-publish", phase_started, cpu_started)
+                phase_started, cpu_started = perf_counter(), process_time()
                 result = _load_existing(destination, identity)
                 if result.approved != len(
                     generated_records
                 ) or result.live_fallbacks != len(live_fallbacks):
                     raise OfflinePackError("Published offline pack counts changed")
+                _record_publication_phase(
+                    "published-validation", phase_started, cpu_started
+                )
                 return result
         except OfflineGenerationCancelled:
             raise
@@ -1109,6 +1147,23 @@ def _load_existing(destination, identity, *, imported=None):
 def _raise_if_cancelled(cancel_event):
     if cancel_event is not None and cancel_event.is_set():
         raise OfflineGenerationCancelled("Offline pack publication was cancelled")
+
+
+def _file_size(path):
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return 0
+
+
+def _record_publication_phase(name, started, cpu_started, **details):
+    record_background_operation(
+        f"pregeneration-publication-{name}",
+        (perf_counter() - started) * 1000,
+        "complete",
+        cpu_ms=(process_time() - cpu_started) * 1000,
+        **details,
+    )
 
 
 __all__ = [

@@ -211,7 +211,10 @@ class OfflinePackActivatorTest(unittest.TestCase):
                 )
             )
 
-            result = activator.activate(AppSettings(), pack, controller)
+            with patch(
+                "vntts.pregeneration_activation.record_background_operation"
+            ) as record:
+                result = activator.activate(AppSettings(), pack, controller)
 
         self.assertEqual(result.settings.audio_source_policy, "prefer-generated")
         self.assertEqual(result.settings.game_pack, str(pack.manifest))
@@ -227,6 +230,15 @@ class OfflinePackActivatorTest(unittest.TestCase):
             cancellation=None,
         )
         controller.start.assert_called_once_with()
+        self.assertEqual(
+            [call.args[0] for call in record.call_args_list],
+            [
+                "pregeneration-activation-pack-preflight",
+                "pregeneration-activation-settings-build",
+                "pregeneration-activation-runtime-apply",
+                "pregeneration-activation-settings-save",
+            ],
+        )
 
     def test_new_choices_use_pack_narrator_and_rollback_keeps_old_settings(self):
         with TemporaryDirectory() as temporary_directory:
