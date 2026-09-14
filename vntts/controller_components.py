@@ -776,8 +776,7 @@ class LiveSessionComponent:
                 f"invalid: {controller.live_speaker_corpus_error}"
             )
             return False
-        unresolved = controller.voice_assignments.unresolved_live_speakers()
-        if unresolved is None:
+        if controller.voice_assignments.unresolved_live_speakers() is None:
             if controller.live_speaker_corpus_error:
                 controller.status_handler(
                     "Live reading could not start: configured speaker corpus is "
@@ -789,26 +788,8 @@ class LiveSessionComponent:
                     "identify the story chapter"
                 )
             return False
-        unresolved = tuple(unresolved)
-        approved = tuple(controller.next_live_narrator_fallback_names.values())
-        if not unresolved:
-            if approved:
-                controller.next_live_narrator_fallback_names.clear()
-                controller.status_handler(
-                    "Live reading could not start: voice preflight scope changed; "
-                    "start live reading again"
-                )
-                return False
-            controller.next_live_narrator_fallback_names.clear()
-            return True
-        if approved == unresolved:
-            return True
         controller.next_live_narrator_fallback_names.clear()
-        controller.status_handler(
-            "Live reading could not start: choose voices or explicitly approve "
-            f"Narrator for {', '.join(unresolved)}"
-        )
-        return False
+        return True
 
     def toggle_speech_pause(self) -> bool:
         controller = self.controller

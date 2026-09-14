@@ -2247,6 +2247,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         narrator_approval=None,
         allow_scope_bootstrap=True,
     ):
+        del narrator_approval
         unresolved = getattr(self.controller, "unresolved_live_speakers", None)
         result = unresolved() if callable(unresolved) else ()
         if result is None:
@@ -2260,24 +2261,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     "not identified"
                 )
             return False
-        speakers = tuple(result)
-        if narrator_approval is not None:
-            approved = tuple(narrator_approval)
-            if speakers != approved:
-                self.pending_live_voice_preflight_speakers = speakers
-                if speakers:
-                    self._show_live_voice_preflight(speakers)
-                else:
-                    self.set_status("Voice preflight changed; start live reading again")
-                self.signals.live_changed.emit(False)
-                return False
-            self.controller.approve_live_narrator_fallbacks(approved)
-            return self._toggle_controller_live()
-        if speakers:
-            self.pending_live_voice_preflight_speakers = speakers
-            self._show_live_voice_preflight(speakers)
-            self.signals.live_changed.emit(False)
-            return False
+        self.pending_live_voice_preflight_speakers = ()
         return self._toggle_controller_live()
 
     def _identify_live_scope_then_start(self):
@@ -3419,6 +3403,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def offer_speaker_mapping(self, speaker):
         self.pending_unknown_speaker = speaker
         self.speaker_mapping_action.setText(f"Manage voice for {speaker}...")
+        if self.controller.is_live_running:
+            self.set_status(
+                f"Using the narrator for {speaker}. Manage the voice later if needed."
+            )
+            self.compact_controller.set_warning(f"Narrator used for {speaker}")
+            return
         message = (
             f"No voice is assigned to {speaker}. Speech is waiting for you to "
             "choose a voice or allow the narrator voice."

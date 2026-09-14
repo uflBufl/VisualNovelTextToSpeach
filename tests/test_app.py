@@ -1039,7 +1039,7 @@ class TrayApplicationTest(unittest.TestCase):
         tray_application.shutdown()
 
     def test_unknown_speaker_prompt_suppresses_duplicate_notification(self):
-        controller = Mock()
+        controller = Mock(is_live_running=False)
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -1094,45 +1094,21 @@ class TrayApplicationTest(unittest.TestCase):
         controller.allow_narrator_fallback.assert_called_once_with("Selone")
         tray_application.shutdown()
 
-    def test_unknown_speaker_close_and_escape_pause_without_fallback(self):
-        for dismissal in ("close", "escape"):
-            with self.subTest(dismissal=dismissal):
-                controller = Mock(is_live_running=True)
-                controller.live_reader = None
+    def test_unknown_speaker_during_live_reading_is_nonmodal(self):
+        controller = Mock(is_live_running=True)
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
 
-                def stop_live():
-                    controller.is_live_running = False
-                    return False
+        tray_application.offer_speaker_mapping("Selone")
 
-                controller.toggle_live.side_effect = stop_live
-                tray_application = TrayApplication(
-                    self.application,
-                    AppSettings(),
-                    controller_factory=Mock(return_value=controller),
-                )
-                with patch("vntts.app.configure_floating_window"):
-                    tray_application.offer_speaker_mapping("Selone")
-                    self.application.processEvents()
-                    prompt = tray_application.unknown_speaker_prompt
-                    if dismissal == "escape":
-                        QTest.keyClick(prompt, Qt.Key.Key_Escape)
-                    else:
-                        prompt.close()
-                    self.wait_until(
-                        lambda: (
-                            "live reading is paused"
-                            in tray_application.status_action.text()
-                        )
-                    )
-
-                controller.allow_narrator_fallback.assert_not_called()
-                controller.toggle_live.assert_called_once_with()
-                self.assertFalse(controller.is_live_running)
-                self.assertEqual(tray_application.pending_unknown_speaker, "Selone")
-                self.assertIn(
-                    "live reading is paused", tray_application.status_action.text()
-                )
-                tray_application.shutdown()
+        self.assertIsNone(tray_application.unknown_speaker_prompt)
+        self.assertEqual(tray_application.pending_unknown_speaker, "Selone")
+        self.assertIn("Using the narrator", tray_application.status_action.text())
+        controller.toggle_live.assert_not_called()
+        tray_application.shutdown()
 
     def test_pending_speaker_mapping_passes_a_locked_context(self):
         controller = Mock(is_live_running=False)
@@ -1156,7 +1132,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIsNone(tray_application.pending_unknown_speaker)
         tray_application.shutdown()
 
-    def test_live_preflight_blocks_start_until_named_speakers_are_approved(self):
+    def test_live_start_does_not_block_on_unassigned_named_speakers(self):
         controller = Mock(is_live_running=False)
         controller.unresolved_live_speakers.return_value = ("Selone", "Hotelier")
         controller.toggle_live.return_value = True
@@ -1166,114 +1142,12 @@ class TrayApplicationTest(unittest.TestCase):
             controller_factory=Mock(return_value=controller),
         )
 
-        with patch("vntts.app.configure_floating_window"):
-            self.assertFalse(tray_application.toggle_live())
-            self.application.processEvents()
-
-        controller.toggle_live.assert_not_called()
-        self.assertIn(
-            "2 named story speaker(s)",
-            tray_application.live_voice_preflight_prompt.text(),
-        )
-        self.assertIn(
-            "Selone, Hotelier",
-            tray_application.live_voice_preflight_prompt.informativeText(),
-        )
-
-        tray_application.live_voice_preflight_narrator_button.click()
-        controller.approve_live_narrator_fallbacks.assert_not_called()
-        self.wait_until(lambda: controller.toggle_live.called)
-
-        controller.approve_live_narrator_fallbacks.assert_called_once_with(
-            ("Selone", "Hotelier")
-        )
-        self.assertEqual(controller.unresolved_live_speakers.call_count, 2)
-        controller.toggle_live.assert_called_once_with()
-        tray_application.shutdown()
-
-    def test_live_preflight_defers_close_until_native_button_event_unwinds(self):
-        controller = Mock(is_live_running=False)
-        controller.unresolved_live_speakers.side_effect = [
-            ("Mrs. Owen",),
-            ("Mrs. Owen",),
-        ]
-        controller.toggle_live.return_value = True
-        tray_application = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-
-        with patch("vntts.app.configure_floating_window"):
-            self.assertFalse(tray_application.toggle_live())
-            self.application.processEvents()
-
-        prompt = tray_application.live_voice_preflight_prompt
-        narrator = tray_application.live_voice_preflight_narrator_button
-        QTest.mouseClick(narrator, Qt.MouseButton.LeftButton)
+        self.assertTrue(tray_application.toggle_live())
 
         self.assertIsNone(tray_application.live_voice_preflight_prompt)
-        self.assertIs(tray_application.live_voice_preflight_action_prompt, prompt)
-        self.assertFalse(prompt.isEnabled())
         controller.approve_live_narrator_fallbacks.assert_not_called()
-        controller.toggle_live.assert_not_called()
-
-        self.wait_until(lambda: controller.approve_live_narrator_fallbacks.called)
-
-        controller.approve_live_narrator_fallbacks.assert_called_once_with(
-            ("Mrs. Owen",)
-        )
+        controller.unresolved_live_speakers.assert_called_once_with()
         controller.toggle_live.assert_called_once_with()
-        tray_application.shutdown()
-
-    def test_live_preflight_rejects_stale_narrator_approval_and_refreshes(self):
-        controller = Mock(is_live_running=False)
-        controller.unresolved_live_speakers.side_effect = [
-            ("Selone",),
-            ("Hotelier",),
-        ]
-        tray_application = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-
-        with patch("vntts.app.configure_floating_window"):
-            self.assertFalse(tray_application.toggle_live())
-            self.application.processEvents()
-            tray_application.live_voice_preflight_narrator_button.click()
-            self.wait_until(
-                lambda: tray_application.live_voice_preflight_prompt is not None
-            )
-
-        controller.approve_live_narrator_fallbacks.assert_not_called()
-        controller.toggle_live.assert_not_called()
-        self.assertIn(
-            "Hotelier",
-            tray_application.live_voice_preflight_prompt.informativeText(),
-        )
-        tray_application.shutdown()
-
-    def test_live_preflight_does_not_start_when_narrator_scope_becomes_empty(self):
-        controller = Mock(is_live_running=False)
-        controller.unresolved_live_speakers.side_effect = [("Selone",), ()]
-        tray_application = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-
-        with patch("vntts.app.configure_floating_window"):
-            self.assertFalse(tray_application.toggle_live())
-            self.application.processEvents()
-            tray_application.live_voice_preflight_narrator_button.click()
-            self.wait_until(
-                lambda: "changed" in tray_application.dashboard.status.text()
-            )
-
-        controller.approve_live_narrator_fallbacks.assert_not_called()
-        controller.toggle_live.assert_not_called()
-        self.assertIn("changed", tray_application.dashboard.status.text())
         tray_application.shutdown()
 
     def test_live_preflight_identifies_current_scope_silently_then_starts(self):
@@ -1424,9 +1298,10 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertIn("no dialog text", tray_application.dashboard.status.text())
         tray_application.shutdown()
 
-    def test_live_scope_identification_still_prompts_for_unresolved_speakers(self):
+    def test_live_scope_identification_starts_with_unresolved_speakers(self):
         controller = Mock(is_live_running=False)
         controller.unresolved_live_speakers.side_effect = [None, ("Hotelier",)]
+        controller.toggle_live.return_value = True
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -1434,16 +1309,11 @@ class TrayApplicationTest(unittest.TestCase):
         )
         tray_application.live_scope_runner = Mock(active=False)
 
-        with patch("vntts.app.configure_floating_window"):
-            self.assertFalse(tray_application.toggle_live())
-            tray_application._live_scope_finished(True, None)
-            self.application.processEvents()
+        self.assertFalse(tray_application.toggle_live())
+        tray_application._live_scope_finished(True, None)
 
-        controller.toggle_live.assert_not_called()
-        self.assertIn(
-            "Hotelier",
-            tray_application.live_voice_preflight_prompt.informativeText(),
-        )
+        controller.toggle_live.assert_called_once_with()
+        self.assertIsNone(tray_application.live_voice_preflight_prompt)
         tray_application.shutdown()
 
     def test_repeated_live_start_coalesces_scope_identification(self):
@@ -1499,81 +1369,6 @@ class TrayApplicationTest(unittest.TestCase):
         runner.cancel.assert_called_once_with()
         controller.emergency_stop.assert_called_once_with()
         controller.toggle_live.assert_not_called()
-        tray_application.shutdown()
-
-    def test_closing_live_preflight_never_silently_approves_narrator(self):
-        controller = Mock(is_live_running=False)
-        controller.unresolved_live_speakers.return_value = ("Selone",)
-        tray_application = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-
-        with patch("vntts.app.configure_floating_window"):
-            self.assertFalse(tray_application.toggle_live())
-            self.application.processEvents()
-            tray_application.live_voice_preflight_prompt.close()
-            self.application.processEvents()
-
-        controller.approve_live_narrator_fallbacks.assert_not_called()
-        controller.toggle_live.assert_not_called()
-        self.assertIn("cancelled", tray_application.dashboard.status.text())
-        tray_application.shutdown()
-
-    def test_live_preflight_rechecks_scope_after_voice_assignment(self):
-        controller = Mock(is_live_running=False)
-        controller.unresolved_live_speakers.side_effect = [("Selone",), ()]
-        controller.toggle_live.return_value = True
-        tray_application = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-
-        with (
-            patch("vntts.app.configure_floating_window"),
-            patch.object(tray_application, "open_speaker_mapping") as open_mapping,
-        ):
-            self.assertFalse(tray_application.toggle_live())
-            self.application.processEvents()
-            tray_application.live_voice_preflight_assign_button.click()
-            self.wait_until(lambda: open_mapping.called)
-
-        open_mapping.assert_called_once_with()
-        self.assertEqual(controller.unresolved_live_speakers.call_count, 2)
-        controller.toggle_live.assert_called_once_with()
-        tray_application.shutdown()
-
-    def test_cancelled_voice_assignment_returns_to_preflight_without_starting(self):
-        controller = Mock(is_live_running=False)
-        controller.unresolved_live_speakers.side_effect = [
-            ("Selone",),
-            ("Selone",),
-        ]
-        tray_application = TrayApplication(
-            self.application,
-            AppSettings(),
-            controller_factory=Mock(return_value=controller),
-        )
-
-        with (
-            patch("vntts.app.configure_floating_window"),
-            patch.object(tray_application, "open_speaker_mapping") as open_mapping,
-        ):
-            self.assertFalse(tray_application.toggle_live())
-            self.application.processEvents()
-            tray_application.live_voice_preflight_assign_button.click()
-            self.wait_until(
-                lambda: tray_application.live_voice_preflight_prompt is not None
-            )
-
-        open_mapping.assert_called_once_with()
-        controller.toggle_live.assert_not_called()
-        self.assertIn(
-            "Selone",
-            tray_application.live_voice_preflight_prompt.informativeText(),
-        )
         tray_application.shutdown()
 
     def test_voice_mapping_resumes_live_mode_after_assignment(self):
@@ -2077,18 +1872,21 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertEqual(settings.auto_advance_delay_ms, 250)
         delete_dialog(dialog)
 
-    def test_settings_expose_disabled_by_default_speaker_announcements(self):
-        dialog = SettingsDialog(AppSettings(announce_speaker_changes=True))
+    def test_settings_expose_default_fallback_role_announcements(self):
+        dialog = SettingsDialog(AppSettings())
 
-        self.assertEqual(dialog.speaker_announcement_mode.currentData(), "all-speakers")
+        self.assertEqual(
+            dialog.speaker_announcement_mode.currentData(),
+            "narrator-fallback-roles",
+        )
         dialog.speaker_announcement_mode.setCurrentIndex(
-            dialog.speaker_announcement_mode.findData("narrator-fallback-roles")
+            dialog.speaker_announcement_mode.findData("all-speakers")
         )
 
-        self.assertFalse(dialog.settings().announce_speaker_changes)
+        self.assertTrue(dialog.settings().announce_speaker_changes)
         self.assertEqual(
             dialog.settings().speaker_announcement_mode,
-            "narrator-fallback-roles",
+            "all-speakers",
         )
         delete_dialog(dialog)
 

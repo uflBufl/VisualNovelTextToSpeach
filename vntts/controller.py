@@ -2550,17 +2550,17 @@ class AppController:
             return False
         key = normalize_character_name(character)
         if key in self.pending_unknown_speakers:
-            return True
+            return False
         if key in self.reported_unknown_speakers:
             return False
         self.reported_unknown_speakers.add(key)
         self.pending_unknown_speakers.add(key)
         self.status_handler(
-            f"No voice is assigned to {character.strip()}; speech is waiting "
-            "for a voice choice"
+            f"Using the narrator for {character.strip()}; assign another voice "
+            "later if needed"
         )
         self.unknown_speaker_handler(character.strip())
-        return True
+        return False
 
     def _speaker_requires_voice_decision(
         self,

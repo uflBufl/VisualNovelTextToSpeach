@@ -145,7 +145,7 @@ class AppSettings:
     live_idle_flush_ms: int = 400
     live_min_chunk_characters: int = 20
     auto_advance_enabled: bool = True
-    speaker_announcement_mode: str = "off"
+    speaker_announcement_mode: str = "narrator-fallback-roles"
     # Compatibility for callers and settings written before schema 24.
     announce_speaker_changes: bool = False
     auto_advance_key: str = "space"
