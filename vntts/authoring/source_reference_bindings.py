@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable, Mapping
 
-from vntts_artifacts.voice_manifest import normalize_character_name
+from vntts_artifacts.voice_manifest import VoiceManifestEntry, normalize_character_name
 
 from vntts.document_identity import is_lowercase_sha256
 
@@ -39,13 +40,19 @@ KNOWN_ROLE_REUSE_AUTHORITY = (
     "Explicit exact-role reuse binding. Existing approved audio remains authoritative; "
     "absent and rejected targets use the selected existing character voice."
 )
+JsonObject = dict[str, object]
 
 
 class SourceReferenceBindingError(ValueError):
     """A source-reference voice binding is malformed or inconsistent."""
 
 
-def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
+def queue_voice_overrides_from_manifest(
+    document: JsonObject,
+    *,
+    queue_ids: Iterable[str] | None = None,
+    voices: Iterable[VoiceManifestEntry] = (),
+) -> dict[str, str]:
     """Return all validated exact queue overrides from a voice manifest."""
     # Callers commonly pass a generator over the queue. Both independent
     # binding layers must validate against the same complete identity set.
@@ -61,7 +68,10 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
     )
     overlap = set(source_overrides).intersection(reuse_overrides)
     if overlap:
-        reuse = document.get(MISSING_VOICE_REUSE_BINDING_FIELD)
+        reuse = _required_object(
+            document.get(MISSING_VOICE_REUSE_BINDING_FIELD),
+            "Missing-voice reuse binding",
+        )
         controls = reuse.get("source_failed_state_item_sha256s", {})
         if (
             reuse.get("target_mode") != "failed"
@@ -75,7 +85,10 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
             )
     overlap = set(source_overrides).intersection(known_role_overrides)
     if overlap:
-        authority = document.get(KNOWN_ROLE_REUSE_BINDING_FIELD)
+        authority = _required_object(
+            document.get(KNOWN_ROLE_REUSE_BINDING_FIELD),
+            "Known-role reuse binding",
+        )
         controls = authority.get("source_rejected_state_item_sha256s", {})
         if (
             not isinstance(controls, dict)
@@ -88,7 +101,10 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
             )
     overlap = set(reuse_overrides).intersection(known_role_overrides)
     if overlap:
-        reuse = document.get(MISSING_VOICE_REUSE_BINDING_FIELD)
+        reuse = _required_object(
+            document.get(MISSING_VOICE_REUSE_BINDING_FIELD),
+            "Missing-voice reuse binding",
+        )
         controls = reuse.get("source_failed_state_item_sha256s", {})
         compatible_failed_comparison = (
             reuse.get("target_mode") == "failed"
@@ -109,7 +125,12 @@ def queue_voice_overrides_from_manifest(document, *, queue_ids=None, voices=()):
     return {**source_overrides, **reuse_overrides, **known_role_overrides}
 
 
-def _known_role_reuse_overrides_from_manifest(document, *, queue_ids=None, voices=()):
+def _known_role_reuse_overrides_from_manifest(
+    document: JsonObject,
+    *,
+    queue_ids: Iterable[str] | None = None,
+    voices: Iterable[VoiceManifestEntry] = (),
+) -> dict[str, str]:
     value = document.get(KNOWN_ROLE_REUSE_BINDING_FIELD)
     if value is None:
         return {}
@@ -353,7 +374,12 @@ def _known_role_reuse_overrides_from_manifest(document, *, queue_ids=None, voice
     return dict(overrides)
 
 
-def _source_reference_overrides_from_manifest(document, *, queue_ids=None, voices=()):
+def _source_reference_overrides_from_manifest(
+    document: JsonObject,
+    *,
+    queue_ids: Iterable[str] | None = None,
+    voices: Iterable[VoiceManifestEntry] = (),
+) -> dict[str, str]:
     value = document.get(SOURCE_REFERENCE_BINDINGS_FIELD)
     if value is None:
         return {}
@@ -530,8 +556,11 @@ def _source_reference_overrides_from_manifest(document, *, queue_ids=None, voice
 
 
 def _missing_voice_reuse_overrides_from_manifest(
-    document, *, queue_ids=None, voices=()
-):
+    document: JsonObject,
+    *,
+    queue_ids: Iterable[str] | None = None,
+    voices: Iterable[VoiceManifestEntry] = (),
+) -> dict[str, str]:
     value = document.get(MISSING_VOICE_REUSE_BINDING_FIELD)
     if value is None:
         return {}
@@ -649,7 +678,7 @@ def _missing_voice_reuse_overrides_from_manifest(
     return parsed
 
 
-def _validate_approved_reuse_authority(value):
+def _validate_approved_reuse_authority(value: JsonObject) -> dict[str, str]:
     for field, label in (
         ("review_bundle_id", "Missing-voice reuse review bundle ID"),
         ("review_bundle_sha256", "Missing-voice reuse review bundle SHA-256"),
@@ -703,7 +732,7 @@ def _validate_approved_reuse_authority(value):
     if not isinstance(decisions, list) or not decisions:
         raise SourceReferenceBindingError("Approved missing-voice decisions are empty")
     observed_cohorts = []
-    observed_queue_ids = set()
+    observed_queue_ids: set[str] = set()
     used_candidate_ids = set()
     selected_by_id = {
         record["candidate_id"]: normalize_character_name(record["voice_character"])
@@ -820,26 +849,41 @@ def _validate_approved_reuse_authority(value):
     return candidates
 
 
-def retired_source_reference_variants_from_manifest(document):
+def retired_source_reference_variants_from_manifest(
+    document: JsonObject,
+) -> tuple[JsonObject, ...]:
     """Return validated inactive variant records from a version-3 manifest."""
     value = document.get(SOURCE_REFERENCE_BINDINGS_FIELD)
     if value is None:
         return ()
-    version = value.get("schema_version") if isinstance(value, dict) else None
+    if not isinstance(value, dict):
+        return ()
+    version = value.get("schema_version")
     if version != SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION:
         return ()
     sources = value.get("sources")
+    if not isinstance(sources, list):
+        raise SourceReferenceBindingError(
+            "Source-reference binding sources are invalid"
+        )
     plan_sha256s = {
-        source.get("source_reference_plan_sha256")
+        _required_sha256(
+            source.get("source_reference_plan_sha256"),
+            "Source-reference binding source plan SHA-256",
+        )
         for source in sources
         if isinstance(source, dict)
     }
     retired = value.get("retired_variants")
     _validate_retired_variants(retired, plan_sha256s)
+    if not isinstance(retired, list):
+        raise SourceReferenceBindingError(
+            "Retired source-reference bindings are invalid"
+        )
     return tuple(dict(record) for record in retired)
 
 
-def queue_voice_overrides_sha256(overrides):
+def queue_voice_overrides_sha256(overrides: Mapping[str, str]) -> str:
     rendered = json.dumps(
         dict(sorted(overrides.items())),
         ensure_ascii=False,
@@ -849,19 +893,25 @@ def queue_voice_overrides_sha256(overrides):
     return hashlib.sha256(rendered).hexdigest()
 
 
-def _text(value, label):
+def _text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SourceReferenceBindingError(f"{label} must be non-empty text")
     return value.strip()
 
 
-def _required_sha256(value, label):
-    if not is_lowercase_sha256(value):
+def _required_sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or not is_lowercase_sha256(value):
         raise SourceReferenceBindingError(f"{label} is invalid")
     return value
 
 
-def _validate_retired_variants(records, plan_sha256s):
+def _required_object(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict):
+        raise SourceReferenceBindingError(f"{label} is malformed")
+    return value
+
+
+def _validate_retired_variants(records: object, plan_sha256s: set[str]) -> None:
     if not isinstance(records, list) or not records:
         raise SourceReferenceBindingError(
             "Retired source-reference bindings require retired variants"

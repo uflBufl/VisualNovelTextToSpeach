@@ -8,14 +8,14 @@ import json
 from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Callable, Sequence
+from typing import Callable
 
 from vntts_artifacts import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
     VoiceGenerationQueueItem,
 )
-from vntts_artifacts.voice_manifest import load_voice_manifest
+from vntts_artifacts.voice_manifest import VoiceManifestEntry, load_voice_manifest
 
 from vntts.authoring.bulk_generation import (
     BulkGenerationResult,
@@ -282,7 +282,9 @@ def configure_parsers(
 
 def _load_stable_voice_registry(
     manifest_path: str | Path,
-) -> tuple[CharacterVoiceRegistry, str, object, Sequence[object]]:
+) -> tuple[
+    CharacterVoiceRegistry, str, dict[str, object], tuple[VoiceManifestEntry, ...]
+]:
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
         payload = manifest_path.read_bytes()

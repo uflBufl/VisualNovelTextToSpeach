@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import tempfile
+from collections.abc import MutableSequence
 from pathlib import Path, PurePosixPath
 
 from vntts_artifacts import VoiceGenerationQueue, VoiceGenerationQueueError
@@ -21,6 +22,7 @@ from vntts.authoring.source_reference_quality_records import (
     QUALITY_DECISIONS,
     QUALITY_REVIEW_SCHEMA,
     QUALITY_REVIEW_VERSION,
+    JsonObject,
     SourceReferenceQualityError,
     SourceReferenceQualityResult,
     _contained_file,
@@ -46,13 +48,13 @@ from vntts.cli import cli_error, cli_success
 
 
 def publish_source_reference_quality_review(
-    plan_directory,
-    evaluation_directory,
-    state_path,
-    output,
+    plan_directory: str | Path,
+    evaluation_directory: str | Path,
+    state_path: str | Path,
+    output: str | Path,
     *,
-    portrait_directory=None,
-):
+    portrait_directory: str | Path | None = None,
+) -> SourceReferenceQualityResult:
     """Publish a self-contained review card for every exact reference variant."""
     plan_directory = Path(plan_directory).expanduser().resolve()
     evaluation_directory = Path(evaluation_directory).expanduser().resolve()
@@ -120,10 +122,13 @@ def publish_source_reference_quality_review(
     except (VoiceGenerationQueueError, BulkGenerationError) as error:
         raise SourceReferenceQualityError(str(error)) from error
     queue_by_id = {item.queue_id: item for item in queue.items}
+    state_items = _object_field(state, "items", "generation state items")
 
     plan_variants = {}
-    for cluster in plan["clusters"]:
-        for index, reference in enumerate(cluster["references"], start=1):
+    for cluster in _object_list(plan.get("clusters"), "plan clusters"):
+        for index, reference in enumerate(
+            _object_list(cluster.get("references"), "plan references"), start=1
+        ):
             variant_id = f"{cluster['cluster_id']}-anchor-{index}"
             plan_variants[variant_id] = (cluster, reference)
     evaluation_variants = comparison.get("variants")
@@ -236,7 +241,7 @@ def publish_source_reference_quality_review(
                     raise SourceReferenceQualityError(
                         f"Variant {variant_id} queue binding changed: {queue_id}"
                     )
-                result = state["items"].get(queue_id)
+                result = state_items.get(queue_id)
                 if isinstance(result, dict):
                     synthesis_contexts.append(
                         {
@@ -246,7 +251,8 @@ def publish_source_reference_quality_review(
                             "seed": result.get("seed"),
                         }
                     )
-                status = result.get("status") if isinstance(result, dict) else "pending"
+                result_document = result if isinstance(result, dict) else {}
+                status = result_document.get("status", "pending")
                 common = {
                     "queue_id": queue_id,
                     "evaluation_kind": expected_kind,
@@ -255,13 +261,14 @@ def publish_source_reference_quality_review(
                 }
                 if status in {"generated", "approved"}:
                     relative = _required_text(
-                        result.get("path"), f"generated result {queue_id} path"
+                        result_document.get("path"),
+                        f"generated result {queue_id} path",
                     )
                     generated_source = _contained_file(
                         state_path.parent, relative, f"generated result {queue_id}"
                     )
                     generated_sha256 = _required_sha256(
-                        result.get("file_sha256"),
+                        result_document.get("file_sha256"),
                         f"generated result {queue_id} hash",
                     )
                     if sha256_file(generated_source) != generated_sha256:
@@ -333,7 +340,9 @@ def publish_source_reference_quality_review(
                     "portrait_image": portrait_image,
                     "source_bank": cluster["source_bank"],
                     "media_id": reference["media_id"],
-                    "affected_queue_item_count": len(cluster["queue_items"]),
+                    "affected_queue_item_count": len(
+                        _object_list(cluster.get("queue_items"), "plan queue items")
+                    ),
                     "reference": reference_record,
                     "decision_context": _quality_decision_context(synthesis_contexts),
                     "generated_samples": generated,
@@ -372,7 +381,7 @@ def publish_source_reference_quality_review(
         )
 
 
-def create_parser():
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Review source-reference quality by exact character cluster"
     )
@@ -398,7 +407,7 @@ def create_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     options = create_parser().parse_args(argv)
     try:
         if options.command == "create-composite":
@@ -409,7 +418,9 @@ def main(argv=None):
             result = publish_composite_quality_review(
                 options.composite, options.state, options.output
             )
-            return cli_success(f"Created composite quality review: {result.session}")
+            return _exit_code(
+                cli_success(f"Created composite quality review: {result.session}")
+            )
         if options.command == "create":
             result = publish_source_reference_quality_review(
                 options.plan,
@@ -418,28 +429,34 @@ def main(argv=None):
                 options.output,
                 portrait_directory=options.portrait_directory,
             )
-            return cli_success(
-                f"Created source-reference quality review: {result.session}"
+            return _exit_code(
+                cli_success(
+                    f"Created source-reference quality review: {result.session}"
+                )
             )
         if options.command == "ui":
             from vntts.authoring.source_reference_quality_ui import (
                 launch_source_reference_quality_review,
             )
 
-            return launch_source_reference_quality_review(options.session)
+            return _exit_code(launch_source_reference_quality_review(options.session))
         session = load_source_reference_quality_review(options.session)
         if options.command == "status":
             completed, total = quality_review_progress(session)
             accepted = len(
                 accepted_source_reference_variants(session, require_complete=False)
             )
-            return cli_success(
-                f"Source-reference review: {completed}/{total}; accepted {accepted}"
+            return _exit_code(
+                cli_success(
+                    f"Source-reference review: {completed}/{total}; accepted {accepted}"
+                )
             )
         if options.command == "next":
             card = next_pending_quality_variant(session)
             if card is None:
-                return cli_success("Source-reference quality review is complete")
+                return _exit_code(
+                    cli_success("Source-reference quality review is complete")
+                )
             print(json.dumps(card, ensure_ascii=False, indent=2))
             return 0
         updated = record_source_reference_quality_decision(
@@ -449,17 +466,19 @@ def main(argv=None):
             overwrite=options.overwrite,
         )
         completed, total = quality_review_progress(updated)
-        return cli_success(f"Saved {options.variant_id}; progress: {completed}/{total}")
+        return _exit_code(
+            cli_success(f"Saved {options.variant_id}; progress: {completed}/{total}")
+        )
     except ModuleNotFoundError as error:
         if error.name and error.name.startswith("PySide6"):
-            return cli_error("Qt UI is not installed")
+            return _exit_code(cli_error("Qt UI is not installed"))
         raise
     except (SourceReferenceQualityError, OSError, json.JSONDecodeError) as error:
-        return cli_error(error)
+        return _exit_code(cli_error(error))
 
 
-def _quality_decision_context(values):
-    def shared(field):
+def _quality_decision_context(values: list[JsonObject]) -> JsonObject:
+    def shared(field: str) -> object:
         candidates = {value.get(field) for value in values}
         candidates.discard(None)
         if len(candidates) == 1:
@@ -474,7 +493,25 @@ def _quality_decision_context(values):
     }
 
 
-def _validate_variant_identity(variant, cluster, reference, variant_id):
+def _object_field(document: JsonObject, field: str, label: str) -> JsonObject:
+    value = document.get(field)
+    if not isinstance(value, dict):
+        raise SourceReferenceQualityError(f"Source-reference {label} are invalid")
+    return value
+
+
+def _object_list(value: object, label: str) -> list[JsonObject]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise SourceReferenceQualityError(f"Source-reference {label} are invalid")
+    return value
+
+
+def _validate_variant_identity(
+    variant: JsonObject,
+    cluster: JsonObject,
+    reference: JsonObject,
+    variant_id: str,
+) -> None:
     expected = {
         "character": cluster["character"],
         "portrait": cluster["portrait"],
@@ -489,13 +526,19 @@ def _validate_variant_identity(variant, cluster, reference, variant_id):
             )
 
 
-def _copy_optional_portrait(root, portrait, variant_id, staging, snapshots):
+def _copy_optional_portrait(
+    root: Path | None,
+    portrait: object,
+    variant_id: str,
+    staging: Path,
+    snapshots: MutableSequence[tuple[Path, str]],
+) -> JsonObject | None:
     if root is None or portrait is None:
         return None
-    portrait = _required_text(portrait, f"variant {variant_id} portrait")
-    if "\\" in portrait:
+    portrait_text = _required_text(portrait, f"variant {variant_id} portrait")
+    if "\\" in portrait_text:
         raise SourceReferenceQualityError("Portrait identity must be a filename")
-    identity = PurePosixPath(portrait)
+    identity = PurePosixPath(portrait_text)
     if len(identity.parts) != 1 or identity.name in {"", ".", ".."}:
         raise SourceReferenceQualityError("Portrait identity must be a filename")
     filename = identity.name
@@ -533,6 +576,14 @@ def _copy_optional_portrait(root, portrait, variant_id, staging, snapshots):
         "width": width,
         "height": height,
     }
+
+
+def _exit_code(value: object) -> int:
+    if not isinstance(value, int):
+        raise RuntimeError(
+            "Source-reference quality CLI returned a non-integer exit code"
+        )
+    return value
 
 
 __all__ = [

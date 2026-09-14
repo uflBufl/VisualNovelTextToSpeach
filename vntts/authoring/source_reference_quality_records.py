@@ -8,6 +8,7 @@ import json
 import shutil
 import struct
 import zlib
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ from vntts.path_safety import contained_regular_file
 QUALITY_REVIEW_SCHEMA = "vntts.authoring-source-reference-quality-review"
 QUALITY_REVIEW_VERSION = 1
 QUALITY_DECISIONS = frozenset({"accept", "reject", "needs_sample"})
+JsonObject = dict[str, object]
 
 
 class SourceReferenceQualityError(RuntimeError):
@@ -41,10 +43,10 @@ class SourceReferenceQualityResult:
     excluded_results: int
 
     @property
-    def session(self):
+    def session(self) -> Path:
         return self.directory / "review.json"
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "directory": str(self.directory),
             "session": str(self.session),
@@ -59,14 +61,16 @@ SourceReferenceQualityError.__module__ = "vntts.authoring.source_reference_quali
 SourceReferenceQualityResult.__module__ = "vntts.authoring.source_reference_quality"
 
 
-def load_source_reference_quality_review(path):
+def load_source_reference_quality_review(path: str | Path) -> JsonObject:
     """Load and fully validate one self-contained quality review."""
     path = Path(path).expanduser().resolve()
     _payload, session = _read_json(path, "source-reference quality review")
     return validate_source_reference_quality_review_document(session, path.parent)
 
 
-def validate_source_reference_quality_review_document(document, root):
+def validate_source_reference_quality_review_document(
+    document: JsonObject, root: str | Path
+) -> JsonObject:
     """Validate captured quality-review semantics against one artifact root."""
     session = copy.deepcopy(document)
     path = Path(root).expanduser().resolve() / "review.json"
@@ -223,20 +227,23 @@ def validate_source_reference_quality_review_document(document, root):
     return session
 
 
-def quality_review_progress(session):
-    completed = sum(card.get("decision") is not None for card in session["variants"])
-    return completed, len(session["variants"])
+def quality_review_progress(session: Mapping[str, object]) -> tuple[int, int]:
+    variants = _variants(session)
+    completed = sum(card.get("decision") is not None for card in variants)
+    return completed, len(variants)
 
 
-def next_pending_quality_variant(session):
+def next_pending_quality_variant(
+    session: Mapping[str, object],
+) -> JsonObject | None:
     return next(
-        (card for card in session["variants"] if card.get("decision") is None), None
+        (card for card in _variants(session) if card.get("decision") is None), None
     )
 
 
 def record_source_reference_quality_decision(
-    session_path, variant_id, decision, *, overwrite=False
-):
+    session_path: str | Path, variant_id: str, decision: str, *, overwrite: bool = False
+) -> JsonObject:
     if decision not in QUALITY_DECISIONS:
         raise SourceReferenceQualityError(
             "Quality decision must be accept, reject, or needs_sample"
@@ -253,7 +260,12 @@ def record_source_reference_quality_decision(
                 "Quality review changed while the decision was loaded"
             )
         card = next(
-            (item for item in session["variants"] if item["variant_id"] == variant_id),
+            (
+                item
+                for item in _variants(session)
+                if _required_text(item.get("variant_id"), "quality variant ID")
+                == variant_id
+            ),
             None,
         )
         if card is None:
@@ -262,7 +274,10 @@ def record_source_reference_quality_decision(
             raise SourceReferenceQualityError(
                 f"Quality variant is already rated: {variant_id}"
             )
-        if decision == "accept" and not card["generated_samples"]:
+        generated_samples = card.get("generated_samples")
+        if not isinstance(generated_samples, list):
+            raise SourceReferenceQualityError("Quality variant outcomes are invalid")
+        if decision == "accept" and not generated_samples:
             raise SourceReferenceQualityError(
                 "A reference without generated samples cannot be accepted"
             )
@@ -277,18 +292,23 @@ def record_source_reference_quality_decision(
         return session
 
 
-def accepted_source_reference_variants(session, *, require_complete=True):
+def accepted_source_reference_variants(
+    session: Mapping[str, object], *, require_complete: bool = True
+) -> tuple[str, ...]:
     completed, total = quality_review_progress(session)
     if require_complete and completed != total:
         raise SourceReferenceQualityError("Quality review is incomplete")
-    return tuple(
-        card["variant_id"]
-        for card in session["variants"]
-        if (card.get("decision") or {}).get("decision") == "accept"
-    )
+    accepted: list[str] = []
+    for card in _variants(session):
+        decision = card.get("decision")
+        if isinstance(decision, dict) and decision.get("decision") == "accept":
+            accepted.append(
+                _required_text(card.get("variant_id"), "quality variant ID")
+            )
+    return tuple(accepted)
 
 
-def _copy_audio(source, digest, destination):
+def _copy_audio(source: Path, digest: str, destination: Path) -> JsonObject:
     try:
         info = probe_pcm16_mono_wav(source)
     except Pcm16MonoWavError as error:
@@ -307,7 +327,7 @@ def _copy_audio(source, digest, destination):
     }
 
 
-def _validate_portrait_record(root, value, label):
+def _validate_portrait_record(root: Path, value: object, label: str) -> Path:
     if not isinstance(value, dict):
         raise SourceReferenceQualityError(f"Quality portrait {label} must be an object")
     path = _contained_file(root, value.get("image"), f"quality portrait {label}")
@@ -328,7 +348,7 @@ def _validate_portrait_record(root, value, label):
     return path
 
 
-def _probe_png(payload, label):
+def _probe_png(payload: bytes, label: str) -> tuple[int, int]:
     if not isinstance(payload, bytes) or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
         raise SourceReferenceQualityError(f"{label.title()} is not a PNG")
     offset = 8
@@ -362,7 +382,7 @@ def _probe_png(payload, label):
                 raise SourceReferenceQualityError(f"{label.title()} has invalid IEND")
             saw_iend = True
         offset = chunk_end
-    if width is None or not idat_parts or not saw_iend:
+    if width is None or height is None or not idat_parts or not saw_iend:
         raise SourceReferenceQualityError(f"{label.title()} is incomplete")
     try:
         decoded = zlib.decompress(b"".join(idat_parts))
@@ -375,7 +395,7 @@ def _probe_png(payload, label):
     return width, height
 
 
-def _validate_audio_record(root, value, label):
+def _validate_audio_record(root: Path, value: object, label: str) -> Path:
     if not isinstance(value, dict):
         raise SourceReferenceQualityError(f"Quality audio {label} must be an object")
     path = _contained_file(root, value.get("audio"), f"quality audio {label}")
@@ -397,7 +417,9 @@ def _validate_audio_record(root, value, label):
     return path
 
 
-def _validate_sample(root, sample, variant_id, *, audio):
+def _validate_sample(
+    root: Path, sample: object, variant_id: str, *, audio: bool
+) -> str:
     if not isinstance(sample, dict):
         raise SourceReferenceQualityError(
             f"Quality variant {variant_id} sample must be an object"
@@ -415,7 +437,7 @@ def _validate_sample(root, sample, variant_id, *, audio):
     return queue_id
 
 
-def _read_json(path, label):
+def _read_json(path: str | Path, label: str) -> tuple[bytes, JsonObject]:
     path = Path(path).expanduser().resolve()
     try:
         payload = path.read_bytes()
@@ -429,33 +451,44 @@ def _read_json(path, label):
     return payload, value
 
 
-def _contained_file(root, value, label):
+def _contained_file(root: Path, value: object, label: str) -> Path:
     value = _required_text(value, label)
-    return contained_regular_file(
-        root, value, label, error_type=SourceReferenceQualityError
+    return Path(
+        contained_regular_file(
+            root, value, label, error_type=SourceReferenceQualityError
+        )
     )
 
 
-def _required_text(value, label):
+def _variants(session: Mapping[str, object]) -> list[JsonObject]:
+    variants = session.get("variants")
+    if not isinstance(variants, list) or any(
+        not isinstance(card, dict) for card in variants
+    ):
+        raise SourceReferenceQualityError("Quality review variants are invalid")
+    return variants
+
+
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SourceReferenceQualityError(f"{label.title()} must be non-empty text")
     return value.strip()
 
 
-def _required_sha256(value, label):
+def _required_sha256(value: object, label: str) -> str:
     value = _required_text(value, label)
     if not is_lowercase_sha256(value):
         raise SourceReferenceQualityError(f"{label.title()} must be lowercase SHA-256")
     return value
 
 
-def _positive_integer(value, label):
+def _positive_integer(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise SourceReferenceQualityError(f"{label.title()} must be positive")
     return value
 
 
-def _aware_timestamp(value, label):
+def _aware_timestamp(value: object, label: str) -> datetime:
     value = _required_text(value, label)
     try:
         parsed = datetime.fromisoformat(value)
@@ -467,7 +500,7 @@ def _aware_timestamp(value, label):
 
 
 @contextmanager
-def _decision_lock(session_path):
+def _decision_lock(session_path: Path) -> Generator[None, None, None]:
     lock_path = session_path.with_name(f".{session_path.name}.lock")
     try:
         with exclusive_advisory_lock(lock_path):
@@ -478,7 +511,7 @@ def _decision_lock(session_path):
         ) from error
 
 
-def _utc_now():
+def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 

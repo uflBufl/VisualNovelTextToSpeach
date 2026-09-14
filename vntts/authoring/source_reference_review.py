@@ -6,7 +6,7 @@ import hashlib
 import json
 import shutil
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,15 +19,25 @@ from vntts_artifacts import (
 )
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import (
+    StoryIndexDocument,
+    StoryIndexError,
+    load_story_index_document,
+)
+from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
     VoiceManifestError,
     load_voice_manifest,
     normalize_character_name,
     write_voice_manifest,
 )
 
-from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
+from vntts.authoring.bulk_generation import (
+    BulkGenerationError,
+    JsonDocument,
+    load_generation_state,
+)
 from vntts.authoring.listening import (
     ModelListeningError,
     create_listening_session_from_reports,
@@ -62,6 +72,10 @@ REFERENCE_EVALUATION_VERSION = 1
 REFERENCE_DECISIONS = frozenset({"accept", "reject", "uncertain"})
 JsonObject = dict[str, object]
 CandidateMap = dict[str, JsonObject]
+ClusterGroups = dict[tuple[str, str | None, str], list[JsonObject]]
+QueueItemsByCharacter = dict[tuple[str, str | None], list[JsonObject]]
+PlanVariants = dict[str, tuple[JsonObject, JsonObject]]
+SourceSnapshots = MutableSequence[tuple[Path, str]]
 FIXED_EVALUATION_CORPUS = (
     "I knew this path would be difficult, but I chose it anyway.",
     "Wait. Did you hear that behind us?",
@@ -136,7 +150,12 @@ class SourceReferenceBindingsResult:
         }
 
 
-def import_source_reference_review(report_path, review_path, story_index_path, output):
+def import_source_reference_review(
+    report_path: str | Path,
+    review_path: str | Path,
+    story_index_path: str | Path,
+    output: str | Path,
+) -> SourceReferencePlanResult:
     """Publish a no-overwrite self-contained plan from exact extractor evidence."""
     report_path, report_payload, report = _read_json(report_path, "candidate report")
     review_path, review_payload, review = _read_json(review_path, "candidate review")
@@ -186,15 +205,14 @@ def import_source_reference_review(report_path, review_path, story_index_path, o
     accepted = [
         candidate
         for candidate in candidates.values()
-        if decisions.get(candidate["candidate_key"], {}).get("decision") == "accept"
+        if decisions.get(
+            _text(candidate.get("candidate_key"), "Candidate key"), {}
+        ).get("decision")
+        == "accept"
     ]
-    groups = {}
+    groups: ClusterGroups = {}
     for candidate in accepted:
-        identity = (
-            candidate["character"],
-            candidate["portrait"],
-            candidate["source_bank"],
-        )
+        identity = _candidate_cluster_identity(candidate)
         groups.setdefault(identity, []).append(candidate)
     queue_items_by_character = _queue_items_by_character(story)
 
@@ -216,25 +234,25 @@ def import_source_reference_review(report_path, review_path, story_index_path, o
 
 
 def _publish_source_reference_plan(
-    output,
-    groups,
-    queue_items_by_character,
-    report_path,
-    report_sha256,
-    review_path,
-    review_sha256,
-    story_index_path,
-    story_sha256,
-    candidates,
-    decisions,
-    invalidated,
-    accepted,
-):
+    output: Path,
+    groups: ClusterGroups,
+    queue_items_by_character: QueueItemsByCharacter,
+    report_path: Path,
+    report_sha256: str,
+    review_path: Path,
+    review_sha256: str,
+    story_index_path: Path,
+    story_sha256: str,
+    candidates: CandidateMap,
+    decisions: CandidateMap,
+    invalidated: list[JsonObject],
+    accepted: list[JsonObject],
+) -> SourceReferencePlanResult:
     output.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         clusters = []
         copied_sources = []
-        mapped_queue_ids = set()
+        mapped_queue_ids: set[str] = set()
         for identity, members in sorted(
             groups.items(),
             key=lambda value: tuple(str(part or "").casefold() for part in value[0]),
@@ -243,7 +261,8 @@ def _publish_source_reference_plan(
             cluster_id = _cluster_id(character, portrait, bank)
             references = []
             for index, candidate in enumerate(members, start=1):
-                suffix = candidate["reference_path"].suffix.lower() or ".wav"
+                reference_path = _candidate_path(candidate, "reference_path")
+                suffix = reference_path.suffix.lower() or ".wav"
                 relative = (
                     Path("references")
                     / cluster_id
@@ -251,7 +270,7 @@ def _publish_source_reference_plan(
                 )
                 destination = staging / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                payload = candidate["reference_payload"]
+                payload = _candidate_bytes(candidate, "reference_payload")
                 destination.write_bytes(payload)
                 if sha256_file(destination) != candidate["reference_sha256"]:
                     raise SourceReferenceReviewError(
@@ -265,16 +284,22 @@ def _publish_source_reference_plan(
                         "candidate_evidence_sha256": candidate["evidence_sha256"],
                         "media_id": candidate["media_id"],
                         "candidate_origin": candidate["candidate_origin"],
-                        "source_event_ids": list(candidate["source_event_ids"]),
+                        "source_event_ids": list(
+                            _candidate_integers(candidate, "source_event_ids")
+                        ),
                         "source_reference": candidate["reference_relative"],
-                        "source_transcripts": list(candidate["transcripts"]),
+                        "source_transcripts": list(
+                            _candidate_strings(candidate, "transcripts")
+                        ),
                     }
                 )
                 copied_sources.append(candidate)
             queue_items = queue_items_by_character.get(
                 (normalize_character_name(character), portrait), ()
             )
-            mapped_queue_ids.update(item["queue_id"] for item in queue_items)
+            mapped_queue_ids.update(
+                _text(item.get("queue_id"), "Mapped queue ID") for item in queue_items
+            )
             clusters.append(
                 {
                     "cluster_id": cluster_id,
@@ -334,8 +359,8 @@ def _publish_source_reference_plan(
         _assert_source_unchanged(story_index_path, story_sha256, "story index")
         for candidate in copied_sources:
             _assert_source_unchanged(
-                candidate["reference_path"],
-                candidate["reference_sha256"],
+                _candidate_path(candidate, "reference_path"),
+                _sha256(candidate.get("reference_sha256"), "Candidate reference hash"),
                 f"candidate reference {candidate['reference_relative']}",
             )
         rename_directory_no_replace(staging, output)
@@ -348,7 +373,7 @@ def _publish_source_reference_plan(
         )
 
 
-def load_source_reference_plan(directory):
+def load_source_reference_plan(directory: str | Path) -> JsonObject:
     """Validate a published plan and every copied reference checksum."""
     directory = Path(directory).expanduser().resolve()
     plan_path, _payload, plan = _read_json(
@@ -366,8 +391,8 @@ def load_source_reference_plan(directory):
         raise SourceReferenceReviewError(
             "Source-reference plan clusters must be a list"
         )
-    seen_clusters = set()
-    seen_queue_ids = set()
+    seen_clusters: set[str] = set()
+    seen_queue_ids: set[str] = set()
     for cluster_index, cluster in enumerate(clusters):
         _validate_plan_cluster(
             directory, cluster, cluster_index, seen_clusters, seen_queue_ids
@@ -443,7 +468,98 @@ def _validate_plan_queue_items(
         seen_queue_ids.add(queue_id)
 
 
-def _quality_review_selection(quality_review, selected_variant_ids, plan_sha256):
+def _plan_clusters(plan: Mapping[str, object]) -> list[JsonObject]:
+    clusters = plan.get("clusters")
+    if not isinstance(clusters, list) or any(
+        not isinstance(cluster, dict) for cluster in clusters
+    ):
+        raise SourceReferenceReviewError(
+            "Source-reference plan clusters must be a list"
+        )
+    return clusters
+
+
+def _plan_references(cluster: Mapping[str, object]) -> list[JsonObject]:
+    references = cluster.get("references")
+    if not isinstance(references, list) or any(
+        not isinstance(reference, dict) for reference in references
+    ):
+        raise SourceReferenceReviewError(
+            "Source-reference plan references must be a list"
+        )
+    return references
+
+
+def _plan_queue_items(cluster: Mapping[str, object]) -> list[JsonObject]:
+    items = cluster.get("queue_items")
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise SourceReferenceReviewError(
+            "Source-reference plan queue items are invalid"
+        )
+    return items
+
+
+def _binding_variants(binding: Mapping[str, object]) -> list[JsonObject]:
+    variants = binding.get("selected_variants")
+    if not isinstance(variants, list) or any(
+        not isinstance(variant, dict) for variant in variants
+    ):
+        raise SourceReferenceReviewError(
+            "Source-reference binding variants are invalid"
+        )
+    return variants
+
+
+def _candidate_cluster_identity(
+    candidate: Mapping[str, object],
+) -> tuple[str, str | None, str]:
+    portrait = candidate.get("portrait")
+    if portrait is not None and not isinstance(portrait, str):
+        raise SourceReferenceReviewError("Candidate portrait is invalid")
+    return (
+        _text(candidate.get("character"), "Candidate character"),
+        portrait,
+        _text(candidate.get("source_bank"), "Candidate source bank"),
+    )
+
+
+def _candidate_path(candidate: Mapping[str, object], field: str) -> Path:
+    value = candidate.get(field)
+    if not isinstance(value, Path):
+        raise SourceReferenceReviewError(f"Candidate {field} is invalid")
+    return value
+
+
+def _candidate_strings(candidate: Mapping[str, object], field: str) -> tuple[str, ...]:
+    value = candidate.get(field)
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(item, str) for item in value
+    ):
+        raise SourceReferenceReviewError(f"Candidate {field} is invalid")
+    return tuple(value)
+
+
+def _candidate_bytes(candidate: Mapping[str, object], field: str) -> bytes:
+    value = candidate.get(field)
+    if not isinstance(value, bytes):
+        raise SourceReferenceReviewError(f"Candidate {field} is invalid")
+    return value
+
+
+def _candidate_integers(candidate: Mapping[str, object], field: str) -> tuple[int, ...]:
+    value = candidate.get(field)
+    if not isinstance(value, (list, tuple)) or any(
+        isinstance(item, bool) or not isinstance(item, int) for item in value
+    ):
+        raise SourceReferenceReviewError(f"Candidate {field} is invalid")
+    return tuple(value)
+
+
+def _quality_review_selection(
+    quality_review: str | Path | None,
+    selected_variant_ids: Iterable[str] | None,
+    plan_sha256: str,
+) -> tuple[Iterable[str] | None, Path | None, str | None]:
     if quality_review is None:
         return selected_variant_ids, None, None
     if selected_variant_ids is not None:
@@ -482,7 +598,11 @@ def _quality_review_selection(quality_review, selected_variant_ids, plan_sha256)
     )
 
 
-def _load_binding_base(base_voice_manifest, narrator_character, base_characters):
+def _load_binding_base(
+    base_voice_manifest: str | Path,
+    narrator_character: str,
+    base_characters: Iterable[str],
+) -> tuple[Path, JsonObject, str, VoiceManifestEntry, list[VoiceManifestEntry]]:
     base_voice_manifest = Path(base_voice_manifest).expanduser().resolve()
     try:
         base_payload = base_voice_manifest.read_bytes()
@@ -535,7 +655,9 @@ def _load_binding_base(base_voice_manifest, narrator_character, base_characters)
     )
 
 
-def _select_plan_variants(plan, selected_variant_ids):
+def _select_plan_variants(
+    plan: JsonObject, selected_variant_ids: Iterable[str]
+) -> tuple[tuple[str, ...], PlanVariants]:
     requested = tuple(
         _text(value, "Selected source-reference variant")
         for value in selected_variant_ids
@@ -544,10 +666,13 @@ def _select_plan_variants(plan, selected_variant_ids):
         raise SourceReferenceReviewError(
             "Select one or more distinct source-reference variants"
         )
-    available = {}
-    for cluster in plan["clusters"]:
-        for reference_index, reference in enumerate(cluster["references"], start=1):
-            variant_id = f"{cluster['cluster_id']}-anchor-{reference_index}"
+    available: PlanVariants = {}
+    for cluster in _plan_clusters(plan):
+        for reference_index, reference in enumerate(_plan_references(cluster), start=1):
+            variant_id = (
+                f"{_text(cluster.get('cluster_id'), 'Plan cluster ID')}-anchor-"
+                f"{reference_index}"
+            )
             available[variant_id] = (cluster, reference)
     unknown = set(requested) - set(available)
     if unknown:
@@ -555,7 +680,10 @@ def _select_plan_variants(plan, selected_variant_ids):
             "Selected source-reference variants are absent from the plan: "
             + ", ".join(sorted(unknown))
         )
-    selected_clusters = [available[value][0]["cluster_id"] for value in requested]
+    selected_clusters = [
+        _text(available[value][0].get("cluster_id"), "Plan cluster ID")
+        for value in requested
+    ]
     if len(selected_clusters) != len(set(selected_clusters)):
         raise SourceReferenceReviewError(
             "Select at most one source-reference variant per portrait cluster"
@@ -564,10 +692,15 @@ def _select_plan_variants(plan, selected_variant_ids):
 
 
 def _copy_binding_voice_references(
-    staging, source_root, voice, target_root, source_snapshots, error_message
-):
-    copied = []
-    digests = []
+    staging: Path,
+    source_root: Path,
+    voice: VoiceManifestEntry,
+    target_root: Path,
+    source_snapshots: SourceSnapshots,
+    error_message: str,
+) -> tuple[list[str], list[str]]:
+    copied: list[str] = []
+    digests: list[str] = []
     for index, relative in enumerate(voice.references, start=1):
         source = _contained_file(source_root, relative)
         digest = sha256_file(source)
@@ -585,9 +718,17 @@ def _copy_binding_voice_references(
 
 
 def _copy_selected_binding_variant(
-    staging, plan_directory, variant_id, cluster, reference, queue_overrides, snapshots
-):
-    source = _contained_file(plan_directory, reference["path"])
+    staging: Path,
+    plan_directory: Path,
+    variant_id: str,
+    cluster: JsonObject,
+    reference: JsonObject,
+    queue_overrides: dict[str, str],
+    snapshots: SourceSnapshots,
+) -> tuple[JsonObject, JsonObject]:
+    source = _contained_file(
+        plan_directory, _text(reference.get("path"), "Variant reference path")
+    )
     digest = _sha256(reference.get("sha256"), f"variant {variant_id} reference hash")
     if sha256_file(source) != digest:
         raise SourceReferenceReviewError(
@@ -604,13 +745,13 @@ def _copy_selected_binding_variant(
         )
     snapshots.append((source, digest))
     voice_character = f"Source reference {cluster['character']} {variant_id}"
-    voice = {
+    voice: JsonObject = {
         "character": voice_character,
         "speaker": f"source-reference:{variant_id}",
         "references": [target_relative.as_posix()],
     }
-    queue_ids = []
-    for item in cluster["queue_items"]:
+    queue_ids: list[str] = []
+    for item in _plan_queue_items(cluster):
         queue_id = _text(item.get("queue_id"), "Bound queue ID")
         if queue_id in queue_overrides:
             raise SourceReferenceReviewError(
@@ -618,7 +759,7 @@ def _copy_selected_binding_variant(
             )
         queue_overrides[queue_id] = voice_character
         queue_ids.append(queue_id)
-    selected = {
+    selected: JsonObject = {
         "variant_id": variant_id,
         "cluster_id": cluster["cluster_id"],
         "character": cluster["character"],
@@ -632,15 +773,15 @@ def _copy_selected_binding_variant(
 
 
 def publish_source_reference_bindings(
-    plan_directory,
-    base_voice_manifest,
-    narrator_character,
-    selected_variant_ids,
-    output,
+    plan_directory: str | Path,
+    base_voice_manifest: str | Path,
+    narrator_character: str,
+    selected_variant_ids: Iterable[str] | None,
+    output: str | Path,
     *,
-    quality_review=None,
-    base_characters=(),
-):
+    quality_review: str | Path | None = None,
+    base_characters: Iterable[str] = (),
+) -> SourceReferenceBindingsResult:
     """Publish a partial manifest with explicit queue-to-variant bindings."""
     plan_directory = Path(plan_directory).expanduser().resolve()
     plan = load_source_reference_plan(plan_directory)
@@ -656,7 +797,9 @@ def publish_source_reference_bindings(
         narrator,
         included_base_voices,
     ) = _load_binding_base(base_voice_manifest, narrator_character, base_characters)
-    requested_variants, available = _select_plan_variants(plan, selected_variant_ids)
+    requested_variants, available = _select_plan_variants(
+        plan, selected_variant_ids or ()
+    )
 
     output = Path(output).expanduser().resolve()
     if output.exists() or output.is_symlink():
@@ -664,7 +807,7 @@ def publish_source_reference_bindings(
             f"Source-reference bindings output exists: {output}"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    source_snapshots = []
+    source_snapshots: list[tuple[Path, str]] = []
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
         narrator_references, _digests = _copy_binding_voice_references(
             staging,
@@ -708,8 +851,8 @@ def publish_source_reference_bindings(
                 }
             )
 
-        queue_overrides = {}
-        selected_variants = []
+        queue_overrides: dict[str, str] = {}
+        selected_variants: list[JsonObject] = []
         for variant_id in requested_variants:
             cluster, reference = available[variant_id]
             voice, selected = _copy_selected_binding_variant(
@@ -769,7 +912,9 @@ def publish_source_reference_bindings(
         )
 
 
-def _load_bound_manifest(path):
+def _load_bound_manifest(
+    path: Path,
+) -> tuple[bytes, JsonObject, tuple[VoiceManifestEntry, ...], dict[str, str]]:
     try:
         payload = path.read_bytes()
         document, voices = load_voice_manifest(path, allow_legacy=False)
@@ -799,9 +944,13 @@ def _validate_successor_sources(
         )
 
 
-def _copy_successor_voices(staging, sources, snapshots):
-    voices = []
-    voice_digests = {}
+def _copy_successor_voices(
+    staging: Path,
+    sources: Sequence[tuple[Path, Sequence[VoiceManifestEntry]]],
+    snapshots: SourceSnapshots,
+) -> list[JsonObject]:
+    voices: list[JsonObject] = []
+    voice_digests: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = {}
     for source_index, (manifest_path, manifest_voices) in enumerate(sources, start=1):
         for voice_index, voice in enumerate(manifest_voices, start=1):
             copied_references, reference_digests = _copy_binding_voice_references(
@@ -837,12 +986,12 @@ def _copy_successor_voices(staging, sources, snapshots):
 
 
 def publish_source_reference_binding_successor(
-    base_binding_manifest,
-    plan_directory,
-    quality_review,
-    narrator_character,
-    output,
-):
+    base_binding_manifest: str | Path,
+    plan_directory: str | Path,
+    quality_review: str | Path,
+    narrator_character: str,
+    output: str | Path,
+) -> SourceReferenceBindingsResult:
     """Add one reviewed plan without dropping existing exact queue bindings."""
     base_binding_manifest = Path(base_binding_manifest).expanduser().resolve()
     plan_directory = Path(plan_directory).expanduser().resolve()
@@ -880,12 +1029,16 @@ def publish_source_reference_binding_successor(
             addition_voices,
             addition_overrides,
         ) = _load_bound_manifest(addition_manifest)
-        addition_binding = addition_document[SOURCE_REFERENCE_BINDINGS_FIELD]
+        addition_binding = addition_document.get(SOURCE_REFERENCE_BINDINGS_FIELD)
+        if not isinstance(addition_binding, dict):
+            raise SourceReferenceReviewError(
+                "Added voice manifest has no source-reference binding authority"
+            )
         _validate_successor_sources(
             base_document, addition_document, base_overrides, addition_overrides
         )
 
-        snapshots = []
+        snapshots: list[tuple[Path, str]] = []
         with staged_directory(
             output.parent, prefix=f".{output.name}.staging-"
         ) as staging:
@@ -906,7 +1059,9 @@ def publish_source_reference_binding_successor(
                     *retired_source_reference_variants_from_manifest(base_document),
                     *retired_source_reference_variants_from_manifest(addition_document),
                 ),
-                key=lambda record: record["variant_id"],
+                key=lambda record: _text(
+                    record.get("variant_id"), "Retired variant ID"
+                ),
             )
             overrides = dict(sorted({**base_overrides, **addition_overrides}.items()))
             bindings = {
@@ -977,15 +1132,15 @@ def _retirement_request(
 
 
 def _retirement_records(
-    requested,
-    variants,
-    voices_by_character,
-    base_binding_manifest,
-    base_overrides,
-    retired_records,
-    reason,
-):
-    removed_queue_ids = set()
+    requested: Iterable[str],
+    variants: Mapping[str, JsonObject],
+    voices_by_character: Mapping[str, VoiceManifestEntry],
+    base_binding_manifest: Path,
+    base_overrides: Mapping[str, str],
+    retired_records: list[JsonObject],
+    reason: str,
+) -> set[str]:
+    removed_queue_ids: set[str] = set()
     for variant_id in requested:
         variant = variants[variant_id]
         voice_character = _text(
@@ -1040,8 +1195,13 @@ def _retirement_records(
     return removed_queue_ids
 
 
-def _copy_retirement_voices(staging, base_binding_manifest, base_voices, snapshots):
-    voices = []
+def _copy_retirement_voices(
+    staging: Path,
+    base_binding_manifest: Path,
+    base_voices: Sequence[VoiceManifestEntry],
+    snapshots: SourceSnapshots,
+) -> list[JsonObject]:
+    voices: list[JsonObject] = []
     for voice_index, voice in enumerate(base_voices, start=1):
         references, _digests = _copy_binding_voice_references(
             staging,
@@ -1063,12 +1223,12 @@ def _copy_retirement_voices(staging, base_binding_manifest, base_voices, snapsho
 
 
 def publish_source_reference_binding_retirement(
-    base_binding_manifest,
-    variant_ids,
-    output,
+    base_binding_manifest: str | Path,
+    variant_ids: Iterable[str] | None,
+    output: str | Path,
     *,
-    reason="real_story_quality_failure",
-):
+    reason: str = "real_story_quality_failure",
+) -> SourceReferenceBindingsResult:
     """Publish an immutable successor with exact selected variants retired."""
     requested = _retirement_request(variant_ids, reason)
     base_binding_manifest = Path(base_binding_manifest).expanduser().resolve()
@@ -1089,9 +1249,10 @@ def publish_source_reference_binding_retirement(
             "Source-reference retirement requires a multi-plan binding manifest"
         )
     variants = {
-        variant.get("variant_id"): variant
-        for variant in base_binding.get("selected_variants", [])
-        if isinstance(variant, dict)
+        _text(
+            variant.get("variant_id"), "Selected source-reference variant ID"
+        ): variant
+        for variant in _binding_variants(base_binding)
     }
     missing = sorted(set(requested) - set(variants))
     if missing:
@@ -1105,7 +1266,10 @@ def publish_source_reference_binding_retirement(
     retired_records = list(
         retired_source_reference_variants_from_manifest(base_document)
     )
-    retired_ids = {record["variant_id"] for record in retired_records}
+    retired_ids = {
+        _text(record.get("variant_id"), "Retired source-reference variant ID")
+        for record in retired_records
+    }
     if retired_ids & set(requested):
         raise SourceReferenceReviewError("Source-reference variant is already retired")
     removed_queue_ids = _retirement_records(
@@ -1119,8 +1283,9 @@ def publish_source_reference_binding_retirement(
     )
     remaining_variants = [
         variant
-        for variant in base_binding["selected_variants"]
-        if variant["variant_id"] not in requested
+        for variant in _binding_variants(base_binding)
+        if _text(variant.get("variant_id"), "Selected source-reference variant ID")
+        not in requested
     ]
     if not remaining_variants:
         raise SourceReferenceReviewError(
@@ -1132,7 +1297,7 @@ def publish_source_reference_binding_retirement(
         if queue_id not in removed_queue_ids
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    snapshots = []
+    snapshots: list[tuple[Path, str]] = []
     with staged_directory(
         output.parent, prefix=f".{output.name}.retirement-"
     ) as staging:
@@ -1146,7 +1311,10 @@ def publish_source_reference_binding_retirement(
             "sources": base_binding["sources"],
             "selected_variants": remaining_variants,
             "retired_variants": sorted(
-                retired_records, key=lambda record: record["variant_id"]
+                retired_records,
+                key=lambda record: _text(
+                    record.get("variant_id"), "Retired variant ID"
+                ),
             ),
             "queue_voice_overrides": dict(sorted(overrides.items())),
             "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
@@ -1182,33 +1350,15 @@ def publish_source_reference_binding_retirement(
         )
 
 
-def _combined_binding_ledgers(*bindings):
-    sources = []
-    selected_variants = []
-    seen_sources = {}
-    seen_variants = set()
+def _combined_binding_ledgers(
+    *bindings: JsonObject,
+) -> tuple[list[JsonObject], list[JsonObject]]:
+    sources: list[JsonObject] = []
+    selected_variants: list[JsonObject] = []
+    seen_sources: dict[str, str] = {}
+    seen_variants: set[str] = set()
     for binding in bindings:
-        version = binding.get("schema_version")
-        if version == SOURCE_REFERENCE_BINDINGS_VERSION:
-            binding_sources = [
-                {
-                    "source_reference_plan_sha256": binding.get(
-                        "source_reference_plan_sha256"
-                    ),
-                    "source_reference_quality_review_sha256": binding.get(
-                        "source_reference_quality_review_sha256"
-                    ),
-                }
-            ]
-        elif version in {
-            SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
-            SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION,
-        }:
-            binding_sources = binding.get("sources")
-        else:
-            raise SourceReferenceReviewError(
-                "Successor source-reference binding schema is unsupported"
-            )
+        binding_sources = _binding_sources(binding)
         for source in binding_sources:
             plan_sha256 = _sha256(
                 source.get("source_reference_plan_sha256"),
@@ -1231,8 +1381,15 @@ def _combined_binding_ledgers(*bindings):
                         "source_reference_quality_review_sha256": review_sha256,
                     }
                 )
-        default_plan = binding_sources[0]["source_reference_plan_sha256"]
-        for variant in binding.get("selected_variants", []):
+        if not binding_sources:
+            raise SourceReferenceReviewError(
+                "Successor source-reference sources are empty"
+            )
+        default_plan = _sha256(
+            binding_sources[0].get("source_reference_plan_sha256"),
+            "successor source-reference plan SHA-256",
+        )
+        for variant in _binding_variants(binding):
             variant_id = _text(
                 variant.get("variant_id"), "successor selected variant ID"
             )
@@ -1252,17 +1409,59 @@ def _combined_binding_ledgers(*bindings):
     return sources, selected_variants
 
 
+def _binding_sources(binding: Mapping[str, object]) -> list[JsonObject]:
+    version = binding.get("schema_version")
+    if version == SOURCE_REFERENCE_BINDINGS_VERSION:
+        return [
+            {
+                "source_reference_plan_sha256": binding.get(
+                    "source_reference_plan_sha256"
+                ),
+                "source_reference_quality_review_sha256": binding.get(
+                    "source_reference_quality_review_sha256"
+                ),
+            }
+        ]
+    if version not in {
+        SOURCE_REFERENCE_BINDINGS_MULTI_VERSION,
+        SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION,
+    }:
+        raise SourceReferenceReviewError(
+            "Successor source-reference binding schema is unsupported"
+        )
+    sources = binding.get("sources")
+    if not isinstance(sources, list) or any(
+        not isinstance(source, dict) for source in sources
+    ):
+        raise SourceReferenceReviewError(
+            "Successor source-reference sources are invalid"
+        )
+    return sources
+
+
 def _stage_evaluation_variant(
-    staging, plan_directory, cluster, reference, reference_index
-):
-    variant_id = f"{cluster['cluster_id']}-anchor-{reference_index}"
-    evaluation_character = f"Source reference {cluster['character']} {variant_id}"
-    source = _contained_file(plan_directory, reference["path"])
-    relative = Path("references") / variant_id / f"source-{reference['media_id']}.wav"
+    staging: Path,
+    plan_directory: Path,
+    cluster: JsonObject,
+    reference: JsonObject,
+    reference_index: int,
+) -> tuple[JsonObject, JsonObject, list[JsonObject], tuple[Path, str]]:
+    cluster_id = _text(cluster.get("cluster_id"), "Plan cluster ID")
+    character = _text(cluster.get("character"), "Plan cluster character")
+    variant_id = f"{cluster_id}-anchor-{reference_index}"
+    evaluation_character = f"Source reference {character} {variant_id}"
+    source = _contained_file(
+        plan_directory, _text(reference.get("path"), "Plan reference path")
+    )
+    media_id = reference.get("media_id")
+    if isinstance(media_id, bool) or not isinstance(media_id, int):
+        raise SourceReferenceReviewError("Plan reference media ID is invalid")
+    reference_sha256 = _sha256(reference.get("sha256"), "Plan reference hash")
+    relative = Path("references") / variant_id / f"source-{media_id}.wav"
     destination = staging / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = source.read_bytes()
-    if hashlib.sha256(payload).hexdigest() != reference["sha256"]:
+    if hashlib.sha256(payload).hexdigest() != reference_sha256:
         raise SourceReferenceReviewError(
             f"Source-reference plan changed during evaluation: {reference['path']}"
         )
@@ -1274,15 +1473,15 @@ def _stage_evaluation_variant(
         raise SourceReferenceReviewError(
             f"Source-reference anchor transcripts are invalid: {variant_id}"
         )
-    evaluation_texts = []
+    evaluation_texts: list[tuple[str, str]] = []
     if source_transcripts:
         evaluation_texts.append(("source-match", source_transcripts[0]))
     evaluation_texts.extend(
         (f"fixed-{index}", text)
         for index, text in enumerate(FIXED_EVALUATION_CORPUS, start=1)
     )
-    queue_ids = {}
-    items = []
+    queue_ids: dict[str, str] = {}
+    items: list[JsonObject] = []
     for evaluation_kind, text in evaluation_texts:
         text_hash = hashlib.sha256(text.encode()).hexdigest()
         line_id = f"source-reference:{variant_id}:{evaluation_kind}"
@@ -1295,44 +1494,48 @@ def _stage_evaluation_variant(
                 "line_id": line_id,
                 "text": text,
                 "text_sha256": text_hash,
-                "speaker": cluster["character"],
+                "speaker": character,
                 "voice_character": evaluation_character,
                 "source_audio_status": "absent",
                 "source_audio_reason": "source_reference_evaluation",
                 "source_kind": "authoring_evaluation",
                 "action": "generate",
                 "state": "pending",
-                "reference_cluster_id": cluster["cluster_id"],
-                "reference_candidate_key": reference["candidate_key"],
+                "reference_cluster_id": cluster_id,
+                "reference_candidate_key": _text(
+                    reference.get("candidate_key"), "Plan reference candidate key"
+                ),
                 "evaluation_kind": evaluation_kind,
             }
         )
-    variant = {
+    variant: JsonObject = {
         "variant_id": variant_id,
-        "character": cluster["character"],
+        "character": character,
         "portrait": cluster["portrait"],
-        "source_bank": cluster["source_bank"],
-        "media_id": reference["media_id"],
+        "source_bank": _text(cluster.get("source_bank"), "Plan cluster source bank"),
+        "media_id": media_id,
         "source_audio": relative.as_posix(),
-        "source_audio_sha256": reference["sha256"],
+        "source_audio_sha256": reference_sha256,
         "fixed_queue_ids": [
             queue_ids[f"fixed-{index}"]
             for index in range(1, len(FIXED_EVALUATION_CORPUS) + 1)
         ],
-        "affected_queue_item_count": len(cluster["queue_items"]),
+        "affected_queue_item_count": len(_plan_queue_items(cluster)),
         "manual_blind_review_required": True,
     }
     if "source-match" in queue_ids:
         variant["source_match_queue_id"] = queue_ids["source-match"]
-    voice = {
+    voice: JsonObject = {
         "character": evaluation_character,
         "speaker": f"source-reference:{variant_id}",
         "references": [relative.as_posix()],
     }
-    return voice, variant, items, (source, reference["sha256"])
+    return voice, variant, items, (source, reference_sha256)
 
 
-def publish_source_reference_evaluation(plan_directory, output):
+def publish_source_reference_evaluation(
+    plan_directory: str | Path, output: str | Path
+) -> SourceReferenceEvaluationResult:
     """Publish self-contained fixed-corpus inputs for every accepted anchor."""
     plan_directory = Path(plan_directory).expanduser().resolve()
     plan = load_source_reference_plan(plan_directory)
@@ -1345,16 +1548,21 @@ def publish_source_reference_evaluation(plan_directory, output):
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
-        voices = []
-        items = []
-        variants = []
-        source_snapshots = []
+        voices: list[JsonObject] = []
+        items: list[JsonObject] = []
+        variants: list[JsonObject] = []
+        source_snapshots: list[tuple[Path, str]] = []
         clusters = sorted(
-            plan["clusters"],
-            key=lambda cluster: (-len(cluster["queue_items"]), cluster["cluster_id"]),
+            _plan_clusters(plan),
+            key=lambda cluster: (
+                -len(_plan_queue_items(cluster)),
+                _text(cluster.get("cluster_id"), "Plan cluster ID"),
+            ),
         )
         for cluster in clusters:
-            for reference_index, reference in enumerate(cluster["references"], start=1):
+            for reference_index, reference in enumerate(
+                _plan_references(cluster), start=1
+            ):
                 voice, variant, variant_items, snapshot = _stage_evaluation_variant(
                     staging,
                     plan_directory,
@@ -1419,8 +1627,10 @@ def publish_source_reference_evaluation(plan_directory, output):
                 f"source-reference plan artifact {source.name}",
             )
         for variant in variants:
-            source = staging / variant["source_audio"]
-            if sha256_file(source) != variant["source_audio_sha256"]:
+            source = staging / _text(variant.get("source_audio"), "Evaluation source")
+            if sha256_file(source) != _sha256(
+                variant.get("source_audio_sha256"), "Evaluation source hash"
+            ):
                 raise SourceReferenceReviewError(
                     f"Evaluation reference changed before publication: {source}"
                 )
@@ -1428,7 +1638,20 @@ def publish_source_reference_evaluation(plan_directory, output):
         return SourceReferenceEvaluationResult(output, len(variants), len(items))
 
 
-def _load_evaluation_generation(evaluation_directory, state_path):
+def _load_evaluation_generation(
+    evaluation_directory: Path, state_path: str | Path
+) -> tuple[
+    Path,
+    bytes,
+    JsonObject,
+    Path,
+    str,
+    Path,
+    str,
+    VoiceGenerationQueue,
+    tuple[VoiceManifestEntry, ...],
+    JsonDocument,
+]:
     comparison_path, comparison_payload, comparison = _read_json(
         evaluation_directory / "comparison.json", "source-reference evaluation"
     )
@@ -1514,8 +1737,12 @@ def _variant_evaluation_queue_ids(
 
 
 def _validate_listening_variant(
-    evaluation_directory, variant, variant_index, voices_by_character, checked_audio
-):
+    evaluation_directory: Path,
+    variant: object,
+    variant_index: int,
+    voices_by_character: Mapping[str, VoiceManifestEntry],
+    checked_audio: SourceSnapshots,
+) -> tuple[str, str, str, str, Path, str, list[tuple[str, str]]]:
     if not isinstance(variant, dict):
         raise SourceReferenceReviewError(
             f"Evaluation variant {variant_index} must be an object"
@@ -1559,22 +1786,25 @@ def _validate_listening_variant(
 
 
 def _collect_generated_variant_samples(
-    variant_id,
-    character,
-    evaluation_character,
-    cluster_id,
-    source,
-    source_sha256,
-    queue_ids,
-    queue_by_id,
-    state,
-    state_path,
-    checked_audio,
-):
-    samples = []
-    originals = []
-    report_provider = None
-    report_model = None
+    variant_id: str,
+    character: str,
+    evaluation_character: str,
+    cluster_id: str,
+    source: Path,
+    source_sha256: str,
+    queue_ids: Iterable[tuple[str, str]],
+    queue_by_id: Mapping[str, VoiceGenerationQueueItem],
+    state: JsonDocument,
+    state_path: Path,
+    checked_audio: SourceSnapshots,
+) -> tuple[list[JsonObject], list[JsonObject], str | None, str | None]:
+    samples: list[JsonObject] = []
+    originals: list[JsonObject] = []
+    report_provider: str | None = None
+    report_model: str | None = None
+    state_items = state.get("items")
+    if not isinstance(state_items, dict):
+        raise SourceReferenceReviewError("Generation state items are invalid")
     for expected_kind, queue_id in queue_ids:
         item = queue_by_id.get(queue_id)
         if item is None:
@@ -1590,7 +1820,7 @@ def _collect_generated_variant_samples(
             raise SourceReferenceReviewError(
                 f"Variant {variant_id} queue binding changed: {queue_id}"
             )
-        result = state["items"].get(queue_id)
+        result = state_items.get(queue_id)
         if not isinstance(result, dict) or result.get("status") not in {
             "generated",
             "approved",
@@ -1642,17 +1872,22 @@ def _collect_generated_variant_samples(
 
 
 def _collect_listening_variants(
-    evaluation_directory, comparison, voices, queue, state, state_path
-):
+    evaluation_directory: Path,
+    comparison: JsonObject,
+    voices: Iterable[VoiceManifestEntry],
+    queue: VoiceGenerationQueue,
+    state: JsonDocument,
+    state_path: Path,
+) -> tuple[list[JsonObject], list[JsonObject], list[tuple[Path, str]]]:
     queue_by_id = {item.queue_id: item for item in queue.items}
     voices_by_character = {voice.character: voice for voice in voices}
     variants = comparison.get("variants")
     if not isinstance(variants, list) or not variants:
         raise SourceReferenceReviewError("Evaluation variants must be a non-empty list")
-    originals = []
-    generated_reports = []
-    checked_audio = []
-    seen_variants = set()
+    originals: list[JsonObject] = []
+    generated_reports: list[JsonObject] = []
+    checked_audio: list[tuple[Path, str]] = []
+    seen_variants: set[str] = set()
     for variant_index, variant in enumerate(variants):
         if not isinstance(variant, dict):
             raise SourceReferenceReviewError(
@@ -1713,8 +1948,8 @@ def _collect_listening_variants(
 
 
 def publish_source_reference_listening_reports(
-    evaluation_directory, state_path, output
-):
+    evaluation_directory: str | Path, state_path: str | Path, output: str | Path
+) -> SourceReferenceListeningReportsResult:
     """Publish strict reports for blind original/generated and variant review."""
     evaluation_directory = Path(evaluation_directory).expanduser().resolve()
     (
@@ -1771,9 +2006,9 @@ def publish_source_reference_listening_reports(
                 path,
                 _model_report(
                     f"generated:{report['variant_id']}",
-                    report["provider"],
-                    report["model"],
-                    report["samples"],
+                    _text(report.get("provider"), "Generated report provider"),
+                    _text(report.get("model"), "Generated report model"),
+                    _report_samples(report),
                     comparison_path=comparison_path,
                     comparison_sha256=comparison_sha256,
                     state_path=state_path,
@@ -1789,7 +2024,10 @@ def publish_source_reference_listening_reports(
             )
         except ModelListeningError as error:
             raise SourceReferenceReviewError(str(error)) from error
-        blind_trials = load_listening_session(session_path)["trial_count"]
+        blind_trials = _nonnegative_int(
+            load_listening_session(session_path).get("trial_count"),
+            "Listening trial count",
+        )
         shutil.rmtree(validation)
         if sha256_file(queue_path) != queue_sha256:
             raise SourceReferenceReviewError(
@@ -1815,7 +2053,7 @@ def publish_source_reference_listening_reports(
         return SourceReferenceListeningReportsResult(
             output,
             len(reports),
-            sum(len(report["samples"]) for report in generated_reports)
+            sum(len(_report_samples(report)) for report in generated_reports)
             + len(originals),
             blind_trials,
         )
@@ -1847,6 +2085,21 @@ def _model_report(
         "generation_state_sha256": state_sha256,
         "affected_queue_item_count": affected_queue_item_count,
     }
+
+
+def _report_samples(report: Mapping[str, object]) -> list[JsonObject]:
+    samples = report.get("samples")
+    if not isinstance(samples, list) or any(
+        not isinstance(sample, dict) for sample in samples
+    ):
+        raise SourceReferenceReviewError("Generated report samples are invalid")
+    return samples
+
+
+def _nonnegative_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise SourceReferenceReviewError(f"{label} is invalid")
+    return value
 
 
 def _load_candidates(report_path: Path, report: JsonObject) -> CandidateMap:
@@ -2001,8 +2254,8 @@ def _record_review_decision(
     decisions[key] = value
 
 
-def _queue_items_by_character(story):
-    values = {}
+def _queue_items_by_character(story: StoryIndexDocument) -> QueueItemsByCharacter:
+    values: QueueItemsByCharacter = {}
     for record in story.records:
         record_portrait = record.producer_fields.get("portrait")
         if not record.speakable or record.source_audio_status == "available":
@@ -2097,8 +2350,10 @@ def _sha256(value: object, label: str) -> str:
 
 def _contained_file(root: Path, relative: str) -> Path:
     relative = _text(relative, "Reference path")
-    return contained_regular_file(
-        root, relative, "reference path", error_type=SourceReferenceReviewError
+    return Path(
+        contained_regular_file(
+            root, relative, "reference path", error_type=SourceReferenceReviewError
+        )
     )
 
 

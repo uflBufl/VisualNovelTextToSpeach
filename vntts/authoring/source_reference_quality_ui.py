@@ -6,7 +6,7 @@ import hashlib
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict, TypeGuard
 
 from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtGui import QCloseEvent, QKeySequence, QPixmap
@@ -31,6 +31,7 @@ from vntts.authoring.review_context_ui import (
     review_scroll_area,
 )
 from vntts.authoring.source_reference_quality_records import (
+    SourceReferenceQualityError,
     load_source_reference_quality_review,
     next_pending_quality_variant,
     quality_review_progress,
@@ -110,10 +111,46 @@ PendingVariant = Callable[[_QualitySession], _QualityVariant | None]
 DecisionRecorder = Callable[[Path, str, QualityDecision], _QualitySession]
 DecisionConfirmer = Callable[[QualityDecision], bool]
 
-_load_review: ReviewLoader = load_source_reference_quality_review
+
+def _is_quality_session(value: object) -> TypeGuard[_QualitySession]:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("variants"), list)
+        and all(isinstance(variant, dict) for variant in value["variants"])
+    )
+
+
+def _is_quality_variant(value: object) -> TypeGuard[_QualityVariant]:
+    return isinstance(value, dict)
+
+
+def _load_review_document(path: Path) -> _QualitySession:
+    session = load_source_reference_quality_review(path)
+    if not _is_quality_session(session):
+        raise SourceReferenceQualityError("Quality review session is invalid")
+    return session
+
+
+def _next_pending_document(session: _QualitySession) -> _QualityVariant | None:
+    variant = next_pending_quality_variant(session)
+    if variant is None or _is_quality_variant(variant):
+        return variant
+    raise SourceReferenceQualityError("Quality review variant is invalid")
+
+
+def _record_decision_document(
+    path: Path, variant_id: str, decision: QualityDecision
+) -> _QualitySession:
+    session = record_source_reference_quality_decision(path, variant_id, decision)
+    if not _is_quality_session(session):
+        raise SourceReferenceQualityError("Quality review session is invalid")
+    return session
+
+
+_load_review: ReviewLoader = _load_review_document
 _quality_progress: ReviewProgress = quality_review_progress
-_next_pending_variant: PendingVariant = next_pending_quality_variant
-_record_decision: DecisionRecorder = record_source_reference_quality_decision
+_next_pending_variant: PendingVariant = _next_pending_document
+_record_decision: DecisionRecorder = _record_decision_document
 
 
 class SourceReferenceQualityDialog(QDialog):

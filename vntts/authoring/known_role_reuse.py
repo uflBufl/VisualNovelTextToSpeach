@@ -361,11 +361,15 @@ def publish_known_role_reuse_binding(
         )
     retired_records: list[RetiredRecord] = []
     for record in retired_source_reference_variants_from_manifest(voice_document):
-        queue_ids = sorted(record["queue_ids"])
+        queue_ids = sorted(
+            _text_list(record.get("queue_ids"), "Retired source-reference queue IDs")
+        )
         if set(queue_ids).issubset(rejected):
             retired_records.append(
                 {
-                    "variant_id": record["variant_id"],
+                    "variant_id": _text_field(
+                        record, "variant_id", "Retired source-reference variant ID"
+                    ),
                     "record_sha256": canonical_document_sha256(record),
                     "queue_ids": queue_ids,
                 }
@@ -673,6 +677,12 @@ def _object_list(value: object, label: str) -> list[JsonObject]:
 
 def _text_field(document: JsonObject, field: str, label: str) -> str:
     return _required_text(document.get(field), label)
+
+
+def _text_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise KnownRoleReuseError(f"{label} is invalid")
+    return value
 
 
 __all__ = [
