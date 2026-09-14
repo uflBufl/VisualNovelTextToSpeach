@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from threading import RLock
+from uuid import UUID
 
 from vntts_artifacts.atomic_io import atomic_output_path
 
@@ -172,7 +173,7 @@ class GenerationTimelineLog:
         self.timelines = OrderedDict()
         self.lock = RLock()
 
-    def record(self, stage, generation, occurred_at, **details):
+    def record(self, stage, generation, occurred_at, *, session_id=None, **details):
         if stage not in generation_timeline_stages + sequence_timeline_stages:
             raise ValueError(f"Unknown generation timeline stage: {stage}")
         try:
@@ -184,11 +185,21 @@ class GenerationTimelineLog:
             ) from error
         if generation < 1:
             return False
+        if session_id is not None:
+            try:
+                session_id = UUID(str(session_id)).hex
+            except (ValueError, AttributeError) as error:
+                raise ValueError("Timeline session ID must be a UUID") from error
 
         with self.lock:
+            identity = session_id, generation
             timeline = self.timelines.setdefault(
-                generation,
-                {"generation": generation, "events": OrderedDict()},
+                identity,
+                {
+                    "generation": generation,
+                    "session_id": session_id,
+                    "events": OrderedDict(),
+                },
             )
             chunk_id = details.get("chunk_id")
             event_key = f"{stage}:{chunk_id}" if chunk_id else stage
@@ -205,7 +216,7 @@ class GenerationTimelineLog:
             # A stage can be reported by both the controller and the reader.
             # Preserve richer source-specific details while updating its time.
             timeline["events"][event_key] = {**existing, **event}
-            self.timelines.move_to_end(generation)
+            self.timelines.move_to_end(identity)
             while len(self.timelines) > self.maximum_entries:
                 self.timelines.popitem(last=False)
             self._persist_locked()
@@ -293,7 +304,10 @@ class GenerationTimelineLog:
     def _serialize_timeline(timeline):
         events = list(timeline["events"].values())
         if not events:
-            return {"generation": timeline["generation"], "events": []}
+            result = {"generation": timeline["generation"], "events": []}
+            if timeline["session_id"] is not None:
+                result["session_id"] = timeline["session_id"]
+            return result
         started_at = min(event["occurred_at"] for event in events)
         serialized = []
         for event in sorted(
@@ -314,7 +328,10 @@ class GenerationTimelineLog:
                     )
                 }
             )
-        return {"generation": timeline["generation"], "events": serialized}
+        result = {"generation": timeline["generation"], "events": serialized}
+        if timeline["session_id"] is not None:
+            result["session_id"] = timeline["session_id"]
+        return result
 
 
 def _percentile(values, quantile):

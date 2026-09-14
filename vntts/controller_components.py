@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Callable, Protocol, TypeGuard, runtime_checkable
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from vntts.controller import AppController
@@ -410,6 +412,8 @@ class RuntimeLifecycleComponent:
             normal_jobs=max_speech_jobs,
         )
         screenshot_directory = get_screenshot_directory(controller.settings)
+        session_id = uuid4().hex
+        controller.live_reader_session_id = session_id
         live_reader = controller.live_reader_factory(
             capture_executor=controller.capture_executor,
             ocr_executor=controller.ocr_executor,
@@ -441,7 +445,10 @@ class RuntimeLifecycleComponent:
                 controller.settings.auto_advance_delay_ms / 1000
             ),
             auto_advance_state_changed=controller._auto_advance_state_changed,
-            pipeline_event_handler=controller.pipeline_event_handler,
+            pipeline_event_handler=partial(
+                controller.pipeline_event_handler,
+                session_id=session_id,
+            ),
             max_speech_jobs=max_speech_jobs,
             interrupt_on_dialog_replacement=bool(
                 getattr(

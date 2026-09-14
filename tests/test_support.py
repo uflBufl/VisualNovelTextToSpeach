@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 from PIL import Image
 
@@ -104,6 +105,21 @@ class NativeSpeechLogTest(unittest.TestCase):
 
 
 class GenerationTimelineLogTest(unittest.TestCase):
+    def test_keeps_restarted_reader_generations_in_separate_timelines(self):
+        timelines = GenerationTimelineLog()
+        first_session, second_session = uuid4().hex, uuid4().hex
+
+        timelines.record("capture", 1, 1.0, session_id=first_session)
+        timelines.record("capture", 1, 2.0, session_id=second_session)
+
+        snapshot = timelines.snapshot()
+        self.assertEqual(len(snapshot), 2)
+        self.assertEqual(
+            {timeline["session_id"] for timeline in snapshot},
+            {first_session, second_session},
+        )
+        self.assertEqual([timeline["generation"] for timeline in snapshot], [1, 1])
+
     def test_keeps_one_ordered_privacy_safe_timeline_per_generation(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "timelines.json"
@@ -309,6 +325,8 @@ class GenerationTimelineLogTest(unittest.TestCase):
         self.assertFalse(timelines.record("capture", 0, 1.0))
         with self.assertRaisesRegex(ValueError, "Unknown generation timeline stage"):
             timelines.record("dialogue-text", 1, 1.0)
+        with self.assertRaisesRegex(ValueError, "session ID must be a UUID"):
+            timelines.record("capture", 1, 1.0, session_id="not-a-session")
 
     def test_accepts_privacy_safe_sequence_control_evidence(self):
         timelines = GenerationTimelineLog()

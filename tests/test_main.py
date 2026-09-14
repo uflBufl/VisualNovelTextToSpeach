@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
+from uuid import UUID
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -1059,6 +1060,10 @@ class MainTest(unittest.TestCase):
             progress=controller._warmup_progress
         )
         live_reader_factory.assert_called_once()
+        session_id = controller.live_reader_session_id
+        self.assertEqual(UUID(session_id).hex, session_id)
+        pipeline = live_reader_factory.call_args.kwargs["pipeline_event_handler"]
+        self.assertEqual(pipeline.keywords["session_id"], session_id)
         schedule_dialog_read.assert_called_once_with(
             capture_executor,
             voice_router,

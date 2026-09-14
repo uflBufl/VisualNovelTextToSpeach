@@ -14,8 +14,7 @@ Execution labels:
 
 Planned implementation order after approval:
 
-1. Add session identity, sanitized previous-session preservation and audio
-   lifecycle telemetry.
+1. Add sanitized previous-session preservation and audio lifecycle telemetry.
 2. Reproduce and fix the Windows device-quiescence race, then use the same
    timelines to resolve duplicate playback, ellipsis loss and avoidable story
    misses.
@@ -152,10 +151,6 @@ Planned implementation order after approval:
       dialogue text or local paths into the support ZIP. Gate: a
       crash/restart fixture still identifies the prior live-reading and native-
       speech stages without dialogue text, screenshots, audio, paths or secrets.
-- [ ] **Ready:** give every live-reader instance a session UUID and include it in
-      generation-timeline identity. Integer generation numbers restart at one and
-      currently merge separate readers into impossible timelines. Gate: two reader
-      restarts with generation 1 remain two distinct timelines in diagnostics.
 - [ ] **Ready, before the crash fix:** record the audio host API/device plus stream
       open, stop, abort and close owner/reason. Keep values bounded and privacy-safe.
       Gate: a support ZIP can correlate every terminal playback outcome with one

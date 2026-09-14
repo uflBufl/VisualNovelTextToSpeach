@@ -482,9 +482,11 @@ class AppController:
         self.generated_audio_library_factory = generated_audio_library_factory
         self.generated_audio_backend_factory = generated_audio_backend_factory
         self.route_trace_handler = route_trace_handler or (lambda _trace: None)
-        self.pipeline_event_handler = pipeline_event_handler or (
+        self._pipeline_event_sink = pipeline_event_handler or (
             lambda _stage, _generation, _occurred_at, **_details: None
         )
+        self.live_reader_session_id = None
+        self.pipeline_event_handler = self._record_pipeline_event
         self.live_sequence_plan_factory = live_sequence_plan_factory
         self.sequence_prefetch_lock = Lock()
         self.sequence_prefetch_keys: set[tuple[object, ...]] = set()
@@ -538,6 +540,20 @@ class AppController:
         self.live_session = LiveSessionComponent(self)
         self.voice_assignments = VoiceAssignmentComponent(self)
         self.diagnostics = DiagnosticsComponent(self)
+
+    def _record_pipeline_event(
+        self,
+        stage: str,
+        generation: int,
+        occurred_at: float,
+        *,
+        session_id: str | None = None,
+        **details: object,
+    ) -> object:
+        active_session_id = session_id or self.live_reader_session_id
+        if active_session_id is not None:
+            details["session_id"] = active_session_id
+        return self._pipeline_event_sink(stage, generation, occurred_at, **details)
 
     @property
     def is_ready(self) -> bool:
