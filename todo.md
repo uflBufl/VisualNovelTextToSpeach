@@ -27,21 +27,13 @@ Planned implementation order after approval:
 
 ## P0 - Play while offline audio is still preparing
 
-- [ ] **Investigate after session logging:** fix dialogue lines frequently playing
-      twice. Correlate both playback
-      attempts by session, occurrence and route identity; prevent source audio,
-      prepared WAV and live TTS from claiming the same occurrence, including
-      delayed completion and auto-advance races. Reproduce across a sustained
-      chapter run and require zero duplicate starts, not one successful sample.
-      The captured run contains eight confirmed duplicate generated-WAV
-      starts for lines `314601:46`, `:50`, `:67`, `:68`, `:70`, `:71`, `:75` and
-      `:76`, each with a new chunk ID 6.9-10.8 seconds later; the first route is
-      commonly marked interrupted only after nearly a full playback. Do not dedupe
-      by line ID or text because legitimate dialogue may repeat. Give sequence mode
-      a session-bound event lease and non-sequence mode a session-bound routed-frame
-      epoch/fingerprint; claim it while the occurrence is active and release it only
-      before the first PCM is played. Gate: legitimate repeated lines still play,
-      while one occurrence can produce at most one audible route.
+- [ ] **Validate in a sustained chapter:** an occurrence is now claimed as soon as
+      its first PCM is emitted, even if playback is later interrupted. Sequence
+      leases and non-sequence generation sealing suppress a second route without
+      deduplicating by text or line ID, so genuinely repeated dialogue remains
+      playable. Re-run the captured lines `314601:46`, `:50`, `:67`, `:68`, `:70`,
+      `:71`, `:75` and `:76`; require zero duplicate starts and at most one audible
+      route per occurrence.
 - [ ] **Investigate first:** skip an ellipsis-only dialogue (`...`) without speech
       and without waiting
       indefinitely. Classify punctuation-only ellipses before audio routing,

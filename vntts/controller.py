@@ -2480,7 +2480,12 @@ class AppController:
             ):
                 return False
             successful = isinstance(outcome, PlaybackOutcome) and outcome.successful
-            if isinstance(outcome, PlaybackOutcome) and outcome.successful:
+            audible = bool(
+                isinstance(outcome, PlaybackOutcome)
+                and isinstance(outcome.first_audio_ms, (int, float))
+                and not isinstance(outcome.first_audio_ms, bool)
+            )
+            if successful or audible:
                 route = str(outcome.audio_source or "unknown")
                 existing = self.sequence_event_terminal_routes.setdefault(
                     lease,
@@ -2506,7 +2511,7 @@ class AppController:
                 occurrence_id=lease.occurrence_id,
                 terminal_route=(
                     self.sequence_event_terminal_routes.get(lease)
-                    if successful
+                    if successful or audible
                     else None
                 ),
                 outcome="completed" if successful else "failed",
@@ -3086,13 +3091,16 @@ class AppController:
             if outcome is None:
                 raise TypeError("Speech backend does not implement typed playback")
             result = outcome.successful
+            audible = isinstance(outcome.first_audio_ms, (int, float)) and not isinstance(
+                outcome.first_audio_ms, bool
+            )
             if not result and not chunk.explicit_replay:
                 reader.block_auto_advance_for_generation(
                     chunk.generation,
                     "Playback was interrupted; retry or wait for a new dialogue",
                 )
             if (
-                result
+                (result or audible)
                 and not chunk.explicit_replay
                 and (
                     self._live_sequence_audio_active()

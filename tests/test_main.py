@@ -2054,6 +2054,24 @@ class MainTest(unittest.TestCase):
             {current_lease: "game"},
         )
 
+        controller.story_cursor.anchor_event("event-1", "revisit")
+        audible_lease = controller._begin_sequence_playback(chunk)
+        interrupted = PlaybackOutcome(
+            PlaybackStatus.INTERRUPTED,
+            5000.0,
+            first_audio_ms=3.0,
+            audio_source="generated",
+        )
+
+        self.assertFalse(
+            controller._finish_sequence_playback(audible_lease, interrupted)
+        )
+        self.assertEqual(
+            controller.sequence_event_terminal_routes[audible_lease],
+            "generated",
+        )
+        self.assertIsNone(controller._begin_sequence_playback(chunk))
+
     def test_sequence_audio_auto_dispatch_is_cursor_and_focus_guarded(self):
         rows = [
             {
@@ -4780,6 +4798,38 @@ class MainTest(unittest.TestCase):
 
         self.assertFalse(result)
         controller.live_reader.seal_generation.assert_not_called()
+        controller.live_reader.block_auto_advance_for_generation.assert_called_once()
+
+    def test_interrupted_playback_after_first_pcm_seals_the_occurrence(self):
+        controller = AppController(AppSettings(), tts_factory=Mock())
+        controller.live_reader = Mock()
+        controller.live_reader.wait_until_playable.return_value = True
+        controller.speech_backend = StubTypedPlaybackBackend(
+            PlaybackOutcome(
+                PlaybackStatus.INTERRUPTED,
+                5000.0,
+                first_audio_ms=4.0,
+                audio_source="generated",
+            )
+        )
+
+        route = GeneratedAudioRoute(
+            PreparedGeneratedAudio(
+                "game:1",
+                "a" * 64,
+                np.array([0.0], dtype=np.float32),
+                24_000,
+            ),
+            stub_route_trace("generated", "game:1"),
+        )
+
+        result = controller._play_live_chunk(
+            SpeechChunk(4, "Rhiannon", "A line."),
+            route,
+        )
+
+        self.assertFalse(result)
+        controller.live_reader.seal_generation.assert_called_once_with(4)
         controller.live_reader.block_auto_advance_for_generation.assert_called_once()
 
     def test_failed_typed_playback_blocks_auto_advance_before_error_surfaces(self):
