@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import hashlib
 import http.client
 import io
@@ -51,6 +52,8 @@ from vntts.voices import CharacterVoiceRegistry
 
 NATIVE_GENERATION_CONTRACT = "nonzero-seed-stable-1.7-v2"
 _MANAGED_STARTUP_FAILURE_PREFIX = "VNTTS_STARTUP_FAILURE_JSON="
+_CREATE_SUSPENDED = 0x00000004
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 
 
 class _CancellationSignal(Protocol):
@@ -59,6 +62,106 @@ class _CancellationSignal(Protocol):
 
 Cancellation: TypeAlias = Callable[[], bool] | _CancellationSignal
 ProgressCallback: TypeAlias = Callable[[str], object]
+
+
+class _WindowsKillOnCloseJob:
+    def __init__(self, process: subprocess.Popen[bytes]) -> None:
+        from ctypes import wintypes
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("per_process_time", ctypes.c_longlong),
+                ("per_job_time", ctypes.c_longlong),
+                ("limit_flags", wintypes.DWORD),
+                ("minimum_working_set", ctypes.c_size_t),
+                ("maximum_working_set", ctypes.c_size_t),
+                ("active_process_limit", wintypes.DWORD),
+                ("affinity", ctypes.c_size_t),
+                ("priority_class", wintypes.DWORD),
+                ("scheduling_class", wintypes.DWORD),
+            ]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [
+                ("read_operations", ctypes.c_ulonglong),
+                ("write_operations", ctypes.c_ulonglong),
+                ("other_operations", ctypes.c_ulonglong),
+                ("read_bytes", ctypes.c_ulonglong),
+                ("write_bytes", ctypes.c_ulonglong),
+                ("other_bytes", ctypes.c_ulonglong),
+            ]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("basic", BasicLimits),
+                ("io", IoCounters),
+                ("process_memory_limit", ctypes.c_size_t),
+                ("job_memory_limit", ctypes.c_size_t),
+                ("peak_process_memory", ctypes.c_size_t),
+                ("peak_job_memory", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+        ]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        kernel32.ResumeThread.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._kernel32 = kernel32
+        self._handle = handle
+        limits = ExtendedLimits()
+        limits.basic.limit_flags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        try:
+            if not kernel32.SetInformationJobObject(
+                handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not kernel32.AssignProcessToJobObject(
+                handle, wintypes.HANDLE(process._handle)
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if kernel32.ResumeThread(wintypes.HANDLE(process._thread)) == 0xFFFFFFFF:
+                raise ctypes.WinError(ctypes.get_last_error())
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._kernel32.CloseHandle(self._handle)
+            self._handle = None
+
+
+def _launch_owned_process(command, **options):
+    if sys.platform != "win32":
+        return subprocess.Popen(command, **options), None
+    options["creationflags"] = int(options.get("creationflags", 0)) | _CREATE_SUSPENDED
+    process = subprocess.Popen(command, **options)
+    try:
+        return process, _WindowsKillOnCloseJob(process)
+    except BaseException:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        process.wait()
+        raise
 
 
 class NativeControls(TypedDict):
@@ -642,6 +745,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
             raise TTSConfigurationError("MOSS C++ timeouts must be positive and finite")
         self.server_lock = Lock()
         self.server: subprocess.Popen[bytes] | None = None
+        self.server_job: _WindowsKillOnCloseJob | None = None
         self.server_log: BinaryIO | None = None
         self.server_directory: TemporaryDirectory[str] | None = None
         self.port: int | None = None
@@ -1029,7 +1133,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                 Path(self.server_directory.name) / "server.log", "w+b"
             )
             started = monotonic()
-            self.server = subprocess.Popen(
+            self.server, self.server_job = _launch_owned_process(
                 command,
                 stdin=subprocess.DEVNULL,
                 stdout=self.server_log,
@@ -1525,6 +1629,7 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
     def _stop_server(self) -> None:
         with self.server_lock:
             server, self.server = self.server, None
+            job, self.server_job = self.server_job, None
             log, self.server_log = self.server_log, None
             directory, self.server_directory = self.server_directory, None
             self.server_info = None
@@ -1540,6 +1645,8 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                         server.kill()
                         server.wait(timeout=2)
             finally:
+                if job is not None:
+                    job.close()
                 if log is not None:
                     log.close()
                 if directory is not None:

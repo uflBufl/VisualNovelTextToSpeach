@@ -83,15 +83,11 @@ Planned implementation order after approval:
       short-stream completion. Gate: no native crash, stale audio or overlapping
       output stream; the support archive records matching stream owner and lifecycle
       events.
-- [ ] **Ready, with Windows verification:** ensure a managed OpenMOSS server cannot
-      survive an application crash. On Windows, launch it in an owned Job Object
-      with kill-on-close semantics so normal exit, fatal Python/Qt failure and
-      forced process termination close the whole process tree. Do not add next-start
-      PID cleanup: PID reuse and the native server's lack of an authenticated
-      ownership token make it unsafe. Never terminate an unrelated server.
-      Add a subprocess crash test that proves no `moss-tts-server.exe` remains. In
-      this incident server PID 11036 completed its final HTTP request normally while
-      host PID 13844 crashed, so ordinary backend shutdown was never reached.
+- [ ] **Validate on Windows:** managed OpenMOSS now starts suspended, joins a private
+      Job Object with kill-on-close, and only then resumes. Run the Windows-only
+      subprocess crash test and force-close VNTTS during one real render. Gate: the
+      owned `moss-tts-server.exe` process tree disappears while an independently
+      started server is never terminated.
 - [ ] **Validate on Windows:** run the qualified GPU/8 profile beside Reverse: 1999
       and confirm game-time VRAM headroom and responsiveness before making it the
       accelerated default. Retain CPU/4 as the fallback; extra CPU workers did not

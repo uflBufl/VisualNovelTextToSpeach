@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -14,6 +15,7 @@ from threading import Event, Thread
 from unittest.mock import patch
 
 import numpy as np
+import psutil
 import soundfile as sf
 
 from scripts import moss_native_pause_probe as native_probe
@@ -163,6 +165,29 @@ class LoopbackServer(HTTPServer):
         self.server_port = self.server_address[1]
 LoopbackServer(('127.0.0.1', port), Handler).serve_forever()
 """
+
+
+class WindowsOwnedServerTest(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows Job Object semantics")
+    def test_host_crash_kills_owned_process(self):
+        with TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "child.pid"
+            controller = (
+                "import os,pathlib,subprocess,sys;"
+                "from vntts.moss_cpp_backend import _launch_owned_process;"
+                "p,j=_launch_owned_process([sys.executable,'-c',"
+                "'import time;time.sleep(60)'],stdin=subprocess.DEVNULL,"
+                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+                f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid));"
+                "os._exit(17)"
+            )
+            result = subprocess.run([sys.executable, "-c", controller], timeout=15)
+            self.assertEqual(result.returncode, 17)
+            child_pid = int(pid_file.read_text())
+            deadline = time.monotonic() + 5
+            while psutil.pid_exists(child_pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(psutil.pid_exists(child_pid))
 
 
 class MossCppBackendTest(unittest.TestCase):
