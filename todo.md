@@ -34,22 +34,13 @@ Planned implementation order after approval:
       playable. Re-run the captured lines `314601:46`, `:50`, `:67`, `:68`, `:70`,
       `:71`, `:75` and `:76`; require zero duplicate starts and at most one audible
       route per occurrence.
-- [ ] **Investigate first:** skip an ellipsis-only dialogue (`...`) without speech
-      and without waiting
-      indefinitely. Classify punctuation-only ellipses before audio routing,
-      record an explicit silent outcome, and dispatch at most one advance through
-      the existing focus/ownership guard only when auto-advance is enabled;
-      keep lines containing spoken text plus an ellipsis on the normal speech path.
-      The prepared index omits source sequence `314601:78`; the following captured
-      eight-character no-match was sent to fresh MOSS, hit its frame limit and ran
-      for 7.4 seconds instead of producing a silent outcome. Preserve a privacy-safe
-      punctuation classification in diagnostics so the exact correlation is
-      provable without storing dialogue text. Existing silent handling already
-      exists in capture, sequence sealing and the incremental tracker; reproduce the
-      failing route and identify which boundary drops the silent event before
-      changing it. Gate: `...`, `…` and whitespace produce no MOSS request and one
-      silent outcome; auto mode with valid ownership advances once, manual mode
-      dispatches no key, and `Wait...` remains speech.
+- [ ] **Validate in the affected chapter:** the existing visual ellipsis detector,
+      punctuation-only capture classification and cursor-owned silent route already
+      cover omitted sequence `314601:78`, including one guarded auto-advance and no
+      MOSS request. Confirm `...`, `…` and surrounding whitespace produce one silent
+      outcome, manual mode dispatches no key, and `Wait...` remains speech. If the
+      failure recurs, collect the support archive to identify which already logged
+      boundary rejected the silent event before changing code.
 - [ ] **Investigate after session logging:** classify and eliminate avoidable
       `story-line-no-match` live fallbacks. The
       captured timeline contains ten fresh-MOSS no-match routes while the prepared
