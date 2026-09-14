@@ -26,6 +26,7 @@ from vntts.support import (
     collect_ocr_metrics,
     correlate_active_preparation,
     native_speech_context,
+    preserve_previous_session,
     record_game_import,
     record_native_speech,
     redact_text,
@@ -405,6 +406,43 @@ class GenerationTimelineLogTest(unittest.TestCase):
 
 
 class RuntimeSupportLogTest(unittest.TestCase):
+    def test_preserves_sanitized_previous_session_before_logs_are_replaced(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            runtime = RuntimeSupportLog(path=directory / "runtime.log")
+            runtime.add("status", f"Live reading at {Path.home() / 'private'}")
+            performance = PerformanceLog(path=directory / "performance.log")
+            performance.record("live-start", 120, "complete")
+            timelines = GenerationTimelineLog(
+                path=directory / "generation-timelines.json"
+            )
+            timelines.record("capture", 1, 1.0, session_id=uuid4().hex)
+            native = NativeSpeechLog(path=directory / "native-speech.log")
+            native.record(
+                {
+                    "operation": "server-start",
+                    "outcome": "complete",
+                    "stage": "ready",
+                    "reference": str(Path.home() / "private.wav"),
+                }
+            )
+            (directory / "server.log").write_text("PRIVATE DIALOGUE", encoding="utf-8")
+
+            snapshot = preserve_previous_session(directory)
+            persisted = json.loads(
+                (directory / "previous-session.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(snapshot, persisted)
+        self.assertTrue(snapshot["available"])
+        self.assertEqual(
+            snapshot["generation_timelines"][0]["events"][0]["stage"],
+            "capture",
+        )
+        self.assertEqual(snapshot["native_speech"]["latest_runtime"]["stage"], "ready")
+        self.assertNotIn(str(Path.home()), repr(snapshot))
+        self.assertNotIn("PRIVATE DIALOGUE", repr(snapshot))
+
     def test_log_is_bounded_and_returns_a_copy(self):
         log = RuntimeSupportLog(
             maximum_entries=2,
@@ -720,12 +758,17 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 dependency_probe=lambda: {"test": "ok"},
                 generation_timelines=GenerationTimelineLog(),
                 game_import_log=imports,
+                previous_session={
+                    "available": True,
+                    "runtime_events": [{"message": "prior crash"}],
+                },
             ).build(directory / "support.zip")
             with zipfile.ZipFile(output) as archive:
                 names = set(archive.namelist())
                 combined = b"\n".join(archive.read(name) for name in names).decode()
                 metrics = json.loads(archive.read("ocr-metrics.json"))
                 imports = json.loads(archive.read("game-import.json"))
+                previous = json.loads(archive.read("previous-session.json"))
 
             self.assertEqual(
                 names,
@@ -740,6 +783,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                     "native-speech.json",
                     "build.json",
                     "generation-timelines.json",
+                    "previous-session.json",
                     "ocr-metrics.json",
                     "diagnostics.json",
                     "dependencies.json",
@@ -748,6 +792,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertNotIn("PRIVATE CHARACTER", combined)
         self.assertNotIn("PRIVATE DIALOGUE", combined)
         self.assertNotIn("PRIVATE -> SECRET", combined)
+        self.assertTrue(previous["available"])
         self.assertNotIn(str(Path.home()), combined)
         self.assertEqual(metrics["sample_count"], 1)
         self.assertEqual(metrics["average_confidence"], 42)

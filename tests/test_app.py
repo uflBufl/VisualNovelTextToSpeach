@@ -2514,6 +2514,7 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.support_log,
             diagnostic=diagnostic,
             generation_timelines=tray_application.generation_timelines,
+            previous_session=tray_application.previous_session,
         )
         builder.build.assert_called_once_with("support.zip")
         tray_application.support_dialog.set_export_result.assert_called_once_with(

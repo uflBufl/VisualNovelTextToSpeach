@@ -144,6 +144,7 @@ from vntts.support import (
     configure_native_speech_log,
     configure_performance_log,
     configure_pregeneration_support,
+    preserve_previous_session,
     record_background_operation,
 )
 from vntts.support_ui import SupportCenterDialog
@@ -1487,6 +1488,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     ):
         self.application = application
         uses_saved_settings = settings is None
+        self.previous_session = (
+            preserve_previous_session(get_local_data_directory())
+            if uses_saved_settings
+            else {"available": False}
+        )
         if uses_saved_settings:
             configure_performance_log(get_local_data_directory() / "performance.log")
         self._startup_game_pack_errors = []
@@ -3686,6 +3692,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.support_log,
                 diagnostic=diagnostic,
                 generation_timelines=self.generation_timelines,
+                previous_session=self.previous_session,
             ).build(path)
         )
 

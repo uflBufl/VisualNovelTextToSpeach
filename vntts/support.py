@@ -763,6 +763,93 @@ def configure_native_speech_log(path=None):
     return native_speech_log
 
 
+def preserve_previous_session(directory: str | Path) -> SupportDocument:
+    """Snapshot bounded, sanitized diagnostics left by the previous process."""
+    directory = Path(directory).expanduser()
+    runtime_events = [
+        sanitize_event(entry)
+        for entry in _read_bounded_json_lines(directory / "runtime.log", 512 * 1024)
+    ]
+    performance_events = [
+        sanitize_event(entry)
+        for entry in _read_bounded_json_lines(directory / "performance.log", 512 * 1024)
+    ]
+    timelines = _previous_generation_timelines(directory / "generation-timelines.json")
+    native = NativeSpeechLog(path=directory / "native-speech.log").report()
+    if not (
+        runtime_events or performance_events or timelines or native["total_events"]
+    ):
+        return {"available": False}
+    snapshot = {
+        "available": True,
+        "schema_version": 1,
+        "preserved_at": datetime.now(timezone.utc).isoformat(),
+        "runtime_events": runtime_events,
+        "performance_events": performance_events,
+        "generation_timelines": timelines,
+        "native_speech": native,
+    }
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with atomic_output_path(directory / "previous-session.json") as temporary_path:
+            temporary_path.write_text(
+                json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+    except OSError:
+        pass
+    return snapshot
+
+
+def _previous_generation_timelines(path: Path) -> list[SupportDocument]:
+    try:
+        if path.stat().st_size > 2 * 1024 * 1024:
+            return []
+        document = json.loads(path.read_bytes())
+    except OSError, UnicodeError, json.JSONDecodeError:
+        return []
+    if not isinstance(document, dict) or not isinstance(
+        document.get("timelines"), list
+    ):
+        return []
+    result = []
+    for timeline in document["timelines"][-200:]:
+        if not isinstance(timeline, dict):
+            continue
+        generation = timeline.get("generation")
+        if (
+            not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or generation < 1
+        ):
+            continue
+        sanitized: SupportDocument = {"generation": generation, "events": []}
+        session_id = timeline.get("session_id")
+        if session_id is not None:
+            try:
+                sanitized["session_id"] = UUID(str(session_id)).hex
+            except ValueError, AttributeError:
+                continue
+        events = timeline.get("events")
+        if isinstance(events, list):
+            for event in events[-100:]:
+                if not isinstance(event, dict) or event.get("stage") not in (
+                    generation_timeline_stages + sequence_timeline_stages
+                ):
+                    continue
+                safe_event = {
+                    "stage": event["stage"],
+                    **{
+                        key: _sanitize_event_value(event[key])
+                        for key in ("elapsed_ms", *generation_timeline_detail_fields)
+                        if key in event and event[key] is not None
+                    },
+                }
+                sanitized["events"].append(safe_event)
+        result.append(sanitized)
+    return result
+
+
 def record_native_speech(**details):
     details = {**(native_speech_context.get() or {}), **details}
     try:
@@ -1336,6 +1423,7 @@ class SupportBundleBuilder:
         generation_timelines=None,
         game_import_log=None,
         performance_log_value=None,
+        previous_session=None,
     ):
         self.settings = settings
         self.event_log = event_log
@@ -1344,6 +1432,7 @@ class SupportBundleBuilder:
         self.generation_timelines = generation_timelines
         self.game_import_log = game_import_log
         self.performance_log = performance_log_value
+        self.previous_session = previous_session or {"available": False}
 
     def build(self, path):
         path = Path(path).expanduser()
@@ -1408,6 +1497,7 @@ class SupportBundleBuilder:
                     else {}
                 ),
             },
+            "previous-session.json": self.previous_session,
             "ocr-metrics.json": collect_ocr_metrics(
                 self.settings.ocr_diagnostics_directory
             ),
