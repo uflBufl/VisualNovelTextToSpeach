@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import wave
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -107,6 +108,7 @@ class VoiceCandidate:
     source_bank: str | None = None
     source_voice_ids: tuple[str, ...] = ()
     source_line_ids: tuple[str, ...] = ()
+    reference_duration_seconds: float | None = None
 
     def to_document(self):
         value = asdict(self)
@@ -583,6 +585,9 @@ class VoicePlanStore:
             if _requires_audition(eligible_candidates, records):
                 route = "needs-audition"
                 resolution = "ambiguous-voice-evidence"
+                if narrator_candidate is not None:
+                    source_id = narrator_candidate.source_id
+                    candidate = _candidate_from_source(source_id, registry)
             else:
                 route = "voice"
                 if assignment_source:
@@ -859,7 +864,19 @@ def _ranked_candidate(source_id, voice, score, recommendation, *, variant=None):
         source_bank=_optional_variant(variant.get("source_bank")),
         source_voice_ids=tuple(variant.get("source_voice_ids", ())),
         source_line_ids=tuple(variant.get("source_line_ids", ())),
+        reference_duration_seconds=_reference_duration_seconds(voice.references),
     )
+
+
+def _reference_duration_seconds(references):
+    total = 0.0
+    try:
+        for reference in references:
+            with wave.open(str(reference), "rb") as audio:
+                total += audio.getnframes() / audio.getframerate()
+    except EOFError, OSError, ValueError, wave.Error, ZeroDivisionError:
+        return None
+    return round(total, 3) if references else None
 
 
 def _candidate_decision_identity(candidate):

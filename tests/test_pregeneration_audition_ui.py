@@ -110,6 +110,50 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.shutdown()
             panel.deleteLater()
 
+    def test_automatic_voice_inspector_explains_exact_reference_set(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, unresolved, _manifest = ambiguous_fixture(root)
+            candidate = unresolved.candidates[0]
+            group = replace(
+                unresolved,
+                route="voice",
+                source_id=candidate.source_id,
+                source_character=candidate.source_character,
+                source_speaker=candidate.source_speaker,
+                reference_sha256s=candidate.reference_sha256s,
+                resolution="known-character-voice",
+            )
+            plan = replace(
+                plan,
+                groups=tuple(
+                    group if value.group_id == group.group_id else value
+                    for value in plan.groups
+                ),
+            )
+            panel = VoiceAuditionPanel(
+                VoiceDecisionStore(root / "decisions.json"),
+                preview_service=Mock(),
+                player=Mock(),
+            )
+
+            panel.start(plan, group_id=group.group_id)
+
+            self.assertTrue(panel.choose_all_button.isHidden())
+            self.assertEqual(panel.a_play.text(), "Test selected reference")
+            self.assertEqual(panel.a_use.text(), "Use selected reference")
+            self.assertEqual(panel.neither_button.text(), "Use narrator")
+            self.assertEqual(panel.auto_button.text(), "Keep automatic choice")
+            self.assertIn(
+                "Production set: 1 reference, 1.2 s total", panel.a_reason.text()
+            )
+            panel.reference_details_toggle.setChecked(True)
+            self.assertIn(
+                candidate.reference_sha256s[0], panel.reference_details.text()
+            )
+            panel.shutdown()
+            panel.deleteLater()
+
     def test_auto_preview_replay_candidate_cycle_and_persisted_choice(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -782,7 +826,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_saved_audition_replans_before_generation_input(self):
+    def test_inspected_automatic_voice_can_be_saved_and_replanned(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
@@ -824,8 +868,23 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             dialog.continue_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
+            self.assertFalse(dialog.auditioning_voices)
+            self.assertTrue(dialog.preparing_inputs)
+
+            pool.tasks.clear()
+            dialog.preparing_inputs = False
+            dialog._show_voice_confirmation(plan)
+            dialog.show_all_voice_routes.setChecked(True)
+            for row in range(dialog.voice_routes.count()):
+                if (
+                    dialog.voice_routes.item(row).data(Qt.ItemDataRole.UserRole)
+                    == group.character
+                ):
+                    dialog.voice_routes.setCurrentRow(row)
+                    break
+            dialog.inspect_character_voice.click()
             self.assertTrue(dialog.auditioning_voices)
-            self.assertFalse(dialog.preparing_inputs)
+            self.assertTrue(dialog.inspecting_voice_plan)
 
             dialog.voice_panel.a_play.click()
             pool.tasks.pop().run()

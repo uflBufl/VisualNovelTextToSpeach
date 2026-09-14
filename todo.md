@@ -63,51 +63,16 @@ Planned implementation order after approval:
       cancellation/restart, and finish with the same validated pack as
       uninterrupted offline preparation.
 
-## P0 - Let users inspect automatic voices before long pregeneration
+## P0 - Validate the non-blocking Voice plan
 
-- [ ] **Ready after extending the decision contract:** replace chance-like voice
-      audition with a compact, non-blocking Voice plan inside the existing
-      preparation flow. Automatic selection remains the default: generation must
-      not require the user to approve every character. Show only characters in the
-      selected stories, ordered by needs-attention first and then affected line
-      count. Each row shows character, chosen voice source, production reference-set
-      count and total duration, reason for the choice, affected line count and one
-      of: automatic, explicitly approved, narrator, or needs attention. An automatic
-      recommendation is not stored as a user decision; an explicit override is.
-      Reuse the existing plan store, audition panel, portrait, asynchronous runner
-      and checksum-bound preview cache, but first extend the data model: current
-      decision persistence and UI filtering accept only `needs-audition` groups and
-      cannot approve ordinary auto-selected `voice` groups.
-      Inspector behavior:
-      1. Selecting a row reveals the representative original reference plus a
-         compact description of the exact ordered production set. Keep the full
-         member list behind `Reference details`/`Show all`; do not force the user to
-         audit dozens of clips. Permit individual reference/set replacement only if
-         the production backend actually supports that change.
-      2. Show source line, duration and `Play original`. Automatic ranking is only a
-         recommended starting point, never a hidden random next choice.
-      3. Show one fixed `Test selected reference` action. If an exact cached preview
-         exists, replay it; otherwise generate with the production backend, model,
-         profile, controls and reference set, cache it, then play it. Keep original
-         and generated playback controls visually separate and label what is playing.
-      4. Show the test text and an `Another phrase` action. Advance
-         deterministically through suitable story phrases, preferring a longer or
-         more expressive unused line after a neutral default. Keep one phrase across
-         candidate references so comparisons remain meaningful.
-      5. Offer `Use selected reference`, `Use narrator`, and `Choose another
-         voice...`; the last action opens the existing Voices catalog/import flow.
-         Do not add `Try another reference`, `None are acceptable`, separate
-         ordinary/expressive modes or separate Generate/Play controls.
-      6. Persist only explicit decisions against character identity, ordered
-         reference checksums, backend, model, profile and synthesis controls. Reuse
-         them across stories/restarts and invalidate them when one input changes.
-      Only genuine ambiguity, no usable source, or a failed reference/preview is
-      marked needs attention. Even then, the configured narrator is the automatic
-      safe fallback, so unresolved review does not block generation. Existing
-      decisions such as `Hotelier -> narrator` bypass attention. Gate: a new user can
-      start automatically without reviewing every role, can inspect and override
-      any consequential choice before generation, and sees the exact production
-      reference set rather than a misleading single clip.
+- [ ] **Needs player validation:** prepare one story with an automatically matched
+      character, one ambiguous character and one narrator fallback. Confirm that
+      generation can start without reviewing them; the Voice plan lists all roles
+      in useful order; `Inspect selected voice` plays the original and the exact
+      production preview; `Another phrase`, `Use selected reference`, `Use narrator`,
+      `Keep automatic choice`, and `Choose another character's voice...` are clear;
+      and an explicit choice survives reopening while an untouched recommendation
+      remains automatic.
 
 ## P0 - Stabilize Windows audio and the OpenMOSS runtime
 

@@ -654,6 +654,8 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             self.assertEqual(rhiannon.route, "needs-audition")
             self.assertEqual(rhiannon.resolution, "ambiguous-voice-evidence")
+            self.assertEqual(rhiannon.source_id, "preset:alba")
+            self.assertEqual(rhiannon.source_character, "alba")
             self.assertEqual(plan.audition_count, 1)
             self.assertEqual(len(rhiannon.candidate_inventory), 3)
             self.assertEqual(len(rhiannon.candidates), 3)
@@ -880,7 +882,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             self.assertEqual(resolved.route, "needs-audition")
             self.assertEqual(resolved.resolution, "ambiguous-voice-evidence")
-            self.assertEqual(resolved.source_id, group.candidates[0].source_id)
+            self.assertEqual(resolved.source_id, "preset:alba")
             self.assertEqual(second.audition_count, 1)
 
     def test_exact_installed_portrait_is_checksum_bound_for_the_comparison(self):

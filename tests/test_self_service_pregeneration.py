@@ -36,7 +36,6 @@ from vntts.game_content_importer import GameContentImportError  # noqa: E402
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
 from vntts.pregeneration_acceptance import OfflineAcceptanceWorker  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivator  # noqa: E402
-from vntts.pregeneration_audition import VoiceAuditionCancelled  # noqa: E402
 from vntts.pregeneration_generation import (  # noqa: E402
     OfflineGenerationCancelled,
     OfflineGenerationWorker,
@@ -637,9 +636,15 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     for index in range(dialog.voice_routes.count())
                 )
             )
-            dialog.show_all_voice_routes.setChecked(True)
             self.assertEqual(
-                dialog.voice_routes.count(), len(dialog._voice_plan.groups)
+                dialog.voice_routes.count(),
+                sum(
+                    group.character != "Narrator" for group in dialog._voice_plan.groups
+                ),
+            )
+            dialog.show_all_voice_routes.setChecked(True)
+            self.assertLessEqual(
+                dialog.voice_routes.count(), len(dialog._voice_plan.groups) - 1
             )
             for index in range(dialog.voice_routes.count()):
                 item = dialog.voice_routes.item(index)
@@ -1099,7 +1104,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                             "Prepare this story again", plain_label_text(dialog.summary)
                         )
 
-    def test_ambiguous_voice_choice_resumes_then_completes_without_line_review(self):
+    def test_ambiguous_voice_does_not_require_review_before_generation(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_content(root / "content"))
@@ -1119,15 +1124,13 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             decisions = VoiceDecisionStore(root / "voice-decisions.json")
             voices = VoicePlanStore(jobs, decisions=decisions)
             pool = ManualThreadPool()
-            cancelled_preview = Mock()
-            cancelled_preview.generate.side_effect = VoiceAuditionCancelled("cancelled")
             first = OfflineAudioPreparationDialog(
                 settings,
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=jobs,
                 voice_plan_store=voices,
                 voice_decisions=decisions,
-                audition_service=cancelled_preview,
+                audition_service=Mock(),
                 preview_player=Mock(),
                 thread_pool=pool,
             )
@@ -1136,9 +1139,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             first.continue_button.click()
             pool.tasks.pop(0).run()
             self.application.processEvents()
-            self.assertTrue(first.auditioning_voices)
+            self.assertFalse(first.auditioning_voices)
+            self.assertTrue(first.preparing_inputs)
             interrupted_job_id = first.job().job_id
-            first.voice_panel.a_play.click()
             first.cancel_button.click()
             pool.tasks.pop(0).run()
             self.application.processEvents()
@@ -1168,12 +1171,10 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             pool.tasks.pop(0).run()
             self.application.processEvents()
             self.assertEqual(second.job().job_id, interrupted_job_id)
-            self.assertTrue(second.auditioning_voices)
-            second.voice_panel.a_play.click()
+            self.assertFalse(second.auditioning_voices)
+            self.assertTrue(second.preparing_inputs)
             pool.tasks.pop(0).run()
             self.application.processEvents()
-            self.assertTrue(second.voice_panel.a_use.isEnabled())
-            second.voice_panel.a_use.click()
             for _step in range(8):
                 if second.pack_result() is not None:
                     break
@@ -1192,9 +1193,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             second.continue_button.click()
             self.assertEqual(second.result(), QDialog.DialogCode.Accepted)
-            self.assertEqual(second.voice_plan().audition_count, 0)
+            self.assertEqual(second.voice_plan().audition_count, 1)
             self.assertTrue(generator.rendered)
-            self.assertTrue(decisions.path.is_file())
+            self.assertFalse(decisions.path.exists())
             first.deleteLater()
             second.deleteLater()
 

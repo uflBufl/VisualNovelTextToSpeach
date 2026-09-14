@@ -9,6 +9,7 @@ from typing import Protocol, TypeAlias
 from PySide6.QtCore import Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -135,6 +136,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._terminal_emitted = False
         self._ignore_preview_result = False
         self._shutdown_requested = False
+        self._inspection_mode = False
 
         self.summary = QLabel()
         self.summary.setAccessibleName("Voice choice estimate")
@@ -180,13 +182,21 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_reason = QLabel()
         self.a_reason.setAccessibleName("Voice sample details")
         self.a_reason.setWordWrap(True)
+        self.reference_details_toggle = QCheckBox("Reference details")
+        self.reference_details = QLabel()
+        self.reference_details.setWordWrap(True)
+        self.reference_details.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.reference_details.hide()
+        self.reference_details_toggle.toggled.connect(self.reference_details.setVisible)
         self.a_play = QPushButton("Play generated preview")
         self.a_play.setAccessibleName("Play generated voice preview")
         self.a_play.clicked.connect(self.play_a)
         self.a_original = QPushButton("Play original")
         self.a_original.setAccessibleName("Play original reference")
         self.a_original.clicked.connect(self._play_original)
-        self.a_use = QPushButton("Accept voice")
+        self.a_use = QPushButton("Use selected reference")
         self.a_use.setAccessibleName("Accept verified character voice")
         self.a_use.clicked.connect(self.use_a)
         candidate_actions = QHBoxLayout()
@@ -196,6 +206,8 @@ class VoiceAuditionPanel(QGroupBox):
         candidate_layout = QVBoxLayout(self.a_box)
         candidate_layout.addWidget(self.a_title)
         candidate_layout.addWidget(self.a_reason)
+        candidate_layout.addWidget(self.reference_details_toggle)
+        candidate_layout.addWidget(self.reference_details)
         candidate_layout.addLayout(candidate_actions)
 
         self.neither_button = QPushButton("Try another voice")
@@ -252,19 +264,26 @@ class VoiceAuditionPanel(QGroupBox):
     def active(self) -> bool:
         return bool(self.preview_runner.active or self.decision_runner.active)
 
-    def start(self, plan: VoicePlan) -> None:
+    def start(self, plan: VoicePlan, *, group_id: str | None = None) -> None:
         if not isinstance(plan, VoicePlan):
             raise VoiceAuditionUIError("Voice audition plan is invalid")
         groups = tuple(
-            group for group in plan.groups if group.route == "needs-audition"
+            group
+            for group in plan.groups
+            if (group_id is None and group.route == "needs-audition")
+            or group.group_id == group_id
         )
         if not groups:
-            raise VoiceAuditionUIError("Voice audition plan has no unresolved voices")
-        if any(not group.candidates for group in groups):
-            raise VoiceAuditionUIError("An unresolved voice must have a candidate")
+            raise VoiceAuditionUIError("Voice plan has no matching character")
+        if any(
+            not group.candidates and group.narrator_candidate is None
+            for group in groups
+        ):
+            raise VoiceAuditionUIError("This character has no voice to inspect")
         if self._shutdown_requested and self._owns_preview_service:
             self.preview_service = _preview_service_factory()
         self._plan = plan
+        self._inspection_mode = group_id is not None
         self.engine.setText(
             _engine_model_label(
                 plan.synthesis_backend,
@@ -282,6 +301,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._ignore_preview_result = False
         self._shutdown_requested = False
         self.retry_save_button.setVisible(False)
+        self.choose_all_button.setVisible(not self._inspection_mode)
         self.runtime_timer.start()
         self.setVisible(True)
         self._show_group()
@@ -320,6 +340,9 @@ class VoiceAuditionPanel(QGroupBox):
     def choose_for_me(self) -> None:
         if self.preview_runner.active or self.decision_runner.active:
             return
+        if self._inspection_mode:
+            self.cancel()
+            return
         source_id = self._automatic_source_id(self.current_group())
         if source_id is None:
             self.status.setText(
@@ -354,6 +377,12 @@ class VoiceAuditionPanel(QGroupBox):
 
     def neither(self) -> None:
         if self.preview_runner.active or self.decision_runner.active:
+            return
+        if self._inspection_mode:
+            if self.current_group().narrator_candidate is None:
+                self.status.setText("No narrator voice is available for this plan.")
+                return
+            self._record_choice(default_voice_choice_id)
             return
         if len(self._candidate_entries) <= 1:
             self.status.setText(
@@ -426,15 +455,19 @@ class VoiceAuditionPanel(QGroupBox):
         self._previews = {}
         self._displayed = ()
         self._alternate_active = False
+        self.reference_details_toggle.setChecked(False)
         group = self.current_group()
         entries: list[CandidateEntry] = [
             (candidate, candidate.source_id, False) for candidate in group.candidates
         ]
         if group.narrator_candidate is not None:
             entries.append((group.narrator_candidate, default_voice_choice_id, True))
+        entries.sort(key=lambda entry: entry[0].source_id != group.source_id)
         self._candidate_entries = tuple(entries)
         self.summary.setText(
-            f"Voice sample {self._group_index + 1} of {len(self._groups)}."
+            "Inspect this production voice before generation."
+            if self._inspection_mode
+            else f"Voice sample {self._group_index + 1} of {len(self._groups)}."
         )
         variant = f" ({group.age})" if group.age else ""
         self.character.setText(f"Choose a voice for {group.character}{variant}")
@@ -474,11 +507,27 @@ class VoiceAuditionPanel(QGroupBox):
                 if candidate.reference_sha256s
                 else f"Voice: {candidate.source_character} ({candidate.source_speaker}); no recorded reference"
             )
-            + "\n"
-            + candidate.recommendation
+            + "\nProduction set: "
+            + f"{len(candidate.reference_sha256s)} reference"
+            + ("s" if len(candidate.reference_sha256s) != 1 else "")
+            + (
+                f", {candidate.reference_duration_seconds:.1f} s total"
+                if candidate.reference_duration_seconds is not None
+                else ""
+            )
+            + f"\nReason: {candidate.recommendation}"
+        )
+        details = [
+            f"{index}. SHA-256 {checksum}"
+            for index, checksum in enumerate(candidate.reference_sha256s, 1)
+        ]
+        if candidate.source_line_ids:
+            details.append("Source lines: " + ", ".join(candidate.source_line_ids))
+        self.reference_details.setText(
+            "\n".join(details) if details else "No recorded reference files."
         )
         preview = self._previews.get(self._preview_key(candidate))
-        self.a_play.setText("Play generated preview")
+        self.a_play.setText("Test selected reference")
         self.a_play.setEnabled(True)
         self.a_original.setEnabled(bool(candidate.reference_sha256s))
         self.a_original.setToolTip(
@@ -489,11 +538,16 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_use.setEnabled(preview is not None)
         self.a_box.setVisible(True)
         self.neither_button.setText(
-            "Try another voice"
-            if len(self._candidate_entries) > 1
-            else "Retry this voice"
+            "Use narrator" if self._inspection_mode else "Try another voice"
         )
-        self.neither_button.setEnabled(len(self._candidate_entries) > 1)
+        self.neither_button.setEnabled(
+            self.current_group().narrator_candidate is not None
+            if self._inspection_mode
+            else len(self._candidate_entries) > 1
+        )
+        self.auto_button.setText(
+            "Keep automatic choice" if self._inspection_mode else "Choose for me"
+        )
         self.auto_button.setEnabled(True)
         if preview is not None:
             self._displayed = ((candidate, preview, self._current_entry()[1]),)
@@ -648,7 +702,14 @@ class VoiceAuditionPanel(QGroupBox):
             and candidate is not None
             and bool(candidate.reference_sha256s)
         )
-        self.neither_button.setEnabled(enabled and len(self._candidate_entries) > 1)
+        self.neither_button.setEnabled(
+            enabled
+            and (
+                self.current_group().narrator_candidate is not None
+                if self._inspection_mode
+                else len(self._candidate_entries) > 1
+            )
+        )
         self.auto_button.setEnabled(enabled)
         group = self.current_group() if self._group_index < len(self._groups) else None
         self.another_sample_button.setEnabled(
