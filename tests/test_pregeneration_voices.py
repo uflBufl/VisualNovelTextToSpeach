@@ -973,15 +973,24 @@ class VoicePlanStoreTest(unittest.TestCase):
 
             self.assertFalse(VoicePlanStore(jobs).path_for(job).exists())
 
-    def test_decision_store_rejects_non_audition_routes(self):
+    def test_decision_store_accepts_explicit_confirmation_of_automatic_route(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
-            plan = VoicePlanStore(jobs).create(job, AppSettings())
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=write_manifest(root / "voices"),
+            )
             decisions = VoiceDecisionStore(root / "decisions.json")
 
-            with self.assertRaisesRegex(PregenerationVoiceError, "unresolved"):
-                decisions.remember(plan.groups[0], "default")
+            group = next(value for value in plan.groups if value.route == "voice")
+            decisions.remember(group, group.source_id)
+
+            self.assertEqual(
+                decisions.choice_for(group.group_id, group.decision_context_sha256),
+                group.source_id,
+            )
 
     def test_decision_store_accepts_only_bound_candidate_or_narrator(self):
         with TemporaryDirectory() as temporary_directory:
@@ -999,7 +1008,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             group = replace(selected, route="needs-audition")
             decisions = VoiceDecisionStore(root / "decisions.json")
 
-            with self.assertRaisesRegex(PregenerationVoiceError, "not a candidate"):
+            with self.assertRaisesRegex(PregenerationVoiceError, "not part"):
                 decisions.remember(group, "character:unrelated")
 
             decisions.remember(group, group.candidates[0].source_id)

@@ -229,10 +229,6 @@ class VoiceDecisionStore:
         decided_at = self.clock().astimezone(timezone.utc).isoformat()
         observed_groups = set()
         for group, source_id in selections:
-            if group.route != "needs-audition":
-                raise PregenerationVoiceError(
-                    "Only an unresolved voice audition can create a player decision"
-                )
             if group.group_id in observed_groups:
                 raise PregenerationVoiceError(
                     "A voice group was selected more than once"
@@ -243,9 +239,13 @@ class VoiceDecisionStore:
                 default_voice_choice_id,
                 *(candidate.source_id for candidate in group.candidates),
             }
+            if group.narrator_candidate is not None:
+                allowed_sources.add(group.narrator_candidate.source_id)
+            if group.source_id:
+                allowed_sources.add(group.source_id)
             if source_id not in allowed_sources:
                 raise PregenerationVoiceError(
-                    "The selected voice is not a candidate for this audition"
+                    "The selected voice is not part of this voice plan"
                 )
             decisions[_decision_key(group.group_id, group.decision_context_sha256)] = {
                 "group_id": group.group_id,

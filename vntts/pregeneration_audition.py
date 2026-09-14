@@ -426,8 +426,6 @@ def _validate_request(plan, group, candidate_source_id):
         raise VoiceAuditionError("Voice audition inputs are invalid")
     if group not in plan.groups:
         raise VoiceAuditionError("Voice audition group is not part of this plan")
-    if group.route != "needs-audition":
-        raise VoiceAuditionError("Only an ambiguous voice group may be auditioned")
     candidates = tuple(
         candidate
         for candidate in group.candidates

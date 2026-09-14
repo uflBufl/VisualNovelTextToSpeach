@@ -126,6 +126,28 @@ def ambiguous_fixture(root):
 
 
 class VoiceAuditionPreviewServiceTest(unittest.TestCase):
+    def test_automatic_voice_route_can_be_previewed(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, ambiguous, _manifest = ambiguous_fixture(root)
+            group = replace(ambiguous, route="voice", resolution="known-character-voice")
+            plan = replace(
+                plan,
+                groups=tuple(
+                    group if value.group_id == group.group_id else value
+                    for value in plan.groups
+                ),
+            )
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: FakeBackend("moss-tts"),
+            )
+            try:
+                preview = service.generate(plan, group, group.source_id)
+                self.assertTrue(preview.path.is_file())
+            finally:
+                service.close()
+
     def test_pocket_permission_reaches_preview_and_invalidates_loaded_worker(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
