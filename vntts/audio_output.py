@@ -1,13 +1,15 @@
 """Small shared helpers for lazy audio output and playback status."""
 
 from collections.abc import Callable, Mapping
-from threading import Event, Lock
+from threading import Event, Lock, current_thread
 from typing import Protocol, TypeAlias
+from uuid import uuid4
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.signal import resample_poly
 
+from vntts.audio_lifecycle import audio_lifecycle_context, record_audio_lifecycle
 from vntts.playback import (
     PlaybackOutcome,
     PlaybackStatus,
@@ -64,9 +66,212 @@ def resolve_audio_output(audio_output: AudioOutput | None) -> AudioOutput:
     if audio_output is None:
         import sounddevice
 
-        output_module: AudioOutput = sounddevice
-        return output_module
+        audio_output = sounddevice
+    if isinstance(audio_output, _LoggedAudioOutput):
+        return audio_output
+    if getattr(audio_output, "__name__", None) == "sounddevice":
+        return _LoggedAudioOutput(audio_output)
     return audio_output
+
+
+class _LoggedOutputStream:
+    def __init__(self, stream, stream_id, fields, context):
+        self.stream = stream
+        self.stream_id = stream_id
+        self.fields = fields
+        self.context = context
+
+    def _record(self, operation, outcome, reason):
+        record_audio_lifecycle(
+            operation,
+            **self.context,
+            **self.fields,
+            stream_id=self.stream_id,
+            outcome=outcome,
+            reason=reason,
+            owner=current_thread().name,
+        )
+
+    def __enter__(self):
+        try:
+            entered = self.stream.__enter__()
+        except Exception:
+            self._record("start", "failed", "context-enter")
+            raise
+        if entered is not None:
+            self.stream = entered
+        self._record("start", "complete", "context-enter")
+        return self
+
+    def __exit__(self, *args):
+        self._record("stop", "requested", "context-exit")
+        try:
+            result = self.stream.__exit__(*args)
+        except Exception:
+            self._record("close", "failed", "context-exit")
+            raise
+        self._record("stop", "complete", "context-exit")
+        self._record("close", "complete", "context-exit")
+        return result
+
+    def write(self, audio):
+        return self.stream.write(audio)
+
+    def abort(self):
+        self._record("abort", "requested", "caller-request")
+        try:
+            result = self.stream.abort()
+        except Exception:
+            self._record("abort", "failed", "caller-request")
+            raise
+        self._record("abort", "complete", "caller-request")
+        return result
+
+    def stop(self):
+        self._record("stop", "requested", "caller-request")
+        try:
+            result = self.stream.stop()
+        except Exception:
+            self._record("stop", "failed", "caller-request")
+            raise
+        self._record("stop", "complete", "caller-request")
+        return result
+
+    def close(self):
+        try:
+            result = self.stream.close()
+        except Exception:
+            self._record("close", "failed", "caller-request")
+            raise
+        self._record("close", "complete", "caller-request")
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+class _LoggedAudioOutput:
+    def __init__(self, output):
+        self.output = output
+        self.lock = Lock()
+        self.convenience = None
+
+    def _device_fields(self):
+        fields = {}
+        try:
+            device = self.output.query_devices(kind="output")
+            if isinstance(device, Mapping):
+                fields["device_name"] = device.get("name")
+                host_api_index = device.get("hostapi")
+                query_hostapis = getattr(self.output, "query_hostapis", None)
+                if callable(query_hostapis) and host_api_index is not None:
+                    host_api = query_hostapis(host_api_index)
+                    if isinstance(host_api, Mapping):
+                        fields["host_api"] = host_api.get("name")
+        except Exception:
+            pass
+        return fields
+
+    def OutputStream(self, **options):
+        stream_id = uuid4().hex
+        fields = {
+            **self._device_fields(),
+            "sample_rate": options.get("samplerate"),
+            "channels": options.get("channels"),
+            "dtype": options.get("dtype"),
+            "latency": options.get("latency"),
+        }
+        context = dict(audio_lifecycle_context.get() or {})
+        try:
+            stream = self.output.OutputStream(**options)
+        except Exception:
+            record_audio_lifecycle(
+                "open",
+                **context,
+                **fields,
+                stream_id=stream_id,
+                outcome="failed",
+                reason="output-stream-construction",
+                owner=current_thread().name,
+            )
+            raise
+        record_audio_lifecycle(
+            "open",
+            **context,
+            **fields,
+            stream_id=stream_id,
+            outcome="complete",
+            reason="output-stream-construction",
+            owner=current_thread().name,
+        )
+        return _LoggedOutputStream(stream, stream_id, fields, context)
+
+    def play(self, audio, sample_rate, *, latency):
+        stream_id = uuid4().hex
+        context = dict(audio_lifecycle_context.get() or {})
+        fields = {
+            **self._device_fields(),
+            "sample_rate": sample_rate,
+            "channels": 1,
+            "dtype": str(getattr(audio, "dtype", "unknown")),
+            "latency": latency,
+        }
+        try:
+            result = self.output.play(audio, sample_rate, latency=latency)
+        except Exception:
+            record_audio_lifecycle(
+                "open",
+                **context,
+                **fields,
+                stream_id=stream_id,
+                outcome="failed",
+                reason="convenience-play",
+                owner=current_thread().name,
+            )
+            raise
+        with self.lock:
+            self.convenience = stream_id, fields, context
+        record_audio_lifecycle(
+            "open",
+            **context,
+            **fields,
+            stream_id=stream_id,
+            outcome="complete",
+            reason="convenience-play",
+            owner=current_thread().name,
+        )
+        return result
+
+    def wait(self):
+        try:
+            return self.output.wait()
+        finally:
+            self._finish_convenience("close", "convenience-wait")
+
+    def stop(self):
+        try:
+            return self.output.stop()
+        finally:
+            self._finish_convenience("abort", "convenience-stop")
+
+    def _finish_convenience(self, operation, reason):
+        with self.lock:
+            active, self.convenience = self.convenience, None
+        if active is None:
+            return
+        stream_id, fields, context = active
+        record_audio_lifecycle(
+            operation,
+            **context,
+            **fields,
+            stream_id=stream_id,
+            outcome="complete",
+            reason=reason,
+            owner=current_thread().name,
+        )
+
+    def __getattr__(self, name):
+        return getattr(self.output, name)
 
 
 def playback_underflowed(

@@ -20,6 +20,7 @@ from uuid import UUID
 
 from vntts_artifacts.atomic_io import atomic_output_path
 
+from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.diagnostics import macos_permission_warnings
 from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
 from vntts.onboarding import probe_audio_output, probe_tesseract
@@ -39,6 +40,23 @@ audio_route_fields = (
     "chunk_id",
     "chunk_ordinal",
     "chunk_characters",
+)
+
+audio_lifecycle_fields = (
+    "session_id",
+    "generation",
+    "chunk_id",
+    "stream_id",
+    "operation",
+    "outcome",
+    "owner",
+    "reason",
+    "host_api",
+    "device_name",
+    "sample_rate",
+    "channels",
+    "dtype",
+    "latency",
 )
 
 live_scope_fields = (
@@ -776,8 +794,15 @@ def preserve_previous_session(directory: str | Path) -> SupportDocument:
     ]
     timelines = _previous_generation_timelines(directory / "generation-timelines.json")
     native = NativeSpeechLog(path=directory / "native-speech.log").report()
+    audio = AudioLifecycleLog(
+        path=directory / "audio-lifecycle.log", load_existing=True
+    ).report()
     if not (
-        runtime_events or performance_events or timelines or native["total_events"]
+        runtime_events
+        or performance_events
+        or timelines
+        or native["total_events"]
+        or audio["events"]
     ):
         return {"available": False}
     snapshot = {
@@ -788,6 +813,7 @@ def preserve_previous_session(directory: str | Path) -> SupportDocument:
         "performance_events": performance_events,
         "generation_timelines": timelines,
         "native_speech": native,
+        "audio_lifecycle": audio,
     }
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -858,6 +884,78 @@ def record_native_speech(**details):
         )
     except Exception:
         # Diagnostics must never turn a successful render into a failure.
+        pass
+
+
+class AudioLifecycleLog(RuntimeSupportLog):
+    def __init__(self, maximum_entries=400, *, path=None, load_existing=False):
+        super().__init__(
+            maximum_entries=maximum_entries,
+            path=path,
+            detail_fields=audio_lifecycle_fields,
+        )
+        self.persistence_initialized = self.path is None or bool(load_existing)
+        if load_existing:
+            for entry in _read_bounded_json_lines(self.path, self.maximum_bytes):
+                if entry.get("level") == "audio-lifecycle":
+                    self.entries.append(sanitize_event(entry))
+
+    def _persist_locked(self):
+        try:
+            existing_bytes = self.path.stat().st_size
+        except OSError:
+            existing_bytes = 0
+        latest = (
+            json.dumps(sanitize_event(self.entries[-1]), ensure_ascii=False) + "\n"
+        ).encode("utf-8")
+        if (
+            not self.persistence_initialized
+            or existing_bytes + len(latest) > self.maximum_bytes
+        ):
+            super()._persist_locked()
+            self.persistence_initialized = True
+            return
+        with self.path.open("ab") as output:
+            output.write(latest)
+
+    def record(self, operation, **details):
+        fields = {**(audio_lifecycle_context.get() or {}), **details}
+        fields["operation"] = str(operation)[:64]
+        self.add(
+            "audio-lifecycle",
+            f"Audio stream: {fields['operation']}",
+            **{
+                key: _sanitize_audio_lifecycle_value(value)
+                for key, value in fields.items()
+                if key in audio_lifecycle_fields and value is not None
+            },
+        )
+
+    def report(self):
+        return {"schema_version": 1, "events": self.snapshot()}
+
+
+def _sanitize_audio_lifecycle_value(value):
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        return round(value, 3) if math.isfinite(value) else None
+    return _redact_game_import_text(value)[:256]
+
+
+audio_lifecycle_log = AudioLifecycleLog()
+
+
+def configure_audio_lifecycle_log(path=None):
+    global audio_lifecycle_log
+    audio_lifecycle_log = AudioLifecycleLog(path=path)
+    return audio_lifecycle_log
+
+
+def record_audio_lifecycle(operation, **details):
+    try:
+        audio_lifecycle_log.record(operation, **details)
+    except Exception:
         pass
 
 
@@ -1424,6 +1522,7 @@ class SupportBundleBuilder:
         game_import_log=None,
         performance_log_value=None,
         previous_session=None,
+        audio_lifecycle=None,
     ):
         self.settings = settings
         self.event_log = event_log
@@ -1433,6 +1532,7 @@ class SupportBundleBuilder:
         self.game_import_log = game_import_log
         self.performance_log = performance_log_value
         self.previous_session = previous_session or {"available": False}
+        self.audio_lifecycle = audio_lifecycle or AudioLifecycleLog()
 
     def build(self, path):
         path = Path(path).expanduser()
@@ -1498,6 +1598,7 @@ class SupportBundleBuilder:
                 ),
             },
             "previous-session.json": self.previous_session,
+            "audio-lifecycle.json": self.audio_lifecycle.report(),
             "ocr-metrics.json": collect_ocr_metrics(
                 self.settings.ocr_diagnostics_directory
             ),
@@ -1565,6 +1666,12 @@ def sanitize_event(entry):
         )
     if isinstance(entry.get("native"), dict):
         sanitized["native"] = _sanitize_native_details(entry["native"])
+    if entry.get("level") == "audio-lifecycle":
+        sanitized.update(
+            (key, _sanitize_audio_lifecycle_value(entry[key]))
+            for key in audio_lifecycle_fields
+            if key in entry and entry[key] is not None
+        )
     return sanitized
 
 

@@ -1,6 +1,7 @@
 import os
 import sys
 from collections.abc import Callable, Generator, Iterator, Mapping
+from contextvars import copy_context
 from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Full, Queue
@@ -2286,7 +2287,13 @@ class MossTTSVoiceRouterBackend:
                     self.playback_active = False
 
         enqueue(first_chunk)
-        consumer = Thread(target=consume, name="vntts-moss-playback", daemon=True)
+        context = copy_context()
+        consumer = Thread(
+            target=context.run,
+            args=(consume,),
+            name="vntts-moss-playback",
+            daemon=True,
+        )
         consumer.start()
         render_exhausted = False
         try:

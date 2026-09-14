@@ -14,16 +14,15 @@ Execution labels:
 
 Planned implementation order after approval:
 
-1. Add audio lifecycle telemetry.
-2. Reproduce and fix the Windows device-quiescence race, then use the same
+1. Reproduce and fix the Windows device-quiescence race, then use the same
    timelines to resolve duplicate playback, ellipsis loss and avoidable story
    misses.
-3. Extend the voice-plan decision contract, then implement the optional
+2. Extend the voice-plan decision contract, then implement the optional
    pre-generation reference inspector without turning automatic choices into
    mandatory review.
-4. Instrument the current planning/finalization paths and optimize only work that
+3. Instrument the current planning/finalization paths and optimize only work that
    the new measurements prove is still duplicated.
-5. Run platform, hardware and signing gates only when the required host or
+4. Run platform, hardware and signing gates only when the required host or
    credentials are available.
 
 ## P0 - Play while offline audio is still preparing
@@ -144,10 +143,6 @@ Planned implementation order after approval:
       lock that can deadlock against callbacks. Stress focus loss plus stop/restart
       at short-stream completion. Gate: no native
       crash, stale audio or overlapping output stream on Windows.
-- [ ] **Ready, before the crash fix:** record the audio host API/device plus stream
-      open, stop, abort and close owner/reason. Keep values bounded and privacy-safe.
-      Gate: a support ZIP can correlate every terminal playback outcome with one
-      stream lifecycle without recording audio or dialogue.
 - [ ] **Ready, with Windows verification:** ensure a managed OpenMOSS server cannot
       survive an application crash. On Windows, launch it in an owned Job Object
       with kill-on-close semantics so normal exit, fatal Python/Qt failure and

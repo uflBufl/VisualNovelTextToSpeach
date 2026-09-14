@@ -21,7 +21,7 @@ from vntts_artifacts.generated_audio import (
     load_generated_audio_document,
 )
 
-from vntts.audio_output import match_output_sample_rate
+from vntts.audio_output import match_output_sample_rate, resolve_audio_output
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
 from vntts.playback import PlaybackOutcome, PlaybackStatus
 from vntts.settings import audio_source_policies
@@ -514,14 +514,10 @@ class GeneratedAudioFallbackBackend:
         clock=monotonic,
         audio_source_policy="prefer-generated",
     ):
-        if audio_output is None:
-            import sounddevice
-
-            audio_output = sounddevice
         self.live_backend = live_backend
         self.library = library
         self.line_resolver = line_resolver
-        self.audio_output = audio_output
+        self.audio_output = resolve_audio_output(audio_output)
         self.playback_latency = playback_latency
         self.clock = clock
         if audio_source_policy not in audio_source_policies:

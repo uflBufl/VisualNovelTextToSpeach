@@ -14,6 +14,7 @@ from PIL import Image
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.settings import AppSettings
 from vntts.support import (
+    AudioLifecycleLog,
     GameImportLog,
     GenerationTimelineLog,
     NativeSpeechLog,
@@ -406,6 +407,22 @@ class GenerationTimelineLogTest(unittest.TestCase):
 
 
 class RuntimeSupportLogTest(unittest.TestCase):
+    def test_audio_lifecycle_log_replaces_previous_session_then_appends(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "audio-lifecycle.log"
+            previous = AudioLifecycleLog(path=path)
+            previous.record("open", stream_id="old")
+
+            current = AudioLifecycleLog(path=path)
+            current.record("open", stream_id="new")
+            current.record("close", stream_id="new")
+            restored = AudioLifecycleLog(path=path, load_existing=True)
+
+        self.assertEqual(
+            [(event["operation"], event["stream_id"]) for event in restored.snapshot()],
+            [("open", "new"), ("close", "new")],
+        )
+
     def test_preserves_sanitized_previous_session_before_logs_are_replaced(self):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
@@ -426,6 +443,14 @@ class RuntimeSupportLogTest(unittest.TestCase):
                     "reference": str(Path.home() / "private.wav"),
                 }
             )
+            audio = AudioLifecycleLog(path=directory / "audio-lifecycle.log")
+            audio.record(
+                "abort",
+                stream_id="stream-1",
+                outcome="complete",
+                owner="dialog-playback_0",
+                reason="shutdown",
+            )
             (directory / "server.log").write_text("PRIVATE DIALOGUE", encoding="utf-8")
 
             snapshot = preserve_previous_session(directory)
@@ -440,6 +465,7 @@ class RuntimeSupportLogTest(unittest.TestCase):
             "capture",
         )
         self.assertEqual(snapshot["native_speech"]["latest_runtime"]["stage"], "ready")
+        self.assertEqual(snapshot["audio_lifecycle"]["events"][0]["operation"], "abort")
         self.assertNotIn(str(Path.home()), repr(snapshot))
         self.assertNotIn("PRIVATE DIALOGUE", repr(snapshot))
 
@@ -784,6 +810,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                     "build.json",
                     "generation-timelines.json",
                     "previous-session.json",
+                    "audio-lifecycle.json",
                     "ocr-metrics.json",
                     "diagnostics.json",
                     "dependencies.json",

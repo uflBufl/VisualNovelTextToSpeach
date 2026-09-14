@@ -11,6 +11,7 @@ from time import monotonic
 from typing import Protocol, TypeGuard, runtime_checkable
 
 from vntts.assets import ModelAssetManager
+from vntts.audio_lifecycle import audio_lifecycle_context
 from vntts.auto_advance import DialogueAdvancer
 from vntts.auto_advance_policy import auto_advance_allowed
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
@@ -3043,6 +3044,13 @@ class AppController:
                 self.status_handler(reason)
         playback_started = monotonic()
         outcome = None
+        context_token = audio_lifecycle_context.set(
+            {
+                "session_id": self.live_reader_session_id,
+                "generation": chunk.generation,
+                "chunk_id": chunk.chunk_id,
+            }
+        )
         try:
             play_route = getattr(type(self.speech_backend), "play_route", None)
             play_prepared = getattr(type(self.speech_backend), "play_prepared", None)
@@ -3164,6 +3172,7 @@ class AppController:
                 reader.record_first_pcm(playback_started + first_audio_ms / 1000)
             return bool(result)
         finally:
+            audio_lifecycle_context.reset(context_token)
             self._finish_sequence_playback(sequence_lease, outcome)
             self._refresh_diagnostic_metrics(outcome, source)
 
@@ -3281,11 +3290,21 @@ class AppController:
         reader = self.live_reader
         if reader is None:
             raise RuntimeError("The speech engine is not ready")
-        outcome = play(
-            backend,
-            route.prepared,
-            playback_guard=lambda: reader.wait_until_playable(chunk),
+        context_token = audio_lifecycle_context.set(
+            {
+                "session_id": self.live_reader_session_id,
+                "generation": chunk.generation,
+                "chunk_id": route.trace.chunk_id,
+            }
         )
+        try:
+            outcome = play(
+                backend,
+                route.prepared,
+                playback_guard=lambda: reader.wait_until_playable(chunk),
+            )
+        finally:
+            audio_lifecycle_context.reset(context_token)
         if not isinstance(outcome, PlaybackOutcome):
             raise TypeError("Live backend returned an untyped announcement outcome")
         outcome = replace(
