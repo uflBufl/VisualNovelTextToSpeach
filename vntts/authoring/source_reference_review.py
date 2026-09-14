@@ -57,6 +57,10 @@ from vntts.authoring.source_reference_bindings import (
     retired_source_reference_variants_from_manifest,
 )
 from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.chapter_voice_preload import (
+    _source_audio_covers_full_line,
+    _validated_source_audio_line_ids,
+)
 from vntts.document_identity import is_lowercase_sha256
 
 SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
@@ -2256,9 +2260,18 @@ def _record_review_decision(
 
 def _queue_items_by_character(story: StoryIndexDocument) -> QueueItemsByCharacter:
     values: QueueItemsByCharacter = {}
+    completion_contract = story.metadata.get("source_audio_completion")
+    authoritative_source_lines = _validated_source_audio_line_ids(story.path, story)
     for record in story.records:
         record_portrait = record.producer_fields.get("portrait")
-        if not record.speakable or record.source_audio_status == "available":
+        if not record.speakable or (
+            record.line_id in authoritative_source_lines
+            and _source_audio_covers_full_line(
+                record.document,
+                completion_contract=completion_contract,
+                semantic_authorized=True,
+            )
+        ):
             continue
         key = (normalize_character_name(record.voice_character), record_portrait)
         values.setdefault(key, []).append(

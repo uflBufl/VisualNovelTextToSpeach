@@ -16,7 +16,10 @@ from vntts_artifacts.story_index import StoryIndexError, load_story_index_docume
 
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
-from vntts.chapter_voice_preload import _source_audio_duration_seconds
+from vntts.chapter_voice_preload import (
+    _source_audio_covers_full_line,
+    _validated_source_audio_line_ids,
+)
 from vntts.pregeneration_queue import PregenerationInput
 from vntts.pregeneration_setup import (
     PregenerationSetupError,
@@ -428,19 +431,18 @@ def _static_ready_line_ids(story_index: Path) -> tuple[str, ...]:
     except OSError, StoryIndexError, TypeError, ValueError:
         return ()
     completion = story.metadata.get("source_audio_completion")
+    authoritative_line_ids = _validated_source_audio_line_ids(story_index, story)
     return tuple(
         record.line_id
         for record in story.records
         if not record.speakable
         or (
-            record.source_audio_status == "available"
-            and record.document.get("source_audio_completeness") == "full"
-            and completion in {"duration-seconds", "verified-media-duration-seconds"}
-            and _source_audio_duration_seconds(
+            record.line_id in authoritative_line_ids
+            and _source_audio_covers_full_line(
                 record.document,
                 completion_contract=completion,
+                semantic_authorized=True,
             )
-            is not None
         )
     )
 

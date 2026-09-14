@@ -640,8 +640,6 @@ class LiveReplayRunner:
         self,
         generated_audio_index: GeneratedAudioIndex | None,
         resolver: ChapterVoicePreloader,
-        *,
-        require_source_audio_completion: bool = False,
     ) -> tuple[
         ReplayLiveSpeechBackend,
         GeneratedAudioLibrary | None,
@@ -663,7 +661,6 @@ class LiveReplayRunner:
             resolver,
             audio_source_policy=self.audio_source_policy,
             audio_output=audio_output,
-            require_source_audio_completion=require_source_audio_completion,
         )
         router.set_live_mode_active(True)
         return live_backend, library, audio_output, router
@@ -950,7 +947,6 @@ class LiveReplayRunner:
         live_backend, _library, audio_output, router = self._create_audio_stack(
             generated_audio_index,
             resolver,
-            require_source_audio_completion=mode == "shadow",
         )
         pipeline = ReplayPipelineRecorder(len(self.corpus.dialogue) + 1)
         routes: list[dict[str, object]] = []

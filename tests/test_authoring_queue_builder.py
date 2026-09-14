@@ -5,12 +5,14 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts_artifacts import (
     StoryIndexDocument,
     StoryIndexError,
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
+    load_story_index_document,
     write_story_index_document,
 )
 from vntts_artifacts.audio import write_pcm16_wav
@@ -142,6 +144,14 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                     story_record(
                         "line-1",
                         "available",
+                        source_audio_duration_seconds=1.0,
+                        source_audio_duration_media_id=7,
+                        source_audio_duration_media_sha256="c" * 64,
+                        source_audio_duration_sample_rate=24000,
+                        source_audio_duration_sample_count=24000,
+                        source_audio_duration_decoder="synthetic",
+                        source_media_ids=[7],
+                        available_media_ids=[7],
                         source_audio_completeness="partial",
                         source_audio_completeness_reason="asr-transcript-mismatch",
                         source_audio_semantic_evidence_id="a" * 64,
@@ -160,24 +170,34 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
                 ],
             )
 
-            plan = inspect_generation_queue(story_path, manifest_path)
-            partial_only = inspect_generation_queue(
-                story_path,
-                manifest_path,
-                partial_source_audio_only=True,
-            )
+            with patch(
+                "vntts.authoring.queue_builder._validated_source_audio_line_ids",
+                return_value=frozenset({"line-1"}),
+            ):
+                document = load_story_index_document(story_path)
+                document.metadata["source_audio_completion"] = (
+                    "verified-media-duration-seconds"
+                )
+                entries = load_voice_manifest(manifest_path)[1]
+                plan = plan_generation_queue(document, entries, manifest_path)
+                partial_only = plan_generation_queue(
+                    document,
+                    entries,
+                    manifest_path,
+                    partial_source_audio_only=True,
+                )
             published = VoiceGenerationQueue.load(
                 publish_generation_queue(partial_only, root / "partial-queue.jsonl")
             )
 
-        self.assertEqual(len(plan.items), 1)
+        self.assertEqual(len(plan.items), 3)
         self.assertEqual(plan.items[0]["action"], "generate")
         self.assertEqual(plan.items[0]["source_audio_status"], "available")
         self.assertEqual(plan.items[0]["source_audio_completeness"], "partial")
         self.assertEqual(plan.items[0]["source_audio_semantic_evidence_id"], "a" * 64)
         self.assertEqual(plan.summary.partial_source_audio, 1)
-        self.assertEqual(plan.summary.ready, 1)
-        self.assertEqual(plan.summary.skipped_available, 2)
+        self.assertEqual(plan.summary.ready, 3)
+        self.assertEqual(plan.summary.skipped_available, 0)
         self.assertEqual(plan.metadata["partial_source_audio_count"], 1)
         self.assertEqual([item["line_id"] for item in partial_only.items], ["line-1"])
         self.assertTrue(partial_only.metadata["filters"]["partial_source_audio_only"])
@@ -316,24 +336,25 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
             {
                 "story_records": 7,
                 "selected_records": 6,
-                "queue_items": 4,
+                "queue_items": 5,
                 "character_count": 2,
-                "ready": 1,
+                "ready": 2,
                 "missing_reference": 1,
                 "recoverable_source_audio": 1,
                 "manual_review": 1,
                 "partial_source_audio": 0,
                 "audio_event_composition": 0,
-                "skipped_available": 1,
+                "skipped_available": 0,
                 "skipped_unspeakable": 1,
                 "skipped_unselected": 1,
                 "action_counts": {
-                    "generate": 2,
+                    "generate": 3,
                     "manual_review": 1,
                     "prefer_source_audio": 1,
                 },
                 "source_audio_status_counts": {
                     "absent": 2,
+                    "available": 1,
                     "unavailable": 1,
                     "unknown": 1,
                 },
@@ -342,7 +363,7 @@ class AuthoringQueueBuilderTest(unittest.TestCase):
         )
         self.assertEqual(
             [item.line_id for item in queue.items],
-            ["line-1", "line-3", "line-4", "line-5"],
+            ["line-1", "line-2", "line-3", "line-4", "line-5"],
         )
         self.assertEqual(queue.items[0].voice_character, "Ada")
         self.assertEqual(queue.items[0].document["emotion"], {"primary": "quiet"})

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from vntts_artifacts.story_index import load_story_index_document
 
+from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.game_narrator import bind_game_narrator
 from vntts.game_pack import GamePackError, import_game_pack
 from vntts.pregeneration_pack import OfflinePackResult
@@ -74,12 +75,16 @@ class OfflinePackActivator:
             raise OfflinePackActivationError("Offline game pack identity changed")
         source_settings = generation_settings or current_settings
         records = load_story_index_document(imported.story_index).records
+        source_dialogue = ChapterVoicePreloader.load_optional(
+            imported.story_index
+        ).dialogue
         candidate = imported.apply_to(source_settings).updated(
             audio_source_policy=(
                 "prefer-game-audio"
                 if any(
-                    getattr(record, "source_audio_status", None) == "available"
-                    for record in records
+                    line.source_audio_authoritative
+                    and line.source_audio_completeness == "full"
+                    for line in source_dialogue
                 )
                 else "prefer-generated"
             ),

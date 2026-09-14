@@ -5008,11 +5008,10 @@ class MainTest(unittest.TestCase):
             volume=1.0,
             speed=1.0,
             audio_source_policy="prefer-game-audio",
-            require_source_audio_completion=False,
         )
         self.assertIs(controller.speech_backend, wrapped_backend)
 
-    def test_persisted_narrator_assignment_does_not_override_unknown_source_audio(self):
+    def test_unverified_unknown_source_audio_uses_live_fallback(self):
         text = "An unattributed source line."
         preloader = ChapterVoicePreloader(
             [
@@ -5047,10 +5046,10 @@ class MainTest(unittest.TestCase):
         controller.speech_backend.set_live_mode_active(True)
         route = controller.speech_backend.prepare_route("???", text)
 
-        self.assertIsInstance(route, SourceAudioRoute)
+        self.assertIsInstance(route, LiveTTSRoute)
         self.assertFalse(controller.speech_backend.voice_override("???"))
         self.assertTrue(controller.speech_backend.voice_override("Narrator"))
-        live_backend.prepare_playback.assert_not_called()
+        live_backend.prepare_playback.assert_called_once()
 
     def test_controller_keeps_live_backend_without_story_identity(self):
         statuses = []

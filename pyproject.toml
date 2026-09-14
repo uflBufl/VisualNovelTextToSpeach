@@ -89,7 +89,7 @@ torchcodec = [
     { index = "pytorch-cpu", marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
     { index = "pytorch-cu130", marker = "sys_platform == 'linux'" },
 ]
-vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "7ba9fa1704fd5c25f2576db4f9133af4fe155cea" }
+vntts-artifacts = { git = "https://github.com/AlexRedby/vntts-artifacts.git", rev = "19e6035986eedae6bbda966d7d5cff8307c9f574" }
 reverse1999-extractor = { git = "https://github.com/AlexRedby/r1999-extractor.git", rev = "719918cab0f622a33b766e1b01520eb3b2a7cd59" }
 
 [dependency-groups]

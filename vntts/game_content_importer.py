@@ -21,6 +21,10 @@ from vntts_artifacts.story_index import StoryIndexError, load_story_index_docume
 from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.application_directories import get_config_directory, get_local_data_directory
+from vntts.chapter_voice_preload import (
+    _source_audio_covers_full_line,
+    _validated_source_audio_line_ids,
+)
 from vntts.game_audio_decoder import ensure_game_decoder
 from vntts.pregeneration_setup import PregenerationSetupError, inspect_story_index
 from vntts.subprocess_utils import last_output_line, terminate_process
@@ -516,6 +520,8 @@ def _candidate_roles(job, reference_index=None):
             f"Unable to inspect selected character voices: {error}"
         ) from error
     selected = set(job.selected_line_ids)
+    authoritative_source_lines = _validated_source_audio_line_ids(story_index, document)
+    source_completion = document.metadata.get("source_audio_completion")
     available = {
         normalize_character_name(
             synthesis_character_for_line(record.speaker, record.voice_character)
@@ -538,7 +544,14 @@ def _candidate_roles(job, reference_index=None):
         normalized = normalize_character_name(character)
         if (
             record.line_id in selected
-            and record.source_audio_status != "available"
+            and not (
+                record.line_id in authoritative_source_lines
+                and _source_audio_covers_full_line(
+                    record.document,
+                    completion_contract=source_completion,
+                    semantic_authorized=True,
+                )
+            )
             and record.speakable
             and not is_narrator(character)
         ):

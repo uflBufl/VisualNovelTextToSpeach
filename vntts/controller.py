@@ -839,8 +839,6 @@ class AppController:
             "speed": self.settings.speech_rate_percent / 100,
             "audio_source_policy": policy,
         }
-        if policy == "prefer-game-audio":
-            backend_options["require_source_audio_completion"] = False
         generated_backend = self.generated_audio_backend_factory(
             live_backend,
             library,
@@ -1336,6 +1334,9 @@ class AppController:
         if (
             self.settings.audio_source_policy == "prefer-game-audio"
             and line.source_audio_status == "available"
+            and line.source_audio_authoritative
+            and line.source_audio_completeness == "full"
+            and line.source_audio_duration_seconds is not None
             and not self._has_manual_voice_override(line.speaker)
         ):
             return "Original game audio"

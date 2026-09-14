@@ -38,6 +38,10 @@ from vntts.authoring.delivery import (
     DeliveryAnnotationError,
     apply_delivery_policy,
 )
+from vntts.chapter_voice_preload import (
+    _source_audio_covers_full_line,
+    _validated_source_audio_line_ids,
+)
 from vntts.voices import synthesis_character_for_line
 
 
@@ -150,6 +154,10 @@ def plan_generation_queue(
         )
 
     selected_collection_ids = _selected_collection_ids(document, collection_ids)
+    completion_contract = document.metadata.get("source_audio_completion")
+    authoritative_source_lines = _validated_source_audio_line_ids(
+        document_path, document
+    )
     selected = tuple(
         record
         for record in document.records
@@ -160,7 +168,8 @@ def plan_generation_queue(
         selected = tuple(
             record
             for record in selected
-            if record.source_audio_status == "available"
+            if record.line_id in authoritative_source_lines
+            and record.source_audio_status == "available"
             and record.producer_fields.get("source_audio_completeness") == "partial"
         )
     voice_index = _voice_index(entries)
@@ -194,19 +203,27 @@ def plan_generation_queue(
         if not record.speakable:
             skipped_unspeakable += 1
             continue
-        action = voice_generation_action(
-            record.source_audio_status,
-            unknown_action=unknown_action,
+        source_covers_line = (
+            record.line_id in authoritative_source_lines
+            and _source_audio_covers_full_line(
+                record.document,
+                completion_contract=completion_contract,
+                semantic_authorized=True,
+            )
         )
-        if (
-            action is None
-            and record.source_audio_status == "available"
-            and record.producer_fields.get("source_audio_completeness") == "partial"
-        ):
-            action = "generate"
-            partial_source_audio += 1
-        if action is None:
+        if source_covers_line:
             skipped_available += 1
+            continue
+        if record.source_audio_status == "available":
+            action = "generate"
+            if record.line_id in authoritative_source_lines:
+                partial_source_audio += 1
+        else:
+            action = voice_generation_action(
+                record.source_audio_status,
+                unknown_action=unknown_action,
+            )
+        if action is None:
             continue
         requested_character = synthesis_character_for_line(
             record.speaker, record.voice_character
@@ -237,6 +254,13 @@ def plan_generation_queue(
             action,
             audio_event_plan=audio_event_plan,
         )
+        if record.source_audio_status == "available" and not source_covers_line:
+            item["source_audio_completeness"] = (
+                "partial"
+                if record.line_id in authoritative_source_lines
+                and record.producer_fields.get("source_audio_completeness") == "partial"
+                else "unknown"
+            )
         try:
             application = apply_delivery_policy(item, delivery_policy)
         except DeliveryAnnotationError as error:

@@ -29,7 +29,7 @@ from vntts.live_replay import (
 
 
 class LiveReplayTest(unittest.TestCase):
-    def test_audio_stack_requires_source_completion_only_when_requested(self):
+    def test_audio_stack_uses_one_strict_source_audio_contract(self):
         runner = object.__new__(LiveReplayRunner)
         runner.corpus = SimpleNamespace(
             dialogue=(SimpleNamespace(character="Rhiannon"),)
@@ -37,48 +37,33 @@ class LiveReplayTest(unittest.TestCase):
         runner.audio_source_policy = "prefer-game-audio"
         resolver = object()
 
-        for require_source_audio_completion in (False, True):
-            with self.subTest(
-                require_source_audio_completion=require_source_audio_completion
-            ):
-                library = SimpleNamespace(live_fallbacks={})
-                live_backend = object()
-                audio_output = object()
-                router = Mock()
-                with (
-                    patch(
-                        "vntts.live_replay.GeneratedAudioLibrary",
-                        return_value=library,
-                    ),
-                    patch(
-                        "vntts.live_replay.ReplayLiveSpeechBackend",
-                        return_value=live_backend,
-                    ),
-                    patch(
-                        "vntts.live_replay.ReplayAudioOutput",
-                        return_value=audio_output,
-                    ),
-                    patch(
-                        "vntts.live_replay.GeneratedAudioFallbackBackend",
-                        return_value=router,
-                    ) as fallback_backend,
-                ):
-                    result = runner._create_audio_stack(
-                        object(),
-                        resolver,
-                        require_source_audio_completion=require_source_audio_completion,
-                    )
+        library = SimpleNamespace(live_fallbacks={})
+        live_backend = object()
+        audio_output = object()
+        router = Mock()
+        with (
+            patch("vntts.live_replay.GeneratedAudioLibrary", return_value=library),
+            patch(
+                "vntts.live_replay.ReplayLiveSpeechBackend",
+                return_value=live_backend,
+            ),
+            patch("vntts.live_replay.ReplayAudioOutput", return_value=audio_output),
+            patch(
+                "vntts.live_replay.GeneratedAudioFallbackBackend",
+                return_value=router,
+            ) as fallback_backend,
+        ):
+            result = runner._create_audio_stack(object(), resolver)
 
-                self.assertEqual(result, (live_backend, library, audio_output, router))
-                fallback_backend.assert_called_once_with(
-                    live_backend,
-                    library,
-                    resolver,
-                    audio_source_policy="prefer-game-audio",
-                    audio_output=audio_output,
-                    require_source_audio_completion=require_source_audio_completion,
-                )
-                router.set_live_mode_active.assert_called_once_with(True)
+        self.assertEqual(result, (live_backend, library, audio_output, router))
+        fallback_backend.assert_called_once_with(
+            live_backend,
+            library,
+            resolver,
+            audio_source_policy="prefer-game-audio",
+            audio_output=audio_output,
+        )
+        router.set_live_mode_active.assert_called_once_with(True)
 
     def test_ocr_replay_uses_production_confidence_profile_search(self):
         frame = CapturedDialogFrame(Image.new("RGB", (80, 40), "black"), 0.0)
@@ -131,7 +116,7 @@ class LiveReplayTest(unittest.TestCase):
                             "line_id": "reverse1999:rhiannon:1",
                             "source_audio_status": "available",
                             "source_audio_duration_seconds": 0.001,
-                            "expected_source": "game",
+                            "expected_source": "live:replay-live-tts",
                         },
                         {
                             "frames": ["second.png", "second.png"],
@@ -246,8 +231,6 @@ class LiveReplayTest(unittest.TestCase):
                     else (
                         "generated"
                         if line_id == generated_line_id
-                        else "game"
-                        if line.get("source_audio_status") == "available"
                         else "live:replay-live-tts"
                     ),
                 }
@@ -331,7 +314,7 @@ class LiveReplayTest(unittest.TestCase):
         self.assertTrue(report["successful"], report)
         self.assertEqual(
             report["route_sources"],
-            ["game", "live:replay-live-tts"],
+            ["live:replay-live-tts", "live:replay-live-tts"],
         )
         self.assertEqual(report["advance_requests"], 2)
         first_stages = {event["stage"] for event in report["timelines"][0]["events"]}
@@ -344,6 +327,7 @@ class LiveReplayTest(unittest.TestCase):
                 "route-decision",
                 "voice-resolution",
                 "generation-start",
+                "first-pcm",
                 "playback-completion",
                 "playback-outcome",
                 "key-dispatch",
@@ -641,7 +625,10 @@ class LiveReplayTest(unittest.TestCase):
                 ],
             },
         )
-        self.assertEqual(report["route_sources"], ["game", "generated", "game"])
+        self.assertEqual(
+            report["route_sources"],
+            ["live:replay-live-tts", "generated", "live:replay-live-tts"],
+        )
         recognized_frame_identities = {
             (frame["dialogue_index"], frame["frame_index"])
             for frame in report["media_integrity"]["recognized_frames"]
@@ -1049,7 +1036,7 @@ class LiveReplayTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "story index changed"):
                 LiveReplayRunner(corpus).run()
 
-    def test_unobserved_game_audio_completion_blocks_replay_auto_advance(self):
+    def test_unverified_game_audio_falls_back_without_blocking_auto_advance(self):
         with TemporaryDirectory() as temporary_directory:
             path = self.create_corpus(temporary_directory)
             document = json.loads(path.read_text(encoding="utf-8"))
@@ -1061,13 +1048,16 @@ class LiveReplayTest(unittest.TestCase):
                 corpus,
                 recognizer=self.recognize,
                 interval_seconds=0.002,
-                timeout_seconds=0.1,
+                timeout_seconds=2,
             ).run()
 
-        self.assertFalse(report["successful"])
-        self.assertEqual(report["errors"], ["Live replay timed out after 0.1 seconds"])
-        self.assertEqual(report["route_sources"], ["game"])
-        self.assertEqual(report["advance_requests"], 0)
+        self.assertTrue(report["successful"], report)
+        self.assertEqual(report["errors"], [])
+        self.assertEqual(
+            report["route_sources"],
+            ["live:replay-live-tts", "live:replay-live-tts"],
+        )
+        self.assertEqual(report["advance_requests"], 2)
 
     def test_advance_waits_until_every_declared_frame_is_acknowledged(self):
         with TemporaryDirectory() as temporary_directory:
@@ -1151,7 +1141,7 @@ class LiveReplayTest(unittest.TestCase):
                                 "line_id": "fixture:rhiannon:100",
                                 "source_audio_status": "available",
                                 "source_audio_duration_seconds": 0.001,
-                                "expected_source": "game",
+                                "expected_source": "live:replay-live-tts",
                             }
                         ],
                     }
@@ -1275,7 +1265,7 @@ class LiveReplayTest(unittest.TestCase):
                                 "line_id": "fixture:rhiannon:1",
                                 "source_audio_status": "available",
                                 "source_audio_duration_seconds": 0.001,
-                                "expected_source": "game",
+                                "expected_source": "live:replay-live-tts",
                             },
                             {
                                 "frames": frame_specs[4:12],
@@ -1316,7 +1306,12 @@ class LiveReplayTest(unittest.TestCase):
         self.assertTrue(report["successful"], report)
         self.assertEqual(
             report["route_sources"],
-            ["game", "live:replay-live-tts", "generated", "live:replay-live-tts"],
+            [
+                "live:replay-live-tts",
+                "live:replay-live-tts",
+                "generated",
+                "live:replay-live-tts",
+            ],
         )
         self.assertEqual(report["advance_requests"], 4)
         self.assertEqual(len(report["media_integrity"]["frame_sha256s"]), 20)

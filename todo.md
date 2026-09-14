@@ -14,55 +14,21 @@ Execution labels:
 
 Planned implementation order after approval:
 
-1. Establish one strict source-audio authority contract and one non-blocking live
-   voice-resolution path, including audible narrator-fallback announcements.
-2. Add session identity, sanitized previous-session preservation and audio
+1. Add session identity, sanitized previous-session preservation and audio
    lifecycle telemetry.
-3. Reproduce and fix the Windows device-quiescence race, then use the same
+2. Reproduce and fix the Windows device-quiescence race, then use the same
    timelines to resolve duplicate playback, ellipsis loss and avoidable story
    misses.
-4. Extend the voice-plan decision contract, then implement the optional
+3. Extend the voice-plan decision contract, then implement the optional
    pre-generation reference inspector without turning automatic choices into
    mandatory review.
-5. Instrument the current planning/finalization paths and optimize only work that
+4. Instrument the current planning/finalization paths and optimize only work that
    the new measurements prove is still duplicated.
-6. Run platform, hardware and signing gates only when the required host or
+5. Run platform, hardware and signing gates only when the required host or
    credentials are available.
 
 ## P0 - Play while offline audio is still preparing
 
-- [ ] **Ready:** enforce one immutable source-audio authority predicate before
-      publication, pre-generation routing, early prepared-WAV reservation and live
-      playback. Only the current strict contract marker, verified media duration and
-      checksum-bound semantic evidence may authorize `full`; remove policy switches
-      that let callers bypass this predicate. Measure duration and establish
-      full/partial correspondence once during game import or pre-generation, cache
-      expensive semantic analysis by media SHA-256, and store the result in the story
-      index and published pack. Duration alone is not semantic correspondence: reuse
-      the existing local `Whisper tiny.en` normalized-transcript evidence, and treat
-      inconclusive ASR as non-covering rather than inventing a duration threshold.
-      Live reading must never scan, decode or hash game
-      files: it performs only a bounded metadata lookup. Reject malformed records at
-      the producer boundary. Downgrade an intact but inconclusive clip to
-      unable-to-cover/`partial`, and continue story preparation with generated speech
-      instead of rejecting the whole pack. A short game clip that does not match the
-      full on-screen line may play only as a cue, followed by the complete prepared
-      WAV or live TTS; base auto-advance on the complete VNTTS route. Find why
-      affected records, including the Rhiannon `Stop it` case, arrive as `full` or
-      bypass their checksum-bound semantic evidence. The captured Windows run proves
-      the bypass: lines
-      `314601:9` (`Stop it.`), `:13`, `:15`, `:22`, `:33`, `:36`, `:53` and `:62`
-      all declare source audio but have `source_audio_completeness=unknown` and no
-      duration; they were nevertheless routed as `game/exact` with
-      `passthrough-unobserved`. Lines `:53` and `:62` then explicitly disabled
-      auto-advance because completion timing was unavailable.
-      Do not add legacy migration or a second compatibility predicate. If invalid
-      data somehow reaches runtime, treat the source clip as unable to cover the
-      line, start the prepared WAV or live TTS immediately, allow harmless overlap
-      with the game clip, and base auto-advance only on the VNTTS playback outcome.
-      Gate: every route consumer uses the same predicate, the live path performs no
-      game-file I/O, one uncertain clip cannot invalidate the story pack, and
-      invalid metadata cannot stall reading.
 - [ ] **Investigate after session logging:** fix dialogue lines frequently playing
       twice. Correlate both playback
       attempts by session, occurrence and route identity; prevent source audio,

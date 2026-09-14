@@ -852,11 +852,6 @@ class LiveSessionComponent:
         controller.settings = controller.settings.updated(
             auto_advance_enabled=effective
         )
-        if isinstance(controller.speech_backend, GeneratedAudioFallbackBackend):
-            # Never replace audio already spoken by the game with live TTS just
-            # to obtain a completion duration. Unknown timing pauses automatic
-            # advance; it must not create audible duplicate dialogue.
-            controller.speech_backend.require_source_audio_completion = False
         if controller.live_reader is not None:
             controller.live_reader.set_auto_advance(
                 controller._live_auto_advance_callback()

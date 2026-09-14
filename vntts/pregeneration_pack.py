@@ -45,7 +45,10 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
     staged_directory,
 )
-from vntts.chapter_voice_preload import _source_audio_duration_seconds
+from vntts.chapter_voice_preload import (
+    _source_audio_covers_full_line,
+    _validated_source_audio_line_ids,
+)
 from vntts.document_identity import is_lowercase_sha256
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
@@ -145,9 +148,18 @@ def inspect_story_audio(
     library = None
     pack_records = {}
     pack_story = None
+    source_audio_line_ids = _validated_source_audio_line_ids(
+        content.story_index,
+        source,
+    )
+    pack_source_audio_line_ids = frozenset()
     if manifest is not None:
         imported_pack = imported_pack or import_game_pack(manifest)
         pack_story = load_story_index_document(imported_pack.story_index)
+        pack_source_audio_line_ids = _validated_source_audio_line_ids(
+            imported_pack.story_index,
+            pack_story,
+        )
         pack_records = {record.line_id: record for record in pack_story.records}
         if imported_pack.generated_audio_manifest is not None:
             library = GeneratedAudioLibrary(
@@ -176,6 +188,9 @@ def inspect_story_audio(
         completion_contract = (
             pack_story if saved is not None else source
         ).metadata.get("source_audio_completion")
+        semantic_authorized = record.line_id in (
+            pack_source_audio_line_ids if saved is not None else source_audio_line_ids
+        )
         if explicit_pack and saved is None:
             route = "missing"
         elif library and library.find_audio_event_omission(
@@ -198,16 +213,10 @@ def inspect_story_audio(
             route = "generated"
         elif library and library.find_live_fallback(record.line_id, record.text_sha256):
             route = "live"
-        elif (
-            effective.source_audio_status == "available"
-            and effective.document.get("source_audio_completeness") == "full"
-            and completion_contract
-            in {"duration-seconds", "verified-media-duration-seconds"}
-            and _source_audio_duration_seconds(
-                effective.document,
-                completion_contract=completion_contract,
-            )
-            is not None
+        elif _source_audio_covers_full_line(
+            effective.document,
+            completion_contract=completion_contract,
+            semantic_authorized=semantic_authorized,
         ):
             route = "original"
         else:
@@ -263,9 +272,18 @@ class OfflinePackPublisher:
                 elif saved.get(record.line_id) != record.audio_sha256:
                     replacements += 1
         queued = {item.line_id for item in queue.items}
+        authoritative_source_lines = _validated_source_audio_line_ids(
+            generation_input.story_index, story
+        )
+        source_completion = story.metadata.get("source_audio_completion")
         original = sum(
             record.speakable
-            and record.source_audio_status == "available"
+            and record.line_id in authoritative_source_lines
+            and _source_audio_covers_full_line(
+                record.document,
+                completion_contract=source_completion,
+                semantic_authorized=True,
+            )
             and record.line_id not in queued
             for record in story.records
         )

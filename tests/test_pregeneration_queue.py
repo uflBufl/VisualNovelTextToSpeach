@@ -257,13 +257,13 @@ class PregenerationInputStoreTest(unittest.TestCase):
 
             result = PregenerationInputStore(jobs).materialize(job, voice_plan)
 
-            self.assertEqual(result.queue_items, 3)
-            self.assertEqual(result.ready_items, 3)
+            self.assertEqual(result.queue_items, 4)
+            self.assertEqual(result.ready_items, 4)
             self.assertEqual(result.narrator_fallback_roles, ("Hotelier",))
             queue = VoiceGenerationQueue.load(result.queue)
             self.assertEqual(
                 tuple(item.line_id for item in queue.items),
-                ("rhiannon", "hotelier", "unknown"),
+                ("original", "rhiannon", "hotelier", "unknown"),
             )
             manifest = json.loads(result.voice_manifest.read_text(encoding="utf-8"))
             self.assertEqual(
@@ -317,8 +317,8 @@ class PregenerationInputStoreTest(unittest.TestCase):
             queue = VoiceGenerationQueue.load(result.queue)
             queue_by_line = {item.line_id: item.queue_id for item in queue.items}
 
-        self.assertEqual(result.queue_items, 5)
-        self.assertEqual(result.ready_items, 4)
+        self.assertEqual(result.queue_items, 6)
+        self.assertEqual(result.ready_items, 5)
         self.assertEqual(
             result.audio_event_projection_queue_ids,
             (queue_by_line["mixed-event"],),
@@ -460,7 +460,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                     }
                 ],
             )
-            self.assertEqual(result.ready_items, 3)
+            self.assertEqual(result.ready_items, 4)
             self.assertEqual(
                 result.narrator_fallback_roles,
                 ("Hotelier", "Rhiannon"),

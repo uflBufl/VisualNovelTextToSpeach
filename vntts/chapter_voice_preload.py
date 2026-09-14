@@ -6,12 +6,20 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from os.path import commonprefix
+from pathlib import Path
 
 from vntts_artifacts.story_index import (
     StoryIndexError,
     load_story_index,
     load_story_index_document,
 )
+
+from vntts.source_audio_semantics import (
+    SourceAudioSemanticEvidenceError,
+    load_source_audio_semantic_evidence,
+)
+
+VERIFIED_SOURCE_AUDIO_COMPLETION = "verified-media-duration-seconds"
 
 
 def _normalize(value):
@@ -36,8 +44,9 @@ class ChapterDialogue:
     source_audio_status: str = "unknown"
     source_audio_id: str | None = None
     source_audio_duration_seconds: float | None = None
-    source_audio_completeness: str = "full"
+    source_audio_completeness: str = "unknown"
     story_title: str | None = None
+    source_audio_authoritative: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,6 +125,7 @@ class ChapterVoicePreloader:
                 entry,
                 completion_contract=completion_contract or None,
                 duration_seconds=source_audio_duration_seconds,
+                semantic_authorized=False,
             )
             rows.append(
                 ChapterDialogue(
@@ -155,15 +165,14 @@ class ChapterVoicePreloader:
             collection["collection_id"].strip(): collection["title"].strip()
             for collection in metadata.get("collections") or ()
         }
-        completion_declared = completion_contract in {
-            "duration-seconds",
-            "verified-media-duration-seconds",
-        }
+        completion_declared = completion_contract == VERIFIED_SOURCE_AUDIO_COMPLETION
+        authoritative_line_ids = _validated_source_audio_line_ids(path, document)
         if document is not None and completion_declared:
             source_audio_by_line_id = {
                 line.line_id: _source_audio_extension(
                     line.document,
                     completion_contract=completion_contract,
+                    semantic_authorized=line.line_id in authoritative_line_ids,
                 )
                 for line in indexed_lines
             }
@@ -178,7 +187,7 @@ class ChapterVoicePreloader:
         def source_audio(line):
             return source_audio_by_line_id.get(
                 line.line_id,
-                ("unknown", None, None, "unknown"),
+                ("unknown", None, None, "unknown", False),
             )
 
         rows = (
@@ -202,6 +211,7 @@ class ChapterVoicePreloader:
                 ),
                 source_audio(line)[3],
                 story_titles.get(getattr(line, "collection_id", None)),
+                source_audio(line)[4],
             )
             for line in indexed_lines
         )
@@ -743,8 +753,8 @@ def _source_audio_duration_seconds(entry, *, completion_contract=None):
     value = float(value)
     if not math.isfinite(value) or not 0 < value <= 600:
         return None
-    if completion_contract != "verified-media-duration-seconds":
-        return value
+    if completion_contract != VERIFIED_SOURCE_AUDIO_COMPLETION:
+        return None
     media_id = entry.get("source_audio_duration_media_id")
     media_sha256 = str(entry.get("source_audio_duration_media_sha256") or "").strip()
     sample_rate = entry.get("source_audio_duration_sample_rate")
@@ -776,17 +786,33 @@ def _source_audio_completeness(
     *,
     completion_contract=None,
     duration_seconds=None,
+    semantic_authorized=False,
 ):
-    if duration_seconds is None:
+    if (
+        duration_seconds is None
+        or completion_contract != VERIFIED_SOURCE_AUDIO_COMPLETION
+        or not semantic_authorized
+    ):
         return "unknown"
-    if completion_contract != "verified-media-duration-seconds":
-        value = str(entry.get("source_audio_completeness") or "full").strip()
-        return value if value in {"full", "partial", "unknown"} else "unknown"
     value = str(entry.get("source_audio_completeness") or "unknown").strip()
-    return value if value in {"full", "partial", "unknown"} else "unknown"
+    expected_reason = {
+        "full": "exact-normalized-asr-transcript",
+        "partial": "asr-transcript-mismatch",
+    }.get(value)
+    return (
+        value
+        if expected_reason is not None
+        and entry.get("source_audio_completeness_reason") == expected_reason
+        else "unknown"
+    )
 
 
-def _source_audio_extension(entry, *, completion_contract=None):
+def _source_audio_extension(
+    entry,
+    *,
+    completion_contract=None,
+    semantic_authorized=False,
+):
     source_audio_id = (
         str(entry.get("source_audio_id") or entry.get("source_voice_id") or "").strip()
         or None
@@ -795,15 +821,61 @@ def _source_audio_extension(entry, *, completion_contract=None):
         entry,
         completion_contract=completion_contract,
     )
+    completeness = _source_audio_completeness(
+        entry,
+        completion_contract=completion_contract,
+        duration_seconds=duration_seconds,
+        semantic_authorized=semantic_authorized,
+    )
     return (
         _source_audio_status(entry),
         source_audio_id,
         duration_seconds,
-        _source_audio_completeness(
+        completeness,
+        completeness in {"full", "partial"},
+    )
+
+
+def _validated_source_audio_line_ids(path, document=None):
+    if document is None:
+        return frozenset()
+    if (
+        document.metadata.get("source_audio_completion")
+        != VERIFIED_SOURCE_AUDIO_COMPLETION
+    ):
+        return frozenset()
+    evidence_path = Path(path).expanduser().resolve().parent / (
+        "source-audio-semantic-evidence.json"
+    )
+    try:
+        load_source_audio_semantic_evidence(evidence_path, document)
+    except OSError, SourceAudioSemanticEvidenceError:
+        return frozenset()
+    return frozenset(
+        record.line_id
+        for record in document.records
+        if record.document.get("source_audio_semantic_evidence_entry_id") is not None
+    )
+
+
+def _source_audio_covers_full_line(
+    entry,
+    *,
+    completion_contract,
+    semantic_authorized,
+):
+    return (
+        _source_audio_status(entry) == "available"
+        and _source_audio_completeness(
             entry,
             completion_contract=completion_contract,
-            duration_seconds=duration_seconds,
-        ),
+            duration_seconds=_source_audio_duration_seconds(
+                entry,
+                completion_contract=completion_contract,
+            ),
+            semantic_authorized=semantic_authorized,
+        )
+        == "full"
     )
 
 
@@ -821,6 +893,7 @@ def _load_source_audio_extensions(path, *, completion_contract=None):
                 result[line_id] = _source_audio_extension(
                     record,
                     completion_contract=completion_contract,
+                    semantic_authorized=False,
                 )
     except OSError, TypeError, ValueError, json.JSONDecodeError:
         return {}

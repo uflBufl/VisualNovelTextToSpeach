@@ -21,11 +21,15 @@ from vntts_artifacts.voice_generation_queue import (
 
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
+from vntts.chapter_voice_preload import (
+    _source_audio_covers_full_line,
+    _validated_source_audio_line_ids,
+)
 from vntts.settings import AppSettings
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 
 job_schema_version = 1
-story_catalog_schema_version = 2
+story_catalog_schema_version = 3
 story_catalog_minimum_bytes = 8 * 1024 * 1024
 # ponytail: assumes 12 text chars/sec and PCM16 mono 24 kHz; upgrade with measured
 # durations and the selected backend's output format if storage estimates matter.
@@ -184,7 +188,10 @@ def inspect_story_index(path, *, provider_id="local-story-index"):
         if content is None:
             cache_hits = _cached_story_index_document.cache_info().hits
             document = _cached_story_index_document(str(path), checksum)
-            selections = _story_selections(document)
+            selections = _story_selections(
+                document,
+                _validated_source_audio_line_ids(path, document),
+            )
             if not selections:
                 raise PregenerationSetupError(
                     "Story content has no selectable dialogue"
@@ -714,7 +721,8 @@ class PregenerationJobStore:
         return self.root / job_id / "job.json"
 
 
-def _story_selections(document):
+def _story_selections(document, authoritative_source_lines=frozenset()):
+    metadata = getattr(document, "metadata", {})
     if document.collections:
         records_by_collection = {}
         for record in document.records:
@@ -746,7 +754,15 @@ def _story_selections(document):
             )
         ]
     return tuple(
-        _selection_from_records(selection_id, title, kind, order, records)
+        _selection_from_records(
+            selection_id,
+            title,
+            kind,
+            order,
+            records,
+            completion_contract=metadata.get("source_audio_completion"),
+            authoritative_source_lines=authoritative_source_lines,
+        )
         for selection_id, title, kind, order, records in groups
         if records
     )
@@ -765,13 +781,30 @@ def _is_outdated_reverse1999_index(path):
     )
 
 
-def _selection_from_records(selection_id, title, kind, order, records):
+def _selection_from_records(
+    selection_id,
+    title,
+    kind,
+    order,
+    records,
+    *,
+    completion_contract=None,
+    authoritative_source_lines=frozenset(),
+):
     speakable = tuple(record for record in records if record.speakable)
     original = tuple(
-        record for record in speakable if record.source_audio_status == "available"
+        record
+        for record in speakable
+        if record.line_id in authoritative_source_lines
+        and _source_audio_covers_full_line(
+            record.document,
+            completion_contract=completion_contract,
+            semantic_authorized=True,
+        )
     )
+    original_ids = {record.line_id for record in original}
     generation = tuple(
-        record for record in speakable if record.source_audio_status != "available"
+        record for record in speakable if record.line_id not in original_ids
     )
     speakers = {
         (record.voice_character or record.speaker).strip()

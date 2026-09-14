@@ -158,7 +158,7 @@ class VoiceDefaultImpactTest(unittest.TestCase):
             )
             self.assertEqual(result[0].changed_line_ids, ("changed",))
             self.assertEqual(
-                (result[0].matching, result[0].unknown, result[0].original), (1, 1, 1)
+                (result[0].matching, result[0].unknown, result[0].original), (1, 1, 0)
             )
             self.assertEqual(result[1].changed_line_ids, ())
             self.assertEqual(

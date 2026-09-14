@@ -124,7 +124,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 {
                     "game": "Synthetic",
                     "language": "en",
-                    "source_audio_completion": "duration-seconds",
+                    "source_audio_completion": "verified-media-duration-seconds",
                 },
                 [
                     {
@@ -137,7 +137,17 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                         "kind": "dialogue",
                         "source_audio_status": "available",
                         "source_audio_completeness": "full",
+                        "source_audio_completeness_reason": (
+                            "exact-normalized-asr-transcript"
+                        ),
                         "source_audio_duration_seconds": 1.0,
+                        "source_audio_duration_media_id": 7,
+                        "source_audio_duration_media_sha256": "c" * 64,
+                        "source_audio_duration_sample_rate": 24000,
+                        "source_audio_duration_sample_count": 24000,
+                        "source_audio_duration_decoder": "synthetic",
+                        "source_media_ids": [7],
+                        "available_media_ids": [7],
                         "speakable": True,
                     },
                     {
@@ -173,7 +183,11 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            progress = OfflineGenerationWorker().inspect_progress(inputs)
+            with patch(
+                "vntts.pregeneration_generation._validated_source_audio_line_ids",
+                return_value=frozenset({"original"}),
+            ):
+                progress = OfflineGenerationWorker().inspect_progress(inputs)
 
         self.assertEqual(progress.ready_line_ids, ("generated", "original"))
 

@@ -1,3 +1,4 @@
+import hashlib
 import os
 import unittest
 from dataclasses import replace
@@ -12,8 +13,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 from vntts_artifacts import write_story_index_document  # noqa: E402
+from vntts_artifacts.atomic_io import atomic_write_json  # noqa: E402
+from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
+from vntts.document_identity import canonical_document_sha256  # noqa: E402
 from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
     ImporterAvailability,
@@ -43,6 +47,10 @@ from vntts.pregeneration_setup import (  # noqa: E402
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
 from vntts.pregeneration_voices import PregenerationVoiceCancelled  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.source_audio_semantics import (  # noqa: E402
+    SEMANTIC_EVIDENCE_METHOD,
+    semantic_text_sha256,
+)
 from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.versioned_json import write_versioned_json  # noqa: E402
 
@@ -50,13 +58,59 @@ from vntts.versioned_json import write_versioned_json  # noqa: E402
 def write_story_index(root, *, generated_text="Generate me."):
     root.mkdir(parents=True, exist_ok=True)
     path = root / "story-index.jsonl"
+    line_id = "reverse1999:1"
+    text = "Original game voice."
+    text_hash = hashlib.sha256(text.encode()).hexdigest()
+    media_hash = "a" * 64
+    entry = {
+        "locale": "en",
+        "media_id": 7,
+        "media_sha256": media_hash,
+        "displayed_text_sha256": text_hash,
+        "normalized_displayed_text_sha256": semantic_text_sha256(text),
+        "observed_transcript": text,
+        "normalized_observed_text_sha256": semantic_text_sha256(text),
+        "verdict": "full",
+        "reason": "exact-normalized-asr-transcript",
+        "method": SEMANTIC_EVIDENCE_METHOD,
+        "model_sha256": "b" * 64,
+        "source_line_ids": [line_id],
+    }
+    entry["entry_id"] = canonical_document_sha256(
+        {key: value for key, value in entry.items() if key != "source_line_ids"}
+    )
+    evidence = {
+        "schema": "r1999.source-audio-semantic-evidence",
+        "schema_version": 1,
+        "locale": "en",
+        "source_story_index_sha256": "c" * 64,
+        "model": {
+            "kind": "whisper",
+            "snapshot": "synthetic",
+            "sha256": "b" * 64,
+            "device": "cpu",
+            "decoding": "deterministic_greedy_default",
+        },
+        "entries": [entry],
+    }
+    evidence["evidence_id"] = canonical_document_sha256(evidence)
+    evidence["generated_at"] = "2026-09-14T00:00:00+00:00"
+    evidence_path = root / "source-audio-semantic-evidence.json"
+    atomic_write_json(evidence_path, evidence, sort_keys=True)
     write_story_index_document(
         path,
         {
             "game": "Reverse: 1999",
             "game_version": "3.7",
             "language": "en",
-            "source_audio_completion": "duration-seconds",
+            "source_audio_completion": "verified-media-duration-seconds",
+            "source_audio_semantics": {
+                "evidence_id": evidence["evidence_id"],
+                "evidence_sha256": sha256_file(evidence_path),
+                "method": SEMANTIC_EVIDENCE_METHOD,
+                "selected_chapters": ["1"],
+                "applied_count": 1,
+            },
             "collections": [
                 {
                     "collection_id": "main-1",
@@ -75,17 +129,28 @@ def write_story_index(root, *, generated_text="Generate me."):
         [
             {
                 "record_type": "line",
-                "line_id": "reverse1999:1",
+                "line_id": line_id,
                 "chapter": "1",
                 "sequence": 1,
                 "speaker": "Centurion",
                 "voice_character": "Centurion",
-                "text": "Original game voice.",
+                "text": text,
+                "text_sha256": text_hash,
                 "kind": "dialogue",
                 "collection_id": "main-1",
                 "source_audio_status": "available",
                 "source_audio_duration_seconds": 1.0,
+                "source_audio_duration_media_id": 7,
+                "source_audio_duration_media_sha256": media_hash,
+                "source_audio_duration_sample_rate": 24000,
+                "source_audio_duration_sample_count": 24000,
+                "source_audio_duration_decoder": "synthetic",
+                "source_media_ids": [7],
+                "available_media_ids": [7],
                 "source_audio_completeness": "full",
+                "source_audio_completeness_reason": ("exact-normalized-asr-transcript"),
+                "source_audio_semantic_evidence_id": evidence["evidence_id"],
+                "source_audio_semantic_evidence_entry_id": entry["entry_id"],
                 "speakable": True,
             },
             {
@@ -219,8 +284,8 @@ class PregenerationSetupTest(unittest.TestCase):
 
         self.assertEqual(records.iterations, 1)
         self.assertEqual(len(selections), 2)
-        self.assertEqual(selections[0].original_audio_lines, 1)
-        self.assertEqual(selections[0].generation_lines, 1)
+        self.assertEqual(selections[0].original_audio_lines, 0)
+        self.assertEqual(selections[0].generation_lines, 2)
 
     def test_legacy_chapter_records_are_grouped_in_one_pass(self):
         class CountingRecords(tuple):

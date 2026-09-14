@@ -9,6 +9,7 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.generated_audio import load_generated_audio_document
 from vntts_artifacts.story_index import StoryIndexRecord, load_story_index_document
 
+from vntts.chapter_voice_preload import _validated_source_audio_line_ids
 from vntts.game_pack import import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
 from vntts.pregeneration_setup import (
@@ -37,6 +38,7 @@ class _CompatiblePack:
     line_ids: tuple[str, ...]
     records: dict[str, StoryIndexRecord]
     library: GeneratedAudioLibrary | None
+    authoritative_source_line_ids: frozenset[str]
 
 
 SavedVoiceStatus = Literal["not-saved", "unknown", "matching", "changed"]
@@ -74,9 +76,16 @@ def _saved_packs(
 
 def _load_pack(
     path: Path,
-    cache: dict[Path, tuple[dict[str, StoryIndexRecord], GeneratedAudioLibrary | None]],
+    cache: dict[
+        Path,
+        tuple[
+            dict[str, StoryIndexRecord],
+            GeneratedAudioLibrary | None,
+            frozenset[str],
+        ],
+    ],
     cancellation: Cancellation | None,
-) -> tuple[dict[str, StoryIndexRecord], GeneratedAudioLibrary | None]:
+) -> tuple[dict[str, StoryIndexRecord], GeneratedAudioLibrary | None, frozenset[str]]:
     _raise_if_cancelled(cancellation)
     path = path.expanduser().resolve()
     if path not in cache:
@@ -91,7 +100,11 @@ def _load_pack(
             if imported.generated_audio_manifest
             else None
         )
-        cache[path] = ({record.line_id: record for record in document.records}, library)
+        cache[path] = (
+            {record.line_id: record for record in document.records},
+            library,
+            _validated_source_audio_line_ids(imported.story_index, document),
+        )
     return cache[path]
 
 
@@ -104,7 +117,12 @@ def _compatible_packs(
 ) -> tuple[_CompatiblePack, ...]:
     saved = _saved_packs(content, job_store, cancellation)
     cache: dict[
-        Path, tuple[dict[str, StoryIndexRecord], GeneratedAudioLibrary | None]
+        Path,
+        tuple[
+            dict[str, StoryIndexRecord],
+            GeneratedAudioLibrary | None,
+            frozenset[str],
+        ],
     ] = {}
     selected: list[_CompatiblePack] = []
     for selection in content.selections:
@@ -117,7 +135,9 @@ def _compatible_packs(
         if settings.game_pack:
             candidates.insert(0, Path(settings.game_pack))
         for candidate in candidates:
-            pack_records, library = _load_pack(candidate, cache, cancellation)
+            pack_records, library, authoritative_source_line_ids = _load_pack(
+                candidate, cache, cancellation
+            )
             if all(
                 line_id in pack_records
                 and pack_records[line_id].text_sha256 == records[line_id].text_sha256
@@ -130,6 +150,7 @@ def _compatible_packs(
                         selection.line_ids,
                         pack_records,
                         library,
+                        authoritative_source_line_ids,
                     )
                 )
                 break
@@ -151,10 +172,7 @@ def _impact_for_pack(
     for line_id in pack.line_ids:
         _raise_if_cancelled(cancellation)
         record = records[line_id]
-        if (
-            record.speakable
-            and pack.records[line_id].source_audio_status == "available"
-        ):
+        if record.speakable and line_id in pack.authoritative_source_line_ids:
             original += 1
             continue
         group = new_groups.get(line_id)

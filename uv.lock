@@ -4350,7 +4350,7 @@ requires-dist = [
     { name = "torchcodec", marker = "sys_platform == 'linux'", specifier = ">=0.16,<0.17", index = "https://download.pytorch.org/whl/cu130" },
     { name = "torchcodec", marker = "sys_platform == 'win32'", specifier = ">=0.16,<0.17" },
     { name = "transformers", specifier = ">=4.57.6,<5" },
-    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=7ba9fa1704fd5c25f2576db4f9133af4fe155cea" },
+    { name = "vntts-artifacts", extras = ["audio"], git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=19e6035986eedae6bbda966d7d5cff8307c9f574" },
 ]
 provides-extras = ["rapidocr", "speaker-identity"]
 
@@ -4371,7 +4371,7 @@ notebook = [
 [[package]]
 name = "vntts-artifacts"
 version = "0.7.2"
-source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=7ba9fa1704fd5c25f2576db4f9133af4fe155cea#7ba9fa1704fd5c25f2576db4f9133af4fe155cea" }
+source = { git = "https://github.com/AlexRedby/vntts-artifacts.git?rev=19e6035986eedae6bbda966d7d5cff8307c9f574#19e6035986eedae6bbda966d7d5cff8307c9f574" }
 dependencies = [
     { name = "durable-file" },
 ]

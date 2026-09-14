@@ -11,6 +11,7 @@ from vntts_artifacts.story_index import (
     write_story_index_document,
 )
 
+from tests.test_chapter_voice_preload import write_verified_source_story
 from tests.test_generated_audio import FakeAudioOutput
 from tests.test_pregeneration_audition import clean_wav_bytes
 from tests.test_pregeneration_pack import fixture
@@ -107,33 +108,27 @@ class OfflinePackActivatorTest(unittest.TestCase):
             root = Path(directory)
             job, inputs, result, _items = fixture(root)
             story = load_story_index_document(inputs.story_index)
-            original = {
-                "record_type": "line",
-                "line_id": "pack:original",
-                "chapter": "1",
-                "sequence": 3,
-                "speaker": "Ada",
-                "text": "Original spoken line.",
-                "kind": "dialogue",
-                "speakable": True,
-                "source_audio_status": "available",
-                "source_audio_id": "voice-7",
-                "source_audio_duration_seconds": 2.75,
-                "source_audio_completeness": "full",
-            }
+            write_verified_source_story(inputs.story_index)
+            verified = load_story_index_document(inputs.story_index)
+            original = verified.records[0]
             write_story_index_document(
                 inputs.story_index,
-                {
-                    "game": story.game,
-                    "language": story.language,
-                    "source_audio_completion": "duration-seconds",
-                },
-                [*(record.to_record() for record in story.records), original],
+                verified.metadata,
+                [
+                    *(record.to_record() for record in story.records),
+                    original.to_record(),
+                ],
+            )
+            inputs = replace(
+                inputs,
+                source_audio_semantic_evidence=(
+                    inputs.story_index.parent / "source-audio-semantic-evidence.json"
+                ),
             )
             job = replace(
                 job,
                 story_index_sha256=sha256_file(inputs.story_index),
-                selected_line_ids=(*job.selected_line_ids, "pack:original"),
+                selected_line_ids=(*job.selected_line_ids, original.line_id),
             )
             pack = OfflinePackPublisher().publish(job, inputs, result)
             controller = Mock(is_ready=False)
@@ -156,10 +151,10 @@ class OfflinePackActivatorTest(unittest.TestCase):
                 audio_output=FakeAudioOutput(),
             )
             backend.set_live_mode_active(True)
-            source = backend.prepare_route("Ada", "Original spoken line.")
+            source = backend.prepare_route(original.speaker, original.text)
             generated = backend.prepare_route("Narrator", "Prepared line generated.")
             self.assertIsInstance(source, SourceAudioRoute)
-            self.assertGreater(source.prepared.completion_seconds, 2.75)
+            self.assertGreater(source.prepared.completion_seconds, 1.25)
             self.assertIsInstance(generated, GeneratedAudioRoute)
             live.prepare_playback.assert_not_called()
 

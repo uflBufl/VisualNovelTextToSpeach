@@ -96,7 +96,7 @@ class LiveReplayCaptureTest(unittest.TestCase):
             self.assertEqual(result.boundary_review_count, 0)
             self.assertEqual(document["fixture_kind"], "saved-frame-ocr-replay-capture")
             self.assertEqual(document["dialogue"][0]["line_id"], "story:1")
-            self.assertEqual(document["dialogue"][0]["expected_source"], "game")
+            self.assertIsNone(document["dialogue"][0]["expected_source"])
             self.assertEqual(document["dialogue"][1]["line_id"], "capture:2")
             self.assertEqual(document["dialogue"][1]["text"], "...")
             self.assertEqual(document["dialogue"][2]["line_id"], "story:2")

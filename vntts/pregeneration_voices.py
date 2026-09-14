@@ -21,6 +21,10 @@ from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
 )
+from vntts.chapter_voice_preload import (
+    _source_audio_covers_full_line,
+    _validated_source_audio_line_ids,
+)
 from vntts.pregeneration_setup import load_verified_story_index_document
 from vntts.services.tts_engine import default_tts_profile, get_tts_profile
 from vntts.versioned_json import read_versioned_json, write_versioned_json
@@ -308,6 +312,10 @@ class VoicePlanStore:
     ):
         _raise_if_cancelled(cancellation)
         document = _load_bound_story(job)
+        source_completion = document.metadata.get("source_audio_completion")
+        authoritative_source_lines = _validated_source_audio_line_ids(
+            job.story_index, document
+        )
         _raise_if_cancelled(cancellation)
         manifest_path = _selected_manifest(settings, manifest_path)
         registry, manifest_sha256, manifest_document = _load_registry(manifest_path)
@@ -336,7 +344,14 @@ class VoicePlanStore:
         grouped = {}
         for line_id in job.selected_line_ids:
             record = records[line_id]
-            if not record.speakable or record.source_audio_status == "available":
+            if not record.speakable or (
+                record.line_id in authoritative_source_lines
+                and _source_audio_covers_full_line(
+                    record.document,
+                    completion_contract=source_completion,
+                    semantic_authorized=True,
+                )
+            ):
                 continue
             character = synthesis_character_for_line(
                 record.speaker, record.voice_character

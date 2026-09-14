@@ -117,7 +117,7 @@ def seal_sequence_replay(
     )
     capture_report_sha256 = hashlib.sha256(capture_report_payload).hexdigest()
 
-    _story_path, story_payload = _read_regular_file(story_index, "Story index")
+    source_story_path, story_payload = _read_regular_file(story_index, "Story index")
     _plan_path, plan_payload = _read_regular_file(sequence_plan, "Sequence plan")
     story_sha256 = hashlib.sha256(story_payload).hexdigest()
     plan_sha256 = hashlib.sha256(plan_payload).hexdigest()
@@ -149,6 +149,18 @@ def seal_sequence_replay(
         plan_copy = authority / "live-sequence.json"
         _write_bytes(story_copy, story_payload)
         _write_bytes(plan_copy, plan_payload)
+        source_semantic_path = (
+            source_story_path.parent / "source-audio-semantic-evidence.json"
+        )
+        if source_semantic_path.is_file() and not source_semantic_path.is_symlink():
+            _, semantic_payload = _read_regular_file(
+                source_semantic_path,
+                "Source audio semantic evidence",
+            )
+            _write_bytes(
+                authority / "source-audio-semantic-evidence.json",
+                semantic_payload,
+            )
         try:
             resolver = ChapterVoicePreloader.load_optional(story_copy)
             plan = LiveSequencePlan.load(plan_copy, story_copy)
@@ -630,7 +642,8 @@ def _sealed_dialogue(
             if (
                 audio_source_policy == "prefer-game-audio"
                 and line.source_audio_status == "available"
-                and (mode != "shadow" or line.source_audio_duration_seconds is not None)
+                and line.source_audio_authoritative
+                and line.source_audio_completeness == "full"
             ):
                 expected_source = "game"
             elif (
@@ -650,6 +663,7 @@ def _sealed_dialogue(
                 "source_audio_status": line.source_audio_status,
                 "source_audio_id": line.source_audio_id,
                 "source_audio_duration_seconds": line.source_audio_duration_seconds,
+                "source_audio_completeness": line.source_audio_completeness,
                 "expected_source": expected_source,
             }
         dialogue.append(record)

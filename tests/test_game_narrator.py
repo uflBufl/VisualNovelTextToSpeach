@@ -462,7 +462,10 @@ class GameNarratorTest(unittest.TestCase):
                     original.character_voice_defaults["Hotelier"], "default"
                 )
                 self.assertIn("HOTELIER", original.voice_assignments)
-                self.assertEqual(original.effective_speaker_announcement_mode, "off")
+                self.assertEqual(
+                    original.effective_speaker_announcement_mode,
+                    "narrator-fallback-roles",
+                )
                 importer.narrator_characters.assert_not_called()
                 previews.generate.assert_not_called()
 

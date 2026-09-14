@@ -137,7 +137,7 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
                         line.source_audio_duration_seconds
                     ),
                     "expected_source": (
-                        "game" if line.source_audio_status == "available" else None
+                        "game" if line.source_audio_authoritative else None
                     ),
                     "story_match": match_result,
                 }
@@ -184,7 +184,7 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
         )
         return manifest
 
-    def test_seals_silent_and_text_only_mapping_with_all_audio_routes(self):
+    def test_seals_silent_and_text_only_mapping_with_safe_audio_routes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             lines = [
@@ -299,7 +299,8 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
         )
         self.assertFalse(corpus["dialogue"][1]["expect_playback"])
         self.assertEqual(
-            report["route_sources"], ["game", "generated", "live:replay-live-tts"]
+            report["route_sources"],
+            ["live:replay-live-tts", "generated", "live:replay-live-tts"],
         )
         self.assertTrue(report["successful"], report)
         self.assertEqual(

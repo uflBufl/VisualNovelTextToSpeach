@@ -52,7 +52,7 @@
       "line_id": "fixture:rhiannon:1",
       "source_audio_status": "available",
       "source_audio_duration_seconds": 0.001,
-      "expected_source": "game"
+      "expected_source": "live:replay-live-tts"
     },
     {
       "frames": [

@@ -540,9 +540,15 @@ class LiveReplayCaptureSession:
             "source_audio_completeness": getattr(
                 line,
                 "source_audio_completeness",
-                "full" if line.source_audio_duration_seconds is not None else "unknown",
+                "unknown",
             ),
-            "expected_source": "game" if source_status == "available" else None,
+            "expected_source": (
+                "game"
+                if source_status == "available"
+                and getattr(line, "source_audio_authoritative", False)
+                and getattr(line, "source_audio_completeness", "unknown") == "full"
+                else None
+            ),
             "capture_boundary": item["boundary_reason"],
             "story_match": item["story_match"],
         }

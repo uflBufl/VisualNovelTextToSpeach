@@ -226,14 +226,15 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 "source_audio_status": "available",
                 "speakable": True,
             }
-            for contract, fields, original in (
+            for contract, fields, original, authoritative in (
                 (
                     "duration-seconds",
                     {
                         "source_audio_duration_seconds": 1.0,
                         "source_audio_completeness": "full",
                     },
-                    1,
+                    0,
+                    False,
                 ),
                 (
                     "duration-seconds",
@@ -242,6 +243,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                         "source_audio_completeness": "partial",
                     },
                     0,
+                    False,
                 ),
                 (
                     "duration-seconds",
@@ -250,9 +252,20 @@ class OfflinePackPublisherTest(unittest.TestCase):
                         "source_audio_completeness": "unknown",
                     },
                     0,
+                    False,
                 ),
-                ("duration-seconds", {"source_audio_duration_seconds": 1.0}, 0),
-                ("duration-seconds", {"source_audio_completeness": "full"}, 0),
+                (
+                    "duration-seconds",
+                    {"source_audio_duration_seconds": 1.0},
+                    0,
+                    False,
+                ),
+                (
+                    "duration-seconds",
+                    {"source_audio_completeness": "full"},
+                    0,
+                    False,
+                ),
                 (
                     "duration-seconds",
                     {
@@ -260,6 +273,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                         "source_audio_completeness": "full",
                     },
                     0,
+                    False,
                 ),
                 (
                     None,
@@ -268,6 +282,7 @@ class OfflinePackPublisherTest(unittest.TestCase):
                         "source_audio_completeness": "full",
                     },
                     0,
+                    False,
                 ),
                 (
                     "verified-media-duration-seconds",
@@ -276,6 +291,26 @@ class OfflinePackPublisherTest(unittest.TestCase):
                         "source_audio_completeness": "full",
                     },
                     0,
+                    False,
+                ),
+                (
+                    "verified-media-duration-seconds",
+                    {
+                        "source_audio_duration_seconds": 1.0,
+                        "source_audio_duration_media_id": 7,
+                        "source_audio_duration_media_sha256": "c" * 64,
+                        "source_audio_duration_sample_rate": 24000,
+                        "source_audio_duration_sample_count": 24000,
+                        "source_audio_duration_decoder": "synthetic",
+                        "source_media_ids": [7],
+                        "available_media_ids": [7],
+                        "source_audio_completeness": "full",
+                        "source_audio_completeness_reason": (
+                            "exact-normalized-asr-transcript"
+                        ),
+                    },
+                    1,
+                    True,
                 ),
             ):
                 with self.subTest(contract=contract, fields=fields):
@@ -284,9 +319,15 @@ class OfflinePackPublisherTest(unittest.TestCase):
                         metadata["source_audio_completion"] = contract
                     write_story_index_document(path, metadata, [source | fields])
                     content = inspect_story_index(path)
-                    coverage = inspect_story_audio(
-                        content, content.selections[0].selection_id, store
-                    )
+                    with patch(
+                        "vntts.pregeneration_pack._validated_source_audio_line_ids",
+                        return_value=(
+                            frozenset({"source-only"}) if authoritative else frozenset()
+                        ),
+                    ):
+                        coverage = inspect_story_audio(
+                            content, content.selections[0].selection_id, store
+                        )
                     self.assertEqual(
                         (coverage.original, coverage.missing), (original, 1 - original)
                     )

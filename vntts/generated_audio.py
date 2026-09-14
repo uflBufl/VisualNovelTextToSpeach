@@ -513,7 +513,6 @@ class GeneratedAudioFallbackBackend:
         playback_latency="low",
         clock=monotonic,
         audio_source_policy="prefer-generated",
-        require_source_audio_completion=False,
     ):
         if audio_output is None:
             import sounddevice
@@ -528,7 +527,6 @@ class GeneratedAudioFallbackBackend:
         if audio_source_policy not in audio_source_policies:
             raise ValueError(f"Unknown audio source policy: {audio_source_policy}")
         self.audio_source_policy = audio_source_policy
-        self.require_source_audio_completion = bool(require_source_audio_completion)
         prefix = "generated-audio" if library is not None else "story-audio"
         self.name = f"{prefix}+{live_backend.name}"
         self.capabilities = live_backend.capabilities
@@ -622,11 +620,9 @@ class GeneratedAudioFallbackBackend:
             line is not None
             and line.line_id
             and getattr(line, "source_audio_status", "unknown") == "available"
-            and getattr(line, "source_audio_completeness", "unknown") != "partial"
-            and (
-                not self.require_source_audio_completion
-                or getattr(line, "source_audio_duration_seconds", None) is not None
-            )
+            and getattr(line, "source_audio_authoritative", False)
+            and getattr(line, "source_audio_completeness", "unknown") == "full"
+            and getattr(line, "source_audio_duration_seconds", None) is not None
         )
 
     def has_generated_line(self, line):
@@ -664,6 +660,7 @@ class GeneratedAudioFallbackBackend:
             or (
                 self.audio_source_policy == "prefer-game-audio"
                 and getattr(line, "source_audio_status", "unknown") == "available"
+                and getattr(line, "source_audio_authoritative", False)
             )
         ):
             return False
@@ -718,23 +715,23 @@ class GeneratedAudioFallbackBackend:
             line is not None
             and self.audio_source_policy == "prefer-game-audio"
             and getattr(line, "source_audio_status", "unknown") == "available"
+            and getattr(line, "source_audio_authoritative", False)
             and source_audio_completion is not None
             and source_audio_completeness == "partial"
         )
-        source_audio_missing_completion = bool(
-            self.require_source_audio_completion
-            and line is not None
+        source_audio_full = bool(
+            line is not None
             and getattr(line, "source_audio_status", "unknown") == "available"
-            and source_audio_completion is None
+            and getattr(line, "source_audio_authoritative", False)
+            and source_audio_completion is not None
+            and source_audio_completeness == "full"
         )
         if (
             line is not None
             and line.line_id
             and self.live_mode_active
             and self.audio_source_policy == "prefer-game-audio"
-            and getattr(line, "source_audio_status", "unknown") == "available"
-            and not source_audio_missing_completion
-            and not source_audio_partial
+            and source_audio_full
         ):
             trace = AudioRouteTrace(
                 None,
@@ -768,9 +765,9 @@ class GeneratedAudioFallbackBackend:
             if source_audio_partial:
                 fallback_reasons.append("source-audio-partial-cue")
                 artifact_preflight_state = "source-audio-partial-cue"
-            elif source_audio_missing_completion:
-                fallback_reasons.append("source-audio-completion-unavailable")
-                artifact_preflight_state = "source-audio-completion-unavailable"
+            elif getattr(line, "source_audio_status", "unknown") == "available":
+                fallback_reasons.append("source-audio-authority-unavailable")
+                artifact_preflight_state = "source-audio-authority-unavailable"
             else:
                 source_status = getattr(line, "source_audio_status", "unknown")
                 fallback_reasons.append(f"source-audio-{source_status}")

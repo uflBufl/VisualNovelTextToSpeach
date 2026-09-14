@@ -249,7 +249,11 @@ class GeneratedAudioTest(unittest.TestCase):
                     backend = GeneratedAudioFallbackBackend(
                         live,
                         library,
-                        self.create_resolver(source_audio_status="available"),
+                        self.create_resolver(
+                            source_audio_status="available",
+                            source_audio_duration_seconds=1.0,
+                            source_audio_authoritative=True,
+                        ),
                         audio_source_policy=policy,
                         audio_output=FakeAudioOutput(),
                     )
@@ -487,6 +491,7 @@ class GeneratedAudioTest(unittest.TestCase):
         source_audio_id=None,
         source_audio_duration_seconds=None,
         source_audio_completeness="full",
+        source_audio_authoritative=False,
     ):
         return ChapterVoicePreloader(
             [
@@ -501,6 +506,8 @@ class GeneratedAudioTest(unittest.TestCase):
                     source_audio_id,
                     source_audio_duration_seconds,
                     source_audio_completeness,
+                    None,
+                    source_audio_authoritative,
                 )
             ]
         )
@@ -751,7 +758,11 @@ class GeneratedAudioTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             library, _audio = self.create_library(root)
-            source_resolver = self.create_resolver(source_audio_status="available")
+            source_resolver = self.create_resolver(
+                source_audio_status="available",
+                source_audio_duration_seconds=1.0,
+                source_audio_authoritative=True,
+            )
             source_backend = GeneratedAudioFallbackBackend(
                 self.create_live_backend(),
                 library,
@@ -956,6 +967,8 @@ class GeneratedAudioTest(unittest.TestCase):
                 self.create_resolver(
                     source_audio_status="available",
                     source_audio_id="voice-7",
+                    source_audio_duration_seconds=1.0,
+                    source_audio_authoritative=True,
                 ),
                 audio_source_policy="prefer-game-audio",
                 audio_output=FakeAudioOutput(),
@@ -966,7 +979,7 @@ class GeneratedAudioTest(unittest.TestCase):
 
         self.assertIsInstance(route, SourceAudioRoute)
         self.assertEqual(route.prepared.source_audio_id, "voice-7")
-        self.assertIsNone(route.prepared.completion_seconds)
+        self.assertEqual(route.prepared.completion_seconds, 1.35)
         self.assertEqual(route.trace.effective_source, "game")
         live.prepare_playback.assert_not_called()
 
@@ -979,6 +992,8 @@ class GeneratedAudioTest(unittest.TestCase):
                 speaker="???",
                 source_audio_status="available",
                 source_audio_id="voice-unknown",
+                source_audio_duration_seconds=1.0,
+                source_audio_authoritative=True,
             ),
             audio_source_policy="prefer-game-audio",
             audio_output=FakeAudioOutput(),
@@ -1023,7 +1038,7 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertIsInstance(route, GeneratedAudioRoute)
         live.prepare_playback.assert_not_called()
 
-    def test_auto_advance_falls_back_when_game_audio_has_no_completion(self):
+    def test_unverified_game_audio_falls_back_to_live_tts(self):
         live = self.create_live_backend()
         backend = GeneratedAudioFallbackBackend(
             live,
@@ -1033,7 +1048,6 @@ class GeneratedAudioTest(unittest.TestCase):
                 source_audio_id="voice-7",
             ),
             audio_source_policy="prefer-game-audio",
-            require_source_audio_completion=True,
             audio_output=FakeAudioOutput(),
         )
         backend.set_live_mode_active(True)
@@ -1044,14 +1058,18 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(route.prepared.payload, "live-audio")
         self.assertEqual(route.trace.effective_source, "live:live-test")
         self.assertIn(
-            "source-audio-completion-unavailable",
+            "source-audio-authority-unavailable",
             route.trace.fallback_reason,
         )
         self.assertFalse(backend.will_use_source_audio("Ada", "Hello."))
 
     def test_available_game_audio_is_known_before_unknown_voice_prompting(self):
         live = self.create_live_backend()
-        resolver = self.create_resolver(source_audio_status="available")
+        resolver = self.create_resolver(
+            source_audio_status="available",
+            source_audio_duration_seconds=1.0,
+            source_audio_authoritative=True,
+        )
         backend = GeneratedAudioFallbackBackend(
             live,
             None,
@@ -1073,7 +1091,11 @@ class GeneratedAudioTest(unittest.TestCase):
         backend = GeneratedAudioFallbackBackend(
             live,
             None,
-            self.create_resolver(source_audio_status="available"),
+            self.create_resolver(
+                source_audio_status="available",
+                source_audio_duration_seconds=1.0,
+                source_audio_authoritative=True,
+            ),
             audio_source_policy="prefer-game-audio",
             audio_output=FakeAudioOutput(),
         )
@@ -1083,8 +1105,8 @@ class GeneratedAudioTest(unittest.TestCase):
 
         self.assertIsInstance(route, SourceAudioRoute)
         outcome = backend.play_route(route)
-        self.assertIs(outcome.status, PlaybackStatus.PASSTHROUGH_UNOBSERVED)
-        self.assertIsNone(outcome.playback_ms)
+        self.assertIs(outcome.status, PlaybackStatus.COMPLETED)
+        self.assertIsNotNone(outcome.playback_ms)
         live.prepare_playback.assert_not_called()
 
     def test_explicit_line_id_routes_repeated_text_without_resolution_ambiguity(self):
@@ -1101,6 +1123,9 @@ class GeneratedAudioTest(unittest.TestCase):
                     "available",
                     f"voice-{sequence}",
                     0.1,
+                    "full",
+                    None,
+                    True,
                 )
                 for sequence in (1, 2)
             ]
@@ -1132,6 +1157,7 @@ class GeneratedAudioTest(unittest.TestCase):
             self.create_resolver(
                 source_audio_status="available",
                 source_audio_duration_seconds=0.001,
+                source_audio_authoritative=True,
             ),
             audio_source_policy="prefer-game-audio",
             audio_output=FakeAudioOutput(),
@@ -1158,6 +1184,7 @@ class GeneratedAudioTest(unittest.TestCase):
                 source_audio_status="available",
                 source_audio_duration_seconds=1.25,
                 source_audio_completeness="partial",
+                source_audio_authoritative=True,
             ),
             audio_source_policy="prefer-game-audio",
             audio_output=FakeAudioOutput(),
@@ -1181,6 +1208,7 @@ class GeneratedAudioTest(unittest.TestCase):
                 source_audio_status="available",
                 source_audio_duration_seconds=1.25,
                 source_audio_completeness="partial",
+                source_audio_authoritative=True,
             ),
             audio_source_policy="prefer-game-audio",
             audio_output=FakeAudioOutput(),
@@ -1202,7 +1230,7 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertAlmostEqual(outcome.playback_ms, 1850.0)
         self.assertAlmostEqual(outcome.first_audio_ms, 1625.0)
 
-    def test_unknown_source_completeness_stays_manual_despite_measured_duration(self):
+    def test_unknown_source_completeness_falls_back_despite_measured_duration(self):
         backend = GeneratedAudioFallbackBackend(
             self.create_live_backend(),
             None,
@@ -1218,8 +1246,8 @@ class GeneratedAudioTest(unittest.TestCase):
 
         route = backend.prepare_route("Ada", "Hello.")
 
-        self.assertIsInstance(route, SourceAudioRoute)
-        self.assertIsNone(route.prepared.completion_seconds)
+        self.assertIsInstance(route, LiveTTSRoute)
+        self.assertIn("source-audio-authority-unavailable", route.trace.fallback_reason)
 
     def test_one_time_read_does_not_silently_pass_through_game_audio(self):
         live = self.create_live_backend()
