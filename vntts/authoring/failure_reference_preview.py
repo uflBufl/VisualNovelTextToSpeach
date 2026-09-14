@@ -9,6 +9,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol, TypeAlias, TypedDict
 
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
@@ -18,6 +19,8 @@ from vntts.authoring.bulk_generation import (
     normalize_short_trailing_ellipsis,
 )
 from vntts.authoring.failure_reference_audit import (
+    FailureReferenceAudio,
+    FailureReferenceAudit,
     load_failure_reference_audit,
     prepare_failure_reference_audio,
 )
@@ -28,6 +31,7 @@ from vntts.authoring.workbench import (
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.synthesis import (
     SynthesisCachePolicy,
+    SynthesisChunkStream,
     SynthesisCompletion,
     SynthesisRequest,
 )
@@ -45,6 +49,93 @@ class FailureReferencePreviewCancelled(FailureReferencePreviewError):
 
 class FailureReferencePreviewIncomplete(FailureReferencePreviewError):
     """The typed renderer ended without a publishable complete result."""
+
+
+JsonDocument: TypeAlias = dict[str, object]
+
+
+class _PreviewCase(TypedDict):
+    text: str
+
+
+class _PreviewCandidate(TypedDict):
+    candidate_id: str
+    sha256: str
+
+
+class _PreviewGroup(TypedDict):
+    group_id: str
+    synthesis_voice_character: str
+    cases: list[_PreviewCase]
+    candidates: list[_PreviewCandidate]
+
+
+def _document(value: object, message: str) -> JsonDocument:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise FailureReferencePreviewError(message)
+    return {key: item for key, item in value.items()}
+
+
+def _documents(value: object, message: str) -> list[JsonDocument]:
+    if not isinstance(value, list):
+        raise FailureReferencePreviewError(message)
+    return [_document(item, message) for item in value]
+
+
+def _preview_groups(value: object) -> list[_PreviewGroup]:
+    groups: list[_PreviewGroup] = []
+    for raw_group in _documents(value, "Reference audit group is malformed"):
+        cases: list[_PreviewCase] = [
+            _PreviewCase(text=_required_text(case.get("text"), "Preview text"))
+            for case in _documents(
+                raw_group.get("cases"), "Reference audit group is malformed"
+            )
+        ]
+        candidates: list[_PreviewCandidate] = [
+            _PreviewCandidate(
+                candidate_id=_required_text(
+                    candidate.get("candidate_id"), "Reference audit candidate"
+                ),
+                sha256=_required_text(
+                    candidate.get("sha256"), "Reference audit candidate"
+                ),
+            )
+            for candidate in _documents(
+                raw_group.get("candidates"), "Reference audit group is malformed"
+            )
+        ]
+        groups.append(
+            {
+                "group_id": _required_text(
+                    raw_group.get("group_id"), "Reference audit group"
+                ),
+                "synthesis_voice_character": _required_text(
+                    raw_group.get("synthesis_voice_character"),
+                    "Preview synthesis voice character",
+                ),
+                "cases": cases,
+                "candidates": candidates,
+            }
+        )
+    return groups
+
+
+class _PreviewBackend(Protocol):
+    registry: CharacterVoiceRegistry
+
+    def render(self, request: SynthesisRequest) -> SynthesisChunkStream: ...
+
+
+class _PreviewBackendFactory(Protocol):
+    def __call__(
+        self,
+        name: str,
+        registry: CharacterVoiceRegistry,
+        cache_root: Path,
+        *,
+        model_name: str | None = None,
+        startup_cancellation: threading.Event | None = None,
+    ) -> _PreviewBackend: ...
 
 
 @dataclass(frozen=True)
@@ -67,18 +158,30 @@ class FailureReferencePreview:
 class FailureReferencePreviewService:
     """Own one lazy backend and memory-only preview cache for a dialog lifetime."""
 
-    def __init__(self, audit_directory, *, backend_factory=create_backend):
+    def __init__(
+        self,
+        audit_directory: str | Path,
+        *,
+        backend_factory: _PreviewBackendFactory = create_backend,
+    ) -> None:
         self.audit_directory = Path(audit_directory).expanduser().resolve()
         self.backend_factory = backend_factory
         self._root = Path(tempfile.mkdtemp(prefix="vntts-reference-preview-")).resolve()
-        self._backend = None
-        self._backend_config = None
-        self._cache = {}
+        self._backend: _PreviewBackend | None = None
+        self._backend_config: tuple[str, str, str] | None = None
+        self._cache: dict[tuple[str, ...], FailureReferencePreview] = {}
         self._lock = threading.Lock()
         self._cancel = threading.Event()
         self._closed = False
 
-    def generate(self, group_id, candidate_id, text, *, candidate_group_id=None):
+    def generate(
+        self,
+        group_id: str,
+        candidate_id: str,
+        text: str,
+        *,
+        candidate_group_id: str | None = None,
+    ) -> FailureReferencePreview:
         """Generate or return one exact in-memory preview without authoring writes."""
         text = str(text)
         if not text.strip():
@@ -99,7 +202,7 @@ class FailureReferencePreviewService:
                     "Cross-group preview candidates must belong to the same exact "
                     "source-reference character family"
                 )
-            if text not in {value.get("text") for value in group["cases"]}:
+            if text not in {value["text"] for value in group["cases"]}:
                 raise FailureReferencePreviewError(
                     "Preview text is not an affected line in this reference group"
                 )
@@ -107,7 +210,7 @@ class FailureReferencePreviewService:
                 (
                     value
                     for value in source_group["candidates"]
-                    if value.get("candidate_id") == candidate_id
+                    if value["candidate_id"] == candidate_id
                 ),
                 None,
             )
@@ -116,7 +219,9 @@ class FailureReferencePreviewService:
                     f"Reference candidate is unknown: {candidate_id}"
                 )
             _directory, workspace = self._load_workspace(document)
-            run_config = workspace["run_config"]
+            run_config = _document(
+                workspace.get("run_config"), "Preview workspace run configuration"
+            )
             backend_name = _required_text(run_config.get("backend"), "Preview backend")
             model = _required_text(run_config.get("model"), "Preview model")
             profile = _required_text(
@@ -158,7 +263,8 @@ class FailureReferencePreviewService:
             )
             backend_config = (backend_name, model, profile)
             if self._backend is None or self._backend_config != backend_config:
-                self._backend = shutdown_speech_backend(self._backend)
+                shutdown_speech_backend(self._backend)
+                self._backend = None
                 self._backend_config = None
                 self._backend = self.backend_factory(
                     backend_name,
@@ -237,11 +343,11 @@ class FailureReferencePreviewService:
             self._cache[key] = preview
             return preview
 
-    def cancel(self):
+    def cancel(self) -> None:
         """Request cancellation of backend startup or the active render."""
         self._cancel.set()
 
-    def close(self):
+    def close(self) -> None:
         """Release the worker and all ephemeral reference/preview files."""
         self.cancel()
         with self._lock:
@@ -249,21 +355,28 @@ class FailureReferencePreviewService:
                 return
             self._closed = True
             self._cache.clear()
-            self._backend = shutdown_speech_backend(self._backend)
+            shutdown_speech_backend(self._backend)
+            self._backend = None
             self._backend_config = None
             shutil.rmtree(self._root, ignore_errors=True)
 
-    def __del__(self):
+    def __del__(self) -> None:
         try:
             self.close()
         except Exception:
             pass
 
-    def _load_group(self, group_id):
+    def _load_group(
+        self, group_id: str
+    ) -> tuple[FailureReferenceAudit, JsonDocument, _PreviewGroup]:
         audit = load_failure_reference_audit(self.audit_directory)
         document = _read_audit_document(audit.directory)
         group = next(
-            (value for value in document["groups"] if value["group_id"] == group_id),
+            (
+                value
+                for value in _preview_groups(document.get("groups"))
+                if value["group_id"] == group_id
+            ),
             None,
         )
         if group is None:
@@ -272,8 +385,12 @@ class FailureReferencePreviewService:
             )
         return audit, document, group
 
-    def _load_workspace(self, document):
-        expected = Path(document.get("workspace", "")).expanduser().resolve()
+    def _load_workspace(self, document: JsonDocument) -> tuple[Path, JsonDocument]:
+        expected = (
+            Path(_required_text(document.get("workspace"), "Reference audit workspace"))
+            .expanduser()
+            .resolve()
+        )
         try:
             directory, workspace, _workspace_sha256 = load_workspace_authority(expected)
         except AuthoringWorkbenchError as error:
@@ -284,7 +401,7 @@ class FailureReferencePreviewService:
             )
         return directory, workspace
 
-    def _copy_reference(self, audio):
+    def _copy_reference(self, audio: FailureReferenceAudio) -> Path:
         suffix = audio.path.suffix.lower() or ".wav"
         target = self._root / f"reference-{audio.sha256}{suffix}"
         if target.exists():
@@ -301,23 +418,24 @@ class FailureReferencePreviewService:
         return target
 
 
-def _read_audit_document(directory):
+def _read_audit_document(directory: str | Path) -> JsonDocument:
     try:
-        return json.loads((Path(directory) / "audit.json").read_text(encoding="utf-8"))
+        return _document(
+            json.loads((Path(directory) / "audit.json").read_text(encoding="utf-8")),
+            "Reference audit document is malformed",
+        )
     except (OSError, ValueError) as error:
         raise FailureReferencePreviewError(str(error)) from error
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise FailureReferencePreviewError(f"{label} must be non-empty text")
     return value.strip()
 
 
-def _reference_family(group):
-    value = _required_text(
-        group.get("synthesis_voice_character"), "Preview synthesis voice character"
-    )
+def _reference_family(group: _PreviewGroup) -> str:
+    value = group["synthesis_voice_character"]
     prefix = "Source reference "
     marker = " cluster-"
     if not value.startswith(prefix) or marker not in value:

@@ -66,28 +66,65 @@ def load_failure_reference_runtime_binding(
         document = load_failure_reference_binding_document(binding_path.parent)
     except FailureReferenceBindingError as error:
         raise error_type(str(error)) from error
-    controls = {binding_path: config["sha256"]}
+    controls = {
+        binding_path: _text(
+            config.get("sha256"),
+            "Failure-reference binding SHA-256",
+            error_type=error_type,
+        )
+    }
     voices = []
-    for group, control in zip(document["groups"], config["controls"], strict=True):
+    groups = _object_list(
+        document.get("groups"), "Failure-reference groups", error_type=error_type
+    )
+    config_controls = _object_list(
+        config.get("controls"), "Selected references", error_type=error_type
+    )
+    for group, control in zip(groups, config_controls, strict=True):
         reference = contained_path(
             directory,
             safe_relative_path(
-                control["path"], "Selected reference", error_type=error_type
+                _text(
+                    control.get("path"),
+                    "Selected reference path",
+                    error_type=error_type,
+                ),
+                "Selected reference",
+                error_type=error_type,
             ),
             "Selected reference",
             error_type=error_type,
         )
         _read_bound_bytes(
             reference,
-            control["sha256"],
+            _text(
+                control.get("sha256"),
+                "Selected reference SHA-256",
+                error_type=error_type,
+            ),
             "Selected reference",
             error_type=error_type,
         )
-        controls[reference] = control["sha256"]
+        controls[reference] = _text(
+            control.get("sha256"),
+            "Selected reference SHA-256",
+            error_type=error_type,
+        )
         voices.append(
             CharacterVoice(
-                character=group["voice_character"],
-                speaker=f"failure-reference:{group['group_id']}",
+                character=_text(
+                    group.get("voice_character"),
+                    "Failure-reference voice character",
+                    error_type=error_type,
+                ),
+                speaker=(
+                    "failure-reference:"
+                    + _text(
+                        group.get("group_id"),
+                        "Failure-reference group ID",
+                        error_type=error_type,
+                    )
+                ),
                 references=(reference,),
             )
         )
@@ -95,7 +132,11 @@ def load_failure_reference_runtime_binding(
         binding_path.parent,
         document,
         tuple(voices),
-        dict(document["queue_voice_overrides"]),
+        _text_mapping(
+            document.get("queue_voice_overrides"),
+            "Failure-reference queue voice overrides",
+            error_type=error_type,
+        ),
         controls,
     )
 
@@ -163,6 +204,33 @@ def _read_bound_bytes(
     if hashlib.sha256(payload).hexdigest() != expected_sha256:
         raise error_type(f"{label} was modified")
     return payload
+
+
+def _object_list(
+    value: object, label: str, *, error_type: type[Exception] = ValueError
+) -> list[dict[str, object]]:
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise error_type(f"{label} are invalid")
+    return value
+
+
+def _text(
+    value: object, label: str, *, error_type: type[Exception] = ValueError
+) -> str:
+    if not isinstance(value, str) or not value:
+        raise error_type(f"{label} is invalid")
+    return value
+
+
+def _text_mapping(
+    value: object, label: str, *, error_type: type[Exception] = ValueError
+) -> dict[str, str]:
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) or not isinstance(item, str)
+        for key, item in value.items()
+    ):
+        raise error_type(f"{label} are invalid")
+    return value
 
 
 __all__ = [

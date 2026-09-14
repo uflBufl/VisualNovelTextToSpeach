@@ -355,27 +355,27 @@ def configure_parsers(
 
 def handle(arguments: argparse.Namespace) -> int:
     if arguments.command == "failure-reference-audit":
-        result = publish_failure_reference_audit(
+        audit = publish_failure_reference_audit(
             arguments.workspace,
             arguments.output,
             seed=arguments.seed,
             queue_ids=arguments.queue_id,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(audit.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "failure-reference-binding":
-        result = publish_failure_reference_binding(arguments.audit, arguments.output)
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        binding = publish_failure_reference_binding(arguments.audit, arguments.output)
+        print(json.dumps(binding.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "create-failure-reference-workspace":
-        result = create_failure_reference_workspace(
+        workspace = create_failure_reference_workspace(
             arguments.base_workspace,
             arguments.binding,
             arguments.workspaces_root,
         )
         print(
             json.dumps(
-                {"workspace": str(result.directory), "created": result.created},
+                {"workspace": str(workspace.directory), "created": workspace.created},
                 indent=2,
                 sort_keys=True,
             )
@@ -394,7 +394,7 @@ def handle(arguments: argparse.Namespace) -> int:
         print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     if arguments.command == "missing-voice-reuse-candidate-workspace":
-        result = prepare_missing_voice_reuse_candidate_workspace(
+        candidate_workspace = prepare_missing_voice_reuse_candidate_workspace(
             load_missing_voice_reuse_plan(arguments.plan),
             arguments.candidate_id,
             arguments.import_directory,
@@ -402,7 +402,12 @@ def handle(arguments: argparse.Namespace) -> int:
             arguments.workspaces_root,
         )
         print(
-            json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            json.dumps(
+                candidate_workspace.to_dict(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
         )
         return 0
     if arguments.command == "missing-voice-reuse-candidate-command":
@@ -458,15 +463,15 @@ def handle(arguments: argparse.Namespace) -> int:
             launch_missing_voice_reuse_review,
         )
 
-        return launch_missing_voice_reuse_review(arguments.session)
+        return int(launch_missing_voice_reuse_review(arguments.session))
     if arguments.command == "missing-voice-reuse-binding":
-        result = publish_missing_voice_reuse_binding(
+        reuse_binding = publish_missing_voice_reuse_binding(
             arguments.plan, arguments.session, arguments.output
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(reuse_binding.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "missing-voice-live-fallback":
-        result = authorize_missing_voice_live_fallback(
+        live_fallback = authorize_missing_voice_live_fallback(
             arguments.workspace,
             arguments.authority_directory,
             arguments.character,
@@ -474,10 +479,10 @@ def handle(arguments: argparse.Namespace) -> int:
                 arguments.accept_known_role_narrator_fallback
             ),
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(live_fallback.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "known-role-reuse-binding":
-        result = publish_known_role_reuse_binding(
+        known_role_binding = publish_known_role_reuse_binding(
             arguments.workspace,
             arguments.unresolved_authority_directory,
             arguments.source_character,
@@ -485,7 +490,7 @@ def handle(arguments: argparse.Namespace) -> int:
             arguments.output,
             accept_known_role_reuse=arguments.accept_known_role_reuse,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(known_role_binding.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "portrait-alias-plan":
         plan = build_portrait_alias_plan(
@@ -517,35 +522,37 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "select-reference":
-        result = select_voice_reference(
+        selection = select_voice_reference(
             arguments.voice_manifest,
             arguments.character,
             arguments.reference_number,
             arguments.output,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(selection.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "import-reference-review":
-        result = import_source_reference_review(
+        source_plan = import_source_reference_review(
             arguments.report,
             arguments.review,
             arguments.story_index,
             arguments.output,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(source_plan.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "build-reference-evaluation":
-        result = publish_source_reference_evaluation(arguments.plan, arguments.output)
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        evaluation = publish_source_reference_evaluation(
+            arguments.plan, arguments.output
+        )
+        print(json.dumps(evaluation.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "build-reference-listening-reports":
-        result = publish_source_reference_listening_reports(
+        listening_reports = publish_source_reference_listening_reports(
             arguments.evaluation, arguments.state, arguments.output
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(listening_reports.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "build-reference-bindings":
-        result = publish_source_reference_bindings(
+        source_bindings = publish_source_reference_bindings(
             arguments.plan,
             arguments.voice_manifest,
             arguments.narrator_character,
@@ -554,25 +561,25 @@ def handle(arguments: argparse.Namespace) -> int:
             quality_review=arguments.quality_review,
             base_characters=arguments.base_characters,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(source_bindings.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "extend-reference-bindings":
-        result = publish_source_reference_binding_successor(
+        successor = publish_source_reference_binding_successor(
             arguments.base_binding_manifest,
             arguments.plan,
             arguments.quality_review,
             arguments.narrator_character,
             arguments.output,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(successor.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "retire-reference-bindings":
-        result = publish_source_reference_binding_retirement(
+        retirement = publish_source_reference_binding_retirement(
             arguments.base_binding_manifest,
             arguments.variant_ids,
             arguments.output,
             reason=arguments.reason,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(retirement.to_dict(), indent=2, sort_keys=True))
         return 0
     raise AssertionError(f"Unhandled reference command: {arguments.command}")

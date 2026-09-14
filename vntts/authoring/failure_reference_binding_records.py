@@ -34,7 +34,7 @@ class FailureReferenceBinding:
     case_count: int
     created: bool = False
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "directory": str(self.directory),
             "binding": str(self.directory / "binding.json"),
@@ -52,7 +52,7 @@ FailureReferenceBindingError.__module__ = "vntts.authoring.failure_reference_bin
 FailureReferenceBinding.__module__ = "vntts.authoring.failure_reference_binding"
 
 
-def load_failure_reference_binding(directory):
+def load_failure_reference_binding(directory: str | Path) -> FailureReferenceBinding:
     """Validate one self-contained selected-reference overlay."""
     argument = Path(directory).expanduser()
     if argument.is_symlink():
@@ -203,7 +203,9 @@ def load_failure_reference_binding(directory):
     )
 
 
-def _validate_selection_authority(value, *, selected_reference_sha256):
+def _validate_selection_authority(
+    value: object, *, selected_reference_sha256: str
+) -> None:
     blind_required = {
         "schema",
         "schema_version",
@@ -308,7 +310,7 @@ def _validate_selection_authority(value, *, selected_reference_sha256):
         _text(value[field], f"Reference selection {field}")
 
 
-def load_failure_reference_binding_document(directory):
+def load_failure_reference_binding_document(directory: str | Path) -> dict[str, object]:
     """Return a validated binding document for runtime control construction."""
     argument = Path(directory).expanduser()
     if argument.is_symlink():
@@ -330,16 +332,26 @@ def load_failure_reference_binding_document(directory):
         raise FailureReferenceBindingError(
             "Reference binding changed while it was loaded"
         )
-    return document
+    if not isinstance(document, dict) or not all(
+        isinstance(key, str) for key in document
+    ):
+        raise FailureReferenceBindingError(
+            "Reference binding changed while it was loaded"
+        )
+    return {key: value for key, value in document.items()}
 
 
-def _contained_regular_file(directory, relative, label):
-    return contained_regular_file(
-        directory, relative, label, error_type=FailureReferenceBindingError
+def _contained_regular_file(
+    directory: str | Path, relative: object, label: str
+) -> Path:
+    return Path(
+        contained_regular_file(
+            directory, relative, label, error_type=FailureReferenceBindingError
+        )
     )
 
 
-def _safe_relative(value, label):
+def _safe_relative(value: object, label: str) -> PurePosixPath:
     if isinstance(value, PurePosixPath):
         value = value.as_posix()
     if not isinstance(value, str) or not value.strip() or "\\" in value:
@@ -352,13 +364,13 @@ def _safe_relative(value, label):
     return relative
 
 
-def _text(value, label):
+def _text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise FailureReferenceBindingError(f"{label} must be non-empty text")
     return value
 
 
-def _sha256(value, label):
+def _sha256(value: object, label: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise FailureReferenceBindingError(f"{label} must be a lowercase SHA-256")
     return value

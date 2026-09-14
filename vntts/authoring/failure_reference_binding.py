@@ -6,6 +6,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NotRequired, TypeAlias, TypedDict
 
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -35,8 +36,191 @@ _AUDIT_VERSION = 2
 _DECISIONS_VERSION = 4
 _LEGACY_DECISIONS_VERSIONS = frozenset({2, 3})
 
+JsonDocument: TypeAlias = dict[str, object]
 
-def publish_failure_reference_binding(audit_directory, output_directory):
+
+class _AuditCase(TypedDict):
+    queue_id: str
+    failure_sha256: str
+
+
+class _AuditCandidate(TypedDict):
+    candidate_id: str
+    audio: str
+    sha256: str
+
+
+class _AuditGroup(TypedDict):
+    group_id: str
+    synthesis_voice_character: str
+    candidates: list[_AuditCandidate]
+    cases: list[_AuditCase]
+
+
+class _PrivateCandidate(TypedDict):
+    candidate_id: str
+    source_reference: str
+    source_sha256: str
+
+
+class _PrivateGroup(TypedDict):
+    group_id: str
+    control_character: str
+    speaker: str
+    candidates: list[_PrivateCandidate]
+
+
+class _Decision(TypedDict):
+    group_id: str
+    decision: str
+    selected_reference_sha256: str | None
+    case_queue_ids: list[str]
+    selection_authority: NotRequired[object]
+
+
+class _AuditSnapshot(TypedDict):
+    audit_id: str
+    workspace_id: str
+    workspace_sha256: str
+    queue_sha256: str
+    state_sha256: str
+    voice_manifest_sha256: str
+    groups: list[_AuditGroup]
+
+
+class _KeySnapshot(TypedDict):
+    groups: list[_PrivateGroup]
+
+
+class _DecisionSnapshot(TypedDict):
+    decision_set_id: str
+    decisions: list[_Decision]
+
+
+class _AuditSnapshots(TypedDict):
+    audit: _AuditSnapshot
+    key: _KeySnapshot
+    decisions: _DecisionSnapshot
+    payloads: dict[str, bytes]
+    audit_sha256: str
+    key_sha256: str
+    decisions_sha256: str
+
+
+def _document(value: object, message: str) -> JsonDocument:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise FailureReferenceBindingError(message)
+    return {key: item for key, item in value.items()}
+
+
+def _documents(value: object, message: str) -> list[JsonDocument]:
+    if not isinstance(value, list):
+        raise FailureReferenceBindingError(message)
+    return [_document(item, message) for item in value]
+
+
+def _text_list(value: object, message: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise FailureReferenceBindingError(message)
+    return list(value)
+
+
+def _audit_groups(value: object) -> list[_AuditGroup]:
+    groups: list[_AuditGroup] = []
+    for raw_group in _documents(value, "Reference audit inventory is malformed"):
+        cases = [
+            _AuditCase(
+                queue_id=_text(case.get("queue_id"), "Reference binding queue ID"),
+                failure_sha256=_sha256(
+                    case.get("failure_sha256"), "Reference failure SHA-256"
+                ),
+            )
+            for case in _documents(
+                raw_group.get("cases"), "Reference audit inventory is malformed"
+            )
+        ]
+        candidates = [
+            _AuditCandidate(
+                candidate_id=_text(
+                    candidate.get("candidate_id"), "Reference candidate ID"
+                ),
+                audio=_text(candidate.get("audio"), "Reference candidate audio"),
+                sha256=_sha256(candidate.get("sha256"), "Reference candidate SHA-256"),
+            )
+            for candidate in _documents(
+                raw_group.get("candidates"), "Reference audit inventory is malformed"
+            )
+        ]
+        groups.append(
+            _AuditGroup(
+                group_id=_text(raw_group.get("group_id"), "Reference audit group ID"),
+                synthesis_voice_character=_text(
+                    raw_group.get("synthesis_voice_character"),
+                    "Audited synthesis voice",
+                ),
+                candidates=candidates,
+                cases=cases,
+            )
+        )
+    return groups
+
+
+def _private_groups(value: object) -> list[_PrivateGroup]:
+    groups: list[_PrivateGroup] = []
+    for raw_group in _documents(value, "Reference audit inventory is malformed"):
+        candidates = [
+            _PrivateCandidate(
+                candidate_id=_text(
+                    candidate.get("candidate_id"), "Reference candidate ID"
+                ),
+                source_reference=_text(
+                    candidate.get("source_reference"), "Audited source reference"
+                ),
+                source_sha256=_sha256(
+                    candidate.get("source_sha256"), "Reference candidate SHA-256"
+                ),
+            )
+            for candidate in _documents(
+                raw_group.get("candidates"), "Reference audit inventory is malformed"
+            )
+        ]
+        groups.append(
+            _PrivateGroup(
+                group_id=_text(raw_group.get("group_id"), "Reference audit group ID"),
+                control_character=_text(
+                    raw_group.get("control_character"), "Audited control character"
+                ),
+                speaker=_text(raw_group.get("speaker"), "Audited speaker"),
+                candidates=candidates,
+            )
+        )
+    return groups
+
+
+def _decisions(value: object) -> list[_Decision]:
+    decisions: list[_Decision] = []
+    for raw_decision in _documents(value, "Reference audit inventory is malformed"):
+        selected = raw_decision.get("selected_reference_sha256")
+        if selected is not None:
+            selected = _sha256(selected, "Reference selected SHA-256")
+        decision = _Decision(
+            group_id=_text(raw_decision.get("group_id"), "Reference audit group ID"),
+            decision=_text(raw_decision.get("decision"), "Reference audit decision"),
+            selected_reference_sha256=selected,
+            case_queue_ids=_text_list(
+                raw_decision.get("case_queue_ids"),
+                "Reference audit inventory is malformed",
+            ),
+        )
+        if "selection_authority" in raw_decision:
+            decision["selection_authority"] = raw_decision["selection_authority"]
+        decisions.append(decision)
+    return decisions
+
+
+def publish_failure_reference_binding(
+    audit_directory: str | Path, output_directory: str | Path
+) -> FailureReferenceBinding:
     """Publish one self-contained, no-replace overlay from terminal decisions."""
     audit_argument = Path(audit_directory).expanduser()
     output_argument = Path(output_directory).expanduser()
@@ -75,9 +259,9 @@ def publish_failure_reference_binding(audit_directory, output_directory):
             "Reference binding requires one terminal decision for every audit group"
         )
 
-    stable_groups = []
-    overrides = {}
-    sources = []
+    stable_groups: list[JsonDocument] = []
+    overrides: dict[str, str] = {}
+    sources: list[tuple[Path, str, Path, bytes]] = []
     for group_id in sorted(groups):
         group = groups[group_id]
         private = private_groups[group_id]
@@ -133,7 +317,7 @@ def publish_failure_reference_binding(audit_directory, output_directory):
             raise FailureReferenceBindingError(
                 f"Reference binding case authority changed: {group_id}"
             )
-        stable_group = {
+        stable_group: JsonDocument = {
             "group_id": group_id,
             "synthesis_voice_character": _text(
                 group.get("synthesis_voice_character"),
@@ -248,7 +432,7 @@ def publish_failure_reference_binding(audit_directory, output_directory):
     )
 
 
-def _load_audit_snapshots(directory):
+def _load_audit_snapshots(directory: Path) -> _AuditSnapshots:
     paths = {
         "audit": directory / "audit.json",
         "key": directory / ".blind-key.json",
@@ -264,8 +448,11 @@ def _load_audit_snapshots(directory):
         )
     try:
         payloads = {name: path.read_bytes() for name, path in paths.items()}
-        documents = {
-            name: json.loads(payload.decode("utf-8"))
+        documents: dict[str, JsonDocument] = {
+            name: _document(
+                json.loads(payload.decode("utf-8")),
+                "Reference audit inventory is malformed",
+            )
             for name, payload in payloads.items()
         }
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -300,13 +487,13 @@ def _load_audit_snapshots(directory):
         {name: value for name, value in decisions.items() if name != "decision_set_id"}
     ):
         raise FailureReferenceBindingError("Reference decision identity changed")
-    groups = audit.get("groups")
-    private_groups = key.get("groups")
-    decision_values = decisions.get("decisions")
-    if not all(
-        isinstance(value, list) for value in (groups, private_groups, decision_values)
-    ):
-        raise FailureReferenceBindingError("Reference audit inventory is malformed")
+    groups = _documents(audit.get("groups"), "Reference audit inventory is malformed")
+    private_groups = _documents(
+        key.get("groups"), "Reference audit inventory is malformed"
+    )
+    decision_values = _documents(
+        decisions.get("decisions"), "Reference audit inventory is malformed"
+    )
     if audit.get("group_count") != len(groups) or canonical_document_sha256(
         private_groups
     ) != audit.get("blind_key_groups_sha256"):
@@ -336,13 +523,42 @@ def _load_audit_snapshots(directory):
     ):
         _sha256(audit.get(field), f"Reference audit {field}")
     _text(audit.get("workspace_id"), "Reference audit workspace ID")
-    result = {**documents, "payloads": payloads}
-    for name, payload in payloads.items():
-        result[f"{name}_sha256"] = hashlib.sha256(payload).hexdigest()
-    return result
+    return _AuditSnapshots(
+        audit=_AuditSnapshot(
+            audit_id=audit_id,
+            workspace_id=_text(
+                audit.get("workspace_id"), "Reference audit workspace ID"
+            ),
+            workspace_sha256=_sha256(
+                audit.get("workspace_sha256"), "Reference audit workspace_sha256"
+            ),
+            queue_sha256=_sha256(
+                audit.get("queue_sha256"), "Reference audit queue_sha256"
+            ),
+            state_sha256=_sha256(
+                audit.get("state_sha256"), "Reference audit state_sha256"
+            ),
+            voice_manifest_sha256=_sha256(
+                audit.get("voice_manifest_sha256"),
+                "Reference audit voice_manifest_sha256",
+            ),
+            groups=_audit_groups(groups),
+        ),
+        key=_KeySnapshot(groups=_private_groups(private_groups)),
+        decisions=_DecisionSnapshot(
+            decision_set_id=decision_set_id,
+            decisions=_decisions(decision_values),
+        ),
+        payloads=payloads,
+        audit_sha256=hashlib.sha256(payloads["audit"]).hexdigest(),
+        key_sha256=hashlib.sha256(payloads["key"]).hexdigest(),
+        decisions_sha256=hashlib.sha256(payloads["decisions"]).hexdigest(),
+    )
 
 
-def _assert_audit_snapshots_unchanged(directory, snapshots):
+def _assert_audit_snapshots_unchanged(
+    directory: Path, snapshots: _AuditSnapshots
+) -> None:
     for name, filename in (
         ("audit", "audit.json"),
         ("key", ".blind-key.json"),
