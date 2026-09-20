@@ -65,20 +65,29 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
-- [ ] **Replace layered voice precedence with one authoritative binding per voice
-      role:** keep discovered references as an inspectable asset inventory, but make
-      exactly one binding (`voice`, `narrator`, or explicit live fallback) authoritative
-      for each stable character/variant role. Automatic matching and a player choice
-      write the same binding field; record `automatic`/`manual`, evidence, algorithm
-      version and timestamp only as provenance. Manual selection replaces the binding
-      atomically, while rediscovery may add alternatives but must never create a second
-      runtime source or silently override an existing choice. Planning, preview,
-      generation, resume and live reading must all resolve through this binding without
-      merging `settings.voice_manifest`, pack voices and candidate manifests by
-      priority. Materialize one checksum-bound voice snapshot for generation and copy
-      it into the published pack. Gate: for every voice role, diagnostics identify one
-      effective source and its provenance; changing the choice updates all consumers,
-      and deleting candidate caches cannot change a saved binding.
+- [ ] **Сделать одну библиотеку голосов и один выбранный голос для каждой роли:**
+      1. Хранить все найденные аудиореференсы в одной библиотеке приложения и
+         дедуплицировать их по SHA-256. Альтернативы остаются доступными для
+         прослушивания, но не участвуют в озвучивании сами по себе.
+      2. Для каждого персонажа или его отдельного возрастного варианта хранить ровно
+         одно текущее решение: конкретный голос, narrator или live TTS fallback.
+      3. Автоматический и ручной выбор записывают одно и то же решение. Способ выбора,
+         доказательства и версия алгоритма являются только поясняющими метаданными.
+         Новый поиск голосов не меняет уже принятое решение без явного действия
+         пользователя.
+      4. Preview, подготовка истории и live reading получают голос только из этой
+         записи. Настройки приложения и game pack больше не конкурируют с ней и не
+         объединяются по приоритетам.
+      5. При запуске генерации копировать выбранные голоса в неизменяемый snapshot
+         конкретной задачи, чтобы pause/resume всегда продолжали с теми же файлами.
+         Готовый game pack получает переносимую копию этого snapshot.
+      6. После перехода удалить промежуточные `game-narrators/<hash>` manifests,
+         устаревшие candidate caches и код выбора «победителя» между несколькими
+         manifests. Сохранять только данные, на которые ссылаются библиотека,
+         незавершённые задачи или опубликованные packs.
+      Gate: для каждой роли диагностика показывает один источник голоса и способ его
+      выбора; смена голоса одновременно видна в preview, генерации и live reading;
+      удаление невыбранных альтернатив не меняет сохранённый голос.
 - [ ] **Validate Mrs. Owen on fresh Windows state:** multiple portrait expressions
       now count as one safe bank owner. The exact Windows settings shape
       (`voice_manifest` plus `Narrator: character:narrator`) now invokes candidate
