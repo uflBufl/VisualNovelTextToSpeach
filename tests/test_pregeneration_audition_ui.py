@@ -46,7 +46,11 @@ def with_second_candidate(plan, group):
         source_speaker="centurion-v1",
         reference_sha256s=(sha256_file(reference),),
     )
-    group = replace(group, candidates=(*group.candidates, second))
+    group = replace(
+        group,
+        candidates=(*group.candidates, second),
+        candidate_inventory=(*group.candidate_inventory, second),
+    )
     plan = replace(
         plan,
         groups=tuple(
@@ -124,6 +128,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 source_speaker=candidate.source_speaker,
                 reference_sha256s=candidate.reference_sha256s,
                 resolution="known-character-voice",
+                candidates=(candidate,),
             )
             plan = replace(
                 plan,
@@ -157,7 +162,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertIn(
                 candidate.reference_sha256s[0], panel.reference_details.text()
             )
-            alternative = unresolved.candidates[1]
+            alternative = unresolved.candidate_inventory[1]
             panel.neither_button.click()
             self.assertIn(alternative.source_character, panel.a_title.text())
             panel.a_original.click()

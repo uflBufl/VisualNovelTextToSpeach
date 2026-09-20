@@ -426,10 +426,14 @@ def _validate_request(plan, group, candidate_source_id):
         raise VoiceAuditionError("Voice audition inputs are invalid")
     if group not in plan.groups:
         raise VoiceAuditionError("Voice audition group is not part of this plan")
+    candidates_by_source = {
+        candidate.source_id: candidate
+        for candidate in (*group.candidates, *group.candidate_inventory)
+    }
     candidates = tuple(
         candidate
-        for candidate in group.candidates
-        if candidate.source_id == candidate_source_id
+        for source_id, candidate in candidates_by_source.items()
+        if source_id == candidate_source_id
     )
     if (
         not candidates

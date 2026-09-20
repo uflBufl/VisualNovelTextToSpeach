@@ -452,8 +452,11 @@ class VoiceAuditionPanel(QGroupBox):
         self._alternate_active = False
         self.reference_details_toggle.setChecked(False)
         group = self.current_group()
+        candidates = (
+            group.candidate_inventory if self._inspection_mode else group.candidates
+        )
         entries: list[CandidateEntry] = [
-            (candidate, candidate.source_id, False) for candidate in group.candidates
+            (candidate, candidate.source_id, False) for candidate in candidates
         ]
         if group.narrator_candidate is not None:
             entries.append((group.narrator_candidate, default_voice_choice_id, True))

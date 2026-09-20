@@ -757,6 +757,33 @@ class VoicePlanStoreTest(unittest.TestCase):
                 ],
             )
 
+    def test_saved_player_voice_keeps_other_references_available_for_inspection(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices",
+                job.story_index_sha256,
+            )
+            saved_source = "character:playercandidaterhiannon1"
+
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(
+                    pocket_gated_model_accepted=True,
+                    character_voice_defaults={"Rhiannon": saved_source},
+                ),
+                manifest_path=manifest,
+            )
+
+            rhiannon = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            self.assertEqual(rhiannon.source_id, saved_source)
+            self.assertEqual(rhiannon.resolution, "saved-voice-assignment")
+            self.assertEqual(len(rhiannon.candidates), 1)
+            self.assertEqual(len(rhiannon.candidate_inventory), 2)
+
     def test_player_import_candidates_reject_another_story_index(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

@@ -242,6 +242,7 @@ class VoiceDecisionStore:
             allowed_sources = {
                 default_voice_choice_id,
                 *(candidate.source_id for candidate in group.candidates),
+                *(candidate.source_id for candidate in group.candidate_inventory),
             }
             if group.narrator_candidate is not None:
                 allowed_sources.add(group.narrator_candidate.source_id)
@@ -531,6 +532,10 @@ class VoicePlanStore:
                     _candidate_decision_identity(candidate)
                     for candidate in eligible_candidates
                 ],
+                "candidate_inventory": [
+                    _candidate_decision_identity(candidate)
+                    for candidate in candidate_inventory
+                ],
                 "narrator": (
                     None
                     if narrator_candidate is None
@@ -742,24 +747,6 @@ def _candidate_inventory(
     candidate_variants,
 ):
     assignment = _effective_assignment_source(settings, character)
-    if assignment and assignment != default_voice_choice_id:
-        voice = _candidate_from_source(assignment, registry)
-        return (
-            (
-                _ranked_candidate(
-                    assignment,
-                    voice,
-                    120,
-                    "Your saved voice assignment",
-                ),
-            )
-            if voice is not None
-            else ()
-        )
-
-    if _public_pocket_mode(settings):
-        return ()
-
     candidates = {}
     candidate_ranks = {}
 
@@ -798,6 +785,12 @@ def _candidate_inventory(
         ):
             candidates[source_id] = candidate
             candidate_ranks[source_id] = rank
+
+    if assignment and assignment != default_voice_choice_id:
+        add(assignment, 120, "Your saved voice assignment")
+
+    if _public_pocket_mode(settings):
+        return tuple(candidates.values())
 
     if bound_source:
         add(bound_source, 120, "Exact voice binding for this dialogue")
