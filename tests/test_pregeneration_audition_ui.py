@@ -881,8 +881,11 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.addCleanup(dialog.deleteLater)
             dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
             dialog._voice_plan = plan
+            dialog._prepared_voice_manifest = root / "prepared-voices.json"
+            dialog._prepared_voice_job = "prepared-job"
             dialog._generation_input = object()
             dialog._show_voice_confirmation(plan)
+            dialog.content_scroll.show()
 
             dialog.back_to_story_selection.click()
 
@@ -890,10 +893,13 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertFalse(dialog.selection_panel.isHidden())
             self.assertTrue(dialog.voice_confirmation.isHidden())
             self.assertTrue(dialog.voice_panel.isHidden())
+            self.assertTrue(dialog.content_scroll.isHidden())
             self.assertEqual(dialog.step.text(), "Step 1 of 4 - Choose stories")
             self.assertEqual(dialog.cancel_button.text(), "Cancel")
             self.assertEqual(dialog.stories.item(0).checkState(), Qt.CheckState.Checked)
             self.assertIsNone(dialog.voice_plan())
+            self.assertIsNone(dialog._prepared_voice_manifest)
+            self.assertIsNone(dialog._prepared_voice_job)
             self.assertIsNone(dialog.generation_input())
 
     def test_inspected_automatic_voice_can_be_saved_and_replanned(self):

@@ -811,11 +811,14 @@ class OfflineAudioPreparationDialog(QDialog):
             self._narrator_player.stop()
         self._awaiting_voice_confirmation = False
         self._voice_plan = None
+        self._prepared_voice_manifest = None
+        self._prepared_voice_job = None
         self._generation_input = None
         self._changes_rows = ()
         self.voice_panel.hide()
         self.voice_confirmation.hide()
         self.progress_panel.hide()
+        self.content_scroll.hide()
         self.selection_panel.show()
         self.step.setText("Step 1 of 4 - Choose stories")
         self.continue_button.setText("Continue")
