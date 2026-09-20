@@ -65,6 +65,13 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
+- [ ] **Investigate the first Windows preview failure:** preserve the exact preview
+      stage and exception in the support archive and distinguish reference
+      preflight, cached-preview validation, native model startup, generation limit
+      and generated-audio quality. The current old archive proves a prior
+      `generation limit` failure, but not the newly reported run where GPU memory
+      stayed flat. Gate: one fresh failure identifies whether OpenMOSS was never
+      started or started and stopped, without inferring it from Task Manager.
 - [ ] **Needs player validation:** prepare one story with an automatically matched
       character, one ambiguous character and one narrator fallback. Confirm that
       generation can start without reviewing them; the Voice plan lists all roles

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from traceback import format_exception
 from typing import Protocol, TypeAlias
 
 from PySide6.QtCore import Qt, QThreadPool, QTimer, QUrl, Signal
@@ -576,6 +577,16 @@ class VoiceAuditionPanel(QGroupBox):
             return
         candidate, choice, _narrator = self._current_entry()
         if error is not None:
+            from vntts.support import record_game_import
+
+            record_game_import(
+                "voice-preview",
+                outcome="failed",
+                command_kind="preview",
+                exception_type=type(error).__name__,
+                reason=str(error),
+                traceback_tail="".join(format_exception(error))[-12000:],
+            )
             self._failed_candidate_source_ids.add(candidate.source_id)
             self.a_play.setEnabled(True)
             self.a_original.setEnabled(bool(candidate.reference_sha256s))
@@ -750,7 +761,8 @@ class VoiceAuditionPanel(QGroupBox):
         self.runtime_timer.stop()
         self._refresh_runtime()
         self.setVisible(False)
-        self.preview_service.close()
+        if self._owns_preview_service:
+            self.preview_service.close()
         self.cancelled.emit()
 
     def _ensure_player(self) -> _PreviewPlayer:

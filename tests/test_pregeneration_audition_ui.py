@@ -3,7 +3,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -578,9 +578,18 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.deleteLater)
             self.addCleanup(panel.shutdown)
             panel.start(plan)
-            panel.a_play.click()
-            pool.tasks.pop().run()
-            self.application.processEvents()
+            with patch("vntts.support.record_game_import") as support_event:
+                panel.a_play.click()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+            support_event.assert_called_once_with(
+                "voice-preview",
+                outcome="failed",
+                command_kind="preview",
+                exception_type="RuntimeError",
+                reason="preview failed",
+                traceback_tail=ANY,
+            )
             self.assertFalse(panel.a_use.isEnabled())
             self.assertIn("failed", panel.status.text())
             decisions.remember_many.assert_not_called()
@@ -817,6 +826,14 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertEqual(cancelled.call_count, 1)
+            preview_service.close.assert_not_called()
+            panel.start(plan)
+            panel.a_play.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertIn("Could not prepare", panel.status.text())
+            self.assertNotIn("service is closed", panel.status.text())
+            panel.shutdown()
             preview_service.close.assert_called_once_with()
             panel.deleteLater()
 
