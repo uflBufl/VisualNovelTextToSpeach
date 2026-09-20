@@ -711,8 +711,8 @@ class AutoAdvanceFakeFrameEndToEndTest(unittest.TestCase):
             )
             self.assertEqual(harness.advance_calls, [1])
 
-            harness.push("Hotelier", "The next line.", background="next-a")
-            harness.push("Hotelier", "The next line.", background="next-b")
+            harness.push("Rhiannon", "I, erhm ... again.", background="next-a")
+            harness.push("Rhiannon", "I, erhm ... again.", background="next-b")
 
             self.assertEqual(harness.reader.active_generation, 2)
             self.assertIsNone(harness.reader.pending_auto_advance_generation)
@@ -894,6 +894,22 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         )
         self.assertEqual(tracker.generation, 1)
 
+    def test_canonical_line_ignores_later_ordinary_ocr_suffix(self):
+        tracker = IncrementalDialogTracker()
+        canonical = tracker.observe_canonical("Ada", "Canonical line.", "line-1")
+
+        self.assertEqual(tracker.observe("Ada", "Canonical line. OCR junk"), [])
+        self.assertEqual(tracker.observe("Ada", "Canonical line. OCR junk"), [])
+        self.assertEqual(tracker.flush(), [])
+        self.assertEqual(tracker.generation, 1)
+        self.assertEqual([chunk.text for chunk in canonical], ["Canonical line."])
+
+        self.assertEqual(tracker.observe("Bea", "Fallback reply."), [])
+        self.assertEqual(
+            tracker.observe("Bea", "Fallback reply."),
+            [SpeechChunk(2, "Bea", "Fallback reply.")],
+        )
+
     def create_tracker(self, **options):
         self.clock = FakeClock()
         return IncrementalDialogTracker(clock=self.clock, **options)
@@ -979,6 +995,8 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
 
         self.assertEqual(chunks, [SpeechChunk(1, "Rhiannon", full_text)])
         self.clock.advance(0.8)
+        self.assertEqual(tracker.observe("Rhiannon", partial), [])
+        self.assertTrue(tracker.is_idle_complete())
         self.assertEqual(tracker.observe("Rhiannon", full_text), [])
 
     def test_punctuation_only_ellipsis_completes_without_speech(self):
@@ -1081,12 +1099,61 @@ class IncrementalDialogTrackerTest(unittest.TestCase):
         tracker.observe("Alice", "The first dialogue is complete.")
         tracker.observe("Alice", "The first dialogue is complete.")
         first_generation = tracker.generation
+        tracker.expect_new_dialog()
         tracker.observe("Alice", "Something entirely different appears.")
 
         self.assertEqual(tracker.generation, first_generation)
         tracker.observe("Alice", "Something entirely different appears.")
 
         self.assertGreater(tracker.generation, first_generation)
+
+    def test_committed_text_is_never_sliced_from_a_conflicting_ocr_string(self):
+        tracker = self.create_tracker()
+
+        tracker.observe("Ada", "Yes, okay.")
+        self.assertEqual(
+            tracker.observe("Ada", "Yes, okay."),
+            [SpeechChunk(1, "Ada", "Yes, okay.")],
+        )
+
+        self.assertEqual(tracker.observe("Ada", "Yes, please."), [])
+        self.assertEqual(tracker.observe("Ada", "Yes, please."), [])
+        self.assertEqual(tracker.flush(), [])
+        self.assertEqual(tracker.generation, 1)
+        self.assertFalse(tracker.is_idle_complete())
+
+    def test_committed_text_correction_does_not_reopen_the_dialogue(self):
+        tracker = self.create_tracker()
+        tracker.observe("Ada", "Hello worldd.")
+        tracker.observe("Ada", "Hello worldd.")
+
+        self.assertEqual(tracker.observe("Ada", "Hello world."), [])
+        self.assertEqual(tracker.observe("Ada", "Hello world."), [])
+        self.assertEqual(tracker.flush(), [])
+        self.assertEqual(tracker.generation, 1)
+
+    def test_expected_transition_accepts_similar_same_speaker_dialogue(self):
+        tracker = self.create_tracker()
+        tracker.observe("Ada", "Yes, okay.")
+        tracker.observe("Ada", "Yes, okay.")
+
+        tracker.expect_new_dialog()
+        self.assertEqual(tracker.observe("Ada", "Yes, please."), [])
+        self.assertEqual(
+            tracker.observe("Ada", "Yes, please."),
+            [SpeechChunk(2, "Ada", "Yes, please.")],
+        )
+
+    def test_shorter_reply_from_new_speaker_is_not_treated_as_ocr_noise(self):
+        tracker = self.create_tracker()
+        tracker.observe("Ada", "Please come inside.")
+        tracker.observe("Ada", "Please come inside.")
+
+        self.assertEqual(tracker.observe("Bea", "Come inside."), [])
+        self.assertEqual(
+            tracker.observe("Bea", "Come inside."),
+            [SpeechChunk(2, "Bea", "Come inside.")],
+        )
 
     def test_empty_dialog_invalidates_previous_generation(self):
         tracker = self.create_tracker()
@@ -1299,7 +1366,9 @@ class LiveDialogReaderTest(unittest.TestCase):
         pending.add_done_callback(reader._speech_finished)
         completed = Event()
 
-        worker = Thread(target=lambda: (reader.wait(timeout_seconds=1), completed.set()))
+        worker = Thread(
+            target=lambda: (reader.wait(timeout_seconds=1), completed.set())
+        )
         worker.start()
         self.assertFalse(completed.wait(0.02))
         pending.set_result(None)
@@ -1978,6 +2047,16 @@ class LiveDialogReaderTest(unittest.TestCase):
 
         interrupt_speech.assert_not_called()
         self.assertTrue(reader.wait_until_playable(old_chunk))
+
+    def test_equal_text_does_not_make_a_different_chunk_current(self):
+        reader = self.create_reader(interrupt_on_dialog_replacement=False)
+        current = SpeechChunk(1, "Alice", "Again.", ordinal=1)
+        repeated = SpeechChunk(1, "Alice", "Again.", ordinal=2)
+        reader.current_chunk = current
+        reader.active_generation = 2
+
+        self.assertTrue(reader.wait_until_playable(current))
+        self.assertFalse(reader.wait_until_playable(repeated))
 
     def test_exact_route_seals_generation_against_late_ocr_suffix(self):
         speech_executor = Mock()

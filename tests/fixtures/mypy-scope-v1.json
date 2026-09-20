@@ -107,6 +107,7 @@
     "vntts/hotkey_ui.py",
     "vntts/hotkeys.py",
     "vntts/live.py",
+    "vntts/live_tracking.py",
     "vntts/live_replay.py",
     "vntts/live_replay_capture.py",
     "vntts/live_replay_capture_recover.py",
