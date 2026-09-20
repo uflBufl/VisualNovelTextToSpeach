@@ -2606,6 +2606,16 @@ class OfflineAudioPreparationDialog(QDialog):
 
             configured = load_voice_manifest(self.settings.voice_manifest)[0]
             narrator = configured.get("vntts.game_narrator")
+            if narrator is None:
+                source_id = pregeneration_narrator_source_id(self.settings)
+                selected = CharacterVoiceRegistry.from_file(
+                    self.settings.voice_manifest
+                ).resolve_source(source_id)
+                if selected is not None and selected.references:
+                    narrator = {
+                        "source_id": source_id,
+                        "character": selected.source_character or selected.character,
+                    }
             if narrator is not None:
                 candidates = self.importer.prepare_voice_candidates(
                     job, self.voice_cancel_event, progress=self.decoderProgress.emit

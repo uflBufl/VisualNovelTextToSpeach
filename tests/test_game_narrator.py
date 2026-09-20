@@ -1574,6 +1574,66 @@ class GameNarratorTest(unittest.TestCase):
             self.assertNotEqual(plan.voice_manifest, str(candidates))
             dialog.reject()
 
+    def test_preparation_extracts_story_voices_with_plain_narrator_assignment(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_content(root / "content"))
+            manifest = write_manifest(root / "configured", rhiannon=clean_wav_bytes())
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            narrator_reference = manifest.parent / "references" / "narrator.wav"
+            narrator_reference.write_bytes(clean_wav_bytes(amplitude=0.2))
+            document["voices"].append(
+                {
+                    "character": "Narrator",
+                    "speaker": "configured-narrator",
+                    "aliases": [],
+                    "references": ["references/narrator.wav"],
+                }
+            )
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            candidates = write_player_candidate_manifest(
+                root / "story-candidates", content.story_index_sha256
+            )
+            importer = Mock()
+            importer.prepare_voice_candidates.return_value = candidates
+            importer.availability.return_value = Mock(
+                available=True, message="Available"
+            )
+            settings = AppSettings(
+                voice_manifest=str(manifest),
+                voice_assignments={"Narrator": "character:narrator"},
+                character_voice_defaults={"Rhiannon": "character:rhiannon"},
+                pocket_gated_model_accepted=True,
+            )
+            jobs = PregenerationJobStore(root / "jobs")
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                importer=importer,
+                job_store=jobs,
+                discovery=lambda: ContentDiscovery((content,)),
+                thread_pool=ManualThreadPool(),
+            )
+            job = jobs.create_or_resume(content, ["story"])
+
+            with patch(
+                "vntts.game_narrator.get_local_data_directory",
+                return_value=root / "local",
+            ):
+                plan = dialog._create_voice_plan(job)
+
+            importer.prepare_voice_candidates.assert_called_once()
+            group = next(group for group in plan.groups if group.character == "Rhiannon")
+            self.assertEqual(len(group.candidate_inventory), 3)
+            self.assertEqual(
+                initialize_voice_registry(
+                    settings.updated(voice_manifest=plan.voice_manifest)
+                )
+                .resolve_source("character:narrator")
+                .speaker,
+                "configured-narrator",
+            )
+            dialog.reject()
+
     def test_preview_plan_binds_exact_reference_and_engine(self):
         with TemporaryDirectory() as directory:
             manifest = write_manifest(Path(directory))
