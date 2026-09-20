@@ -1011,8 +1011,12 @@ class LiveDialogReader:
                         expect_new_dialog = getattr(tracker, "expect_new_dialog", None)
                         if callable(expect_new_dialog) and awaiting_post_advance_dialog:
                             expect_new_dialog()
-                        chunks = tracker.observe(character, text)
+                        tracker_character = (
+                            "Narrator" if character is None else character
+                        )
+                        chunks = tracker.observe(tracker_character, text)
                     else:
+                        assert character is not None
                         chunks = tracker.observe_canonical(character, text, line_id)
                 self._set_generation(tracker.generation)
                 self._schedule(chunks)

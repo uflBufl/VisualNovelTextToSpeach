@@ -22,10 +22,9 @@ class SpeechChunk:
     def chunk_id(self) -> str | None:
         if self.ordinal is None:
             return None
-        character = " ".join((self.character or "Narrator").casefold().split())
-        text = " ".join((self.text or "").casefold().split())
         payload = (
-            f"{self.generation}\0{self.ordinal}\0{character}\0{text}\0"
+            f"{self.generation}\0{self.ordinal}\0{self.character.casefold()}\0"
+            f"{self.text.casefold()}\0"
             f"{self.line_id or ''}"
         )
         return sha256(payload.encode("utf-8")).hexdigest()[:16]
@@ -48,18 +47,11 @@ class IncrementalDialogTracker:
         incomplete_dialogue_probe: TrackerProbe | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
-        if stability_frames < 2:
-            raise ValueError("stability_frames must be at least 2")
-        if idle_flush_seconds <= 0:
-            raise ValueError("idle_flush_seconds must be positive")
-        if min_chunk_characters <= 0:
-            raise ValueError("min_chunk_characters must be positive")
-
         self.stability_frames = stability_frames
         self.idle_flush_seconds = idle_flush_seconds
         self.min_chunk_characters = min_chunk_characters
         self.complete_sentences_only = complete_sentences_only
-        self.complete_dialogue_only = bool(complete_dialogue_only)
+        self.complete_dialogue_only = complete_dialogue_only
         self.early_dialogue_resolver = early_dialogue_resolver
         self.incomplete_dialogue_probe = incomplete_dialogue_probe
         self.clock = clock
@@ -69,7 +61,7 @@ class IncrementalDialogTracker:
         self.committed_text = ""
         self.conflicting_observation = False
         self.transition_expected = False
-        self.last_change_at: float | None = None
+        self.last_change_at = 0.0
         self.stable_text = ""
         self.last_stable_change_at: float | None = None
         self.history: deque[str] = deque(maxlen=stability_frames)
@@ -87,10 +79,8 @@ class IncrementalDialogTracker:
         if self.latest_text:
             self.transition_expected = True
 
-    def observe(self, character: str | None, text: str | None) -> list[SpeechChunk]:
+    def observe(self, character: str, text: str) -> list[SpeechChunk]:
         now = self.clock()
-        character = (character or "Narrator").strip() or "Narrator"
-        text = self._normalize(text)
 
         if not text:
             if self.latest_text:
@@ -121,9 +111,7 @@ class IncrementalDialogTracker:
         if stable_text != self.stable_text:
             self.stable_text = stable_text
             self.last_stable_change_at = now
-        last_change_at = self.last_change_at
-        assert last_change_at is not None
-        idle = now - last_change_at >= self.idle_flush_seconds
+        idle = now - self.last_change_at >= self.idle_flush_seconds
         if (
             self.complete_dialogue_only
             and not idle
@@ -165,52 +153,25 @@ class IncrementalDialogTracker:
         return False
 
     def observe_silent(self, event_id: str) -> bool:
-        event_id = str(event_id).strip()
-        if not event_id:
-            raise ValueError("silent event_id must be non-empty")
         if self.silent_event_id == event_id:
             return False
-        self.generation += 1
-        self.character = None
-        self.latest_text = ""
-        self.committed_text = ""
-        self.conflicting_observation = False
-        self.transition_expected = False
-        self.last_change_at = None
-        self.stable_text = ""
+        self._clear_dialog()
         self.last_stable_change_at = self.clock()
-        self.history.clear()
-        self.next_chunk_ordinal = 1
-        self._clear_pending_dialog()
         self.silent_event_id = event_id
-        self.canonical_line_id = None
         return True
 
     def observe_canonical(
-        self, character: str | None, text: str | None, line_id: str
+        self, character: str, text: str, line_id: str
     ) -> list[SpeechChunk]:
-        character = (character or "Narrator").strip() or "Narrator"
-        text = self._normalize(text)
-        line_id = str(line_id).strip()
-        if not text or not line_id:
-            raise ValueError("canonical dialogue requires text and line_id")
         if self.canonical_line_id == line_id:
             return []
         now = self.clock()
-        self.generation += 1
-        self.character = character
-        self.latest_text = text
+        self._start_dialog(character, text, now)
         self.committed_text = text
-        self.conflicting_observation = False
-        self.transition_expected = False
-        self.last_change_at = now
         self.stable_text = text
-        self.last_stable_change_at = now
         self.history.clear()
         self.history.extend([text] * self.stability_frames)
         self.next_chunk_ordinal = 2
-        self._clear_pending_dialog()
-        self.silent_event_id = None
         self.canonical_line_id = line_id
         return [
             SpeechChunk(
@@ -237,7 +198,7 @@ class IncrementalDialogTracker:
             or not self.latest_text
             or len(self.history) < self.stability_frames
             or self.last_stable_change_at is None
-            or not self.stable_text.strip()
+            or not self.stable_text
         ):
             return False
         stable_length = len(self.stable_text.rstrip())
@@ -348,7 +309,7 @@ class IncrementalDialogTracker:
         self.committed_text = ""
         self.conflicting_observation = False
         self.transition_expected = False
-        self.last_change_at = None
+        self.last_change_at = 0.0
         self.stable_text = ""
         self.last_stable_change_at = None
         self.history.clear()
@@ -440,7 +401,3 @@ class IncrementalDialogTracker:
             if next_position == len(text) or text[next_position].isspace():
                 boundary = next_position
         return boundary
-
-    @staticmethod
-    def _normalize(text: str | None) -> str:
-        return " ".join((text or "").split())
