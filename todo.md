@@ -65,6 +65,20 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
+- [ ] **Replace layered voice precedence with one authoritative binding per voice
+      role:** keep discovered references as an inspectable asset inventory, but make
+      exactly one binding (`voice`, `narrator`, or explicit live fallback) authoritative
+      for each stable character/variant role. Automatic matching and a player choice
+      write the same binding field; record `automatic`/`manual`, evidence, algorithm
+      version and timestamp only as provenance. Manual selection replaces the binding
+      atomically, while rediscovery may add alternatives but must never create a second
+      runtime source or silently override an existing choice. Planning, preview,
+      generation, resume and live reading must all resolve through this binding without
+      merging `settings.voice_manifest`, pack voices and candidate manifests by
+      priority. Materialize one checksum-bound voice snapshot for generation and copy
+      it into the published pack. Gate: for every voice role, diagnostics identify one
+      effective source and its provenance; changing the choice updates all consumers,
+      and deleting candidate caches cannot change a saved binding.
 - [ ] **Validate Mrs. Owen on fresh Windows state:** multiple portrait expressions
       now count as one safe bank owner. The exact Windows settings shape
       (`voice_manifest` plus `Narrator: character:narrator`) now invokes candidate
