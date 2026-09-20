@@ -54,6 +54,8 @@ NATIVE_GENERATION_CONTRACT = "nonzero-seed-stable-1.7-v2"
 _MANAGED_STARTUP_FAILURE_PREFIX = "VNTTS_STARTUP_FAILURE_JSON="
 _CREATE_SUSPENDED = 0x00000004
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_TH32CS_SNAPTHREAD = 0x00000004
+_THREAD_SUSPEND_RESUME = 0x0002
 
 
 class _CancellationSignal(Protocol):
@@ -101,6 +103,17 @@ class _WindowsKillOnCloseJob:
                 ("peak_job_memory", ctypes.c_size_t),
             ]
 
+        class ThreadEntry(ctypes.Structure):
+            _fields_ = [
+                ("size", wintypes.DWORD),
+                ("usage", wintypes.DWORD),
+                ("thread_id", wintypes.DWORD),
+                ("owner_process_id", wintypes.DWORD),
+                ("base_priority", wintypes.LONG),
+                ("priority_delta", wintypes.LONG),
+                ("flags", wintypes.DWORD),
+            ]
+
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
         kernel32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -116,6 +129,14 @@ class _WindowsKillOnCloseJob:
             wintypes.HANDLE,
         ]
         kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry)]
+        kernel32.Thread32First.restype = wintypes.BOOL
+        kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry)]
+        kernel32.Thread32Next.restype = wintypes.BOOL
+        kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenThread.restype = wintypes.HANDLE
         kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
         kernel32.ResumeThread.restype = wintypes.DWORD
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -136,8 +157,30 @@ class _WindowsKillOnCloseJob:
                 handle, wintypes.HANDLE(process._handle)
             ):
                 raise ctypes.WinError(ctypes.get_last_error())
-            if kernel32.ResumeThread(wintypes.HANDLE(process._thread)) == 0xFFFFFFFF:
+            snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+            if snapshot == wintypes.HANDLE(-1).value:
                 raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                entry = ThreadEntry(size=ctypes.sizeof(ThreadEntry))
+                found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+                while found and entry.owner_process_id != process.pid:
+                    found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+                if not found:
+                    raise RuntimeError(
+                        "Unable to find the suspended MOSS process thread"
+                    )
+                thread = kernel32.OpenThread(
+                    _THREAD_SUSPEND_RESUME, False, entry.thread_id
+                )
+                if not thread:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                try:
+                    if kernel32.ResumeThread(thread) == 0xFFFFFFFF:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                finally:
+                    kernel32.CloseHandle(thread)
+            finally:
+                kernel32.CloseHandle(snapshot)
         except BaseException:
             self.close()
             raise

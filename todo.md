@@ -65,13 +65,19 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
-- [ ] **Investigate the first Windows preview failure:** preserve the exact preview
-      stage and exception in the support archive and distinguish reference
-      preflight, cached-preview validation, native model startup, generation limit
-      and generated-audio quality. The current old archive proves a prior
-      `generation limit` failure, but not the newly reported run where GPU memory
-      stayed flat. Gate: one fresh failure identifies whether OpenMOSS was never
-      started or started and stopped, without inferring it from Task Manager.
+- [ ] **Fix Mrs. Owen inspection provenance:** compare the Windows voice-plan
+      inventory with the accepted game media `562400954`, distinguish multiple
+      references inside one candidate from distinct voice candidates, and make
+      `Inspect selected voice` expose every eligible production reference before
+      narrator fallback. Gate: the accepted Mrs. Owen reference can be played,
+      previewed and saved from the Stories flow on a fresh Windows state.
+- [ ] **Validate the Windows preview startup repair:** Python 3.14 `Popen` does not
+      retain a `_thread` handle, so the suspended owned MOSS process failed before
+      model loading. The launcher now finds and resumes the process thread through
+      documented Win32 Tool Help APIs after binding the process to its kill-on-close
+      Job Object. Gate: `Inspect selected voice` loads MOSS, produces a preview,
+      remains reusable for a second preview, and forced VNTTS termination leaves no
+      owned `moss-tts-server.exe` process.
 - [ ] **Needs player validation:** prepare one story with an automatically matched
       character, one ambiguous character and one narrator fallback. Confirm that
       generation can start without reviewing them; the Voice plan lists all roles
