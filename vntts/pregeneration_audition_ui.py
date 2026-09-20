@@ -379,12 +379,6 @@ class VoiceAuditionPanel(QGroupBox):
     def neither(self) -> None:
         if self.preview_runner.active or self.decision_runner.active:
             return
-        if self._inspection_mode:
-            if self.current_group().narrator_candidate is None:
-                self.status.setText("No narrator voice is available for this plan.")
-                return
-            self._record_choice(default_voice_choice_id)
-            return
         if len(self._candidate_entries) <= 1:
             self.status.setText(
                 "This is the only available sample. Retry it or choose automatically."
@@ -538,14 +532,8 @@ class VoiceAuditionPanel(QGroupBox):
         )
         self.a_use.setEnabled(preview is not None)
         self.a_box.setVisible(True)
-        self.neither_button.setText(
-            "Use narrator" if self._inspection_mode else "Try another voice"
-        )
-        self.neither_button.setEnabled(
-            self.current_group().narrator_candidate is not None
-            if self._inspection_mode
-            else len(self._candidate_entries) > 1
-        )
+        self.neither_button.setText("Try another voice/reference")
+        self.neither_button.setEnabled(len(self._candidate_entries) > 1)
         self.auto_button.setText(
             "Keep automatic choice" if self._inspection_mode else "Choose for me"
         )
@@ -713,14 +701,7 @@ class VoiceAuditionPanel(QGroupBox):
             and candidate is not None
             and bool(candidate.reference_sha256s)
         )
-        self.neither_button.setEnabled(
-            enabled
-            and (
-                self.current_group().narrator_candidate is not None
-                if self._inspection_mode
-                else len(self._candidate_entries) > 1
-            )
-        )
+        self.neither_button.setEnabled(enabled and len(self._candidate_entries) > 1)
         self.auto_button.setEnabled(enabled)
         group = self.current_group() if self._group_index < len(self._groups) else None
         self.another_sample_button.setEnabled(

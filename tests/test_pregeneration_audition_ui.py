@@ -114,6 +114,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, unresolved, _manifest = ambiguous_fixture(root)
+            plan, unresolved = with_second_candidate(plan, unresolved)
             candidate = unresolved.candidates[0]
             group = replace(
                 unresolved,
@@ -131,10 +132,15 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     for value in plan.groups
                 ),
             )
+            decisions = VoiceDecisionStore(root / "decisions.json")
+            preview_service = Mock()
+            preview_service.reference_audio.return_value = root / "reference.wav"
+            pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
-                VoiceDecisionStore(root / "decisions.json"),
-                preview_service=Mock(),
+                decisions,
+                preview_service=preview_service,
                 player=Mock(),
+                thread_pool=pool,
             )
 
             panel.start(plan, group_id=group.group_id)
@@ -142,7 +148,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertTrue(panel.choose_all_button.isHidden())
             self.assertEqual(panel.a_play.text(), "Test selected reference")
             self.assertEqual(panel.a_use.text(), "Use selected reference")
-            self.assertEqual(panel.neither_button.text(), "Use narrator")
+            self.assertEqual(panel.neither_button.text(), "Try another voice/reference")
             self.assertEqual(panel.auto_button.text(), "Keep automatic choice")
             self.assertIn(
                 "Production set: 1 reference, 1.2 s total", panel.a_reason.text()
@@ -150,6 +156,20 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.reference_details_toggle.setChecked(True)
             self.assertIn(
                 candidate.reference_sha256s[0], panel.reference_details.text()
+            )
+            alternative = unresolved.candidates[1]
+            panel.neither_button.click()
+            self.assertIn(alternative.source_character, panel.a_title.text())
+            panel.a_original.click()
+            preview_service.reference_audio.assert_called_once_with(
+                plan, group, alternative.source_id
+            )
+            panel.a_use.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            self.assertEqual(
+                decisions.choice_for(group.group_id, group.decision_context_sha256),
+                alternative.source_id,
             )
             panel.shutdown()
             panel.deleteLater()
