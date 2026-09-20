@@ -868,6 +868,34 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def test_voice_confirmation_can_return_to_story_selection(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            plan, _group, _manifest = ambiguous_fixture(root / "voice-fixture")
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog._voice_plan = plan
+            dialog._generation_input = object()
+            dialog._show_voice_confirmation(plan)
+
+            dialog.back_to_story_selection.click()
+
+            self.assertFalse(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.selection_panel.isHidden())
+            self.assertTrue(dialog.voice_confirmation.isHidden())
+            self.assertTrue(dialog.voice_panel.isHidden())
+            self.assertEqual(dialog.step.text(), "Step 1 of 4 - Choose stories")
+            self.assertEqual(dialog.cancel_button.text(), "Cancel")
+            self.assertEqual(dialog.stories.item(0).checkState(), Qt.CheckState.Checked)
+            self.assertIsNone(dialog.voice_plan())
+            self.assertIsNone(dialog.generation_input())
+
     def test_inspected_automatic_voice_can_be_saved_and_replanned(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

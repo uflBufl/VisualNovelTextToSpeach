@@ -619,6 +619,8 @@ class OfflineAudioPreparationDialog(QDialog):
                 item is not None
             )
         )
+        self.back_to_story_selection = QPushButton("Back to story selection")
+        self.back_to_story_selection.clicked.connect(self._return_to_story_selection)
         self.show_all_voice_routes = QCheckBox(
             "Show only substitutions or voices needing attention"
         )
@@ -643,6 +645,7 @@ class OfflineAudioPreparationDialog(QDialog):
         confirmation_layout.addWidget(self.voice_routes)
         confirmation_layout.addWidget(self.inspect_character_voice)
         confirmation_layout.addWidget(self.choose_character_voice)
+        confirmation_layout.addWidget(self.back_to_story_selection)
         confirmation_layout.addWidget(self.voice_confirmation_status)
 
     def _build_discovery_panel(self):
@@ -800,6 +803,25 @@ class OfflineAudioPreparationDialog(QDialog):
         self.inspecting_voice_plan = True
         self.cancel_button.setText("Back to voice plan")
         self.selection_panel.hide()
+
+    def _return_to_story_selection(self):
+        if self.has_pending_work():
+            return
+        if self._narrator_player is not None:
+            self._narrator_player.stop()
+        self._awaiting_voice_confirmation = False
+        self._voice_plan = None
+        self._generation_input = None
+        self._changes_rows = ()
+        self.voice_panel.hide()
+        self.voice_confirmation.hide()
+        self.progress_panel.hide()
+        self.selection_panel.show()
+        self.step.setText("Step 1 of 4 - Choose stories")
+        self.continue_button.setText("Continue")
+        self.cancel_button.setText("Cancel")
+        self._set_import_controls(True)
+        self._selection_changed()
 
     def apply_narrator_settings(self, settings):
         if self.has_pending_work():
