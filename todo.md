@@ -65,10 +65,11 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
-- [ ] **Validate Mrs. Owen on fresh Windows state:** voice preparation now includes
-      safe unrouted media from character-only banks, and inspection exposes the
-      full candidate inventory before narrator fallback. Gate: accepted game media
-      `562400954` can be played, previewed and saved from the Stories flow.
+- [ ] **Validate Mrs. Owen on fresh Windows state:** multiple portrait expressions
+      now count as one safe bank owner, the cache policy version forces fresh
+      extraction, and inspection exposes the full inventory before narrator
+      fallback. Gate: accepted game media `562400954` can be played, previewed and
+      saved from the Stories flow.
 - [ ] **Validate the Windows preview startup repair:** Python 3.14 `Popen` does not
       retain a `_thread` handle, so the suspended owned MOSS process failed before
       model loading. The launcher now finds and resumes the process thread through
