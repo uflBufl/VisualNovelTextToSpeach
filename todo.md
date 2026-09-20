@@ -65,29 +65,29 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
-- [ ] **Сделать одну библиотеку голосов и один выбранный голос для каждой роли:**
-      1. Хранить все найденные аудиореференсы в одной библиотеке приложения и
-         дедуплицировать их по SHA-256. Альтернативы остаются доступными для
-         прослушивания, но не участвуют в озвучивании сами по себе.
-      2. Для каждого персонажа или его отдельного возрастного варианта хранить ровно
-         одно текущее решение: конкретный голос, narrator или live TTS fallback.
-      3. Автоматический и ручной выбор записывают одно и то же решение. Способ выбора,
-         доказательства и версия алгоритма являются только поясняющими метаданными.
-         Новый поиск голосов не меняет уже принятое решение без явного действия
-         пользователя.
-      4. Preview, подготовка истории и live reading получают голос только из этой
-         записи. Настройки приложения и game pack больше не конкурируют с ней и не
-         объединяются по приоритетам.
-      5. При запуске генерации копировать выбранные голоса в неизменяемый snapshot
-         конкретной задачи, чтобы pause/resume всегда продолжали с теми же файлами.
-         Готовый game pack получает переносимую копию этого snapshot.
-      6. После перехода удалить промежуточные `game-narrators/<hash>` manifests,
-         устаревшие candidate caches и код выбора «победителя» между несколькими
-         manifests. Сохранять только данные, на которые ссылаются библиотека,
-         незавершённые задачи или опубликованные packs.
-      Gate: для каждой роли диагностика показывает один источник голоса и способ его
-      выбора; смена голоса одновременно видна в preview, генерации и live reading;
-      удаление невыбранных альтернатив не меняет сохранённый голос.
+- [ ] **Use one voice library and one selected voice for each role:**
+      1. Store every discovered audio reference in one application-owned library and
+         deduplicate the files by SHA-256. Alternatives remain available for
+         inspection but never participate in synthesis by themselves.
+      2. Store exactly one current decision for each character or distinct age
+         variant: a specific voice, the narrator, or an explicit live-TTS fallback.
+      3. Automatic matching and manual selection write the same decision. Selection
+         method, evidence, algorithm version and timestamp are provenance only. A new
+         discovery pass must not change an existing decision without an explicit user
+         action.
+      4. Preview, story preparation and live reading obtain the voice only from this
+         decision. Application settings and game packs must not compete with it or be
+         merged through precedence rules.
+      5. When generation starts, copy the selected voices into an immutable snapshot
+         for that task so pause/resume always uses the same files. The published game
+         pack receives a portable copy of the same snapshot.
+      6. After migration, remove intermediate `game-narrators/<hash>` manifests,
+         obsolete candidate caches and code that chooses a winner among multiple
+         manifests. Retain only data referenced by the library, unfinished tasks or
+         published packs.
+      Gate: diagnostics identify one effective source and its provenance for every
+      role; changing a choice updates preview, generation and live reading together;
+      deleting unselected alternatives cannot change a saved voice.
 - [ ] **Validate Mrs. Owen on fresh Windows state:** multiple portrait expressions
       now count as one safe bank owner. The exact Windows settings shape
       (`voice_manifest` plus `Narrator: character:narrator`) now invokes candidate
