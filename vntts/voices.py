@@ -1,3 +1,4 @@
+import hashlib
 import os
 import stat
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -17,6 +18,9 @@ from vntts_artifacts.voice_manifest import (
 from vntts_artifacts.voice_manifest import (
     normalize_character_name as normalize_character_name,
 )
+
+from vntts.application_directories import get_local_data_directory
+from vntts.voice_library import VoiceBinding, VoiceLibrary
 
 default_voice_choice_id = "default"
 pocket_tts_preset_voices = (
@@ -269,6 +273,129 @@ class CharacterVoiceRegistry:
             raise VoiceManifestError(f"Duplicate voice name or alias: {name!r}")
         self.voices[normalized_name] = voice
         self.voice_names[normalized_name] = name
+
+
+def application_voice_library() -> VoiceLibrary:
+    return VoiceLibrary(get_local_data_directory() / "voice-library")
+
+
+def remember_voice_binding(
+    library: VoiceLibrary,
+    registry: CharacterVoiceRegistry,
+    role: str,
+    source_id: str,
+    *,
+    variant_key: str | None = None,
+    method: str = "manual",
+    evidence: object | None = None,
+    algorithm: str | None = None,
+    only_if_unbound: bool = False,
+) -> VoiceBinding:
+    """Persist one role decision, copying game references into the library."""
+    if source_id == default_voice_choice_id:
+        return library.select(
+            role,
+            variant_key=variant_key,
+            route="live-fallback" if is_narrator(role) else "narrator",
+            method=method,
+            evidence=evidence,
+            algorithm=algorithm,
+            only_if_unbound=only_if_unbound,
+        )
+    voice = registry.resolve_source(source_id)
+    if voice is None:
+        raise VoiceManifestError(f"Voice choice is unavailable: {source_id!r}")
+    if not voice.references:
+        return library.select(
+            role,
+            variant_key=variant_key,
+            route="voice",
+            source_id=source_id,
+            method=method,
+            evidence=evidence,
+            algorithm=algorithm,
+            only_if_unbound=only_if_unbound,
+        )
+    source_evidence = {
+        "source_id": source_id,
+        "source_character": voice.source_character or voice.character,
+        "speaker": voice.speaker,
+        "evidence": evidence,
+    }
+    alternatives = tuple(
+        library.discover(
+            role,
+            reference,
+            variant_key=variant_key,
+            method=method,
+            evidence=source_evidence,
+            algorithm=algorithm,
+        )
+        for reference in voice.references
+    )
+    return library.select(
+        role,
+        variant_key=variant_key,
+        route="voice",
+        source_sha256s=(alternative.sha256 for alternative in alternatives),
+        method=method,
+        evidence=source_evidence,
+        algorithm=algorithm,
+        only_if_unbound=only_if_unbound,
+    )
+
+
+def registry_with_voice_library(
+    registry: CharacterVoiceRegistry,
+    library: VoiceLibrary,
+) -> CharacterVoiceRegistry:
+    """Project authoritative bindings into the in-memory routing registry."""
+    bindings = library.bindings()
+    voices = list(registry.unique_voices())
+    sources: dict[tuple[str, str | None], str] = {}
+    for binding in bindings:
+        key = (normalize_character_name(binding.role), binding.variant_key)
+        if binding.route != "voice":
+            continue
+        if binding.source_id is not None:
+            sources[key] = binding.source_id
+            continue
+        references = library.resolve_source_paths(
+            binding.role, variant_key=binding.variant_key
+        )
+        identity = hashlib.sha256(
+            "\0".join(binding.source_sha256s).encode("ascii")
+        ).hexdigest()
+        name = f"Voice library {identity[:16]}"
+        evidence = binding.provenance.get("evidence")
+        metadata = evidence if isinstance(evidence, dict) else {}
+        voices.append(
+            CharacterVoice(
+                name,
+                str(metadata.get("speaker") or name),
+                references=references,
+                reference_root=library.root,
+                source_character=str(
+                    metadata.get("source_character") or binding.role
+                ),
+            )
+        )
+        sources[key] = f"character:{normalize_character_name(name)}"
+    projected = CharacterVoiceRegistry(voices)
+    narrator_source = sources.get(("narrator", None))
+    for binding in bindings:
+        if binding.variant_key is not None:
+            continue
+        key = normalize_character_name(binding.role)
+        source_id = sources.get((key, None))
+        if binding.route == "narrator":
+            source_id = narrator_source
+        if binding.route == "live-fallback" or source_id is None:
+            projected.assignments[key] = None
+            projected.assignment_names[key] = binding.role
+            continue
+        projected.set_assignment(binding.role, source_id)
+    return projected
 
 
 def _contained_manifest_reference(

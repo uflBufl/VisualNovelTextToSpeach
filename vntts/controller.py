@@ -74,8 +74,8 @@ from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
 from vntts.playback import PreparedPlayback
 from vntts.runtime_config import (
     get_live_configuration,
-    initialize_voice_registry,
-    initialize_voice_router,
+    initialize_application_voice_registry,
+    initialize_application_voice_router,
 )
 from vntts.services.tts_engine import AudioPlaybackError, TTSEngine
 from vntts.settings import (
@@ -462,8 +462,8 @@ class AppController:
         self.dialog_read_scheduler_factory = create_dialog_read_scheduler
         self.thread_pool_executor_factory = ThreadPoolExecutor
         self.live_reader_factory: Callable[..., LiveDialogReader] = LiveDialogReader
-        self.voice_registry_initializer = initialize_voice_registry
-        self.voice_router_initializer = initialize_voice_router
+        self.voice_registry_initializer = initialize_application_voice_registry
+        self.voice_router_initializer = initialize_application_voice_router
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.correction_dictionary = self.correction_store.dictionary_for(
             self.settings.active_profile_id
