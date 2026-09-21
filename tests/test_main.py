@@ -75,6 +75,7 @@ from vntts.services.tts_engine import AudioPlaybackError, TTSSynthesisError
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.support import GenerationTimelineLog
+from vntts.voice_library import VoiceLibrary
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
@@ -1620,9 +1621,13 @@ class MainTest(unittest.TestCase):
         )
 
     def test_controller_lists_pocket_presets_and_assigns_one_immediately(self):
+        voice_root = TemporaryDirectory()
+        self.addCleanup(voice_root.cleanup)
+        voice_library = VoiceLibrary(Path(voice_root.name) / "voices")
         controller = AppController(
             AppSettings(speech_backend="pocket-tts"),
             tts_factory=Mock(),
+            voice_library=voice_library,
         )
         controller.live_reader = Mock(is_running=False)
         controller.speech_executor = Mock()
@@ -1632,7 +1637,8 @@ class MainTest(unittest.TestCase):
         updated = controller.assign_voice("Selone", "preset:alba")
 
         self.assertIn("preset:alba", [choice.id for choice in choices])
-        self.assertEqual(updated.voice_assignments, {"Selone": "preset:alba"})
+        self.assertEqual(updated.voice_assignments, {})
+        self.assertEqual(voice_library.binding("Selone").source_id, "preset:alba")
         self.assertEqual(
             controller.voice_router.registry.resolve("Selone").speaker,
             "alba",
@@ -1640,15 +1646,20 @@ class MainTest(unittest.TestCase):
         self.assertFalse(controller._offer_unknown_speaker_mapping("Selone"))
 
     def test_narrator_fallback_voice_and_force_live_are_independent(self):
+        voice_root = TemporaryDirectory()
+        self.addCleanup(voice_root.cleanup)
+        voice_library = VoiceLibrary(Path(voice_root.name) / "voices")
         controller = AppController(
             AppSettings(speech_backend="pocket-tts"),
             tts_factory=Mock(),
+            voice_library=voice_library,
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock(registry=CharacterVoiceRegistry())
         controller.voice_router.audio_cache = Mock()
 
         assigned = controller.assign_voice("Narrator", "preset:alba")
+        self.assertEqual(voice_library.binding("Narrator").source_id, "preset:alba")
         self.assertFalse(controller._has_manual_voice_override("Narrator"))
         forced = controller.set_force_live_narrator(True)
         self.assertTrue(controller._has_manual_voice_override("Narrator"))
@@ -1656,18 +1667,23 @@ class MainTest(unittest.TestCase):
         self.assertFalse(controller._has_manual_voice_override("Narrator"))
         restored = controller.clear_voice_assignment("Narrator")
 
-        self.assertEqual(assigned.voice_assignments, {"Narrator": "preset:alba"})
+        self.assertEqual(assigned.voice_assignments, {})
         self.assertFalse(assigned.force_live_narrator)
         self.assertTrue(forced.force_live_narrator)
         self.assertFalse(generated_first.force_live_narrator)
         self.assertEqual(restored.voice_assignments, {})
+        self.assertIsNone(voice_library.binding("Narrator"))
         self.assertFalse(restored.force_live_narrator)
         self.assertNotIn("narrator", controller.voice_router.registry.assignments)
 
     def test_voice_changes_publish_only_after_commit_callback_succeeds(self):
+        voice_root = TemporaryDirectory()
+        self.addCleanup(voice_root.cleanup)
+        voice_library = VoiceLibrary(Path(voice_root.name) / "voices")
         controller = AppController(
             AppSettings(speech_backend="pocket-tts"),
             tts_factory=Mock(),
+            voice_library=voice_library,
         )
         controller.live_reader = Mock(is_running=False)
         controller.voice_router = Mock(registry=CharacterVoiceRegistry())
@@ -1681,6 +1697,7 @@ class MainTest(unittest.TestCase):
             )
 
         self.assertEqual(controller.settings.voice_assignments, {})
+        self.assertIsNone(voice_library.binding("Selone"))
         self.assertNotIn("selone", controller.voice_router.registry.assignments)
 
         controller.assign_voice("Narrator", "preset:alba")
@@ -1696,6 +1713,7 @@ class MainTest(unittest.TestCase):
             controller.voice_router.registry.assignments,
             assigned_registry,
         )
+        self.assertIsNotNone(voice_library.binding("Narrator"))
 
         with self.assertRaisesRegex(OSError, "disk full"):
             controller.set_force_live_narrator(

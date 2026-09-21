@@ -20,12 +20,8 @@ from vntts.voices import (
     CharacterVoiceRouter,
     VoiceEngine,
     VoiceManifestError,
-    application_voice_library,
     find_default_voice_manifest,
-    is_narrator,
-    pocket_tts_preset_voices,
     registry_with_voice_library,
-    remember_voice_binding,
 )
 
 EngineT = TypeVar("EngineT")
@@ -251,7 +247,6 @@ def initialize_voice_registry(
     error_handler: Callable[[Exception], object] | None = None,
     *,
     voice_library: VoiceLibrary | None = None,
-    migrate_legacy_bindings: bool = False,
 ) -> CharacterVoiceRegistry | None:
     manifest_path: str | os.PathLike[str] | None = (
         settings.voice_manifest
@@ -275,52 +270,16 @@ def initialize_voice_registry(
 
     if settings is not None and voice_library is not None:
         try:
-            if migrate_legacy_bindings:
-                legacy = {
-                    **settings.character_voice_defaults,
-                    **settings.voice_assignments,
-                }
-                for role, source_id in legacy.items():
-                    remember_voice_binding(
-                        voice_library,
-                        registry,
-                        role,
-                        source_id,
-                        method="manual",
-                        evidence={"migration": "settings-v29"},
-                        algorithm="settings-v29-import",
-                        only_if_unbound=True,
-                    )
             registry = registry_with_voice_library(registry, voice_library)
         except (OSError, VoiceLibraryError, VoiceManifestError) as error:
             if error_handler is None:
-                print(f"Unable to initialize saved voice choices: {error}", file=sys.stderr)
+                print(
+                    f"Unable to initialize saved voice choices: {error}",
+                    file=sys.stderr,
+                )
             else:
                 error_handler(error)
             return None
-    elif settings is not None:
-        preset_validator = None
-        if settings.speech_backend == "pocket-tts":
-            preset_validator = pocket_tts_preset_voices.__contains__
-        elif settings.speech_backend in {"chatterbox-nano", "moss-tts"}:
-            preset_validator = ().__contains__
-        defaults = {
-            character: source
-            for character, source in settings.character_voice_defaults.items()
-            if not is_narrator(character)
-        }
-        # Defaults affect synthesis only; manual assignments also override recordings.
-        for assignments in (defaults, settings.voice_assignments):
-            registry.apply_assignments(
-                assignments,
-                warn=(
-                    (lambda message: error_handler(VoiceManifestError(message)))
-                    if error_handler is not None
-                    else (lambda message: print(message, file=sys.stderr))
-                ),
-                preset_validator=preset_validator,
-            )
-
     return registry
 
 
@@ -330,13 +289,11 @@ def initialize_voice_router(
     error_handler: Callable[[Exception], object] | None = None,
     *,
     voice_library: VoiceLibrary | None = None,
-    migrate_legacy_bindings: bool = False,
 ) -> CharacterVoiceRouter | None:
     registry = initialize_voice_registry(
         settings,
         error_handler,
         voice_library=voice_library,
-        migrate_legacy_bindings=migrate_legacy_bindings,
     )
     if registry is None:
         return None
@@ -363,35 +320,7 @@ def initialize_voice_router(
             if settings is not None
             else os.environ.get("VNTTS_NARRATOR_SPEAKER")
         ),
-        narrator_voice=(
-            registry.resolve("Narrator") if settings is not None else None
-        ),
-    )
-
-
-def initialize_application_voice_registry(
-    settings: AppSettings | None = None,
-    error_handler: Callable[[Exception], object] | None = None,
-) -> CharacterVoiceRegistry | None:
-    return initialize_voice_registry(
-        settings,
-        error_handler,
-        voice_library=application_voice_library(),
-        migrate_legacy_bindings=True,
-    )
-
-
-def initialize_application_voice_router(
-    tts: VoiceEngine,
-    settings: AppSettings | None = None,
-    error_handler: Callable[[Exception], object] | None = None,
-) -> CharacterVoiceRouter | None:
-    return initialize_voice_router(
-        tts,
-        settings,
-        error_handler,
-        voice_library=application_voice_library(),
-        migrate_legacy_bindings=True,
+        narrator_voice=(registry.resolve("Narrator") if settings is not None else None),
     )
 
 

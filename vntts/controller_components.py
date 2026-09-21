@@ -46,10 +46,11 @@ from vntts.voices import (
     VoiceChoice,
     VoiceEngine,
     default_voice_choice_id,
-    find_voice_assignment,
     is_narrator,
     normalize_character_name,
     pocket_tts_preset_voices,
+    remember_voice_binding,
+    voice_binding_source_id,
 )
 from vntts.window_capture import WindowGeometry
 
@@ -302,15 +303,9 @@ class RuntimeLifecycleComponent:
                 "pocket-tts": controller.pocket_backend_factory,
             }[controller.settings.speech_backend]
             narrator_reference: str | Path | None = controller.settings.tts_speaker_wav
-            narrator_source_id = find_voice_assignment(
-                controller.settings.voice_assignments,
-                "Narrator",
-            )
-            if narrator_source_id is not None:
-                narrator_voice = registry.resolve_source(narrator_source_id)
-                if narrator_voice is None:
-                    narrator_reference = controller.settings.tts_speaker_wav
-                elif narrator_voice.references:
+            narrator_voice = registry.resolve("Narrator")
+            if narrator_voice is not None:
+                if narrator_voice.references:
                     narrator_reference = narrator_voice.references[0]
                 elif controller.settings.speech_backend == "pocket-tts":
                     narrator_reference = narrator_voice.speaker
@@ -934,12 +929,9 @@ class VoiceAssignmentComponent:
 
     def assignment_for(self, character: str) -> str:
         controller = self.controller
-        configured = find_voice_assignment(
-            controller.settings.voice_assignments,
-            character,
-        )
-        if configured is not None:
-            return str(configured)
+        binding = controller.voice_library.binding(character)
+        if binding is not None:
+            return str(voice_binding_source_id(binding))
         voice_router = controller.voice_router
         if voice_router is None:
             return str(default_voice_choice_id)
@@ -1008,17 +1000,20 @@ class VoiceAssignmentComponent:
         if choice is None:
             raise ValueError("The selected voice is no longer available")
         character_key = normalize_character_name(character)
-        assignments = {
-            configured_character: configured_source
-            for configured_character, configured_source in (
-                controller.settings.voice_assignments or {}
-            ).items()
-            if normalize_character_name(configured_character) != character_key
-        }
-        assignments[character] = source_id
-        updated_settings = controller.settings.updated(voice_assignments=assignments)
+        updated_settings = controller.settings.updated(
+            voice_assignments={}, character_voice_defaults={}
+        )
         if commit_settings is not None:
             commit_settings(updated_settings)
+        remember_voice_binding(
+            controller.voice_library,
+            voice_router.registry,
+            character,
+            source_id,
+            method="manual",
+            evidence={"selected_in": "live-voice-controls"},
+            algorithm="live-voice-controls-v1",
+        )
         voice_router.registry.set_assignment(character, source_id)
         controller.settings = updated_settings
         if character_key == "narrator":
@@ -1048,24 +1043,19 @@ class VoiceAssignmentComponent:
         if voice_router is None:
             raise RuntimeError("The speech engine is not ready")
         character_key = normalize_character_name(character)
-        assignments = {
-            configured_character: configured_source
-            for configured_character, configured_source in (
-                controller.settings.voice_assignments or {}
-            ).items()
-            if normalize_character_name(configured_character) != character_key
-        }
         if character_key == "narrator":
             updated_settings = controller.settings.updated(
-                voice_assignments=assignments,
+                voice_assignments={},
+                character_voice_defaults={},
                 force_live_narrator=False,
             )
         else:
             updated_settings = controller.settings.updated(
-                voice_assignments=assignments
+                voice_assignments={}, character_voice_defaults={}
             )
         if commit_settings is not None:
             commit_settings(updated_settings)
+        controller.voice_library.clear(character)
         voice_router.registry.assignments.pop(character_key, None)
         controller.settings = updated_settings
         if character_key == "narrator":

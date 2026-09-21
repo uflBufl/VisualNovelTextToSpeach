@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
+from functools import partial
 from hashlib import sha256
 from pathlib import Path
 from threading import Event, Lock, RLock
@@ -74,8 +75,8 @@ from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
 from vntts.playback import PreparedPlayback
 from vntts.runtime_config import (
     get_live_configuration,
-    initialize_application_voice_registry,
-    initialize_application_voice_router,
+    initialize_voice_registry,
+    initialize_voice_router,
 )
 from vntts.services.tts_engine import AudioPlaybackError, TTSEngine
 from vntts.settings import (
@@ -94,12 +95,13 @@ from vntts.speech_worker import (
     create_moss_worker_backend,
     create_pocket_worker_backend,
 )
+from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
     VoiceChoice,
     VoiceEngine,
-    find_voice_assignment,
+    application_voice_library,
     is_narrator,
     is_unattributed_speaker,
     normalize_character_name,
@@ -451,8 +453,10 @@ class AppController:
         live_sequence_plan_factory: Callable[
             [str, str], _LiveSequencePlanContract
         ] = LiveSequencePlan.load,
+        voice_library: VoiceLibrary | None = None,
     ) -> None:
         self.settings = settings or AppSettings()
+        self.voice_library = voice_library or application_voice_library()
         self.capture_target_factory = capture_target_factory
         self.model_assets = model_asset_manager_factory()
         self.chatterbox_backend_factory = chatterbox_backend_factory
@@ -462,8 +466,12 @@ class AppController:
         self.dialog_read_scheduler_factory = create_dialog_read_scheduler
         self.thread_pool_executor_factory = ThreadPoolExecutor
         self.live_reader_factory: Callable[..., LiveDialogReader] = LiveDialogReader
-        self.voice_registry_initializer = initialize_application_voice_registry
-        self.voice_router_initializer = initialize_application_voice_router
+        self.voice_registry_initializer = partial(
+            initialize_voice_registry, voice_library=self.voice_library
+        )
+        self.voice_router_initializer = partial(
+            initialize_voice_router, voice_library=self.voice_library
+        )
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.correction_dictionary = self.correction_store.dictionary_for(
             self.settings.active_profile_id
@@ -811,12 +819,7 @@ class AppController:
     def _has_manual_voice_override(self, character: str) -> bool:
         if is_unattributed_speaker(character):
             return False
-        assignment = find_voice_assignment(self.settings.voice_assignments, character)
-        if assignment is None:
-            return False
-        if is_narrator(character):
-            return bool(self.settings.force_live_narrator)
-        return True
+        return bool(is_narrator(character) and self.settings.force_live_narrator)
 
     def _set_backend_live_mode(self, active: bool) -> None:
         configure = getattr(self.speech_backend, "set_live_mode_active", None)

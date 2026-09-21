@@ -67,7 +67,6 @@ from vntts.voices import (
     CharacterVoiceRegistry,
     application_voice_library,
     find_default_voice_manifest,
-    find_voice_assignment,
     is_narrator,
     normalize_character_name,
     pocket_tts_preset_voices,
@@ -266,12 +265,15 @@ class GameNarratorDialog(QDialog):
         self.source.addItem("Imported game voice", "catalog")
         self.source.addItem("Automatic assignment", "automatic")
         self.source.addItem("Narrator fallback", "narrator")
-        selected = find_voice_assignment(
-            settings.voice_assignments, "Narrator"
-        ) or pregeneration_narrator_source_id(
-            self.settings_value, voice_library=self.voice_library
+        narrator_binding = self.voice_library.binding("Narrator")
+        selected = (
+            narrator_binding.source_id
+            if narrator_binding is not None
+            else pregeneration_narrator_source_id(
+                settings, voice_library=self.voice_library
+            )
         )
-        if selected.startswith("preset:"):
+        if str(selected or "").startswith("preset:"):
             self.source.setCurrentIndex(1)
         form.addRow("Candidate source", self.source)
         self.presets = QComboBox()
@@ -501,8 +503,6 @@ class GameNarratorDialog(QDialog):
         available_roles = {
             *roles,
             *(binding.role for binding in self.voice_library.bindings()),
-            *self.settings_value.voice_assignments,
-            *self.settings_value.character_voice_defaults,
             *(
                 voice.character
                 for voice in self._catalog_registry.unique_voices()
@@ -549,48 +549,36 @@ class GameNarratorDialog(QDialog):
         saved_evidence = (
             saved_binding.provenance.get("evidence")
             if saved_binding is not None
+            else pregeneration_narrator_source_id(
+                settings, voice_library=self.voice_library
+            )
+            if narrator
             else None
         )
         selected = (
-            (
-                saved_binding.source_id
-                or (
-                    saved_evidence.get("source_id")
-                    if isinstance(saved_evidence, dict)
-                    else None
-                )
-                or (
-                    "default"
-                    if saved_binding is not None
-                    and saved_binding.route in {"narrator", "live-fallback"}
-                    else None
-                )
+            saved_binding.source_id
+            or (
+                saved_evidence.get("source_id")
+                if isinstance(saved_evidence, dict)
+                else None
+            )
+            or (
+                "default"
+                if saved_binding.route in {"narrator", "live-fallback"}
+                else None
             )
             if saved_binding is not None
-            else (
-                (
-                    find_voice_assignment(settings.voice_assignments, "Narrator")
-                    or pregeneration_narrator_source_id(
-                        settings, voice_library=self.voice_library
-                    )
-                )
-                if narrator
-                else find_voice_assignment(settings.character_voice_defaults, role)
+            else None
+        )
+        if selected is None and narrator:
+            selected = pregeneration_narrator_source_id(
+                settings, voice_library=self.voice_library
             )
-        )
-        manual = not narrator and find_voice_assignment(
-            settings.voice_assignments, role
-        )
         self.role_summary.setText(
             f"Saved narrator: {self._source_label(selected)}"
             if narrator
             else f"Saved default: {self._source_label(selected)}\n"
-            + (
-                "Live override active. Saving this default restores recording priority.\n"
-                if manual
-                else ""
-            )
-            + "Original and prepared recordings keep priority."
+            "Original and prepared recordings keep priority."
         )
         self.portrait.clear()
         self.portrait.hide()
@@ -775,13 +763,18 @@ class GameNarratorDialog(QDialog):
         )
         role = self.role.currentText().strip()
         narrator = normalize_character_name(role) == "narrator"
+        binding = self.voice_library.binding(role)
+        evidence = binding.provenance.get("evidence") if binding is not None else None
         saved = (
-            find_voice_assignment(initial.voice_assignments, "Narrator")
-            or pregeneration_narrator_source_id(
+            binding.source_id
+            or (evidence.get("source_id") if isinstance(evidence, dict) else None)
+            or ("default" if binding.route in {"narrator", "live-fallback"} else None)
+            if binding is not None
+            else pregeneration_narrator_source_id(
                 initial, voice_library=self.voice_library
             )
             if narrator
-            else find_voice_assignment(initial.character_voice_defaults, role)
+            else None
         )
         candidate = {
             "automatic": None,
@@ -1345,14 +1338,8 @@ class GameNarratorDialog(QDialog):
             context["root"] = root
         if normalize_character_name(role) == "narrator":
             return self.binder(settings, manifest, source_id, character, **context)
-        # A normal default must not leave an old forced-live override shadowing it.
-        assignments = {
-            name: value
-            for name, value in settings.voice_assignments.items()
-            if normalize_character_name(name) != normalize_character_name(role)
-        }
         return self.binder(
-            settings.updated(voice_assignments=assignments),
+            settings,
             manifest,
             source_id,
             character,

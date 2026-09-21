@@ -7,8 +7,6 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from tests.symlink_support import symlink_or_skip
-from vntts.runtime_config import initialize_voice_registry
-from vntts.settings import AppSettings
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoice,
@@ -26,56 +24,6 @@ from vntts.voices import (
 
 
 class CharacterVoiceRegistryTest(unittest.TestCase):
-    def test_legacy_binding_migrates_once_without_becoming_precedence(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            references = root / "references"
-            references.mkdir()
-            for name in ("centurion", "rhiannon"):
-                with wave.open(str(references / f"{name}.wav"), "wb") as audio:
-                    audio.setparams((1, 2, 24_000, 0, "NONE", "not compressed"))
-                    audio.writeframes(b"\x00\x00" * 24_000)
-            manifest = root / "manifest.json"
-            manifest.write_text(
-                json.dumps(
-                    {
-                        "version": 2,
-                        "voices": [
-                            {
-                                "character": name.title(),
-                                "speaker": name,
-                                "aliases": [],
-                                "references": [f"references/{name}.wav"],
-                            }
-                            for name in ("centurion", "rhiannon")
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            library = VoiceLibrary(root / "library")
-            settings = AppSettings(
-                voice_manifest=str(manifest),
-                voice_assignments={"Narrator": "character:centurion"},
-            )
-
-            first = initialize_voice_registry(
-                settings,
-                voice_library=library,
-                migrate_legacy_bindings=True,
-            )
-            changed_settings = settings.updated(
-                voice_assignments={"Narrator": "character:rhiannon"}
-            )
-            second = initialize_voice_registry(
-                changed_settings,
-                voice_library=library,
-                migrate_legacy_bindings=True,
-            )
-
-            self.assertEqual(first.resolve("Narrator").source_character, "Centurion")
-            self.assertEqual(second.resolve("Narrator").source_character, "Centurion")
-
     def test_voice_library_binding_is_the_runtime_assignment(self):
         with TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -96,9 +44,7 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
             )
             library = VoiceLibrary(root / "library")
 
-            remember_voice_binding(
-                library, registry, "Narrator", "character:centurion"
-            )
+            remember_voice_binding(library, registry, "Narrator", "character:centurion")
             projected = registry_with_voice_library(registry, library)
 
             narrator = projected.resolve("Narrator")

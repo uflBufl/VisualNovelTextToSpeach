@@ -1078,8 +1078,7 @@ def _effective_assignment_source(
         binding = library.binding(character, variant_key=variant_key)
         if binding is None and variant_key is not None:
             binding = library.binding(character)
-        if binding is not None:
-            return voice_binding_source_id(binding)
+        return voice_binding_source_id(binding) if binding is not None else None
     source_id = find_voice_assignment(settings.voice_assignments, character)
     if source_id is None and not is_narrator(character):
         source_id = find_voice_assignment(settings.character_voice_defaults, character)

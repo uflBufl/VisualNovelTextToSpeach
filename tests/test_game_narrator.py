@@ -289,6 +289,23 @@ class GameNarratorTest(unittest.TestCase):
         pool.tasks.pop(0).run()
         self.application.processEvents()
 
+    def select_preset(self, source_id="preset:alba", *, role="Narrator"):
+        self._voice_library.select(role, route="voice", source_id=source_id)
+
+    def bind_game_voice(self, settings, manifest, source_id, *, role="Narrator"):
+        return bind_voice_library_selection(
+            settings,
+            manifest,
+            source_id,
+            source_id.partition(":")[2],
+            root=self._voice_library.root,
+            target_character=role,
+        )
+
+    @staticmethod
+    def choose_game_source(dialog):
+        dialog.source.setCurrentIndex(dialog.source.findData("game"))
+
     def narrator_manifest(self, root):
         manifest = write_manifest(root, rhiannon=clean_wav_bytes())
         (root / "references" / "centurion.wav").write_bytes(
@@ -297,6 +314,7 @@ class GameNarratorTest(unittest.TestCase):
         return manifest
 
     def test_preview_compute_stays_visible_and_cached_playback_clears_generation(self):
+        self.select_preset()
         pool = ManualThreadPool()
         previews = Mock()
         previews.backend.runtime_status = "GPU: RTX 2070 SUPER <8 GB>; auxiliary: CPU"
@@ -304,7 +322,7 @@ class GameNarratorTest(unittest.TestCase):
             path=Path("/tmp/preview.wav"), reused=True
         )
         dialog = GameNarratorDialog(
-            AppSettings(voice_assignments={"Narrator": "preset:alba"}),
+            AppSettings(),
             preview_service=previews,
             thread_pool=pool,
             player=Mock(),
@@ -358,8 +376,9 @@ class GameNarratorTest(unittest.TestCase):
             settings = AppSettings(
                 voice_manifest=str(manifest),
                 pocket_gated_model_accepted=True,
-                voice_assignments={"Narrator": "preset:alba"},
-                character_voice_defaults={"Hotelier": "character:rhiannon"},
+            )
+            self.bind_game_voice(
+                settings, manifest, "character:rhiannon", role="Hotelier"
             )
             dialog = GameNarratorDialog(
                 settings,
@@ -403,18 +422,13 @@ class GameNarratorTest(unittest.TestCase):
 
     def test_builtin_preview_and_save_need_no_game_or_gated_model(self):
         with TemporaryDirectory() as directory:
+            self.select_preset()
             pool = ManualThreadPool()
             importer = Mock()
             backend = FakeBackend("pocket-tts")
             factory = Mock(return_value=backend)
             previews = VoiceAuditionPreviewService(directory, backend_factory=factory)
-            settings = AppSettings(
-                pocket_gated_model_accepted=True,
-                voice_assignments={
-                    "Narrator": "preset:alba",
-                    "Rhiannon": "character:rhiannon",
-                },
-            )
+            settings = AppSettings(pocket_gated_model_accepted=True)
             dialog = GameNarratorDialog(
                 settings,
                 importer=importer,
@@ -445,8 +459,9 @@ class GameNarratorTest(unittest.TestCase):
             self.assertEqual(backend.shutdown_count, 1)
 
     def test_cancel_builtin_candidate_preserves_saved_narrator(self):
+        self.select_preset()
         pool = ManualThreadPool()
-        original = AppSettings(voice_assignments={"Narrator": "preset:alba"})
+        original = AppSettings()
         dialog = GameNarratorDialog(
             original,
             importer=Mock(),
@@ -459,11 +474,15 @@ class GameNarratorTest(unittest.TestCase):
         dialog.reject()
         self.run_task(pool)
         self.assertIsNone(dialog.result_settings)
-        self.assertEqual(original.voice_assignments, {"Narrator": "preset:alba"})
+        self.assertEqual(
+            self._voice_library.binding("Narrator").source_id, "preset:alba"
+        )
 
     def test_character_preset_save_and_cancel_keep_other_roles_unchanged(self):
         for save in (False, True):
             with self.subTest(save=save):
+                self.select_preset()
+                self._voice_library.clear("Hotelier")
                 pool, importer, previews = ManualThreadPool(), Mock(), Mock()
                 original = AppSettings(
                     voice_assignments={
@@ -520,6 +539,8 @@ class GameNarratorTest(unittest.TestCase):
     def test_character_policies_restore_recording_priority_and_save_announcements(self):
         for policy in ("automatic", "narrator"):
             with self.subTest(policy=policy):
+                self.select_preset()
+                self._voice_library.clear("Hotelier")
                 pool = ManualThreadPool()
                 original = AppSettings(
                     voice_assignments={
@@ -708,14 +729,17 @@ class GameNarratorTest(unittest.TestCase):
 
     def test_saved_game_voice_is_not_replaced_by_pocket_preset_without_access(self):
         with TemporaryDirectory() as directory:
-            manifest = write_manifest(Path(directory))
+            manifest = self.narrator_manifest(Path(directory))
             for role in ("Narrator", "Hotelier"):
                 with self.subTest(role=role):
                     pool, importer, previews = ManualThreadPool(), Mock(), Mock()
-                    settings = AppSettings(
-                        voice_manifest=str(manifest),
-                        voice_assignments={"Narrator": "character:centurion"},
-                        character_voice_defaults={"Hotelier": "character:rhiannon"},
+                    settings = self.bind_game_voice(
+                        AppSettings(voice_manifest=str(manifest)),
+                        manifest,
+                        "character:centurion"
+                        if role == "Narrator"
+                        else "character:rhiannon",
+                        role=role,
                     )
                     dialog = GameNarratorDialog(
                         settings,
@@ -796,8 +820,9 @@ class GameNarratorTest(unittest.TestCase):
             self.run_task(pool)
 
     def test_engine_switch_preserves_source_intent_and_cancel_discards_changes(self):
+        self.select_preset()
         pool = ManualThreadPool()
-        original = AppSettings(voice_assignments={"Narrator": "preset:alba"})
+        original = AppSettings()
         dialog = GameNarratorDialog(
             original,
             importer=Mock(),
@@ -830,7 +855,9 @@ class GameNarratorTest(unittest.TestCase):
         dialog.reject()
         self.run_task(pool)
         self.assertIsNone(dialog.result_settings)
-        self.assertEqual(original.voice_assignments, {"Narrator": "preset:alba"})
+        self.assertEqual(
+            self._voice_library.binding("Narrator").source_id, "preset:alba"
+        )
         self.assertEqual(original.speech_backend, "pocket-tts")
 
     def test_candidate_rows_precede_engine_and_model_details(self):
@@ -1413,12 +1440,13 @@ class GameNarratorTest(unittest.TestCase):
             importer = self.narrator_importer(manifest)
             pool = ManualThreadPool()
             dialog = GameNarratorDialog(
-                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
+                self.bind_game_voice(AppSettings(), manifest, "character:centurion"),
                 importer=importer,
                 preview_service=Mock(),
                 thread_pool=pool,
                 player=Mock(),
             )
+            self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
             dialog.prepare_button.click()
@@ -1459,12 +1487,13 @@ class GameNarratorTest(unittest.TestCase):
             manifest = self.narrator_manifest(Path(directory))
             pool = ManualThreadPool()
             dialog = GameNarratorDialog(
-                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
+                self.bind_game_voice(AppSettings(), manifest, "character:centurion"),
                 importer=self.narrator_importer(manifest),
                 preview_service=Mock(),
                 thread_pool=pool,
                 player=Mock(),
             )
+            self.choose_game_source(dialog)
             changed = []
             dialog.settingsChanged.connect(changed.append)
             self.application.processEvents()
@@ -1494,7 +1523,7 @@ class GameNarratorTest(unittest.TestCase):
 
     def test_decoder_setup_consent_retries_in_worker_and_keeps_controls_gated(self):
         with TemporaryDirectory() as directory:
-            manifest = write_manifest(Path(directory) / "candidates")
+            manifest = self.narrator_manifest(Path(directory) / "candidates")
             importer = self.narrator_importer(manifest)
             importer.prepare_voice_roles.side_effect = [
                 DecoderSetupRequired("Install decoder?"),
@@ -1502,12 +1531,13 @@ class GameNarratorTest(unittest.TestCase):
             ]
             pool = ManualThreadPool()
             dialog = GameNarratorDialog(
-                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
+                self.bind_game_voice(AppSettings(), manifest, "character:centurion"),
                 importer=importer,
                 preview_service=Mock(),
                 thread_pool=pool,
                 player=Mock(),
             )
+            self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
             dialog.prepare_button.click()
@@ -1588,6 +1618,7 @@ class GameNarratorTest(unittest.TestCase):
                 thread_pool=pool,
                 player=Mock(),
             )
+            self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
             dialog.prepare_button.click()
@@ -1615,6 +1646,7 @@ class GameNarratorTest(unittest.TestCase):
                 thread_pool=pool,
                 player=player,
             )
+            self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
             dialog.prepare_button.click()
@@ -1645,6 +1677,7 @@ class GameNarratorTest(unittest.TestCase):
                 player=Mock(),
                 binder=binder,
             )
+            self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
             dialog.prepare_button.click()
@@ -1676,7 +1709,7 @@ class GameNarratorTest(unittest.TestCase):
             pool = ManualThreadPool()
             player = Mock()
             dialog = GameNarratorDialog(
-                AppSettings(voice_assignments={"Narrator": "character:centurion"}),
+                self.bind_game_voice(AppSettings(), manifest, "character:centurion"),
                 importer=importer,
                 preview_service=previews,
                 thread_pool=pool,
@@ -1685,6 +1718,7 @@ class GameNarratorTest(unittest.TestCase):
                     bind_voice_library_selection, root=self._voice_library.root
                 ),
             )
+            self.choose_game_source(dialog)
             self.application.processEvents()
             self.assertFalse(dialog.controls.isEnabled())
             self.assertFalse(dialog.progress.isHidden())
@@ -1751,6 +1785,7 @@ class GameNarratorTest(unittest.TestCase):
                 thread_pool=pool,
                 player=Mock(),
             )
+            self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
             dialog.prepare_button.click()
@@ -1773,43 +1808,55 @@ class GameNarratorTest(unittest.TestCase):
             self.run_task(pool)
 
     def test_cancel_discards_late_discovery_and_closes_worker(self):
-        pool = ManualThreadPool()
-        importer = Mock()
-        importer.narrator_characters.return_value = ("Centurion",)
-        previews = Mock()
-        dialog = GameNarratorDialog(
-            AppSettings(voice_assignments={"Narrator": "character:centurion"}),
-            importer=importer,
-            preview_service=previews,
-            thread_pool=pool,
-            player=Mock(),
-        )
-        self.application.processEvents()
-        dialog.reject()
-        self.assertTrue(dialog.cancellation.is_set())
-        self.run_task(pool)
-        self.run_task(pool)
-        self.assertEqual(dialog.characters.count(), 0)
-        self.assertIsNone(dialog.result_settings)
-        self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
-        previews.close.assert_called_once()
+        with TemporaryDirectory() as directory:
+            manifest = self.narrator_manifest(Path(directory))
+            settings = self.bind_game_voice(
+                AppSettings(), manifest, "character:centurion"
+            )
+            pool = ManualThreadPool()
+            importer = Mock()
+            importer.narrator_characters.return_value = ("Centurion",)
+            previews = Mock()
+            dialog = GameNarratorDialog(
+                settings,
+                importer=importer,
+                preview_service=previews,
+                thread_pool=pool,
+                player=Mock(),
+            )
+            self.choose_game_source(dialog)
+            self.application.processEvents()
+            dialog.reject()
+            self.assertTrue(dialog.cancellation.is_set())
+            self.run_task(pool)
+            self.run_task(pool)
+            self.assertEqual(dialog.characters.count(), 0)
+            self.assertIsNone(dialog.result_settings)
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+            previews.close.assert_called_once()
 
     def test_missing_game_restores_retry_controls(self):
-        pool = ManualThreadPool()
-        importer = Mock()
-        importer.narrator_characters.side_effect = ValueError("Game not found")
-        dialog = GameNarratorDialog(
-            AppSettings(voice_assignments={"Narrator": "character:centurion"}),
-            importer=importer,
-            preview_service=Mock(),
-            thread_pool=pool,
-            player=Mock(),
-        )
-        self.application.processEvents()
-        self.run_task(pool)
-        self.assertIn("Game not found", dialog.status.text())
-        self.assertTrue(dialog.folder_button.isEnabled())
-        self.assertTrue(dialog.controls.isEnabled())
-        self.assertFalse(dialog.save_button.isEnabled())
-        dialog.reject()
-        self.run_task(pool)
+        with TemporaryDirectory() as directory:
+            manifest = self.narrator_manifest(Path(directory))
+            settings = self.bind_game_voice(
+                AppSettings(), manifest, "character:centurion"
+            )
+            pool = ManualThreadPool()
+            importer = Mock()
+            importer.narrator_characters.side_effect = ValueError("Game not found")
+            dialog = GameNarratorDialog(
+                settings,
+                importer=importer,
+                preview_service=Mock(),
+                thread_pool=pool,
+                player=Mock(),
+            )
+            self.choose_game_source(dialog)
+            self.application.processEvents()
+            self.run_task(pool)
+            self.assertIn("Game not found", dialog.status.text())
+            self.assertTrue(dialog.folder_button.isEnabled())
+            self.assertTrue(dialog.controls.isEnabled())
+            self.assertFalse(dialog.save_button.isEnabled())
+            dialog.reject()
+            self.run_task(pool)
