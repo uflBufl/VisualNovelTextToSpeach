@@ -1,7 +1,7 @@
 import json
 import os
 import unittest
-from dataclasses import asdict, replace
+from dataclasses import replace
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,7 +16,6 @@ from PySide6.QtGui import QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
-from scripts.moss_native_pause_probe import _saved_narrator_reference  # noqa: E402
 from tests.test_authoring_pcm_playback import FakeAudioModule  # noqa: E402
 from tests.test_pregeneration_audition import FakeBackend, clean_wav_bytes  # noqa: E402
 from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
@@ -32,7 +31,6 @@ from vntts.configuration_apply import ConfigurationApplyMixin  # noqa: E402
 from vntts.game_audio_decoder import DecoderSetupRequired  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
 from vntts.game_narrator import (  # noqa: E402
-    bind_game_narrator,
     bind_voice_library_selection,
     load_original_reference,
     narrator_preview_plan,
@@ -569,27 +567,16 @@ class GameNarratorTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             manifest = self.narrator_manifest(root / "voices")
-            original = bind_game_narrator(
+            original = bind_voice_library_selection(
                 AppSettings(
                     voice_manifest=str(manifest), pocket_gated_model_accepted=True
                 ),
                 manifest,
                 "character:centurion",
                 "Centurion",
-                root=root / "saved",
-            )
-            original = original.updated(
-                voice_assignments={
-                    **original.voice_assignments,
-                    "Hotelier": "preset:anna",
-                }
+                root=self._voice_library.root,
             )
             before = Path(original.voice_manifest).read_bytes()
-            narrator_metadata = json.loads(before)["vntts.game_narrator"]
-            expected_refs = {
-                voice.character: tuple(path.read_bytes() for path in voice.references)
-                for voice in initialize_voice_registry(original).unique_voices()
-            }
             imported = self.narrator_manifest(root / "story-voices")
             imported_document = json.loads(imported.read_text())
             imported_document["voices"][-1]["character"] = "New story role"
@@ -601,7 +588,9 @@ class GameNarratorTest(unittest.TestCase):
                 preview_service=Mock(),
                 thread_pool=pool,
                 player=Mock(),
-                binder=partial(bind_game_narrator, root=root / "saved"),
+                binder=partial(
+                    bind_voice_library_selection, root=self._voice_library.root
+                ),
             )
             self.application.processEvents()
             dialog.set_voice_context(
@@ -619,12 +608,11 @@ class GameNarratorTest(unittest.TestCase):
             self.run_task(pool)
             saved = dialog.result_settings
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
-            self.assertEqual(
-                saved.voice_assignments,
-                {"Narrator": original.voice_assignments["Narrator"]},
+            self.assertEqual(saved.voice_assignments, {})
+            self.assertEqual(saved.character_voice_defaults, {})
+            registry = initialize_voice_registry(
+                saved, voice_library=self._voice_library
             )
-            self.assertEqual(set(saved.character_voice_defaults), {"Hotelier"})
-            registry = initialize_voice_registry(saved)
             self.assertEqual(registry.resolve("Narrator").source_character, "Centurion")
             self.assertEqual(
                 registry.resolve("Narrator").reference.read_bytes(),
@@ -634,42 +622,22 @@ class GameNarratorTest(unittest.TestCase):
             self.assertEqual(
                 registry.resolve("Hotelier").reference.read_bytes(), clean_wav_bytes()
             )
-            self.assertEqual(
-                registry.resolve("New story role").reference.read_bytes(), b"unrelated"
-            )
-            for character, references in expected_refs.items():
-                self.assertEqual(
-                    tuple(
-                        path.read_bytes()
-                        for path in registry.resolve_source(
-                            f"character:{character}"
-                        ).references
-                    ),
-                    references,
-                )
-            self.assertEqual(
-                json.loads(Path(saved.voice_manifest).read_bytes())[
-                    "vntts.game_narrator"
-                ],
-                narrator_metadata,
-            )
             self.assertEqual(Path(original.voice_manifest).read_bytes(), before)
-            self.assertEqual(original.voice_assignments["Hotelier"], "preset:anna")
             importer.narrator_characters.assert_not_called()
 
     def test_imported_rhiannon_voice_can_be_saved_for_aderyn_and_used_by_planning(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             manifest = self.narrator_manifest(root / "voices")
-            original = bind_game_narrator(
+            original = bind_voice_library_selection(
                 AppSettings(
                     voice_manifest=str(manifest), pocket_gated_model_accepted=True
                 ),
                 manifest,
                 "character:centurion",
                 "Centurion",
-                root=root / "saved",
-            ).updated(character_voice_defaults={"Rhiannon": "character:rhiannon"})
+                root=self._voice_library.root,
+            )
             imported = self.narrator_manifest(root / "story-voices")
             expected_reference = imported.parent / "references" / "rhiannon.wav"
             pool = ManualThreadPool()
@@ -679,7 +647,9 @@ class GameNarratorTest(unittest.TestCase):
                 preview_service=Mock(),
                 thread_pool=pool,
                 player=Mock(),
-                binder=partial(bind_game_narrator, root=root / "saved"),
+                binder=partial(
+                    bind_voice_library_selection, root=self._voice_library.root
+                ),
             )
             self.application.processEvents()
             dialog.set_voice_context(
@@ -698,12 +668,11 @@ class GameNarratorTest(unittest.TestCase):
                 saved.save(root / "settings.json"), environment={}
             )
 
-            self.assertEqual(loaded.voice_assignments, original.voice_assignments)
-            self.assertEqual(
-                loaded.character_voice_defaults["Rhiannon"], "character:rhiannon"
+            self.assertEqual(loaded.voice_assignments, {})
+            self.assertEqual(loaded.character_voice_defaults, {})
+            registry = initialize_voice_registry(
+                loaded, voice_library=self._voice_library
             )
-            self.assertIn("Aderyn", loaded.character_voice_defaults)
-            registry = initialize_voice_registry(loaded)
             self.assertEqual(
                 registry.resolve("Narrator").reference.read_bytes(),
                 clean_wav_bytes(amplitude=0.2),
@@ -728,11 +697,11 @@ class GameNarratorTest(unittest.TestCase):
             content = inspect_story_index(content_path)
             jobs = PregenerationJobStore(root / "jobs")
             job = jobs.create_or_resume(content, ("story",))
-            plan = VoicePlanStore(jobs).create(job, loaded)
-            aderyn = next(group for group in plan.groups if group.character == "Aderyn")
-            self.assertEqual(
-                aderyn.source_id, loaded.character_voice_defaults["Aderyn"]
+            plan = VoicePlanStore(jobs, voice_library=self._voice_library).create(
+                job, loaded
             )
+            aderyn = next(group for group in plan.groups if group.character == "Aderyn")
+            self.assertEqual(aderyn.source_character, "Rhiannon")
             self.assertEqual(
                 aderyn.reference_sha256s, (sha256_file(expected_reference),)
             )
@@ -777,19 +746,11 @@ class GameNarratorTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             manifest = self.narrator_manifest(root / "voices")
-            settings = bind_game_narrator(
-                AppSettings(
-                    voice_manifest=str(manifest), pocket_gated_model_accepted=True
-                ),
-                manifest,
-                "character:centurion",
-                "Centurion",
-                target_character="Hotelier",
-                root=root / "saved",
+            settings = AppSettings(
+                voice_manifest=str(manifest), pocket_gated_model_accepted=True
             )
-            source = settings.character_voice_defaults["Hotelier"]
             plan = narrator_preview_plan(
-                settings, settings.voice_manifest, source, "Line."
+                settings, settings.voice_manifest, "character:centurion", "Line."
             )
             portrait = root / "portrait.png"
             pixmap = QPixmap(20, 20)
@@ -1272,87 +1233,6 @@ class GameNarratorTest(unittest.TestCase):
         )
         shell.controller.start.assert_not_called()
 
-    def test_binding_rejects_unusable_selected_reference_before_mutation(self):
-        for name, payload in (
-            ("short", clean_wav_bytes(seconds=0.06075, sample_rate=24_000)),
-            ("silent", clean_wav_bytes(amplitude=0)),
-            ("malformed", b"not a WAV"),
-        ):
-            with self.subTest(reference=name), TemporaryDirectory() as directory:
-                root = Path(directory)
-                manifest = self.narrator_manifest(root / "source")
-                (manifest.parent / "references" / "centurion.wav").write_bytes(payload)
-                settings = AppSettings(
-                    voice_manifest=str(manifest),
-                    pocket_gated_model_accepted=True,
-                    voice_assignments={"Aderyn": "character:rhiannon"},
-                )
-                before_settings, before_manifest = (
-                    asdict(settings),
-                    manifest.read_bytes(),
-                )
-                output_root = root / "saved"
-
-                with self.assertRaisesRegex(
-                    ValueError, r"Cannot save Centurion: reference 1 is unusable"
-                ):
-                    bind_game_narrator(
-                        settings,
-                        manifest,
-                        "character:centurion",
-                        "Centurion",
-                        root=output_root,
-                    )
-
-                self.assertEqual(asdict(settings), before_settings)
-                self.assertEqual(manifest.read_bytes(), before_manifest)
-                self.assertFalse(output_root.exists())
-
-    def test_binding_preserves_existing_routes_and_original_manifest(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            manifest = self.narrator_manifest(root / "existing")
-            before = manifest.read_bytes()
-            settings = AppSettings(
-                voice_manifest=str(manifest),
-                pocket_gated_model_accepted=True,
-                voice_assignments={"Aderyn": "character:rhiannon"},
-            )
-            self.assertEqual(
-                (manifest.parent / "references" / "unrelated.wav").read_bytes(),
-                b"unrelated",
-            )
-            candidate = bind_game_narrator(
-                settings,
-                manifest,
-                "character:centurion",
-                "Centurion",
-                root=root / "saved",
-            )
-            registry = initialize_voice_registry(candidate)
-            self.assertEqual(registry.resolve("Narrator").source_character, "Centurion")
-            self.assertEqual(registry.resolve("Aderyn").character, "Rhiannon")
-            self.assertEqual(manifest.read_bytes(), before)
-            self.assertEqual(
-                candidate.voice_assignments["Aderyn"], "character:rhiannon"
-            )
-            saved = candidate.save(root / "settings.json")
-            loaded = load_app_settings(saved)
-            self.assertEqual(
-                initialize_voice_registry(loaded)
-                .resolve("Narrator")
-                .reference.read_bytes(),
-                clean_wav_bytes(amplitude=0.2),
-            )
-            again = bind_game_narrator(
-                settings,
-                manifest,
-                "character:centurion",
-                "Centurion",
-                root=root / "saved",
-            )
-            self.assertEqual(again.voice_manifest, candidate.voice_manifest)
-
     def test_ui_save_persists_selected_reference_over_retained_short_base_voice(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1377,7 +1257,9 @@ class GameNarratorTest(unittest.TestCase):
                 preview_service=VoiceAuditionPreviewService(root / "previews"),
                 thread_pool=pool,
                 player=player,
-                binder=partial(bind_game_narrator, root=root / "saved"),
+                binder=partial(
+                    bind_voice_library_selection, root=self._voice_library.root
+                ),
             )
             self.application.processEvents()
             dialog.source.setCurrentIndex(dialog.source.findData("game"))
@@ -1397,79 +1279,14 @@ class GameNarratorTest(unittest.TestCase):
             dialog.save_button.click()
             self.run_task(pool)
             self.run_task(pool)
-            loaded = load_app_settings(
-                dialog.result_settings.save(root / "settings.json"), environment={}
-            )
-            reference, registry = _saved_narrator_reference(
-                loaded, initialize_voice_registry
-            )
-            self.assertEqual(reference.read_bytes(), selected_reference.read_bytes())
+            dialog.result_settings.save(root / "settings.json")
             self.assertEqual(
-                registry.resolve("Centurion").reference.read_bytes(),
-                old_reference.read_bytes(),
+                self._voice_library.resolve_source_path("Narrator").read_bytes(),
+                selected_reference.read_bytes(),
             )
-
-    def test_fresh_narrator_keeps_story_character_candidates(self):
-        with (
-            TemporaryDirectory() as directory,
-            patch("vntts.game_narrator.find_default_voice_manifest", return_value=None),
-        ):
-            root = Path(directory)
-            manifest = self.narrator_manifest(root / "candidates")
-            settings = AppSettings(pocket_gated_model_accepted=True)
-            narrator = bind_game_narrator(
-                settings,
-                manifest,
-                "character:centurion",
-                "Centurion",
-                root=root / "saved",
-            )
-            combined = bind_game_narrator(
-                narrator,
-                narrator.voice_manifest,
-                narrator.voice_assignments["Narrator"],
-                "Centurion",
-                additional_manifest=manifest,
-                root=root / "saved",
-            )
-            content = inspect_story_index(write_content(root / "content"))
-            jobs = PregenerationJobStore(root / "jobs")
-            job = jobs.create_or_resume(content, ["story"])
-            plan = VoicePlanStore(jobs).create(job, combined)
-            self.assertTrue(
-                any(group.source_character == "Rhiannon" for group in plan.groups)
-            )
-            self.assertEqual(
-                initialize_voice_registry(combined)
-                .resolve("Narrator")
-                .source_character,
-                "Centurion",
-            )
-
-    def test_binding_rejects_incomplete_candidate_evidence(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            manifest = self.narrator_manifest(root / "voices")
-            document = json.loads(manifest.read_text(encoding="utf-8"))
-            document["vntts.player.voice_candidates"] = {
-                "candidate_report": "candidate-report.json"
-            }
-            manifest.write_text(json.dumps(document), encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "Candidate evidence is incomplete"):
-                bind_game_narrator(
-                    AppSettings(voice_manifest=str(manifest)),
-                    manifest,
-                    "character:centurion",
-                    "Centurion",
-                    root=root / "saved",
-                )
 
     def test_preparation_extracts_story_voices_after_fresh_narrator_selection(self):
-        with (
-            TemporaryDirectory() as directory,
-            patch("vntts.game_narrator.find_default_voice_manifest", return_value=None),
-        ):
+        with TemporaryDirectory() as directory:
             root = Path(directory)
             content = inspect_story_index(write_content(root / "content"))
             manifest = self.narrator_manifest(root / "narrators")
@@ -1497,11 +1314,7 @@ class GameNarratorTest(unittest.TestCase):
                 thread_pool=ManualThreadPool(),
             )
             job = jobs.create_or_resume(content, ["story"])
-            with patch(
-                "vntts.game_narrator.get_local_data_directory",
-                return_value=root / "local",
-            ):
-                plan = dialog._create_voice_plan(job)
+            plan = dialog._create_voice_plan(job)
             importer.prepare_voice_candidates.assert_called_once()
             self.assertTrue(any(group.candidates for group in plan.groups))
             narrator = initialize_voice_registry(
@@ -1565,11 +1378,7 @@ class GameNarratorTest(unittest.TestCase):
             )
             job = jobs.create_or_resume(content, ["story"])
 
-            with patch(
-                "vntts.game_narrator.get_local_data_directory",
-                return_value=root / "local",
-            ):
-                plan = dialog._create_voice_plan(job)
+            plan = dialog._create_voice_plan(job)
 
             importer.prepare_voice_candidates.assert_called_once()
             group = next(
@@ -1858,10 +1667,7 @@ class GameNarratorTest(unittest.TestCase):
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
     def test_guided_flow_gates_controls_previews_and_saves(self):
-        with (
-            TemporaryDirectory() as directory,
-            patch("vntts.game_narrator.find_default_voice_manifest", return_value=None),
-        ):
+        with TemporaryDirectory() as directory:
             root = Path(directory)
             manifest = self.narrator_manifest(root / "candidates")
             importer = self.narrator_importer(manifest)
@@ -1875,7 +1681,9 @@ class GameNarratorTest(unittest.TestCase):
                 preview_service=previews,
                 thread_pool=pool,
                 player=player,
-                binder=partial(bind_game_narrator, root=root / "saved"),
+                binder=partial(
+                    bind_voice_library_selection, root=self._voice_library.root
+                ),
             )
             self.application.processEvents()
             self.assertFalse(dialog.controls.isEnabled())
@@ -1911,7 +1719,9 @@ class GameNarratorTest(unittest.TestCase):
             self.run_task(pool)
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
             self.assertEqual(
-                initialize_voice_registry(dialog.result_settings)
+                initialize_voice_registry(
+                    dialog.result_settings, voice_library=self._voice_library
+                )
                 .resolve("Narrator")
                 .source_character,
                 "Centurion",
