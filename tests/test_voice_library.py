@@ -1,8 +1,11 @@
 import hashlib
+import os
 import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from vntts.voice_library import VoiceLibrary, VoiceLibraryError
 
@@ -16,6 +19,31 @@ def write_wav(path: Path, frames: bytes) -> None:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_windows_cross_stat_identity_does_not_reject_stable_reference(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x00\x00")
+            real_fstat = os.fstat
+
+            def windows_fstat(descriptor):
+                value = real_fstat(descriptor)
+                return SimpleNamespace(
+                    st_mode=value.st_mode,
+                    st_dev=value.st_dev + 1,
+                    st_ino=value.st_ino + 1,
+                    st_size=value.st_size,
+                    st_mtime_ns=value.st_mtime_ns,
+                )
+
+            with (
+                patch("vntts.voice_library._CROSS_STAT_IDENTITY_RELIABLE", False),
+                patch("vntts.voice_library.os.fstat", side_effect=windows_fstat),
+            ):
+                result = VoiceLibrary(root / "library").discover("Role", reference)
+
+            self.assertTrue(result.path.is_file())
+
     def test_discovery_deduplicates_blobs_and_does_not_replace_binding(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

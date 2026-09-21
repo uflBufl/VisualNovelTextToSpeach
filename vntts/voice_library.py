@@ -22,6 +22,7 @@ from vntts_artifacts.voice_manifest import normalize_character_name
 VOICE_LIBRARY_VERSION = 1
 VoiceRoute = Literal["voice", "narrator", "live-fallback"]
 _ROUTES = {"voice", "narrator", "live-fallback"}
+_CROSS_STAT_IDENTITY_RELIABLE = os.name != "nt"
 
 
 class VoiceLibraryError(ValueError):
@@ -316,6 +317,7 @@ def _read_wav(reference: str | Path) -> bytes:
     if path.is_symlink():
         raise VoiceLibraryError("Voice reference must not be a symlink")
     try:
+        before = path.stat(follow_symlinks=False)
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except OSError as error:
         raise VoiceLibraryError(f"Unable to open voice reference: {path}") from error
@@ -324,14 +326,18 @@ def _read_wav(reference: str | Path) -> bytes:
         if not stat.S_ISREG(opened.st_mode):
             raise VoiceLibraryError("Voice reference must be a regular file")
         payload = b"".join(iter(lambda: os.read(descriptor, 1024 * 1024), b""))
+        finished = os.fstat(descriptor)
         current = path.stat(follow_symlinks=False)
-        if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != (
-            current.st_dev,
-            current.st_ino,
-            current.st_size,
-            current.st_mtime_ns,
-        ) or len(payload) != opened.st_size:
-            raise VoiceLibraryError("Voice reference changed while it was read")
+        if _file_identity(opened) != _file_identity(finished):
+            raise VoiceLibraryError("Voice reference descriptor changed while read")
+        if _file_identity(before) != _file_identity(current):
+            raise VoiceLibraryError("Voice reference path changed while read")
+        if _CROSS_STAT_IDENTITY_RELIABLE and _file_identity(
+            opened
+        ) != _file_identity(before):
+            raise VoiceLibraryError("Voice reference path and descriptor disagree")
+        if len(payload) != opened.st_size:
+            raise VoiceLibraryError("Voice reference read was incomplete")
     finally:
         os.close(descriptor)
     try:
@@ -340,6 +346,10 @@ def _read_wav(reference: str | Path) -> bytes:
     except wave.Error as error:
         raise VoiceLibraryError("Voice reference is not a WAV file") from error
     return payload
+
+
+def _file_identity(value):
+    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
 
 
 def _provenance(
