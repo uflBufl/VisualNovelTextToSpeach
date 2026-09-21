@@ -97,6 +97,7 @@ from vntts.voices import (
     is_unattributed_speaker,
     normalize_character_name,
     pocket_tts_preset_voices,
+    remember_voice_binding,
     voice_binding_label,
 )
 
@@ -145,12 +146,18 @@ class OfflineAudioPreparationDialog(QDialog):
             )
         )
         self.voice_decisions = voice_decisions or VoiceDecisionStore(
-            get_local_data_directory() / "pregeneration" / "voice-decisions.json"
+            get_local_data_directory() / "pregeneration" / "voice-decisions.json",
+            voice_library=self.voice_library,
         )
         self.voice_plan_store = voice_plan_store or VoicePlanStore(
             self.job_store,
             decisions=self.voice_decisions,
+            voice_library=self.voice_library,
         )
+        if self.voice_decisions.voice_library is None:
+            self.voice_decisions.voice_library = self.voice_library
+        if self.voice_plan_store.voice_library is None:
+            self.voice_plan_store.voice_library = self.voice_library
         self.input_store = input_store or PregenerationInputStore(self.job_store)
         self.generator = generator or OfflineGenerationWorker()
         self.recovery = recovery or OfflineRecoveryWorker(self.generator)
@@ -1043,7 +1050,9 @@ class OfflineAudioPreparationDialog(QDialog):
                 choice.description,
                 Qt.ItemDataRole.ToolTipRole,
             )
-        current = pregeneration_narrator_source_id(self.settings)
+        current = pregeneration_narrator_source_id(
+            self.settings, voice_library=self.voice_library
+        )
         selected = self.narrator_choice.findData(current)
         self.narrator_choice.setCurrentIndex(max(0, selected))
         self.narrator_choice.blockSignals(False)
@@ -1170,7 +1179,10 @@ class OfflineAudioPreparationDialog(QDialog):
         ready = source_id is not None or not needs_narrator
         changed = (
             source_id is not None
-            and source_id != pregeneration_narrator_source_id(self.settings)
+            and source_id
+            != pregeneration_narrator_source_id(
+                self.settings, voice_library=self.voice_library
+            )
         ) or (
             self._voice_plan is not None
             and self._voice_plan.synthesis_backend == "pocket-tts"
@@ -1226,7 +1238,9 @@ class OfflineAudioPreparationDialog(QDialog):
         if self._narrator_player is not None:
             self._narrator_player.stop()
         source_id = self.narrator_choice.currentData()
-        current = pregeneration_narrator_source_id(self.settings)
+        current = pregeneration_narrator_source_id(
+            self.settings, voice_library=self.voice_library
+        )
         self._awaiting_voice_confirmation = False
         self.pocket_voice_cloning.setEnabled(False)
         self.voice_confirmation.hide()
@@ -1239,13 +1253,24 @@ class OfflineAudioPreparationDialog(QDialog):
         narrator_changed = source_id is not None and source_id != current
         if controls_changed or narrator_changed:
             if narrator_changed:
-                assignments = {
-                    character: value
-                    for character, value in self.settings.voice_assignments.items()
-                    if normalize_character_name(character) != "narrator"
-                }
-                assignments["Narrator"] = source_id
-                self.settings = self.settings.updated(voice_assignments=assignments)
+                registry = (
+                    CharacterVoiceRegistry.from_file(self._voice_plan.voice_manifest)
+                    if self._voice_plan.voice_manifest
+                    else CharacterVoiceRegistry()
+                )
+                remember_voice_binding(
+                    self.voice_library,
+                    registry,
+                    "Narrator",
+                    source_id,
+                    method="manual",
+                    evidence={"selected_in": "story-preparation"},
+                    algorithm="story-preparation-v1",
+                )
+                self.settings = self.settings.updated(
+                    voice_assignments={},
+                    character_voice_defaults={},
+                )
                 self._refresh_narrator_status()
             self.planning_voices = True
             self.replanning_voice_decisions = False
@@ -2604,42 +2629,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self._prepared_voice_manifest = None
             self._prepared_voice_job = job.job_id
         manifest = self._prepared_voice_manifest
-        if manifest is None and self.settings.voice_manifest:
-            from vntts_artifacts.voice_manifest import load_voice_manifest
-
-            from vntts.game_narrator import bind_game_narrator
-
-            configured = load_voice_manifest(self.settings.voice_manifest)[0]
-            narrator = configured.get("vntts.game_narrator")
-            if narrator is None:
-                source_id = pregeneration_narrator_source_id(self.settings)
-                selected = CharacterVoiceRegistry.from_file(
-                    self.settings.voice_manifest
-                ).resolve_source(source_id)
-                if selected is not None and selected.references:
-                    narrator = {
-                        "source_id": source_id,
-                        "character": selected.source_character or selected.character,
-                    }
-            if narrator is not None:
-                candidates = self.importer.prepare_voice_candidates(
-                    job, self.voice_cancel_event, progress=self.decoderProgress.emit
-                )
-                if candidates is not None:
-                    combined = bind_game_narrator(
-                        self.settings,
-                        self.settings.voice_manifest,
-                        narrator["source_id"],
-                        narrator["character"],
-                        additional_manifest=candidates,
-                    )
-                    manifest = combined.voice_manifest
-                    self._prepared_voice_manifest = manifest
-        if (
-            manifest is None
-            and not self.settings.voice_manifest
-            and find_default_voice_manifest() is None
-        ):
+        if manifest is None:
             try:
                 manifest = self.importer.prepare_voice_candidates(
                     job,
@@ -2650,6 +2640,11 @@ class OfflineAudioPreparationDialog(QDialog):
                 raise PregenerationVoiceCancelled(
                     "Voice candidate preparation was cancelled"
                 ) from error
+            manifest = (
+                manifest
+                or self.settings.voice_manifest
+                or find_default_voice_manifest()
+            )
             self._prepared_voice_manifest = manifest
         options = {
             "cancellation": self.voice_cancel_event,

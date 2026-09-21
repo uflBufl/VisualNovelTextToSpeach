@@ -203,9 +203,8 @@ class CharacterVoiceRegistry:
         return tuple(
             VoiceChoice(
                 f"character:{normalize_character_name(voice.character)}",
-                f"{voice.source_character} (game narrator)"
-                if voice.source_character
-                and voice.character.startswith("Game narrator ")
+                voice.source_character
+                if voice.source_character and voice.source_character != voice.character
                 else voice.character,
                 "Imported character voice",
             )
@@ -296,6 +295,50 @@ def voice_binding_label(binding: VoiceBinding | None) -> str | None:
     return binding.role
 
 
+def voice_binding_source_id(binding: VoiceBinding) -> str | None:
+    if binding.route != "voice":
+        return default_voice_choice_id
+    if binding.source_id is not None:
+        return binding.source_id
+    identity = hashlib.sha256(
+        "\0".join(binding.source_sha256s).encode("ascii")
+    ).hexdigest()
+    return f"character:voicelibrary{identity[:16]}"
+
+
+def discover_voice_source(
+    library: VoiceLibrary,
+    registry: CharacterVoiceRegistry,
+    role: str,
+    source_id: str,
+    *,
+    variant_key: str | None = None,
+    method: str = "automatic",
+    evidence: object | None = None,
+    algorithm: str | None = None,
+) -> tuple[str, ...]:
+    voice = registry.resolve_source(source_id)
+    if voice is None or not voice.references:
+        return ()
+    source_evidence = {
+        "source_id": source_id,
+        "source_character": voice.source_character or voice.character,
+        "speaker": voice.speaker,
+        "evidence": evidence,
+    }
+    return tuple(
+        library.discover(
+            role,
+            reference,
+            variant_key=variant_key,
+            method=method,
+            evidence=source_evidence,
+            algorithm=algorithm,
+        ).sha256
+        for reference in voice.references
+    )
+
+
 def remember_voice_binding(
     library: VoiceLibrary,
     registry: CharacterVoiceRegistry,
@@ -333,28 +376,27 @@ def remember_voice_binding(
             algorithm=algorithm,
             only_if_unbound=only_if_unbound,
         )
+    selected_checksums = discover_voice_source(
+        library,
+        registry,
+        role,
+        source_id,
+        variant_key=variant_key,
+        method=method,
+        evidence=evidence,
+        algorithm=algorithm,
+    )
     source_evidence = {
         "source_id": source_id,
         "source_character": voice.source_character or voice.character,
         "speaker": voice.speaker,
         "evidence": evidence,
     }
-    alternatives = tuple(
-        library.discover(
-            role,
-            reference,
-            variant_key=variant_key,
-            method=method,
-            evidence=source_evidence,
-            algorithm=algorithm,
-        )
-        for reference in voice.references
-    )
     return library.select(
         role,
         variant_key=variant_key,
         route="voice",
-        source_sha256s=(alternative.sha256 for alternative in alternatives),
+        source_sha256s=selected_checksums,
         method=method,
         evidence=source_evidence,
         algorithm=algorithm,
@@ -380,24 +422,26 @@ def registry_with_voice_library(
         references = library.resolve_source_paths(
             binding.role, variant_key=binding.variant_key
         )
-        identity = hashlib.sha256(
-            "\0".join(binding.source_sha256s).encode("ascii")
-        ).hexdigest()
-        name = f"Voice library {identity[:16]}"
+        source_id = voice_binding_source_id(binding)
+        name = source_id.removeprefix("character:").title()
         evidence = binding.provenance.get("evidence")
         metadata = evidence if isinstance(evidence, dict) else {}
+        normalized_name = normalize_character_name(name)
+        voices = [
+            voice
+            for voice in voices
+            if normalize_character_name(voice.character) != normalized_name
+        ]
         voices.append(
             CharacterVoice(
                 name,
                 str(metadata.get("speaker") or name),
                 references=references,
                 reference_root=library.root,
-                source_character=str(
-                    metadata.get("source_character") or binding.role
-                ),
+                source_character=str(metadata.get("source_character") or binding.role),
             )
         )
-        sources[key] = f"character:{normalize_character_name(name)}"
+        sources[key] = source_id
     projected = CharacterVoiceRegistry(voices)
     narrator_source = sources.get(("narrator", None))
     for binding in bindings:

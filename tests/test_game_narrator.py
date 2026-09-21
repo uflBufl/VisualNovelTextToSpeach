@@ -1600,12 +1600,12 @@ class GameNarratorTest(unittest.TestCase):
             root = Path(directory)
             content = inspect_story_index(write_content(root / "content"))
             manifest = self.narrator_manifest(root / "narrators")
-            selected = bind_game_narrator(
+            selected = bind_voice_library_selection(
                 AppSettings(pocket_gated_model_accepted=True),
                 manifest,
                 "character:centurion",
                 "Centurion",
-                root=root / "saved",
+                root=self._voice_library.root,
             )
             candidates = write_player_candidate_manifest(
                 root / "story-candidates", content.story_index_sha256
@@ -1631,7 +1631,9 @@ class GameNarratorTest(unittest.TestCase):
                 plan = dialog._create_voice_plan(job)
             importer.prepare_voice_candidates.assert_called_once()
             self.assertTrue(any(group.candidates for group in plan.groups))
-            narrator = initialize_voice_registry(selected).resolve("Narrator")
+            narrator = initialize_voice_registry(
+                selected, voice_library=self._voice_library
+            ).resolve("Narrator")
             self.assertEqual(narrator.source_character, "Centurion")
             self.assertNotEqual(plan.voice_manifest, str(candidates))
             dialog.reject()
@@ -1663,9 +1665,22 @@ class GameNarratorTest(unittest.TestCase):
             )
             settings = AppSettings(
                 voice_manifest=str(manifest),
-                voice_assignments={"Narrator": "character:narrator"},
-                character_voice_defaults={"Rhiannon": "character:rhiannon"},
                 pocket_gated_model_accepted=True,
+            )
+            settings = bind_voice_library_selection(
+                settings,
+                manifest,
+                "character:narrator",
+                "Narrator",
+                root=self._voice_library.root,
+            )
+            settings = bind_voice_library_selection(
+                settings,
+                manifest,
+                "character:rhiannon",
+                "Rhiannon",
+                root=self._voice_library.root,
+                target_character="Rhiannon",
             )
             jobs = PregenerationJobStore(root / "jobs")
             dialog = OfflineAudioPreparationDialog(
@@ -1684,13 +1699,16 @@ class GameNarratorTest(unittest.TestCase):
                 plan = dialog._create_voice_plan(job)
 
             importer.prepare_voice_candidates.assert_called_once()
-            group = next(group for group in plan.groups if group.character == "Rhiannon")
+            group = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
             self.assertEqual(len(group.candidate_inventory), 3)
             self.assertEqual(
                 initialize_voice_registry(
-                    settings.updated(voice_manifest=plan.voice_manifest)
+                    settings.updated(voice_manifest=plan.voice_manifest),
+                    voice_library=self._voice_library,
                 )
-                .resolve_source("character:narrator")
+                .resolve("Narrator")
                 .speaker,
                 "configured-narrator",
             )

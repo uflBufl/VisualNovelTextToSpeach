@@ -56,6 +56,8 @@ from vntts.settings import AppSettings  # noqa: E402
 from vntts.speech_presentation import engine_model_label  # noqa: E402
 from vntts.synthesis import SynthesisCompletion  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
+from vntts.voice_library import VoiceLibrary  # noqa: E402
+from vntts.voices import CharacterVoiceRegistry, remember_voice_binding  # noqa: E402
 
 
 class InProcessPocketGenerator(OfflineGenerationWorker):
@@ -168,6 +170,33 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self._voice_library_directory = TemporaryDirectory()
+        self._voice_library = VoiceLibrary(
+            Path(self._voice_library_directory.name) / "library"
+        )
+        self._voice_library_patches = (
+            patch(
+                "vntts.pregeneration_ui.application_voice_library",
+                return_value=self._voice_library,
+            ),
+            patch(
+                "vntts.game_narrator_ui.application_voice_library",
+                return_value=self._voice_library,
+            ),
+            patch(
+                "vntts.game_narrator.application_voice_library",
+                return_value=self._voice_library,
+            ),
+        )
+        for library_patch in self._voice_library_patches:
+            library_patch.start()
+
+    def tearDown(self):
+        for library_patch in reversed(self._voice_library_patches):
+            library_patch.stop()
+        self._voice_library_directory.cleanup()
 
     def test_generation_exception_keeps_exact_copyable_details(self):
         with TemporaryDirectory() as directory:
@@ -463,15 +492,25 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             selected = original.updated(
                 speech_backend="moss-tts",
                 tts_model="selected/model",
-                voice_assignments={"Narrator": "character:centurion"},
             )
+
+            def choose_narrator(*_args, **_kwargs):
+                remember_voice_binding(
+                    self._voice_library,
+                    CharacterVoiceRegistry.from_file(manifest),
+                    "Narrator",
+                    "character:centurion",
+                    method="manual",
+                )
+                return selected
+
             pool = ManualThreadPool()
             dialog = OfflineAudioPreparationDialog(
                 original,
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=PregenerationJobStore(root / "jobs"),
                 voice_decisions=VoiceDecisionStore(root / "decisions.json"),
-                game_narrator_chooser=Mock(return_value=selected),
+                game_narrator_chooser=Mock(side_effect=choose_narrator),
                 thread_pool=pool,
             )
             dialog.select_all_button.click()
@@ -710,9 +749,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertTrue(dialog._awaiting_voice_confirmation)
-            self.assertEqual(
-                dialog.narrator_choice.currentData(), "character:centurion"
-            )
+            self.assertEqual(dialog.narrator_choice.currentText(), "Centurion")
             narrator_groups = tuple(
                 group
                 for group in dialog._voice_plan.groups
@@ -746,6 +783,13 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     24_000,
                     subtype="PCM_16",
                 )
+            remember_voice_binding(
+                self._voice_library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Narrator",
+                "character:centurion",
+                method="manual",
+            )
             pool = ManualThreadPool()
             player = Mock()
             dialog = OfflineAudioPreparationDialog(
@@ -753,7 +797,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                     speech_backend="moss-tts",
                     voice_manifest=str(manifest),
                     pocket_gated_model_accepted=True,
-                    voice_assignments={"Narrator": "character:centurion"},
                 ),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=PregenerationJobStore(root / "jobs"),
@@ -772,7 +815,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertFalse(dialog.voice_panel.preview_service._closed)
             player.reset_mock()
             dialog.continue_button.click()
-            self.assertTrue(dialog.generating)
+            self.assertTrue(dialog.generating, dialog.resume_status.text())
             self.assertFalse(dialog.planning_voices)
             player.stop.assert_called()
             self.assertTrue(dialog.voice_panel.preview_service._closed)
@@ -799,7 +842,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.application.processEvents()
             pool.tasks.pop(0).run()
             self.application.processEvents()
-            manifest.write_text("broken", encoding="utf-8")
+            Path(dialog._voice_plan.voice_manifest).write_text(
+                "broken", encoding="utf-8"
+            )
             dialog.pocket_voice_cloning.setChecked(True)
             self.assertFalse(dialog._awaiting_voice_confirmation)
             self.assertTrue(dialog.selection_panel.isVisibleTo(dialog))

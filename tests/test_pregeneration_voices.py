@@ -1,6 +1,7 @@
 import hashlib
 import json
 import unittest
+import wave
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -35,6 +36,7 @@ from vntts.source_audio_semantics import (
     SEMANTIC_EVIDENCE_METHOD,
     semantic_text_sha256,
 )
+from vntts.voice_library import VoiceLibrary
 
 
 def write_content(root):
@@ -341,7 +343,11 @@ def write_player_candidate_manifest(
     variants = []
     for index, quality_score in enumerate(quality_scores, start=1):
         reference = references / f"rhiannon-{index}.wav"
-        reference.write_bytes(f"rhiannon-{index}".encode())
+        with wave.open(str(reference), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16_000)
+            audio.writeframes(b"\0\0" * 1_600)
         variant_id = str(index) * 64
         voice_character = f"Player candidate Rhiannon {index}"
         voices.append(
@@ -389,6 +395,45 @@ def write_player_candidate_manifest(
 
 
 class VoicePlanStoreTest(unittest.TestCase):
+    def test_planning_persists_one_binding_and_rediscovery_keeps_it(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_manifest(root / "voices")
+            for reference in ("rhiannon.wav", "centurion.wav"):
+                with wave.open(
+                    str(manifest.parent / "references" / reference), "wb"
+                ) as audio:
+                    audio.setparams((1, 2, 24_000, 0, "NONE", "not compressed"))
+                    audio.writeframes(b"\x00\x00" * 24_000)
+            library = VoiceLibrary(root / "library")
+            planner = VoicePlanStore(jobs, voice_library=library)
+
+            first = planner.create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+            rhiannon = next(
+                group for group in first.groups if group.character == "Rhiannon"
+            )
+            variant = rhiannon.age or rhiannon.source_bank
+            binding = library.binding("Rhiannon", variant_key=variant)
+            planner.create(
+                job,
+                AppSettings(
+                    pocket_gated_model_accepted=True,
+                    voice_assignments={"Rhiannon": "character:centurion"},
+                ),
+                manifest_path=manifest,
+            )
+
+            self.assertEqual(binding.route, "voice")
+            self.assertEqual(
+                library.binding("Rhiannon", variant_key=variant),
+                binding,
+            )
+
     def create_fixture(self, root):
         content = inspect_story_index(write_content(root / "content"))
         jobs = PregenerationJobStore(root / "jobs")

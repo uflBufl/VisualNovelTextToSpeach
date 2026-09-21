@@ -268,7 +268,9 @@ class GameNarratorDialog(QDialog):
         self.source.addItem("Narrator fallback", "narrator")
         selected = find_voice_assignment(
             settings.voice_assignments, "Narrator"
-        ) or pregeneration_narrator_source_id(self.settings_value)
+        ) or pregeneration_narrator_source_id(
+            self.settings_value, voice_library=self.voice_library
+        )
         if selected.startswith("preset:"):
             self.source.setCurrentIndex(1)
         form.addRow("Candidate source", self.source)
@@ -550,25 +552,31 @@ class GameNarratorDialog(QDialog):
             else None
         )
         selected = (
-            saved_binding.source_id
-            or (
-                saved_evidence.get("source_id")
-                if isinstance(saved_evidence, dict)
-                else None
-            )
-            or (
-                "default"
-                if saved_binding is not None
-                and saved_binding.route in {"narrator", "live-fallback"}
-                else None
-            )
-        ) if saved_binding is not None else (
             (
-                find_voice_assignment(settings.voice_assignments, "Narrator")
-                or pregeneration_narrator_source_id(settings)
+                saved_binding.source_id
+                or (
+                    saved_evidence.get("source_id")
+                    if isinstance(saved_evidence, dict)
+                    else None
+                )
+                or (
+                    "default"
+                    if saved_binding is not None
+                    and saved_binding.route in {"narrator", "live-fallback"}
+                    else None
+                )
             )
-            if narrator
-            else find_voice_assignment(settings.character_voice_defaults, role)
+            if saved_binding is not None
+            else (
+                (
+                    find_voice_assignment(settings.voice_assignments, "Narrator")
+                    or pregeneration_narrator_source_id(
+                        settings, voice_library=self.voice_library
+                    )
+                )
+                if narrator
+                else find_voice_assignment(settings.character_voice_defaults, role)
+            )
         )
         manual = not narrator and find_voice_assignment(
             settings.voice_assignments, role
@@ -769,7 +777,9 @@ class GameNarratorDialog(QDialog):
         narrator = normalize_character_name(role) == "narrator"
         saved = (
             find_voice_assignment(initial.voice_assignments, "Narrator")
-            or pregeneration_narrator_source_id(initial)
+            or pregeneration_narrator_source_id(
+                initial, voice_library=self.voice_library
+            )
             if narrator
             else find_voice_assignment(initial.character_voice_defaults, role)
         )
@@ -1385,11 +1395,7 @@ class GameNarratorDialog(QDialog):
                 self.voice_library,
                 self._catalog_registry,
                 role,
-                (
-                    "default"
-                    if policy == "narrator"
-                    else self.presets.currentData()
-                ),
+                ("default" if policy == "narrator" else self.presets.currentData()),
                 method="manual",
                 evidence={"selected_in": "voice-picker"},
                 algorithm="voice-picker-v1",

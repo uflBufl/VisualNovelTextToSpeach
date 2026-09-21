@@ -16,8 +16,17 @@ from vntts_artifacts.voice_generation_queue import (
     expected_voice_generation_queue_id,
     text_sha256,
 )
-from vntts_artifacts.voice_manifest import VoiceManifestError, normalize_character_name
+from vntts_artifacts.voice_manifest import (
+    VoiceManifestError,
+    normalize_character_name,
+    write_voice_manifest,
+)
 
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.source_reference_bindings import (
     SOURCE_REFERENCE_BINDINGS_FIELD,
     SourceReferenceBindingError,
@@ -31,14 +40,20 @@ from vntts.pregeneration_setup import load_verified_story_index_document
 from vntts.services.tts_engine import default_tts_profile, get_tts_profile
 from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
+from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
     default_voice_choice_id,
+    discover_voice_source,
     find_default_voice_manifest,
     find_voice_assignment,
     is_narrator,
     pocket_tts_preset_voices,
+    read_voice_reference_bytes,
+    registry_with_voice_library,
+    remember_voice_binding,
     synthesis_character_for_line,
+    voice_binding_source_id,
 )
 
 voice_plan_schema_version = 4
@@ -78,9 +93,11 @@ def resolve_pregeneration_settings(settings):
     return settings
 
 
-def pregeneration_narrator_source_id(settings):
+def pregeneration_narrator_source_id(settings, *, voice_library=None):
     """Return the narrator source that self-service generation will use."""
-    source_id = _effective_assignment_source(settings, "Narrator")
+    source_id = _effective_assignment_source(
+        settings, "Narrator", library=voice_library
+    )
     if source_id is not None:
         return source_id
     if settings.speech_backend != "pocket-tts":
@@ -211,8 +228,9 @@ class VoicePlan:
 class VoiceDecisionStore:
     """Reuse explicit player choices only under identical evidence and controls."""
 
-    def __init__(self, path, *, clock=None):
+    def __init__(self, path, *, voice_library=None, clock=None):
         self.path = Path(path).expanduser()
+        self.voice_library: VoiceLibrary | None = voice_library
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def choice_for(self, group_id, decision_context_sha256):
@@ -252,6 +270,58 @@ class VoiceDecisionStore:
                 raise PregenerationVoiceError(
                     "The selected voice is not part of this voice plan"
                 )
+            if self.voice_library is not None:
+                variant_key = group.age or group.source_bank
+                if source_id == default_voice_choice_id:
+                    self.voice_library.select(
+                        group.character,
+                        variant_key=variant_key,
+                        route="narrator",
+                        method="manual",
+                        evidence={
+                            "decision_context_sha256": group.decision_context_sha256
+                        },
+                        algorithm="voice-audition-v1",
+                    )
+                else:
+                    selected = next(
+                        (
+                            candidate
+                            for candidate in (
+                                *group.candidates,
+                                *group.candidate_inventory,
+                            )
+                            if candidate.source_id == source_id
+                        ),
+                        None,
+                    )
+                    if selected is not None and selected.reference_sha256s:
+                        self.voice_library.select(
+                            group.character,
+                            variant_key=variant_key,
+                            route="voice",
+                            source_sha256s=selected.reference_sha256s,
+                            method="manual",
+                            evidence={
+                                "source_id": selected.source_id,
+                                "source_character": selected.source_character,
+                                "speaker": selected.source_speaker,
+                                "decision_context_sha256": group.decision_context_sha256,
+                            },
+                            algorithm="voice-audition-v1",
+                        )
+                    else:
+                        self.voice_library.select(
+                            group.character,
+                            variant_key=variant_key,
+                            route="voice",
+                            source_id=source_id,
+                            method="manual",
+                            evidence={
+                                "decision_context_sha256": group.decision_context_sha256
+                            },
+                            algorithm="voice-audition-v1",
+                        )
             decisions[_decision_key(group.group_id, group.decision_context_sha256)] = {
                 "group_id": group.group_id,
                 "decision_context_sha256": group.decision_context_sha256,
@@ -301,9 +371,10 @@ class VoiceDecisionStore:
 
 
 class VoicePlanStore:
-    def __init__(self, job_store, *, decisions=None, clock=None):
+    def __init__(self, job_store, *, decisions=None, voice_library=None, clock=None):
         self.job_store = job_store
         self.decisions = decisions
+        self.voice_library: VoiceLibrary | None = voice_library
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def create(
@@ -333,6 +404,8 @@ class VoicePlanStore:
         phase_started, cpu_started = perf_counter(), process_time()
         manifest_path = _selected_manifest(settings, manifest_path)
         registry, manifest_sha256, manifest_document = _load_registry(manifest_path)
+        if self.voice_library is not None:
+            registry = registry_with_voice_library(registry, self.voice_library)
         queue_bindings = _manifest_queue_bindings(manifest_document, registry)
         candidate_variants = _manifest_candidate_variants(
             manifest_document,
@@ -340,6 +413,9 @@ class VoicePlanStore:
             manifest_path,
             job.story_index_sha256,
         )
+        if self.voice_library is not None:
+            manifest_path = _materialize_voice_catalog(self.job_store, job, registry)
+            manifest_sha256 = sha256_file(manifest_path)
         reference_files, reference_bytes = _voice_reference_stats(registry)
         _record_plan_phase(
             "voice-inventory",
@@ -379,8 +455,14 @@ class VoicePlanStore:
                 record.speaker, record.voice_character
             )
             evidence = _variant_evidence(record)
+            variant_key = (
+                _voice_variant_key(evidence) if self.voice_library is not None else None
+            )
             bound_source = _effective_assignment_source(
-                settings, character
+                settings,
+                character,
+                library=self.voice_library,
+                variant_key=variant_key,
             ) or _bound_source_for_record(record, queue_bindings)
             portrait_image, portrait_image_sha256 = _portrait_snapshot(
                 Path(job.story_index).expanduser().resolve().parent,
@@ -389,7 +471,7 @@ class VoicePlanStore:
             )
             identity = [
                 normalize_character_name(character),
-                bound_source,
+                variant_key,
             ]
             group_id = _digest(identity)
             grouped.setdefault(group_id, []).append(
@@ -397,6 +479,7 @@ class VoicePlanStore:
                     record,
                     character,
                     evidence,
+                    variant_key,
                     bound_source,
                     portrait_image,
                     portrait_image_sha256,
@@ -503,27 +586,52 @@ class VoicePlanStore:
         records = tuple(value[0] for value in values)
         character = values[0][1]
         portrait, age, source_bank, source_voice_id = values[0][2]
+        variant_key = values[0][3]
         if any(value[2][1] != age for value in values):
             age = None
         if any(value[2][2] != source_bank for value in values):
             source_bank = None
         if any(value[2][3] != source_voice_id for value in values):
             source_voice_id = None
-        bound_source = values[0][3]
-        portrait_value = next((value for value in values if value[4]), values[0])
+        bound_source = values[0][4]
+        portrait_value = next((value for value in values if value[5]), values[0])
         portrait = portrait_value[2][0]
-        portrait_image, portrait_image_sha256 = portrait_value[4:6]
+        portrait_image, portrait_image_sha256 = portrait_value[5:7]
         speakers = tuple(dict.fromkeys(record.speaker for record in records))
-        assignment_source = _effective_assignment_source(settings, character)
+        assignment_source = _effective_assignment_source(
+            settings,
+            character,
+            library=self.voice_library,
+            variant_key=variant_key,
+        )
         candidate_inventory = _candidate_inventory(
             character,
             bound_source,
             settings,
             registry,
             candidate_variants,
+            assignment_source=assignment_source,
         )
+        if self.voice_library is not None:
+            for available in candidate_inventory:
+                discover_voice_source(
+                    self.voice_library,
+                    registry,
+                    character,
+                    available.source_id,
+                    variant_key=variant_key,
+                    method="automatic",
+                    evidence={"recommendation": available.recommendation},
+                    algorithm="voice-plan-v1",
+                )
         eligible_candidates = _eligible_candidates(candidate_inventory)
-        narrator_candidate = _narrator_candidate(settings, registry)
+        narrator_candidate = _narrator_candidate(
+            settings,
+            registry,
+            assignment_source=_effective_assignment_source(
+                settings, "Narrator", library=self.voice_library
+            ),
+        )
         decision_context_sha256 = _digest(
             {
                 "group_id": group_id,
@@ -647,6 +755,42 @@ class VoicePlanStore:
                 if narrator_candidate is not None
                 else None
             )
+        if self.voice_library is not None and route != "needs-audition":
+            if route == "voice":
+                remember_voice_binding(
+                    self.voice_library,
+                    registry,
+                    character,
+                    source_id,
+                    variant_key=variant_key,
+                    method="automatic",
+                    evidence={"resolution": resolution},
+                    algorithm="voice-plan-v1",
+                    only_if_unbound=True,
+                )
+            elif route == "narrator" and is_narrator(character):
+                if narrator_candidate is not None:
+                    remember_voice_binding(
+                        self.voice_library,
+                        registry,
+                        character,
+                        narrator_candidate.source_id,
+                        variant_key=variant_key,
+                        method="automatic",
+                        evidence={"resolution": resolution},
+                        algorithm="voice-plan-v1",
+                        only_if_unbound=True,
+                    )
+            elif route == "narrator":
+                self.voice_library.select(
+                    character,
+                    variant_key=variant_key,
+                    route="narrator",
+                    method="automatic",
+                    evidence={"resolution": resolution},
+                    algorithm="voice-plan-v1",
+                    only_if_unbound=True,
+                )
         selected_identity = _candidate_identity(
             (source_id, candidate) if candidate is not None else None
         )
@@ -674,7 +818,11 @@ class VoicePlanStore:
             alternate_sample_text=alternate_sample_text,
             route=route,
             source_id=source_id,
-            source_character=candidate.character if candidate is not None else None,
+            source_character=(
+                candidate.source_character or candidate.character
+                if candidate is not None
+                else None
+            ),
             source_speaker=candidate.speaker if candidate is not None else None,
             reference_sha256s=tuple((selected_identity or {}).get("references", ())),
             decision_context_sha256=decision_context_sha256,
@@ -726,8 +874,61 @@ def _load_registry(manifest_path):
     return registry, before, manifest_document
 
 
-def _candidate_for(character, settings, registry):
-    source_id = _effective_assignment_source(settings, character)
+def _materialize_voice_catalog(job_store, job, registry):
+    voices = []
+    payloads = {}
+    identity = []
+    for voice in sorted(
+        registry.unique_voices(), key=lambda value: value.character.casefold()
+    ):
+        references = []
+        checksums = []
+        for reference in voice.references:
+            payload = read_voice_reference_bytes(voice, reference)
+            checksum = hashlib.sha256(payload).hexdigest()
+            suffix = reference.suffix or ".wav"
+            relative = f"references/{checksum}{suffix}"
+            payloads.setdefault(relative, payload)
+            references.append(relative)
+            checksums.append(checksum)
+        entry = {
+            "character": voice.character,
+            "speaker": voice.speaker,
+            "aliases": [],
+            "references": references,
+        }
+        if voice.source_character:
+            entry["vntts.source_character"] = voice.source_character
+        voices.append(entry)
+        identity.append((voice.character, voice.speaker, checksums))
+    digest = _digest(identity)
+    root = job_store.path_for(job.job_id).parent
+    destination = root / f"voice-catalog-{digest[:16]}"
+    manifest = destination / "manifest.json"
+    if manifest.is_file():
+        return manifest
+    root.mkdir(parents=True, exist_ok=True)
+    with staged_directory(root, prefix=".voice-catalog-") as staging:
+        for relative, payload in payloads.items():
+            target = staging / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+        write_voice_manifest(
+            staging / "manifest.json", {"version": 2, "voices": voices}
+        )
+        CharacterVoiceRegistry.from_file(staging / "manifest.json")
+        try:
+            rename_directory_no_replace(staging, destination)
+        except AtomicPublicationError:
+            if not manifest.is_file():
+                raise
+    return manifest
+
+
+def _candidate_for(character, settings, registry, *, assignment_source=None):
+    source_id = assignment_source
+    if source_id is None:
+        source_id = _effective_assignment_source(settings, character)
     if source_id == default_voice_choice_id:
         return None
     if source_id:
@@ -745,8 +946,10 @@ def _candidate_inventory(
     settings,
     registry,
     candidate_variants,
+    *,
+    assignment_source=None,
 ):
-    assignment = _effective_assignment_source(settings, character)
+    assignment = assignment_source
     candidates = {}
     candidate_ranks = {}
 
@@ -795,7 +998,12 @@ def _candidate_inventory(
     if bound_source:
         add(bound_source, 120, "Exact voice binding for this dialogue")
 
-    exact = _candidate_for(character, settings, registry)
+    exact = _candidate_for(
+        character,
+        settings,
+        registry,
+        assignment_source=assignment,
+    )
     if exact is not None:
         add(exact[0], 90, "Exact character name or known alias")
 
@@ -825,8 +1033,13 @@ def _candidate_inventory(
     )
 
 
-def _narrator_candidate(settings, registry):
-    selected = _candidate_for("Narrator", settings, registry)
+def _narrator_candidate(settings, registry, *, assignment_source=None):
+    selected = _candidate_for(
+        "Narrator",
+        settings,
+        registry,
+        assignment_source=assignment_source,
+    )
     if selected is not None:
         return _ranked_candidate(
             selected[0],
@@ -835,7 +1048,15 @@ def _narrator_candidate(settings, registry):
             "Configured narrator voice",
         )
     if settings.speech_backend != "pocket-tts":
-        return None
+        voice = registry.resolve("Narrator")
+        if voice is None or not _usable_voice(voice):
+            return None
+        return _ranked_candidate(
+            f"character:{normalize_character_name(voice.character)}",
+            voice,
+            120,
+            "Configured narrator voice",
+        )
     source_id = pregeneration_narrator_source_id(settings)
     voice = _candidate_from_source(source_id, registry)
     return _ranked_candidate(
@@ -846,7 +1067,19 @@ def _narrator_candidate(settings, registry):
     )
 
 
-def _effective_assignment_source(settings, character):
+def _effective_assignment_source(
+    settings,
+    character,
+    *,
+    library: VoiceLibrary | None = None,
+    variant_key: str | None = None,
+):
+    if library is not None:
+        binding = library.binding(character, variant_key=variant_key)
+        if binding is None and variant_key is not None:
+            binding = library.binding(character)
+        if binding is not None:
+            return voice_binding_source_id(binding)
     source_id = find_voice_assignment(settings.voice_assignments, character)
     if source_id is None and not is_narrator(character):
         source_id = find_voice_assignment(settings.character_voice_defaults, character)
@@ -883,7 +1116,7 @@ def _ranked_candidate(source_id, voice, score, recommendation, *, variant=None):
     variant = variant or {}
     return VoiceCandidate(
         source_id=source_id,
-        source_character=voice.character,
+        source_character=voice.source_character or voice.character,
         source_speaker=voice.speaker,
         reference_sha256s=tuple(identity["references"]),
         match_score=score,
@@ -1180,6 +1413,11 @@ def _variant_evidence(record):
         _optional_variant(record.producer_fields.get(field))
         for field in ("portrait", "age", "source_bank", "source_voice_id")
     )
+
+
+def _voice_variant_key(evidence):
+    _portrait, age, source_bank, _source_voice_id = evidence
+    return age or source_bank
 
 
 def _portrait_snapshot(content_root, portrait, cache):
