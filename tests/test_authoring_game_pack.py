@@ -407,10 +407,14 @@ class AuthoringGamePackTest(unittest.TestCase):
 
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            content, jobs, decisions, settings, _pack = voice_impact_fixture(root)
-            settings = settings.updated(voice_assignments={"Narrator": "preset:marius"})
+            content, jobs, decisions, settings, _pack, library = voice_impact_fixture(
+                root
+            )
+            library.select("Narrator", route="voice", source_id="preset:marius")
             job = jobs.create_or_resume(content, ("chapter:1", "chapter:2"))
-            plan = VoicePlanStore(jobs, decisions=decisions).create(job, settings)
+            plan = VoicePlanStore(
+                jobs, decisions=decisions, voice_library=library
+            ).create(job, settings)
             prepared = PregenerationInputStore(jobs).materialize(job, plan)
             renderer = SyntheticRenderer()
             renderer.name = renderer.model_name = "pocket-tts"

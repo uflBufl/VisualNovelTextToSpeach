@@ -185,8 +185,6 @@ def bind_voice_library_selection(
     )
     return settings.updated(
         voice_manifest=settings.voice_manifest or str(manifest),
-        voice_assignments={},
-        character_voice_defaults={},
         tts_speaker_wav=(
             None
             if normalize_character_name(target_character) == "narrator"

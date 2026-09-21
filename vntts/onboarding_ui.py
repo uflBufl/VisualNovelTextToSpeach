@@ -55,7 +55,7 @@ from vntts.settings import AppSettings
 from vntts.speech_backend import default_moss_tts_model
 from vntts.speech_presentation import speech_configuration_rows
 from vntts.ui_text import make_text_copyable, set_labeled_text
-from vntts.voices import find_default_voice_manifest, find_voice_assignment
+from vntts.voices import application_voice_library, find_default_voice_manifest
 from vntts.window_capture import (
     WindowCaptureError,
     WindowCaptureTarget,
@@ -127,8 +127,7 @@ class ConfigurationPage(QWizardPage):
     ) -> None:
         self.reading_setup = reading_setup
         self.original_settings = settings
-        self.narrator_assignments = dict(settings.voice_assignments)
-        self.character_voice_defaults = dict(settings.character_voice_defaults)
+        self.voice_library = application_voice_library()
         self.speaker_announcement_mode = settings.speaker_announcement_mode
         self.announce_speaker_changes = settings.announce_speaker_changes
         self.tts_profile = settings.tts_profile
@@ -543,7 +542,9 @@ class ConfigurationPage(QWizardPage):
         if self.reading_setup:
             self.flow.request_voices()
             return
-        dialog = GameNarratorDialog(self._base_settings(), self)
+        dialog = GameNarratorDialog(
+            self._base_settings(), self, voice_library=self.voice_library
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.result_settings
@@ -554,8 +555,6 @@ class ConfigurationPage(QWizardPage):
         )
         self.tts_model.setText(candidate.tts_model or "")
         self.tts_profile = candidate.tts_profile
-        self.narrator_assignments = dict(candidate.voice_assignments)
-        self.character_voice_defaults = dict(candidate.character_voice_defaults)
         self.speaker_announcement_mode = candidate.speaker_announcement_mode
         self.announce_speaker_changes = candidate.announce_speaker_changes
         self.voice_manifest.setText(candidate.voice_manifest or "")
@@ -725,11 +724,10 @@ class ConfigurationPage(QWizardPage):
         if backend == "coqui-xtts" and not self.terms.isChecked():
             add(self.terms, "XTTS license: accept the CPML terms.")
         narrator_reference = self.narrator_reference.text().strip()
+        narrator_binding = self.voice_library.binding("Narrator")
         if (
             narrator_reference
-            and not str(
-                find_voice_assignment(self.narrator_assignments, "Narrator") or ""
-            ).startswith("character:")
+            and narrator_binding is None
             and not Path(narrator_reference).expanduser().is_file()
         ):
             add(
@@ -739,9 +737,7 @@ class ConfigurationPage(QWizardPage):
         if (
             backend == "moss-tts"
             and not narrator_reference
-            and not str(
-                find_voice_assignment(self.narrator_assignments, "Narrator") or ""
-            ).startswith("character:")
+            and narrator_binding is None
         ):
             add(
                 self.choose_narrator_button,
@@ -769,7 +765,6 @@ class ConfigurationPage(QWizardPage):
                 self.original_settings
                 if self.reading_setup
                 else self.original_settings.updated(
-                    voice_assignments=dict(self.narrator_assignments),
                     speech_backend=self.speech_backend.currentData(),
                     tts_model=self.tts_model.text().strip() or None,
                     narrator_speaker=self.narrator_speaker.text().strip() or None,
@@ -825,8 +820,6 @@ class ConfigurationPage(QWizardPage):
         return AppSettings.from_mapping(
             {
                 **asdict(self.original_settings),
-                "voice_assignments": dict(self.narrator_assignments),
-                "character_voice_defaults": dict(self.character_voice_defaults),
                 "speaker_announcement_mode": self.speaker_announcement_mode,
                 "announce_speaker_changes": self.announce_speaker_changes,
                 "capture_mode": self.capture_mode.currentData(),

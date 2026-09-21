@@ -37,6 +37,21 @@ from vntts.source_audio_semantics import (
     semantic_text_sha256,
 )
 from vntts.voice_library import VoiceLibrary
+from vntts.voices import (
+    CharacterVoiceRegistry,
+    remember_voice_binding,
+    voice_binding_source_id,
+)
+
+
+def write_reference(path, payload):
+    if payload.startswith(b"RIFF"):
+        path.write_bytes(payload)
+        return
+    frames = (payload * ((32_000 // len(payload)) + 1))[:32_000]
+    with wave.open(str(path), "wb") as audio:
+        audio.setparams((1, 2, 16_000, 0, "NONE", "not compressed"))
+        audio.writeframes(frames)
 
 
 def write_content(root):
@@ -198,9 +213,9 @@ def write_content(root):
 def write_manifest(root, *, rhiannon=b"rhiannon", unrelated=b"unrelated"):
     references = root / "references"
     references.mkdir(parents=True, exist_ok=True)
-    (references / "rhiannon.wav").write_bytes(rhiannon)
-    (references / "centurion.wav").write_bytes(b"centurion")
-    (references / "unrelated.wav").write_bytes(unrelated)
+    write_reference(references / "rhiannon.wav", rhiannon)
+    write_reference(references / "centurion.wav", b"centurion")
+    write_reference(references / "unrelated.wav", unrelated)
     path = root / "manifest.json"
     path.write_text(
         json.dumps(
@@ -242,7 +257,7 @@ def write_conflicting_manifest(root, *, bind_selected_lines=False):
         "child.wav": b"child",
     }
     for name, payload in payloads.items():
-        (references / name).write_bytes(payload)
+        write_reference(references / name, payload)
     adult_voice = "Source reference Rhiannon adult"
     child_voice = "Source reference Rhiannon child"
     adult_queue_ids = ["historical:adult"]
@@ -347,7 +362,7 @@ def write_player_candidate_manifest(
             audio.setnchannels(1)
             audio.setsampwidth(2)
             audio.setframerate(16_000)
-            audio.writeframes(b"\0\0" * 1_600)
+            audio.writeframes((index * 100).to_bytes(2, "little", signed=True) * 1_600)
         variant_id = str(index) * 64
         voice_character = f"Player candidate Rhiannon {index}"
         voices.append(
@@ -421,10 +436,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             binding = library.binding("Rhiannon", variant_key=variant)
             planner.create(
                 job,
-                AppSettings(
-                    pocket_gated_model_accepted=True,
-                    voice_assignments={"Rhiannon": "character:centurion"},
-                ),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
 
@@ -623,14 +635,11 @@ class VoicePlanStoreTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
-            plan = VoicePlanStore(jobs).create(
+            library = VoiceLibrary(root / "library")
+            library.select("Narrator", route="voice", source_id="preset:marius")
+            plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(
-                    voice_assignments={
-                        "Narrator": "preset:marius",
-                        "Rhiannon": "character:centurion",
-                    }
-                ),
+                AppSettings(),
                 manifest_path=write_manifest(root / "voices"),
             )
 
@@ -645,13 +654,18 @@ class VoicePlanStoreTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
-            plan = VoicePlanStore(jobs).create(
+            manifest = write_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+            remember_voice_binding(
+                library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Rhiannon",
+                "character:centurion",
+            )
+            plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(
-                    pocket_gated_model_accepted=True,
-                    voice_assignments={"Rhiannon": "character:centurion"},
-                ),
-                manifest_path=write_manifest(root / "voices"),
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
             )
 
             rhiannon = next(
@@ -667,24 +681,26 @@ class VoicePlanStoreTest(unittest.TestCase):
             root = Path(directory)
             job, jobs = self.create_fixture(root)
             manifest = write_manifest(root / "voices")
-            settings = AppSettings(
-                pocket_gated_model_accepted=True,
-                voice_assignments={"Narrator": "preset:marius"},
-                character_voice_defaults={"Rhiannon": "character:centurion"},
-            )
-            for manual, default, expected_route, expected_voice in (
-                ({}, "character:centurion", "voice", "Centurion"),
-                ({}, "default", "narrator", "marius"),
-                ({"rhiannon": "character:rhiannon"}, "default", "voice", "Rhiannon"),
+            settings = AppSettings(pocket_gated_model_accepted=True)
+            for source, expected_route, expected_voice in (
+                ("character:centurion", "voice", "Centurion"),
+                ("default", "narrator", "marius"),
+                ("character:rhiannon", "voice", "Rhiannon"),
             ):
-                with self.subTest(manual=manual, default=default):
-                    plan = VoicePlanStore(jobs).create(
-                        job,
-                        settings.updated(
-                            voice_assignments={**settings.voice_assignments, **manual},
-                            character_voice_defaults={"Rhiannon": default},
-                        ),
-                        manifest_path=manifest,
+                with self.subTest(source=source):
+                    library = VoiceLibrary(root / f"library-{expected_voice}")
+                    library.select("Narrator", route="voice", source_id="preset:marius")
+                    if source == "default":
+                        library.select("Rhiannon", route="narrator")
+                    else:
+                        remember_voice_binding(
+                            library,
+                            CharacterVoiceRegistry.from_file(manifest),
+                            "Rhiannon",
+                            source,
+                        )
+                    plan = VoicePlanStore(jobs, voice_library=library).create(
+                        job, settings, manifest_path=manifest
                     )
                     role = next(g for g in plan.groups if g.character == "Rhiannon")
                     self.assertEqual(role.route, expected_route)
@@ -695,19 +711,20 @@ class VoicePlanStoreTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             job, jobs = self.create_fixture(root)
-            settings = AppSettings(
-                character_voice_defaults={"Rhiannon": "character:centurion"}
+            manifest = write_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+            remember_voice_binding(
+                library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Rhiannon",
+                "character:centurion",
             )
             with self.assertRaisesRegex(
                 PregenerationVoiceError, "requires Pocket voice cloning access"
             ):
-                VoicePlanStore(jobs).create(
-                    job, settings, manifest_path=write_manifest(root / "voices")
+                VoicePlanStore(jobs, voice_library=library).create(
+                    job, AppSettings(), manifest_path=manifest
                 )
-            self.assertEqual(
-                settings.character_voice_defaults,
-                {"Rhiannon": "character:centurion"},
-            )
 
     def test_close_variant_evidence_creates_one_informed_audition(self):
         with TemporaryDirectory() as temporary_directory:
@@ -812,19 +829,25 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
             saved_source = "character:playercandidaterhiannon1"
 
-            plan = VoicePlanStore(jobs).create(
+            library = VoiceLibrary(root / "library")
+            remember_voice_binding(
+                library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Rhiannon",
+                saved_source,
+            )
+            plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(
-                    pocket_gated_model_accepted=True,
-                    character_voice_defaults={"Rhiannon": saved_source},
-                ),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
 
             rhiannon = next(
                 group for group in plan.groups if group.character == "Rhiannon"
             )
-            self.assertEqual(rhiannon.source_id, saved_source)
+            binding = library.binding("Rhiannon")
+            self.assertEqual(rhiannon.source_id, voice_binding_source_id(binding))
+            self.assertEqual(binding.provenance["evidence"]["source_id"], saved_source)
             self.assertEqual(rhiannon.resolution, "saved-voice-assignment")
             self.assertEqual(len(rhiannon.candidates), 1)
             self.assertEqual(len(rhiannon.candidate_inventory), 2)
@@ -907,8 +930,11 @@ class VoicePlanStoreTest(unittest.TestCase):
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             manifest = write_conflicting_manifest(root / "voices")
-            decisions = VoiceDecisionStore(root / "decisions.json")
-            store = VoicePlanStore(jobs, decisions=decisions)
+            library = VoiceLibrary(root / "library")
+            decisions = VoiceDecisionStore(
+                root / "decisions.json", voice_library=library
+            )
+            store = VoicePlanStore(jobs, decisions=decisions, voice_library=library)
             settings = AppSettings(pocket_gated_model_accepted=True)
             first = store.create(job, settings, manifest_path=manifest)
             group = next(
@@ -922,22 +948,23 @@ class VoicePlanStoreTest(unittest.TestCase):
             )
 
             self.assertEqual(resolved.route, "voice")
-            self.assertEqual(resolved.resolution, "saved-player-decision")
-            self.assertEqual(resolved.source_id, group.candidates[1].source_id)
+            self.assertEqual(resolved.resolution, "saved-voice-assignment")
+            self.assertEqual(
+                resolved.source_character,
+                group.candidates[1].source_character,
+            )
             self.assertEqual(second.audition_count, 0)
 
-            changed_narrator = store.create(
-                job,
-                settings.updated(voice_assignments={"Narrator": "preset:marius"}),
-                manifest_path=manifest,
-            )
+            library.select("Narrator", route="voice", source_id="preset:marius")
+            changed_narrator = store.create(job, settings, manifest_path=manifest)
             preserved = next(
                 value
                 for value in changed_narrator.groups
                 if value.character == "Rhiannon"
             )
-            self.assertEqual(preserved.source_id, group.candidates[1].source_id)
-            self.assertEqual(preserved.resolution, "saved-player-decision")
+            self.assertEqual(preserved.reference_sha256s, resolved.reference_sha256s)
+            self.assertEqual(preserved.source_character, resolved.source_character)
+            self.assertEqual(preserved.resolution, "saved-voice-assignment")
             self.assertEqual(changed_narrator.audition_count, 0)
 
             reconsidered = store.create(
@@ -949,8 +976,9 @@ class VoicePlanStoreTest(unittest.TestCase):
             reopened = next(
                 value for value in reconsidered.groups if value.character == "Rhiannon"
             )
-            self.assertEqual(reopened.route, "needs-audition")
-            self.assertEqual(reconsidered.audition_count, 1)
+            self.assertEqual(reopened.route, "voice")
+            self.assertEqual(reopened.reference_sha256s, resolved.reference_sha256s)
+            self.assertEqual(reconsidered.audition_count, 0)
 
     def test_changed_eligible_reference_requires_a_new_choice(self):
         with TemporaryDirectory() as temporary_directory:

@@ -46,7 +46,6 @@ from vntts.voices import (
     default_voice_choice_id,
     discover_voice_source,
     find_default_voice_manifest,
-    find_voice_assignment,
     is_narrator,
     pocket_tts_preset_voices,
     read_voice_reference_bytes,
@@ -487,19 +486,22 @@ class VoicePlanStore:
             )
 
         phase_started, cpu_started = perf_counter(), process_time()
-        groups = tuple(
-            self._resolve_group(
-                group_id,
-                values,
-                settings,
-                registry,
-                candidate_variants,
-                controls,
-                ignore_decisions,
-                saved_groups,
+        groups = []
+        for group_id, values in grouped.items():
+            groups.append(
+                self._resolve_group(
+                    group_id,
+                    values,
+                    settings,
+                    registry,
+                    candidate_variants,
+                    controls,
+                    ignore_decisions,
+                    saved_groups,
+                )
             )
-            for group_id, values in grouped.items()
-        )
+            if self.voice_library is not None:
+                registry = registry_with_voice_library(registry, self.voice_library)
         _record_plan_phase(
             "routing",
             phase_started,
@@ -520,7 +522,7 @@ class VoicePlanStore:
             synthesis_profile=controls["profile"],
             pocket_voice_cloning=bool(controls["pocket_voice_cloning"]),
             synthesis_controls_sha256=controls_sha256,
-            groups=groups,
+            groups=tuple(groups),
         )
         phase_started, cpu_started = perf_counter(), process_time()
         path = self.path_for(job)
@@ -653,10 +655,12 @@ class VoicePlanStore:
         )
         prior_source = (
             self.decisions.choice_for(group_id, decision_context_sha256)
-            if self.decisions is not None and not ignore_decisions
+            if self.voice_library is None
+            and self.decisions is not None
+            and not ignore_decisions
             else None
         )
-        if prior_source is None and eligible_candidates:
+        if prior_source is None and self.voice_library is None and eligible_candidates:
             candidate_identities = [
                 _candidate_decision_identity(value) for value in eligible_candidates
             ]
@@ -755,7 +759,11 @@ class VoicePlanStore:
                 if narrator_candidate is not None
                 else None
             )
-        if self.voice_library is not None and route != "needs-audition":
+        if (
+            self.voice_library is not None
+            and route != "needs-audition"
+            and assignment_source is None
+        ):
             if route == "voice":
                 remember_voice_binding(
                     self.voice_library,
@@ -980,6 +988,20 @@ def _candidate_inventory(
                 else float("inf")
             ),
         )
+        duplicate = next(
+            (
+                existing
+                for existing, value in candidates.items()
+                if candidate.reference_sha256s
+                and value.reference_sha256s == candidate.reference_sha256s
+            ),
+            None,
+        )
+        if duplicate is not None and duplicate != source_id:
+            if candidates[duplicate].match_score >= candidate.match_score:
+                return
+            del candidates[duplicate]
+            del candidate_ranks[duplicate]
         if (
             previous is None
             or candidate.match_score > previous.match_score
@@ -1078,10 +1100,7 @@ def _effective_assignment_source(
         binding = library.binding(character, variant_key=variant_key)
         if binding is None and variant_key is not None:
             binding = library.binding(character)
-        return voice_binding_source_id(binding) if binding is not None else None
-    source_id = find_voice_assignment(settings.voice_assignments, character)
-    if source_id is None and not is_narrator(character):
-        source_id = find_voice_assignment(settings.character_voice_defaults, character)
+        source_id = voice_binding_source_id(binding) if binding is not None else None
         if (
             source_id
             and source_id != default_voice_choice_id
@@ -1093,14 +1112,8 @@ def _effective_assignment_source(
                 "cloning access. Accept the model terms in Voices or choose an "
                 "available engine."
             )
-    if (
-        source_id
-        and source_id != default_voice_choice_id
-        and _public_pocket_mode(settings)
-        and not source_id.startswith("preset:")
-    ):
-        return None
-    return source_id
+        return source_id
+    return None
 
 
 def _public_pocket_mode(settings):

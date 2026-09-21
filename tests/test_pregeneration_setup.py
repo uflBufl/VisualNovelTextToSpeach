@@ -53,6 +53,7 @@ from vntts.source_audio_semantics import (  # noqa: E402
 )
 from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.versioned_json import write_versioned_json  # noqa: E402
+from vntts.voice_library import VoiceLibrary  # noqa: E402
 
 
 def write_story_index(root, *, generated_text="Generate me."):
@@ -531,6 +532,21 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self._voice_library_directory = TemporaryDirectory()
+        self._voice_library = VoiceLibrary(
+            Path(self._voice_library_directory.name) / "library"
+        )
+        self._voice_library_patch = patch(
+            "vntts.pregeneration_ui.application_voice_library",
+            return_value=self._voice_library,
+        )
+        self._voice_library_patch.start()
+
+    def tearDown(self):
+        self._voice_library_patch.stop()
+        self._voice_library_directory.cleanup()
 
     def run_next_task(self, pool):
         pool.tasks.pop().run()
@@ -1124,29 +1140,22 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             key = dialog._story_audio_key("main-1")
             dialog._story_audio_checks[key] = (ready, ready, None)
             dialog._story_playback_speakers[key] = ("Centurion", "Narrator")
-            for changed, blocked in (
-                ({"audio_source_policy": "live-tts-only"}, True),
-                ({"audio_source_policy": "prefer-generated"}, True),
-                ({"speech_rate_percent": 120}, True),
-                ({"voice_assignments": {"Centurion": "preset:alba"}}, True),
-                (
-                    {
-                        "voice_assignments": {"Narrator": "preset:alba"},
-                        "force_live_narrator": True,
-                    },
-                    True,
-                ),
-                (
-                    {
-                        "voice_assignments": {"Narrator": "preset:alba"},
-                        "force_live_narrator": False,
-                    },
-                    False,
-                ),
-                ({"voice_assignments": {"Unrelated": "preset:alba"}}, False),
-                ({"character_voice_defaults": {"Centurion": "preset:alba"}}, False),
+            library = VoiceLibrary(root / "voice-library")
+            dialog.voice_library = library
+            for changed, binding, blocked in (
+                ({"audio_source_policy": "live-tts-only"}, None, True),
+                ({"audio_source_policy": "prefer-generated"}, None, True),
+                ({"speech_rate_percent": 120}, None, True),
+                ({}, "Centurion", False),
+                ({"force_live_narrator": True}, "Narrator", True),
+                ({"force_live_narrator": False}, "Narrator", False),
+                ({}, "Unrelated", False),
             ):
-                with self.subTest(changed=changed):
+                with self.subTest(changed=changed, binding=binding):
+                    for role in ("Centurion", "Narrator", "Unrelated"):
+                        library.clear(role)
+                    if binding is not None:
+                        library.select(binding, route="voice", source_id="preset:alba")
                     dialog.settings = settings.updated(**changed)
                     dialog._refresh_story_statuses()
                     dialog._selection_changed()
@@ -1175,15 +1184,15 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             content = inspect_story_index(write_story_index(root / "content"))
             jobs = PregenerationJobStore(root / "jobs")
             jobs.mark_prepared(jobs.create_or_resume(content, ("main-1",)))
-            settings = AppSettings(
-                voice_manifest=str(write_manifest(root / "voices")),
-                character_voice_defaults={"Rhiannon": "preset:alba"},
-            )
+            settings = AppSettings(voice_manifest=str(write_manifest(root / "voices")))
+            library = VoiceLibrary(root / "voice-library")
+            library.select("Rhiannon", route="voice", source_id="preset:alba")
             pool = ManualThreadPool()
             dialog = OfflineAudioPreparationDialog(
                 settings,
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=jobs,
+                voice_library=library,
                 thread_pool=pool,
             )
             self.addCleanup(dialog.deleteLater)
@@ -1200,9 +1209,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             other_plan = dialog.voice_plan_store.create(other, settings)
             other_input = dialog.input_store.materialize(other, other_plan)
             other_bytes = other_input.voice_manifest.read_bytes()
-            dialog.apply_narrator_settings(
-                settings.updated(character_voice_defaults={"Rhiannon": "preset:jean"})
-            )
+            library.select("Rhiannon", route="voice", source_id="preset:jean")
+            dialog.apply_narrator_settings(settings, voice_changed=True)
             dialog.prepare_again.click()
             for _ in range(5):
                 if dialog._awaiting_voice_confirmation:

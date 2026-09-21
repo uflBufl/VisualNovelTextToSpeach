@@ -19,6 +19,7 @@ from vntts.synthesis import (
     SynthesisResult,
     SynthesisTiming,
 )
+from vntts.voice_library import VoiceLibrary
 from vntts.voices import CharacterVoice, CharacterVoiceRegistry, VoiceManifestError
 
 
@@ -255,14 +256,21 @@ class MossNativePauseProbeTest(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             reference = Path(temporary) / "old.wav"
             reference.write_bytes(clean_wav_bytes(seconds=0.06075, sample_rate=24000))
-            registry = CharacterVoiceRegistry(
-                (CharacterVoice("Narrator", "old", reference),)
-            )
-            settings = AppSettings(voice_assignments={"Narrator": "character:missing"})
+            settings = AppSettings()
+            library = VoiceLibrary(Path(temporary) / "library")
+            library.select("Narrator", route="voice", source_id="character:missing")
+
+            def missing_voice(_settings, *, voice_library):
+                raise VoiceManifestError("selected voice is no longer available")
+
             with self.assertRaisesRegex(
                 VoiceManifestError, "selected voice is no longer available"
             ):
-                probe._saved_narrator_reference(settings, lambda _settings: registry)
+                probe._saved_narrator_reference(
+                    settings,
+                    missing_voice,
+                    library,
+                )
 
     def test_probe_writes_cacheless_stereo_comparison_and_stops_backend(self):
         with TemporaryDirectory() as temporary:
@@ -428,7 +436,8 @@ class MossNativePauseProbeTest(unittest.TestCase):
                         Path("codec.gguf"),
                     ),
                     settings_loader=lambda: SimpleNamespace(tts_model="saved-model"),
-                    registry_initializer=lambda _settings: registry,
+                    registry_initializer=lambda _settings, **_kwargs: registry,
+                    voice_library=VoiceLibrary(root / "library"),
                 ),
                 0,
             )
@@ -454,7 +463,7 @@ class MossNativePauseProbeTest(unittest.TestCase):
                 probe.run(
                     options,
                     settings_loader=lambda: SimpleNamespace(tts_model="saved-model"),
-                    registry_initializer=lambda _settings: registry,
+                    registry_initializer=lambda _settings, **_kwargs: registry,
                 )
 
     def test_limited_and_interrupted_attempts_keep_reports_raw_audio_and_archive(self):

@@ -84,8 +84,6 @@ class OfflinePackActivator:
                 else "prefer-generated"
             ),
             force_live_narrator=False,
-            voice_assignments={},
-            character_voice_defaults={},
             tts_speaker_wav=None,
         )
         _record_activation_phase("settings-build", phase_started, cpu_started)

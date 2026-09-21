@@ -29,6 +29,7 @@ from vntts.pregeneration_activation import OfflinePackActivationResult  # noqa: 
 from vntts.pregeneration_pack import OfflinePackResult  # noqa: E402
 from vntts.profiles import GameProfileStore  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.window_capture import WindowGeometry  # noqa: E402
 
 
@@ -620,7 +621,7 @@ class TrayApplicationTest(unittest.TestCase):
         )
         dialog = Mock()
         dialog.has_pending_work.return_value = False
-        dialog.settings = AppSettings(voice_assignments={"Narrator": "preset:marius"})
+        dialog.settings = AppSettings()
         tray_application.pregeneration_dialog = dialog
         with (
             patch("vntts.app.GameNarratorDialog") as factory,
@@ -2043,9 +2044,7 @@ class TrayApplicationTest(unittest.TestCase):
         delete_dialog(dialog)
 
     def test_settings_narrator_picker_stages_voice_and_preserves_other_edits(self):
-        original = AppSettings(
-            speech_backend="moss-tts", voice_assignments={"Other": "character:other"}
-        )
+        original = AppSettings(speech_backend="moss-tts")
         dialog = SettingsDialog(original)
         dialog.output_volume.setValue(37)
         dialog.section_navigation.setCurrentIndex(2)
@@ -2055,10 +2054,6 @@ class TrayApplicationTest(unittest.TestCase):
             tts_model=None,
             tts_profile="default",
             voice_manifest="chosen-voices.json",
-            voice_assignments={
-                "Other": "character:other",
-                "Narrator": "character:rhiannon",
-            },
         )
         with (
             patch("vntts.app.GameNarratorDialog") as picker,
@@ -2072,15 +2067,13 @@ class TrayApplicationTest(unittest.TestCase):
             self.assertIs(parent, dialog)
             save.assert_not_called()
         draft = dialog._raw_settings()
-        self.assertEqual(draft.voice_assignments, candidate.voice_assignments)
         self.assertEqual(draft.voice_manifest, "chosen-voices.json")
         self.assertEqual(draft.speech_backend, "pocket-tts")
         self.assertIsNone(draft.tts_model)
         self.assertEqual(draft.tts_profile, "default")
         self.assertEqual(draft.output_volume_percent, 37)
         self.assertIsNone(draft.tts_speaker_wav)
-        self.assertIn("Rhiannon", dialog.narrator_voice.text())
-        self.assertNotIn("Narrator", original.voice_assignments)
+        self.assertIn("Alba", dialog.narrator_voice.text())
         self.assertFalse(
             any(
                 widget is dialog.choose_narrator_button
@@ -2105,20 +2098,14 @@ class TrayApplicationTest(unittest.TestCase):
             dialog.choose_narrator_button.click()
         self.assertEqual(dialog._raw_settings(), before)
         dialog.reject()
-        self.assertNotIn("Narrator", original.voice_assignments)
         delete_dialog(dialog)
 
     def test_character_choice_keeps_manual_narrator_reference_in_settings(self):
         with TemporaryDirectory() as directory:
             reference = Path(directory) / "narrator.wav"
             reference.touch()
-            original = AppSettings(
-                tts_speaker_wav=str(reference),
-                voice_assignments={"Narrator": "preset:alba"},
-            )
-            candidate = original.updated(
-                character_voice_defaults={"Vertin": "preset:marius"}
-            )
+            original = AppSettings(tts_speaker_wav=str(reference))
+            candidate = original
             dialog = SettingsDialog(original)
             dialog.advanced_narrator.setChecked(True)
             with patch("vntts.app.GameNarratorDialog") as picker:
@@ -2127,19 +2114,11 @@ class TrayApplicationTest(unittest.TestCase):
                 dialog.choose_narrator_button.click()
             draft = dialog._raw_settings()
             self.assertEqual(draft.tts_speaker_wav, str(reference))
-            self.assertEqual(draft.voice_assignments, original.voice_assignments)
-            self.assertEqual(
-                draft.character_voice_defaults, candidate.character_voice_defaults
-            )
             self.assertTrue(dialog.advanced_narrator.isChecked())
             delete_dialog(dialog)
 
     def test_settings_missing_moss_voice_targets_picker_and_file_is_optional(self):
-        dialog = SettingsDialog(
-            AppSettings(
-                speech_backend="moss-tts", voice_assignments={"Narrator": "preset:alba"}
-            )
-        )
+        dialog = SettingsDialog(AppSettings(speech_backend="moss-tts"))
         self.assertTrue(
             any(
                 widget is dialog.choose_narrator_button
@@ -2155,11 +2134,23 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertFalse(dialog.narrator_reference.isHidden())
         with patch("vntts.app.QFileDialog.getOpenFileName", return_value=("", "")):
             dialog.browse_narrator_reference()
-        self.assertEqual(dialog.narrator_assignments, {"Narrator": "preset:alba"})
         dialog.narrator_reference.setText("custom.wav")
         dialog.narrator_reference.textEdited.emit("custom.wav")
-        self.assertEqual(dialog.narrator_assignments, {})
-        dialog.narrator_assignments = {"Narrator": "character:rhiannon"}
+        self.assertTrue(
+            any(
+                widget is dialog.narrator_reference
+                for _, widget, _ in dialog.validation_errors()
+            )
+        )
+        delete_dialog(dialog)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        library = VoiceLibrary(Path(directory.name) / "voices")
+        library.select("Narrator", route="voice", source_id="character:rhiannon")
+        dialog = SettingsDialog(
+            AppSettings(speech_backend="moss-tts", tts_speaker_wav="custom.wav"),
+            voice_library=library,
+        )
         self.assertFalse(
             any(
                 widget is dialog.narrator_reference
@@ -2822,7 +2813,7 @@ class TrayApplicationTest(unittest.TestCase):
 
     def test_voice_write_preserves_latest_section_from_stale_controller(self):
         original = AppSettings(last_main_section="reading")
-        stale = AppSettings(voice_assignments={"Selone": "preset:alba"})
+        stale = AppSettings(output_volume_percent=42)
         controller = Mock()
 
         def commit_voice(*_args, commit_settings):
@@ -2844,7 +2835,7 @@ class TrayApplicationTest(unittest.TestCase):
 
     def test_failed_voice_writes_do_not_publish_application_settings(self):
         original = AppSettings()
-        candidate = original.updated(voice_assignments={"Selone": "preset:alba"})
+        candidate = original.updated(output_volume_percent=42)
         operations = (
             (
                 "assign_voice",

@@ -26,7 +26,7 @@ from vntts.pregeneration_activation import (
     OfflinePackActivator,
 )
 from vntts.pregeneration_pack import OfflinePackPublisher
-from vntts.settings import AppSettings, load_app_settings
+from vntts.settings import AppSettings
 
 
 def published_pack(root):
@@ -35,29 +35,6 @@ def published_pack(root):
 
 
 class OfflinePackActivatorTest(unittest.TestCase):
-    def test_activation_discards_legacy_voice_maps_instead_of_merging_catalogs(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            pack = published_pack(root / "pack")
-            original = AppSettings(
-                pocket_gated_model_accepted=True,
-                character_voice_defaults={
-                    "Hotelier": "character:centurion",
-                    "Unrelated story": "character:rhiannon",
-                    "Narrator fallback role": "default",
-                    "Built-in role": "preset:anna",
-                },
-            )
-            controller = Mock(is_ready=False)
-            controller.apply_settings.return_value = True
-            activator = OfflinePackActivator(
-                save_settings=lambda value: value.save(root / "settings.json")
-            )
-            result = activator.activate(original, pack, controller)
-            loaded = load_app_settings(root / "settings.json", environment={})
-            self.assertEqual(loaded.voice_manifest, result.settings.voice_manifest)
-            self.assertEqual(loaded.voice_assignments, {})
-            self.assertEqual(loaded.character_voice_defaults, {})
 
     def test_mixed_pack_activation_routes_original_and_generated_without_live_synthesis(
         self,
@@ -122,14 +99,7 @@ class OfflinePackActivatorTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             pack = published_pack(root)
-            current = AppSettings(
-                force_live_narrator=True,
-                voice_assignments={
-                    "Narrator": "preset:marius",
-                    "Hotelier": "preset:alba",
-                    "Other story speaker": "preset:anna",
-                },
-            )
+            current = AppSettings(force_live_narrator=True)
             controller = Mock(is_ready=True)
             controller.apply_settings.return_value = True
             controller.start.return_value = True
@@ -138,7 +108,6 @@ class OfflinePackActivatorTest(unittest.TestCase):
             )
             result = activator.activate(current, pack, controller)
             self.assertFalse(result.settings.force_live_narrator)
-            self.assertEqual(result.settings.voice_assignments, {})
             live = AppController(result.settings)
             self.assertFalse(live._has_manual_voice_override("Narrator"))
             self.assertFalse(live._has_manual_voice_override("Hotelier"))
@@ -194,7 +163,6 @@ class OfflinePackActivatorTest(unittest.TestCase):
             previous = AppSettings(game_pack="previous-pack.json")
             selected = previous.updated(
                 pocket_gated_model_accepted=True,
-                voice_assignments={"Narrator": "character:centurion"},
                 tts_speaker_wav="old-narrator.wav",
             )
             for failure in (None, "start", "save", "apply"):
@@ -227,8 +195,6 @@ class OfflinePackActivatorTest(unittest.TestCase):
                         )
                         self.assertTrue(result.settings.pocket_gated_model_accepted)
                         self.assertIsNone(result.settings.tts_speaker_wav)
-                        self.assertEqual(result.settings.voice_assignments, {})
-                        self.assertEqual(result.settings.character_voice_defaults, {})
 
     def test_save_failure_restores_the_previous_running_pack(self):
         with TemporaryDirectory() as temporary_directory:

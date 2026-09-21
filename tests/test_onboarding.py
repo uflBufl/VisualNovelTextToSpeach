@@ -261,7 +261,6 @@ class OnboardingWizardTest(unittest.TestCase):
         settings = AppSettings(
             tts_model=None,
             narrator_speaker=None,
-            voice_assignments={"Narrator": "character:rhiannon"},
             tts_profile="default",
         )
         wizard = OnboardingWizard(
@@ -281,7 +280,7 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertFalse(page.speech_backend.isVisibleTo(wizard))
         self.assertFalse(page.tts_model.isVisibleTo(wizard))
         self.assertFalse(page.advanced_toggle.isVisibleTo(wizard))
-        self.assertIn("Rhiannon", page.speech_summary.text())
+        self.assertIn("Alba", page.speech_summary.text())
         self.assertTrue(page.validatePage())
         self.assertEqual(
             wizard.draft_settings,
@@ -376,8 +375,6 @@ class OnboardingWizardTest(unittest.TestCase):
         page = wizard.configuration_page
         candidate = original.updated(
             voice_manifest="chosen-voices.json",
-            voice_assignments={"Narrator": "character:rhiannon"},
-            character_voice_defaults={"Vertin": "character:rhiannon"},
             speaker_announcement_mode="all-speakers",
             announce_speaker_changes=False,
             speech_backend="pocket-tts",
@@ -394,13 +391,6 @@ class OnboardingWizardTest(unittest.TestCase):
             page.choose_narrator_button.click()
             save.assert_not_called()
         self.assertEqual(
-            page._base_settings().voice_assignments, candidate.voice_assignments
-        )
-        self.assertEqual(
-            page._base_settings().character_voice_defaults,
-            candidate.character_voice_defaults,
-        )
-        self.assertEqual(
             page._base_settings().speaker_announcement_mode, "all-speakers"
         )
         self.assertFalse(page._base_settings().announce_speaker_changes)
@@ -409,14 +399,13 @@ class OnboardingWizardTest(unittest.TestCase):
         self.assertIsNone(page._base_settings().tts_model)
         self.assertEqual(page._base_settings().tts_profile, "default")
         self.assertTrue(page._base_settings().pocket_gated_model_accepted)
-        self.assertIn("Rhiannon", page.speech_summary.text())
+        self.assertIn("Pocket", page.speech_summary.text())
         self.assertFalse(
             any(
                 widget is page.choose_narrator_button
                 for widget, _ in page.validation_errors()
             )
         )
-        self.assertEqual(original.voice_assignments, {})
         before = page._base_settings()
         with patch("vntts.onboarding_ui.GameNarratorDialog") as picker:
             picker.return_value.exec.return_value = QDialog.DialogCode.Rejected
@@ -432,11 +421,8 @@ class OnboardingWizardTest(unittest.TestCase):
             reference.touch()
             original = AppSettings(
                 tts_speaker_wav=str(reference),
-                voice_assignments={"Narrator": "preset:alba"},
             )
-            candidate = original.updated(
-                character_voice_defaults={"Vertin": "preset:marius"}
-            )
+            candidate = original
             wizard = OnboardingWizard(original)
             with patch("vntts.onboarding_ui.GameNarratorDialog") as picker:
                 picker.return_value.exec.return_value = QDialog.DialogCode.Accepted
@@ -444,10 +430,6 @@ class OnboardingWizardTest(unittest.TestCase):
                 wizard.configuration_page.choose_narrator_button.click()
             draft = wizard.configuration_page._base_settings()
             self.assertEqual(draft.tts_speaker_wav, str(reference))
-            self.assertEqual(draft.voice_assignments, original.voice_assignments)
-            self.assertEqual(
-                draft.character_voice_defaults, candidate.character_voice_defaults
-            )
             wizard.deleteLater()
 
     def test_new_setup_defaults_to_window_capture_and_pocket_tts(self):

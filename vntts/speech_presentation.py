@@ -4,12 +4,8 @@ import re
 from pathlib import Path
 
 from vntts.release_backends import SPEECH_BACKEND_LABELS
-from vntts.voices import (
-    CharacterVoiceRegistry,
-    VoiceManifestError,
-    find_voice_assignment,
-    pocket_tts_preset_voices,
-)
+from vntts.voice_library import VoiceLibrary
+from vntts.voices import pocket_tts_preset_voices
 
 
 def speech_runtime_label(backend):
@@ -147,25 +143,24 @@ def playback_labels(source, voice):
     return voice, "Audio source: see details"
 
 
-def narrator_voice_label(settings):
-    source = find_voice_assignment(settings.voice_assignments, "Narrator")
+def narrator_voice_label(settings, voice_library: VoiceLibrary | None = None):
+    binding = voice_library.binding("Narrator") if voice_library is not None else None
+    source = binding.source_id if binding is not None else None
     if source and source != "default":
         kind, _, value = source.partition(":")
-        if kind == "character" and settings.voice_manifest:
-            try:
-                voice = CharacterVoiceRegistry.from_file(
-                    settings.voice_manifest
-                ).resolve_source(source)
-            except OSError, VoiceManifestError:
-                voice = None
-            if voice is not None:
-                return voice.source_character or voice.character
-        if kind == "character" and value.replace(" ", "").startswith("gamenarrator"):
-            return "Selected game voice (saved catalog unavailable)"
-        if kind == "character" and value == "narrator":
-            return "Prepared pack narrator (identity available after loading)"
         if kind in {"character", "preset"}:
             return value.replace("_", " ").title()
+    if binding is not None:
+        evidence = binding.provenance.get("evidence")
+        if isinstance(evidence, dict):
+            character = evidence.get("source_character") or evidence.get(
+                "selected_character"
+            )
+            if isinstance(character, str) and character.strip():
+                return character.strip()
+        if binding.route != "voice":
+            return "Narrator fallback"
+        return "Selected game voice"
     if settings.tts_speaker_wav:
         return f"Reference: {Path(settings.tts_speaker_wav).name}"
     if settings.speech_backend == "pocket-tts":

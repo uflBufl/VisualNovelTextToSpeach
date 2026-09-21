@@ -274,7 +274,6 @@ class GamePackImportTest(unittest.TestCase):
             settings = AppSettings(
                 game_pack=str(pack_path),
                 voice_manifest=str(saved),
-                voice_assignments={"NARRATOR": "character:game_narrator_active"},
             )
 
             implicit = apply_game_pack(settings)
@@ -300,7 +299,6 @@ class GamePackImportTest(unittest.TestCase):
                     AppSettings(
                         game_pack=str(pack_path),
                         voice_manifest=str(saved),
-                        voice_assignments={"Narrator": narrator_source},
                     )
                 )
 

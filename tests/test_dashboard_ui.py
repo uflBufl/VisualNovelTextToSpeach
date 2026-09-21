@@ -234,7 +234,6 @@ class ControlDashboardTest(unittest.TestCase):
             AppSettings(
                 speech_backend="pocket-tts",
                 generated_audio_manifest="saved.json",
-                voice_assignments={"Narrator": "character:centurion"},
             )
         )
         dashboard.show_reading()
@@ -245,7 +244,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.speech_runtime.isVisibleTo(dashboard))
         self.assertEqual(dashboard.speech_runtime.textFormat(), Qt.TextFormat.PlainText)
         self.assertTrue(dashboard.audio_source.isVisibleTo(dashboard))
-        self.assertIn("Centurion", dashboard.speech_configuration.text())
+        self.assertIn("Alba", dashboard.speech_configuration.text())
         dashboard.set_diagnostic(
             DiagnosticSnapshot(
                 None,

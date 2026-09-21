@@ -304,7 +304,7 @@ class RuntimeLifecycleComponent:
             }[controller.settings.speech_backend]
             narrator_reference: str | Path | None = controller.settings.tts_speaker_wav
             narrator_voice = registry.resolve("Narrator")
-            if narrator_voice is not None:
+            if isinstance(narrator_voice, CharacterVoice):
                 if narrator_voice.references:
                     narrator_reference = narrator_voice.references[0]
                 elif controller.settings.speech_backend == "pocket-tts":
@@ -1000,9 +1000,7 @@ class VoiceAssignmentComponent:
         if choice is None:
             raise ValueError("The selected voice is no longer available")
         character_key = normalize_character_name(character)
-        updated_settings = controller.settings.updated(
-            voice_assignments={}, character_voice_defaults={}
-        )
+        updated_settings = controller.settings
         if commit_settings is not None:
             commit_settings(updated_settings)
         remember_voice_binding(
@@ -1045,14 +1043,10 @@ class VoiceAssignmentComponent:
         character_key = normalize_character_name(character)
         if character_key == "narrator":
             updated_settings = controller.settings.updated(
-                voice_assignments={},
-                character_voice_defaults={},
                 force_live_narrator=False,
             )
         else:
-            updated_settings = controller.settings.updated(
-                voice_assignments={}, character_voice_defaults={}
-            )
+            updated_settings = controller.settings
         if commit_settings is not None:
             commit_settings(updated_settings)
         controller.voice_library.clear(character)

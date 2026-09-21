@@ -92,9 +92,7 @@ from vntts.voices import (
     VoiceChoice,
     application_voice_library,
     find_default_voice_manifest,
-    find_voice_assignment,
     is_narrator,
-    is_unattributed_speaker,
     normalize_character_name,
     pocket_tts_preset_voices,
     remember_voice_binding,
@@ -766,10 +764,14 @@ class OfflineAudioPreparationDialog(QDialog):
         self._apply_discovery(self._discover_content())
 
     def _choose_game_narrator(self):
+        previous_voices = self.voice_library.bindings()
         settings = self.game_narrator_chooser(self.settings, self)
         if settings is None:
             return
-        self.apply_narrator_settings(settings)
+        self.apply_narrator_settings(
+            settings,
+            voice_changed=self.voice_library.bindings() != previous_voices,
+        )
 
     def _choose_character_voice(self):
         item = self.voice_routes.currentItem()
@@ -780,6 +782,7 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         if self._narrator_player is not None:
             self._narrator_player.stop()
+        previous_voices = self.voice_library.bindings()
         if self.game_narrator_chooser is not None:
             settings = self.game_narrator_chooser(
                 self.settings, self, character=character
@@ -795,7 +798,10 @@ class OfflineAudioPreparationDialog(QDialog):
                 else None
             )
         if settings is not None:
-            self.apply_narrator_settings(settings)
+            self.apply_narrator_settings(
+                settings,
+                voice_changed=self.voice_library.bindings() != previous_voices,
+            )
 
     def _inspect_character_voice(self):
         item = self.voice_routes.currentItem()
@@ -838,10 +844,10 @@ class OfflineAudioPreparationDialog(QDialog):
         self._set_import_controls(True)
         self._selection_changed()
 
-    def apply_narrator_settings(self, settings):
+    def apply_narrator_settings(self, settings, *, voice_changed=False):
         if self.has_pending_work():
             return
-        if (
+        if not voice_changed and (
             settings.updated(last_main_section=self.settings.last_main_section)
             == self.settings
         ):
@@ -1267,10 +1273,6 @@ class OfflineAudioPreparationDialog(QDialog):
                     evidence={"selected_in": "story-preparation"},
                     algorithm="story-preparation-v1",
                 )
-                self.settings = self.settings.updated(
-                    voice_assignments={},
-                    character_voice_defaults={},
-                )
                 self._refresh_narrator_status()
             self.planning_voices = True
             self.replanning_voice_decisions = False
@@ -1472,7 +1474,6 @@ class OfflineAudioPreparationDialog(QDialog):
             generated_audio_manifest=str(manifest),
             audio_source_policy="prefer-game-audio",
             speech_rate_percent=100,
-            voice_assignments={},
             force_live_narrator=False,
         )
 
@@ -1897,20 +1898,15 @@ class OfflineAudioPreparationDialog(QDialog):
             return "This story relies on original game voices. Choose Original game audio in Settings."
         if coverage.generated and settings.speech_rate_percent != 100:
             return "Reading skips prepared recordings at this speed. Set speech speed to 100% in Settings."
-        overrides = [
-            speaker
+        if settings.force_live_narrator and any(
+            is_narrator(speaker)
             for speaker in self._story_playback_speakers.get(
                 self._story_audio_key(selection_id), ()
             )
-            if not is_unattributed_speaker(speaker)
-            and find_voice_assignment(settings.voice_assignments, speaker) is not None
-            and (not is_narrator(speaker) or settings.force_live_narrator)
-        ]
-        if overrides:
+        ):
             return (
-                "Live voice overrides replace recordings for "
-                + ", ".join(sorted(overrides))
-                + ". Clear those overrides in Voices or prepare these stories again."
+                "Narrator is forced to live speech. Disable that override in Voices "
+                "to use prepared recordings."
             )
         return ""
 

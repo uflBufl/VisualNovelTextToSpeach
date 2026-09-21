@@ -1637,7 +1637,7 @@ class MainTest(unittest.TestCase):
         updated = controller.assign_voice("Selone", "preset:alba")
 
         self.assertIn("preset:alba", [choice.id for choice in choices])
-        self.assertEqual(updated.voice_assignments, {})
+        self.assertIs(updated, controller.settings)
         self.assertEqual(voice_library.binding("Selone").source_id, "preset:alba")
         self.assertEqual(
             controller.voice_router.registry.resolve("Selone").speaker,
@@ -1667,11 +1667,9 @@ class MainTest(unittest.TestCase):
         self.assertFalse(controller._has_manual_voice_override("Narrator"))
         restored = controller.clear_voice_assignment("Narrator")
 
-        self.assertEqual(assigned.voice_assignments, {})
         self.assertFalse(assigned.force_live_narrator)
         self.assertTrue(forced.force_live_narrator)
         self.assertFalse(generated_first.force_live_narrator)
-        self.assertEqual(restored.voice_assignments, {})
         self.assertIsNone(voice_library.binding("Narrator"))
         self.assertFalse(restored.force_live_narrator)
         self.assertNotIn("narrator", controller.voice_router.registry.assignments)
@@ -1696,7 +1694,6 @@ class MainTest(unittest.TestCase):
                 commit_settings=Mock(side_effect=OSError("disk full")),
             )
 
-        self.assertEqual(controller.settings.voice_assignments, {})
         self.assertIsNone(voice_library.binding("Selone"))
         self.assertNotIn("selone", controller.voice_router.registry.assignments)
 
@@ -5117,7 +5114,6 @@ class MainTest(unittest.TestCase):
             AppSettings(
                 story_index="story.jsonl",
                 audio_source_policy="prefer-game-audio",
-                voice_assignments={"Narrator": "preset:alba"},
                 force_live_narrator=True,
             ),
             tts_factory=Mock(),
@@ -5692,15 +5688,20 @@ class MainTest(unittest.TestCase):
         from vntts.runtime_config import initialize_voice_registry
 
         backend = RecordingAnnouncementBackend()
-        settings = AppSettings(
-            speaker_announcement_mode="narrator-fallback-roles",
-            character_voice_defaults={"Hotelier": "default", "Ada": "preset:anna"},
-        )
-        controller = AppController(settings)
+        settings = AppSettings(speaker_announcement_mode="narrator-fallback-roles")
+        voice_root = TemporaryDirectory()
+        self.addCleanup(voice_root.cleanup)
+        voice_library = VoiceLibrary(Path(voice_root.name) / "voices")
+        voice_library.select("Ada", route="voice", source_id="preset:anna")
+        controller = AppController(settings, voice_library=voice_library)
         with patch(
             "vntts.runtime_config.find_default_voice_manifest", return_value=None
         ):
-            controller.voice_router = Mock(registry=initialize_voice_registry(settings))
+            controller.voice_router = Mock(
+                registry=initialize_voice_registry(
+                    settings, voice_library=voice_library
+                )
+            )
         controller.speech_backend = backend
         for typed in (False, True):
             for role, expected in (

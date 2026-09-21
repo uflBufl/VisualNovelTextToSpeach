@@ -374,8 +374,15 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
-            selected = AppSettings(voice_assignments={"Narrator": "preset:marius"})
-            chooser = Mock(return_value=selected)
+            selected = AppSettings()
+
+            def choose_narrator(*_args):
+                self._voice_library.select(
+                    "Narrator", route="voice", source_id="preset:marius"
+                )
+                return selected
+
+            chooser = Mock(side_effect=choose_narrator)
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
@@ -395,6 +402,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(dialog.engine_controls.isHidden())
             self.assertTrue(dialog.pocket_terms.isHidden())
             self.assertTrue(dialog.pocket_voice_cloning.isHidden())
+            chooser.side_effect = None
             chooser.return_value = None
             dialog.game_narrator_button.click()
             self.assertIs(dialog.settings, selected)
@@ -458,12 +466,18 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIs(dialog.voice_plan(), plan)
             self.assertIs(dialog.settings, settings)
 
-            saved = settings.updated(
-                character_voice_defaults={"Aderyn": "character:rhiannon"}
-            )
-            chooser.return_value = saved
+            def save_aderyn(*_args, **_kwargs):
+                remember_voice_binding(
+                    self._voice_library,
+                    CharacterVoiceRegistry.from_file(manifest),
+                    "Aderyn",
+                    "character:rhiannon",
+                )
+                return settings
+
+            chooser.side_effect = save_aderyn
             dialog.choose_character_voice.click()
-            self.assertIs(dialog.settings, saved)
+            self.assertIs(dialog.settings, settings)
             self.assertIsNone(dialog.voice_plan())
             self.assertTrue(dialog.voice_confirmation.isHidden())
             self.assertTrue(dialog.planning_voices)
@@ -567,8 +581,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             content = inspect_story_index(write_content(root / "content"))
-            settings = AppSettings(
-                voice_assignments={"Narrator": "character:centurion"}
+            settings = AppSettings()
+            self._voice_library.select(
+                "Narrator", route="voice", source_id="character:centurion"
             )
             dialog = OfflineAudioPreparationDialog(
                 settings,
@@ -1238,7 +1253,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             )
             second.continue_button.click()
             self.assertEqual(second.result(), QDialog.DialogCode.Accepted)
-            self.assertEqual(second.voice_plan().audition_count, 1)
+            self.assertEqual(second.voice_plan().audition_count, 0)
             self.assertTrue(generator.rendered)
             self.assertFalse(decisions.path.exists())
             first.deleteLater()

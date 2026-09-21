@@ -15,6 +15,7 @@ from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.pregeneration_voices import PregenerationVoiceError, VoiceDecisionStore
 from vntts.settings import AppSettings
 from vntts.voice_default_impact import inspect_voice_default_impact
+from vntts.voice_library import VoiceLibrary
 
 
 def voice_impact_fixture(root):
@@ -116,20 +117,18 @@ def voice_impact_fixture(root):
             "generated_audio": generated,
         },
     )
-    settings = AppSettings(
-        voice_manifest=str(voices),
-        voice_assignments={"Narrator": "preset:alba"},
-        character_voice_defaults={
-            "Rhiannon": "preset:alba",
-            "Centurion": "preset:alba",
-        },
-    )
+    settings = AppSettings(voice_manifest=str(voices))
+    library = VoiceLibrary(root / "voice-library")
+    library.select("Narrator", route="voice", source_id="preset:alba")
+    library.select("Rhiannon", route="voice", source_id="preset:alba")
+    library.select("Centurion", route="voice", source_id="preset:alba")
     return (
         content,
         jobs,
-        VoiceDecisionStore(root / "decisions.json"),
+        VoiceDecisionStore(root / "decisions.json", voice_library=library),
         settings,
         pack_root,
+        library,
     )
 
 
@@ -139,7 +138,11 @@ class VoiceDefaultImpactTest(unittest.TestCase):
     ):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            content, jobs, decisions, settings, _pack = voice_impact_fixture(root)
+            content, jobs, decisions, settings, _pack, library = voice_impact_fixture(
+                root
+            )
+            proposed = library.copy_to(root / "proposed-library")
+            proposed.select("Rhiannon", route="voice", source_id="preset:marius")
             before = {
                 path: path.read_bytes() for path in root.rglob("*") if path.is_file()
             }
@@ -148,13 +151,9 @@ class VoiceDefaultImpactTest(unittest.TestCase):
                 jobs,
                 decisions,
                 settings,
-                settings.updated(
-                    character_voice_defaults={
-                        **settings.character_voice_defaults,
-                        "Rhiannon": "preset:marius",
-                    }
-                ),
                 "Rhiannon",
+                current_voice_library=library,
+                proposed_voice_library=proposed,
             )
             self.assertEqual(result[0].changed_line_ids, ("changed",))
             self.assertEqual(
@@ -168,16 +167,20 @@ class VoiceDefaultImpactTest(unittest.TestCase):
 
     def test_narrator_change_includes_fallback_and_unknown_roles_only(self):
         with TemporaryDirectory() as directory:
-            content, jobs, decisions, settings, _pack = voice_impact_fixture(
-                Path(directory)
+            root = Path(directory)
+            content, jobs, decisions, settings, _pack, library = voice_impact_fixture(
+                root
             )
+            proposed = library.copy_to(root / "proposed-library")
+            proposed.select("Narrator", route="voice", source_id="preset:marius")
             result = inspect_voice_default_impact(
                 content,
                 jobs,
                 decisions,
                 settings,
-                settings.updated(voice_assignments={"Narrator": "preset:marius"}),
                 "Narrator",
+                current_voice_library=library,
+                proposed_voice_library=proposed,
             )
             self.assertEqual(result[0].changed_line_ids, ())
             self.assertEqual(
@@ -186,7 +189,7 @@ class VoiceDefaultImpactTest(unittest.TestCase):
 
     def test_damaged_recording_cannot_be_reported_as_a_reusable_voice(self):
         with TemporaryDirectory() as directory:
-            content, jobs, decisions, settings, pack = voice_impact_fixture(
+            content, jobs, decisions, settings, pack, library = voice_impact_fixture(
                 Path(directory)
             )
             (pack / "changed.wav").write_bytes(b"damaged")
@@ -194,12 +197,18 @@ class VoiceDefaultImpactTest(unittest.TestCase):
                 (ValueError, RuntimeError), "(checksum|missing|damaged|integrity)"
             ):
                 inspect_voice_default_impact(
-                    content, jobs, decisions, settings, settings, "Rhiannon"
+                    content,
+                    jobs,
+                    decisions,
+                    settings,
+                    "Rhiannon",
+                    current_voice_library=library,
+                    proposed_voice_library=library,
                 )
 
     def test_changed_source_requires_refresh_before_comparison(self):
         with TemporaryDirectory() as directory:
-            content, jobs, decisions, settings, _pack = voice_impact_fixture(
+            content, jobs, decisions, settings, _pack, library = voice_impact_fixture(
                 Path(directory)
             )
             content.story_index.write_text(content.story_index.read_text() + "\n")
@@ -207,5 +216,11 @@ class VoiceDefaultImpactTest(unittest.TestCase):
                 PregenerationVoiceError, "Story content changed"
             ):
                 inspect_voice_default_impact(
-                    content, jobs, decisions, settings, settings, "Rhiannon"
+                    content,
+                    jobs,
+                    decisions,
+                    settings,
+                    "Rhiannon",
+                    current_voice_library=library,
+                    proposed_voice_library=library,
                 )

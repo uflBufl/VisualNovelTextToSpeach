@@ -1,5 +1,7 @@
 import os
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -14,6 +16,7 @@ from vntts.speech_presentation import (
     speech_configuration_label,
     speech_runtime_label,
 )
+from vntts.voice_library import VoiceLibrary
 
 
 class SpeechPresentationTest(unittest.TestCase):
@@ -84,12 +87,15 @@ class SpeechPresentationTest(unittest.TestCase):
 
     def test_default_and_explicit_voice_are_the_same_across_journeys(self):
         self.assertIn("Narrator voice: Alba", speech_configuration_label(AppSettings()))
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        voices = VoiceLibrary(Path(directory.name) / "voices")
+        voices.select("Narrator", route="voice", source_id="character:centurion")
         settings = AppSettings(
             speech_backend="moss-tts",
             tts_model="my-model.gguf",
-            voice_assignments={"Narrator": "character:centurion"},
         )
-        self.assertIn("Narrator voice: Centurion", speech_configuration_label(settings))
+        self.assertEqual(narrator_voice_label(settings, voices), "Centurion")
         self.assertIn("Model: my-model.gguf", speech_configuration_label(settings))
         self.assertIn(
             "Configured model: my-model.gguf", speech_configuration_label(settings)
@@ -132,14 +138,6 @@ class SpeechPresentationTest(unittest.TestCase):
                 "Model: custom.gguf",
                 engine_model_label("moss-tts", "/models/custom.gguf"),
             )
-
-    def test_pack_narrator_does_not_invent_identity_before_runtime_load(self):
-        settings = AppSettings(voice_assignments={"Narrator": "character:narrator"})
-        self.assertIn("after loading", narrator_voice_label(settings))
-        self.assertIn(
-            "Narrator voice: Centurion",
-            speech_configuration_label(settings, narrator="Centurion"),
-        )
 
     def test_reading_policy_discloses_saved_audio_and_override(self):
         settings = AppSettings(

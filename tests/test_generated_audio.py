@@ -31,7 +31,9 @@ from vntts.generated_audio import (
     recorded_voice_identity,
 )
 from vntts.playback import PreparedPlayback, outcome_for_prepared
+from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
+from vntts.voice_library import VoiceLibrary
 
 
 class FakeAudioOutput:
@@ -204,19 +206,21 @@ class GeneratedAudioTest(unittest.TestCase):
     ):
         from vntts.controller import AppController
         from vntts.runtime_config import initialize_voice_router
-        from vntts.settings import AppSettings
 
-        settings = AppSettings(
-            voice_assignments={"Narrator": "preset:marius"},
-            character_voice_defaults={"Ada": "preset:anna", "Hotelier": "default"},
-        )
+        settings = AppSettings()
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        voices = VoiceLibrary(Path(directory.name) / "voices")
+        voices.select("Narrator", route="voice", source_id="preset:marius")
+        voices.select("Ada", route="voice", source_id="preset:anna")
+        voices.select("Hotelier", route="narrator")
         tts = Mock()
         tts.has_speaker.return_value = True
         with patch(
             "vntts.runtime_config.find_default_voice_manifest", return_value=None
         ):
-            router = initialize_voice_router(tts, settings)
-            controller = AppController(settings)
+            router = initialize_voice_router(tts, settings, voice_library=voices)
+            controller = AppController(settings, voice_library=voices)
             controller.voice_router = router
             self.assertFalse(controller._has_manual_voice_override("Ada"))
             self.assertFalse(controller._speaker_requires_voice_decision("Hotelier"))
@@ -228,11 +232,9 @@ class GeneratedAudioTest(unittest.TestCase):
             tts.speak.assert_called_with(
                 "Narrator fallback.", speaker="marius", speaker_wav=None
             )
-            overridden = settings.updated(
-                voice_assignments={**settings.voice_assignments, "ada": "preset:alba"}
-            )
+            voices.select("Ada", route="voice", source_id="preset:alba")
             self.assertEqual(
-                initialize_voice_router(tts, overridden)
+                initialize_voice_router(tts, settings, voice_library=voices)
                 .registry.resolve("Ada")
                 .speaker,
                 "alba",
@@ -325,9 +327,7 @@ class GeneratedAudioTest(unittest.TestCase):
             prepared = GeneratedAudioLibrary.load_optional(manifest).find(
                 "game:1", text_sha256("Hello.")
             )
-            controller = AppController(
-                AppSettings(character_voice_defaults={"Narrator": "preset:alba"})
-            )
+            controller = AppController(AppSettings())
             label = controller._describe_audio_source(prepared)
             self.assertIn("Recorded Ada", label)
             self.assertIn("recorded-ada", label)

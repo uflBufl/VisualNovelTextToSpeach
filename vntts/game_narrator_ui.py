@@ -999,39 +999,50 @@ class GameNarratorDialog(QDialog):
             else self._prepared.get(self.references.currentData())
         )
         source_id = self.catalog_choice.currentData() if mode == "catalog" else None
-        character = (
-            self.catalog_choice.currentText() if mode == "catalog" else self._character
-        )
         settings = self._settings()
-        proposed = (
-            self._policy_settings(settings)
-            if mode in {"preset", "automatic", "narrator"}
-            else None
-        )
+        if mode == "preset":
+            source_id = self.presets.currentData()
+        elif mode == "narrator":
+            source_id = "default"
         self._start(
             "impact",
             "Comparing prepared recordings with this voice selection...",
             self._perform_impact,
             settings,
-            proposed,
+            mode,
             manifest,
             source_id,
-            character,
         )
 
     def _perform_impact(
         self,
         settings: AppSettings,
-        proposed: AppSettings | None,
+        mode: str,
         manifest: Path | str | None,
         source_id: str | None,
-        character: str | None,
     ) -> tuple[StoryVoiceImpact, ...]:
         if self._impact_context is None:
             raise RuntimeError("Prepared-story context is unavailable")
         content, jobs, decisions = self._impact_context
         with TemporaryDirectory(prefix="vntts-voice-choice-") as temporary:
-            if proposed is None:
+            proposed_library = self.voice_library.copy_to(
+                Path(temporary) / "proposed-voices"
+            )
+            if mode == "automatic":
+                proposed_library.clear(self._saving_role)
+            elif mode == "narrator":
+                proposed_library.select(
+                    self._saving_role,
+                    route=(
+                        "live-fallback"
+                        if is_narrator(self._saving_role)
+                        else "narrator"
+                    ),
+                    method="manual",
+                    evidence={"selected_in": "voice-impact-preview"},
+                    algorithm="voice-picker-v1",
+                )
+            else:
                 if source_id is None:
                     if manifest is None:
                         raise ValueError("Voice manifest is required")
@@ -1041,16 +1052,28 @@ class GameNarratorDialog(QDialog):
                             "Expected exactly one selected voice reference"
                         )
                     source_id = choices[0].id
-                proposed = self._bind_selected_voice(
-                    settings, manifest, source_id, character, root=temporary
+                registry = (
+                    self._catalog_registry
+                    if mode in {"preset", "catalog"}
+                    else CharacterVoiceRegistry.from_file(manifest)
+                )
+                remember_voice_binding(
+                    proposed_library,
+                    registry,
+                    self._saving_role,
+                    source_id,
+                    method="manual",
+                    evidence={"selected_in": "voice-impact-preview"},
+                    algorithm="voice-picker-v1",
                 )
             results = inspect_voice_default_impact(
                 content,
                 jobs,
                 decisions,
                 settings,
-                proposed,
                 self._saving_role,
+                current_voice_library=self.voice_library,
+                proposed_voice_library=proposed_library,
                 cancellation=self.cancellation,
             )
             if not _is_story_voice_impact(results):
@@ -1388,8 +1411,6 @@ class GameNarratorDialog(QDialog):
                 algorithm="voice-picker-v1",
             )
         return settings.updated(
-            voice_assignments={},
-            character_voice_defaults={},
             tts_speaker_wav=None if narrator else settings.tts_speaker_wav,
         )
 

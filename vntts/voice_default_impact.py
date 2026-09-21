@@ -24,6 +24,7 @@ from vntts.pregeneration_voices import (
     _raise_if_cancelled,
 )
 from vntts.settings import AppSettings
+from vntts.voice_library import VoiceLibrary
 from vntts.voices import is_narrator, normalize_character_name
 
 
@@ -262,9 +263,10 @@ def inspect_voice_default_impact(
     job_store: PregenerationJobStore,
     decisions: VoiceDecisionStore,
     settings: AppSettings,
-    proposed: AppSettings,
     role: str,
     *,
+    current_voice_library: VoiceLibrary,
+    proposed_voice_library: VoiceLibrary,
     cancellation: Cancellation | None = None,
 ) -> tuple[StoryVoiceImpact, ...]:
     """Use the real planner and saved decisions without changing durable work."""
@@ -278,13 +280,19 @@ def inspect_voice_default_impact(
     if not selected:
         return ()
     with TemporaryDirectory(prefix="vntts-voice-impact-") as temporary:
-        preview_jobs = PregenerationJobStore(Path(temporary))
+        root = Path(temporary)
+        preview_jobs = PregenerationJobStore(root / "jobs")
         job = preview_jobs.create_or_resume(
             content, tuple(pack.selection_id for pack in selected)
         )
-        planner = VoicePlanStore(preview_jobs, decisions=decisions)
-        old_plan = planner.create(job, settings, cancellation=cancellation)
-        new_plan = planner.create(job, proposed, cancellation=cancellation)
+        old_library = current_voice_library.copy_to(root / "current-voices")
+        new_library = proposed_voice_library.copy_to(root / "proposed-voices")
+        old_plan = VoicePlanStore(
+            preview_jobs, decisions=decisions, voice_library=old_library
+        ).create(job, settings, cancellation=cancellation)
+        new_plan = VoicePlanStore(
+            preview_jobs, decisions=decisions, voice_library=new_library
+        ).create(job, settings, cancellation=cancellation)
     old_groups = {
         line_id: group for group in old_plan.groups for line_id in group.line_ids
     }
@@ -299,7 +307,7 @@ def inspect_voice_default_impact(
             records,
             old_groups,
             new_groups,
-            proposed,
+            settings,
             role,
             narrator,
             cancellation,

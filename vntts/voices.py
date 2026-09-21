@@ -295,7 +295,9 @@ def voice_binding_label(binding: VoiceBinding | None) -> str | None:
     return binding.role
 
 
-def voice_binding_source_id(binding: VoiceBinding) -> str | None:
+def voice_binding_source_id(binding: VoiceBinding | None) -> str | None:
+    if binding is None:
+        return None
     if binding.route != "voice":
         return default_voice_choice_id
     if binding.source_id is not None:

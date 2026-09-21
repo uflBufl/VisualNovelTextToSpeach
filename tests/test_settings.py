@@ -1,6 +1,7 @@
 import json
 import sys
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -70,7 +71,6 @@ class SettingsTest(unittest.TestCase):
             speech_backend="moss-tts",
             tts_model="local-moss",
             tts_language="English",
-            character_voice_defaults={"Hotelier": "default"},
             output_volume_percent=35,
         )
 
@@ -79,12 +79,11 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(
             changes,
-            ("speech_backend", "tts_model", "tts_language", "character_voice_defaults"),
+            ("speech_backend", "tts_model", "tts_language"),
         )
         self.assertEqual(effective.speech_backend, "pocket-tts")
         self.assertEqual(effective.tts_model, "pocket-tts")
         self.assertIsNone(effective.tts_language)
-        self.assertEqual(effective.character_voice_defaults, {})
         self.assertEqual(effective.output_volume_percent, 35)
 
     def test_schema_11_idle_delay_migrates_to_lower_live_latency(self):
@@ -215,26 +214,18 @@ class SettingsTest(unittest.TestCase):
             "narrator-fallback-roles",
         )
 
-    def test_legacy_narrator_assignment_preserves_force_live_behavior(self):
-        settings = AppSettings.from_mapping(
-            {
-                "schema_version": 21,
-                "voice_assignments": {"Narrator": "preset:alba"},
-            }
-        )
-
-        self.assertTrue(settings.force_live_narrator)
-
-    def test_current_narrator_assignment_can_keep_generated_first(self):
+    def test_obsolete_voice_assignments_are_ignored(self):
         settings = AppSettings.from_mapping(
             {
                 "schema_version": settings_schema_version,
                 "voice_assignments": {"Narrator": "preset:alba"},
-                "force_live_narrator": False,
+                "character_voice_defaults": {"Hotelier": "default"},
             }
         )
 
         self.assertFalse(settings.force_live_narrator)
+        self.assertNotIn("voice_assignments", asdict(settings))
+        self.assertNotIn("character_voice_defaults", asdict(settings))
 
     def test_audio_source_policy_can_be_selected_from_environment(self):
         settings = AppSettings().with_environment_overrides(
@@ -313,11 +304,6 @@ class SettingsTest(unittest.TestCase):
                 live_sequence_plan="story/live-sequence.json",
                 live_sequence_mode="shadow",
                 audio_source_policy="prefer-generated",
-                voice_assignments={
-                    "Narrator": "preset:alba",
-                    "Marcus": "preset:anna",
-                },
-                character_voice_defaults={"Hotelier": "default"},
                 output_volume_percent=72,
                 speech_rate_percent=115,
             )
@@ -333,43 +319,6 @@ class SettingsTest(unittest.TestCase):
         )
 
         self.assertEqual(settings.live_speaker_corpus, "session-speakers.json")
-
-    def test_invalid_voice_assignments_are_ignored(self):
-        warnings = []
-
-        settings = AppSettings.from_mapping(
-            {"voice_assignments": {"Marcus": 42}},
-            warn=warnings.append,
-        )
-
-        self.assertEqual(settings.voice_assignments, {})
-        self.assertTrue(any("voice_assignments" in warning for warning in warnings))
-
-    def test_character_defaults_validate_and_leave_legacy_overrides_unchanged(self):
-        warnings = []
-        settings = AppSettings.from_mapping(
-            {
-                "voice_assignments": {"Marcus": "preset:anna"},
-                "character_voice_defaults": {
-                    " Hotelier ": " default ",
-                    "Narrator": "preset:alba",
-                    "???": "preset:alba",
-                },
-            },
-            warn=warnings.append,
-        )
-        self.assertEqual(settings.voice_assignments, {"Marcus": "preset:anna"})
-        self.assertEqual(settings.character_voice_defaults, {"Hotelier": "default"})
-        self.assertEqual(len(warnings), 2)
-        for invalid in ({"Marcus": 42}, "preset:alba"):
-            with self.subTest(invalid=invalid):
-                self.assertEqual(
-                    AppSettings.from_mapping(
-                        {"character_voice_defaults": invalid}
-                    ).character_voice_defaults,
-                    {},
-                )
-        self.assertEqual(AppSettings.from_mapping({}).character_voice_defaults, {})
 
     def test_malformed_settings_file_uses_defaults(self):
         warnings = []

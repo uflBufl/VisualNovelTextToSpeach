@@ -11,9 +11,8 @@ from vntts.application_directories import (
 from vntts.application_directories import get_config_directory, get_local_data_directory
 from vntts.hotkeys import default_hotkey
 from vntts.versioned_json import load_versioned_json, write_versioned_json
-from vntts.voices import is_narrator
 
-settings_schema_version = 29
+settings_schema_version = 30
 main_sections = ("stories", "voices", "reading")
 
 audio_source_policies = {
@@ -85,8 +84,6 @@ class AppSettingsChanges(TypedDict, total=False):
     live_speaker_corpus: str | None
     generated_audio_manifest: str | None
     narrator_speaker: str | None
-    voice_assignments: dict[str, str]
-    character_voice_defaults: dict[str, str]
     force_live_narrator: bool
     active_profile_id: str | None
 
@@ -104,7 +101,6 @@ restart_required_setting_names = (
     "voice_manifest",
     "narrator_speaker",
     "pocket_gated_model_accepted",
-    "character_voice_defaults",
 )
 
 
@@ -198,8 +194,6 @@ class AppSettings:
         metadata={"support_sensitivity": "path"},
     )
     narrator_speaker: str | None = None
-    voice_assignments: dict[str, str] = field(default_factory=dict)
-    character_voice_defaults: dict[str, str] = field(default_factory=dict)
     force_live_narrator: bool = False
     active_profile_id: str | None = None
 
@@ -371,39 +365,6 @@ class AppSettings:
             and parsed["announce_speaker_changes"]
         ):
             parsed["speaker_announcement_mode"] = "all-speakers"
-
-        validated_assignments: dict[str, dict[str, str]] = {}
-        for name in ("voice_assignments", "character_voice_defaults"):
-            assignments = values.get(name, getattr(defaults, name))
-            if isinstance(assignments, dict) and all(
-                isinstance(character, str)
-                and character.strip()
-                and isinstance(source_id, str)
-                and source_id.strip()
-                for character, source_id in assignments.items()
-            ):
-                validated_assignments[name] = {
-                    character.strip(): source_id.strip()
-                    for character, source_id in assignments.items()
-                }
-            else:
-                report(f"Invalid {name!r} setting; using its default")
-                validated_assignments[name] = {}
-            parsed[name] = validated_assignments[name]
-        character_voice_defaults = validated_assignments["character_voice_defaults"]
-        for character in tuple(character_voice_defaults):
-            if is_narrator(character):
-                report("Narrator cannot be set in 'character_voice_defaults'")
-                del character_voice_defaults[character]
-
-        # Before schema 22 a saved Narrator assignment always bypassed source
-        # and pregenerated audio. Preserve that behavior during migration while
-        # making the routing choice explicit for newly saved settings.
-        if source_schema < 22 and any(
-            character.strip().casefold() == "narrator"
-            for character in validated_assignments["voice_assignments"]
-        ):
-            parsed["force_live_narrator"] = True
 
         # The keys and values above are validated dynamically from versioned JSON;
         # typeshed cannot express that mapping through dataclasses.replace.

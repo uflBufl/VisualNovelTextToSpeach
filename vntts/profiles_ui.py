@@ -258,8 +258,7 @@ class GameProfilesDialog(QDialog):
             f"- Capture: {capture} with its calibrated dialogue area\n"
             f"- Content: {content}; sequence mode {profile.live_sequence_mode}\n"
             f"- Audio: {profile.audio_source_policy}; prepared tracks {prepared}\n"
-            f"- Voices: {voice_pack}; {len(profile.voice_assignments)} manual "
-            f"assignment(s); Narrator {narrator_routing}\n"
+            f"- Voices: {voice_pack}; Narrator {narrator_routing}\n"
             f"OCR language: {profile.ocr_language}\n"
         )
 

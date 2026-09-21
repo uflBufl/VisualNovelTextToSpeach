@@ -27,6 +27,8 @@ from vntts.source_audio_semantics import (
     load_source_audio_semantic_evidence,
     semantic_text_sha256,
 )
+from vntts.voice_library import VoiceLibrary
+from vntts.voices import CharacterVoiceRegistry, remember_voice_binding
 
 
 def write_content(root):
@@ -245,9 +247,18 @@ class PregenerationInputStoreTest(unittest.TestCase):
         settings = AppSettings(
             speech_backend=backend,
             pocket_gated_model_accepted=backend == "pocket-tts",
-            voice_assignments=({"Narrator": "character:centurion"} if narrator else {}),
         )
-        voice_plan = VoicePlanStore(jobs).create(job, settings, manifest_path=manifest)
+        library = VoiceLibrary(root / "library")
+        if narrator:
+            remember_voice_binding(
+                library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Narrator",
+                "character:centurion",
+            )
+        voice_plan = VoicePlanStore(jobs, voice_library=library).create(
+            job, settings, manifest_path=manifest
+        )
         return job, jobs, voice_plan, manifest
 
     def test_materializes_selected_story_effective_voices_and_queue(self):
@@ -334,13 +345,18 @@ class PregenerationInputStoreTest(unittest.TestCase):
             content = inspect_story_index(story_path)
             jobs = PregenerationJobStore(root / "jobs")
             job = jobs.create_or_resume(content, ("selected",))
-            plan = VoicePlanStore(jobs).create(
+            manifest = write_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+            remember_voice_binding(
+                library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Narrator",
+                "character:centurion",
+            )
+            plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(
-                    pocket_gated_model_accepted=True,
-                    voice_assignments={"Narrator": "character:centurion"},
-                ),
-                manifest_path=write_manifest(root / "voices"),
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
             )
 
             result = PregenerationInputStore(jobs).materialize(job, plan)
@@ -372,16 +388,23 @@ class PregenerationInputStoreTest(unittest.TestCase):
             jobs = PregenerationJobStore(root / "jobs")
             job = jobs.create_or_resume(content, ("selected", "later"))
             manifest = write_manifest(root / "voices")
-            plan = VoicePlanStore(jobs).create(
+            library = VoiceLibrary(root / "library")
+            remember_voice_binding(
+                library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Narrator",
+                "character:centurion",
+            )
+            plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(
-                    pocket_gated_model_accepted=True,
-                    voice_assignments={"Narrator": "character:centurion"},
-                ),
+                AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
             variants = [group for group in plan.groups if group.character == "Rhiannon"]
-            self.assertEqual(len(variants), 1)
+            self.assertEqual(len(variants), 2)
+            self.assertEqual(
+                {group.source_character for group in variants}, {"Rhiannon"}
+            )
 
             result = PregenerationInputStore(jobs).materialize(job, plan)
             queue = VoiceGenerationQueue.load(result.queue)
@@ -404,9 +427,15 @@ class PregenerationInputStoreTest(unittest.TestCase):
             settings = AppSettings(
                 speech_backend="pocket-tts",
                 pocket_gated_model_accepted=True,
-                voice_assignments={"Narrator": "character:centurion"},
             )
-            plan = VoicePlanStore(jobs).create(
+            library = VoiceLibrary(root / "library")
+            remember_voice_binding(
+                library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Narrator",
+                "character:centurion",
+            )
+            plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
                 settings,
                 manifest_path=manifest,
@@ -502,15 +531,13 @@ class PregenerationInputStoreTest(unittest.TestCase):
             content = inspect_story_index(write_content(root / "content"))
             jobs = PregenerationJobStore(root / "jobs")
             job = jobs.create_or_resume(content, ("selected",))
-            plan = VoicePlanStore(jobs).create(
+            manifest_path = write_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+            library.select("Narrator", route="voice", source_id="preset:marius")
+            plan = VoicePlanStore(jobs, voice_library=library).create(
                 job,
-                AppSettings(
-                    voice_assignments={
-                        "Narrator": "preset:marius",
-                        "Rhiannon": "character:centurion",
-                    }
-                ),
-                manifest_path=write_manifest(root / "voices"),
+                AppSettings(),
+                manifest_path=manifest_path,
             )
 
             result = PregenerationInputStore(jobs).materialize(job, plan)
@@ -551,18 +578,27 @@ class PregenerationInputStoreTest(unittest.TestCase):
 
         self.assertEqual(result.narrator_fallback_roles, ("Hotelier", "Rhiannon"))
 
-    def test_changed_reference_is_rejected_before_publication(self):
+    def test_changed_source_reference_cannot_change_snapshotted_voice(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs, voice_plan, manifest = self.fixture(root)
             reference = manifest.parent / "references" / "rhiannon.wav"
             write_pcm16_wav(reference, [0.0, 0.8, -0.8, 0.0], 16_000)
 
-            with self.assertRaisesRegex(PregenerationQueueError, "changed"):
-                PregenerationInputStore(jobs).materialize(job, voice_plan)
+            result = PregenerationInputStore(jobs).materialize(job, voice_plan)
+            staged_manifest = json.loads(result.voice_manifest.read_text())
+            staged_voice = next(
+                voice
+                for voice in staged_manifest["voices"]
+                if voice["character"] == "Rhiannon"
+            )
+            staged_reference = result.directory / staged_voice["references"][0]
+            planned = next(
+                group for group in voice_plan.groups if group.character == "Rhiannon"
+            )
 
-            self.assertFalse(
-                any((root / "jobs" / job.job_id).glob("generation-input-*"))
+            self.assertEqual(
+                sha256_file(staged_reference), planned.reference_sha256s[0]
             )
 
     def test_cancelled_materialization_does_not_publish(self):

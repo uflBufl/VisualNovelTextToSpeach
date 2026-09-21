@@ -150,8 +150,9 @@ from vntts.support import (
 )
 from vntts.support_ui import SupportCenterDialog
 from vntts.ui_text import make_text_copyable
+from vntts.voice_library import VoiceLibrary
 from vntts.voice_preview_ui import VoicePreviewDialog
-from vntts.voices import find_default_voice_manifest, find_voice_assignment
+from vntts.voices import application_voice_library, find_default_voice_manifest
 from vntts.window_capture import (
     WindowCaptureError,
     WindowGeometry,
@@ -226,8 +227,11 @@ class AppSignals(QObject):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings, parent=None):
+    def __init__(
+        self, settings, parent=None, *, voice_library: VoiceLibrary | None = None
+    ):
         super().__init__(parent)
+        self.voice_library = voice_library or application_voice_library()
         self._initialize_settings(settings)
         window_layout = self._build_capture_controls(settings)
         self._build_engine_controls(settings)
@@ -283,8 +287,6 @@ class SettingsDialog(QDialog):
 
     def _initialize_settings(self, settings):
         self.original_settings = settings
-        self.narrator_assignments = dict(settings.voice_assignments)
-        self.character_defaults = dict(settings.character_voice_defaults)
         self._game_pack_validation = None
         self.setWindowTitle(f"{application_name} settings")
 
@@ -1042,14 +1044,11 @@ class SettingsDialog(QDialog):
                 f"Speech engine: {backend} is not included in this application "
                 "package. Choose an available engine.",
             )
-        narrator_assignment = find_voice_assignment(
-            self.narrator_assignments,
-            "Narrator",
-        )
+        narrator_binding = self.voice_library.binding("Narrator")
         if (
             self.speech_backend.currentData() == "moss-tts"
             and not self.narrator_reference.text().strip()
-            and not str(narrator_assignment or "").startswith("character:")
+            and narrator_binding is None
         ):
             add(
                 2,
@@ -1069,9 +1068,7 @@ class SettingsDialog(QDialog):
             ("Narrator reference", self.narrator_reference),
             ("Live speaker corpus", self.live_speaker_corpus),
         ):
-            if field is self.narrator_reference and str(
-                narrator_assignment or ""
-            ).startswith("character:"):
+            if field is self.narrator_reference and narrator_binding is not None:
                 continue
             add(2, field, self._file_validation_error(label, field.text()))
         if not game_pack or effective_settings is not None:
@@ -1145,7 +1142,9 @@ class SettingsDialog(QDialog):
     def update_validation_summary(self, *_args):
         from vntts.speech_presentation import narrator_voice_label
 
-        self.narrator_voice.setText(narrator_voice_label(self._raw_settings()))
+        self.narrator_voice.setText(
+            narrator_voice_label(self._raw_settings(), self.voice_library)
+        )
         errors = self.validation_errors()
         if errors:
             self.validation_summary.setText(
@@ -1184,7 +1183,9 @@ class SettingsDialog(QDialog):
         )
 
     def choose_narrator(self):
-        dialog = GameNarratorDialog(self._raw_settings(), self)
+        dialog = GameNarratorDialog(
+            self._raw_settings(), self, voice_library=self.voice_library
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.result_settings
@@ -1193,8 +1194,6 @@ class SettingsDialog(QDialog):
         )
         self.tts_model.setText(candidate.tts_model or "")
         self.tts_profile.setCurrentText(candidate.tts_profile)
-        self.narrator_assignments = dict(candidate.voice_assignments)
-        self.character_defaults = dict(candidate.character_voice_defaults)
         self.speaker_announcement_mode.setCurrentIndex(
             self.speaker_announcement_mode.findData(
                 candidate.effective_speaker_announcement_mode
@@ -1210,11 +1209,6 @@ class SettingsDialog(QDialog):
 
     def _use_narrator_file(self, path):
         if path.strip():
-            self.narrator_assignments = {
-                name: source
-                for name, source in self.narrator_assignments.items()
-                if name.strip().casefold() != "narrator"
-            }
             self.update_validation_summary()
 
     def browse_narrator_reference(self):
@@ -1328,8 +1322,6 @@ class SettingsDialog(QDialog):
         return AppSettings.from_mapping(
             {
                 **asdict(self.original_settings),
-                "voice_assignments": dict(self.narrator_assignments),
-                "character_voice_defaults": dict(self.character_defaults),
                 "read_hotkey": hotkeys["Read once"],
                 "live_hotkey": hotkeys["Live reading"],
                 "pause_hotkey": hotkeys["Pause or resume"],
@@ -1393,8 +1385,6 @@ class SettingsDialog(QDialog):
             settings.live_sequence_plan,
             settings.live_sequence_mode,
             settings.voice_manifest,
-            tuple(sorted(settings.voice_assignments.items())),
-            tuple(sorted(settings.character_voice_defaults.items())),
         )
         if self._game_pack_validation is None or self._game_pack_validation[0] != key:
             started = perf_counter()
@@ -2787,7 +2777,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.set_status("Cancelling setup test in background...")
 
     def _create_settings_dialog(self):
-        return SettingsDialog(self.settings)
+        return SettingsDialog(
+            self.settings, voice_library=self.controller.voice_library
+        )
 
     def _create_asset_manager_dialog(self):
         return AssetManagerDialog(self.settings)

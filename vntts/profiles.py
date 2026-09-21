@@ -13,9 +13,8 @@ from vntts.settings import (
     live_sequence_modes,
 )
 from vntts.versioned_json import load_versioned_json, write_versioned_json
-from vntts.voices import is_narrator
 
-profiles_schema_version = 7
+profiles_schema_version = 8
 
 PathInput: TypeAlias = str | Path
 WarningHandler: TypeAlias = Callable[[str], None]
@@ -40,8 +39,6 @@ class GameProfile:
     live_sequence_mode: str
     generated_audio_manifest: str | None
     audio_source_policy: str
-    voice_assignments: dict[str, str]
-    character_voice_defaults: dict[str, str]
     force_live_narrator: bool
 
     @classmethod
@@ -67,8 +64,6 @@ class GameProfile:
             live_sequence_mode=settings.live_sequence_mode,
             generated_audio_manifest=settings.generated_audio_manifest,
             audio_source_policy=settings.audio_source_policy,
-            voice_assignments=dict(settings.voice_assignments),
-            character_voice_defaults=dict(settings.character_voice_defaults),
             force_live_narrator=settings.force_live_narrator,
         )
 
@@ -80,14 +75,9 @@ class GameProfile:
         source_schema: int = profiles_schema_version,
     ) -> Self:
         region = _dialog_region(values["dialog_region"])
-        voice_assignments = _voice_assignments(values.get("voice_assignments"))
         force_live_narrator = values.get("force_live_narrator", False)
         if not isinstance(force_live_narrator, bool):
             raise ValueError("force_live_narrator must be a boolean")
-        if source_schema < 5 and any(
-            character.casefold() == "narrator" for character in voice_assignments
-        ):
-            force_live_narrator = True
         live_sequence_mode = values.get("live_sequence_mode")
         recognized_live_sequence_mode = live_sequence_mode in live_sequence_modes
         if not isinstance(live_sequence_mode, str) or not recognized_live_sequence_mode:
@@ -112,14 +102,6 @@ class GameProfile:
                 values.get("generated_audio_manifest")
             ),
             audio_source_policy=_audio_source_policy(values.get("audio_source_policy")),
-            voice_assignments=voice_assignments,
-            character_voice_defaults={
-                name: source
-                for name, source in _voice_assignments(
-                    values.get("character_voice_defaults")
-                ).items()
-                if not is_narrator(name)
-            },
             force_live_narrator=force_live_narrator,
         )
 
@@ -141,8 +123,6 @@ class GameProfile:
             live_sequence_mode=self.live_sequence_mode,
             generated_audio_manifest=self.generated_audio_manifest,
             audio_source_policy=self.audio_source_policy,
-            voice_assignments=dict(self.voice_assignments),
-            character_voice_defaults=dict(self.character_voice_defaults),
             force_live_narrator=self.force_live_narrator,
         )
         if self.game_pack:
@@ -167,8 +147,6 @@ class GameProfile:
             live_sequence_mode=settings.live_sequence_mode,
             generated_audio_manifest=settings.generated_audio_manifest,
             audio_source_policy=settings.audio_source_policy,
-            voice_assignments=dict(settings.voice_assignments),
-            character_voice_defaults=dict(settings.character_voice_defaults),
             force_live_narrator=settings.force_live_narrator,
         )
 
@@ -340,19 +318,6 @@ def _optional_text(value: object) -> str | None:
 
 def _audio_source_policy(value: object) -> str:
     return value if value in audio_source_policies else default_audio_source_policy
-
-
-def _voice_assignments(value: object) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    return {
-        character.strip(): source_id.strip()
-        for character, source_id in value.items()
-        if isinstance(character, str)
-        and character.strip()
-        and isinstance(source_id, str)
-        and source_id.strip()
-    }
 
 
 def _dialog_region(value: object) -> DialogRegion:

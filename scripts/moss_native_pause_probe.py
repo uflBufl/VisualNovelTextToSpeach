@@ -38,7 +38,12 @@ from vntts.synthesis import (
     SynthesisRequest,
     moss_generation_limits,
 )
-from vntts.voices import CharacterVoice, CharacterVoiceRegistry, find_voice_assignment
+from vntts.voices import (
+    CharacterVoice,
+    CharacterVoiceRegistry,
+    application_voice_library,
+    voice_binding_source_id,
+)
 
 TEXTS = (
     ("short", "The storm has passed."),
@@ -179,18 +184,9 @@ def _attempt_name(index, profile, label):
     return f"attempt-{index:02d}-{profile}-{label}"
 
 
-def _saved_narrator_reference(settings, registry_initializer):
-    registry = registry_initializer(settings)
-    assignment = find_voice_assignment(
-        getattr(settings, "voice_assignments", {}), "Narrator"
-    )
-    voice = None
-    if registry is not None:
-        voice = (
-            registry.resolve_source(assignment)
-            if assignment
-            else registry.resolve("Narrator")
-        )
+def _saved_narrator_reference(settings, registry_initializer, voice_library):
+    registry = registry_initializer(settings, voice_library=voice_library)
+    voice = registry.resolve("Narrator") if registry is not None else None
     references = () if voice is None else tuple(voice.references)
     if len(references) != 1 or not references[0].is_file():
         raise ValueError(
@@ -507,6 +503,7 @@ def run(
     path_check=moss_cpp_paths,
     settings_loader=load_app_settings,
     registry_initializer=initialize_voice_registry,
+    voice_library=None,
     sampling_profiles=PROBE_SAMPLING,
 ):
     settings = (
@@ -515,7 +512,10 @@ def run(
         else None
     )
     if options.reference is None:
-        reference, registry = _saved_narrator_reference(settings, registry_initializer)
+        voice_library = voice_library or application_voice_library()
+        reference, registry = _saved_narrator_reference(
+            settings, registry_initializer, voice_library
+        )
     else:
         reference, registry = (
             options.reference.expanduser().resolve(),
@@ -552,8 +552,8 @@ def run(
             "voice_manifest": Path(settings.voice_manifest).name
             if getattr(settings, "voice_manifest", None)
             else None,
-            "narrator_assignment": find_voice_assignment(
-                getattr(settings, "voice_assignments", {}), "Narrator"
+            "narrator_assignment": voice_binding_source_id(
+                voice_library.binding("Narrator")
             ),
         }
     backend = None
