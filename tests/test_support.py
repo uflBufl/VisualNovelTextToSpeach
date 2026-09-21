@@ -25,6 +25,7 @@ from vntts.support import (
     collect_active_content_identity,
     collect_build_identity,
     collect_ocr_metrics,
+    collect_voice_bindings,
     correlate_active_preparation,
     native_speech_context,
     preserve_previous_session,
@@ -35,6 +36,7 @@ from vntts.support import (
     sanitize_settings,
     sequence_timeline_stages,
 )
+from vntts.voice_library import VoiceLibrary
 
 
 class NativeSpeechLogTest(unittest.TestCase):
@@ -716,6 +718,30 @@ class GameImportLogTest(unittest.TestCase):
 
 
 class SupportBundleBuilderTest(unittest.TestCase):
+    def test_voice_bindings_report_one_effective_source_and_provenance(self):
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(Path(directory) / "voices")
+            library.select(
+                "Narrator",
+                route="voice",
+                source_id="preset:alba",
+                method="manual",
+                evidence={"selected_in": "voice-picker", "ignored": "/private/path"},
+                algorithm="voice-picker-v1",
+            )
+
+            report = collect_voice_bindings(library)
+
+        self.assertTrue(report["available"])
+        self.assertEqual(len(report["bindings"]), 1)
+        binding = report["bindings"][0]
+        self.assertEqual(binding["role"], "Narrator")
+        self.assertEqual(binding["source_id"], "preset:alba")
+        self.assertEqual(binding["provenance"]["method"], "manual")
+        self.assertEqual(
+            binding["provenance"]["evidence"], {"selected_in": "voice-picker"}
+        )
+
     def test_every_sensitive_settings_path_is_redacted_by_metadata(self):
         sensitive = {
             definition.name: definition.metadata["support_sensitivity"]
@@ -823,6 +849,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                     "audio-lifecycle.json",
                     "ocr-metrics.json",
                     "diagnostics.json",
+                    "voice-bindings.json",
                     "dependencies.json",
                 },
             )

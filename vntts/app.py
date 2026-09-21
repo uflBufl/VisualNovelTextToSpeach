@@ -3700,6 +3700,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 generation_timelines=self.generation_timelines,
                 previous_session=self.previous_session,
                 audio_lifecycle=self.audio_lifecycle,
+                voice_library=self.controller.voice_library,
             ).build(path)
         )
 

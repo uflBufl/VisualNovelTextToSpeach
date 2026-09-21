@@ -26,6 +26,7 @@ from vntts.ocr_review import OCR_REVIEW_SCHEMA_VERSION
 from vntts.onboarding import probe_audio_output, probe_tesseract
 from vntts.settings import AppSettings
 from vntts.versioned_json import read_versioned_json
+from vntts.voice_library import VoiceLibrary
 
 SupportDocument = dict[str, object]
 
@@ -1542,6 +1543,7 @@ class SupportBundleBuilder:
         performance_log_value=None,
         previous_session=None,
         audio_lifecycle=None,
+        voice_library: VoiceLibrary | None = None,
     ):
         self.settings = settings
         self.event_log = event_log
@@ -1552,6 +1554,7 @@ class SupportBundleBuilder:
         self.performance_log = performance_log_value
         self.previous_session = previous_session or {"available": False}
         self.audio_lifecycle = audio_lifecycle or AudioLifecycleLog()
+        self.voice_library = voice_library
 
     def build(self, path):
         path = Path(path).expanduser()
@@ -1622,6 +1625,7 @@ class SupportBundleBuilder:
                 self.settings.ocr_diagnostics_directory
             ),
             "diagnostics.json": sanitize_diagnostic(self.diagnostic),
+            "voice-bindings.json": collect_voice_bindings(self.voice_library),
             "dependencies.json": self.dependency_probe(),
         }
         with atomic_output_path(path) as temporary_path:
@@ -1636,6 +1640,50 @@ class SupportBundleBuilder:
                         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                     )
         return path
+
+
+def collect_voice_bindings(library: VoiceLibrary | None) -> SupportDocument:
+    """Expose effective voice decisions without exporting paths or audio."""
+    if library is None:
+        return {"available": False}
+    try:
+        bindings = library.bindings()
+    except (OSError, ValueError) as error:
+        return {"available": False, "reason": _plain_support_value(error)}
+    evidence_fields = {
+        "resolution",
+        "selected_in",
+        "selected_character",
+        "source_id",
+        "source_character",
+        "speaker",
+        "decision_context_sha256",
+    }
+    return {
+        "available": True,
+        "bindings": [
+            {
+                "role": binding.role,
+                "variant_key": binding.variant_key,
+                "route": binding.route,
+                "source_id": binding.source_id,
+                "source_sha256s": list(binding.source_sha256s),
+                "provenance": {
+                    "method": binding.provenance.get("method"),
+                    "algorithm": binding.provenance.get("algorithm"),
+                    "timestamp": binding.provenance.get("timestamp"),
+                    "evidence": {
+                        key: value
+                        for key, value in _support_mapping(
+                            binding.provenance.get("evidence")
+                        ).items()
+                        if key in evidence_fields
+                    },
+                },
+            }
+            for binding in bindings
+        ],
+    }
 
 
 def sanitize_settings(settings):

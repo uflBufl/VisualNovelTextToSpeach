@@ -2516,6 +2516,7 @@ class TrayApplicationTest(unittest.TestCase):
             generation_timelines=tray_application.generation_timelines,
             previous_session=tray_application.previous_session,
             audio_lifecycle=tray_application.audio_lifecycle,
+            voice_library=tray_application.controller.voice_library,
         )
         builder.build.assert_called_once_with("support.zip")
         tray_application.support_dialog.set_export_result.assert_called_once_with(
