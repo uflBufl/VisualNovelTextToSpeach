@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import wave
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -1254,38 +1255,62 @@ def _validate_player_voice_variant(variant, index, version):
     source_event_ids = variant.get("source_event_ids")
     duration = variant.get("duration_seconds")
     quality = variant.get("quality_score")
-    if (
-        not _is_sha256(variant.get("variant_id"))
-        or not isinstance(character, str)
-        or not character.strip()
-        or portrait is not None
-        and (not isinstance(portrait, str) or not portrait.strip())
-        or not isinstance(source_bank, str)
-        or not source_bank.strip()
-        or not isinstance(voice_character, str)
-        or not voice_character.strip()
-        or not _is_sha256(variant.get("reference_sha256"))
-        or not _canonical_texts(variant.get("source_voice_ids"))
-        or not _canonical_texts(variant.get("source_line_ids"))
-        or not isinstance(source_event_ids, list)
-        or source_event_ids != sorted(set(source_event_ids))
-        or any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in source_event_ids
-        )
-        or isinstance(duration, bool)
-        or not isinstance(duration, (int, float))
-        or duration <= 0
-        or isinstance(quality, bool)
-        or not isinstance(quality, int)
-        or not 0 <= quality <= 100
-        or version >= 2
-        and variant.get("portrait_image_sha256") is not None
-        and not _is_sha256(variant["portrait_image_sha256"])
-    ):
+    checks = (
+        ("variant_id", _is_sha256(variant.get("variant_id"))),
+        ("character", isinstance(character, str) and bool(character.strip())),
+        (
+            "portrait",
+            portrait is None
+            or isinstance(portrait, str)
+            and bool(portrait.strip()),
+        ),
+        ("source_bank", isinstance(source_bank, str) and bool(source_bank.strip())),
+        (
+            "voice_character",
+            isinstance(voice_character, str) and bool(voice_character.strip()),
+        ),
+        ("reference_sha256", _is_sha256(variant.get("reference_sha256"))),
+        ("source_voice_ids", _canonical_texts(variant.get("source_voice_ids"))),
+        ("source_line_ids", _canonical_texts(variant.get("source_line_ids"))),
+        (
+            "source_event_ids",
+            _canonical_nonnegative_ints(source_event_ids),
+        ),
+        (
+            "duration_seconds",
+            not isinstance(duration, bool)
+            and isinstance(duration, (int, float))
+            and math.isfinite(duration)
+            and duration > 0,
+        ),
+        (
+            "quality_score",
+            not isinstance(quality, bool)
+            and isinstance(quality, int)
+            and 0 <= quality <= 100,
+        ),
+        (
+            "portrait_image_sha256",
+            version < 2
+            or variant.get("portrait_image_sha256") is None
+            or _is_sha256(variant["portrait_image_sha256"]),
+        ),
+    )
+    invalid = next((field for field, valid in checks if not valid), None)
+    if invalid is not None:
         raise PregenerationVoiceError(
-            f"Player voice candidate {index} evidence is invalid"
+            f"Player voice candidate {index} has invalid {invalid}"
         )
+
+
+def _record_rejected_player_voice_candidate(reason):
+    from vntts.support import record_game_import
+
+    record_game_import(
+        "voice-candidate-validation",
+        outcome="rejected",
+        reason=str(reason),
+    )
 
 
 def _manifest_candidate_variants(
@@ -1350,12 +1375,17 @@ def _manifest_candidate_variants(
     seen = set()
     version = player["schema_version"]
     for index, variant in enumerate(values):
-        _validate_player_voice_variant(variant, index, version)
+        try:
+            _validate_player_voice_variant(variant, index, version)
+        except PregenerationVoiceError as error:
+            _record_rejected_player_voice_candidate(str(error))
+            continue
         variant_id = variant["variant_id"]
         if variant_id in seen:
-            raise PregenerationVoiceError(
-                f"Player voice candidate {index} evidence is invalid"
+            _record_rejected_player_voice_candidate(
+                f"Player voice candidate {index} duplicates an earlier candidate"
             )
+            continue
         voice_character = variant["voice_character"]
         reference_sha256 = variant["reference_sha256"]
         source_id = f"character:{normalize_character_name(voice_character)}"
@@ -1363,9 +1393,10 @@ def _manifest_candidate_variants(
         if voice is None or tuple(sha256_file(path) for path in voice.references) != (
             reference_sha256,
         ):
-            raise PregenerationVoiceError(
+            _record_rejected_player_voice_candidate(
                 f"Player voice candidate {index} reference is invalid"
             )
+            continue
         seen.add(variant_id)
         variants.append(dict(variant))
     return tuple(variants)
@@ -1379,6 +1410,19 @@ def _canonical_texts(values):
     ):
         return False
     return values == sorted(set(values), key=str.casefold)
+
+
+def _canonical_nonnegative_ints(values):
+    return (
+        isinstance(values, list)
+        and all(
+            not isinstance(value, bool)
+            and isinstance(value, int)
+            and value >= 0
+            for value in values
+        )
+        and values == sorted(set(values))
+    )
 
 
 def _bound_source_for_record(record, bindings):

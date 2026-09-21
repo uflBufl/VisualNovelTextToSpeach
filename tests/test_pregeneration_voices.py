@@ -871,6 +871,54 @@ class VoicePlanStoreTest(unittest.TestCase):
                     manifest_path=manifest,
                 )
 
+    def test_player_import_skips_one_invalid_optional_candidate(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices",
+                job.story_index_sha256,
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"][1][
+                "source_event_ids"
+            ] = [2, "invalid"]
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+
+            rhiannon = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            self.assertEqual(
+                [candidate.source_character for candidate in rhiannon.candidate_inventory],
+                ["Player candidate Rhiannon 1"],
+            )
+
+    def test_player_import_still_rejects_changed_candidate_report(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices",
+                job.story_index_sha256,
+            )
+            (manifest.parent / "report.json").write_text("changed", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                PregenerationVoiceError,
+                "Player voice candidate report changed",
+            ):
+                VoicePlanStore(jobs).create(
+                    job,
+                    AppSettings(),
+                    manifest_path=manifest,
+                )
+
     def test_player_import_candidate_ignores_changed_portrait(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

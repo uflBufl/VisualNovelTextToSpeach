@@ -244,6 +244,7 @@ def _first_process(root):
     importer = Mock()
     importer.availability.return_value = ImporterAvailability(True, "Ready")
     importer.import_installed.return_value = content
+    importer.prepare_voice_candidates.return_value = manifest
     player = Mock()
     dialog = OfflineAudioPreparationDialog(
         saved,

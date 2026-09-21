@@ -35,6 +35,7 @@ from vntts.pregeneration_voices import (  # noqa: E402
     VoiceDecisionStore,
 )
 from vntts.settings import AppSettings  # noqa: E402
+from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.voices import default_voice_choice_id  # noqa: E402
 
 
@@ -922,7 +923,17 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             )
             voice_plan_store = Mock()
             voice_plan_store.create.side_effect = (plan, resolved)
-            decisions = VoiceDecisionStore(root / "decisions.json")
+            library = VoiceLibrary(root / "voice-library")
+            variant_key = group.age or group.source_bank
+            for name in ("rhiannon.wav", "centurion.wav"):
+                library.discover(
+                    group.character,
+                    Path(plan.voice_manifest).parent / "references" / name,
+                    variant_key=variant_key,
+                )
+            decisions = VoiceDecisionStore(
+                root / "decisions.json", voice_library=library
+            )
             preview_service = Mock()
             preview_service.generate.return_value = Mock(path=root / "preview.wav")
             input_store = Mock()
@@ -938,6 +949,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 preview_player=Mock(),
                 input_store=input_store,
                 thread_pool=pool,
+                voice_library=library,
             )
 
             dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
