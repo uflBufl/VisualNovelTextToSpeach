@@ -19,6 +19,29 @@ def write_wav(path: Path, frames: bytes) -> None:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_windows_reference_is_opened_in_binary_mode(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "voice.wav"
+            write_wav(reference, b"\x1a\r\n")
+            real_open = os.open
+            binary_flag = 0x40000000
+            flags_seen = 0
+
+            def windows_open(path, flags, *args):
+                nonlocal flags_seen
+                if Path(path) == reference:
+                    flags_seen = flags
+                return real_open(path, flags & ~binary_flag, *args)
+
+            with (
+                patch("vntts.voice_library.os.O_BINARY", binary_flag, create=True),
+                patch("vntts.voice_library.os.open", side_effect=windows_open),
+            ):
+                VoiceLibrary(root / "library").discover("Role", reference)
+
+            self.assertEqual(flags_seen & binary_flag, binary_flag)
+
     def test_windows_cross_stat_identity_does_not_reject_stable_reference(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -61,7 +84,9 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertEqual(library.resolve_source_path("Mrs Owen"), selected.path)
             self.assertEqual(len(list(library.blobs_path.glob("*.wav"))), 2)
 
-    def test_explicit_routes_replace_one_variant_binding_and_support_presets(self) -> None:
+    def test_explicit_routes_replace_one_variant_binding_and_support_presets(
+        self,
+    ) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             reference = root / "voice.wav"
@@ -86,7 +111,9 @@ class VoiceLibraryTest(unittest.TestCase):
             library.select("Narrator", route="narrator")
             library.select("Unknown", route="live-fallback")
 
-            self.assertEqual(library.binding("Sonetto", variant_key="old").source_id, "preset:alba")
+            self.assertEqual(
+                library.binding("Sonetto", variant_key="old").source_id, "preset:alba"
+            )
             self.assertIsNone(library.resolve_source_path("Sonetto", variant_key="old"))
             self.assertEqual(library.binding("Narrator").route, "narrator")
             self.assertEqual(library.binding("Unknown").route, "live-fallback")
@@ -144,7 +171,9 @@ class VoiceLibraryTest(unittest.TestCase):
                     route="voice",
                     source_sha256=hashlib.sha256(b"missing").hexdigest(),
                 )
-            with self.assertRaisesRegex(VoiceLibraryError, "cannot have a voice source"):
+            with self.assertRaisesRegex(
+                VoiceLibraryError, "cannot have a voice source"
+            ):
                 library.select("Role", route="narrator", source_id="preset:alba")
 
 

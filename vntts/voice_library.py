@@ -318,7 +318,10 @@ def _read_wav(reference: str | Path) -> bytes:
         raise VoiceLibraryError("Voice reference must not be a symlink")
     try:
         before = path.stat(follow_symlinks=False)
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
     except OSError as error:
         raise VoiceLibraryError(f"Unable to open voice reference: {path}") from error
     try:
@@ -332,9 +335,9 @@ def _read_wav(reference: str | Path) -> bytes:
             raise VoiceLibraryError("Voice reference descriptor changed while read")
         if _file_identity(before) != _file_identity(current):
             raise VoiceLibraryError("Voice reference path changed while read")
-        if _CROSS_STAT_IDENTITY_RELIABLE and _file_identity(
-            opened
-        ) != _file_identity(before):
+        if _CROSS_STAT_IDENTITY_RELIABLE and _file_identity(opened) != _file_identity(
+            before
+        ):
             raise VoiceLibraryError("Voice reference path and descriptor disagree")
         if len(payload) != opened.st_size:
             raise VoiceLibraryError("Voice reference read was incomplete")
