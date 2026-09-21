@@ -36,7 +36,7 @@ from vntts.game_audio_decoder import DecoderSetupRequired, confirm_decoder_setup
 from vntts.game_content_importer import Reverse1999GameImporter
 from vntts.game_narrator import (
     OriginalReference,
-    bind_game_narrator,
+    bind_voice_library_selection,
     load_original_reference,
     narrator_preview_plan,
 )
@@ -57,19 +57,21 @@ from vntts.settings import AppSettings
 from vntts.speech_presentation import (
     compact_runtime_label,
     engine_model_label,
-    narrator_voice_label,
     speech_runtime_label,
 )
 from vntts.tts_benchmark import create_backend
 from vntts.ui_text import copy_text_button, make_text_copyable
 from vntts.voice_default_impact import StoryVoiceImpact, inspect_voice_default_impact
+from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
+    application_voice_library,
     find_default_voice_manifest,
     find_voice_assignment,
     is_narrator,
     normalize_character_name,
     pocket_tts_preset_voices,
+    remember_voice_binding,
 )
 
 Binder = Callable[..., AppSettings]
@@ -117,11 +119,18 @@ class GameNarratorDialog(QDialog):
         preview_service: VoiceAuditionPreviewService | None = None,
         thread_pool: QThreadPool | None = None,
         player: QtPcmPlayer | None = None,
-        binder: Binder = bind_game_narrator,
+        binder: Binder = bind_voice_library_selection,
+        voice_library: VoiceLibrary | None = None,
     ) -> None:
         super().__init__(parent)
         self._initialize_state(
-            settings, importer, preview_service, binder, player, thread_pool
+            settings,
+            importer,
+            preview_service,
+            binder,
+            player,
+            thread_pool,
+            voice_library,
         )
         model_summary = self._build_status_and_engine_controls(settings)
         self._build_voice_source_controls(settings)
@@ -141,6 +150,7 @@ class GameNarratorDialog(QDialog):
         binder: Binder,
         player: QtPcmPlayer | None,
         thread_pool: QThreadPool | None,
+        voice_library: VoiceLibrary | None,
     ) -> None:
         self.setWindowTitle("Narrator and character voices")
         self.resize(640, 560)
@@ -155,6 +165,7 @@ class GameNarratorDialog(QDialog):
             )
         )
         self.binder = binder
+        self.voice_library = voice_library or application_voice_library()
         self.player = player or QtPcmPlayer(self)
         self.runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.runner.finished.connect(self._finished)
@@ -487,6 +498,7 @@ class GameNarratorDialog(QDialog):
             )
         available_roles = {
             *roles,
+            *(binding.role for binding in self.voice_library.bindings()),
             *self.settings_value.voice_assignments,
             *self.settings_value.character_voice_defaults,
             *(
@@ -531,7 +543,26 @@ class GameNarratorDialog(QDialog):
             return
         narrator = normalize_character_name(role) == "narrator"
         settings = self.settings_value
+        saved_binding = self.voice_library.binding(role)
+        saved_evidence = (
+            saved_binding.provenance.get("evidence")
+            if saved_binding is not None
+            else None
+        )
         selected = (
+            saved_binding.source_id
+            or (
+                saved_evidence.get("source_id")
+                if isinstance(saved_evidence, dict)
+                else None
+            )
+            or (
+                "default"
+                if saved_binding is not None
+                and saved_binding.route in {"narrator", "live-fallback"}
+                else None
+            )
+        ) if saved_binding is not None else (
             (
                 find_voice_assignment(settings.voice_assignments, "Narrator")
                 or pregeneration_narrator_source_id(settings)
@@ -543,7 +574,7 @@ class GameNarratorDialog(QDialog):
             settings.voice_assignments, role
         )
         self.role_summary.setText(
-            f"Saved narrator: {narrator_voice_label(settings)}"
+            f"Saved narrator: {self._source_label(selected)}"
             if narrator
             else f"Saved default: {self._source_label(selected)}\n"
             + (
@@ -1346,37 +1377,28 @@ class GameNarratorDialog(QDialog):
     def _policy_settings(self, settings: AppSettings) -> AppSettings:
         role = self.role.currentText().strip()
         narrator = normalize_character_name(role) == "narrator"
-        assignments = {
-            name: value
-            for name, value in (
-                settings.voice_assignments
-                if narrator
-                else settings.character_voice_defaults
-            ).items()
-            if normalize_character_name(name) != normalize_character_name(role)
-        }
-        if self.source.currentData() != "automatic":
-            assignments[role] = (
-                "default"
-                if self.source.currentData() == "narrator"
-                else self.presets.currentData()
-            )
-        result = (
-            settings.updated(voice_assignments=assignments)
-            if narrator
-            else settings.updated(character_voice_defaults=assignments)
-        )
-        if narrator:
-            result = result.updated(tts_speaker_wav=None)
+        policy = self.source.currentData()
+        if policy == "automatic":
+            self.voice_library.clear(role)
         else:
-            result = result.updated(
-                voice_assignments={
-                    name: value
-                    for name, value in result.voice_assignments.items()
-                    if normalize_character_name(name) != normalize_character_name(role)
-                }
+            remember_voice_binding(
+                self.voice_library,
+                self._catalog_registry,
+                role,
+                (
+                    "default"
+                    if policy == "narrator"
+                    else self.presets.currentData()
+                ),
+                method="manual",
+                evidence={"selected_in": "voice-picker"},
+                algorithm="voice-picker-v1",
             )
-        return result
+        return settings.updated(
+            voice_assignments={},
+            character_voice_defaults={},
+            tts_speaker_wav=None if narrator else settings.tts_speaker_wav,
+        )
 
     def _save(self) -> None:
         if not self.save_button.isEnabled():

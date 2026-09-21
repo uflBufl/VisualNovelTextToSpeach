@@ -19,13 +19,16 @@ from vntts.authoring.publication import (
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference_bytes
 from vntts.settings import AppSettings
+from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
+    application_voice_library,
     find_default_voice_manifest,
     normalize_character_name,
     pocket_tts_preset_voices,
     read_voice_reference_bytes,
+    remember_voice_binding,
 )
 
 
@@ -413,4 +416,59 @@ def bind_game_narrator(
     return settings.updated(
         voice_manifest=str(output),
         character_voice_defaults=assignments,
+    )
+
+
+def bind_voice_library_selection(
+    settings: AppSettings,
+    manifest: str | Path | None,
+    source_id: str,
+    character: str,
+    *,
+    root: str | Path | None = None,
+    additional_manifest: str | Path | None = None,
+    target_character: str = "Narrator",
+) -> AppSettings:
+    """Save a role once in the authoritative library, not another manifest."""
+    del additional_manifest
+    if manifest is None:
+        raise ValueError("Choose an available game voice")
+    target_character = target_character.strip()
+    if not normalize_character_name(target_character):
+        raise ValueError("Choose a narrator or character role")
+    registry = CharacterVoiceRegistry.from_file(manifest)
+    selected = registry.resolve_source(source_id)
+    if selected is None or not selected.references:
+        raise ValueError("Choose an available game voice")
+    for index, path in enumerate(selected.references, 1):
+        try:
+            report = analyze_reference_bytes(
+                read_voice_reference_bytes(selected, path), path=path
+            )
+            if report["objective_preflight"] != "pass":
+                raise ValueError(", ".join(report["rejection_reasons"]))
+        except ValueError as error:
+            raise ValueError(
+                f"Cannot save {character}: reference {index} is unusable ({error}). "
+                "Choose another spoken reference."
+            ) from error
+    library = VoiceLibrary(root) if root is not None else application_voice_library()
+    remember_voice_binding(
+        library,
+        registry,
+        target_character,
+        source_id,
+        method="manual",
+        evidence={"selected_character": character},
+        algorithm="voice-picker-v1",
+    )
+    return settings.updated(
+        voice_manifest=settings.voice_manifest or str(manifest),
+        voice_assignments={},
+        character_voice_defaults={},
+        tts_speaker_wav=(
+            None
+            if normalize_character_name(target_character) == "narrator"
+            else settings.tts_speaker_wav
+        ),
     )

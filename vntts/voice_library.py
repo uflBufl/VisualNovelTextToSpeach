@@ -173,6 +173,15 @@ class VoiceLibrary:
             for _identity, item in sorted(self._load()["bindings"].items())
         )
 
+    def clear(self, role: str, *, variant_key: str | None = None) -> bool:
+        """Remove one explicit decision while keeping its alternatives."""
+        identity, _role, _variant = _role_identity(role, variant_key)
+        document = self._load()
+        if document["bindings"].pop(identity, None) is None:
+            return False
+        self._write(document)
+        return True
+
     def alternatives(
         self, role: str, *, variant_key: str | None = None
     ) -> tuple[VoiceAlternative, ...]:

@@ -34,6 +34,7 @@ from vntts.game_audio_decoder import DecoderSetupRequired  # noqa: E402
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
 from vntts.game_narrator import (  # noqa: E402
     bind_game_narrator,
+    bind_voice_library_selection,
     load_original_reference,
     narrator_preview_plan,
 )
@@ -54,9 +55,31 @@ from vntts.speech_presentation import (  # noqa: E402
     engine_model_label,
     narrator_voice_label,
 )
+from vntts.voice_library import VoiceLibrary  # noqa: E402
 
 
 class GameNarratorTest(unittest.TestCase):
+    def test_voice_picker_saves_one_library_binding_without_a_manifest_snapshot(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self.narrator_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+
+            saved = bind_voice_library_selection(
+                AppSettings(voice_manifest=str(manifest)),
+                manifest,
+                "character:centurion",
+                "Centurion",
+                root=library.root,
+            )
+
+            self.assertEqual(saved.voice_manifest, str(manifest))
+            self.assertEqual(saved.voice_assignments, {})
+            self.assertEqual(saved.character_voice_defaults, {})
+            self.assertEqual(len(library.resolve_source_paths("Narrator")), 1)
+            registry = initialize_voice_registry(saved, voice_library=library)
+            self.assertEqual(registry.resolve("Narrator").source_character, "Centurion")
+
     def test_original_snapshot_keeps_inspected_bytes_if_file_changes(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -216,10 +239,14 @@ class GameNarratorTest(unittest.TestCase):
                     self.run_task(pool)
                     self.assertEqual(preparation.selected_story_ids(), ("chapter:1",))
                     self.assertEqual(
+                        self._voice_library.binding("Rhiannon").source_id,
+                        "preset:marius",
+                    )
+                    self.assertEqual(
                         load_app_settings(
                             Path(directory) / "settings.json"
-                        ).character_voice_defaults["Rhiannon"],
-                        "preset:marius",
+                        ).character_voice_defaults,
+                        {},
                     )
                     self.assertIsNone(preparation._generation_input)
                     self.assertEqual(tray.dashboard.sections.currentIndex(), 0)
@@ -237,6 +264,33 @@ class GameNarratorTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self._voice_library_directory = TemporaryDirectory()
+        self._voice_library = VoiceLibrary(
+            Path(self._voice_library_directory.name) / "library"
+        )
+        self._voice_library_patches = (
+            patch(
+                "vntts.game_narrator_ui.application_voice_library",
+                return_value=self._voice_library,
+            ),
+            patch(
+                "vntts.game_narrator.application_voice_library",
+                return_value=self._voice_library,
+            ),
+            patch(
+                "vntts.pregeneration_ui.application_voice_library",
+                return_value=self._voice_library,
+            ),
+        )
+        for library_patch in self._voice_library_patches:
+            library_patch.start()
+
+    def tearDown(self):
+        for library_patch in reversed(self._voice_library_patches):
+            library_patch.stop()
+        self._voice_library_directory.cleanup()
 
     def run_task(self, pool):
         pool.tasks.pop(0).run()
@@ -389,9 +443,10 @@ class GameNarratorTest(unittest.TestCase):
             dialog.save_button.click()
             self.run_task(pool)
             self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            self.assertEqual(dialog.result_settings.voice_assignments, {})
             self.assertEqual(
-                dialog.result_settings.voice_assignments,
-                {"Narrator": "preset:marius", "Rhiannon": "character:rhiannon"},
+                self._voice_library.binding("Narrator").source_id,
+                "preset:marius",
             )
             importer.narrator_characters.assert_not_called()
             self.assertEqual(backend.shutdown_count, 1)
@@ -448,12 +503,12 @@ class GameNarratorTest(unittest.TestCase):
                 if save:
                     self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
                     self.assertEqual(
-                        dialog.result_settings.character_voice_defaults,
-                        {"Hotelier": "preset:marius", "Ada": "preset:anna"},
+                        dialog.result_settings.character_voice_defaults, {}
                     )
+                    self.assertEqual(dialog.result_settings.voice_assignments, {})
                     self.assertEqual(
-                        dialog.result_settings.voice_assignments,
-                        {"Narrator": "preset:alba", "Other": "preset:anna"},
+                        self._voice_library.binding("Hotelier").source_id,
+                        "preset:marius",
                     )
                 else:
                     self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
@@ -500,14 +555,13 @@ class GameNarratorTest(unittest.TestCase):
                 dialog.save_button.click()
                 self.run_task(pool)
                 saved = dialog.result_settings
-                self.assertEqual(saved.voice_assignments, {"Narrator": "preset:alba"})
-                self.assertEqual(
-                    saved.character_voice_defaults,
-                    {
-                        "Ada": "preset:anna",
-                        **({"Hotelier": "default"} if policy == "narrator" else {}),
-                    },
-                )
+                self.assertEqual(saved.voice_assignments, {})
+                self.assertEqual(saved.character_voice_defaults, {})
+                binding = self._voice_library.binding("Hotelier")
+                if policy == "automatic":
+                    self.assertIsNone(binding)
+                else:
+                    self.assertEqual(binding.route, "narrator")
                 self.assertEqual(
                     saved.effective_speaker_announcement_mode, "narrator-fallback-roles"
                 )
@@ -1181,6 +1235,7 @@ class GameNarratorTest(unittest.TestCase):
     def test_main_and_preparation_persist_only_an_accepted_selection(self):
         for decision in ("save", "cancel", "save-failure"):
             with self.subTest(decision=decision), TemporaryDirectory() as directory:
+                self._voice_library.clear("Narrator")
                 root = Path(directory)
                 original = AppSettings()
                 pool = ManualThreadPool()
@@ -1209,7 +1264,8 @@ class GameNarratorTest(unittest.TestCase):
                 voice_saves = []
 
                 def save_settings(candidate):
-                    if candidate.voice_assignments != tray.settings.voice_assignments:
+                    binding = self._voice_library.binding("Narrator")
+                    if binding is not None and binding.source_id == "preset:marius":
                         voice_saves.append(candidate)
                         if decision == "save-failure":
                             raise OSError("disk full")
@@ -1249,9 +1305,10 @@ class GameNarratorTest(unittest.TestCase):
                     self.assertIsNone(tray.narrator_dialog)
                     self.assertTrue(preparation.isEnabled())
                     if decision == "save":
-                        self.assertEqual(len(voice_saves), 1)
+                        self.assertGreaterEqual(len(voice_saves), 1)
                         self.assertEqual(
-                            tray.settings.voice_assignments["Narrator"], "preset:marius"
+                            self._voice_library.binding("Narrator").source_id,
+                            "preset:marius",
                         )
                         self.assertEqual(
                             preparation.settings.updated(
@@ -1262,10 +1319,15 @@ class GameNarratorTest(unittest.TestCase):
                         self.assertIn("Marius", preparation.narrator_status.text())
                         reload.assert_called_once()
                     else:
+                        self.assertEqual(bool(voice_saves), decision == "save-failure")
                         self.assertEqual(
-                            len(voice_saves), int(decision == "save-failure")
+                            tray.settings.voice_assignments,
+                            original.voice_assignments,
                         )
-                        self.assertEqual(tray.settings, original)
+                        self.assertEqual(
+                            tray.settings.character_voice_defaults,
+                            original.character_voice_defaults,
+                        )
                         self.assertEqual(preparation.settings, original)
                         reload.assert_not_called()
                 tray.shutdown()

@@ -63,6 +63,9 @@ class VoiceLibraryTest(unittest.TestCase):
             self.assertEqual(library.binding("Narrator").route, "narrator")
             self.assertEqual(library.binding("Unknown").route, "live-fallback")
             self.assertEqual(len(library.bindings()), 4)
+            self.assertTrue(library.clear("Unknown"))
+            self.assertIsNone(library.binding("Unknown"))
+            self.assertFalse(library.clear("Unknown"))
 
     def test_composite_selection_keeps_all_selected_references_in_order(self) -> None:
         with TemporaryDirectory() as directory:

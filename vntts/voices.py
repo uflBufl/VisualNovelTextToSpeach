@@ -279,6 +279,23 @@ def application_voice_library() -> VoiceLibrary:
     return VoiceLibrary(get_local_data_directory() / "voice-library")
 
 
+def voice_binding_label(binding: VoiceBinding | None) -> str | None:
+    if binding is None:
+        return None
+    if binding.route == "narrator":
+        return "Narrator"
+    if binding.route == "live-fallback":
+        return "Backend default live voice"
+    if binding.source_id:
+        return binding.source_id.removeprefix("preset:").replace("_", " ").title()
+    evidence = binding.provenance.get("evidence")
+    if isinstance(evidence, dict):
+        source = evidence.get("source_character")
+        if isinstance(source, str) and source.strip():
+            return source.strip()
+    return binding.role
+
+
 def remember_voice_binding(
     library: VoiceLibrary,
     registry: CharacterVoiceRegistry,

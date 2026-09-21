@@ -86,15 +86,18 @@ from vntts.ui_text import (
     plain_label_text,
     set_labeled_text,
 )
+from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
     VoiceChoice,
+    application_voice_library,
     find_default_voice_manifest,
     find_voice_assignment,
     is_narrator,
     is_unattributed_speaker,
     normalize_character_name,
     pocket_tts_preset_voices,
+    voice_binding_label,
 )
 
 
@@ -126,10 +129,12 @@ class OfflineAudioPreparationDialog(QDialog):
         game_narrator_chooser=None,
         automatic_activation=False,
         thread_pool=None,
+        voice_library: VoiceLibrary | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self.settings = settings
+        self.voice_library = voice_library or application_voice_library()
         self.automatic_activation = automatic_activation
         self.job_store = job_store or PregenerationJobStore()
         self._background_discovery = discovery is None
@@ -933,7 +938,7 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _narrator_configuration_values(self):
         settings = resolve_pregeneration_settings(self.settings)
-        narrator = None
+        narrator = voice_binding_label(self.voice_library.binding("Narrator"))
         if self._awaiting_voice_confirmation and self._voice_plan is not None:
             plan = self._voice_plan
             if isinstance(plan.synthesis_backend, str):
