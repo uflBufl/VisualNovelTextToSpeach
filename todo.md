@@ -65,29 +65,6 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
-- [ ] **Use one voice library and one selected voice for each role:**
-      1. Store every discovered audio reference in one application-owned library and
-         deduplicate the files by SHA-256. Alternatives remain available for
-         inspection but never participate in synthesis by themselves.
-      2. Store exactly one current decision for each character or distinct age
-         variant: a specific voice, the narrator, or an explicit live-TTS fallback.
-      3. Automatic matching and manual selection write the same decision. Selection
-         method, evidence, algorithm version and timestamp are provenance only. A new
-         discovery pass must not change an existing decision without an explicit user
-         action.
-      4. Preview, story preparation and live reading obtain the voice only from this
-         decision. Application settings and game packs must not compete with it or be
-         merged through precedence rules.
-      5. When generation starts, copy the selected voices into an immutable snapshot
-         for that task so pause/resume always uses the same files. The published game
-         pack receives a portable copy of the same snapshot.
-      6. After migration, remove intermediate `game-narrators/<hash>` manifests,
-         obsolete candidate caches and code that chooses a winner among multiple
-         manifests. Retain only data referenced by the library, unfinished tasks or
-         published packs.
-      Gate: diagnostics identify one effective source and its provenance for every
-      role; changing a choice updates preview, generation and live reading together;
-      deleting unselected alternatives cannot change a saved voice.
 - [ ] **Validate Mrs. Owen on fresh Windows state:** multiple portrait expressions
       now count as one safe bank owner. The exact Windows settings shape
       (`voice_manifest` plus `Narrator: character:narrator`) now invokes candidate
