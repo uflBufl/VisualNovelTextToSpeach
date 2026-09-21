@@ -6,20 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter, process_time
 
-from vntts_artifacts.story_index import load_story_index_document
-
 from vntts.chapter_voice_preload import ChapterVoicePreloader
-from vntts.game_narrator import bind_game_narrator
 from vntts.game_pack import GamePackError, import_game_pack
 from vntts.pregeneration_pack import OfflinePackResult
 from vntts.settings import AppSettings
 from vntts.support import record_background_operation
-from vntts.voices import (
-    CharacterVoiceRegistry,
-    find_default_voice_manifest,
-    is_narrator,
-    normalize_character_name,
-)
 
 
 class OfflinePackActivationError(RuntimeError):
@@ -79,7 +70,6 @@ class OfflinePackActivator:
         _record_activation_phase("pack-preflight", phase_started, cpu_started)
         phase_started, cpu_started = perf_counter(), process_time()
         source_settings = generation_settings or current_settings
-        records = load_story_index_document(imported.story_index).records
         source_dialogue = ChapterVoicePreloader.load_optional(
             imported.story_index
         ).dialogue
@@ -94,55 +84,10 @@ class OfflinePackActivator:
                 else "prefer-generated"
             ),
             force_live_narrator=False,
+            voice_assignments={},
+            character_voice_defaults={},
+            tts_speaker_wav=None,
         )
-        registry = CharacterVoiceRegistry.from_file(imported.voice_manifest)
-        covered_roles = set(registry.voices)
-        covered_roles.update(
-            normalize_character_name(record.speaker) for record in records
-        )
-        assignments = {
-            character: source
-            for character, source in candidate.voice_assignments.items()
-            if normalize_character_name(character) not in covered_roles
-        }
-        narrator = registry.resolve("Narrator")
-        if narrator is not None:
-            assignments = {
-                character: source
-                for character, source in assignments.items()
-                if normalize_character_name(character) != "narrator"
-            }
-            assignments["Narrator"] = "character:narrator"
-            candidate = candidate.updated(tts_speaker_wav=None)
-        candidate = candidate.updated(voice_assignments=assignments)
-        reference_defaults = {
-            character: source
-            for character, source in source_settings.character_voice_defaults.items()
-            if source.startswith("character:") and not is_narrator(character)
-        }
-        if reference_defaults:
-            source_manifest = (
-                source_settings.voice_manifest or find_default_voice_manifest()
-            )
-            try:
-                if source_manifest is None:
-                    raise ValueError("The saved character voice catalog is unavailable")
-                source_registry = CharacterVoiceRegistry.from_file(source_manifest)
-                # ponytail: defaults are sparse; batch snapshots if many are configured.
-                for character, source in reference_defaults.items():
-                    _raise_if_cancelled(cancellation)
-                    voice = source_registry.resolve_source(source)
-                    candidate = bind_game_narrator(
-                        candidate,
-                        source_manifest,
-                        source,
-                        voice.source_character or voice.character,
-                        target_character=character,
-                    )
-            except (OSError, ValueError) as error:
-                raise OfflinePackActivationError(
-                    f"Unable to retain saved character voices: {error}"
-                ) from error
         _record_activation_phase("settings-build", phase_started, cpu_started)
         _raise_if_cancelled(cancellation)
         was_ready = bool(controller.is_ready)

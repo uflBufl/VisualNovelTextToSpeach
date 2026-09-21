@@ -18,7 +18,6 @@ from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from scripts.moss_native_pause_probe import _saved_narrator_reference  # noqa: E402
 from tests.test_authoring_pcm_playback import FakeAudioModule  # noqa: E402
-from tests.test_game_pack import write_synthetic_game_pack  # noqa: E402
 from tests.test_pregeneration_audition import FakeBackend, clean_wav_bytes  # noqa: E402
 from tests.test_pregeneration_setup import ManualThreadPool  # noqa: E402
 from tests.test_pregeneration_voices import (  # noqa: E402
@@ -39,7 +38,6 @@ from vntts.game_narrator import (  # noqa: E402
     narrator_preview_plan,
 )
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
-from vntts.game_pack import GamePackError, apply_game_pack  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionPreviewService  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
@@ -51,10 +49,7 @@ from vntts.pregeneration_voices import VoicePlanStore  # noqa: E402
 from vntts.qt_audio import QtPcmPlayer  # noqa: E402
 from vntts.runtime_config import initialize_voice_registry  # noqa: E402
 from vntts.settings import AppSettings, load_app_settings  # noqa: E402
-from vntts.speech_presentation import (  # noqa: E402
-    engine_model_label,
-    narrator_voice_label,
-)
+from vntts.speech_presentation import engine_model_label  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
 
 
@@ -1060,128 +1055,6 @@ class GameNarratorTest(unittest.TestCase):
                 importer.narrator_characters(installation_root=root / "game")
                 self.assertEqual(importing.call_count, 2)
                 self.assertEqual(importing.call_args.args[1], root / "game")
-
-    def test_saved_pack_does_not_replace_explicit_game_narrator_on_restart(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            pack_root = root / "pack"
-            pack_root.mkdir()
-            pack, *_ = write_synthetic_game_pack(pack_root)
-            original = apply_game_pack(AppSettings(), pack)
-            manifest = self.narrator_manifest(root / "candidates")
-            candidate = bind_game_narrator(
-                original,
-                manifest,
-                "character:centurion",
-                "Centurion",
-                root=root / "saved",
-            )
-            saved_manifest = Path(candidate.voice_manifest)
-            document = json.loads(saved_manifest.read_text())
-            document["vntts.game_narrator"]["base_manifest_sha256"] = "0" * 64
-            saved_manifest.write_text(json.dumps(document))
-            loaded = load_app_settings(candidate.save(root / "settings.json"))
-            self.assertEqual(narrator_voice_label(candidate), "Centurion")
-            self.assertEqual(narrator_voice_label(loaded), "Centurion")
-            self.assertEqual(loaded.voice_manifest, candidate.voice_manifest)
-            self.assertEqual(
-                loaded.generated_audio_manifest, original.generated_audio_manifest
-            )
-            self.assertEqual(
-                initialize_voice_registry(loaded).resolve("Narrator").source_character,
-                "Centurion",
-            )
-            self.assertEqual(
-                apply_game_pack(loaded, pack).voice_manifest, original.voice_manifest
-            )
-
-    def test_character_reference_defaults_survive_restart_and_later_narrator_choice(
-        self,
-    ):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            pack_root = root / "pack"
-            pack_root.mkdir()
-            pack, *_ = write_synthetic_game_pack(pack_root)
-            original = apply_game_pack(
-                AppSettings(
-                    pocket_gated_model_accepted=True,
-                    tts_speaker_wav="custom-narrator.wav",
-                ),
-                pack,
-            )
-            source = self.narrator_manifest(root / "candidates")
-            candidate = bind_game_narrator(
-                original,
-                source,
-                "character:centurion",
-                "Centurion",
-                target_character="Ada",
-                root=root / "saved",
-            )
-            self.assertEqual(candidate.tts_speaker_wav, "custom-narrator.wav")
-            self.assertNotIn(
-                "vntts.game_narrator",
-                json.loads(Path(candidate.voice_manifest).read_text()),
-            )
-            for choose_narrator in (False, True):
-                with self.subTest(choose_narrator=choose_narrator):
-                    selected = (
-                        bind_game_narrator(
-                            candidate,
-                            source,
-                            "character:rhiannon",
-                            "Rhiannon",
-                            root=root / "saved",
-                        )
-                        if choose_narrator
-                        else candidate
-                    )
-                    loaded = load_app_settings(
-                        selected.save(root / "settings.json"), environment={}
-                    )
-                    self.assertEqual(loaded.voice_manifest, selected.voice_manifest)
-                    self.assertEqual(
-                        loaded.character_voice_defaults,
-                        candidate.character_voice_defaults,
-                    )
-                    registry = initialize_voice_registry(loaded)
-                    self.assertEqual(
-                        registry.resolve("Ada").reference.read_bytes(),
-                        clean_wav_bytes(amplitude=0.2),
-                    )
-                    self.assertEqual(
-                        registry.resolve("Ada").source_character, "Centurion"
-                    )
-                    if choose_narrator:
-                        self.assertEqual(
-                            registry.resolve("Narrator").reference.read_bytes(),
-                            clean_wav_bytes(),
-                        )
-                        self.assertIsNone(loaded.tts_speaker_wav)
-                    self.assertEqual(
-                        apply_game_pack(loaded, pack).voice_manifest,
-                        original.voice_manifest,
-                    )
-
-            custom = Path(candidate.voice_manifest)
-            document = json.loads(custom.read_text())
-            document["voices"] = [
-                row
-                for row in document["voices"]
-                if not row["character"].startswith("Game voice ")
-            ]
-            custom.write_text(json.dumps(document))
-            with self.assertRaisesRegex(
-                GamePackError, "missing from its saved catalog"
-            ):
-                apply_game_pack(candidate)
-            document["vntts.game_character_voices"]["base_manifest_sha256"] = "0" * 64
-            custom.write_text(json.dumps(document))
-            with self.assertRaisesRegex(
-                GamePackError, "missing from its saved catalog"
-            ):
-                apply_game_pack(candidate)
 
     def test_preparation_character_picker_preselects_target_role(self):
         with TemporaryDirectory() as directory:

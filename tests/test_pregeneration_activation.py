@@ -13,9 +13,7 @@ from vntts_artifacts.story_index import (
 
 from tests.test_chapter_voice_preload import write_verified_source_story
 from tests.test_generated_audio import FakeAudioOutput
-from tests.test_pregeneration_audition import clean_wav_bytes
 from tests.test_pregeneration_pack import fixture
-from tests.test_pregeneration_voices import write_manifest
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.generated_audio import (
     GeneratedAudioFallbackBackend,
@@ -28,9 +26,7 @@ from vntts.pregeneration_activation import (
     OfflinePackActivator,
 )
 from vntts.pregeneration_pack import OfflinePackPublisher
-from vntts.runtime_config import initialize_voice_registry
 from vntts.settings import AppSettings, load_app_settings
-from vntts.voices import CharacterVoiceRegistry
 
 
 def published_pack(root):
@@ -39,19 +35,12 @@ def published_pack(root):
 
 
 class OfflinePackActivatorTest(unittest.TestCase):
-    def test_activation_retains_selected_and_unrelated_character_reference_defaults(
-        self,
-    ):
+    def test_activation_discards_legacy_voice_maps_instead_of_merging_catalogs(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             pack = published_pack(root / "pack")
-            rhiannon = clean_wav_bytes()
-            centurion = clean_wav_bytes(amplitude=0.2)
-            sources = write_manifest(root / "sources", rhiannon=rhiannon)
-            (sources.parent / "references" / "centurion.wav").write_bytes(centurion)
             original = AppSettings(
                 pocket_gated_model_accepted=True,
-                voice_manifest=str(sources),
                 character_voice_defaults={
                     "Hotelier": "character:centurion",
                     "Unrelated story": "character:rhiannon",
@@ -64,42 +53,11 @@ class OfflinePackActivatorTest(unittest.TestCase):
             activator = OfflinePackActivator(
                 save_settings=lambda value: value.save(root / "settings.json")
             )
-            with patch(
-                "vntts.game_narrator.get_local_data_directory",
-                return_value=root / "local",
-            ):
-                result = activator.activate(original, pack, controller)
+            result = activator.activate(original, pack, controller)
             loaded = load_app_settings(root / "settings.json", environment={})
             self.assertEqual(loaded.voice_manifest, result.settings.voice_manifest)
-            self.assertEqual(
-                loaded.character_voice_defaults,
-                result.settings.character_voice_defaults,
-            )
-            registry = initialize_voice_registry(loaded)
-            self.assertEqual(
-                registry.resolve("Hotelier").reference.read_bytes(), centurion
-            )
-            self.assertEqual(
-                registry.resolve("Unrelated story").reference.read_bytes(), rhiannon
-            )
-            self.assertIsNone(registry.resolve("Narrator fallback role"))
-            self.assertEqual(registry.resolve("Built-in role").speaker, "anna")
-            self.assertEqual(
-                original.character_voice_defaults["Hotelier"], "character:centurion"
-            )
-            controller.reset_mock()
-            missing = original.updated(
-                character_voice_defaults={"Hotelier": "character:missing"}
-            )
-            with self.assertRaisesRegex(
-                OfflinePackActivationError, "retain saved character voices"
-            ):
-                activator.activate(missing, pack, controller)
-            controller.shutdown.assert_not_called()
-            controller.apply_settings.assert_not_called()
-            self.assertEqual(
-                load_app_settings(root / "settings.json", environment={}), loaded
-            )
+            self.assertEqual(loaded.voice_assignments, {})
+            self.assertEqual(loaded.character_voice_defaults, {})
 
     def test_mixed_pack_activation_routes_original_and_generated_without_live_synthesis(
         self,
@@ -159,8 +117,6 @@ class OfflinePackActivatorTest(unittest.TestCase):
             live.prepare_playback.assert_not_called()
 
     def test_activation_uses_saved_audio_instead_of_previous_live_overrides(self):
-        from types import SimpleNamespace
-
         from vntts.controller import AppController
 
         with TemporaryDirectory() as directory:
@@ -180,22 +136,13 @@ class OfflinePackActivatorTest(unittest.TestCase):
             activator = OfflinePackActivator(
                 save_settings=lambda _settings: root / "settings.json"
             )
-            with patch(
-                "vntts.pregeneration_activation.load_story_index_document",
-                return_value=SimpleNamespace(
-                    records=(SimpleNamespace(speaker="Hotelier"),),
-                ),
-            ):
-                result = activator.activate(current, pack, controller)
+            result = activator.activate(current, pack, controller)
             self.assertFalse(result.settings.force_live_narrator)
-            self.assertNotIn("Hotelier", result.settings.voice_assignments)
-            self.assertEqual(
-                result.settings.voice_assignments["Other story speaker"], "preset:anna"
-            )
+            self.assertEqual(result.settings.voice_assignments, {})
             live = AppController(result.settings)
             self.assertFalse(live._has_manual_voice_override("Narrator"))
             self.assertFalse(live._has_manual_voice_override("Hotelier"))
-            self.assertTrue(live._has_manual_voice_override("Other story speaker"))
+            self.assertFalse(live._has_manual_voice_override("Other story speaker"))
 
     def test_restarts_runtime_before_committing_generated_first_settings(self):
         with TemporaryDirectory() as temporary_directory:
@@ -280,13 +227,8 @@ class OfflinePackActivatorTest(unittest.TestCase):
                         )
                         self.assertTrue(result.settings.pocket_gated_model_accepted)
                         self.assertIsNone(result.settings.tts_speaker_wav)
-                        registry = CharacterVoiceRegistry.from_file(
-                            result.settings.voice_manifest
-                        )
-                        narrator = registry.resolve_source(
-                            result.settings.voice_assignments["Narrator"]
-                        )
-                        self.assertEqual(narrator, registry.resolve("Narrator"))
+                        self.assertEqual(result.settings.voice_assignments, {})
+                        self.assertEqual(result.settings.character_voice_defaults, {})
 
     def test_save_failure_restores_the_previous_running_pack(self):
         with TemporaryDirectory() as temporary_directory:

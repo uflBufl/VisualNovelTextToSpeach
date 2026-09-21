@@ -216,52 +216,6 @@ def apply_game_pack(
         settings,
         preserve_external_sequence=path is None,
     )
-    if (
-        path is None
-        and settings.voice_manifest
-        and settings.voice_manifest != result.voice_manifest
-        and Path(settings.voice_manifest).is_file()
-    ):
-        from vntts_artifacts.voice_manifest import load_voice_manifest
-
-        from vntts.voices import (
-            CharacterVoiceRegistry,
-            VoiceManifestError,
-            find_voice_assignment,
-        )
-
-        document = load_voice_manifest(settings.voice_manifest)[0]
-        narrator = document.get("vntts.game_narrator")
-        characters = document.get("vntts.game_character_voices")
-        # Reloading a pack must not undo an explicit player voice selection when
-        # its original base catalog has changed. Explicit pack selection (path)
-        # still replaces the catalog above; selected sources are validated below.
-        selected = [
-            source
-            for source in settings.character_voice_defaults.values()
-            if isinstance(source, str) and source.startswith("character:")
-        ]
-        narrator_source = find_voice_assignment(settings.voice_assignments, "Narrator")
-        if isinstance(narrator_source, str) and narrator_source.startswith(
-            "character:"
-        ):
-            selected.append(narrator_source)
-        if selected and any(
-            isinstance(binding, dict) for binding in (narrator, characters)
-        ):
-            registry = CharacterVoiceRegistry.from_file(settings.voice_manifest)
-            try:
-                if any(
-                    not isinstance(source, str)
-                    or registry.resolve_source(source) is None
-                    for source in selected
-                ):
-                    raise VoiceManifestError("Selected game voice is unavailable")
-            except VoiceManifestError as error:
-                raise GamePackError(
-                    "Selected game voice is missing from its saved catalog"
-                ) from error
-            result = result.updated(voice_manifest=settings.voice_manifest)
     return result
 
 

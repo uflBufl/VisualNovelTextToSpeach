@@ -264,7 +264,7 @@ class GamePackImportTest(unittest.TestCase):
         self.assertGreater(operation.kwargs["files_examined"], 0)
         self.assertGreater(operation.kwargs["bytes_examined"], 0)
 
-    def test_implicit_reload_uses_active_narrator_not_stale_catalog_metadata(self):
+    def test_implicit_reload_uses_pack_catalog_without_voice_precedence(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             pack_path, *_unused = write_synthetic_game_pack(root)
@@ -280,10 +280,9 @@ class GamePackImportTest(unittest.TestCase):
             implicit = apply_game_pack(settings)
             explicit = apply_game_pack(settings, pack_path)
 
-        self.assertEqual(implicit.voice_manifest, str(saved))
-        self.assertEqual(
-            explicit.voice_manifest, str((root / "voice-manifest.json").resolve())
-        )
+        expected = str((root / "voice-manifest.json").resolve())
+        self.assertEqual(implicit.voice_manifest, expected)
+        self.assertEqual(explicit.voice_manifest, expected)
 
     def test_implicit_reload_drops_stale_catalog_without_active_character_source(self):
         for narrator_source in ("preset:alba", "default"):
