@@ -47,7 +47,6 @@
     "vntts/pregeneration_acceptance.py": 3,
     "vntts/pregeneration_activation.py": 5,
     "vntts/pregeneration_audition.py": 27,
-    "vntts/pregeneration_generation.py": 20,
     "vntts/pregeneration_queue.py": 17,
     "vntts/pregeneration_recovery.py": 7,
     "vntts/pregeneration_ui.py": 119,

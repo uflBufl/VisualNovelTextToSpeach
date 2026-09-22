@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Protocol
 
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 
@@ -38,6 +40,10 @@ from vntts.pregeneration_voices import VoicePlan
 from vntts.subprocess_utils import last_output_line, terminate_process
 
 
+class _Cancellation(Protocol):
+    def is_set(self) -> bool: ...
+
+
 @dataclass(frozen=True)
 class OfflineGenerationProgress:
     generated: int = 0
@@ -49,7 +55,7 @@ class OfflineGenerationProgress:
     ready_line_ids: tuple[str, ...] = ()
 
     @property
-    def completed(self):
+    def completed(self) -> int:
         return self.generated + self.failed + self.other_terminal
 
 
@@ -57,19 +63,19 @@ class OfflineGenerationWorker:
     def __init__(
         self,
         *,
-        command=None,
-        popen_factory=subprocess.Popen,
-        backend_factory=None,
-    ):
+        command: Sequence[str] | None = None,
+        popen_factory: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
+        backend_factory: Callable[..., object] | None = None,
+    ) -> None:
         self._configured_command = tuple(command) if command else None
         self.popen_factory = popen_factory
         self.backend_factory = backend_factory
-        self._process = None
+        self._process: subprocess.Popen[str] | None = None
         self._in_process_active = False
-        self._startup_status = None
-        self._disk_checked_inputs = set()
+        self._startup_status: str | None = None
+        self._disk_checked_inputs: set[str] = set()
 
-    def command(self):
+    def command(self) -> tuple[str, ...]:
         if self._configured_command:
             return self._configured_command
         if getattr(sys, "frozen", False):
@@ -77,8 +83,13 @@ class OfflineGenerationWorker:
         return (sys.executable, "-m", "vntts.authoring.cli")
 
     def generate(
-        self, generation_input, voice_plan, cancel_event=None, *, queue_ids=None
-    ):
+        self,
+        generation_input: PregenerationInput,
+        voice_plan: VoicePlan,
+        cancel_event: _Cancellation | None = None,
+        *,
+        queue_ids: object = None,
+    ) -> OfflineGenerationResult:
         try:
             current = self.inspect(generation_input)
         except OfflineGenerationError:
@@ -99,7 +110,7 @@ class OfflineGenerationWorker:
                 queue_id for queue_id in selected if queue_id not in projection_ids
             )
         )
-        result = None
+        result: OfflineGenerationResult | None = None
         if ordinary is None or ordinary:
             arguments = self._base_arguments(generation_input, voice_plan, output)
             for queue_id in ordinary or ():
@@ -132,14 +143,14 @@ class OfflineGenerationWorker:
 
     def repair(
         self,
-        generation_input,
-        voice_plan,
-        generation_result,
+        generation_input: PregenerationInput,
+        voice_plan: VoicePlan,
+        generation_result: OfflineGenerationResult,
         *,
-        action,
-        queue_ids,
-        cancel_event=None,
-    ):
+        action: str,
+        queue_ids: object,
+        cancel_event: _Cancellation | None = None,
+    ) -> OfflineGenerationResult:
         """Apply one exact, typed repair batch to the resumable output."""
         if not isinstance(generation_result, OfflineGenerationResult):
             raise OfflineGenerationError("Offline generation result is invalid")
@@ -177,11 +188,13 @@ class OfflineGenerationWorker:
             )
         return current
 
-    def inspect(self, generation_input):
+    def inspect(self, generation_input: PregenerationInput) -> OfflineGenerationResult:
         """Reload the current validated terminal counts without starting work."""
         return _load_result(_generation_output(generation_input), generation_input)
 
-    def inspect_progress(self, generation_input):
+    def inspect_progress(
+        self, generation_input: PregenerationInput
+    ) -> OfflineGenerationProgress:
         """Reload durable per-item progress while generation is still running."""
         output = _generation_output(generation_input)
         state_path = output / "generation-state.json"
@@ -205,7 +218,8 @@ class OfflineGenerationWorker:
         ):
             raise OfflineGenerationError("Offline generation progress is invalid")
         generated = failed = other_terminal = 0
-        for item in state["items"].values():
+        items = _state_items(state)
+        for item in items.values():
             status = item.get("status") if isinstance(item, dict) else None
             if status in {"generated", "approved"}:
                 generated += 1
@@ -241,12 +255,19 @@ class OfflineGenerationWorker:
                 else None
             ),
             ready_line_ids=_ready_line_ids(
-                generation_input.story_index,
-                state["items"],
+                Path(generation_input.story_index),
+                items,
             ),
         )
 
-    def _base_arguments(self, generation_input, voice_plan, output, *, retries=None):
+    def _base_arguments(
+        self,
+        generation_input: PregenerationInput,
+        voice_plan: VoicePlan,
+        output: Path,
+        *,
+        retries: int | None = None,
+    ) -> list[str]:
         if not isinstance(generation_input, PregenerationInput):
             raise OfflineGenerationError("Offline generation input is invalid")
         if not isinstance(voice_plan, VoicePlan):
@@ -290,14 +311,15 @@ class OfflineGenerationWorker:
 
     def _execute(
         self,
-        arguments,
-        generation_input,
-        output,
+        arguments: list[str],
+        generation_input: PregenerationInput,
+        output: Path,
         *,
-        cancel_event=None,
-    ):
+        cancel_event: _Cancellation | None = None,
+    ) -> OfflineGenerationResult:
         if cancel_event is not None and cancel_event.is_set():
             raise OfflineGenerationCancelled("Offline speech generation was cancelled")
+        parsed: argparse.Namespace | None
         if self.backend_factory is not None and "--backend" in arguments:
             from vntts.authoring.cli import create_parser
             from vntts.authoring.cli_generation import run_generation
@@ -368,12 +390,12 @@ class OfflineGenerationWorker:
             )
         return _load_result(output, generation_input)
 
-    def _set_startup_status(self, message):
+    def _set_startup_status(self, message: object) -> None:
         if isinstance(message, str) and message.strip():
             self._startup_status = message.strip()[:2000]
 
 
-def _ensure_remaining_disk_space(generation_input):
+def _ensure_remaining_disk_space(generation_input: PregenerationInput) -> None:
     try:
         estimate = estimate_generation_resources(generation_input)
     except PregenerationSetupError:
@@ -392,21 +414,21 @@ def _ensure_remaining_disk_space(generation_input):
         )
 
 
-def _megabytes(value):
+def _megabytes(value: int) -> int:
     return max(1, (value + 999_999) // 1_000_000)
 
 
-def _generation_output(generation_input):
+def _generation_output(generation_input: PregenerationInput) -> Path:
     if not isinstance(generation_input, PregenerationInput):
         raise OfflineGenerationError("Offline generation input is invalid")
-    return generation_input.directory.parent / (
+    return Path(generation_input.directory).parent / (
         f"generation-output-{generation_input.identity[:16]}"
     )
 
 
 def runtime_progress_manifest_path(generation_input: PregenerationInput) -> Path:
     """Return the temporary manifest published while this input is generating."""
-    return _generation_output(generation_input) / RUNTIME_PROGRESS_MANIFEST_NAME
+    return _generation_output(generation_input) / str(RUNTIME_PROGRESS_MANIFEST_NAME)
 
 
 @lru_cache(maxsize=16)
@@ -417,6 +439,7 @@ def _static_ready_line_ids(story_index: Path) -> tuple[str, ...]:
     except OSError, StoryIndexError, TypeError, ValueError:
         return ()
     completion = story.metadata.get("source_audio_completion")
+    completion_contract = completion if isinstance(completion, str) else None
     authoritative_line_ids = _validated_source_audio_line_ids(story_index, story)
     return tuple(
         record.line_id
@@ -426,7 +449,7 @@ def _static_ready_line_ids(story_index: Path) -> tuple[str, ...]:
             record.line_id in authoritative_line_ids
             and _source_audio_covers_full_line(
                 record.document,
-                completion_contract=completion,
+                completion_contract=completion_contract,
                 semantic_authorized=True,
             )
         )
@@ -435,7 +458,7 @@ def _static_ready_line_ids(story_index: Path) -> tuple[str, ...]:
 
 def _ready_line_ids(
     story_index: Path,
-    items: Mapping[object, object],
+    items: Mapping[str, Mapping[str, object]],
 ) -> tuple[str, ...]:
     ready_line_ids = set(_static_ready_line_ids(story_index))
     for item in items.values():
@@ -451,8 +474,12 @@ def _ready_line_ids(
 
 
 def validate_offline_generation_result(
-    generation_input, generation_result, action, *, error_type=OfflineGenerationError
-):
+    generation_input: PregenerationInput,
+    generation_result: OfflineGenerationResult,
+    action: str,
+    *,
+    error_type: type[Exception] = OfflineGenerationError,
+) -> None:
     """Bind a typed generation result to its one deterministic output directory."""
     if not isinstance(generation_input, PregenerationInput):
         raise error_type("Offline generation input is invalid")
@@ -465,8 +492,8 @@ def validate_offline_generation_result(
         raise error_type(f"Offline {action} output identity changed")
 
 
-def _synthesis_cache_directory(generation_input):
-    job_directory = generation_input.directory.parent
+def _synthesis_cache_directory(generation_input: PregenerationInput) -> Path:
+    job_directory = Path(generation_input.directory).parent
     name = job_directory.name
     is_job_identity = len(name) == 24 and all(
         character in "0123456789abcdef" for character in name
@@ -475,7 +502,9 @@ def _synthesis_cache_directory(generation_input):
     return root / "synthesis-cache"
 
 
-def _load_result(output, generation_input):
+def _load_result(
+    output: Path, generation_input: PregenerationInput
+) -> OfflineGenerationResult:
     state_path = output / "generation-state.json"
     manifest_path = output / "manifest.json"
     if not state_path.is_file() or not manifest_path.is_file():
@@ -490,8 +519,8 @@ def _load_result(output, generation_input):
         ) from error
     generated, failed, other_terminal = _terminal_counts(state)
     pending = 0
-    for item in state.get("items", {}).values():
-        if isinstance(item, dict) and item.get("review_status") == "pending_review":
+    for item in _state_items(state).values():
+        if item.get("review_status") == "pending_review":
             pending += 1
     return OfflineGenerationResult(
         output=output,
@@ -504,10 +533,30 @@ def _load_result(output, generation_input):
     )
 
 
-def _terminal_counts(state):
+def _state_items(
+    state: Mapping[str, object],
+) -> dict[str, Mapping[str, object]]:
+    raw_items = state.get("items")
+    if not isinstance(raw_items, Mapping):
+        raise OfflineGenerationError("Offline generation state items are invalid")
+    result: dict[str, Mapping[str, object]] = {}
+    for queue_id, item in raw_items.items():
+        if not isinstance(queue_id, str) or not isinstance(item, Mapping):
+            raise OfflineGenerationError("Offline generation state items are invalid")
+        result[queue_id] = {
+            str(key): value
+            for key, value in item.items()
+            if isinstance(key, str)
+        }
+        if len(result[queue_id]) != len(item):
+            raise OfflineGenerationError("Offline generation state item keys are invalid")
+    return result
+
+
+def _terminal_counts(state: Mapping[str, object]) -> tuple[int, int, int]:
     counts = {"generated": 0, "failed": 0, "other": 0}
-    for item in state.get("items", {}).values():
-        status = item.get("status") if isinstance(item, dict) else None
+    for item in _state_items(state).values():
+        status = item.get("status")
         if status in {"generated", "approved"}:
             counts["generated"] += 1
         elif status == "failed":
@@ -517,10 +566,10 @@ def _terminal_counts(state):
     return counts["generated"], counts["failed"], counts["other"]
 
 
-def _queue_ids(values):
+def _queue_ids(values: object) -> tuple[str, ...]:
     if not isinstance(values, (tuple, list)) or not values:
         raise OfflineGenerationError("Offline repair requires exact queue IDs")
-    result = []
+    result: list[str] = []
     for value in values:
         if not isinstance(value, str) or not value.strip() or value != value.strip():
             raise OfflineGenerationError("Offline repair queue ID is invalid")
@@ -530,7 +579,7 @@ def _queue_ids(values):
     return tuple(sorted(result))
 
 
-def _repair_option(action):
+def _repair_option(action: str) -> tuple[str | None, int]:
     options = {
         "safe_resume": (None, 0),
         "sentence_boundary_segmentation": ("--sentence-segment-failed", 0),

@@ -3,7 +3,9 @@
 import subprocess
 
 
-def terminate_process(process: subprocess.Popen[bytes], *, timeout: float = 5) -> None:
+def terminate_process(
+    process: subprocess.Popen[str] | subprocess.Popen[bytes], *, timeout: float = 5
+) -> None:
     process.terminate()
     try:
         process.communicate(timeout=timeout)

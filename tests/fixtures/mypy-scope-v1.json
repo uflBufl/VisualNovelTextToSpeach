@@ -148,6 +148,7 @@
     "vntts/playback.py",
     "vntts/pregeneration_audition_ui.py",
     "vntts/pregeneration_contract.py",
+    "vntts/pregeneration_generation.py",
     "vntts/pregeneration_pack.py",
     "vntts/pregeneration_setup.py",
     "vntts/profiles.py",
