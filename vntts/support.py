@@ -1073,6 +1073,9 @@ def record_audio_lifecycle(operation: object, **details: object) -> None:
         pass
 
 
+_PERSISTED_SUPPORT_READ_LIMIT = 2 * 1024 * 1024
+
+
 class PregenerationSupportState:
     """Persist the latest bounded preparation failure for a later support export."""
 
@@ -1122,9 +1125,18 @@ class PregenerationSupportState:
     def _load(self) -> SupportDocument | None:
         if self.path is None:
             return None
+        if self.path.is_symlink():
+            return None
         try:
-            document = json.loads(self.path.read_text(encoding="utf-8"))
-        except OSError, UnicodeError, json.JSONDecodeError:
+            with self.path.open("rb") as source:
+                payload = source.read(_PERSISTED_SUPPORT_READ_LIMIT + 1)
+        except OSError:
+            return None
+        if len(payload) > _PERSISTED_SUPPORT_READ_LIMIT:
+            return None
+        try:
+            document = json.loads(payload)
+        except UnicodeError, json.JSONDecodeError:
             return None
         return _loaded_pregeneration_support(document)
 

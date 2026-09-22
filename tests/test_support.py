@@ -1021,6 +1021,32 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(report))
         self.assertNotIn(str(Path.home()), json.dumps(report))
 
+    def test_persisted_pregeneration_support_read_is_bounded(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "pregeneration.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "operation": "x" * 256}),
+                encoding="utf-8",
+            )
+            with patch(
+                "vntts.support._PERSISTED_SUPPORT_READ_LIMIT", 128, create=True
+            ):
+                report = PregenerationSupportState(path).report()
+
+        self.assertEqual(report, {"available": False})
+
+    def test_persisted_pregeneration_support_ignores_aliases(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            outside = root / "outside.json"
+            outside.write_text('{"schema_version":1}', encoding="utf-8")
+            alias = root / "pregeneration.json"
+            symlink_or_skip(alias, outside)
+
+            report = PregenerationSupportState(alias).report()
+
+        self.assertEqual(report, {"available": False})
+
     def test_pregeneration_support_does_not_follow_state_symlinks(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
