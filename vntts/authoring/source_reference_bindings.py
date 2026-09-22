@@ -134,6 +134,51 @@ def _known_role_reuse_overrides_from_manifest(
     value = document.get(KNOWN_ROLE_REUSE_BINDING_FIELD)
     if value is None:
         return {}
+    value, source_character, reuse_character = _known_role_reuse_header(value)
+    unresolved_ids = _known_role_reuse_unresolved_ids(value)
+    rejected = _known_role_reuse_rejected_authority(value)
+    target_ids, absent_ids, rejected_ids = _known_role_reuse_targets(
+        value, source_character, rejected
+    )
+    if (
+        target_ids != sorted(set(target_ids))
+        or absent_ids != unresolved_ids
+        or rejected_ids != sorted(rejected)
+    ):
+        raise SourceReferenceBindingError(
+            "Known-role target inventory disagrees with its authorities"
+        )
+    retired_queue_ids = _known_role_reuse_retired_queue_ids(value)
+    if not retired_queue_ids.issubset(rejected):
+        raise SourceReferenceBindingError(
+            "Known-role retired variants are not bound to rejected targets"
+        )
+    approved = value.get("preserved_approved_queue_ids")
+    if (
+        not isinstance(approved, list)
+        or approved != sorted(set(approved))
+        or set(approved).intersection(target_ids)
+    ):
+        raise SourceReferenceBindingError(
+            "Known-role preserved-approved scope is malformed"
+        )
+    overrides = _known_role_reuse_overrides(value, target_ids, reuse_character)
+    known_queue_ids = None if queue_ids is None else set(queue_ids)
+    if known_queue_ids is not None and not set(target_ids).issubset(known_queue_ids):
+        raise SourceReferenceBindingError(
+            "Known-role reuse queue ID is absent from the queue"
+        )
+    known_voices = {
+        normalize_character_name(voice.character): voice.character for voice in voices
+    }
+    if known_voices and normalize_character_name(reuse_character) not in known_voices:
+        raise SourceReferenceBindingError(
+            "Known-role selected voice is absent from the manifest"
+        )
+    return overrides
+
+
+def _known_role_reuse_header(value: object) -> tuple[JsonObject, str, str]:
     fields = {
         "schema",
         "schema_version",
@@ -164,19 +209,20 @@ def _known_role_reuse_overrides_from_manifest(
         or value.get("authority") != KNOWN_ROLE_REUSE_AUTHORITY
     ):
         raise SourceReferenceBindingError("Known-role reuse binding is malformed")
+    binding: JsonObject = value
     for field in (
         "source_voice_manifest_sha256",
         "source_workspace_sha256",
         "source_state_sha256",
         "queue_sha256",
     ):
-        _required_sha256(value.get(field), f"Known-role reuse {field}")
-    _text(value.get("source_workspace_id"), "Known-role reuse source workspace ID")
+        _required_sha256(binding.get(field), f"Known-role reuse {field}")
+    _text(binding.get("source_workspace_id"), "Known-role reuse source workspace ID")
     source_character = _text(
-        value.get("source_character"), "Known-role reuse source character"
+        binding.get("source_character"), "Known-role reuse source character"
     )
     reuse_character = _text(
-        value.get("reuse_voice_character"), "Known-role reuse selected voice"
+        binding.get("reuse_voice_character"), "Known-role reuse selected voice"
     )
     if normalize_character_name(source_character) == normalize_character_name(
         reuse_character
@@ -184,7 +230,7 @@ def _known_role_reuse_overrides_from_manifest(
         raise SourceReferenceBindingError(
             "Known-role reuse source and selected voice must differ"
         )
-    references = value.get("reuse_reference_sha256s")
+    references = binding.get("reuse_reference_sha256s")
     if (
         not isinstance(references, list)
         or not references
@@ -195,7 +241,10 @@ def _known_role_reuse_overrides_from_manifest(
         )
     for digest in references:
         _required_sha256(digest, "Known-role reuse reference SHA-256")
+    return binding, source_character, reuse_character
 
+
+def _known_role_reuse_unresolved_ids(value: JsonObject) -> list[object]:
     unresolved = value.get("unresolved_authority")
     unresolved_fields = {
         "bundle_id",
@@ -224,7 +273,7 @@ def _known_role_reuse_overrides_from_manifest(
         not isinstance(cohort_ids, list)
         or not cohort_ids
         or cohort_ids != sorted(set(cohort_ids))
-        or any(not is_lowercase_sha256(value) for value in cohort_ids)
+        or any(not is_lowercase_sha256(item) for item in cohort_ids)
         or not isinstance(unresolved_ids, list)
         or not unresolved_ids
         or unresolved_ids != sorted(set(unresolved_ids))
@@ -232,22 +281,32 @@ def _known_role_reuse_overrides_from_manifest(
         raise SourceReferenceBindingError(
             "Known-role unresolved scope is not canonical"
         )
+    return unresolved_ids
 
-    rejected = value.get("source_rejected_state_item_sha256s")
-    if (
-        not isinstance(rejected, dict)
-        or list(rejected) != sorted(rejected)
-        or any(not is_lowercase_sha256(digest) for digest in rejected.values())
+
+def _known_role_reuse_rejected_authority(value: JsonObject) -> JsonObject:
+    rejected = _required_object(
+        value.get("source_rejected_state_item_sha256s"),
+        "Known-role rejected-item authority",
+    )
+    if list(rejected) != sorted(rejected) or any(
+        not is_lowercase_sha256(digest) for digest in rejected.values()
     ):
         raise SourceReferenceBindingError(
             "Known-role rejected-item authority is malformed"
         )
+    return rejected
+
+
+def _known_role_reuse_targets(
+    value: JsonObject, source_character: str, rejected: JsonObject
+) -> tuple[list[str], list[str], list[str]]:
     targets = value.get("targets")
     if not isinstance(targets, list) or not targets:
         raise SourceReferenceBindingError("Known-role reuse targets are empty")
-    target_ids = []
-    absent_ids = []
-    rejected_ids = []
+    target_ids: list[str] = []
+    absent_ids: list[str] = []
+    rejected_ids: list[str] = []
     for target in targets:
         target_fields = {
             "queue_id",
@@ -295,20 +354,15 @@ def _known_role_reuse_overrides_from_manifest(
                 "Known-role reuse target source state is unsupported"
             )
         target_ids.append(queue_id)
-    if (
-        target_ids != sorted(set(target_ids))
-        or absent_ids != unresolved_ids
-        or rejected_ids != sorted(rejected)
-    ):
-        raise SourceReferenceBindingError(
-            "Known-role target inventory disagrees with its authorities"
-        )
+    return target_ids, absent_ids, rejected_ids
 
+
+def _known_role_reuse_retired_queue_ids(value: JsonObject) -> set[object]:
     retired = value.get("retired_variants")
     if not isinstance(retired, list):
         raise SourceReferenceBindingError("Known-role retired variants must be a list")
-    retired_ids = []
-    retired_queue_ids = set()
+    retired_ids: list[str] = []
+    retired_queue_ids: set[object] = set()
     for record in retired:
         if not isinstance(record, dict) or set(record) != {
             "variant_id",
@@ -330,48 +384,36 @@ def _known_role_reuse_overrides_from_manifest(
                 "Known-role retired-variant queue scope is malformed"
             )
         retired_queue_ids.update(queue_scope)
-    if retired_ids != sorted(set(retired_ids)) or not retired_queue_ids.issubset(
-        rejected
-    ):
+    if retired_ids != sorted(set(retired_ids)):
         raise SourceReferenceBindingError(
             "Known-role retired variants are not bound to rejected targets"
         )
+    return retired_queue_ids
 
-    approved = value.get("preserved_approved_queue_ids")
-    if (
-        not isinstance(approved, list)
-        or approved != sorted(set(approved))
-        or set(approved).intersection(target_ids)
-    ):
-        raise SourceReferenceBindingError(
-            "Known-role preserved-approved scope is malformed"
-        )
+
+def _known_role_reuse_overrides(
+    value: JsonObject, target_ids: list[str], reuse_character: str
+) -> dict[str, str]:
     overrides = value.get("queue_voice_overrides")
+    if not isinstance(overrides, dict):
+        raise SourceReferenceBindingError("Known-role reuse overrides are inconsistent")
+    parsed = {
+        queue_id: character
+        for queue_id, character in overrides.items()
+        if isinstance(character, str)
+    }
     if (
-        not isinstance(overrides, dict)
-        or list(overrides) != target_ids
+        list(overrides) != target_ids
         or any(
             normalize_character_name(character)
             != normalize_character_name(reuse_character)
             for character in overrides.values()
         )
         or value.get("queue_voice_overrides_sha256")
-        != queue_voice_overrides_sha256(overrides)
+        != queue_voice_overrides_sha256(parsed)
     ):
         raise SourceReferenceBindingError("Known-role reuse overrides are inconsistent")
-    known_queue_ids = None if queue_ids is None else set(queue_ids)
-    if known_queue_ids is not None and not set(target_ids).issubset(known_queue_ids):
-        raise SourceReferenceBindingError(
-            "Known-role reuse queue ID is absent from the queue"
-        )
-    known_voices = {
-        normalize_character_name(voice.character): voice.character for voice in voices
-    }
-    if known_voices and normalize_character_name(reuse_character) not in known_voices:
-        raise SourceReferenceBindingError(
-            "Known-role selected voice is absent from the manifest"
-        )
-    return dict(overrides)
+    return parsed
 
 
 def _source_reference_overrides_from_manifest(
@@ -386,6 +428,29 @@ def _source_reference_overrides_from_manifest(
     if not isinstance(value, dict):
         raise SourceReferenceBindingError("Source-reference bindings must be an object")
     version = value.get("schema_version")
+    plan_sha256s = _source_reference_plan_sha256s(value, version)
+    selected_voices = _source_reference_selected_voices(value, version, plan_sha256s)
+    known_queue_ids = None if queue_ids is None else set(queue_ids)
+    known_voices = {
+        normalize_character_name(voice.character): voice.character for voice in voices
+    }
+    parsed = _source_reference_queue_overrides(
+        value, known_queue_ids, known_voices, selected_voices
+    )
+    if version == SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION:
+        _validate_active_source_reference_retirements(
+            value, known_voices, selected_voices, parsed
+        )
+    declared_sha256 = value.get("queue_voice_overrides_sha256")
+    calculated_sha256 = queue_voice_overrides_sha256(parsed)
+    if declared_sha256 != calculated_sha256:
+        raise SourceReferenceBindingError(
+            "Source-reference queue voice override checksum is inconsistent"
+        )
+    return parsed
+
+
+def _source_reference_plan_sha256s(value: JsonObject, version: object) -> set[str]:
     if (
         value.get("schema") != SOURCE_REFERENCE_BINDINGS_SCHEMA
         or version not in SUPPORTED_SOURCE_REFERENCE_BINDINGS_VERSIONS
@@ -444,6 +509,12 @@ def _source_reference_overrides_from_manifest(
             raise SourceReferenceBindingError(
                 "Retired variants require source-reference binding schema version 3"
             )
+    return plan_sha256s
+
+
+def _source_reference_selected_voices(
+    value: JsonObject, version: object, plan_sha256s: set[str]
+) -> set[str]:
     variants = value.get("selected_variants")
     if not isinstance(variants, list) or not variants:
         raise SourceReferenceBindingError(
@@ -487,16 +558,21 @@ def _source_reference_overrides_from_manifest(
                 f"Duplicate source-reference variant voice: {character}"
             )
         selected_voices.add(normalized_character)
+    return selected_voices
+
+
+def _source_reference_queue_overrides(
+    value: JsonObject,
+    known_queue_ids: set[str] | None,
+    known_voices: dict[str, str],
+    selected_voices: set[str],
+) -> dict[str, str]:
     overrides = value.get("queue_voice_overrides")
     if not isinstance(overrides, dict) or not overrides:
         raise SourceReferenceBindingError(
             "Source-reference queue voice overrides must be a non-empty object"
         )
-    known_queue_ids = None if queue_ids is None else set(queue_ids)
-    known_voices = {
-        normalize_character_name(voice.character): voice.character for voice in voices
-    }
-    parsed = {}
+    parsed: dict[str, str] = {}
     for queue_id, character in overrides.items():
         queue_id = _text(queue_id, "Source-reference queue ID")
         character = _text(character, f"Source-reference queue {queue_id!r} voice")
@@ -526,33 +602,43 @@ def _source_reference_overrides_from_manifest(
         raise SourceReferenceBindingError(
             "Selected source-reference variants must each bind at least one queue item"
         )
-    if version == SOURCE_REFERENCE_BINDINGS_RETIREMENT_VERSION:
-        retired = value["retired_variants"]
-        retired_voices = {
-            normalize_character_name(record["voice_character"]) for record in retired
-        }
-        if known_voices and not retired_voices.issubset(known_voices):
-            raise SourceReferenceBindingError(
-                "Retired source-reference voice is absent from the manifest"
-            )
-        if retired_voices & selected_voices:
-            raise SourceReferenceBindingError(
-                "A source-reference voice cannot be selected and retired"
-            )
-        retired_queue_ids = {
-            queue_id for record in retired for queue_id in record["queue_ids"]
-        }
-        if retired_queue_ids & set(parsed):
-            raise SourceReferenceBindingError(
-                "Retired source-reference queue IDs must not remain active"
-            )
-    declared_sha256 = value.get("queue_voice_overrides_sha256")
-    calculated_sha256 = queue_voice_overrides_sha256(parsed)
-    if declared_sha256 != calculated_sha256:
-        raise SourceReferenceBindingError(
-            "Source-reference queue voice override checksum is inconsistent"
-        )
     return parsed
+
+
+def _validate_active_source_reference_retirements(
+    value: JsonObject,
+    known_voices: dict[str, str],
+    selected_voices: set[str],
+    parsed: dict[str, str],
+) -> None:
+    retired = value["retired_variants"]
+    if not isinstance(retired, list):
+        raise SourceReferenceBindingError(
+            "Retired source-reference bindings require retired variants"
+        )
+    retired_voices = {
+        normalize_character_name(record["voice_character"])
+        for record in retired
+        if isinstance(record, dict)
+    }
+    if known_voices and not retired_voices.issubset(known_voices):
+        raise SourceReferenceBindingError(
+            "Retired source-reference voice is absent from the manifest"
+        )
+    if retired_voices & selected_voices:
+        raise SourceReferenceBindingError(
+            "A source-reference voice cannot be selected and retired"
+        )
+    retired_queue_ids = {
+        queue_id
+        for record in retired
+        if isinstance(record, dict)
+        for queue_id in record["queue_ids"]
+    }
+    if retired_queue_ids & set(parsed):
+        raise SourceReferenceBindingError(
+            "Retired source-reference queue IDs must not remain active"
+        )
 
 
 def _missing_voice_reuse_overrides_from_manifest(
@@ -595,24 +681,7 @@ def _missing_voice_reuse_overrides_from_manifest(
         value.get("source_workspace_sha256"),
         "Missing-voice reuse source workspace SHA-256",
     )
-    if mode == "comparison_sample_only":
-        _required_sha256(value.get("candidate_id"), "Missing-voice reuse candidate ID")
-        candidate = _text(
-            value.get("candidate_voice_character"),
-            "Missing-voice reuse candidate voice",
-        )
-        references = value.get("candidate_reference_sha256s")
-        if not isinstance(references, list) or not references:
-            raise SourceReferenceBindingError(
-                "Missing-voice reuse candidate references are empty"
-            )
-        for reference in references:
-            _required_sha256(
-                reference, "Missing-voice reuse candidate reference SHA-256"
-            )
-        candidates = {normalize_character_name(candidate): candidate}
-    else:
-        candidates = _validate_approved_reuse_authority(value)
+    candidates = _missing_voice_reuse_candidates(value, mode)
     cohort_ids = value.get("cohort_ids")
     if (
         not isinstance(cohort_ids, list)
@@ -631,6 +700,37 @@ def _missing_voice_reuse_overrides_from_manifest(
         raise SourceReferenceBindingError(
             "A selected missing-voice reuse candidate is absent from the manifest"
         )
+    parsed = _missing_voice_reuse_queue_overrides(
+        value, mode, candidates, known_queue_ids
+    )
+    _validate_missing_voice_reuse_authority(value, mode)
+    return parsed
+
+
+def _missing_voice_reuse_candidates(value: JsonObject, mode: object) -> dict[str, str]:
+    if mode != "comparison_sample_only":
+        return _validate_approved_reuse_authority(value)
+    _required_sha256(value.get("candidate_id"), "Missing-voice reuse candidate ID")
+    candidate = _text(
+        value.get("candidate_voice_character"),
+        "Missing-voice reuse candidate voice",
+    )
+    references = value.get("candidate_reference_sha256s")
+    if not isinstance(references, list) or not references:
+        raise SourceReferenceBindingError(
+            "Missing-voice reuse candidate references are empty"
+        )
+    for reference in references:
+        _required_sha256(reference, "Missing-voice reuse candidate reference SHA-256")
+    return {normalize_character_name(candidate): candidate}
+
+
+def _missing_voice_reuse_queue_overrides(
+    value: JsonObject,
+    mode: object,
+    candidates: dict[str, str],
+    known_queue_ids: set[str] | None,
+) -> dict[str, str]:
     overrides = value.get("queue_voice_overrides")
     if not isinstance(overrides, dict) or (
         mode == "comparison_sample_only" and not overrides
@@ -638,7 +738,7 @@ def _missing_voice_reuse_overrides_from_manifest(
         raise SourceReferenceBindingError(
             "Missing-voice reuse overrides must be a non-empty object"
         )
-    parsed = {}
+    parsed: dict[str, str] = {}
     for queue_id, character in overrides.items():
         queue_id = _text(queue_id, "Missing-voice reuse queue ID")
         character = _text(character, f"Missing-voice reuse queue {queue_id!r} voice")
@@ -657,6 +757,10 @@ def _missing_voice_reuse_overrides_from_manifest(
         raise SourceReferenceBindingError(
             "Missing-voice reuse override checksum is inconsistent"
         )
+    return parsed
+
+
+def _validate_missing_voice_reuse_authority(value: JsonObject, mode: object) -> None:
     authority = value.get("authority")
     expected_authorities = (
         {
@@ -675,7 +779,6 @@ def _missing_voice_reuse_overrides_from_manifest(
         raise SourceReferenceBindingError(
             "Missing-voice reuse authority statement is invalid"
         )
-    return parsed
 
 
 def _validate_approved_reuse_authority(value: JsonObject) -> dict[str, str]:
@@ -686,13 +789,57 @@ def _validate_approved_reuse_authority(value: JsonObject) -> dict[str, str]:
         ("blind_key_sha256", "Missing-voice reuse blind-key SHA-256"),
     ):
         _required_sha256(value.get(field), label)
+    candidates, selected_by_id = _approved_reuse_candidates(value)
+    (
+        observed_cohorts,
+        observed_queue_ids,
+        used_candidate_ids,
+        expected_overrides,
+    ) = _approved_reuse_decisions(value, selected_by_id)
+    if observed_cohorts != sorted(set(observed_cohorts)):
+        raise SourceReferenceBindingError(
+            "Approved missing-voice decisions are not canonical"
+        )
+    if observed_cohorts != value.get("cohort_ids"):
+        raise SourceReferenceBindingError(
+            "Approved missing-voice decisions disagree with declared cohorts"
+        )
+    target_mode = value.get("target_mode")
+    controls = value.get("source_failed_state_item_sha256s")
+    if target_mode == "failed":
+        if (
+            not isinstance(controls, dict)
+            or set(controls) != observed_queue_ids
+            or any(not is_lowercase_sha256(digest) for digest in controls.values())
+        ):
+            raise SourceReferenceBindingError(
+                "Failed missing-voice decisions lack exact source-item authority"
+            )
+    elif target_mode is not None or controls is not None:
+        raise SourceReferenceBindingError(
+            "Missing-voice target-mode authority is invalid"
+        )
+    if used_candidate_ids != set(selected_by_id):
+        raise SourceReferenceBindingError(
+            "Approved missing-voice selected candidates must each bind a cohort"
+        )
+    if value.get("queue_voice_overrides") != expected_overrides:
+        raise SourceReferenceBindingError(
+            "Approved missing-voice decisions disagree with queue overrides"
+        )
+    return candidates
+
+
+def _approved_reuse_candidates(
+    value: JsonObject,
+) -> tuple[dict[str, str], dict[str, str]]:
     selected = value.get("selected_candidates")
     if not isinstance(selected, list):
         raise SourceReferenceBindingError(
             "Approved missing-voice selected candidates must be a list"
         )
-    candidates = {}
-    candidate_ids = []
+    candidates: dict[str, str] = {}
+    candidate_ids: list[str] = []
     for record in selected:
         if not isinstance(record, dict) or set(record) != {
             "candidate_id",
@@ -728,125 +875,118 @@ def _validate_approved_reuse_authority(value: JsonObject) -> dict[str, str]:
         raise SourceReferenceBindingError(
             "Approved missing-voice candidates are not canonical"
         )
+    return candidates, {
+        record["candidate_id"]: normalize_character_name(record["voice_character"])
+        for record in selected
+        if isinstance(record, dict)
+    }
+
+
+def _approved_reuse_decisions(
+    value: JsonObject, selected_by_id: dict[str, str]
+) -> tuple[list[str], set[object], set[str], dict[object, str]]:
     decisions = value.get("decisions")
     if not isinstance(decisions, list) or not decisions:
         raise SourceReferenceBindingError("Approved missing-voice decisions are empty")
-    observed_cohorts = []
-    observed_queue_ids: set[str] = set()
-    used_candidate_ids = set()
-    selected_by_id = {
-        record["candidate_id"]: normalize_character_name(record["voice_character"])
-        for record in selected
-    }
-    expected_overrides = {}
+    observed_cohorts: list[str] = []
+    observed_queue_ids: set[object] = set()
+    used_candidate_ids: set[str] = set()
+    expected_overrides: dict[object, str] = {}
     for decision in decisions:
-        if not isinstance(decision, dict):
-            raise SourceReferenceBindingError(
-                "Approved missing-voice decision is malformed"
-            )
-        cohort_id = _required_sha256(
-            decision.get("cohort_id"), "Approved missing-voice cohort ID"
-        )
-        queue_ids = decision.get("queue_ids")
-        if (
-            not isinstance(queue_ids, list)
-            or not queue_ids
-            or queue_ids != sorted(set(queue_ids))
-        ):
-            raise SourceReferenceBindingError(
-                "Approved missing-voice decision queue IDs are not canonical"
-            )
+        decision, cohort_id, queue_ids = _approved_reuse_decision_scope(decision)
         if observed_queue_ids.intersection(queue_ids):
             raise SourceReferenceBindingError(
                 "Approved missing-voice decisions overlap queue IDs"
             )
         observed_queue_ids.update(queue_ids)
-        outcome = decision.get("decision")
-        origin = decision.get("review_decision_origin", "human_review")
-        if origin not in {"human_review", "automatic_no_complete_candidate"}:
-            raise SourceReferenceBindingError(
-                "Missing-voice review decision origin is unsupported"
-            )
-        origin_field = (
-            {"review_decision_origin"}
-            if "review_decision_origin" in decision
-            else set()
+        candidate_id, overrides = _approved_reuse_decision_overrides(
+            decision, selected_by_id, queue_ids
         )
-        if outcome == "neither":
-            if set(decision) != {
+        if candidate_id is not None:
+            used_candidate_ids.add(candidate_id)
+        expected_overrides.update(overrides)
+        observed_cohorts.append(cohort_id)
+    return (
+        observed_cohorts,
+        observed_queue_ids,
+        used_candidate_ids,
+        expected_overrides,
+    )
+
+
+def _approved_reuse_decision_scope(
+    decision: object,
+) -> tuple[JsonObject, str, list[object]]:
+    if not isinstance(decision, dict):
+        raise SourceReferenceBindingError(
+            "Approved missing-voice decision is malformed"
+        )
+    cohort_id = _required_sha256(
+        decision.get("cohort_id"), "Approved missing-voice cohort ID"
+    )
+    queue_ids = decision.get("queue_ids")
+    if (
+        not isinstance(queue_ids, list)
+        or not queue_ids
+        or queue_ids != sorted(set(queue_ids))
+    ):
+        raise SourceReferenceBindingError(
+            "Approved missing-voice decision queue IDs are not canonical"
+        )
+    return decision, cohort_id, queue_ids
+
+
+def _approved_reuse_decision_overrides(
+    decision: JsonObject, selected_by_id: dict[str, str], queue_ids: list[object]
+) -> tuple[str | None, dict[object, str]]:
+    outcome = decision.get("decision")
+    origin = decision.get("review_decision_origin", "human_review")
+    if origin not in {"human_review", "automatic_no_complete_candidate"}:
+        raise SourceReferenceBindingError(
+            "Missing-voice review decision origin is unsupported"
+        )
+    origin_field = (
+        {"review_decision_origin"} if "review_decision_origin" in decision else set()
+    )
+    if outcome == "neither":
+        if set(decision) != {
+            "cohort_id",
+            "decision",
+            "queue_ids",
+            *origin_field,
+        }:
+            raise SourceReferenceBindingError(
+                "Neither missing-voice decision is malformed"
+            )
+        return None, {}
+    if outcome == "candidate":
+        if (
+            set(decision)
+            != {
                 "cohort_id",
                 "decision",
+                "candidate_id",
+                "voice_character",
                 "queue_ids",
                 *origin_field,
-            }:
-                raise SourceReferenceBindingError(
-                    "Neither missing-voice decision is malformed"
-                )
-        elif outcome == "candidate":
-            if (
-                set(decision)
-                != {
-                    "cohort_id",
-                    "decision",
-                    "candidate_id",
-                    "voice_character",
-                    "queue_ids",
-                    *origin_field,
-                }
-                or origin != "human_review"
-            ):
-                raise SourceReferenceBindingError(
-                    "Selected missing-voice decision is malformed"
-                )
-            candidate_id = _required_sha256(
-                decision.get("candidate_id"), "Selected missing-voice candidate ID"
-            )
-            voice = _text(
-                decision.get("voice_character"), "Selected missing-voice voice"
-            )
-            if selected_by_id.get(candidate_id) != normalize_character_name(voice):
-                raise SourceReferenceBindingError(
-                    "Selected missing-voice decision references an unknown candidate"
-                )
-            used_candidate_ids.add(candidate_id)
-            expected_overrides.update({queue_id: voice for queue_id in queue_ids})
-        else:
-            raise SourceReferenceBindingError(
-                "Approved missing-voice decision outcome is unsupported"
-            )
-        observed_cohorts.append(cohort_id)
-    if observed_cohorts != sorted(set(observed_cohorts)):
-        raise SourceReferenceBindingError(
-            "Approved missing-voice decisions are not canonical"
-        )
-    if observed_cohorts != value.get("cohort_ids"):
-        raise SourceReferenceBindingError(
-            "Approved missing-voice decisions disagree with declared cohorts"
-        )
-    target_mode = value.get("target_mode")
-    controls = value.get("source_failed_state_item_sha256s")
-    if target_mode == "failed":
-        if (
-            not isinstance(controls, dict)
-            or set(controls) != observed_queue_ids
-            or any(not is_lowercase_sha256(digest) for digest in controls.values())
+            }
+            or origin != "human_review"
         ):
             raise SourceReferenceBindingError(
-                "Failed missing-voice decisions lack exact source-item authority"
+                "Selected missing-voice decision is malformed"
             )
-    elif target_mode is not None or controls is not None:
-        raise SourceReferenceBindingError(
-            "Missing-voice target-mode authority is invalid"
+        candidate_id = _required_sha256(
+            decision.get("candidate_id"), "Selected missing-voice candidate ID"
         )
-    if used_candidate_ids != set(selected_by_id):
-        raise SourceReferenceBindingError(
-            "Approved missing-voice selected candidates must each bind a cohort"
-        )
-    if value.get("queue_voice_overrides") != expected_overrides:
-        raise SourceReferenceBindingError(
-            "Approved missing-voice decisions disagree with queue overrides"
-        )
-    return candidates
+        voice = _text(decision.get("voice_character"), "Selected missing-voice voice")
+        if selected_by_id.get(candidate_id) != normalize_character_name(voice):
+            raise SourceReferenceBindingError(
+                "Selected missing-voice decision references an unknown candidate"
+            )
+        return candidate_id, {queue_id: voice for queue_id in queue_ids}
+    raise SourceReferenceBindingError(
+        "Approved missing-voice decision outcome is unsupported"
+    )
 
 
 def retired_source_reference_variants_from_manifest(
