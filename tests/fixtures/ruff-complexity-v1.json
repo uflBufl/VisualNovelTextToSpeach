@@ -111,24 +111,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/failure_reference_audit.py",
-      "scope": "_validate_selection_authority",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/failure_reference_audit.py",
-      "scope": "load_failure_reference_audit",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/failure_reference_audit.py",
-      "scope": "publish_failure_reference_audit",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/failure_reference_binding.py",
       "scope": "_load_audit_snapshots",
       "count": 1
@@ -137,12 +119,6 @@
       "code": "C901",
       "path": "vntts/authoring/failure_reference_binding.py",
       "scope": "publish_failure_reference_binding",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/failure_reference_binding_records.py",
-      "scope": "load_failure_reference_binding",
       "count": 1
     },
     {
@@ -285,30 +261,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/missing_voice_reuse.py",
-      "scope": "_publish_candidate_input",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/missing_voice_reuse.py",
-      "scope": "_validate_candidate_input",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/missing_voice_reuse.py",
-      "scope": "_validate_plan",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/missing_voice_reuse.py",
-      "scope": "build_missing_voice_reuse_plan",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "_validate_binding_bundle",
       "count": 1
@@ -317,24 +269,6 @@
       "code": "C901",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/missing_voice_reuse_review.py",
-      "scope": "_validate_public_matrix",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/missing_voice_reuse_review.py",
-      "scope": "_validate_review_session",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/missing_voice_reuse_review.py",
-      "scope": "build_missing_voice_reuse_review",
       "count": 1
     },
     {
@@ -1341,26 +1275,8 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/failure_reference_audit.py",
-      "scope": "load_failure_reference_audit",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/failure_reference_audit.py",
-      "scope": "publish_failure_reference_audit",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/failure_reference_binding.py",
       "scope": "publish_failure_reference_binding",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/failure_reference_binding_records.py",
-      "scope": "load_failure_reference_binding",
       "count": 1
     },
     {
@@ -1473,18 +1389,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/missing_voice_reuse.py",
-      "scope": "_validate_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/missing_voice_reuse.py",
-      "scope": "build_missing_voice_reuse_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "_validate_binding_bundle",
       "count": 1
@@ -1493,18 +1397,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/missing_voice_reuse_review.py",
-      "scope": "_validate_public_matrix",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/missing_voice_reuse_review.py",
-      "scope": "build_missing_voice_reuse_review",
       "count": 1
     },
     {
@@ -2253,18 +2145,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/failure_reference_audit.py",
-      "scope": "load_failure_reference_audit",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/failure_reference_audit.py",
-      "scope": "publish_failure_reference_audit",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/failure_reference_audit_ui.py",
       "scope": "FailureReferenceAuditDialog.__init__",
       "count": 1
@@ -2273,12 +2153,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/failure_reference_binding.py",
       "scope": "publish_failure_reference_binding",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/failure_reference_binding_records.py",
-      "scope": "load_failure_reference_binding",
       "count": 1
     },
     {
@@ -2331,26 +2205,8 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/missing_voice_reuse.py",
-      "scope": "_publish_candidate_input",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/missing_voice_reuse.py",
-      "scope": "build_missing_voice_reuse_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/missing_voice_reuse_binding.py",
       "scope": "publish_missing_voice_reuse_binding",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/missing_voice_reuse_review.py",
-      "scope": "build_missing_voice_reuse_review",
       "count": 1
     },
     {
