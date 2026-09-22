@@ -235,7 +235,7 @@ class LiveDialogReader:
         auto_advance_confirmation_timeout_seconds: float = 2.0,
         auto_advance_terminal_timeout_seconds: float = 10.0,
         auto_advance_state_changed: Callable[[str, int, int], None] | None = None,
-        pipeline_event_handler: Callable[..., None] | None = None,
+        pipeline_event_handler: Callable[..., object] | None = None,
         max_speech_jobs: int = 2,
         interrupt_on_dialog_replacement: bool = False,
         first_pcm_on_prepare: bool = True,

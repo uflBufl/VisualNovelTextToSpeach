@@ -163,6 +163,7 @@
     "vntts/speech_worker.py",
     "vntts/speech_worker_messages.py",
     "vntts/subprocess_utils.py",
+    "vntts/support.py",
     "vntts/support_ui.py",
     "vntts/synthesis.py",
     "vntts/ui_text.py",

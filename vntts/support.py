@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from threading import RLock
+from typing import Callable, Mapping, TypedDict
 from uuid import UUID
 
 from vntts_artifacts.atomic_io import atomic_output_path
@@ -29,6 +30,14 @@ from vntts.versioned_json import read_versioned_json
 from vntts.voice_library import VoiceLibrary
 
 SupportDocument = dict[str, object]
+SupportEntries = list[SupportDocument]
+SupportDetails = Mapping[str, object]
+
+
+class _Timeline(TypedDict):
+    generation: int
+    session_id: str | None
+    events: OrderedDict[str, SupportDocument]
 
 audio_route_fields = (
     "generation",
@@ -205,13 +214,23 @@ generation_timeline_detail_fields = (
 class GenerationTimelineLog:
     """Keep one bounded, privacy-safe pipeline timeline per generation."""
 
-    def __init__(self, maximum_entries=200, *, path=None):
+    def __init__(
+        self, maximum_entries: int = 200, *, path: str | Path | None = None
+    ) -> None:
         self.maximum_entries = max(1, int(maximum_entries))
         self.path = Path(path).expanduser() if path is not None else None
-        self.timelines = OrderedDict()
+        self.timelines: OrderedDict[tuple[str | None, int], _Timeline] = OrderedDict()
         self.lock = RLock()
 
-    def record(self, stage, generation, occurred_at, *, session_id=None, **details):
+    def record(
+        self,
+        stage: str,
+        generation: str | int | float,
+        occurred_at: str | int | float,
+        *,
+        session_id: object | None = None,
+        **details: object,
+    ) -> bool:
         if stage not in generation_timeline_stages + sequence_timeline_stages:
             raise ValueError(f"Unknown generation timeline stage: {stage}")
         try:
@@ -260,13 +279,13 @@ class GenerationTimelineLog:
             self._persist_locked()
         return True
 
-    def snapshot(self):
+    def snapshot(self) -> list[SupportDocument]:
         with self.lock:
             return [
                 self._serialize_timeline(value) for value in self.timelines.values()
             ]
 
-    def latency_summary(self):
+    def latency_summary(self) -> SupportDocument:
         """Aggregate privacy-safe live latency components across retained lines."""
         fields = {
             "visible_to_first_pcm_ms": ("first-pcm", "from_text_visible_ms"),
@@ -297,7 +316,7 @@ class GenerationTimelineLog:
                 "playback_ms",
             ),
         }
-        samples = {name: [] for name in fields}
+        samples: dict[str, list[float]] = {name: [] for name in fields}
         with self.lock:
             for timeline in self.timelines.values():
                 for event in timeline["events"].values():
@@ -320,7 +339,7 @@ class GenerationTimelineLog:
             if values
         }
 
-    def _persist_locked(self):
+    def _persist_locked(self) -> None:
         if self.path is None:
             return
         try:
@@ -339,21 +358,28 @@ class GenerationTimelineLog:
             pass
 
     @staticmethod
-    def _serialize_timeline(timeline):
+    def _serialize_timeline(timeline: _Timeline) -> SupportDocument:
         events = list(timeline["events"].values())
         if not events:
             result = {"generation": timeline["generation"], "events": []}
             if timeline["session_id"] is not None:
                 result["session_id"] = timeline["session_id"]
             return result
-        started_at = min(event["occurred_at"] for event in events)
-        serialized = []
+        occurred_at = [
+            value
+            for event in events
+            if isinstance(value := event.get("occurred_at"), float)
+        ]
+        if not occurred_at:
+            return {"generation": timeline["generation"], "events": []}
+        started_at = min(occurred_at)
+        serialized: list[SupportDocument] = []
         for event in sorted(
             events,
             key=lambda value: (
-                value["occurred_at"],
+                _timeline_occurred_at(value),
                 (generation_timeline_stages + sequence_timeline_stages).index(
-                    value["stage"]
+                    str(value.get("stage", ""))
                 ),
             ),
         ):
@@ -361,7 +387,7 @@ class GenerationTimelineLog:
                 {key: value for key, value in event.items() if key != "occurred_at"}
                 | {
                     "elapsed_ms": round(
-                        (event["occurred_at"] - started_at) * 1000,
+                        (_timeline_occurred_at(event) - started_at) * 1000,
                         3,
                     )
                 }
@@ -372,7 +398,12 @@ class GenerationTimelineLog:
         return result
 
 
-def _percentile(values, quantile):
+def _timeline_occurred_at(event: SupportDetails) -> float:
+    value = event.get("occurred_at")
+    return value if isinstance(value, float) else 0.0
+
+
+def _percentile(values: list[float], quantile: float) -> float | None:
     ordered = sorted(values)
     if not ordered:
         return None
@@ -386,23 +417,23 @@ def _percentile(values, quantile):
 class RuntimeSupportLog:
     def __init__(
         self,
-        maximum_entries=200,
+        maximum_entries: int = 200,
         *,
-        maximum_bytes=512 * 1024,
-        clock=None,
-        path=None,
-        detail_fields=runtime_event_fields,
-    ):
-        self.entries = deque(maxlen=maximum_entries)
+        maximum_bytes: int = 512 * 1024,
+        clock: Callable[[], datetime] | None = None,
+        path: str | Path | None = None,
+        detail_fields: tuple[str, ...] = runtime_event_fields,
+    ) -> None:
+        self.entries: deque[SupportDocument] = deque(maxlen=maximum_entries)
         self.maximum_bytes = max(256, int(maximum_bytes))
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock = RLock()
         self.path = Path(path).expanduser() if path is not None else None
         self.detail_fields = tuple(detail_fields)
 
-    def add(self, level, message, **details):
+    def add(self, level: object, message: object, **details: object) -> None:
         with self.lock:
-            entry = {
+            entry: SupportDocument = {
                 "recorded_at": self.clock().isoformat(),
                 "level": str(level),
                 "message": self._bounded_message(message),
@@ -417,14 +448,16 @@ class RuntimeSupportLog:
                 except OSError:
                     pass
 
-    def _bounded_message(self, message):
+    def _bounded_message(self, message: object) -> str:
         value = str(message)
         maximum_characters = max(64, min(16_384, self.maximum_bytes // 2))
         if len(value) <= maximum_characters:
             return value
         return f"{value[: maximum_characters - 15]}... <truncated>"
 
-    def _persist_locked(self):
+    def _persist_locked(self) -> None:
+        if self.path is None:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = self._json_lines()
         while len(payload) > self.maximum_bytes and len(self.entries) > 1:
@@ -441,7 +474,7 @@ class RuntimeSupportLog:
         with atomic_output_path(self.path) as temporary_path:
             temporary_path.write_bytes(payload)
 
-    def _json_lines(self):
+    def _json_lines(self) -> bytes:
         return b"".join(
             (json.dumps(sanitize_event(entry), ensure_ascii=False) + "\n").encode(
                 "utf-8"
@@ -449,12 +482,14 @@ class RuntimeSupportLog:
             for entry in self.entries
         )
 
-    def snapshot(self):
+    def snapshot(self) -> SupportEntries:
         with self.lock:
             return list(self.entries)
 
 
-def _read_bounded_json_lines(path, maximum_bytes):
+def _read_bounded_json_lines(
+    path: Path | None, maximum_bytes: int
+) -> tuple[SupportDocument, ...]:
     if path is None:
         return ()
     try:
@@ -467,7 +502,7 @@ def _read_bounded_json_lines(path, maximum_bytes):
         return ()
     if offset:
         payload = payload.split(b"\n", 1)[-1]
-    entries = []
+    entries: SupportEntries = []
     for line in payload.splitlines():
         try:
             entry = json.loads(line)
@@ -492,14 +527,25 @@ performance_fields = (
 class PerformanceLog(RuntimeSupportLog):
     """Retain slow app-stage timings without user content or paths."""
 
-    def __init__(self, maximum_entries=200, **kwargs):
+    def __init__(
+        self,
+        maximum_entries: int = 200,
+        *,
+        maximum_bytes: int = 512 * 1024,
+        clock: Callable[[], datetime] | None = None,
+        path: str | Path | None = None,
+    ) -> None:
         super().__init__(
             maximum_entries=maximum_entries,
             detail_fields=performance_fields,
-            **kwargs,
+            maximum_bytes=maximum_bytes,
+            clock=clock,
+            path=path,
         )
 
-    def record(self, operation, elapsed_ms, outcome, **details):
+    def record(
+        self, operation: str, elapsed_ms: float, outcome: str, **details: object
+    ) -> None:
         if outcome == "complete" and elapsed_ms < 100:
             return
         self.add(
@@ -511,23 +557,33 @@ class PerformanceLog(RuntimeSupportLog):
             **{key: details[key] for key in performance_fields if key in details},
         )
 
-    def report(self):
+    def report(self) -> SupportDocument:
         events = [sanitize_event(entry) for entry in self.snapshot()]
-        summary = {}
+        summary: dict[str, dict[str, int | float]] = {}
         for event in events:
             operation = event["operation"]
+            elapsed_ms = event.get("elapsed_ms")
+            if (
+                not isinstance(operation, str)
+                or not isinstance(elapsed_ms, (int, float))
+                or isinstance(elapsed_ms, bool)
+            ):
+                continue
             aggregate = summary.setdefault(
                 operation, {"count": 0, "total_ms": 0.0, "max_ms": 0.0}
             )
             aggregate["count"] += 1
             aggregate["total_ms"] = round(
-                aggregate["total_ms"] + event["elapsed_ms"], 3
+                aggregate["total_ms"] + elapsed_ms, 3
             )
-            aggregate["max_ms"] = max(aggregate["max_ms"], event["elapsed_ms"])
+            aggregate["max_ms"] = max(aggregate["max_ms"], elapsed_ms)
             for name in ("files_examined", "bytes_examined"):
-                if name in event:
+                if (
+                    isinstance(value := event.get(name), (int, float))
+                    and not isinstance(value, bool)
+                ):
                     aggregate[f"max_{name}"] = max(
-                        aggregate.get(f"max_{name}", 0), event[name]
+                        aggregate.get(f"max_{name}", 0), value
                     )
         return {"threshold_ms": 100, "summary": summary, "events": events}
 
@@ -535,14 +591,18 @@ class PerformanceLog(RuntimeSupportLog):
 performance_log = PerformanceLog()
 
 
-def configure_performance_log(path=None):
+def configure_performance_log(path: str | Path | None = None) -> PerformanceLog:
     global performance_log
     performance_log = PerformanceLog(path=path)
     return performance_log
 
 
-def record_background_operation(operation, elapsed_ms, outcome, **details):
+def record_background_operation(
+    operation: object, elapsed_ms: object, outcome: object, **details: object
+) -> None:
     try:
+        if not isinstance(elapsed_ms, (str, int, float)):
+            return
         performance_log.record(
             str(operation), float(elapsed_ms), str(outcome), **details
         )
@@ -593,11 +653,20 @@ _game_import_numeric_fields = frozenset(
 class GameImportLog(RuntimeSupportLog):
     """Small, restart-safe import trace; content and configuration stay out."""
 
-    def __init__(self, maximum_entries=200, **kwargs):
+    def __init__(
+        self,
+        maximum_entries: int = 200,
+        *,
+        maximum_bytes: int = 512 * 1024,
+        clock: Callable[[], datetime] | None = None,
+        path: str | Path | None = None,
+    ) -> None:
         super().__init__(
             maximum_entries=maximum_entries,
             detail_fields=game_import_fields,
-            **kwargs,
+            maximum_bytes=maximum_bytes,
+            clock=clock,
+            path=path,
         )
         try:
             self._load_previous()
@@ -605,7 +674,7 @@ class GameImportLog(RuntimeSupportLog):
             # A support log must not make application startup fail.
             pass
 
-    def record(self, stage, **details):
+    def record(self, stage: object, **details: object) -> None:
         safe_details = {
             key: _sanitize_game_import_value(key, value)
             for key, value in details.items()
@@ -621,14 +690,14 @@ class GameImportLog(RuntimeSupportLog):
             **safe_details,
         )
 
-    def _load_previous(self):
+    def _load_previous(self) -> None:
         for entry in _read_bounded_json_lines(self.path, self.maximum_bytes):
             if not isinstance(entry, dict) or entry.get("level") != "game-import":
                 continue
             stage = entry.get("stage")
             if not isinstance(stage, str) or not stage:
                 continue
-            restored = {
+            restored: SupportDocument = {
                 "recorded_at": str(entry.get("recorded_at", "")),
                 "level": "game-import",
                 "message": self._bounded_message(
@@ -647,14 +716,14 @@ class GameImportLog(RuntimeSupportLog):
 game_import_log = GameImportLog()
 
 
-def configure_game_import_log(path=None):
+def configure_game_import_log(path: str | Path | None = None) -> GameImportLog:
     """Set the application-owned persistence target without affecting imports."""
     global game_import_log
     game_import_log = GameImportLog(path=path)
     return game_import_log
 
 
-def record_game_import(stage, **details):
+def record_game_import(stage: object, **details: object) -> None:
     """Record only privacy-safe technical import evidence; never affect import work."""
     try:
         game_import_log.record(stage, **details)
@@ -662,7 +731,9 @@ def record_game_import(stage, **details):
         pass
 
 
-native_speech_context = ContextVar("native_speech_context", default=None)
+native_speech_context: ContextVar[SupportDocument | None] = ContextVar(
+    "native_speech_context", default=None
+)
 _native_fields = frozenset(
     "operation outcome cache server_pid server_load_s compute request_key "
     "reference_key reference_mode seed requested_seed frame_limit audio_frames "
@@ -683,7 +754,9 @@ _NATIVE_DROP = object()
 class NativeSpeechLog(RuntimeSupportLog):
     """Bounded detail with non-rolling counts; independent of preview ownership."""
 
-    def __init__(self, maximum_entries=200, *, path=None):
+    def __init__(
+        self, maximum_entries: int = 200, *, path: str | Path | None = None
+    ) -> None:
         super().__init__(
             maximum_entries=maximum_entries,
             path=path,
@@ -691,16 +764,16 @@ class NativeSpeechLog(RuntimeSupportLog):
         )
         self.started_at = self.clock().isoformat()
         self.total_events = 0
-        self.outcomes = Counter()
-        self.request_seconds = Counter()
-        self.latest_runtime = None
-        self.active_requests = OrderedDict()
+        self.outcomes: Counter[str] = Counter()
+        self.request_seconds: dict[str, float] = {}
+        self.latest_runtime: SupportDocument | None = None
+        self.active_requests: OrderedDict[object, SupportDocument] = OrderedDict()
         try:
             self._load_previous()
         except Exception:
             pass
 
-    def record(self, details):
+    def record(self, details: SupportDetails) -> None:
         details = _sanitize_native_details(details)
         with self.lock:
             self.add(
@@ -715,14 +788,14 @@ class NativeSpeechLog(RuntimeSupportLog):
             )
             self._accumulate(details, self.entries[-1]["recorded_at"])
 
-    def _load_previous(self):
+    def _load_previous(self) -> None:
         for entry in _read_bounded_json_lines(self.path, self.maximum_bytes):
             if entry.get("level") != "moss-native":
                 continue
             details = _sanitize_native_details(entry.get("native"))
             if not details:
                 continue
-            restored = {
+            restored: SupportDocument = {
                 "recorded_at": str(entry.get("recorded_at", "")),
                 "level": "moss-native",
                 "message": self._bounded_message(
@@ -733,9 +806,9 @@ class NativeSpeechLog(RuntimeSupportLog):
             self.entries.append(restored)
             self._accumulate(details, restored["recorded_at"])
         if self.entries:
-            self.started_at = self.entries[0]["recorded_at"]
+            self.started_at = str(self.entries[0]["recorded_at"])
 
-    def _accumulate(self, details, recorded_at):
+    def _accumulate(self, details: SupportDocument, recorded_at: object) -> None:
         self.total_events += 1
         operation = details.get("operation", "unknown")
         outcome = details.get("outcome", "unknown")
@@ -746,7 +819,9 @@ class NativeSpeechLog(RuntimeSupportLog):
         self.outcomes[key] += 1
         seconds = details.get("request_s")
         if isinstance(seconds, (int, float)) and math.isfinite(seconds):
-            self.request_seconds[key] += max(0, seconds)
+            self.request_seconds[key] = self.request_seconds.get(key, 0.0) + max(
+                0, float(seconds)
+            )
         if operation == "server-start":
             self.latest_runtime = details
         attempt_id = details.get("attempt_id")
@@ -760,7 +835,7 @@ class NativeSpeechLog(RuntimeSupportLog):
         elif attempt_id and operation == "fresh-generation":
             self.active_requests.pop(attempt_id, None)
 
-    def report(self):
+    def report(self) -> SupportDocument:
         with self.lock:
             events = self.snapshot()
             return {
@@ -795,7 +870,7 @@ class NativeSpeechLog(RuntimeSupportLog):
 native_speech_log = NativeSpeechLog()
 
 
-def configure_native_speech_log(path=None):
+def configure_native_speech_log(path: str | Path | None = None) -> NativeSpeechLog:
     global native_speech_log
     native_speech_log = NativeSpeechLog(path=path)
     return native_speech_log
@@ -869,16 +944,17 @@ def _previous_generation_timelines(path: Path) -> list[SupportDocument]:
             or generation < 1
         ):
             continue
-        sanitized: SupportDocument = {"generation": generation, "events": []}
+        events: list[SupportDocument] = []
+        sanitized: SupportDocument = {"generation": generation, "events": events}
         session_id = timeline.get("session_id")
         if session_id is not None:
             try:
                 sanitized["session_id"] = UUID(str(session_id)).hex
             except ValueError, AttributeError:
                 continue
-        events = timeline.get("events")
-        if isinstance(events, list):
-            for event in events[-100:]:
+        raw_events = timeline.get("events")
+        if isinstance(raw_events, list):
+            for event in raw_events[-100:]:
                 if not isinstance(event, dict) or event.get("stage") not in (
                     generation_timeline_stages + sequence_timeline_stages
                 ):
@@ -891,12 +967,12 @@ def _previous_generation_timelines(path: Path) -> list[SupportDocument]:
                         if key in event and event[key] is not None
                     },
                 }
-                sanitized["events"].append(safe_event)
+                events.append(safe_event)
         result.append(sanitized)
     return result
 
 
-def record_native_speech(**details):
+def record_native_speech(**details: object) -> None:
     details = {**(native_speech_context.get() or {}), **details}
     try:
         native_speech_log.record(
@@ -908,7 +984,13 @@ def record_native_speech(**details):
 
 
 class AudioLifecycleLog(RuntimeSupportLog):
-    def __init__(self, maximum_entries=400, *, path=None, load_existing=False):
+    def __init__(
+        self,
+        maximum_entries: int = 400,
+        *,
+        path: str | Path | None = None,
+        load_existing: bool = False,
+    ) -> None:
         super().__init__(
             maximum_entries=maximum_entries,
             path=path,
@@ -920,7 +1002,9 @@ class AudioLifecycleLog(RuntimeSupportLog):
                 if entry.get("level") == "audio-lifecycle":
                     self.entries.append(sanitize_event(entry))
 
-    def _persist_locked(self):
+    def _persist_locked(self) -> None:
+        if self.path is None:
+            return
         try:
             existing_bytes = self.path.stat().st_size
         except OSError:
@@ -938,7 +1022,7 @@ class AudioLifecycleLog(RuntimeSupportLog):
         with self.path.open("ab") as output:
             output.write(latest)
 
-    def record(self, operation, **details):
+    def record(self, operation: object, **details: object) -> None:
         fields = {**(audio_lifecycle_context.get() or {}), **details}
         fields["operation"] = str(operation)[:64]
         self.add(
@@ -951,11 +1035,11 @@ class AudioLifecycleLog(RuntimeSupportLog):
             },
         )
 
-    def report(self):
+    def report(self) -> SupportDocument:
         return {"schema_version": 1, "events": self.snapshot()}
 
 
-def _sanitize_audio_lifecycle_value(value):
+def _sanitize_audio_lifecycle_value(value: object) -> object:
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
@@ -966,13 +1050,15 @@ def _sanitize_audio_lifecycle_value(value):
 audio_lifecycle_log = AudioLifecycleLog()
 
 
-def configure_audio_lifecycle_log(path=None):
+def configure_audio_lifecycle_log(
+    path: str | Path | None = None,
+) -> AudioLifecycleLog:
     global audio_lifecycle_log
     audio_lifecycle_log = AudioLifecycleLog(path=path)
     return audio_lifecycle_log
 
 
-def record_audio_lifecycle(operation, **details):
+def record_audio_lifecycle(operation: object, **details: object) -> None:
     try:
         audio_lifecycle_log.record(operation, **details)
     except Exception:
@@ -1533,18 +1619,18 @@ def _file_sha256(path: str | Path) -> str:
 class SupportBundleBuilder:
     def __init__(
         self,
-        settings,
-        event_log,
+        settings: AppSettings,
+        event_log: RuntimeSupportLog,
         *,
-        diagnostic=None,
-        dependency_probe=None,
-        generation_timelines=None,
-        game_import_log=None,
-        performance_log_value=None,
-        previous_session=None,
-        audio_lifecycle=None,
+        diagnostic: object | None = None,
+        dependency_probe: Callable[[], SupportDocument] | None = None,
+        generation_timelines: GenerationTimelineLog | None = None,
+        game_import_log: GameImportLog | None = None,
+        performance_log_value: PerformanceLog | None = None,
+        previous_session: SupportDocument | None = None,
+        audio_lifecycle: AudioLifecycleLog | None = None,
         voice_library: VoiceLibrary | None = None,
-    ):
+    ) -> None:
         self.settings = settings
         self.event_log = event_log
         self.diagnostic = diagnostic
@@ -1556,7 +1642,7 @@ class SupportBundleBuilder:
         self.audio_lifecycle = audio_lifecycle or AudioLifecycleLog()
         self.voice_library = voice_library
 
-    def build(self, path):
+    def build(self, path: str | Path) -> Path:
         path = Path(path).expanduser()
         if path.suffix.casefold() != ".zip":
             path = path.with_suffix(".zip")
@@ -1686,7 +1772,7 @@ def collect_voice_bindings(library: VoiceLibrary | None) -> SupportDocument:
     }
 
 
-def sanitize_settings(settings):
+def sanitize_settings(settings: AppSettings) -> SupportDocument:
     values = asdict(settings)
     for definition in fields(settings):
         sensitivity = definition.metadata.get("support_sensitivity")
@@ -1700,7 +1786,7 @@ def sanitize_settings(settings):
     return values
 
 
-def _looks_like_local_path(value):
+def _looks_like_local_path(value: object) -> bool:
     value = str(value).strip()
     return bool(
         value.startswith(("/", "\\", "~", "./", "../"))
@@ -1708,7 +1794,7 @@ def _looks_like_local_path(value):
     )
 
 
-def sanitize_event(entry):
+def sanitize_event(entry: SupportDetails) -> SupportDocument:
     sanitized = {
         "recorded_at": entry.get("recorded_at"),
         "level": entry.get("level"),
@@ -1742,13 +1828,13 @@ def sanitize_event(entry):
     return sanitized
 
 
-def _sanitize_event_value(value):
+def _sanitize_event_value(value: object) -> object:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return redact_text(value)
 
 
-def _sanitize_game_import_value(key, value):
+def _sanitize_game_import_value(key: str, value: object) -> object:
     if key in _game_import_path_fields:
         if key == "roots" and isinstance(value, (list, tuple)):
             return [_redact_game_import_text(item) for item in value[:16]]
@@ -1759,6 +1845,8 @@ def _sanitize_game_import_value(key, value):
         )
     if key in _game_import_numeric_fields:
         if isinstance(value, bool):
+            return None
+        if not isinstance(value, (str, int, float)):
             return None
         try:
             number = float(value)
@@ -1778,7 +1866,7 @@ def _sanitize_game_import_value(key, value):
     return _redact_game_import_text(value)
 
 
-def _sanitize_game_import_structure(value, depth=0):
+def _sanitize_game_import_structure(value: object, depth: int = 0) -> object:
     if depth >= 2:
         return None
     if value is None or isinstance(value, (bool, int, float)):
@@ -1805,7 +1893,7 @@ def _sanitize_game_import_structure(value, depth=0):
     return _redact_game_import_text(value)
 
 
-def _sanitize_native_details(details):
+def _sanitize_native_details(details: object) -> SupportDocument:
     if not isinstance(details, dict):
         return {}
     return {
@@ -1816,7 +1904,7 @@ def _sanitize_native_details(details):
     }
 
 
-def _sanitize_native_value(value, depth=0):
+def _sanitize_native_value(value: object, depth: int = 0) -> object:
     if value is None or isinstance(value, (bool, int)):
         return value
     if isinstance(value, float):
@@ -1843,7 +1931,7 @@ def _sanitize_native_value(value, depth=0):
     return _NATIVE_DROP
 
 
-def _redact_game_import_text(value):
+def _redact_game_import_text(value: object) -> str:
     value = redact_text(value)
     value = re.sub(
         r"(?i)\bauthorization\s*([=:])\s*bearer\s+[^\s,;]+",
@@ -1859,7 +1947,7 @@ def _redact_game_import_text(value):
     return value[:12_288]
 
 
-def _is_secret_name(value):
+def _is_secret_name(value: object) -> bool:
     return bool(
         re.search(
             r"(?i)(password|passwd|token|api[_-]?key|secret|authorization|cookie)",
@@ -1868,7 +1956,7 @@ def _is_secret_name(value):
     )
 
 
-def redact_text(value):
+def redact_text(value: object) -> str:
     value = str(value)
     home = str(Path.home())
     if home:
@@ -1878,32 +1966,32 @@ def redact_text(value):
     return value
 
 
-def sanitize_diagnostic(snapshot):
+def sanitize_diagnostic(snapshot: object) -> SupportDocument:
     if snapshot is None:
         return {"available": False}
     return {
         "available": True,
-        "confidence": snapshot.confidence,
-        "preprocessing_profile": snapshot.preprocessing_profile,
-        "capture_ms": snapshot.capture_ms,
-        "ocr_ms": snapshot.ocr_ms,
-        "synthesis_ms": snapshot.synthesis_ms,
-        "playback_ms": snapshot.playback_ms,
-        "capture_interval_ms": snapshot.capture_interval_ms,
-        "game_focused": snapshot.game_focused,
-        "automatic_correction_count": len(snapshot.corrections),
-        "speech_queue_depth": snapshot.speech_queue_depth,
-        "max_speech_queue_depth": snapshot.max_speech_queue_depth,
-        "last_first_audio_ms": snapshot.last_first_audio_ms,
-        "cache_source": snapshot.cache_source,
+        "confidence": getattr(snapshot, "confidence", None),
+        "preprocessing_profile": getattr(snapshot, "preprocessing_profile", None),
+        "capture_ms": getattr(snapshot, "capture_ms", None),
+        "ocr_ms": getattr(snapshot, "ocr_ms", None),
+        "synthesis_ms": getattr(snapshot, "synthesis_ms", None),
+        "playback_ms": getattr(snapshot, "playback_ms", None),
+        "capture_interval_ms": getattr(snapshot, "capture_interval_ms", None),
+        "game_focused": getattr(snapshot, "game_focused", None),
+        "automatic_correction_count": len(getattr(snapshot, "corrections", ())),
+        "speech_queue_depth": getattr(snapshot, "speech_queue_depth", None),
+        "max_speech_queue_depth": getattr(snapshot, "max_speech_queue_depth", None),
+        "last_first_audio_ms": getattr(snapshot, "last_first_audio_ms", None),
+        "cache_source": getattr(snapshot, "cache_source", None),
     }
 
 
-def collect_ocr_metrics(directory):
+def collect_ocr_metrics(directory: str | Path) -> SupportDocument:
     directory = Path(directory).expanduser()
-    confidences = []
-    attempts = []
-    profiles = Counter()
+    confidences: list[float] = []
+    attempts: list[int] = []
+    profiles: Counter[str] = Counter()
     resolved = 0
     invalid = 0
     if directory.is_dir():
@@ -1915,8 +2003,14 @@ def collect_ocr_metrics(directory):
                     document_name="OCR review metadata",
                     allow_unversioned=True,
                 )
-                confidences.append(float(payload.get("confidence", 0)))
-                attempts.append(int(payload.get("attempts", 0)))
+                confidence = payload.get("confidence", 0)
+                attempt_count = payload.get("attempts", 0)
+                if not isinstance(confidence, (str, int, float)) or not isinstance(
+                    attempt_count, (str, int, float)
+                ):
+                    raise TypeError("OCR metrics must be numeric")
+                confidences.append(float(confidence))
+                attempts.append(int(attempt_count))
                 profiles[str(payload.get("preprocessing_profile") or "unknown")] += 1
                 resolved += payload.get("resolved") is True
             except OSError, TypeError, ValueError, json.JSONDecodeError:
@@ -1936,10 +2030,12 @@ def collect_ocr_metrics(directory):
     }
 
 
-def collect_build_identity():
+def collect_build_identity() -> SupportDocument:
     """No model imports, filenames, branch names or remotes in the report."""
-    status = {"git_commit": None, "tracked_changes": None, "versions": {}}
-    status["code_fingerprints"] = {}
+    versions: dict[str, str | None] = {}
+    code_fingerprints: dict[str, str | None] = {}
+    git_commit: str | None = None
+    tracked_changes: bool | None = None
     # Loaded functions, not files on disk: pulling while the app runs must not
     # make an old process appear to run the new source. Also works when frozen.
     for module, attribute in (
@@ -1949,14 +2045,17 @@ def collect_build_identity():
         ("vntts.native_resources", "NativeResourceSampler._run"),
     ):
         try:
-            function = sys.modules.get(module)
+            function: object = sys.modules.get(module)
             for name in attribute.split("."):
                 function = getattr(function, name)
-            status["code_fingerprints"][f"{module}.{attribute}"] = hashlib.sha256(
-                marshal.dumps(function.__code__)
-            ).hexdigest()
+            code = getattr(function, "__code__", None)
+            code_fingerprints[f"{module}.{attribute}"] = (
+                hashlib.sha256(marshal.dumps(code)).hexdigest()
+                if code is not None
+                else None
+            )
         except AttributeError:
-            status["code_fingerprints"][f"{module}.{attribute}"] = None
+            code_fingerprints[f"{module}.{attribute}"] = None
     for package in (
         "visual-novel-text-to-speech",
         "PySide6",
@@ -1968,9 +2067,9 @@ def collect_build_identity():
         "reverse1999-extractor",
     ):
         try:
-            status["versions"][package] = importlib.metadata.version(package)
+            versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
-            status["versions"][package] = None
+            versions[package] = None
     root = Path(__file__).resolve().parent.parent
     if not getattr(sys, "frozen", False) and (root / ".git").exists():
         try:
@@ -1984,7 +2083,7 @@ def collect_build_identity():
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             ).stdout.strip()
             if re.fullmatch(r"[0-9a-f]{40,64}", commit):
-                status["git_commit"] = commit
+                git_commit = commit
             diff = subprocess.run(
                 [
                     "git",
@@ -2002,13 +2101,18 @@ def collect_build_identity():
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if diff.returncode in {0, 1}:
-                status["tracked_changes"] = diff.returncode == 1
+                tracked_changes = diff.returncode == 1
         except OSError, subprocess.SubprocessError:
             pass
-    return status
+    return {
+        "git_commit": git_commit,
+        "tracked_changes": tracked_changes,
+        "versions": versions,
+        "code_fingerprints": code_fingerprints,
+    }
 
 
-def collect_dependency_status():
+def collect_dependency_status() -> SupportDocument:
     modules = (
         "PySide6",
         "PIL",
@@ -2020,7 +2124,7 @@ def collect_dependency_status():
         "torch",
         "torchaudio",
     )
-    status = {
+    status: SupportDocument = {
         "platform": platform.platform(),
         "architecture": platform.machine(),
         "python_version": platform.python_version(),
