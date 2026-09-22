@@ -189,6 +189,7 @@ files = [
     "vntts/authoring/known_role_live_fallback.py",
     "vntts/authoring/known_role_reuse.py",
     "vntts/authoring/legacy_import.py",
+    "vntts/authoring/legacy_reason_review.py",
     "vntts/authoring/listening.py",
     "vntts/authoring/listening_cli.py",
     "vntts/authoring/listening_import.py",
