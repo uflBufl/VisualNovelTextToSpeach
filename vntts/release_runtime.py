@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -12,6 +11,8 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+from vntts_artifacts.file_integrity import sha256_file
 
 BACKEND = "pocket-tts"
 PYTHON_VERSION = "3.14"
@@ -147,11 +148,6 @@ def _prune_runtime_entrypoints(
             if candidate.is_file() and not candidate.is_symlink():
                 candidate.chmod(candidate.stat().st_mode & ~0o111)
     managed_interpreter.chmod(managed_interpreter.stat().st_mode | 0o755)
-
-
-def _sha256(path: Path) -> str:
-    with path.open("rb") as source:
-        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def _run_checked(
@@ -381,8 +377,8 @@ def stage_pocket_runtime(
     manifest = {
         "backend": BACKEND,
         "python_request": python_version,
-        "lock_sha256": _sha256(lockfile),
-        "project_pyproject_sha256": _sha256(project_root / "pyproject.toml"),
+        "lock_sha256": sha256_file(lockfile),
+        "project_pyproject_sha256": sha256_file(project_root / "pyproject.toml"),
         "probe": probe,
     }
     manifest_path = destination / "runtime-manifest.json"
