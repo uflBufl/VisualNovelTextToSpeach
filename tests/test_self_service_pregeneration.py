@@ -60,6 +60,18 @@ from vntts.voice_library import VoiceLibrary  # noqa: E402
 from vntts.voices import CharacterVoiceRegistry, remember_voice_binding  # noqa: E402
 
 
+def write_voice_references(manifest: Path) -> None:
+    for index, name in enumerate(("rhiannon", "centurion", "unrelated"), 1):
+        audio = np.zeros(2400)
+        audio[0] = index / 100
+        sf.write(
+            manifest.parent / "references" / f"{name}.wav",
+            audio,
+            24_000,
+            subtype="PCM_16",
+        )
+
+
 class InProcessPocketGenerator(OfflineGenerationWorker):
     def __init__(self):
         super().__init__()
@@ -188,6 +200,14 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             patch(
                 "vntts.game_narrator.application_voice_library",
                 return_value=self._voice_library,
+            ),
+            patch(
+                "vntts.pregeneration_ui.get_local_data_directory",
+                return_value=Path(self._voice_library_directory.name) / "data",
+            ),
+            patch(
+                "vntts.game_content_importer.Reverse1999GameImporter.prepare_voice_candidates",
+                return_value=None,
             ),
         )
         for library_patch in self._voice_library_patches:
@@ -445,13 +465,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             root = Path(directory)
             content = inspect_story_index(write_content(root / "content"))
             manifest = write_manifest(root / "voices")
-            for name in ("rhiannon", "centurion", "unrelated"):
-                sf.write(
-                    manifest.parent / "references" / f"{name}.wav",
-                    np.zeros(2400),
-                    24_000,
-                    subtype="PCM_16",
-                )
+            write_voice_references(manifest)
             settings = AppSettings(voice_manifest=str(manifest))
             chooser = Mock(return_value=None)
             player = Mock()
@@ -528,13 +542,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             root = Path(directory)
             content = inspect_story_index(write_content(root / "content"))
             manifest = write_manifest(root / "voices")
-            for name in ("rhiannon", "centurion", "unrelated"):
-                sf.write(
-                    manifest.parent / "references" / f"{name}.wav",
-                    np.zeros(2400),
-                    24_000,
-                    subtype="PCM_16",
-                )
+            write_voice_references(manifest)
             original = AppSettings(voice_manifest=str(manifest))
             selected = original.updated(
                 speech_backend="moss-tts",
@@ -688,13 +696,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             portrait.fill()
             self.assertTrue(portrait.save(str(portraits / "10.png")))
             manifest = write_manifest(root / "voices")
-            for name in ("rhiannon", "centurion", "unrelated"):
-                sf.write(
-                    manifest.parent / "references" / f"{name}.wav",
-                    np.zeros(2400),
-                    24_000,
-                    subtype="PCM_16",
-                )
+            write_voice_references(manifest)
             pool = ManualThreadPool()
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(
@@ -804,8 +806,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 if group.route == "narrator"
             )
             self.assertTrue(narrator_groups)
-            self.assertTrue(
-                all(group.source_character == "Centurion" for group in narrator_groups)
+            self.assertEqual(
+                [group.source_character for group in narrator_groups],
+                ["Centurion"] * len(narrator_groups),
             )
             self.assertFalse(dialog.input_runner.active)
             from vntts.voices import CharacterVoiceRegistry
@@ -824,13 +827,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_content(root / "content"))
             manifest = write_manifest(root / "voices")
-            for name in ("rhiannon", "centurion", "unrelated"):
-                sf.write(
-                    manifest.parent / "references" / f"{name}.wav",
-                    np.zeros(2400),
-                    24_000,
-                    subtype="PCM_16",
-                )
+            write_voice_references(manifest)
             remember_voice_binding(
                 self._voice_library,
                 CharacterVoiceRegistry.from_file(manifest),
