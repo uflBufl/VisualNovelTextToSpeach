@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
 
 from vntts.authoring.audio_events import audio_event_plan_for_record
 from vntts.authoring.authority import canonical_document_sha256
@@ -62,12 +64,61 @@ SCHEMA = "vntts.authoring-audio-event-omission-batch"
 SCHEMA_VERSION = 1
 
 
+@dataclass(frozen=True)
+class _OmissionSelection:
+    base_directory: Path
+    base_document: dict[str, object]
+    base_workspace_sha256: str
+    queue: VoiceGenerationQueue
+    state: dict[str, object]
+    state_sha256: str
+    queue_path: Path
+    queue_sha256: str
+    import_id: str
+    narrator_character: str
+    items: list[dict[str, object]]
+
+
+@dataclass(frozen=True)
+class _OmissionIdentity:
+    batch: dict[str, object]
+    config_fingerprint: str
+    workspace_id: str
+    root: Path
+    destination: Path
+
+
 def create_audio_event_omission_workspace(
     base_workspace: str | Path,
     queue_ids: Iterable[object],
     workspaces_root: str | Path | None = None,
 ) -> WorkspaceCreationResult:
     """Terminalize exact absent pure-event lines without producing audio."""
+    selection = _select_omission_items(base_workspace, queue_ids)
+    identity = _omission_identity(selection, workspaces_root)
+    existing = _existing_omission_workspace(identity)
+    if existing is not None:
+        return existing
+    snapshots = _authority_snapshots(selection)
+    try:
+        with staged_directory(
+            identity.root, prefix=".audio-event-omission-"
+        ) as staging:
+            output = _stage_omission_workspace(staging, selection, snapshots)
+            target_state = _omitted_state(selection, identity)
+            workspace = _write_staged_omission_workspace(
+                staging, output, selection, identity, target_state
+            )
+            _validate_staged_omission_workspace(staging, output, workspace)
+            _publish_staged_omission_workspace(staging, selection, identity, snapshots)
+    except (BulkGenerationError, OSError, ValueError) as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return WorkspaceCreationResult(identity.destination, True)
+
+
+def _select_omission_items(
+    base_workspace: str | Path, queue_ids: Iterable[object]
+) -> _OmissionSelection:
     base_directory, base_document, base_workspace_sha256 = load_workspace_authority(
         base_workspace
     )
@@ -129,171 +180,223 @@ def create_audio_event_omission_workspace(
             }
         )
 
+    return _OmissionSelection(
+        base_directory=base_directory,
+        base_document=base_document,
+        base_workspace_sha256=base_workspace_sha256,
+        queue=queue,
+        state=state,
+        state_sha256=state_sha256,
+        queue_path=queue_path,
+        queue_sha256=queue_sha256,
+        import_id=import_id,
+        narrator_character=narrator_character,
+        items=items,
+    )
+
+
+def _omission_identity(
+    selection: _OmissionSelection, workspaces_root: str | Path | None
+) -> _OmissionIdentity:
     batch_body = {
         "schema": SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "reason": AUDIO_EVENT_OMISSION_REASON,
-        "base_workspace_id": base_document["workspace_id"],
+        "base_workspace_id": selection.base_document["workspace_id"],
         "base_workspace_path": "inputs/audio-event-omission/base-workspace.json",
-        "base_workspace_sha256": base_workspace_sha256,
+        "base_workspace_sha256": selection.base_workspace_sha256,
         "base_state_path": "inputs/audio-event-omission/base-generation-state.json",
-        "base_state_sha256": state_sha256,
-        "queue_sha256": queue_sha256,
-        "items": items,
+        "base_state_sha256": selection.state_sha256,
+        "queue_sha256": selection.queue_sha256,
+        "items": selection.items,
     }
     batch_id = canonical_document_sha256(batch_body)
     batch = {**batch_body, "batch_id": batch_id}
     config_fingerprint = workspace_config_fingerprint(
-        import_id,
-        base_document.get("story_index"),
-        base_document.get("voice_manifest"),
-        narrator_character,
-        base_document["run_config"],
-        base_document.get("carry_forward"),
-        base_document.get("outcome_merge"),
-        base_document.get("failure_reference_binding"),
-        base_document.get("terminal_conflict_merge"),
-        base_document.get("config_rebase"),
-        base_document.get("audio_event_composition"),
-        base_document.get("explicit_fallback_merge"),
-        base_document.get("known_role_live_fallback"),
+        selection.import_id,
+        selection.base_document.get("story_index"),
+        selection.base_document.get("voice_manifest"),
+        selection.narrator_character,
+        selection.base_document["run_config"],
+        selection.base_document.get("carry_forward"),
+        selection.base_document.get("outcome_merge"),
+        selection.base_document.get("failure_reference_binding"),
+        selection.base_document.get("terminal_conflict_merge"),
+        selection.base_document.get("config_rebase"),
+        selection.base_document.get("audio_event_composition"),
+        selection.base_document.get("explicit_fallback_merge"),
+        selection.base_document.get("known_role_live_fallback"),
         batch,
-        base_document.get("audio_event_projection_fallback"),
-        base_document.get("reviewed_waveform_publication"),
-        base_document.get("reviewed_rejection_live_fallback"),
-        queue_extension=base_document.get("queue_extension"),
+        selection.base_document.get("audio_event_projection_fallback"),
+        selection.base_document.get("reviewed_waveform_publication"),
+        selection.base_document.get("reviewed_rejection_live_fallback"),
+        queue_extension=selection.base_document.get("queue_extension"),
     )
-    workspace_id = (
-        f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
-    )
+    workspace_id = f"resume-{selection.import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     destination = contained_workspace_path(
         root, Path(workspace_id), "Audio-event omission destination"
     )
-    if destination.exists():
-        _directory, existing, _sha256 = load_workspace_authority(destination)
-        if existing.get("audio_event_omission") != batch:
-            raise AuthoringWorkbenchError("Audio-event omission destination conflicts")
-        return WorkspaceCreationResult(destination, False)
+    return _OmissionIdentity(batch, config_fingerprint, workspace_id, root, destination)
 
-    snapshots = [
-        (base_directory / "workspace.json", base_workspace_sha256),
-        (base_directory / "generated-audio/generation-state.json", state_sha256),
-        (queue_path, queue_sha256),
+
+def _existing_omission_workspace(
+    identity: _OmissionIdentity,
+) -> WorkspaceCreationResult | None:
+    if identity.destination.exists():
+        _directory, existing, _sha256 = load_workspace_authority(identity.destination)
+        if existing.get("audio_event_omission") != identity.batch:
+            raise AuthoringWorkbenchError("Audio-event omission destination conflicts")
+        return WorkspaceCreationResult(identity.destination, False)
+    return None
+
+
+def _authority_snapshots(selection: _OmissionSelection) -> list[tuple[Path, str]]:
+    return [
+        (selection.base_directory / "workspace.json", selection.base_workspace_sha256),
+        (
+            selection.base_directory / "generated-audio/generation-state.json",
+            selection.state_sha256,
+        ),
+        (selection.queue_path, selection.queue_sha256),
     ]
+
+
+def _stage_omission_workspace(
+    staging: Path,
+    selection: _OmissionSelection,
+    snapshots: list[tuple[Path, str]],
+) -> Path:
+    for tree_name in ("provenance", "inputs"):
+        copy_workspace_tree_snapshot(
+            selection.base_directory / tree_name,
+            staging / tree_name,
+            snapshots,
+            error_type=AuthoringWorkbenchError,
+        )
+    omission_inputs = staging / "inputs/audio-event-omission"
+    omission_inputs.mkdir(parents=True)
+    (omission_inputs / "base-workspace.json").write_bytes(
+        read_workspace_file_bytes(
+            selection.base_directory / "workspace.json",
+            "audio-event omission base workspace",
+        )
+    )
+    (omission_inputs / "base-generation-state.json").write_bytes(
+        read_workspace_file_bytes(
+            selection.base_directory / "generated-audio/generation-state.json",
+            "audio-event omission base state",
+        )
+    )
+    (staging / "queue.jsonl").write_bytes(
+        read_workspace_file_bytes(selection.queue_path, "audio-event omission queue")
+    )
+    output = staging / "generated-audio"
+    output.mkdir()
+    _copy_base_wavs(selection.base_directory, output, selection.state, snapshots)
+    return output
+
+
+def _omitted_state(
+    selection: _OmissionSelection, identity: _OmissionIdentity
+) -> dict[str, object]:
+    target_state = copy.deepcopy(selection.state)
+    target_items = _generation_state_items(target_state)
+    decided_at = datetime.now(timezone.utc).isoformat()
+    authority = {
+        "batch_id": identity.batch["batch_id"],
+        "base_workspace_id": selection.base_document["workspace_id"],
+        "base_workspace_sha256": selection.base_workspace_sha256,
+        "base_state_sha256": selection.state_sha256,
+        "queue_sha256": selection.queue_sha256,
+    }
+    for ledger in selection.items:
+        queue_id = ledger["queue_id"]
+        decision = {
+            "schema": AUDIO_EVENT_OMISSION_SCHEMA,
+            "schema_version": AUDIO_EVENT_OMISSION_VERSION,
+            "reason": AUDIO_EVENT_OMISSION_REASON,
+            **ledger,
+            "decided_at": decided_at,
+            "authority": copy.deepcopy(authority),
+        }
+        target_items[queue_id] = {
+            "status": "omitted",
+            "review_status": "omitted",
+            "attempts": 0,
+            "line_id": ledger["line_id"],
+            "text_sha256": ledger["text_sha256"],
+            "speaker": ledger["speaker"],
+            "audio_event_omission": decision,
+            "updated_at": decided_at,
+        }
+    target_state["active"] = None
+    return target_state
+
+
+def _write_staged_omission_workspace(
+    staging: Path,
+    output: Path,
+    selection: _OmissionSelection,
+    identity: _OmissionIdentity,
+    target_state: dict[str, object],
+) -> dict[str, object]:
+    atomic_write_json(output / "generation-state.json", target_state, sort_keys=True)
+    write_generated_manifest_from_state(target_state, output, output / "manifest.json")
+    workspace = copy.deepcopy(selection.base_document)
+    workspace.update(
+        {
+            "workspace_id": identity.workspace_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "audio_event_omission": identity.batch,
+            "config_fingerprint": identity.config_fingerprint,
+        }
+    )
+    atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+    return workspace
+
+
+def _validate_staged_omission_workspace(
+    staging: Path, output: Path, workspace: dict[str, object]
+) -> None:
+    import_snapshot = load_workspace_json(
+        staging / "provenance/import.json", "audio-event omission import"
+    )
+    validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
+    load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
+
+
+def _publish_staged_omission_workspace(
+    staging: Path,
+    selection: _OmissionSelection,
+    identity: _OmissionIdentity,
+    snapshots: list[tuple[Path, str]],
+) -> None:
     try:
-        with staged_directory(root, prefix=".audio-event-omission-") as staging:
-            for tree_name in ("provenance", "inputs"):
-                copy_workspace_tree_snapshot(
-                    base_directory / tree_name,
-                    staging / tree_name,
-                    snapshots,
-                    error_type=AuthoringWorkbenchError,
-                )
-            omission_inputs = staging / "inputs/audio-event-omission"
-            omission_inputs.mkdir(parents=True)
-            (omission_inputs / "base-workspace.json").write_bytes(
-                read_workspace_file_bytes(
-                    base_directory / "workspace.json",
-                    "audio-event omission base workspace",
-                )
-            )
-            (omission_inputs / "base-generation-state.json").write_bytes(
-                read_workspace_file_bytes(
-                    base_directory / "generated-audio/generation-state.json",
-                    "audio-event omission base state",
-                )
-            )
-            (staging / "queue.jsonl").write_bytes(
-                read_workspace_file_bytes(queue_path, "audio-event omission queue")
-            )
-            output = staging / "generated-audio"
-            output.mkdir()
-            target_state = copy.deepcopy(state)
-            _copy_base_wavs(base_directory, output, state, snapshots)
-            target_items = _generation_state_items(target_state)
-            decided_at = datetime.now(timezone.utc).isoformat()
-            authority = {
-                "batch_id": batch_id,
-                "base_workspace_id": base_document["workspace_id"],
-                "base_workspace_sha256": base_workspace_sha256,
-                "base_state_sha256": state_sha256,
-                "queue_sha256": queue_sha256,
-            }
-            for ledger in items:
-                queue_id = ledger["queue_id"]
-                decision = {
-                    "schema": AUDIO_EVENT_OMISSION_SCHEMA,
-                    "schema_version": AUDIO_EVENT_OMISSION_VERSION,
-                    "reason": AUDIO_EVENT_OMISSION_REASON,
-                    **ledger,
-                    "decided_at": decided_at,
-                    "authority": copy.deepcopy(authority),
-                }
-                target_items[queue_id] = {
-                    "status": "omitted",
-                    "review_status": "omitted",
-                    "attempts": 0,
-                    "line_id": ledger["line_id"],
-                    "text_sha256": ledger["text_sha256"],
-                    "speaker": ledger["speaker"],
-                    "audio_event_omission": decision,
-                    "updated_at": decided_at,
-                }
-            target_state["active"] = None
-            atomic_write_json(
-                output / "generation-state.json", target_state, sort_keys=True
-            )
-            write_generated_manifest_from_state(
-                target_state, output, output / "manifest.json"
-            )
-            workspace = copy.deepcopy(base_document)
-            workspace.update(
-                {
-                    "workspace_id": workspace_id,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "audio_event_omission": batch,
-                    "config_fingerprint": config_fingerprint,
-                }
-            )
-            atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-            import_snapshot = load_workspace_json(
-                staging / "provenance/import.json", "audio-event omission import"
-            )
-            validate_workspace_provenance_extensions(
-                staging, workspace, import_snapshot
-            )
-            load_generation_state(
-                output / "generation-state.json", staging / "queue.jsonl"
-            )
+        with generation_publication_leases(
+            ((selection.base_directory / "generated-audio", selection.queue_sha256),),
+            process_checker=process_is_alive,
+        ) as leases:
+            if any(
+                (selection.base_directory / "generated-audio").rglob("*.partial.wav")
+            ):
+                raise AuthoringWorkbenchError("Audio-event omission base became active")
+            for path, digest in snapshots:
+                if not path.is_file() or sha256_file(path) != digest:
+                    raise AuthoringWorkbenchError(
+                        "Audio-event omission authority changed before publication"
+                    )
+            leases[0].assert_owned()
             try:
-                with generation_publication_leases(
-                    ((base_directory / "generated-audio", queue_sha256),),
-                    process_checker=process_is_alive,
-                ) as leases:
-                    if any((base_directory / "generated-audio").rglob("*.partial.wav")):
-                        raise AuthoringWorkbenchError(
-                            "Audio-event omission base became active"
-                        )
-                    for path, digest in snapshots:
-                        if not path.is_file() or sha256_file(path) != digest:
-                            raise AuthoringWorkbenchError(
-                                "Audio-event omission authority changed before publication"
-                            )
-                    leases[0].assert_owned()
-                    try:
-                        rename_directory_no_replace(staging, destination)
-                    except (AtomicPublicationError, OSError) as error:
-                        raise AuthoringWorkbenchError(
-                            f"Unable to publish audio-event omission workspace: {error}"
-                        ) from error
-                    leases[0].mark_committed()
-            except BulkGenerationError as error:
-                raise AuthoringWorkbenchError(str(error)) from error
-    except (BulkGenerationError, OSError, ValueError) as error:
+                rename_directory_no_replace(staging, identity.destination)
+            except (AtomicPublicationError, OSError) as error:
+                raise AuthoringWorkbenchError(
+                    f"Unable to publish audio-event omission workspace: {error}"
+                ) from error
+            leases[0].mark_committed()
+    except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
-    return WorkspaceCreationResult(destination, True)
 
 
 def validate_audio_event_omission_workspace(
