@@ -74,7 +74,7 @@ class GameProfile:
         *,
         source_schema: int = profiles_schema_version,
     ) -> Self:
-        region = _dialog_region(values["dialog_region"])
+        region = _dialog_region(values.get("dialog_region"))
         force_live_narrator = values.get("force_live_narrator", False)
         if not isinstance(force_live_narrator, bool):
             raise ValueError("force_live_narrator must be a boolean")
@@ -334,7 +334,7 @@ def _dialog_region(value: object) -> DialogRegion:
         raise ValueError("dialog_region must be an object")
     coordinates: list[float] = []
     for name in ("left", "top", "width", "height"):
-        coordinate = value[name]
+        coordinate = value.get(name)
         if not isinstance(coordinate, (int, float)):
             raise ValueError(f"dialog_region {name} must be a number")
         coordinates.append(coordinate)

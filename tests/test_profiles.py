@@ -217,6 +217,33 @@ class GameProfileStoreTest(unittest.TestCase):
         self.assertEqual(store.profiles, [])
         self.assertIn("Unable to load game profiles", warnings[0])
 
+    def test_incomplete_profile_region_is_reported_as_invalid(self):
+        values = {
+            "id": "damaged",
+            "name": "Damaged game",
+            "capture_mode": "screen",
+            "dialog_region": {"left": 0.1},
+        }
+        with self.assertRaisesRegex(ValueError, "dialog_region top must be a number"):
+            GameProfile.from_mapping(values)
+
+        warnings = []
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "profiles.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": profiles_schema_version,
+                        "profiles": [values],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = GameProfileStore.load(path, warn=warnings.append)
+
+        self.assertEqual(store.profiles, [])
+        self.assertIn("dialog_region top must be a number", warnings[0])
+
 
 class GameProfilesDialogTest(unittest.TestCase):
     @classmethod
