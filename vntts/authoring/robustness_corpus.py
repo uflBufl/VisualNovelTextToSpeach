@@ -10,16 +10,24 @@ import re
 import tempfile
 import wave
 from collections import Counter
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
+from typing import TypeAlias, TypedDict
 
 import numpy as np
-from vntts_artifacts import VoiceGenerationQueue, VoiceGenerationQueueError
+from numpy.typing import NDArray
+from vntts_artifacts import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueError,
+    VoiceGenerationQueueItem,
+)
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.hashing import text_sha256
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    AuthoritySnapshot,
     assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
@@ -54,6 +62,72 @@ SUPPORTED_SPEECH_ROBUSTNESS_CORPUS_VERSIONS = frozenset({1, 2, 3})
 SPEECH_ROBUSTNESS_ANALYSIS_VERSION = 1
 _HUMAN_LABELS = frozenset({"acceptable", "bad"})
 
+JsonDocument: TypeAlias = dict[str, object]
+SampleKey: TypeAlias = tuple[str, str, str]
+FailureKey: TypeAlias = tuple[str, str]
+
+
+class _RepeatSignal(TypedDict):
+    seconds: float
+    lag_seconds: float | None
+
+
+class _Assessment(TypedDict):
+    human_label: str
+    human_defect_reasons: list[str]
+
+
+class _SampleRecord(TypedDict):
+    workspace_id: str
+    workspace_sha256: str
+    queue_id: str
+    queue_sha256: str
+    line_id: str
+    text: str
+    text_sha256: str
+    speaker: str | None
+    voice_character: str | None
+    audio_sha256: str
+    audio: str
+    human_label: str
+    human_defect_reasons: list[str]
+    technical_flags: list[str]
+    state_item_sha256: str
+    synthesis: JsonDocument
+    analysis: JsonDocument
+    text_timing: JsonDocument
+    decision_ids: list[str]
+
+
+class _FailureRecord(TypedDict):
+    workspace_id: str
+    workspace_sha256: str
+    state_sha256: str
+    queue_sha256: str
+    queue_id: str
+    line_id: str | None
+    text: str
+    text_sha256: str
+    speaker: str | None
+    voice_character: str | None
+    state_item_sha256: str
+    failure: JsonDocument
+    synthesis: JsonDocument
+
+
+class _ArtifactRecord(TypedDict):
+    path: str
+    sha256: str
+    size: int
+
+
+class _Pause(TypedDict):
+    start_seconds: float
+    duration_seconds: float
+    relative_position: float
+    nearest_boundary_kind: str | None
+    nearest_boundary_distance: float | None
+
 
 class SpeechRobustnessCorpusError(RuntimeError):
     """Human speech evidence cannot be published or validated safely."""
@@ -65,17 +139,17 @@ class SpeechRobustnessCorpus:
 
     directory: Path
     corpus_id: str
-    document: dict
+    document: JsonDocument
 
     @property
-    def sample_count(self):
-        return len(self.document["samples"])
+    def sample_count(self) -> int:
+        return len(_document_rows(self.document.get("samples"), "Corpus samples"))
 
     @property
-    def failure_count(self):
-        return len(self.document["failures"])
+    def failure_count(self) -> int:
+        return len(_document_rows(self.document.get("failures"), "Corpus failures"))
 
-    def to_dict(self):
+    def to_dict(self) -> JsonDocument:
         return copy.deepcopy(self.document)
 
 
@@ -89,7 +163,7 @@ class SpeechRobustnessCorpusResult:
     failure_count: int
     created: bool
 
-    def to_dict(self):
+    def to_dict(self) -> JsonDocument:
         return {
             "directory": str(self.directory),
             "corpus_id": self.corpus_id,
@@ -99,21 +173,23 @@ class SpeechRobustnessCorpusResult:
         }
 
 
-def _sha256(payload):
+def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _require_sha256(value, label):
-    return require_sha256(value, label, error_type=SpeechRobustnessCorpusError)
+def _require_sha256(value: object, label: str) -> str:
+    return _required_text(
+        require_sha256(value, label, error_type=SpeechRobustnessCorpusError), label
+    )
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise SpeechRobustnessCorpusError(f"{label} must be non-empty text")
     return value
 
 
-def _relative(value, label):
+def _relative(value: object, label: str) -> Path:
     if not isinstance(value, str) or not value.strip() or "\\" in value:
         raise SpeechRobustnessCorpusError(f"{label} must be a POSIX-relative path")
     pure = PurePosixPath(value)
@@ -122,7 +198,7 @@ def _relative(value, label):
     return Path(*pure.parts)
 
 
-def _contained(root, relative, label):
+def _contained(root: str | Path, relative: Path, label: str) -> Path:
     root = Path(root).resolve()
     candidate = root / relative
     if candidate.is_symlink():
@@ -135,7 +211,9 @@ def _contained(root, relative, label):
     return resolved
 
 
-def _json_snapshot(path, label, *, root=None):
+def _json_snapshot(
+    path: str | Path, label: str, *, root: str | Path | None = None
+) -> tuple[AuthoritySnapshot, JsonDocument]:
     try:
         snapshot = capture_authority_file(path, label, root=root)
         document = snapshot.json_document(label)
@@ -144,7 +222,63 @@ def _json_snapshot(path, label, *, root=None):
     return snapshot, document
 
 
-def _workspace_snapshot(workspace_directory):
+def _document_rows(value: object, label: str) -> list[JsonDocument]:
+    if not isinstance(value, list):
+        raise SpeechRobustnessCorpusError(f"{label} must be a list")
+    rows: list[JsonDocument] = []
+    for row in value:
+        if not isinstance(row, dict) or not all(isinstance(key, str) for key in row):
+            raise SpeechRobustnessCorpusError(f"{label} must contain objects")
+        rows.append({key: item for key, item in row.items() if isinstance(key, str)})
+    return rows
+
+
+def _string_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(item, str) for item in value
+    ):
+        raise SpeechRobustnessCorpusError(f"{label} must be a list of text")
+    return list(value)
+
+
+def _document_map(value: object, label: str) -> dict[str, JsonDocument]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise SpeechRobustnessCorpusError(f"{label} must be an object")
+    result: dict[str, JsonDocument] = {}
+    for key, row in value.items():
+        if not isinstance(row, dict) or not all(isinstance(name, str) for name in row):
+            raise SpeechRobustnessCorpusError(f"{label} entries must be objects")
+        result[key] = {
+            name: item for name, item in row.items() if isinstance(name, str)
+        }
+    return result
+
+
+def _object_field(document: JsonDocument, field: str, label: str) -> JsonDocument:
+    value = document.get(field)
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise SpeechRobustnessCorpusError(f"{label} must be an object")
+    return {key: item for key, item in value.items() if isinstance(key, str)}
+
+
+def _required_schema_version(document: JsonDocument) -> int:
+    version = document.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise SpeechRobustnessCorpusError("Cohort decision schema version is invalid")
+    return version
+
+
+def _workspace_snapshot(
+    workspace_directory: str | Path,
+) -> tuple[
+    Path,
+    JsonDocument,
+    str,
+    AuthoritySnapshot,
+    JsonDocument,
+    AuthoritySnapshot,
+    dict[str, VoiceGenerationQueueItem],
+]:
     try:
         directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_directory
@@ -198,7 +332,7 @@ def _workspace_snapshot(workspace_directory):
     )
 
 
-def _read_pcm16(payload):
+def _read_pcm16(payload: bytes) -> tuple[NDArray[np.int16], int]:
     try:
         with wave.open(io.BytesIO(payload), "rb") as source:
             if (
@@ -211,7 +345,9 @@ def _read_pcm16(payload):
                 )
             rate = source.getframerate()
             count = source.getnframes()
-            samples = np.frombuffer(source.readframes(count), dtype="<i2").copy()
+            samples: NDArray[np.int16] = np.frombuffer(
+                source.readframes(count), dtype="<i2"
+            ).copy()
     except (EOFError, OSError, ValueError, wave.Error) as error:
         raise SpeechRobustnessCorpusError(
             f"Unable to decode robustness audio: {error}"
@@ -221,7 +357,9 @@ def _read_pcm16(payload):
     return samples, rate
 
 
-def _max_exact_active_repeat(samples, sample_rate):
+def _max_exact_active_repeat(
+    samples: NDArray[np.int16], sample_rate: int
+) -> _RepeatSignal:
     """Return the longest exact repeated active 20 ms block run."""
     block_size = max(1, round(sample_rate * 0.02))
     block_count = len(samples) // block_size
@@ -230,7 +368,7 @@ def _max_exact_active_repeat(samples, sample_rate):
     blocks = samples[: block_count * block_size].reshape(block_count, block_size)
     active = np.sqrt(np.mean(blocks.astype(np.float64) ** 2, axis=1)) >= 184.0
     digests = [_sha256(block.tobytes()) for block in blocks]
-    positions = {}
+    positions: dict[str, list[int]] = {}
     best_blocks = 0
     best_lag = None
     for index, digest in enumerate(digests):
@@ -259,7 +397,7 @@ def _max_exact_active_repeat(samples, sample_rate):
     }
 
 
-def analyze_speech_robustness_bytes(payload):
+def analyze_speech_robustness_bytes(payload: bytes) -> JsonDocument:
     """Compute versioned diagnostic-only artifact signals for one exact WAV."""
     if not isinstance(payload, bytes):
         raise SpeechRobustnessCorpusError("Robustness audio payload must be bytes")
@@ -285,7 +423,7 @@ def analyze_speech_robustness_bytes(payload):
         if len(normalized) > 1
         else 0.0
     )
-    signals = []
+    signals: list[str] = []
     if repeated["seconds"] >= 0.24:
         signals.append("exact_pcm_repeat_candidate")
     if peak >= 0.999 or clipping_fraction >= 0.001:
@@ -317,10 +455,12 @@ def analyze_speech_robustness_bytes(payload):
     }
 
 
-def _text_boundaries(text):
+def _text_boundaries(
+    text: str,
+) -> tuple[tuple[re.Match[str], ...], list[float], list[float]]:
     words = tuple(re.finditer(r"[^\W_]+(?:['’][^\W_]+)*", text, flags=re.UNICODE))
-    sentence = []
-    clause = []
+    sentence: list[float] = []
+    clause: list[float] = []
     if len(words) < 2:
         return words, sentence, clause
     for index, current in enumerate(words[:-1]):
@@ -333,7 +473,7 @@ def _text_boundaries(text):
     return words, sentence, clause
 
 
-def analyze_text_timing_bytes(payload, text):
+def analyze_text_timing_bytes(payload: bytes, text: str) -> JsonDocument:
     """Estimate pause placement against requested text without claiming ASR."""
     text = _required_text(text, "Requested speech text")
     samples, sample_rate = _read_pcm16(payload)
@@ -348,7 +488,7 @@ def analyze_text_timing_bytes(payload, text):
     silent = frame_rms <= 10 ** (-45.0 / 20.0)
     active_indices = np.flatnonzero(~silent)
     words, sentence_boundaries, clause_boundaries = _text_boundaries(text)
-    pauses = []
+    pauses: list[_Pause] = []
     if len(active_indices):
         first_active = int(active_indices[0])
         last_active = int(active_indices[-1])
@@ -396,7 +536,7 @@ def analyze_text_timing_bytes(payload, text):
         float(np.sum(~silent)) * frame_samples / sample_rate,
     )
     active_words_per_minute = 60.0 * len(words) / active_seconds
-    signals = []
+    signals: list[str] = []
     if any(
         pause["duration_seconds"] >= 0.75
         and (
@@ -426,8 +566,8 @@ def analyze_text_timing_bytes(payload, text):
     }
 
 
-def _decision_paths(inputs):
-    paths = []
+def _decision_paths(inputs: Iterable[str | Path]) -> tuple[Path, ...]:
+    paths: list[Path] = []
     for value in inputs:
         path = Path(value).expanduser()
         if path.is_symlink():
@@ -449,7 +589,7 @@ def _decision_paths(inputs):
     return tuple(sorted(set(paths), key=str))
 
 
-def _sample_metadata(item):
+def _sample_metadata(item: JsonDocument) -> JsonDocument:
     keys = (
         "provider",
         "model",
@@ -469,19 +609,48 @@ def _sample_metadata(item):
     return {key: copy.deepcopy(item[key]) for key in keys if key in item}
 
 
-def _sample_key(workspace_id, queue_id, audio_sha256):
+def _sample_key(workspace_id: str, queue_id: str, audio_sha256: str) -> SampleKey:
     return (workspace_id, queue_id, audio_sha256)
 
 
-def _build_sources(decision_inputs, failure_workspaces):
-    snapshots = []
-    decision_documents = {}
-    audio_payloads = {}
-    samples = {}
-    sample_decision_versions = {}
-    workspace_cache = {}
+def _build_sources(
+    decision_inputs: Iterable[str | Path], failure_workspaces: Iterable[str | Path]
+) -> tuple[
+    list[AuthoritySnapshot],
+    dict[str, bytes],
+    dict[str, bytes],
+    list[_SampleRecord],
+    list[_FailureRecord],
+]:
+    snapshots: list[AuthoritySnapshot] = []
+    decision_documents: dict[str, bytes] = {}
+    audio_payloads: dict[str, bytes] = {}
+    samples: dict[SampleKey, _SampleRecord] = {}
+    sample_decision_versions: dict[SampleKey, int] = {}
+    workspace_cache: dict[
+        Path,
+        tuple[
+            Path,
+            JsonDocument,
+            str,
+            AuthoritySnapshot,
+            JsonDocument,
+            AuthoritySnapshot,
+            dict[str, VoiceGenerationQueueItem],
+        ],
+    ] = {}
 
-    def workspace_authority(path):
+    def workspace_authority(
+        path: str | Path,
+    ) -> tuple[
+        Path,
+        JsonDocument,
+        str,
+        AuthoritySnapshot,
+        JsonDocument,
+        AuthoritySnapshot,
+        dict[str, VoiceGenerationQueueItem],
+    ]:
         resolved = Path(path).expanduser().resolve()
         cached = workspace_cache.get(resolved)
         if cached is None:
@@ -510,18 +679,20 @@ def _build_sources(decision_inputs, failure_workspaces):
             # remain valid review authority, but cannot be guessed into this
             # explicitly human-labelled corpus.
             continue
-        if not isinstance(raw_assessments, list):
-            raise SpeechRobustnessCorpusError(
-                "Cohort decision sample assessments must be a list"
-            )
-        assessments = {
-            row["queue_id"]: {
-                "human_label": row["assessment"],
-                "human_defect_reasons": list(row.get("defect_reasons", ())),
+        assessments: dict[str, _Assessment] = {}
+        for row in _document_rows(
+            raw_assessments, "Cohort decision sample assessments"
+        ):
+            label = row.get("assessment")
+            if label not in _HUMAN_LABELS:
+                continue
+            queue_id = _required_text(row.get("queue_id"), "Cohort assessment queue ID")
+            assessments[queue_id] = {
+                "human_label": _required_text(label, "Cohort assessment label"),
+                "human_defect_reasons": _string_list(
+                    row.get("defect_reasons", ()), "Cohort assessment defect reasons"
+                ),
             }
-            for row in raw_assessments
-            if row.get("assessment") in _HUMAN_LABELS
-        }
         if not assessments:
             continue
         workspace_path = decision_path.parent.parent
@@ -535,11 +706,17 @@ def _build_sources(decision_inputs, failure_workspaces):
             queue_items,
         ) = workspace_authority(workspace_path)
         workspace_id = _required_text(workspace.get("workspace_id"), "Workspace ID")
-        reviewed = {row["queue_id"]: row for row in decision["reviewed_samples"]}
+        reviewed = {
+            _required_text(row.get("queue_id"), "Reviewed sample queue ID"): row
+            for row in _document_rows(
+                decision.get("reviewed_samples"), "Cohort reviewed samples"
+            )
+        }
+        state_items = _document_map(state.get("items"), "Generation state items")
         for queue_id, assessment in sorted(assessments.items()):
             label = assessment["human_label"]
             evidence = reviewed.get(queue_id)
-            item = state["items"].get(queue_id)
+            item = state_items.get(queue_id)
             queue_item = queue_items.get(queue_id)
             if (
                 not isinstance(evidence, dict)
@@ -581,24 +758,34 @@ def _build_sources(decision_inputs, failure_workspaces):
                     f"SHA-256 collision in robustness audio {audio_sha256}"
                 )
             key = _sample_key(workspace_id, queue_id, audio_sha256)
-            record = samples.get(key)
+            record: _SampleRecord | None = samples.get(key)
             if record is None:
                 analysis = analyze_speech_robustness_bytes(audio_snapshot.payload)
-                record = {
+                new_record: _SampleRecord = {
                     "workspace_id": workspace_id,
                     "workspace_sha256": workspace_sha256,
                     "queue_id": queue_id,
                     "queue_sha256": queue_snapshot.sha256,
-                    "line_id": evidence["line_id"],
+                    "line_id": _required_text(
+                        evidence.get("line_id"), "Reviewed line ID"
+                    ),
                     "text": queue_item.text,
-                    "text_sha256": evidence["text_sha256"],
+                    "text_sha256": _require_sha256(
+                        evidence.get("text_sha256"), "Reviewed text SHA-256"
+                    ),
                     "speaker": queue_item.speaker,
                     "voice_character": queue_item.voice_character,
                     "audio_sha256": audio_sha256,
                     "audio": f"audio/{audio_sha256}.wav",
                     "human_label": label,
                     "human_defect_reasons": assessment["human_defect_reasons"],
-                    "technical_flags": sorted(set(evidence["technical_flags"])),
+                    "technical_flags": sorted(
+                        set(
+                            _string_list(
+                                evidence.get("technical_flags"), "Technical flags"
+                            )
+                        )
+                    ),
                     "state_item_sha256": canonical_document_sha256(item),
                     "synthesis": _sample_metadata(item),
                     "analysis": analysis,
@@ -607,11 +794,12 @@ def _build_sources(decision_inputs, failure_workspaces):
                     ),
                     "decision_ids": [],
                 }
-                samples[key] = record
-                sample_decision_versions[key] = decision["schema_version"]
+                samples[key] = new_record
+                record = new_record
+                sample_decision_versions[key] = _required_schema_version(decision)
             elif record["human_label"] != label:
                 previous_version = sample_decision_versions[key]
-                current_version = decision["schema_version"]
+                current_version = _required_schema_version(decision)
                 if {previous_version, current_version} != {1, 4}:
                     raise SpeechRobustnessCorpusError(
                         f"Conflicting human labels for {workspace_id}/{queue_id}"
@@ -622,22 +810,27 @@ def _build_sources(decision_inputs, failure_workspaces):
                     sample_decision_versions[key] = current_version
             else:
                 sample_decision_versions[key] = max(
-                    sample_decision_versions[key], decision["schema_version"]
+                    sample_decision_versions[key], _required_schema_version(decision)
                 )
                 record["human_defect_reasons"] = sorted(
                     set(record["human_defect_reasons"])
                     | set(assessment["human_defect_reasons"])
                 )
-            record["decision_ids"].append(decision["decision_id"])
+            if record is None:
+                raise SpeechRobustnessCorpusError("Robustness sample record is missing")
+            record["decision_ids"].append(
+                _require_sha256(decision.get("decision_id"), "Cohort decision ID")
+            )
         previous = decision_documents.setdefault(
-            decision["decision_id"], decision_snapshot.payload
+            _require_sha256(decision.get("decision_id"), "Cohort decision ID"),
+            decision_snapshot.payload,
         )
         if previous != decision_snapshot.payload:
             raise SpeechRobustnessCorpusError(
                 f"Decision ID {decision['decision_id']} has conflicting bytes"
             )
 
-    failures = []
+    failures: list[_FailureRecord] = []
     for workspace_input in sorted(
         {Path(path).expanduser().resolve() for path in failure_workspaces}, key=str
     ):
@@ -651,7 +844,9 @@ def _build_sources(decision_inputs, failure_workspaces):
             queue_items,
         ) = workspace_authority(workspace_input)
         workspace_id = _required_text(workspace.get("workspace_id"), "Workspace ID")
-        for queue_id, item in sorted(state["items"].items()):
+        for queue_id, item in sorted(
+            _document_map(state.get("items"), "Generation state items").items()
+        ):
             if item.get("status") != "failed":
                 continue
             queue_item = queue_items.get(queue_id)
@@ -690,43 +885,79 @@ def _build_sources(decision_inputs, failure_workspaces):
     )
 
 
-def _counts(samples, failures):
-    labels = Counter(row["human_label"] for row in samples)
+def _counts(
+    samples: Sequence[JsonDocument], failures: Sequence[JsonDocument]
+) -> JsonDocument:
+    labels = Counter(
+        _required_text(row.get("human_label"), "Human label") for row in samples
+    )
     providers = Counter(
-        str(row["synthesis"].get("provider") or "unknown") for row in samples
+        str(
+            _object_field(row, "synthesis", "Sample synthesis").get("provider")
+            or "unknown"
+        )
+        for row in samples
     )
     provider_labels = Counter(
         (
-            str(row["synthesis"].get("provider") or "unknown"),
-            row["human_label"],
+            str(
+                _object_field(row, "synthesis", "Sample synthesis").get("provider")
+                or "unknown"
+            ),
+            _required_text(row.get("human_label"), "Human label"),
         )
         for row in samples
     )
     signals = Counter(
-        signal for row in samples for signal in row["analysis"]["signals"]
+        signal
+        for row in samples
+        for signal in _string_list(
+            _object_field(row, "analysis", "Sample analysis").get("signals"),
+            "Analysis signals",
+        )
     )
     signal_labels = Counter(
-        (signal, row["human_label"])
+        (signal, _required_text(row.get("human_label"), "Human label"))
         for row in samples
-        for signal in row["analysis"]["signals"]
+        for signal in _string_list(
+            _object_field(row, "analysis", "Sample analysis").get("signals"),
+            "Analysis signals",
+        )
     )
     timing_signals = Counter(
         signal
         for row in samples
-        for signal in row.get("text_timing", {}).get("signals", ())
+        for signal in _string_list(
+            _object_field(row, "text_timing", "Sample text timing").get("signals"),
+            "Timing signals",
+        )
     )
     timing_signal_labels = Counter(
-        (signal, row["human_label"])
+        (signal, _required_text(row.get("human_label"), "Human label"))
         for row in samples
-        for signal in row.get("text_timing", {}).get("signals", ())
+        for signal in _string_list(
+            _object_field(row, "text_timing", "Sample text timing").get("signals"),
+            "Timing signals",
+        )
     )
     defect_reasons = Counter(
-        reason for row in samples for reason in row.get("human_defect_reasons", ())
+        reason
+        for row in samples
+        for reason in _string_list(
+            row.get("human_defect_reasons", ()), "Human defect reasons"
+        )
     )
     technical_flags = Counter(
-        flag for row in samples for flag in row["technical_flags"]
+        flag
+        for row in samples
+        for flag in _string_list(row.get("technical_flags"), "Technical flags")
     )
-    failure_kinds = Counter(row["failure"]["kind"] for row in failures)
+    failure_kinds = Counter(
+        _required_text(
+            _object_field(row, "failure", "Failure record").get("kind"), "Failure kind"
+        )
+        for row in failures
+    )
     summary = {
         "sample_count": len(samples),
         "failure_count": len(failures),
@@ -744,7 +975,11 @@ def _counts(samples, failures):
         "technical_flags": dict(sorted(technical_flags.items())),
         "failure_kinds": dict(sorted(failure_kinds.items())),
         "bad_without_diagnostic_signal": sum(
-            row["human_label"] == "bad" and not row["analysis"]["signals"]
+            row.get("human_label") == "bad"
+            and not _string_list(
+                _object_field(row, "analysis", "Sample analysis").get("signals"),
+                "Analysis signals",
+            )
             for row in samples
         ),
     }
@@ -759,8 +994,13 @@ def _counts(samples, failures):
     return summary
 
 
-def _document(samples, failures, decisions, audio_payloads):
-    inventory = []
+def _document(
+    samples: Sequence[_SampleRecord],
+    failures: Sequence[_FailureRecord],
+    decisions: dict[str, bytes],
+    audio_payloads: dict[str, bytes],
+) -> JsonDocument:
+    inventory: list[_ArtifactRecord] = []
     for audio_sha256, payload in sorted(audio_payloads.items()):
         inventory.append(
             {
@@ -786,15 +1026,18 @@ def _document(samples, failures, decisions, audio_payloads):
             "automatic_rejection": False,
             "human_labels_are_authoritative": True,
         },
-        "samples": samples,
-        "failures": failures,
-        "summary": _counts(samples, failures),
+        "samples": [dict(sample) for sample in samples],
+        "failures": [dict(failure) for failure in failures],
+        "summary": _counts(
+            [dict(sample) for sample in samples],
+            [dict(failure) for failure in failures],
+        ),
         "artifacts": inventory,
     }
     return {**body, "corpus_id": canonical_document_sha256(body)}
 
 
-def _validate_document(document):
+def _validate_document(document: JsonDocument) -> JsonDocument:
     expected = {
         "schema",
         "schema_version",
@@ -821,11 +1064,9 @@ def _validate_document(document):
         "human_labels_are_authoritative": True,
     }:
         raise SpeechRobustnessCorpusError("Robustness corpus policy is invalid")
-    samples = document.get("samples")
-    failures = document.get("failures")
-    artifacts = document.get("artifacts")
-    if not all(isinstance(value, list) for value in (samples, failures, artifacts)):
-        raise SpeechRobustnessCorpusError("Robustness corpus lists are invalid")
+    samples = _document_rows(document.get("samples"), "Robustness corpus samples")
+    failures = _document_rows(document.get("failures"), "Robustness corpus failures")
+    artifacts = _document_rows(document.get("artifacts"), "Robustness corpus artifacts")
     expected_id = canonical_document_sha256(
         {key: value for key, value in document.items() if key != "corpus_id"}
     )
@@ -833,7 +1074,7 @@ def _validate_document(document):
         raise SpeechRobustnessCorpusError("Robustness corpus identity is invalid")
     if document.get("summary") != _counts(samples, failures):
         raise SpeechRobustnessCorpusError("Robustness corpus summary is invalid")
-    paths = [row.get("path") for row in artifacts if isinstance(row, dict)]
+    paths = [row.get("path") for row in artifacts]
     if len(paths) != len(artifacts) or len(set(paths)) != len(paths):
         raise SpeechRobustnessCorpusError(
             "Robustness corpus artifact inventory is invalid"
@@ -874,7 +1115,7 @@ def _validate_document(document):
         }
     if version >= 3:
         sample_keys.add("human_defect_reasons")
-    sample_identities = set()
+    sample_identities: set[SampleKey] = set()
     for sample in samples:
         if (
             not isinstance(sample, dict)
@@ -906,7 +1147,9 @@ def _validate_document(document):
                 )
             _required_text(sample["speaker"], "Sample speaker")
             _required_text(sample["voice_character"], "Sample voice character")
-            if sample.get("text_timing", {}).get("policy") != {
+            if _object_field(sample, "text_timing", "Sample text timing").get(
+                "policy"
+            ) != {
                 "diagnostic_only": True,
                 "automatic_rejection": False,
                 "alignment": "proportional_word_position_without_asr",
@@ -945,15 +1188,15 @@ def _validate_document(document):
             )
         for decision_id in sample["decision_ids"]:
             _require_sha256(decision_id, "Sample decision ID")
-        if sample.get("analysis", {}).get("policy") != {
+        if _object_field(sample, "analysis", "Sample analysis").get("policy") != {
             "diagnostic_only": True,
             "automatic_rejection": False,
         }:
             raise SpeechRobustnessCorpusError("Robustness sample policy is invalid")
-        identity = (
-            sample["workspace_id"],
-            sample["queue_id"],
-            sample["audio_sha256"],
+        identity: SampleKey = (
+            _required_text(sample.get("workspace_id"), "Sample workspace ID"),
+            _required_text(sample.get("queue_id"), "Sample queue ID"),
+            _require_sha256(sample.get("audio_sha256"), "Sample audio SHA-256"),
         )
         if identity in sample_identities:
             raise SpeechRobustnessCorpusError(
@@ -978,7 +1221,7 @@ def _validate_document(document):
             "speaker",
             "voice_character",
         }
-    failure_identities = set()
+    failure_identities: set[FailureKey] = set()
     for failure in failures:
         if not isinstance(failure, dict) or set(failure) != failure_keys:
             raise SpeechRobustnessCorpusError(
@@ -1016,16 +1259,21 @@ def _validate_document(document):
             raise SpeechRobustnessCorpusError(
                 "Robustness corpus typed failure is invalid"
             )
-        identity = (failure["workspace_id"], failure["queue_id"])
-        if identity in failure_identities:
+        failure_identity: FailureKey = (
+            _required_text(failure.get("workspace_id"), "Failure workspace ID"),
+            _required_text(failure.get("queue_id"), "Failure queue ID"),
+        )
+        if failure_identity in failure_identities:
             raise SpeechRobustnessCorpusError(
                 "Robustness corpus contains a duplicate failure identity"
             )
-        failure_identities.add(identity)
+        failure_identities.add(failure_identity)
     return document
 
 
-def load_speech_robustness_corpus(directory):
+def load_speech_robustness_corpus(
+    directory: str | Path,
+) -> SpeechRobustnessCorpus:
     """Load and fully validate one immutable self-contained corpus."""
     root = Path(directory).expanduser()
     if root.is_symlink() or not root.is_dir():
@@ -1035,17 +1283,25 @@ def load_speech_robustness_corpus(directory):
         root / "corpus.json", "robustness corpus", root=root
     )
     _validate_document(document)
+    samples = _document_rows(document.get("samples"), "Robustness corpus samples")
+    artifacts = _document_rows(document.get("artifacts"), "Robustness corpus artifacts")
+    version = _required_schema_version(document)
     expected_paths = {"corpus.json"}
-    inventory = {row["path"]: row for row in document["artifacts"]}
-    for sample in document["samples"]:
+    inventory = {
+        _required_text(row.get("path"), "Robustness artifact path"): row
+        for row in artifacts
+    }
+    for sample in samples:
         if any(
             f"evidence/decision-{decision_id}.json" not in inventory
-            for decision_id in sample["decision_ids"]
+            for decision_id in _string_list(
+                sample.get("decision_ids"), "Sample decision IDs"
+            )
         ):
             raise SpeechRobustnessCorpusError(
                 "Robustness sample decision evidence is not inventoried"
             )
-    artifact_snapshots = {}
+    artifact_snapshots: dict[str, AuthoritySnapshot] = {}
     for relative_text, record in inventory.items():
         relative = _relative(relative_text, "Robustness artifact path")
         path = _contained(root, relative, "Robustness artifact")
@@ -1069,20 +1325,21 @@ def load_speech_robustness_corpus(directory):
             observed_paths.add(path.relative_to(root).as_posix())
     if observed_paths != expected_paths:
         raise SpeechRobustnessCorpusError("Robustness corpus inventory is not exact")
-    for sample in document["samples"]:
-        record = inventory.get(sample["audio"])
-        if record is None or record["sha256"] != sample["audio_sha256"]:
+    for sample in samples:
+        audio = _required_text(sample.get("audio"), "Sample audio path")
+        audio_record = inventory.get(audio)
+        if audio_record is None or audio_record.get("sha256") != sample.get(
+            "audio_sha256"
+        ):
             raise SpeechRobustnessCorpusError(
                 "Robustness sample audio is not inventoried"
             )
-        payload = artifact_snapshots[sample["audio"]].payload
-        if analyze_speech_robustness_bytes(payload) != sample["analysis"]:
+        payload = artifact_snapshots[audio].payload
+        if analyze_speech_robustness_bytes(payload) != sample.get("analysis"):
             raise SpeechRobustnessCorpusError("Robustness sample analysis is invalid")
-        if (
-            document["schema_version"] >= 2
-            and analyze_text_timing_bytes(payload, sample["text"])
-            != sample["text_timing"]
-        ):
+        if version >= 2 and analyze_text_timing_bytes(
+            payload, _required_text(sample.get("text"), "Sample requested text")
+        ) != sample.get("text_timing"):
             raise SpeechRobustnessCorpusError(
                 "Robustness sample text-timing analysis is invalid"
             )
@@ -1092,16 +1349,22 @@ def load_speech_robustness_corpus(directory):
         assert_authority_snapshot(snapshot, "robustness corpus")
     except AuthoringAuthorityError as error:
         raise SpeechRobustnessCorpusError(str(error)) from error
-    return SpeechRobustnessCorpus(root, document["corpus_id"], document)
+    return SpeechRobustnessCorpus(
+        root, _require_sha256(document.get("corpus_id"), "Corpus ID"), document
+    )
 
 
 def publish_speech_robustness_corpus(
-    decision_inputs, failure_workspaces, output_directory
-):
+    decision_inputs: Iterable[str | Path],
+    failure_workspaces: Iterable[str | Path],
+    output_directory: str | Path,
+) -> SpeechRobustnessCorpusResult:
     """Publish exact human labels and typed failures without mutating sources."""
     output = Path(output_directory).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    for decision_input in decision_inputs:
+    decision_input_paths = tuple(decision_inputs)
+    failure_workspace_paths = tuple(failure_workspaces)
+    for decision_input in decision_input_paths:
         source = Path(decision_input).expanduser().resolve()
         if source.is_dir():
             try:
@@ -1113,7 +1376,7 @@ def publish_speech_robustness_corpus(
                     "Robustness corpus output must be outside decision inputs"
                 )
     snapshots, decisions, audio, samples, failures = _build_sources(
-        decision_inputs, failure_workspaces
+        decision_input_paths, failure_workspace_paths
     )
     if not samples:
         raise SpeechRobustnessCorpusError(
@@ -1128,7 +1391,7 @@ def publish_speech_robustness_corpus(
             )
         return SpeechRobustnessCorpusResult(
             output,
-            document["corpus_id"],
+            _require_sha256(document.get("corpus_id"), "Corpus ID"),
             len(samples),
             len(failures),
             False,
@@ -1157,7 +1420,7 @@ def publish_speech_robustness_corpus(
                 if loaded.document == document:
                     return SpeechRobustnessCorpusResult(
                         output,
-                        document["corpus_id"],
+                        _require_sha256(document.get("corpus_id"), "Corpus ID"),
                         len(samples),
                         len(failures),
                         False,
@@ -1168,7 +1431,7 @@ def publish_speech_robustness_corpus(
         load_speech_robustness_corpus(output)
     return SpeechRobustnessCorpusResult(
         output,
-        document["corpus_id"],
+        _require_sha256(document.get("corpus_id"), "Corpus ID"),
         len(samples),
         len(failures),
         True,

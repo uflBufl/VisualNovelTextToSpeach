@@ -77,6 +77,7 @@
     "vntts/authoring/review_context_ui.py",
     "vntts/authoring/reviewed_rejection_fallback.py",
     "vntts/authoring/reviewed_waveform_publication.py",
+    "vntts/authoring/robustness_corpus.py",
     "vntts/authoring/specialist_failure_plan.py",
     "vntts/authoring/source_reference_bindings.py",
     "vntts/authoring/source_reference_quality.py",

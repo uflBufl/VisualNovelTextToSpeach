@@ -23,7 +23,6 @@
     "vntts/authoring/reference_selection.py": 8,
     "vntts/authoring/review_playback_evidence.py": 6,
     "vntts/authoring/robustness_asr.py": 16,
-    "vntts/authoring/robustness_corpus.py": 26,
     "vntts/authoring/silence_comparison.py": 13,
     "vntts/authoring/silence_evidence.py": 5,
     "vntts/authoring/sound_effect_benchmark.py": 9,
