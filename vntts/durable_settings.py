@@ -1,17 +1,128 @@
 """Failure-atomic settings mutations shared by the desktop application shell."""
 
+from collections.abc import Callable
+from pathlib import Path
+from threading import Event
+from typing import TYPE_CHECKING, Protocol, TypeAlias
+
 from PySide6.QtWidgets import QDialog
 
 from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
 )
+from vntts.ocr import DialogRegion
+from vntts.settings import AppSettings
+
+SettingsCommit: TypeAlias = Callable[[AppSettings], Path]
+VoiceChange: TypeAlias = Callable[[SettingsCommit], AppSettings]
+
+
+class _Signal(Protocol):
+    def disconnect(self, slot: Callable[..., object]) -> object: ...
+
+    def emit(self) -> None: ...
+
+
+class _Signals(Protocol):
+    onboarding_test_finished: _Signal
+    onboarding_test_progress: _Signal
+    hotkeys_requested: _Signal
+
+
+class _OnboardingTestPage(Protocol):
+    def set_result(self, succeeded: bool, message: str) -> None: ...
+
+    def set_progress(self, percent: int | None, message: str) -> None: ...
+
+
+class _OnboardingWizard(Protocol):
+    test_page: _OnboardingTestPage
+
+    def settings(self) -> AppSettings: ...
+
+    def deleteLater(self) -> None: ...
+
+
+class _Controller(Protocol):
+    is_ready: bool
+
+    def set_auto_advance_enabled(self, enabled: bool) -> bool: ...
+
+    def apply_settings(self, settings: AppSettings) -> object: ...
+
+    def assign_voice(
+        self,
+        character: str,
+        source_id: str,
+        *,
+        commit_settings: SettingsCommit,
+    ) -> AppSettings: ...
+
+    def clear_voice_assignment(
+        self,
+        character: str,
+        *,
+        commit_settings: SettingsCommit,
+    ) -> AppSettings: ...
+
+    def set_force_live_narrator(
+        self,
+        enabled: bool,
+        *,
+        commit_settings: SettingsCommit,
+    ) -> AppSettings: ...
+
+
+class _Focusable(Protocol):
+    def setFocus(self) -> None: ...
+
+
+class _Dashboard(Protocol):
+    live_button: _Focusable
+
+    def set_configuration(self, settings: AppSettings) -> None: ...
+
+    def show_reading(self) -> None: ...
+
+
+class _ProfileStore(Protocol):
+    def get(self, profile_id: str) -> object | None: ...
+
+    def update_region(self, profile_id: str, region: DialogRegion) -> object: ...
+
+    def update_from_settings(
+        self, profile_id: str, settings: AppSettings
+    ) -> object: ...
 
 
 class DurableSettingsMixin:
     """Persist settings candidates before publishing them to runtime state."""
 
-    def toggle_auto_advance(self, enabled):
+    if TYPE_CHECKING:
+        settings: AppSettings
+        controller: _Controller
+        dashboard: _Dashboard
+        profile_store: _ProfileStore
+        signals: _Signals
+        onboarding_wizard: _OnboardingWizard | None
+        onboarding_cancel_event: Event
+
+        def _update_auto_advance_action(self) -> None: ...
+
+        def _refresh_preparation_settings(self) -> None: ...
+
+        def _apply_controller_action_state(self) -> None: ...
+
+        def set_status(self, message: str | None) -> None: ...
+
+        def set_ready(self, ready: bool) -> None: ...
+
+        def show_error(self, message: str) -> None: ...
+
+        def show_dashboard(self) -> None: ...
+
+    def toggle_auto_advance(self, enabled: bool) -> None:
         allowed, effective, reason = auto_advance_control_state(
             self.settings.capture_mode,
             self.settings.live_sequence_mode,
@@ -34,7 +145,7 @@ class DurableSettingsMixin:
         self._update_auto_advance_action()
         self.controller.set_auto_advance_enabled(effective)
 
-    def update_profile_region(self, region):
+    def update_profile_region(self, region: DialogRegion) -> None:
         profile_id = self.settings.active_profile_id
         if profile_id and self.profile_store.get(profile_id) is not None:
             try:
@@ -44,7 +155,7 @@ class DurableSettingsMixin:
                     f"Unable to save the calibrated profile region: {error}"
                 )
 
-    def finish_onboarding(self, wizard, result):
+    def finish_onboarding(self, wizard: _OnboardingWizard, result: int) -> None:
         if wizard is not self.onboarding_wizard:
             return
         self.onboarding_cancel_event.set()
@@ -85,7 +196,7 @@ class DurableSettingsMixin:
         )
         self.signals.hotkeys_requested.emit()
 
-    def _save_compact_preference(self, enabled):
+    def _save_compact_preference(self, enabled: bool) -> None:
         enabled = bool(enabled)
         if self.settings.compact_controls == enabled:
             return
@@ -97,7 +208,7 @@ class DurableSettingsMixin:
             return
         self.settings = candidate
 
-    def _save_main_section(self, section):
+    def _save_main_section(self, section: str) -> None:
         if self.settings.last_main_section == section:
             return
         candidate = self.settings.updated(last_main_section=section)
@@ -108,7 +219,7 @@ class DurableSettingsMixin:
             return
         self.settings = candidate
 
-    def assign_voice(self, character, source_id):
+    def assign_voice(self, character: str, source_id: str) -> AppSettings:
         path, suffix = self._persist_voice_change(
             lambda commit: self.controller.assign_voice(
                 character,
@@ -120,7 +231,7 @@ class DurableSettingsMixin:
         self.set_status(f"Voice for {character} saved to {path}{suffix}")
         return self.settings
 
-    def clear_voice_assignment(self, character):
+    def clear_voice_assignment(self, character: str) -> AppSettings:
         path, suffix = self._persist_voice_change(
             lambda commit: self.controller.clear_voice_assignment(
                 character,
@@ -133,7 +244,7 @@ class DurableSettingsMixin:
         )
         return self.settings
 
-    def set_force_live_narrator(self, enabled):
+    def set_force_live_narrator(self, enabled: bool) -> AppSettings:
         path, suffix = self._persist_voice_change(
             lambda commit: self.controller.set_force_live_narrator(
                 enabled,
@@ -144,15 +255,19 @@ class DurableSettingsMixin:
         self.set_status(f"Narrator routing saved to {path}{suffix}")
         return self.settings
 
-    def _persist_voice_change(self, operation, failure_message):
-        saved_path = []
+    def _persist_voice_change(
+        self, operation: VoiceChange, failure_message: str
+    ) -> tuple[Path, str]:
+        saved_path: list[Path] = []
         section = self.settings.last_main_section
+
+        def commit(candidate: AppSettings) -> Path:
+            path: Path = candidate.updated(last_main_section=section).save()
+            saved_path.append(path)
+            return path
+
         try:
-            settings = operation(
-                lambda candidate: saved_path.append(
-                    candidate.updated(last_main_section=section).save()
-                )
-            )
+            settings = operation(commit)
         except OSError as error:
             self.show_error(f"{failure_message}: {error}")
             raise
@@ -164,7 +279,7 @@ class DurableSettingsMixin:
         suffix = "" if profile_synced else "; active profile could not be updated"
         return saved_path[0], suffix
 
-    def _sync_active_profile(self, settings=None):
+    def _sync_active_profile(self, settings: AppSettings | None = None) -> bool:
         settings = self.settings if settings is None else settings
         profile_id = settings.active_profile_id
         if profile_id and self.profile_store.get(profile_id) is not None:

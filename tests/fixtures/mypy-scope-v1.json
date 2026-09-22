@@ -142,6 +142,7 @@
     "vntts/diagnostics_ui.py",
     "vntts/dialog.py",
     "vntts/dialog_capture.py",
+    "vntts/durable_settings.py",
     "vntts/document_identity.py",
     "vntts/game_audio_decoder.py",
     "vntts/game_narrator.py",
