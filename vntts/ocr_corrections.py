@@ -108,15 +108,22 @@ class OCRCorrectionStore:
         return loaded
 
     def save(self) -> Path:
+        self._save_entries(self.global_entries, self.profile_entries)
+        return self.path
+
+    def _save_entries(
+        self,
+        global_entries: dict[str, str],
+        profile_entries: dict[str, dict[str, str]],
+    ) -> None:
         write_versioned_json(
             self.path,
             corrections_schema_version,
             {
-                "global": self.global_entries,
-                "profiles": self.profile_entries,
+                "global": global_entries,
+                "profiles": profile_entries,
             },
         )
-        return self.path
 
     def dictionary_for(self, profile_id: str | None = None) -> OCRCorrectionDictionary:
         combined = dict(self.global_entries)
@@ -140,20 +147,21 @@ class OCRCorrectionStore:
         normalized_profile = (
             normalize_correction_entries(profile_entries or {}) if profile_id else None
         )
-        self.global_entries = normalized_global
+        profiles = dict(self.profile_entries)
         if profile_id:
             if normalized_profile:
-                self.profile_entries[str(profile_id)] = normalized_profile
+                profiles[str(profile_id)] = normalized_profile
             else:
-                self.profile_entries.pop(str(profile_id), None)
-        self.save()
+                profiles.pop(str(profile_id), None)
+        self._save_entries(normalized_global, profiles)
+        self.global_entries = normalized_global
+        self.profile_entries = profiles
 
     def upsert_entries(self, entries: object, profile_id: str | None = None) -> None:
         normalized = normalize_correction_entries(entries)
+        profiles = dict(self.profile_entries)
         target = (
-            self.profile_entries.setdefault(str(profile_id), {})
-            if profile_id
-            else self.global_entries
+            profiles.get(str(profile_id), {}) if profile_id else self.global_entries
         )
         replaced_keys = {key.casefold() for key in normalized}
         merged = {
@@ -163,20 +171,28 @@ class OCRCorrectionStore:
         }
         merged.update(normalized)
         if profile_id:
-            self.profile_entries[str(profile_id)] = merged
+            profiles[str(profile_id)] = merged
+            global_entries = self.global_entries
         else:
-            self.global_entries = merged
-        self.save()
+            global_entries = merged
+        self._save_entries(global_entries, profiles)
+        self.global_entries = global_entries
+        self.profile_entries = profiles
 
     def copy_profile(self, source_id: str, destination_id: str) -> None:
         entries = self.profile_entries.get(str(source_id))
         if entries:
-            self.profile_entries[str(destination_id)] = dict(entries)
-            self.save()
+            profiles = dict(self.profile_entries)
+            profiles[str(destination_id)] = dict(entries)
+            self._save_entries(self.global_entries, profiles)
+            self.profile_entries = profiles
 
     def remove_profile(self, profile_id: str) -> None:
-        if self.profile_entries.pop(str(profile_id), None) is not None:
-            self.save()
+        if str(profile_id) in self.profile_entries:
+            profiles = dict(self.profile_entries)
+            profiles.pop(str(profile_id))
+            self._save_entries(self.global_entries, profiles)
+            self.profile_entries = profiles
 
 
 def normalize_correction_entries(entries: object) -> dict[str, str]:

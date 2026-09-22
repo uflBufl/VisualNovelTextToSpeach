@@ -166,6 +166,27 @@ class ModelAssetManagerTest(unittest.TestCase):
             with self.assertRaisesRegex(ModelIntegrityError, "size changed"):
                 manager.validate(asset.name, asset=asset)
 
+    def test_malformed_checksum_metadata_is_repaired(self):
+        asset = self.create_asset()
+        opener = MemoryOpener(
+            {
+                asset.urls[0]: b"model-weights",
+                asset.urls[1]: b"publisher-hash\n",
+            }
+        )
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory, opener=opener)
+            model_path = manager.download(asset.name, asset=asset)
+            manifest_path = model_path / "vntts-asset.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["files"]["model.pth"] = []
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            repaired = manager.download(asset.name, asset=asset)
+
+            self.assertEqual(repaired, model_path)
+            self.assertTrue(manager.is_ready_with_asset(asset.name, asset))
+
 
 class VoicePackManagerTest(unittest.TestCase):
     def test_import_voice_copies_local_references_and_builds_manifest(self):

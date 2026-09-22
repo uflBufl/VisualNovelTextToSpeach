@@ -3322,7 +3322,7 @@ class TrayApplicationTest(unittest.TestCase):
             return False
 
         controller.toggle_live.side_effect = toggle_live
-        controller.live_reader.wait.side_effect = lambda: release.wait(2)
+        controller.live_reader.wait.side_effect = lambda **_kwargs: release.wait(2)
         tray_application = TrayApplication(
             self.application,
             AppSettings(),
@@ -3345,6 +3345,35 @@ class TrayApplicationTest(unittest.TestCase):
             release.set()
             self.wait_until(lambda: opened == [True])
 
+        tray_application.shutdown()
+
+    def test_live_modal_stop_timeout_restores_actions_for_retry(self):
+        controller = Mock()
+        controller.is_live_running = True
+
+        def toggle_live():
+            controller.is_live_running = False
+            return False
+
+        controller.toggle_live.side_effect = toggle_live
+        controller.live_reader.wait.side_effect = TimeoutError("reader stuck")
+        tray_application = TrayApplication(
+            self.application,
+            AppSettings(),
+            controller_factory=Mock(return_value=controller),
+        )
+        tray_application.set_ready(True)
+
+        with patch.object(tray_application, "_open_history_dialog") as opened:
+            tray_application.open_history()
+            self.wait_until(lambda: not tray_application.live_stop_runner.active)
+
+        controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
+        opened.assert_not_called()
+        self.assertTrue(tray_application.history_action.isEnabled())
+        self.assertIn(
+            "Unable to stop live capture", tray_application.status_action.text()
+        )
         tray_application.shutdown()
 
     def test_profile_restart_does_not_block_qt_events(self):
@@ -3575,7 +3604,7 @@ class TrayApplicationTest(unittest.TestCase):
             return False
 
         controller.toggle_live.side_effect = toggle_live
-        controller.live_reader.wait.side_effect = lambda: release.wait(2)
+        controller.live_reader.wait.side_effect = lambda **_kwargs: release.wait(2)
         tray_application = TrayApplication(
             self.application,
             AppSettings(),

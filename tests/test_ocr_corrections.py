@@ -122,6 +122,31 @@ class OCRCorrectionStoreTest(unittest.TestCase):
             {"Vertln": "Vertin", "mareus": "Ms. Marcus"},
         )
 
+    def test_failed_save_preserves_in_memory_entries(self):
+        store = OCRCorrectionStore(
+            global_entries={"Mareus": "Marcus"},
+            profile_entries={"game": {"Vertln": "Vertin"}},
+        )
+
+        with (
+            patch(
+                "vntts.ocr_corrections.write_versioned_json",
+                side_effect=OSError("disk full"),
+            ),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            store.replace_entries(
+                {"New": "Global"},
+                "game",
+                {"New": "Profile"},
+            )
+
+        self.assertEqual(store.global_entries, {"Mareus": "Marcus"})
+        self.assertEqual(
+            store.profile_entries,
+            {"game": {"Vertln": "Vertin"}},
+        )
+
     def test_invalid_file_falls_back_to_empty_dictionary(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "ocr-corrections.json"

@@ -3181,7 +3181,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     @staticmethod
     def _wait_for_live_reader(reader):
-        reader.wait()
+        reader.wait(timeout_seconds=5.0)
         return True
 
     def _live_stop_finished(self, _result, error):

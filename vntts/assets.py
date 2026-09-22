@@ -102,6 +102,10 @@ class ModelAssetManager:
         if set(files) != expected_files:
             raise ModelIntegrityError("Model checksum manifest has the wrong files")
         for filename, metadata in files.items():
+            if not isinstance(metadata, dict):
+                raise ModelIntegrityError(
+                    f"Model checksum metadata is malformed: {filename}"
+                )
             path = model_path / filename
             if not path.is_file():
                 raise ModelIntegrityError(f"Model file is missing: {filename}")
