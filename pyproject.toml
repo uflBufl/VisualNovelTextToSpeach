@@ -132,6 +132,7 @@ extend-select = ["B007", "B905", "RUF059"]
 python_version = "3.14"
 files = [
     "vntts/application_directories.py",
+    "vntts/audio_cache.py",
     "vntts/audio_output.py",
     "vntts/auto_advance.py",
     "vntts/auto_advance_policy.py",

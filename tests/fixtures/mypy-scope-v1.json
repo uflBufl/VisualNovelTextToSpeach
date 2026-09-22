@@ -4,6 +4,7 @@
     "vntts/application_directories.py",
     "vntts/asset_ui.py",
     "vntts/async_ui.py",
+    "vntts/audio_cache.py",
     "vntts/audio_output.py",
     "vntts/authoring/__init__.py",
     "vntts/authoring/advisory_lock.py",

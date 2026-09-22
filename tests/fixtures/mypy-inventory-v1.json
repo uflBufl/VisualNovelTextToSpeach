@@ -3,7 +3,6 @@
   "maximum_errors_by_file": {
     "vntts/app.py": 181,
     "vntts/assets.py": 24,
-    "vntts/audio_cache.py": 6,
     "vntts/authoring/cohort_bundle_ui.py": 53,
     "vntts/authoring/portrait_aliases.py": 16,
     "vntts/authoring/workbench_ui.py": 112,
