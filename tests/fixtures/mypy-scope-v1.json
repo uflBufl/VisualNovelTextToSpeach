@@ -67,6 +67,8 @@
     "vntts/authoring/queue_extension.py",
     "vntts/authoring/reconciliation_merge.py",
     "vntts/authoring/reconciliation_schema.py",
+    "vntts/authoring/render_hypothesis_records.py",
+    "vntts/authoring/render_hypothesis_review.py",
     "vntts/authoring/review_context_ui.py",
     "vntts/authoring/reviewed_rejection_fallback.py",
     "vntts/authoring/reviewed_waveform_publication.py",

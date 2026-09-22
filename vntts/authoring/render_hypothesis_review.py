@@ -5,12 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypeAlias
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    AuthoritySnapshot,
     assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
@@ -31,7 +33,9 @@ from vntts.authoring.reference_render_comparison import (
     ReferenceRenderComparisonError,
     load_reference_render_comparison_document,
 )
-from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.path_safety import contained_regular_file
+
+JsonObject: TypeAlias = dict[str, object]
 
 RENDER_HYPOTHESIS_REVIEW_SCHEMA = "vntts.authoring-render-hypothesis-review"
 RENDER_HYPOTHESIS_REVIEW_VERSION = 1
@@ -56,7 +60,7 @@ class RenderHypothesisReview:
     result_sha256: str
     decision: str | None
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return {
             "directory": str(self.directory),
             "review_id": self.review_id,
@@ -82,7 +86,7 @@ class RenderHypothesisSelection:
     decision_set_id: str
     created: bool
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return {
             "audit_directory": str(self.audit_directory),
             "audit_id": self.audit_id,
@@ -97,11 +101,11 @@ class RenderHypothesisSelection:
 
 
 def publish_render_hypothesis_review(
-    comparison_directory,
-    queue_id,
-    arm_id,
-    output,
-):
+    comparison_directory: str | Path,
+    queue_id: object,
+    arm_id: object,
+    output: str | Path,
+) -> RenderHypothesisReview:
     """Snapshot one complete unmatched render and its exact reference control."""
     supplied = Path(comparison_directory).expanduser()
     if supplied.is_symlink():
@@ -129,14 +133,18 @@ def publish_render_hypothesis_review(
     queue_id = _required_text(queue_id, "queue ID")
     arm_id = _required_text(arm_id, "arm ID")
     arm = next(
-        (value for value in comparison["arms"] if value.get("arm_id") == arm_id),
+        (
+            value
+            for value in _documents(comparison.get("arms"))
+            if value.get("arm_id") == arm_id
+        ),
         None,
     )
     if arm is None:
         raise RenderHypothesisReviewError(f"Reference render arm is absent: {arm_id}")
     renders = [
         value
-        for value in arm["renders"]
+        for value in _documents(arm.get("renders"))
         if value.get("id") == queue_id and value.get("outcome") == "complete"
     ]
     if len(renders) != 1:
@@ -146,7 +154,7 @@ def publish_render_hypothesis_review(
     render = renders[0]
     controls = [
         value
-        for value in comparison["controls"]
+        for value in _documents(comparison.get("controls"))
         if value.get("sha256") == render.get("reference_sha256")
     ]
     if len(controls) != 1:
@@ -247,7 +255,7 @@ def publish_render_hypothesis_review(
         return load_render_hypothesis_review(output)
 
 
-def load_render_hypothesis_review(directory):
+def load_render_hypothesis_review(directory: str | Path) -> RenderHypothesisReview:
     """Load and verify one self-contained render hypothesis review."""
     directory = Path(directory).expanduser().resolve()
     if directory.is_symlink() or not directory.is_dir():
@@ -300,9 +308,12 @@ def load_render_hypothesis_review(directory):
             )
         except AuthoringAuthorityError as error:
             raise RenderHypothesisReviewError(str(error)) from error
-        decision = _validate_decision_document(
-            decision_document, review, review_snapshot.sha256
-        )["decision"]
+        decision = _required_text(
+            _validate_decision_document(
+                decision_document, review, review_snapshot.sha256
+            )["decision"],
+            "render hypothesis decision",
+        )
         assert_authority_snapshot(decision_snapshot, "render hypothesis decision")
     for snapshot, label in (
         (review_snapshot, "render hypothesis review"),
@@ -314,9 +325,9 @@ def load_render_hypothesis_review(directory):
         assert_authority_snapshot(snapshot, label)
     return RenderHypothesisReview(
         directory=directory,
-        review_id=review["review_id"],
-        queue_id=review["queue_id"],
-        arm_id=review["arm_id"],
+        review_id=_required_text(review["review_id"], "review ID"),
+        queue_id=_required_text(review["queue_id"], "queue ID"),
+        arm_id=_required_text(review["arm_id"], "arm ID"),
         reference=reference_snapshot.path,
         reference_sha256=reference_snapshot.sha256,
         result=result_snapshot.path,
@@ -325,7 +336,9 @@ def load_render_hypothesis_review(directory):
     )
 
 
-def record_render_hypothesis_decision(directory, decision):
+def record_render_hypothesis_decision(
+    directory: str | Path, decision: object
+) -> RenderHypothesisReview:
     """Record one terminal hypothesis verdict without changing generation state."""
     decision = str(decision).strip()
     if decision not in RENDER_HYPOTHESIS_DECISIONS:
@@ -416,11 +429,11 @@ def record_render_hypothesis_decision(directory, decision):
 
 
 def import_accepted_render_hypothesis(
-    audit_directory,
-    comparison_directory,
-    review_directory,
-    queue_id,
-):
+    audit_directory: str | Path,
+    comparison_directory: str | Path,
+    review_directory: str | Path,
+    queue_id: object,
+) -> RenderHypothesisSelection:
     """Bind one accepted single-render hypothesis to one fresh exact audit."""
     queue_id = _required_text(queue_id, "queue ID")
     audit_directory = _safe_directory(audit_directory, "fresh failure audit")
@@ -622,7 +635,7 @@ def import_accepted_render_hypothesis(
     )
     fresh_candidates = [
         value
-        for value in fresh_group["candidates"]
+        for value in _documents(fresh_group.get("candidates"))
         if value.get("sha256") == review.reference_sha256
     ]
     if len(fresh_candidates) != 1:
@@ -645,7 +658,9 @@ def import_accepted_render_hypothesis(
             "Accepted render voice identity changed in the fresh audit"
         )
     fresh_cases = [
-        value for value in fresh_group["cases"] if value["queue_id"] == queue_id
+        value
+        for value in _documents(fresh_group.get("cases"))
+        if value.get("queue_id") == queue_id
     ]
     if len(fresh_cases) != 1:
         raise RenderHypothesisReviewError(
@@ -689,8 +704,8 @@ def import_accepted_render_hypothesis(
     existing = next(
         (
             value
-            for value in current["decisions"]
-            if value["group_id"] == fresh_group["group_id"]
+            for value in _documents(current.get("decisions"))
+            if value.get("group_id") == fresh_group["group_id"]
         ),
         None,
     )
@@ -705,12 +720,12 @@ def import_accepted_render_hypothesis(
         return RenderHypothesisSelection(
             audit_directory,
             fresh.audit_id,
-            fresh_group["group_id"],
-            fresh_candidate["candidate_id"],
+            _required_text(fresh_group["group_id"], "fresh group ID"),
+            _required_text(fresh_candidate["candidate_id"], "fresh candidate ID"),
             queue_id,
             review.review_id,
             review.reference_sha256,
-            current["decision_set_id"],
+            _required_text(current["decision_set_id"], "decision set ID"),
             False,
         )
     try:
@@ -718,8 +733,8 @@ def import_accepted_render_hypothesis(
             assert_authority_snapshot(snapshot, name.replace("_", " "))
         decisions = record_failure_reference_decision(
             audit_directory,
-            fresh_group["group_id"],
-            fresh_candidate["candidate_id"],
+            _required_text(fresh_group["group_id"], "fresh group ID"),
+            _required_text(fresh_candidate["candidate_id"], "fresh candidate ID"),
             selection_authority=selection_authority,
         )
     except (AuthoringAuthorityError, FailureReferenceAuditError) as error:
@@ -727,23 +742,23 @@ def import_accepted_render_hypothesis(
     return RenderHypothesisSelection(
         audit_directory,
         fresh.audit_id,
-        fresh_group["group_id"],
-        fresh_candidate["candidate_id"],
+        _required_text(fresh_group["group_id"], "fresh group ID"),
+        _required_text(fresh_candidate["candidate_id"], "fresh candidate ID"),
         queue_id,
         review.review_id,
         review.reference_sha256,
-        decisions["decision_set_id"],
+        _required_text(decisions["decision_set_id"], "decision set ID"),
         True,
     )
 
 
 def _validate_review_document(
-    review,
-    comparison_snapshot,
-    report_snapshot,
-    reference_snapshot,
-    result_snapshot,
-):
+    review: JsonObject,
+    comparison_snapshot: AuthoritySnapshot,
+    report_snapshot: AuthoritySnapshot,
+    reference_snapshot: AuthoritySnapshot,
+    result_snapshot: AuthoritySnapshot,
+) -> None:
     required = {
         "schema",
         "schema_version",
@@ -815,17 +830,16 @@ def _validate_review_document(
     arm = next(
         (
             value
-            for value in comparison.get("arms", [])
-            if isinstance(value, dict) and value.get("arm_id") == review["arm_id"]
+            for value in _documents(comparison.get("arms"))
+            if value.get("arm_id") == review["arm_id"]
         ),
         None,
     )
     render = next(
         (
             value
-            for value in (arm or {}).get("renders", [])
-            if isinstance(value, dict)
-            and value.get("id") == review["queue_id"]
+            for value in _documents((arm or {}).get("renders"))
+            if value.get("id") == review["queue_id"]
             and value.get("outcome") == "complete"
         ),
         None,
@@ -833,8 +847,8 @@ def _validate_review_document(
     report_sample = next(
         (
             value
-            for value in report.get("samples", [])
-            if isinstance(value, dict) and value.get("id") == review["queue_id"]
+            for value in _documents(report.get("samples"))
+            if value.get("id") == review["queue_id"]
         ),
         None,
     )
@@ -865,7 +879,9 @@ def _validate_review_document(
         raise RenderHypothesisReviewError("Render hypothesis reference format changed")
 
 
-def _validate_decision_document(decision, review, review_sha256):
+def _validate_decision_document(
+    decision: JsonObject, review: JsonObject, review_sha256: str
+) -> JsonObject:
     if (
         not isinstance(decision, dict)
         or set(decision)
@@ -893,14 +909,15 @@ def _validate_decision_document(decision, review, review_sha256):
     return decision
 
 
-def _contained_file(root, value, label):
+def _contained_file(root: Path, value: object, label: str) -> Path:
     text = _required_text(value, label)
-    return contained_regular_file(
+    path: Path = contained_regular_file(
         root, text, label, error_type=RenderHypothesisReviewError
     )
+    return path
 
 
-def _safe_directory(value, label):
+def _safe_directory(value: str | Path, label: str) -> Path:
     supplied = Path(value).expanduser()
     if supplied.is_symlink():
         raise RenderHypothesisReviewError(f"{label.capitalize()} is a symlink")
@@ -910,7 +927,7 @@ def _safe_directory(value, label):
     return resolved
 
 
-def _source_audit_directory(comparison_root, value):
+def _source_audit_directory(comparison_root: Path, value: object) -> Path:
     text = _required_text(value, "source audit path")
     supplied = Path(text).expanduser()
     if not supplied.is_absolute():
@@ -918,10 +935,10 @@ def _source_audit_directory(comparison_root, value):
     return _safe_directory(supplied, "source failure audit")
 
 
-def _group_by_id(document, group_id, label):
+def _group_by_id(document: JsonObject, group_id: object, label: str) -> JsonObject:
     groups = [
         value
-        for value in document.get("groups", [])
+        for value in _documents(document.get("groups"))
         if value.get("group_id") == group_id
     ]
     if len(groups) != 1:
@@ -931,10 +948,12 @@ def _group_by_id(document, group_id, label):
     return groups[0]
 
 
-def _candidate_by_id(group, candidate_id, label):
+def _candidate_by_id(
+    group: JsonObject, candidate_id: object, label: str
+) -> JsonObject:
     candidates = [
         value
-        for value in group.get("candidates", [])
+        for value in _documents(group.get("candidates"))
         if value.get("candidate_id") == candidate_id
     ]
     if len(candidates) != 1:
@@ -944,11 +963,14 @@ def _candidate_by_id(group, candidate_id, label):
     return candidates[0]
 
 
-def _one_group_for_queue(document, queue_id, label):
+def _one_group_for_queue(
+    document: JsonObject, queue_id: str, label: str
+) -> JsonObject:
     groups = [
         group
-        for group in document.get("groups", [])
-        if queue_id in {case.get("queue_id") for case in group.get("cases", [])}
+        for group in _documents(document.get("groups"))
+        if queue_id
+        in {case.get("queue_id") for case in _documents(group.get("cases"))}
     ]
     if len(groups) != 1 or groups[0].get("case_count") != 1:
         raise RenderHypothesisReviewError(
@@ -957,10 +979,16 @@ def _one_group_for_queue(document, queue_id, label):
     return groups[0]
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise RenderHypothesisReviewError(f"{label.capitalize()} is invalid")
     return value
+
+
+def _documents(value: object) -> list[JsonObject]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 __all__ = [

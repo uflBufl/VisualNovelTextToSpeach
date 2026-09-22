@@ -124,12 +124,14 @@ def handle(arguments: argparse.Namespace) -> int:
     elif arguments.command == "render-hypothesis-review-status":
         result = load_render_hypothesis_review(arguments.directory)
     elif arguments.command == "render-hypothesis-review-import":
-        result = import_accepted_render_hypothesis(
+        selection = import_accepted_render_hypothesis(
             arguments.audit,
             arguments.comparison,
             arguments.review,
             arguments.queue_id,
         )
+        print(json.dumps(selection.to_dict(), indent=2, sort_keys=True))
+        return 0
     elif arguments.command == "failure-reference-render-comparison":
         plan = load_reference_render_plan(arguments.plan)
         result = publish_reference_render_comparison(plan, arguments.output)

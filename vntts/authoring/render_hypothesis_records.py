@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
@@ -13,7 +14,9 @@ from vntts.authoring.authority import (
     canonical_document_sha256,
     capture_authority_file,
 )
-from vntts.authoring.workspace_foundation import contained_regular_file
+from vntts.path_safety import contained_regular_file
+
+JsonObject: TypeAlias = dict[str, object]
 
 
 class RenderHypothesisRecordError(RuntimeError):
@@ -23,8 +26,8 @@ class RenderHypothesisRecordError(RuntimeError):
 @dataclass(frozen=True)
 class RenderHypothesisRecord:
     directory: Path
-    review: dict
-    decision: dict | None
+    review: JsonObject
+    decision: JsonObject | None
     review_snapshot: AuthoritySnapshot
     decision_snapshot: AuthoritySnapshot | None
     comparison_snapshot: AuthoritySnapshot
@@ -33,7 +36,7 @@ class RenderHypothesisRecord:
     result_snapshot: AuthoritySnapshot
 
     @property
-    def snapshots(self):
+    def snapshots(self) -> tuple[AuthoritySnapshot, ...]:
         values = [
             self.review_snapshot,
             self.comparison_snapshot,
@@ -46,7 +49,7 @@ class RenderHypothesisRecord:
         return tuple(values)
 
 
-def load_render_hypothesis_record(directory):
+def load_render_hypothesis_record(directory: str | Path) -> RenderHypothesisRecord:
     """Load and fully validate one review without importing publication code."""
     root = Path(directory).expanduser().resolve()
     if root.is_symlink() or not root.is_dir():
@@ -112,7 +115,13 @@ def load_render_hypothesis_record(directory):
     )
 
 
-def _validate_review(review, comparison, report, reference, result):
+def _validate_review(
+    review: JsonObject,
+    comparison: AuthoritySnapshot,
+    report: AuthoritySnapshot,
+    reference: AuthoritySnapshot,
+    result: AuthoritySnapshot,
+) -> None:
     required = {
         "schema",
         "schema_version",
@@ -178,17 +187,16 @@ def _validate_review(review, comparison, report, reference, result):
     arm = next(
         (
             value
-            for value in comparison_document.get("arms", [])
-            if isinstance(value, dict) and value.get("arm_id") == review["arm_id"]
+            for value in _documents(comparison_document.get("arms"))
+            if value.get("arm_id") == review["arm_id"]
         ),
         None,
     )
     render = next(
         (
             value
-            for value in (arm or {}).get("renders", [])
-            if isinstance(value, dict)
-            and value.get("id") == review["queue_id"]
+            for value in _documents((arm or {}).get("renders"))
+            if value.get("id") == review["queue_id"]
             and value.get("outcome") == "complete"
         ),
         None,
@@ -196,8 +204,8 @@ def _validate_review(review, comparison, report, reference, result):
     report_sample = next(
         (
             value
-            for value in report_document.get("samples", [])
-            if isinstance(value, dict) and value.get("id") == review["queue_id"]
+            for value in _documents(report_document.get("samples"))
+            if value.get("id") == review["queue_id"]
         ),
         None,
     )
@@ -232,7 +240,9 @@ def _validate_review(review, comparison, report, reference, result):
         raise RenderHypothesisRecordError("Render hypothesis audio changed")
 
 
-def _validate_decision(decision, review, review_sha256):
+def _validate_decision(
+    decision: JsonObject, review: JsonObject, review_sha256: str
+) -> None:
     if (
         not isinstance(decision, dict)
         or set(decision)
@@ -259,17 +269,24 @@ def _validate_decision(decision, review, review_sha256):
         )
 
 
-def _contained_file(root, value, label):
+def _contained_file(root: Path, value: object, label: str) -> Path:
     text = _required_text(value, label)
-    return contained_regular_file(
+    path: Path = contained_regular_file(
         root, text, label, error_type=RenderHypothesisRecordError
     )
+    return path
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise RenderHypothesisRecordError(f"{label.capitalize()} must be text")
     return value
+
+
+def _documents(value: object) -> list[JsonObject]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
 
 
 __all__ = [

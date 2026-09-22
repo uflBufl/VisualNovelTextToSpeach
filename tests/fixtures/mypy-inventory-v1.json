@@ -26,8 +26,6 @@
     "vntts/authoring/reference_composite.py": 10,
     "vntts/authoring/reference_render_comparison.py": 20,
     "vntts/authoring/reference_selection.py": 8,
-    "vntts/authoring/render_hypothesis_records.py": 6,
-    "vntts/authoring/render_hypothesis_review.py": 15,
     "vntts/authoring/review_playback_evidence.py": 6,
     "vntts/authoring/robustness_asr.py": 16,
     "vntts/authoring/robustness_corpus.py": 26,
