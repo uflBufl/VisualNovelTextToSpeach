@@ -8,7 +8,7 @@ import json
 import os
 import shutil
 import socket
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -54,7 +54,7 @@ from vntts.authoring.failure_reference_binding_records import (
     FailureReferenceBindingError,
     load_failure_reference_binding_document,
 )
-from vntts.authoring.generation_lease import process_started_at
+from vntts.authoring.generation_lease import GenerationLease, process_started_at
 from vntts.authoring.generation_manifest import approved_manifest_entries
 from vntts.authoring.generation_state import (
     load_stable_generation_queue,
@@ -83,6 +83,8 @@ _canonical_sha256 = canonical_document_sha256
 Inventory: TypeAlias = dict[Path, str]
 DecisionRecord: TypeAlias = dict[str, object]
 Producer: TypeAlias = dict[str, str]
+RoleMatcher: TypeAlias = Callable[[str], bool]
+VoiceControlPaths: TypeAlias = dict[Path, tuple[str, RoleMatcher]]
 
 
 class _QueueItem(Protocol):
@@ -148,6 +150,75 @@ class FinalGamePackResult:
         return payload
 
 
+@dataclass(frozen=True)
+class _PublicationPaths:
+    destination: Path
+    state: Path
+    queue: Path
+    story: Path
+    voice_manifest: Path
+    live_sequence: Path | None
+    semantic_evidence: Path | None
+    failure_reference_binding: Path | None
+
+
+@dataclass(frozen=True)
+class _PublicationRequest:
+    paths: _PublicationPaths
+    game_id: object | None
+    game_version: str
+    producers: list[Producer]
+    created_at: str
+
+
+@dataclass(frozen=True)
+class _StagedControls:
+    directory: Path
+    inventory: Inventory
+    story_copy: Path
+    voice_copy: Path
+    story: _Story
+    story_sha256: str
+    voice_sha256: str
+    live_sequence_copy: Path | None
+    semantic_evidence_copy: Path | None
+    semantic_evidence_document: JsonDocument | None
+    semantic_evidence_sha256: str | None
+    failure_reference_document: JsonDocument | None
+
+
+@dataclass(frozen=True)
+class _ValidatedVoiceControls:
+    narrator_selection: DecisionRecord | None
+    voice_override: bool
+    projection: DecisionRecord | None
+
+
+@dataclass(frozen=True)
+class _GeneratedAudioStage:
+    manifest: Path
+    generated_records: list[DecisionRecord]
+    live_fallback_records: list[DecisionRecord]
+    omission_records: list[DecisionRecord]
+    reviewed_waveform_records: list[DecisionRecord]
+
+
+@dataclass(frozen=True)
+class _VoiceControlRequirements:
+    required_paths: VoiceControlPaths
+    narrator_reference_bindings: dict[str, set[tuple[Path, str]]]
+
+
+@dataclass(frozen=True)
+class _VoiceOverrideControls:
+    queue: dict[str, str]
+    failure: dict[str, str]
+    combined: dict[str, str]
+    queue_digest: str | None
+    combined_digest: str | None
+    failure_paths: VoiceControlPaths
+
+
 def publish_final_game_pack(
     destination: str | Path,
     *,
@@ -164,403 +235,610 @@ def publish_final_game_pack(
     created_at: str | None = None,
 ) -> FinalGamePackResult:
     """Stage, verify and atomically publish one immutable game-pack directory."""
-    destination = _new_destination(destination)
-    state_path = Path(state_path).expanduser().resolve()
-    queue_path = Path(queue_path).expanduser().resolve()
-    story_index_path = Path(story_index_path).expanduser().resolve()
-    voice_manifest_path = Path(voice_manifest_path).expanduser().resolve()
-    live_sequence_plan_path = (
-        None
-        if live_sequence_plan_path is None
-        else Path(live_sequence_plan_path).expanduser().resolve()
+    request = _select_publication_request(
+        destination,
+        state_path=state_path,
+        queue_path=queue_path,
+        story_index_path=story_index_path,
+        voice_manifest_path=voice_manifest_path,
+        live_sequence_plan_path=live_sequence_plan_path,
+        source_audio_semantic_evidence_path=source_audio_semantic_evidence_path,
+        failure_reference_binding_path=failure_reference_binding_path,
+        game_id=game_id,
+        game_version=game_version,
+        producers=producers,
+        created_at=created_at,
     )
-    source_audio_semantic_evidence_path = (
-        None
-        if source_audio_semantic_evidence_path is None
-        else Path(source_audio_semantic_evidence_path).expanduser().resolve()
-    )
-    failure_reference_binding_path = (
-        None
-        if failure_reference_binding_path is None
-        else Path(failure_reference_binding_path).expanduser().resolve()
-    )
-    if (
-        failure_reference_binding_path is not None
-        and failure_reference_binding_path.is_dir()
-    ):
-        failure_reference_binding_path = failure_reference_binding_path / "binding.json"
-    game_version = _required_text(game_version, "game version")
-    producers = _validate_producers(producers)
-    created_at = created_at or _now()
-
-    try:
-        initial_state = load_generation_state(state_path)
-    except BulkGenerationError as error:
-        raise FinalGamePackError(str(error)) from error
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with _PublicationLease(destination) as publication_lease:
+    initial_state = _load_initial_publication_state(request.paths.state)
+    request.paths.destination.parent.mkdir(parents=True, exist_ok=True)
+    with _PublicationLease(request.paths.destination) as publication_lease:
         with generation_publication_leases(
             (
                 (
-                    state_path.parent,
-                    _required_text(
-                        initial_state.get("queue_sha256"), "queue SHA-256"
-                    ),
+                    request.paths.state.parent,
+                    _required_text(initial_state.get("queue_sha256"), "queue SHA-256"),
                 ),
             ),
             process_checker=process_is_alive,
         ) as generation_leases:
             generation_lease = generation_leases[0]
-            try:
-                queue, queue_sha256 = load_stable_generation_queue(queue_path)
-            except BulkGenerationError as error:
-                raise FinalGamePackError(str(error)) from error
-            state, state_sha256 = _load_stable_state(state_path, queue, queue_sha256)
-            if queue_sha256 != state["queue_sha256"]:
-                raise FinalGamePackError(
-                    "Generation state does not match the exact queue bytes"
-                )
-            _require_final_review_state(state, queue)
-
+            queue, queue_sha256, state, state_sha256 = _select_stable_publication_state(
+                request.paths
+            )
             with TemporaryDirectory(
-                dir=destination.parent,
-                prefix=f".{destination.name}.staging-",
+                dir=request.paths.destination.parent,
+                prefix=f".{request.paths.destination.name}.staging-",
             ) as staging_directory:
-                staging = Path(staging_directory)
-                inventory = {state_path: state_sha256}
-                story_copy = staging / "story" / "story-index.jsonl"
-                voice_copy = staging / "voices" / "voice-manifest.json"
-                story_sha256 = _copy_control(
-                    story_index_path, story_copy, inventory, "story index"
+                controls = _stage_publication_controls(
+                    request.paths, Path(staging_directory), state_sha256, queue_sha256
                 )
-                voice_sha256 = _copy_control(
-                    voice_manifest_path, voice_copy, inventory, "voice manifest"
-                )
-                captured_queue_sha256 = _capture_control(
-                    queue_path, inventory, "generation queue"
-                )
-                if captured_queue_sha256 != queue_sha256:
-                    raise FinalGamePackError(
-                        "Generation queue changed while publication was staged"
-                    )
-
-                failure_reference_document = None
-                if failure_reference_binding_path is not None:
-                    try:
-                        failure_reference_document = (
-                            load_failure_reference_binding_document(
-                                failure_reference_binding_path.parent
-                            )
-                        )
-                    except FailureReferenceBindingError as error:
-                        raise FinalGamePackError(str(error)) from error
-                    authority = _required_mapping(
-                        failure_reference_document.get("source_authority"),
-                        "failure-reference source authority",
-                    )
-                    if (
-                        authority["queue_sha256"] != queue_sha256
-                        or authority["voice_manifest_sha256"] != voice_sha256
-                    ):
-                        raise FinalGamePackError(
-                            "Failure-reference binding belongs to different pack controls"
-                        )
-                    binding_copy = (
-                        staging
-                        / "voices"
-                        / "failure-reference-binding"
-                        / "binding.json"
-                    )
-                    _copy_control(
-                        failure_reference_binding_path,
-                        binding_copy,
-                        inventory,
-                        "failure-reference binding",
-                    )
-                    for group in _mapping_sequence(
-                        failure_reference_document.get("groups"),
-                        "failure-reference groups",
-                    ):
-                        relative = _safe_relative(
-                            group["reference"], "Selected reference"
-                        )
-                        source = _contained_source(
-                            failure_reference_binding_path.parent,
-                            relative,
-                            "selected reference",
-                        )
-                        _copy_control(
-                            source,
-                            binding_copy.parent / Path(*relative.parts),
-                            inventory,
-                            "selected reference",
-                        )
-
-                story = _load_story(story_copy)
-                semantic_evidence_copy = None
-                semantic_evidence_document = None
-                semantic_evidence_sha256 = None
-                if source_audio_semantic_evidence_path is not None:
-                    semantic_evidence_copy = (
-                        staging / "story" / "source-audio-semantic-evidence.json"
-                    )
-                    semantic_evidence_sha256 = _copy_control(
-                        source_audio_semantic_evidence_path,
-                        semantic_evidence_copy,
-                        inventory,
-                        "source-audio semantic evidence",
-                    )
-                    try:
-                        semantic_evidence_document = (
-                            load_source_audio_semantic_evidence(
-                                semantic_evidence_copy,
-                                story_copy,
-                            )
-                        )
-                    except SourceAudioSemanticEvidenceError as error:
-                        raise FinalGamePackError(str(error)) from error
-                elif isinstance(story.metadata.get("source_audio_semantics"), dict):
-                    raise FinalGamePackError(
-                        "Story index semantic decisions require their exact evidence file"
-                    )
-                live_sequence_copy = None
-                if live_sequence_plan_path is not None:
-                    live_sequence_copy = staging / "story" / "live-sequence.json"
-                    _copy_control(
-                        live_sequence_plan_path,
-                        live_sequence_copy,
-                        inventory,
-                        "live sequence plan",
-                    )
-                    try:
-                        load_live_sequence_plan(live_sequence_copy, story_copy)
-                    except LiveSequencePlanError as error:
-                        raise FinalGamePackError(str(error)) from error
-                voice_document, voice_entries = _load_voices(voice_copy)
-                narrator_selection = _verify_voice_control_provenance(
+                validated_voices = _validate_staged_voice_controls(
                     state,
                     queue,
-                    voice_manifest_path,
-                    voice_document,
-                    voice_entries,
-                    failure_reference_binding_path=failure_reference_binding_path,
-                    failure_reference_document=failure_reference_document,
+                    request.paths,
+                    controls,
                 )
-                voice_override = _validate_source_bindings(
-                    queue.metadata,
-                    queue_path=queue_path,
-                    story_index_path=story_index_path,
-                    voice_manifest_path=voice_manifest_path,
-                    story_sha256=story_sha256,
-                    voice_manifest_sha256=voice_sha256,
-                    reviewed_waveform_publication=state.get(
-                        "reviewed_waveform_publication"
-                    ),
+                generated = _stage_generated_audio(state, queue, request, controls)
+                resolved_game_id, counts = _write_staged_game_pack(
+                    request,
+                    state,
+                    queue,
+                    state_sha256,
+                    queue_sha256,
+                    controls,
+                    validated_voices,
+                    generated,
                 )
-                _validate_story_identity(state, story)
-                voice_projection = _copy_portable_voice_manifest_and_references(
-                    voice_manifest_path,
-                    voice_copy,
-                    voice_document,
-                    voice_entries,
-                    inventory,
+                _publish_staged_game_pack(
+                    request.paths.destination,
+                    controls,
+                    generation_lease,
+                    publication_lease,
                 )
+    return _publication_result(
+        request, resolved_game_id, counts, queue_sha256, state_sha256
+    )
 
-                generated_manifest = staging / "generated" / "manifest.json"
-                if not _reviewed_waveform_supersedes_legacy_authority(state):
-                    try:
-                        validate_authoring_publication_authority(
-                            state_path,
-                            state,
-                        )
-                    except BulkGenerationError as error:
-                        raise FinalGamePackError(str(error)) from error
-                generated_records = approved_manifest_entries(state, state_path.parent)
-                live_fallback_records = _decision_records(
-                    state, queue, "live_fallback", "Live fallback item"
-                )
-                omission_records = _decision_records(
-                    state, queue, "audio_event_omission", "Audio-event omission"
-                )
-                reviewed_waveform_records = _reviewed_waveform_publication_records(
-                    state, queue
-                )
-                _validate_story_records(
-                    generated_records, story, "Approved generated item"
-                )
-                _validate_story_records(
-                    live_fallback_records, story, "Live fallback item"
-                )
-                _validate_story_records(omission_records, story, "Audio-event omission")
-                _validate_story_records(
-                    reviewed_waveform_records, story, "Reviewed waveform"
-                )
-                for record in generated_records:
-                    relative = _safe_relative(
-                        record["audio"], "Generated-audio state path"
-                    )
-                    source = _contained_source(
-                        state_path.parent,
-                        relative,
-                        "generated WAV",
-                    )
-                    _copy_control(
-                        source,
-                        generated_manifest.parent / Path(*relative.parts),
-                        inventory,
-                        "generated WAV",
-                    )
-                try:
-                    write_generated_audio_manifest(
-                        generated_manifest,
-                        {
-                            "game": state.get("game"),
-                            "language": state.get("language"),
-                            "source_queue_sha256": state["queue_sha256"],
-                            "generated_at": created_at,
-                            "vntts.authoring.live_fallback": {
-                                "schema_version": 1,
-                                "mode": "explicit",
-                                "entries": live_fallback_records,
-                            },
-                            "vntts.authoring.audio_event_omission": {
-                                "schema_version": 1,
-                                "mode": "explicit",
-                                "entries": omission_records,
-                            },
-                            "vntts.authoring.reviewed_waveform_publication": {
-                                "schema_version": 1,
-                                "mode": "exact_reviewed_waveform",
-                                "entries": reviewed_waveform_records,
-                            },
-                        },
-                        generated_records,
-                    )
-                except GeneratedAudioManifestError as error:
-                    raise FinalGamePackError(str(error)) from error
 
-                counts = _review_counts(state)
-                resolved_game_id = _required_text(
-                    game_id if game_id is not None else state.get("game"),
-                    "game id",
-                )
-                pack_manifest = staging / "game-pack.json"
-                try:
-                    components = {
-                        "story_index": story_copy,
-                        "voice_manifest": voice_copy,
-                        "generated_audio": generated_manifest,
-                    }
-                    if live_sequence_copy is not None:
-                        components["live_sequence_plan"] = live_sequence_copy
-                    write_game_pack(
-                        pack_manifest,
-                        {
-                            "game": {
-                                "id": resolved_game_id,
-                                "version": game_version,
-                            },
-                            "producers": producers,
-                            "created_at": created_at,
-                            "vntts.authoring": {
-                                "source_queue_sha256": queue_sha256,
-                                "source_state_sha256": state_sha256,
-                                "selected_voice_manifest_sha256": voice_sha256,
-                                "queue_voice_manifest_sha256": queue.metadata.get(
-                                    "source_voice_manifest_sha256"
-                                ),
-                                "voice_manifest_override": voice_override,
-                                "narrator_selection": narrator_selection,
-                                "failure_reference_binding": (
-                                    None
-                                    if failure_reference_document is None
-                                    else {
-                                        "path": "voices/failure-reference-binding/binding.json",
-                                        "binding_id": failure_reference_document[
-                                            "binding_id"
-                                        ],
-                                        "audit_id": failure_reference_document[
-                                            "audit_id"
-                                        ],
-                                        "decision_set_id": failure_reference_document[
-                                            "decision_set_id"
-                                        ],
-                                    }
-                                ),
-                                "source_audio_semantic_evidence": (
-                                    None
-                                    if semantic_evidence_document is None
-                                    else {
-                                        "path": (
-                                            "story/source-audio-semantic-evidence.json"
-                                        ),
-                                        "sha256": semantic_evidence_sha256,
-                                        "evidence_id": semantic_evidence_document[
-                                            "evidence_id"
-                                        ],
-                                        "entry_count": len(
-                                            semantic_evidence_document["entries"]
-                                        ),
-                                    }
-                                ),
-                                "reviewed_waveform_publication": (
-                                    None
-                                    if not reviewed_waveform_records
-                                    else {
-                                        "batch_id": _required_mapping(
-                                            state.get(
-                                                "reviewed_waveform_publication"
-                                            ),
-                                            "reviewed-waveform publication",
-                                        ).get("batch_id"),
-                                        "approved_count": len(
-                                            reviewed_waveform_records
-                                        ),
-                                        "synthesis_reproducibility": False,
-                                    }
-                                ),
-                                "voice_reference_projection": voice_projection,
-                                **counts,
-                            },
-                        },
-                        components,
-                    )
-                    load_game_pack(pack_manifest)
-                except GamePackError as error:
-                    raise FinalGamePackError(str(error)) from error
+def _select_publication_request(
+    destination: str | Path,
+    *,
+    state_path: str | Path,
+    queue_path: str | Path,
+    story_index_path: str | Path,
+    voice_manifest_path: str | Path,
+    live_sequence_plan_path: str | Path | None,
+    source_audio_semantic_evidence_path: str | Path | None,
+    failure_reference_binding_path: str | Path | None,
+    game_id: object | None,
+    game_version: object,
+    producers: object,
+    created_at: str | None,
+) -> _PublicationRequest:
+    paths = _PublicationPaths(
+        destination=_new_destination(destination),
+        state=_resolved_path(state_path),
+        queue=_resolved_path(queue_path),
+        story=_resolved_path(story_index_path),
+        voice_manifest=_resolved_path(voice_manifest_path),
+        live_sequence=_optional_resolved_path(live_sequence_plan_path),
+        semantic_evidence=_optional_resolved_path(source_audio_semantic_evidence_path),
+        failure_reference_binding=_failure_reference_binding_path(
+            failure_reference_binding_path
+        ),
+    )
+    return _PublicationRequest(
+        paths=paths,
+        game_id=game_id,
+        game_version=_required_text(game_version, "game version"),
+        producers=_validate_producers(producers),
+        created_at=created_at or _now(),
+    )
 
-                generation_lease.assert_owned()
-                publication_lease.assert_owned()
-                _assert_controls_unchanged(inventory)
-                if _path_exists(destination):
-                    raise FinalGamePackError(
-                        f"Final game-pack destination already exists: {destination}"
-                    )
-                try:
-                    _rename_directory_no_replace(staging, destination)
-                except (AtomicPublicationError, OSError) as error:
-                    raise FinalGamePackError(
-                        f"Unable to atomically publish final game pack: {error}"
-                    ) from error
-                publication_lease.mark_committed()
-                generation_lease.mark_committed()
 
+def _resolved_path(path: str | Path) -> Path:
+    return Path(path).expanduser().resolve()
+
+
+def _optional_resolved_path(path: str | Path | None) -> Path | None:
+    return None if path is None else _resolved_path(path)
+
+
+def _failure_reference_binding_path(path: str | Path | None) -> Path | None:
+    resolved = _optional_resolved_path(path)
+    if resolved is not None and resolved.is_dir():
+        return resolved / "binding.json"
+    return resolved
+
+
+def _load_initial_publication_state(state_path: Path) -> JsonDocument:
+    try:
+        return load_generation_state(state_path)
+    except BulkGenerationError as error:
+        raise FinalGamePackError(str(error)) from error
+
+
+def _select_stable_publication_state(
+    paths: _PublicationPaths,
+) -> tuple[_Queue, str, JsonDocument, str]:
+    try:
+        queue, queue_sha256 = load_stable_generation_queue(paths.queue)
+    except BulkGenerationError as error:
+        raise FinalGamePackError(str(error)) from error
+    state, state_sha256 = _load_stable_state(paths.state, queue, queue_sha256)
+    if queue_sha256 != state["queue_sha256"]:
+        raise FinalGamePackError(
+            "Generation state does not match the exact queue bytes"
+        )
+    _require_final_review_state(state, queue)
+    return queue, queue_sha256, state, state_sha256
+
+
+def _stage_publication_controls(
+    paths: _PublicationPaths,
+    staging: Path,
+    state_sha256: str,
+    queue_sha256: str,
+) -> _StagedControls:
+    inventory = {paths.state: state_sha256}
+    story_copy = staging / "story" / "story-index.jsonl"
+    voice_copy = staging / "voices" / "voice-manifest.json"
+    story_sha256 = _copy_control(paths.story, story_copy, inventory, "story index")
+    voice_sha256 = _copy_control(
+        paths.voice_manifest, voice_copy, inventory, "voice manifest"
+    )
+    _capture_staged_queue(paths.queue, queue_sha256, inventory)
+    failure_document = _stage_failure_reference_binding(
+        paths.failure_reference_binding, staging, inventory, queue_sha256, voice_sha256
+    )
+    story = _load_story(story_copy)
+    semantic_copy, semantic_document, semantic_sha256 = _stage_semantic_evidence(
+        paths.semantic_evidence, staging, story_copy, story, inventory
+    )
+    live_copy = _stage_live_sequence(
+        paths.live_sequence, staging, story_copy, inventory
+    )
+    return _StagedControls(
+        directory=staging,
+        inventory=inventory,
+        story_copy=story_copy,
+        voice_copy=voice_copy,
+        story=story,
+        story_sha256=story_sha256,
+        voice_sha256=voice_sha256,
+        live_sequence_copy=live_copy,
+        semantic_evidence_copy=semantic_copy,
+        semantic_evidence_document=semantic_document,
+        semantic_evidence_sha256=semantic_sha256,
+        failure_reference_document=failure_document,
+    )
+
+
+def _capture_staged_queue(
+    queue: Path, expected_sha256: str, inventory: Inventory
+) -> None:
+    if _capture_control(queue, inventory, "generation queue") != expected_sha256:
+        raise FinalGamePackError(
+            "Generation queue changed while publication was staged"
+        )
+
+
+def _stage_failure_reference_binding(
+    source: Path | None,
+    staging: Path,
+    inventory: Inventory,
+    queue_sha256: str,
+    voice_sha256: str,
+) -> JsonDocument | None:
+    if source is None:
+        return None
+    try:
+        document = load_failure_reference_binding_document(source.parent)
+    except FailureReferenceBindingError as error:
+        raise FinalGamePackError(str(error)) from error
+    authority = _required_mapping(
+        document.get("source_authority"), "failure-reference source authority"
+    )
+    if (
+        authority["queue_sha256"] != queue_sha256
+        or authority["voice_manifest_sha256"] != voice_sha256
+    ):
+        raise FinalGamePackError(
+            "Failure-reference binding belongs to different pack controls"
+        )
+    binding_copy = staging / "voices" / "failure-reference-binding" / "binding.json"
+    _copy_control(source, binding_copy, inventory, "failure-reference binding")
+    _copy_failure_reference_audio(
+        source.parent, binding_copy.parent, document, inventory
+    )
+    return document
+
+
+def _copy_failure_reference_audio(
+    source_root: Path,
+    destination_root: Path,
+    document: JsonDocument,
+    inventory: Inventory,
+) -> None:
+    for group in _mapping_sequence(document.get("groups"), "failure-reference groups"):
+        relative = _safe_relative(group["reference"], "Selected reference")
+        source = _contained_source(source_root, relative, "selected reference")
+        _copy_control(
+            source,
+            destination_root / Path(*relative.parts),
+            inventory,
+            "selected reference",
+        )
+
+
+def _stage_semantic_evidence(
+    source: Path | None,
+    staging: Path,
+    story_copy: Path,
+    story: _Story,
+    inventory: Inventory,
+) -> tuple[Path | None, JsonDocument | None, str | None]:
+    if source is None:
+        if isinstance(story.metadata.get("source_audio_semantics"), dict):
+            raise FinalGamePackError(
+                "Story index semantic decisions require their exact evidence file"
+            )
+        return None, None, None
+    destination = staging / "story" / "source-audio-semantic-evidence.json"
+    digest = _copy_control(
+        source, destination, inventory, "source-audio semantic evidence"
+    )
+    try:
+        document = load_source_audio_semantic_evidence(destination, story_copy)
+    except SourceAudioSemanticEvidenceError as error:
+        raise FinalGamePackError(str(error)) from error
+    return destination, document, digest
+
+
+def _stage_live_sequence(
+    source: Path | None, staging: Path, story_copy: Path, inventory: Inventory
+) -> Path | None:
+    if source is None:
+        return None
+    destination = staging / "story" / "live-sequence.json"
+    _copy_control(source, destination, inventory, "live sequence plan")
+    try:
+        load_live_sequence_plan(destination, story_copy)
+    except LiveSequencePlanError as error:
+        raise FinalGamePackError(str(error)) from error
+    return destination
+
+
+def _validate_staged_voice_controls(
+    state: JsonDocument,
+    queue: _Queue,
+    paths: _PublicationPaths,
+    controls: _StagedControls,
+) -> _ValidatedVoiceControls:
+    voice_document, voice_entries = _load_voices(controls.voice_copy)
+    narrator_selection = _verify_voice_control_provenance(
+        state,
+        queue,
+        paths.voice_manifest,
+        voice_document,
+        voice_entries,
+        failure_reference_binding_path=paths.failure_reference_binding,
+        failure_reference_document=controls.failure_reference_document,
+    )
+    voice_override = _validate_source_bindings(
+        queue.metadata,
+        queue_path=paths.queue,
+        story_index_path=paths.story,
+        voice_manifest_path=paths.voice_manifest,
+        story_sha256=controls.story_sha256,
+        voice_manifest_sha256=controls.voice_sha256,
+        reviewed_waveform_publication=state.get("reviewed_waveform_publication"),
+    )
+    _validate_story_identity(state, controls.story)
+    projection = _copy_portable_voice_manifest_and_references(
+        paths.voice_manifest,
+        controls.voice_copy,
+        voice_document,
+        voice_entries,
+        controls.inventory,
+    )
+    return _ValidatedVoiceControls(narrator_selection, voice_override, projection)
+
+
+def _stage_generated_audio(
+    state: JsonDocument,
+    queue: _Queue,
+    request: _PublicationRequest,
+    controls: _StagedControls,
+) -> _GeneratedAudioStage:
+    manifest = controls.directory / "generated" / "manifest.json"
+    if not _reviewed_waveform_supersedes_legacy_authority(state):
+        try:
+            validate_authoring_publication_authority(request.paths.state, state)
+        except BulkGenerationError as error:
+            raise FinalGamePackError(str(error)) from error
+    generated_records = approved_manifest_entries(state, request.paths.state.parent)
+    live_fallback_records = _decision_records(
+        state, queue, "live_fallback", "Live fallback item"
+    )
+    omission_records = _decision_records(
+        state, queue, "audio_event_omission", "Audio-event omission"
+    )
+    reviewed_waveform_records = _reviewed_waveform_publication_records(state, queue)
+    _validate_generated_story_records(
+        controls.story,
+        generated_records,
+        live_fallback_records,
+        omission_records,
+        reviewed_waveform_records,
+    )
+    _copy_generated_audio(
+        generated_records,
+        request.paths.state.parent,
+        manifest.parent,
+        controls.inventory,
+    )
+    _write_generated_manifest(
+        manifest,
+        state,
+        request.created_at,
+        generated_records,
+        live_fallback_records,
+        omission_records,
+        reviewed_waveform_records,
+    )
+    return _GeneratedAudioStage(
+        manifest,
+        generated_records,
+        live_fallback_records,
+        omission_records,
+        reviewed_waveform_records,
+    )
+
+
+def _validate_generated_story_records(
+    story: _Story,
+    generated: Sequence[DecisionRecord],
+    fallback: Sequence[DecisionRecord],
+    omissions: Sequence[DecisionRecord],
+    reviewed: Sequence[DecisionRecord],
+) -> None:
+    _validate_story_records(generated, story, "Approved generated item")
+    _validate_story_records(fallback, story, "Live fallback item")
+    _validate_story_records(omissions, story, "Audio-event omission")
+    _validate_story_records(reviewed, story, "Reviewed waveform")
+
+
+def _copy_generated_audio(
+    records: Sequence[DecisionRecord],
+    source_root: Path,
+    destination_root: Path,
+    inventory: Inventory,
+) -> None:
+    for record in records:
+        relative = _safe_relative(record["audio"], "Generated-audio state path")
+        source = _contained_source(source_root, relative, "generated WAV")
+        _copy_control(
+            source, destination_root / Path(*relative.parts), inventory, "generated WAV"
+        )
+
+
+def _write_generated_manifest(
+    manifest: Path,
+    state: JsonDocument,
+    created_at: str,
+    generated: Sequence[DecisionRecord],
+    fallback: Sequence[DecisionRecord],
+    omissions: Sequence[DecisionRecord],
+    reviewed: Sequence[DecisionRecord],
+) -> None:
+    try:
+        write_generated_audio_manifest(
+            manifest,
+            {
+                "game": state.get("game"),
+                "language": state.get("language"),
+                "source_queue_sha256": state["queue_sha256"],
+                "generated_at": created_at,
+                "vntts.authoring.live_fallback": {
+                    "schema_version": 1,
+                    "mode": "explicit",
+                    "entries": fallback,
+                },
+                "vntts.authoring.audio_event_omission": {
+                    "schema_version": 1,
+                    "mode": "explicit",
+                    "entries": omissions,
+                },
+                "vntts.authoring.reviewed_waveform_publication": {
+                    "schema_version": 1,
+                    "mode": "exact_reviewed_waveform",
+                    "entries": reviewed,
+                },
+            },
+            generated,
+        )
+    except GeneratedAudioManifestError as error:
+        raise FinalGamePackError(str(error)) from error
+
+
+def _write_staged_game_pack(
+    request: _PublicationRequest,
+    state: JsonDocument,
+    queue: _Queue,
+    state_sha256: str,
+    queue_sha256: str,
+    controls: _StagedControls,
+    voices: _ValidatedVoiceControls,
+    generated: _GeneratedAudioStage,
+) -> tuple[str, dict[str, int]]:
+    counts = _review_counts(state)
+    game_id = _required_text(
+        request.game_id if request.game_id is not None else state.get("game"), "game id"
+    )
+    pack_manifest = controls.directory / "game-pack.json"
+    try:
+        write_game_pack(
+            pack_manifest,
+            _game_pack_metadata(
+                request,
+                state,
+                queue,
+                state_sha256,
+                queue_sha256,
+                controls,
+                voices,
+                generated,
+                counts,
+                game_id,
+            ),
+            _game_pack_components(controls, generated),
+        )
+        load_game_pack(pack_manifest)
+    except GamePackError as error:
+        raise FinalGamePackError(str(error)) from error
+    return game_id, counts
+
+
+def _game_pack_components(
+    controls: _StagedControls, generated: _GeneratedAudioStage
+) -> dict[str, Path]:
+    components = {
+        "story_index": controls.story_copy,
+        "voice_manifest": controls.voice_copy,
+        "generated_audio": generated.manifest,
+    }
+    if controls.live_sequence_copy is not None:
+        components["live_sequence_plan"] = controls.live_sequence_copy
+    return components
+
+
+def _game_pack_metadata(
+    request: _PublicationRequest,
+    state: JsonDocument,
+    queue: _Queue,
+    state_sha256: str,
+    queue_sha256: str,
+    controls: _StagedControls,
+    voices: _ValidatedVoiceControls,
+    generated: _GeneratedAudioStage,
+    counts: dict[str, int],
+    game_id: str,
+) -> dict[str, object]:
+    return {
+        "game": {"id": game_id, "version": request.game_version},
+        "producers": request.producers,
+        "created_at": request.created_at,
+        "vntts.authoring": {
+            "source_queue_sha256": queue_sha256,
+            "source_state_sha256": state_sha256,
+            "selected_voice_manifest_sha256": controls.voice_sha256,
+            "queue_voice_manifest_sha256": queue.metadata.get(
+                "source_voice_manifest_sha256"
+            ),
+            "voice_manifest_override": voices.voice_override,
+            "narrator_selection": voices.narrator_selection,
+            "failure_reference_binding": _failure_reference_metadata(
+                controls.failure_reference_document
+            ),
+            "source_audio_semantic_evidence": _semantic_evidence_metadata(controls),
+            "reviewed_waveform_publication": _reviewed_waveform_metadata(
+                state, generated
+            ),
+            "voice_reference_projection": voices.projection,
+            **counts,
+        },
+    }
+
+
+def _failure_reference_metadata(
+    document: JsonDocument | None,
+) -> dict[str, object] | None:
+    if document is None:
+        return None
+    return {
+        "path": "voices/failure-reference-binding/binding.json",
+        "binding_id": document["binding_id"],
+        "audit_id": document["audit_id"],
+        "decision_set_id": document["decision_set_id"],
+    }
+
+
+def _semantic_evidence_metadata(
+    controls: _StagedControls,
+) -> dict[str, object] | None:
+    if controls.semantic_evidence_document is None:
+        return None
+    entries = controls.semantic_evidence_document["entries"]
+    assert isinstance(entries, list)
+    return {
+        "path": "story/source-audio-semantic-evidence.json",
+        "sha256": controls.semantic_evidence_sha256,
+        "evidence_id": controls.semantic_evidence_document["evidence_id"],
+        "entry_count": len(entries),
+    }
+
+
+def _reviewed_waveform_metadata(
+    state: JsonDocument, generated: _GeneratedAudioStage
+) -> dict[str, object] | None:
+    if not generated.reviewed_waveform_records:
+        return None
+    return {
+        "batch_id": _required_mapping(
+            state.get("reviewed_waveform_publication"), "reviewed-waveform publication"
+        ).get("batch_id"),
+        "approved_count": len(generated.reviewed_waveform_records),
+        "synthesis_reproducibility": False,
+    }
+
+
+def _publish_staged_game_pack(
+    destination: Path,
+    controls: _StagedControls,
+    generation_lease: GenerationLease,
+    publication_lease: _PublicationLease,
+) -> None:
+    generation_lease.assert_owned()
+    publication_lease.assert_owned()
+    _assert_controls_unchanged(controls.inventory)
+    if _path_exists(destination):
+        raise FinalGamePackError(
+            f"Final game-pack destination already exists: {destination}"
+        )
+    try:
+        _rename_directory_no_replace(controls.directory, destination)
+    except (AtomicPublicationError, OSError) as error:
+        raise FinalGamePackError(
+            f"Unable to atomically publish final game pack: {error}"
+        ) from error
+    publication_lease.mark_committed()
+    generation_lease.mark_committed()
+
+
+def _publication_result(
+    request: _PublicationRequest,
+    game_id: str,
+    counts: dict[str, int],
+    queue_sha256: str,
+    state_sha256: str,
+) -> FinalGamePackResult:
+    destination = request.paths.destination
     return FinalGamePackResult(
         directory=destination,
         manifest=destination / "game-pack.json",
         live_sequence_plan=(
             None
-            if live_sequence_plan_path is None
+            if request.paths.live_sequence is None
             else destination / "story" / "live-sequence.json"
         ),
         source_audio_semantic_evidence=(
             None
-            if source_audio_semantic_evidence_path is None
+            if request.paths.semantic_evidence is None
             else destination / "story" / "source-audio-semantic-evidence.json"
         ),
-        game_id=resolved_game_id,
-        game_version=game_version,
+        game_id=game_id,
+        game_version=request.game_version,
         approved_count=counts["approved_count"],
         rejected_count=counts["rejected_count"],
         live_fallback_count=counts["live_fallback_count"],
@@ -759,8 +1037,7 @@ def _review_counts(state: JsonDocument) -> dict[str, int]:
             item.get("review_status") == "rejected" for item in items.values()
         ),
         "live_fallback_count": sum(
-            isinstance(item.get("live_fallback"), dict)
-            for item in items.values()
+            isinstance(item.get("live_fallback"), dict) for item in items.values()
         ),
         "omitted_count": sum(
             isinstance(item.get("audio_event_omission"), dict)
@@ -894,69 +1171,15 @@ def _copy_portable_voice_manifest_and_references(
     if not isinstance(raw_voices, list) or len(raw_voices) != len(entries):
         raise FinalGamePackError("Voice manifest entries changed during staging")
     for raw_entry, entry in zip(raw_voices, entries, strict=True):
-        configured_references = raw_entry.get("references")
-        if (
-            not isinstance(configured_references, list)
-            or tuple(configured_references) != entry.references
-        ):
-            raise FinalGamePackError("Voice manifest references changed during staging")
-        portable_references = []
-        for configured in entry.references:
-            relative = _safe_relative(configured, "Voice reference")
-            source = _contained_source(source_root, relative, "voice reference")
-            source_sha256 = _capture_control(source, inventory, "voice reference")
-            if relative.suffix.casefold() == ".wav":
-                portable = relative
-            else:
-                portable = relative.with_name(f"{relative.stem}.vntts-pcm16.wav")
-            destination = destination_root / Path(*portable.parts)
-            if destination in copied:
-                if copied[destination] != source_sha256:
-                    raise FinalGamePackError(
-                        f"Portable voice reference path collides: {portable.as_posix()}"
-                    )
-                portable_references.append(portable.as_posix())
-                continue
-            if portable == relative:
-                _copy_control(source, destination, inventory, "voice reference")
-            else:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    samples, sample_rate = sf.read(
-                        source, dtype="float32", always_2d=True
-                    )
-                    if samples.size == 0 or sample_rate < 1:
-                        raise ValueError("decoded reference is empty")
-                    mono = np.mean(samples, axis=1, dtype=np.float32)
-                    sf.write(
-                        destination,
-                        np.clip(mono, -1.0, 1.0),
-                        sample_rate,
-                        format="WAV",
-                        subtype="PCM_16",
-                    )
-                    info = probe_pcm16_mono_wav(destination)
-                except Exception as error:
-                    raise FinalGamePackError(
-                        f"Unable to project voice reference {source} to PCM16 WAV: {error}"
-                    ) from error
-                output_sha256 = sha256_file(destination)
-                projections.append(
-                    {
-                        "character": entry.character,
-                        "source_reference": relative.as_posix(),
-                        "source_sha256": source_sha256,
-                        "output_reference": portable.as_posix(),
-                        "output_sha256": output_sha256,
-                        "sample_rate": info.sample_rate,
-                        "sample_count": info.sample_count,
-                        "channels": 1,
-                        "subtype": "PCM_16",
-                    }
-                )
-            copied[destination] = source_sha256
-            portable_references.append(portable.as_posix())
-        raw_entry["references"] = portable_references
+        _copy_portable_voice_entry(
+            raw_entry,
+            entry,
+            source_root,
+            destination_root,
+            inventory,
+            copied,
+            projections,
+        )
     if not projections:
         return None
     source_manifest_sha256 = sha256_file(source_manifest)
@@ -974,6 +1197,136 @@ def _copy_portable_voice_manifest_and_references(
         "source_manifest_sha256": source_manifest_sha256,
         "output_manifest_sha256": sha256_file(destination_manifest),
         "entries": projections,
+    }
+
+
+def _copy_portable_voice_entry(
+    raw_entry: object,
+    entry: _VoiceEntry,
+    source_root: Path,
+    destination_root: Path,
+    inventory: Inventory,
+    copied: dict[Path, str],
+    projections: list[DecisionRecord],
+) -> None:
+    if not isinstance(raw_entry, dict):
+        raise FinalGamePackError("Voice manifest references changed during staging")
+    configured_references = raw_entry.get("references")
+    if (
+        not isinstance(configured_references, list)
+        or tuple(configured_references) != entry.references
+    ):
+        raise FinalGamePackError("Voice manifest references changed during staging")
+    portable_references = [
+        _copy_portable_voice_reference(
+            configured,
+            entry.character,
+            source_root,
+            destination_root,
+            inventory,
+            copied,
+            projections,
+        )
+        for configured in entry.references
+    ]
+    raw_entry["references"] = portable_references
+
+
+def _copy_portable_voice_reference(
+    configured: str,
+    character: str,
+    source_root: Path,
+    destination_root: Path,
+    inventory: Inventory,
+    copied: dict[Path, str],
+    projections: list[DecisionRecord],
+) -> str:
+    relative = _safe_relative(configured, "Voice reference")
+    source = _contained_source(source_root, relative, "voice reference")
+    source_sha256 = _capture_control(source, inventory, "voice reference")
+    portable = _portable_voice_reference_path(relative)
+    destination = destination_root / Path(*portable.parts)
+    if destination in copied:
+        if copied[destination] != source_sha256:
+            raise FinalGamePackError(
+                f"Portable voice reference path collides: {portable.as_posix()}"
+            )
+        return portable.as_posix()
+    _copy_or_project_voice_reference(
+        source,
+        relative,
+        portable,
+        destination,
+        character,
+        source_sha256,
+        inventory,
+        projections,
+    )
+    copied[destination] = source_sha256
+    return portable.as_posix()
+
+
+def _portable_voice_reference_path(relative: PurePosixPath) -> PurePosixPath:
+    if relative.suffix.casefold() == ".wav":
+        return relative
+    return relative.with_name(f"{relative.stem}.vntts-pcm16.wav")
+
+
+def _copy_or_project_voice_reference(
+    source: Path,
+    relative: PurePosixPath,
+    portable: PurePosixPath,
+    destination: Path,
+    character: str,
+    source_sha256: str,
+    inventory: Inventory,
+    projections: list[DecisionRecord],
+) -> None:
+    if portable == relative:
+        _copy_control(source, destination, inventory, "voice reference")
+        return
+    projections.append(
+        _project_voice_reference(
+            source, relative, portable, destination, character, source_sha256
+        )
+    )
+
+
+def _project_voice_reference(
+    source: Path,
+    relative: PurePosixPath,
+    portable: PurePosixPath,
+    destination: Path,
+    character: str,
+    source_sha256: str,
+) -> DecisionRecord:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        samples, sample_rate = sf.read(source, dtype="float32", always_2d=True)
+        if samples.size == 0 or sample_rate < 1:
+            raise ValueError("decoded reference is empty")
+        sf.write(
+            destination,
+            np.clip(np.mean(samples, axis=1, dtype=np.float32), -1.0, 1.0),
+            sample_rate,
+            format="WAV",
+            subtype="PCM_16",
+        )
+        info = probe_pcm16_mono_wav(destination)
+    except Exception as error:
+        raise FinalGamePackError(
+            f"Unable to project voice reference {source} to PCM16 WAV: {error}"
+        ) from error
+    return {
+        "character": character,
+        "source_reference": relative.as_posix(),
+        "source_sha256": source_sha256,
+        "output_reference": portable.as_posix(),
+        "output_sha256": sha256_file(destination),
+        "sample_rate": info.sample_rate,
+        "sample_count": info.sample_count,
+        "channels": 1,
+        "subtype": "PCM_16",
     }
 
 
@@ -1028,57 +1381,30 @@ def _validate_source_bindings(
     voice_manifest_sha256: str,
     reviewed_waveform_publication: object | None = None,
 ) -> bool:
-    def declared_binding(
-        path_field: str,
-        hash_field: str,
-        label: str,
-        migration_hash_field: str,
-        selected_sha256: str,
-    ) -> tuple[Path | None, str]:
-        declared_path = queue_metadata.get(path_field)
-        declared_hash = queue_metadata.get(hash_field)
-        if not isinstance(declared_path, str) or not declared_path.strip():
-            if (
-                isinstance(reviewed_waveform_publication, dict)
-                and reviewed_waveform_publication.get(migration_hash_field)
-                == selected_sha256
-            ):
-                return None, reviewed_waveform_publication[migration_hash_field]
-            raise FinalGamePackError(
-                f"Generation queue lacks required {label} source path binding; migrate it first"
-            )
-        if not isinstance(declared_hash, str) or len(declared_hash) != 64:
-            raise FinalGamePackError(
-                f"Generation queue lacks required {label} checksum binding; migrate it first"
-            )
-        bound_path = Path(declared_path).expanduser()
-        if not bound_path.is_absolute():
-            bound_path = queue_path.parent / bound_path
-        return bound_path.resolve(), declared_hash
-
-    story_path, declared_story_sha256 = declared_binding(
+    story_path, declared_story_sha256 = _declared_source_binding(
+        queue_metadata,
+        queue_path,
+        reviewed_waveform_publication,
         "source_story_index",
         "source_story_index_sha256",
         "story index",
         "selected_story_index_sha256",
         story_sha256,
     )
-    migrated_story_authorized = (
-        isinstance(reviewed_waveform_publication, dict)
-        and reviewed_waveform_publication.get("selected_story_index_sha256")
-        == story_sha256
+    migrated_story_authorized = _reviewed_waveform_selects(
+        reviewed_waveform_publication, "selected_story_index_sha256", story_sha256
     )
-    if declared_story_sha256 != story_sha256 and not migrated_story_authorized:
-        raise FinalGamePackError(
-            "Generation queue story index checksum does not match the selected source"
-        )
-    if story_path is not None and story_path != story_index_path.resolve():
-        if not migrated_story_authorized:
-            raise FinalGamePackError(
-                "Generation queue story index path does not match the selected source"
-            )
-
-    voice_path, declared_voice_sha256 = declared_binding(
+    _validate_story_source_binding(
+        story_path,
+        declared_story_sha256,
+        story_index_path,
+        story_sha256,
+        migrated_story_authorized,
+    )
+    voice_path, declared_voice_sha256 = _declared_source_binding(
+        queue_metadata,
+        queue_path,
+        reviewed_waveform_publication,
         "source_voice_manifest",
         "source_voice_manifest_sha256",
         "voice manifest",
@@ -1088,13 +1414,73 @@ def _validate_source_bindings(
     if voice_path is None:
         if declared_voice_sha256 != voice_manifest_sha256:
             raise FinalGamePackError(
-                "Reviewed-waveform voice manifest checksum does not match the selected source"
+                "Reviewed-waveform voice manifest checksum does not match the "
+                "selected source"
             )
         return False
     return (
         voice_path != voice_manifest_path.resolve()
         or declared_voice_sha256 != voice_manifest_sha256
     )
+
+
+def _declared_source_binding(
+    queue_metadata: Mapping[str, object],
+    queue_path: Path,
+    reviewed_waveform_publication: object | None,
+    path_field: str,
+    hash_field: str,
+    label: str,
+    migration_hash_field: str,
+    selected_sha256: str,
+) -> tuple[Path | None, str]:
+    declared_path = queue_metadata.get(path_field)
+    declared_hash = queue_metadata.get(hash_field)
+    if not isinstance(declared_path, str) or not declared_path.strip():
+        if _reviewed_waveform_selects(
+            reviewed_waveform_publication, migration_hash_field, selected_sha256
+        ):
+            return None, selected_sha256
+        raise FinalGamePackError(
+            f"Generation queue lacks required {label} source path binding; "
+            "migrate it first"
+        )
+    if not isinstance(declared_hash, str) or len(declared_hash) != 64:
+        raise FinalGamePackError(
+            f"Generation queue lacks required {label} checksum binding; "
+            "migrate it first"
+        )
+    path = Path(declared_path).expanduser()
+    if not path.is_absolute():
+        path = queue_path.parent / path
+    return path.resolve(), declared_hash
+
+
+def _reviewed_waveform_selects(
+    publication: object | None, field: str, selected_sha256: str
+) -> bool:
+    return isinstance(publication, dict) and publication.get(field) == selected_sha256
+
+
+def _validate_story_source_binding(
+    declared_path: Path | None,
+    declared_sha256: str,
+    selected_path: Path,
+    selected_sha256: str,
+    migrated_authorized: bool,
+) -> None:
+    if declared_sha256 != selected_sha256 and not migrated_authorized:
+        raise FinalGamePackError(
+            "Generation queue story index checksum does not match the selected source"
+        )
+    if (
+        declared_path is not None
+        and declared_path != selected_path.resolve()
+        and not migrated_authorized
+    ):
+        raise FinalGamePackError(
+            "Generation queue story index path does not match the selected source"
+        )
 
 
 def _load_stable_state(
@@ -1143,257 +1529,420 @@ def _verify_voice_control_provenance(
     failure_reference_document: JsonDocument | None = None,
 ) -> DecisionRecord | None:
     migrated = reviewed_waveform_publication_queue_ids(state)
-    registry = state.get("synthesis_controls")
-    if not isinstance(registry, dict):
-        if any(
-            result.get("status") == "approved" and queue_id not in migrated
-            for queue_id, result in _state_items(state).items()
-        ):
-            raise FinalGamePackError(
-                "Generation state lacks per-control synthesis provenance; regenerate or migrate it first"
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    registry = _synthesis_controls_registry(state, migrated)
+    requirements = _voice_control_requirements(voice_manifest_path, voice_entries)
+    overrides = _voice_override_controls(
+        voice_document,
+        queue_by_id,
+        voice_entries,
+        failure_reference_binding_path,
+        failure_reference_document,
+    )
+    migrated_selection = _migrated_narrator_selection(
+        state, voice_manifest_path, requirements.narrator_reference_bindings
+    )
+    selections: set[tuple[str, str]] = set()
+    for queue_id, result in _state_items(state).items():
+        if _requires_voice_provenance(queue_id, result, migrated):
+            selections.update(
+                _verify_state_voice_controls(
+                    queue_id,
+                    result,
+                    queue_by_id,
+                    registry,
+                    requirements,
+                    overrides,
+                    failure_reference_binding_path,
+                )
             )
-        registry = {}
-    required_paths: dict[Path, tuple[str, Callable[[str], bool]]] = {
+    if len(selections) > 1:
+        raise FinalGamePackError("Generation state mixes multiple narrator selections")
+    return _resolved_narrator_selection(selections, migrated_selection)
+
+
+def _synthesis_controls_registry(
+    state: JsonDocument, migrated: Set[str]
+) -> dict[str, object]:
+    registry = state.get("synthesis_controls")
+    if isinstance(registry, dict):
+        return registry
+    if any(
+        result.get("status") == "approved" and queue_id not in migrated
+        for queue_id, result in _state_items(state).items()
+    ):
+        raise FinalGamePackError(
+            "Generation state lacks per-control synthesis provenance; regenerate "
+            "or migrate it first"
+        )
+    return {}
+
+
+def _voice_control_requirements(
+    voice_manifest_path: Path, voice_entries: Sequence[_VoiceEntry]
+) -> _VoiceControlRequirements:
+    required_paths: VoiceControlPaths = {
         voice_manifest_path.resolve(): (
             _source_sha256(voice_manifest_path, "voice manifest"),
             lambda role: role == "voice_manifest",
         )
     }
+    bindings: dict[str, set[tuple[Path, str]]] = {}
     source_root = voice_manifest_path.parent.resolve()
-    narrator_reference_bindings: dict[str, set[tuple[Path, str]]] = {}
     for entry in voice_entries:
-        names = (entry.character, *entry.aliases)
-        for configured in entry.references:
-            relative = _safe_relative(configured, "Voice reference")
-            source = _contained_source(source_root, relative, "voice reference")
-            digest = _source_sha256(source, "voice reference")
-            required_paths[source] = (
-                digest,
-                lambda role: role.startswith("voice_reference:"),
+        _add_voice_entry_control_requirements(
+            entry, source_root, required_paths, bindings
+        )
+    return _VoiceControlRequirements(required_paths, bindings)
+
+
+def _add_voice_entry_control_requirements(
+    entry: _VoiceEntry,
+    source_root: Path,
+    required_paths: VoiceControlPaths,
+    bindings: dict[str, set[tuple[Path, str]]],
+) -> None:
+    for configured in entry.references:
+        relative = _safe_relative(configured, "Voice reference")
+        source = _contained_source(source_root, relative, "voice reference")
+        digest = _source_sha256(source, "voice reference")
+        required_paths[source] = (
+            digest,
+            lambda role: role.startswith("voice_reference:"),
+        )
+        for name in (entry.character, *entry.aliases):
+            bindings.setdefault(normalize_character_name(name), set()).add(
+                (source, digest)
             )
-            for name in names:
-                narrator_reference_bindings.setdefault(
-                    normalize_character_name(name), set()
-                ).add((source, digest))
-    queue_by_id = {item.queue_id: item for item in queue.items}
+
+
+def _voice_override_controls(
+    voice_document: JsonDocument,
+    queue_by_id: dict[str, _QueueItem],
+    voice_entries: Sequence[_VoiceEntry],
+    failure_reference_binding_path: Path | None,
+    failure_reference_document: JsonDocument | None,
+) -> _VoiceOverrideControls:
     try:
-        queue_voice_overrides = queue_voice_overrides_from_manifest(
-            voice_document,
-            queue_ids=queue_by_id,
-            voices=voice_entries,
+        queue_overrides = dict(
+            queue_voice_overrides_from_manifest(
+                voice_document, queue_ids=queue_by_id, voices=voice_entries
+            )
         )
     except SourceReferenceBindingError as error:
         raise FinalGamePackError(str(error)) from error
-    queue_voice_overrides_digest = (
-        queue_voice_overrides_sha256(queue_voice_overrides)
-        if queue_voice_overrides
-        else None
+    queue_digest = (
+        queue_voice_overrides_sha256(queue_overrides) if queue_overrides else None
     )
-    failure_reference_overrides = {}
-    failure_reference_paths: dict[Path, tuple[str, Callable[[str], bool]]] = {}
-    combined_overrides = dict(queue_voice_overrides)
-    combined_overrides_digest = queue_voice_overrides_digest
-    if failure_reference_document is not None:
-        if failure_reference_binding_path is None:
-            raise FinalGamePackError(
-                "Failure-reference binding document has no source path"
-            )
-        failure_reference_overrides = dict(
-            _text_mapping(
-                failure_reference_document.get("queue_voice_overrides"),
-                "failure-reference voice overrides",
-            )
+    failure, paths = _failure_reference_override_controls(
+        failure_reference_binding_path, failure_reference_document
+    )
+    combined = {**queue_overrides, **failure}
+    combined_digest = (
+        queue_voice_overrides_sha256(combined) if failure else queue_digest
+    )
+    return _VoiceOverrideControls(
+        queue_overrides, failure, combined, queue_digest, combined_digest, paths
+    )
+
+
+def _failure_reference_override_controls(
+    path: Path | None, document: JsonDocument | None
+) -> tuple[dict[str, str], VoiceControlPaths]:
+    if document is None:
+        return {}, {}
+    if path is None:
+        raise FinalGamePackError(
+            "Failure-reference binding document has no source path"
         )
-        combined_overrides.update(failure_reference_overrides)
-        combined_overrides_digest = queue_voice_overrides_sha256(combined_overrides)
-        binding_digest = _source_sha256(
-            failure_reference_binding_path, "failure-reference binding"
-        )
-        failure_reference_paths[failure_reference_binding_path.resolve()] = (
-            binding_digest,
+    overrides = _text_mapping(
+        document.get("queue_voice_overrides"), "failure-reference voice overrides"
+    )
+    controls: VoiceControlPaths = {
+        path.resolve(): (
+            _source_sha256(path, "failure-reference binding"),
             lambda role: role == "failure_reference_binding",
         )
-        binding_root = failure_reference_binding_path.parent.resolve()
-        for group in _mapping_sequence(
-            failure_reference_document.get("groups"),
-            "failure-reference groups",
-        ):
-            relative = _safe_relative(group["reference"], "Selected reference")
-            source = _contained_source(binding_root, relative, "selected reference")
-            digest = _source_sha256(source, "selected reference")
-            if digest != group["reference_sha256"]:
-                raise FinalGamePackError("Failure-reference selected audio changed")
-            failure_reference_paths[source] = (
-                digest,
-                lambda role: role.startswith("failure_reference_selected:"),
-            )
-    narrator_selections = set()
-    migrated_narrator_selection = None
+    }
+    root = path.parent.resolve()
+    for group in _mapping_sequence(document.get("groups"), "failure-reference groups"):
+        _add_failure_reference_control(group, root, controls)
+    return overrides, controls
+
+
+def _add_failure_reference_control(
+    group: dict[str, object], root: Path, controls: VoiceControlPaths
+) -> None:
+    relative = _safe_relative(group["reference"], "Selected reference")
+    source = _contained_source(root, relative, "selected reference")
+    digest = _source_sha256(source, "selected reference")
+    if digest != group["reference_sha256"]:
+        raise FinalGamePackError("Failure-reference selected audio changed")
+    controls[source] = (
+        digest,
+        lambda role: role.startswith("failure_reference_selected:"),
+    )
+
+
+def _migrated_narrator_selection(
+    state: JsonDocument,
+    voice_manifest_path: Path,
+    bindings: dict[str, set[tuple[Path, str]]],
+) -> DecisionRecord | None:
     publication = state.get("reviewed_waveform_publication")
-    if isinstance(publication, dict):
-        if publication["selected_voice_manifest_sha256"] != _source_sha256(
-            voice_manifest_path, "voice manifest"
-        ):
-            raise FinalGamePackError(
-                "Reviewed-waveform publication belongs to a different voice manifest"
-            )
-        narrator_character = publication["narrator_character"]
-        bindings = narrator_reference_bindings.get(
-            normalize_character_name(narrator_character), set()
+    if not isinstance(publication, dict):
+        return None
+    if publication["selected_voice_manifest_sha256"] != _source_sha256(
+        voice_manifest_path, "voice manifest"
+    ):
+        raise FinalGamePackError(
+            "Reviewed-waveform publication belongs to a different voice manifest"
         )
-        configured_digests = sorted({digest for _path, digest in bindings})
-        if configured_digests != publication["narrator_reference_sha256s"]:
-            raise FinalGamePackError("Reviewed-waveform narrator binding changed")
-        migrated_narrator_selection = {
-            "character": narrator_character,
-            "reference_sha256s": configured_digests,
+    character = publication["narrator_character"]
+    configured_digests = sorted(
+        {
+            digest
+            for _path, digest in bindings.get(
+                normalize_character_name(character), set()
+            )
         }
-    for queue_id, result in _state_items(state).items():
-        if result.get("status") in {"live_fallback", "omitted"} or (
-            result.get("status") == "generated"
-            and result.get("review_status") == "rejected"
-        ):
-            continue
-        if queue_id in migrated:
-            continue
-        provenance = result.get("synthesis_provenance_sha256")
-        controls = registry.get(provenance)
-        if not isinstance(controls, list):
-            raise FinalGamePackError(
-                f"State item {queue_id!r} lacks its exact synthesis-control inventory"
-            )
-        provenance_document = {
-            "provider": result.get("provider"),
-            "model": result.get("model"),
-            "generation_profile": result.get("generation_profile"),
-            "text_transform": result.get("text_transform"),
-            "controls": [
-                {"role": control["role"], "sha256": control["sha256"]}
-                for control in controls
-            ],
-        }
-        configuration = result.get("synthesis_configuration")
-        if configuration is not None:
-            provenance_document.update(
-                _required_mapping(configuration, "synthesis configuration")
-            )
-        calculated = canonical_document_sha256(provenance_document)
-        if calculated != provenance:
-            raise FinalGamePackError(
-                f"State item {queue_id!r} synthesis provenance is inconsistent"
-            )
-        controls_by_path = {
-            Path(control["path"]).expanduser().resolve(): control
+    )
+    if configured_digests != publication["narrator_reference_sha256s"]:
+        raise FinalGamePackError("Reviewed-waveform narrator binding changed")
+    return {"character": character, "reference_sha256s": configured_digests}
+
+
+def _requires_voice_provenance(
+    queue_id: str, result: dict[str, object], migrated: Set[str]
+) -> bool:
+    if result.get("status") in {"live_fallback", "omitted"}:
+        return False
+    if (
+        result.get("status") == "generated"
+        and result.get("review_status") == "rejected"
+    ):
+        return False
+    return queue_id not in migrated
+
+
+def _verify_state_voice_controls(
+    queue_id: str,
+    result: dict[str, object],
+    queue_by_id: dict[str, _QueueItem],
+    registry: dict[str, object],
+    requirements: _VoiceControlRequirements,
+    overrides: _VoiceOverrideControls,
+    failure_reference_binding_path: Path | None,
+) -> set[tuple[str, str]]:
+    controls = _state_synthesis_controls(queue_id, result, registry)
+    controls_by_path = _control_paths(controls)
+    _verify_control_paths(
+        requirements.required_paths,
+        controls_by_path,
+        queue_id,
+        "Voice input",
+    )
+    binding_present = (
+        failure_reference_binding_path is not None
+        and failure_reference_binding_path.resolve() in controls_by_path
+    )
+    if binding_present:
+        _verify_control_paths(
+            overrides.failure_paths,
+            controls_by_path,
+            queue_id,
+            "Failure-reference input",
+            include_path=False,
+        )
+    _verify_source_reference_binding(
+        queue_id,
+        result,
+        queue_by_id[queue_id],
+        overrides,
+        binding_present,
+    )
+    return _verify_narrator_controls(
+        queue_id,
+        result,
+        queue_by_id[queue_id],
+        controls,
+        requirements.narrator_reference_bindings,
+    )
+
+
+def _state_synthesis_controls(
+    queue_id: str, result: dict[str, object], registry: dict[str, object]
+) -> list[dict[str, object]]:
+    provenance = result.get("synthesis_provenance_sha256")
+    controls = registry.get(provenance) if isinstance(provenance, str) else None
+    if not isinstance(controls, list):
+        raise FinalGamePackError(
+            f"State item {queue_id!r} lacks its exact synthesis-control inventory"
+        )
+    provenance_document = {
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "generation_profile": result.get("generation_profile"),
+        "text_transform": result.get("text_transform"),
+        "controls": [
+            {"role": control["role"], "sha256": control["sha256"]}
             for control in controls
-            if control.get("kind") == "file"
-        }
-        for path, (digest, role_matches) in required_paths.items():
-            control = controls_by_path.get(path)
-            if (
-                control is None
-                or not role_matches(control.get("role", ""))
-                or control.get("sha256") != digest
-            ):
-                raise FinalGamePackError(
-                    f"Voice input {path} does not match synthesis controls for {queue_id!r}"
-                )
-        binding_controls_present = bool(
-            failure_reference_binding_path is not None
-            and failure_reference_binding_path.resolve() in controls_by_path
+        ],
+    }
+    configuration = result.get("synthesis_configuration")
+    if configuration is not None:
+        provenance_document.update(
+            _required_mapping(configuration, "synthesis configuration")
         )
-        if binding_controls_present:
-            for path, (digest, role_matches) in failure_reference_paths.items():
-                control = controls_by_path.get(path)
-                if (
-                    control is None
-                    or not role_matches(control.get("role", ""))
-                    or control.get("sha256") != digest
-                ):
-                    raise FinalGamePackError(
-                        "Failure-reference input does not match synthesis controls "
-                        f"for {queue_id!r}"
-                    )
-        item = queue_by_id[queue_id]
-        narrator_controls = [
-            control
-            for control in controls
-            if str(control.get("role", "")).startswith("narrator_selection:")
-        ]
-        synthesis_character: Callable[[str, str | None], str] = (
-            synthesis_character_for_line
+    if canonical_document_sha256(provenance_document) != provenance:
+        raise FinalGamePackError(
+            f"State item {queue_id!r} synthesis provenance is inconsistent"
         )
-        effective_character = result.get("voice_character") or synthesis_character(
-            item.speaker, item.voice_character
-        )
-        expected_override = combined_overrides.get(queue_id)
-        binding = result.get("source_reference_binding")
-        expected_override_digest = (
-            combined_overrides_digest
-            if binding_controls_present
-            else queue_voice_overrides_digest
-        )
-        if queue_id in failure_reference_overrides and not binding_controls_present:
+    return [_required_mapping(control, "synthesis control") for control in controls]
+
+
+def _control_paths(
+    controls: Sequence[dict[str, object]],
+) -> dict[Path, dict[str, object]]:
+    paths: dict[Path, dict[str, object]] = {}
+    for control in controls:
+        path = control.get("path")
+        if control.get("kind") == "file" and isinstance(path, str):
+            paths[Path(path).expanduser().resolve()] = control
+    return paths
+
+
+def _verify_control_paths(
+    required: VoiceControlPaths,
+    controls_by_path: dict[Path, dict[str, object]],
+    queue_id: str,
+    label: str,
+    *,
+    include_path: bool = True,
+) -> None:
+    for path, (digest, role_matches) in required.items():
+        control = controls_by_path.get(path)
+        if (
+            control is None
+            or not _control_role_matches(control, role_matches)
+            or control.get("sha256") != digest
+        ):
+            detail = f"{label} {path}" if include_path else label
             raise FinalGamePackError(
-                f"Failure-reference controls are missing for {queue_id!r}"
+                f"{detail} does not match synthesis controls for {queue_id!r}"
             )
-        if expected_override is not None:
-            if (
-                effective_character != expected_override
-                or not isinstance(binding, dict)
-                or binding.get("queue_voice_overrides_sha256")
-                != expected_override_digest
-            ):
-                raise FinalGamePackError(
-                    f"Source-reference voice binding is missing for {queue_id!r}"
-                )
-        elif binding is not None:
+
+
+def _control_role_matches(control: dict[str, object], matcher: RoleMatcher) -> bool:
+    role = control.get("role")
+    return isinstance(role, str) and matcher(role)
+
+
+def _verify_source_reference_binding(
+    queue_id: str,
+    result: dict[str, object],
+    item: _QueueItem,
+    overrides: _VoiceOverrideControls,
+    binding_present: bool,
+) -> None:
+    if queue_id in overrides.failure and not binding_present:
+        raise FinalGamePackError(
+            f"Failure-reference controls are missing for {queue_id!r}"
+        )
+    effective_character = result.get("voice_character") or synthesis_character_for_line(
+        item.speaker, item.voice_character
+    )
+    expected = overrides.combined.get(queue_id)
+    binding = result.get("source_reference_binding")
+    expected_digest = (
+        overrides.combined_digest if binding_present else overrides.queue_digest
+    )
+    if expected is None:
+        if binding is not None:
             raise FinalGamePackError(
                 f"State item {queue_id!r} has an unselected source-reference binding"
             )
-        if effective_character == "Narrator" and len(narrator_controls) != 1:
-            raise FinalGamePackError(
-                f"Narrator item {queue_id!r} lacks one role-bound narrator selection"
-            )
-        for control in narrator_controls:
-            character = control["role"].removeprefix("narrator_selection:")
-            configured_bindings = narrator_reference_bindings.get(
-                normalize_character_name(character), set()
-            )
-            try:
-                control_path = Path(control["path"]).expanduser().resolve()
-            except KeyError, TypeError, OSError:
-                control_path = None
-            if (
-                control.get("kind") != "file"
-                or (control_path, control.get("sha256")) not in configured_bindings
-            ):
-                raise FinalGamePackError(
-                    f"Narrator selection for {queue_id!r} is not role-bound to "
-                    f"the selected voice manifest character {character!r}"
-                )
-            narrator_selections.add(
-                (
-                    character,
-                    control["sha256"],
-                )
-            )
-    if len(narrator_selections) > 1:
-        raise FinalGamePackError("Generation state mixes multiple narrator selections")
-    if migrated_narrator_selection is not None:
-        if narrator_selections:
-            character, digest = next(iter(narrator_selections))
+        return
+    if (
+        effective_character != expected
+        or not isinstance(binding, dict)
+        or binding.get("queue_voice_overrides_sha256") != expected_digest
+    ):
+        raise FinalGamePackError(
+            f"Source-reference voice binding is missing for {queue_id!r}"
+        )
+
+
+def _verify_narrator_controls(
+    queue_id: str,
+    result: dict[str, object],
+    item: _QueueItem,
+    controls: Sequence[dict[str, object]],
+    bindings: dict[str, set[tuple[Path, str]]],
+) -> set[tuple[str, str]]:
+    narrator_controls = [
+        control
+        for control in controls
+        if str(control.get("role", "")).startswith("narrator_selection:")
+    ]
+    effective_character = result.get("voice_character") or synthesis_character_for_line(
+        item.speaker, item.voice_character
+    )
+    if effective_character == "Narrator" and len(narrator_controls) != 1:
+        raise FinalGamePackError(
+            f"Narrator item {queue_id!r} lacks one role-bound narrator selection"
+        )
+    return {
+        _narrator_selection_from_control(queue_id, control, bindings)
+        for control in narrator_controls
+    }
+
+
+def _narrator_selection_from_control(
+    queue_id: str,
+    control: dict[str, object],
+    bindings: dict[str, set[tuple[Path, str]]],
+) -> tuple[str, str]:
+    character = str(control["role"]).removeprefix("narrator_selection:")
+    try:
+        path_value = control["path"]
+        path = (
+            Path(path_value).expanduser().resolve()
+            if isinstance(path_value, str)
+            else None
+        )
+    except KeyError, TypeError, OSError:
+        path = None
+    if control.get("kind") != "file" or (
+        path,
+        control.get("sha256"),
+    ) not in bindings.get(normalize_character_name(character), set()):
+        raise FinalGamePackError(
+            f"Narrator selection for {queue_id!r} is not role-bound to "
+            f"the selected voice manifest character {character!r}"
+        )
+    return character, str(control["sha256"])
+
+
+def _resolved_narrator_selection(
+    selections: set[tuple[str, str]], migrated: DecisionRecord | None
+) -> DecisionRecord | None:
+    if migrated is not None:
+        if selections:
+            character, digest = next(iter(selections))
             if (
                 normalize_character_name(character)
-                != normalize_character_name(migrated_narrator_selection["character"])
-                or digest not in migrated_narrator_selection["reference_sha256s"]
+                != normalize_character_name(str(migrated["character"]))
+                or not isinstance(migrated["reference_sha256s"], list)
+                or digest not in migrated["reference_sha256s"]
             ):
                 raise FinalGamePackError(
                     "Reviewed and reproducible narrator selections conflict"
                 )
-        return migrated_narrator_selection
-    if not narrator_selections:
+        return migrated
+    if not selections:
         return None
-    character, digest = next(iter(narrator_selections))
+    character, digest = next(iter(selections))
     return {"character": character, "reference_sha256": digest}
 
 
@@ -1460,9 +2009,7 @@ def _path_exists(path: str | Path) -> bool:
 
 
 def _required_mapping(value: object, label: str) -> dict[str, object]:
-    if not isinstance(value, Mapping) or not all(
-        isinstance(key, str) for key in value
-    ):
+    if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
         raise FinalGamePackError(f"{label.capitalize()} is invalid")
     return {str(key): item for key, item in value.items()}
 
