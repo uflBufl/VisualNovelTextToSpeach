@@ -1052,11 +1052,12 @@ class GameNarratorDialog(QDialog):
                             "Expected exactly one selected voice reference"
                         )
                     source_id = choices[0].id
-                registry = (
-                    self._catalog_registry
-                    if mode in {"preset", "catalog"}
-                    else CharacterVoiceRegistry.from_file(manifest)
-                )
+                if mode in {"preset", "catalog"}:
+                    registry = self._catalog_registry
+                else:
+                    if manifest is None:
+                        raise ValueError("Voice manifest is required")
+                    registry = CharacterVoiceRegistry.from_file(manifest)
                 remember_voice_binding(
                     proposed_library,
                     registry,
