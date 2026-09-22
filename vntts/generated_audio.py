@@ -25,6 +25,7 @@ from vntts_artifacts.generated_audio import (
     load_generated_audio_document,
 )
 
+from vntts.audio_cache import BoundedCache
 from vntts.audio_output import (
     PlaybackAudioOutput,
     match_output_sample_rate,
@@ -44,7 +45,7 @@ from vntts.playback import (
 )
 from vntts.settings import audio_source_policies
 from vntts.speech_backend_contract import SpeechBackend
-from vntts.speech_backend_runtime import BoundedCache, validate_speed, validate_volume
+from vntts.speech_backend_runtime import validate_speed, validate_volume
 from vntts.voices import is_unattributed_speaker, synthesis_character
 
 LIVE_FALLBACK_REASONS = frozenset(

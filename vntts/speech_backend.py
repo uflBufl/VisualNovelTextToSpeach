@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 from vntts_artifacts.atomic_io import atomic_output_path
 
 from vntts.application_directories import get_local_data_directory
-from vntts.audio_cache import PersistentAudioCache
+from vntts.audio_cache import BoundedCache, PersistentAudioCache
 from vntts.audio_output import (
     AudioOutput,
     StreamingAudioStream,
@@ -39,7 +39,6 @@ from vntts.services.tts_engine import (
 )
 from vntts.speech_backend_contract import SpeechBackend, SpeechBackendCapabilities
 from vntts.speech_backend_runtime import (
-    BoundedCache,
     SpeechCacheKeyFactory,
     activate_backend_runtime,
     validate_speed,

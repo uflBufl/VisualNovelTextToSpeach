@@ -97,7 +97,7 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
                 "file_sha256": hashlib.sha256(b"wav").hexdigest(),
             }
             snapshots = []
-            copy_generation_wavs(
+            owners = copy_generation_wavs(
                 root / "base",
                 root / "output",
                 {"items": {"line-1": item}},
@@ -107,6 +107,7 @@ class AuthoringWorkspaceFoundationTest(unittest.TestCase):
             )
             self.assertEqual((root / "output/audio.wav").read_bytes(), b"wav")
             self.assertEqual(snapshots, [(source.resolve(), item["file_sha256"])])
+            self.assertEqual(owners, {"audio.wav": "line-1"})
 
             source.write_bytes(b"changed")
             with self.assertRaisesRegex(FoundationError, "changed"):

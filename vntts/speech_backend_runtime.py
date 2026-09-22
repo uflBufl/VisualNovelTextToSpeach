@@ -1,15 +1,14 @@
-"""Shared cache identity, bounded memory, and settings for speech backends."""
+"""Shared cache identity and settings for speech backends."""
 
 from __future__ import annotations
 
 import os
 import re
 import sys
-from collections import OrderedDict
 from functools import lru_cache
 from hashlib import blake2b
 from pathlib import Path
-from typing import Generic, Protocol, TypeAlias, TypeVar
+from typing import Protocol, TypeAlias
 
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -21,35 +20,7 @@ from vntts.runtime_paths import (
 from vntts.services.tts_engine import TTSConfigurationError
 
 PathInput: TypeAlias = str | Path
-CacheKey = TypeVar("CacheKey")
-CacheValue = TypeVar("CacheValue")
-
 _managed_runtime_uses: dict[str, object] = {}
-
-
-class BoundedCache(Generic[CacheKey, CacheValue]):
-    """Small least-recently-used cache with a deliberately minimal interface."""
-
-    def __init__(self, max_entries: int) -> None:
-        self.max_entries = max(0, int(max_entries))
-        self._values: OrderedDict[CacheKey, CacheValue] = OrderedDict()
-
-    def get(self, key: CacheKey) -> CacheValue | None:
-        value = self._values.pop(key, None)
-        if value is not None:
-            self._values[key] = value
-        return value
-
-    def put(self, key: CacheKey, value: CacheValue) -> None:
-        if self.max_entries == 0:
-            return
-        self._values.pop(key, None)
-        self._values[key] = value
-        while len(self._values) > self.max_entries:
-            self._values.popitem(last=False)
-
-    def clear(self) -> None:
-        self._values.clear()
 
 
 def shutdown_speech_backend(backend: object) -> None:

@@ -192,3 +192,9 @@ Planned implementation order after approval:
       SoundEffect v2 using a small fixed corpus and multiple checksum-bound seeds.
       Require technical and blinded perceptual approval before adding a provider;
       unsupported effects remain explicit omissions.
+
+## P2 - Consolidate authoring staging
+
+- [ ] Share the base workspace staging steps used by audio-event omission and
+      spoken-projection fallback. Keep their terminal state mutations and
+      validators separate. Gate: repeat-call and changed-authority tests pass.

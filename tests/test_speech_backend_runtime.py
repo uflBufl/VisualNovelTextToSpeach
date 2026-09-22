@@ -4,9 +4,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from vntts.audio_cache import BoundedCache
 from vntts.services.tts_engine import TTSConfigurationError
 from vntts.speech_backend_runtime import (
-    BoundedCache,
     activate_backend_runtime,
     validate_speed,
     validate_volume,
