@@ -86,6 +86,36 @@ class RetainedMossRuntimeTests(unittest.TestCase):
         self.assertEqual(created[1].shutdowns, 1)
 
     @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
+    def test_recreates_backend_when_language_changes(self, _):
+        created = []
+
+        def factory(registry, **options):
+            backend = _Backend(registry, **options)
+            created.append(backend)
+            return backend
+
+        runtime = RetainedMossRuntime(
+            "/tmp/vntts-moss-runtime-test", backend_factory=factory
+        )
+        first = runtime.backend_for("first", model_name="model-a", language="English")
+        same_language = runtime.backend_for(
+            "second", model_name="model-a", language="English"
+        )
+        self.assertEqual(len(created), 1)
+        self.assertEqual(same_language.render(None).collect(), "second")
+        changed_language = runtime.backend_for(
+            "third", model_name="model-a", language="Russian"
+        )
+
+        self.assertEqual(len(created), 2)
+        self.assertEqual(created[0].shutdowns, 1)
+        self.assertEqual(created[0].options["language"], "English")
+        self.assertEqual(created[1].options["language"], "Russian")
+        self.assertEqual(changed_language.render(None).collect(), "third")
+        first.shutdown()
+        runtime.shutdown()
+
+    @patch("vntts.moss_runtime.moss_cpp_requested", return_value=True)
     def test_cached_playback_does_not_hold_the_generation_lock(self, _):
         runtime = RetainedMossRuntime(
             "/tmp/vntts-moss-runtime-test", backend_factory=_Backend
