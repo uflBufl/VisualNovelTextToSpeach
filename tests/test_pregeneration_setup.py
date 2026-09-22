@@ -554,6 +554,35 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         self._voice_library_patch.stop()
         self._voice_library_directory.cleanup()
 
+    def test_worker_callbacks_fail_closed_on_malformed_success_payloads(self):
+        dialog = OfflineAudioPreparationDialog(
+            AppSettings(),
+            discovery=lambda: ContentDiscovery(()),
+            thread_pool=ManualThreadPool(),
+        )
+        self.addCleanup(dialog.deleteLater)
+
+        dialog._checking_story = ("source", "story", None)
+        dialog._story_audio_finished(object(), None)
+        self.assertIsInstance(
+            dialog._story_audio_checks[("source", "story", None)][2], TypeError
+        )
+
+        dialog.preparing_inputs = True
+        dialog._generation_input_finished(object(), None)
+        self.assertFalse(dialog.preparing_inputs)
+        self.assertIn("invalid input", dialog.resume_status.text())
+
+        dialog.planning_voices = True
+        dialog._voice_plan_finished(object(), None)
+        self.assertFalse(dialog.planning_voices)
+        self.assertIn("invalid voice plan", dialog.resume_status.text())
+
+        dialog.generating = True
+        dialog._generation_finished(object(), None)
+        self.assertFalse(dialog.generating)
+        self.assertIn("invalid result", dialog.resume_status.text())
+
     def run_next_task(self, pool):
         pool.tasks.pop().run()
         self.application.processEvents()
@@ -2069,7 +2098,9 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
 
             dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
             dialog.change_voices.setChecked(True)
-            self.assertIn("clears saved character choices", plain_label_text(dialog.summary))
+            self.assertIn(
+                "clears saved character choices", plain_label_text(dialog.summary)
+            )
             dialog.continue_button.click()
             self.run_next_task(pool)
 

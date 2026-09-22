@@ -2,6 +2,7 @@
 
 from threading import Event
 from time import monotonic
+from typing import TypeGuard
 
 from PySide6.QtCore import QSignalBlocker, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
@@ -40,6 +41,7 @@ from vntts.pregeneration_audition_ui import VoiceAuditionPanel, VoiceAuditionUIE
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationProgress,
+    OfflineGenerationResult,
     OfflineGenerationWorker,
     runtime_progress_manifest_path,
 )
@@ -48,6 +50,7 @@ from vntts.pregeneration_pack import (
     OfflinePackPublisher,
     OfflinePackResult,
     OfflinePreparationChanges,
+    StoryAudioCoverage,
     inspect_story_audio,
     load_saved_pack,
 )
@@ -59,6 +62,7 @@ from vntts.pregeneration_queue import (
 from vntts.pregeneration_recovery import OfflineRecoveryResult, OfflineRecoveryWorker
 from vntts.pregeneration_setup import (
     ContentDiscovery,
+    GenerationResourceEstimate,
     PregenerationJobStore,
     PregenerationSetupError,
     StorySelection,
@@ -71,6 +75,7 @@ from vntts.pregeneration_voices import (
     PregenerationVoiceCancelled,
     PregenerationVoiceError,
     VoiceDecisionStore,
+    VoicePlan,
     VoicePlanStore,
     pregeneration_narrator_source_id,
     resolve_pregeneration_settings,
@@ -2010,14 +2015,20 @@ class OfflineAudioPreparationDialog(QDialog):
             )
             return
 
-    def _story_audio_finished(self, result, error):
+    def _story_audio_finished(self, result: object, error: Exception | None) -> None:
         self.check_story_audio.setEnabled(
             self.stories.currentItem() is not None and not self.has_pending_work()
         )
         if self._checking_story is None:
             return
         key = self._checking_story
-        saved, active, speakers = result if error is None else (None, None, ())
+        if error is None and not _is_story_audio_result(result):
+            error = TypeError("Story audio check returned an invalid result")
+        if error is None:
+            assert _is_story_audio_result(result)
+            saved, active, speakers = result
+        else:
+            saved, active, speakers = None, None, ()
         self._story_playback_speakers[key] = speakers
         self._story_audio_checks[key] = (saved, active, error)
         self._checking_story = None
@@ -2722,8 +2733,10 @@ class OfflineAudioPreparationDialog(QDialog):
         if self.planning_voices and not self._close_after_voice_cancel:
             self.resume_status.setText(message)
 
-    def _voice_plan_finished(self, plan, error):
+    def _voice_plan_finished(self, plan: object, error: Exception | None) -> None:
         self.planning_voices = False
+        if error is None and not _is_voice_plan_result(plan):
+            error = TypeError("Voice matching returned an invalid voice plan")
         if error is not None or self._close_after_voice_cancel:
             restore_error = self._restore_provisional_bindings()
             if restore_error is not None:
@@ -2763,6 +2776,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.importer.allow_decoder_homebrew = True
                 self._save_selection()
             return
+        assert _is_voice_plan_result(plan)
         self._voice_plan = plan
         self.replanning_voice_decisions = False
         if (
@@ -2861,7 +2875,9 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         return prepared, changes, resources
 
-    def _generation_input_finished(self, prepared, error):
+    def _generation_input_finished(
+        self, prepared: object, error: Exception | None
+    ) -> None:
         self.preparing_inputs = False
         self.cancel_button.setText("Cancel")
         self.cancel_button.setEnabled(True)
@@ -2869,6 +2885,8 @@ class OfflineAudioPreparationDialog(QDialog):
         if self._close_after_voice_cancel:
             self.reject()
             return
+        if error is None and not _is_generation_input_result(prepared):
+            error = TypeError("Offline preparation returned an invalid input")
         if error is not None:
             self.selection_panel.setVisible(True)
             self._preparation_paused("Preparation paused", error)
@@ -2883,13 +2901,8 @@ class OfflineAudioPreparationDialog(QDialog):
                 return
             self._set_resume_error("Unable to prepare generation", error)
             return
+        assert _is_generation_input_result(prepared)
         self._generation_input, changes, resources = prepared
-        if not isinstance(changes, OfflinePreparationChanges):
-            self.selection_panel.show()
-            self.resume_status.setText(
-                "Unable to check the changes. Choose Continue to retry."
-            )
-            return
         self._changes_rows = (
             (
                 "Reuse",
@@ -2954,7 +2967,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.voice_cancel_event,
         )
 
-    def _generation_finished(self, result, error):
+    def _generation_finished(self, result: object, error: Exception | None) -> None:
         self._stop_generation_progress()
         self.generating = False
         self.cancel_button.setText("Cancel")
@@ -2963,6 +2976,10 @@ class OfflineAudioPreparationDialog(QDialog):
         if self._close_after_voice_cancel:
             self.reject()
             return
+        if error is None and not isinstance(
+            result, (OfflineRecoveryResult, OfflineGenerationResult)
+        ):
+            error = TypeError("Offline generation returned an invalid result")
         if error is not None:
             self.progress_timer.stop()
             self.selection_panel.setVisible(True)
@@ -2984,6 +3001,7 @@ class OfflineAudioPreparationDialog(QDialog):
         if isinstance(result, OfflineRecoveryResult):
             self._recovery_finished(result, None)
             return
+        assert isinstance(result, OfflineGenerationResult)
         self._generation_result = result
         self._render_generation_result(result)
         if result.failed < 1:
@@ -3413,3 +3431,41 @@ def _voice_resolution_label(resolution):
 
 
 __all__ = ["OfflineAudioPreparationDialog"]
+
+
+def _is_story_audio_result(
+    value: object,
+) -> TypeGuard[
+    tuple[StoryAudioCoverage | None, StoryAudioCoverage | None, tuple[str, ...]]
+]:
+    return (
+        isinstance(value, tuple)
+        and len(value) == 3
+        and all(
+            item is None or isinstance(item, StoryAudioCoverage) for item in value[:2]
+        )
+        and isinstance(value[2], tuple)
+        and all(isinstance(speaker, str) for speaker in value[2])
+    )
+
+
+def _is_generation_input_result(
+    value: object,
+) -> TypeGuard[
+    tuple[
+        PregenerationInput,
+        OfflinePreparationChanges,
+        GenerationResourceEstimate | None,
+    ]
+]:
+    return (
+        isinstance(value, tuple)
+        and len(value) == 3
+        and isinstance(value[0], PregenerationInput)
+        and isinstance(value[1], OfflinePreparationChanges)
+        and (value[2] is None or isinstance(value[2], GenerationResourceEstimate))
+    )
+
+
+def _is_voice_plan_result(value: object) -> TypeGuard[VoicePlan]:
+    return isinstance(value, VoicePlan)
