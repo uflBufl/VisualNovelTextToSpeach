@@ -18,6 +18,7 @@ from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 asset_manifest_name = "vntts-asset.json"
 supported_audio_extensions = {".flac", ".m4a", ".mp3", ".ogg", ".wav"}
 _ASSET_MANIFEST_READ_LIMIT = 64 * 1024
+_VOICE_MANIFEST_READ_LIMIT = 16 * 1024 * 1024
 
 
 class AssetError(RuntimeError):
@@ -309,7 +310,7 @@ class VoicePackManager:
         references_path = pack_path / "references"
         if any(
             path.is_symlink() or path.is_junction()
-            for path in (pack_path, references_path)
+            for path in (pack_path, references_path, pack_path / "manifest.json")
         ):
             raise VoiceManifestError("Managed voice pack directory must not be an alias")
 
@@ -320,13 +321,21 @@ class VoicePackManager:
         references = self._validate_reference_files(reference_files)
         pack_path = self.storage_root / slugify(pack, fallback="asset")
         self._check_pack_path(pack_path)
+        manifest_path = pack_path / "manifest.json"
+        manifest = (
+            read_json(manifest_path, None)
+            if manifest_path.exists()
+            else {"version": 2, "voices": []}
+        )
+        if not isinstance(manifest, dict) or manifest.get("version") != 2:
+            raise VoiceManifestError("Existing voice manifest is invalid")
+        voices = manifest.get("voices")
+        if not isinstance(voices, list) or not all(
+            isinstance(item, dict) for item in voices
+        ):
+            raise VoiceManifestError("Existing voice manifest is invalid")
         references_path = pack_path / "references"
         references_path.mkdir(parents=True, exist_ok=True)
-        manifest_path = pack_path / "manifest.json"
-        manifest = read_json(manifest_path, {"version": 2, "voices": []})
-        voices = manifest.get("voices")
-        if not isinstance(voices, list):
-            raise VoiceManifestError("Existing voice manifest is invalid")
 
         copied = []
         try:
@@ -496,7 +505,14 @@ def load_coqui_model_asset(model_name):
 
 
 def read_json(path, default):
+    path = Path(path)
+    if path.is_symlink() or path.is_junction():
+        return default
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
+        with path.open("rb") as source:
+            payload = source.read(_VOICE_MANIFEST_READ_LIMIT + 1)
+        if len(payload) > _VOICE_MANIFEST_READ_LIMIT:
+            return default
+        return json.loads(payload)
+    except OSError, UnicodeError, json.JSONDecodeError:
         return default

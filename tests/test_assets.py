@@ -294,6 +294,23 @@ class ModelAssetManagerTest(unittest.TestCase):
 
 
 class VoicePackManagerTest(unittest.TestCase):
+    def test_import_voice_preserves_invalid_existing_manifest(self):
+        for payload in (b"{", b'{"version":3,"voices":[]}'):
+            with self.subTest(payload=payload), TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "marcus.wav"
+                source.write_bytes(b"local voice data")
+                pack = root / "managed" / "custom"
+                pack.mkdir(parents=True)
+                manifest = pack / "manifest.json"
+                manifest.write_bytes(payload)
+                manager = VoicePackManager(root / "managed")
+
+                with self.assertRaisesRegex(VoiceManifestError, "Existing"):
+                    manager.import_voice("Marcus", [source])
+
+                self.assertEqual(manifest.read_bytes(), payload)
+
     def test_import_voice_rejects_aliased_managed_pack(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
