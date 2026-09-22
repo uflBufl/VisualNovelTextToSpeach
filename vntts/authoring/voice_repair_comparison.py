@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
@@ -375,7 +375,7 @@ def _comparison_records(
 def _comparison_candidates(
     provider: str,
     model: str,
-    model_control: JsonObject,
+    model_control: Mapping[str, str],
     profiles: Sequence[str],
     variants: JsonList,
 ) -> JsonList:
