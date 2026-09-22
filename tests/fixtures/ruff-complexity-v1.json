@@ -69,90 +69,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/audio_event_omission.py",
-      "scope": "create_audio_event_omission_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/audio_event_omission.py",
-      "scope": "validate_audio_event_omission_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/audio_event_projection_fallback.py",
-      "scope": "create_audio_event_projection_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/audio_event_projection_fallback.py",
-      "scope": "validate_audio_event_projection_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/audio_event_review.py",
-      "scope": "_validate_review_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/audio_event_workspace.py",
-      "scope": "validate_audio_event_composition_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/audio_events.py",
-      "scope": "validate_story_audio_cues",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cli_generation.py",
-      "scope": "handle",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cli_generation.py",
-      "scope": "run_generation",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cli_references.py",
-      "scope": "handle",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "_load_source_sample_records",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "_reconciled_cohort_outcome",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "_validated_bundle_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "load_cohort_review_observations",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/cohort_bundle_ui.py",
       "scope": "CohortReviewBundleDialog._update_actions",
       "count": 1
@@ -239,18 +155,6 @@
       "code": "C901",
       "path": "vntts/authoring/experimental_composite_voice.py",
       "scope": "_validate_experimental_composite_voice_input",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/explicit_fallback_merge.py",
-      "scope": "merge_explicit_live_fallbacks",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/explicit_fallback_merge.py",
-      "scope": "validate_explicit_fallback_merge_workspace",
       "count": 1
     },
     {
@@ -395,18 +299,6 @@
       "code": "C901",
       "path": "vntts/authoring/generation_state.py",
       "scope": "_validate_synthesis_identity",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/known_role_live_fallback.py",
-      "scope": "create_known_role_live_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/known_role_live_fallback.py",
-      "scope": "validate_known_role_live_fallback_workspace",
       "count": 1
     },
     {
@@ -677,24 +569,6 @@
       "code": "C901",
       "path": "vntts/authoring/render_hypothesis_review.py",
       "scope": "publish_render_hypothesis_review",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/reviewed_rejection_fallback.py",
-      "scope": "create_reviewed_rejection_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/reviewed_rejection_fallback.py",
-      "scope": "validate_reviewed_rejection_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/reviewed_waveform_publication.py",
-      "scope": "create_reviewed_waveform_publication_workspace",
       "count": 1
     },
     {
@@ -1539,66 +1413,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/audio_event_omission.py",
-      "scope": "create_audio_event_omission_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/audio_event_projection_fallback.py",
-      "scope": "create_audio_event_projection_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/audio_events.py",
-      "scope": "validate_story_audio_cues",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cli_generation.py",
-      "scope": "handle",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cli_generation.py",
-      "scope": "run_generation",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cli_references.py",
-      "scope": "handle",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "_load_source_sample_records",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "_reconciled_cohort_outcome",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "_validated_bundle_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "load_cohort_review_observations",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/cohort_bundle_ui.py",
       "scope": "CohortReviewBundleDialog._update_actions",
       "count": 1
@@ -1661,18 +1475,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/experimental_composite_voice.py",
       "scope": "_validate_experimental_composite_voice_input",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/explicit_fallback_merge.py",
-      "scope": "merge_explicit_live_fallbacks",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/explicit_fallback_merge.py",
-      "scope": "validate_explicit_fallback_merge_workspace",
       "count": 1
     },
     {
@@ -1781,12 +1583,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/generation_state.py",
       "scope": "_validate_synthesis_identity",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/known_role_live_fallback.py",
-      "scope": "create_known_role_live_fallback_workspace",
       "count": 1
     },
     {
@@ -1973,24 +1769,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/render_hypothesis_review.py",
       "scope": "publish_render_hypothesis_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/reviewed_rejection_fallback.py",
-      "scope": "create_reviewed_rejection_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/reviewed_rejection_fallback.py",
-      "scope": "validate_reviewed_rejection_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/reviewed_waveform_publication.py",
-      "scope": "create_reviewed_waveform_publication_workspace",
       "count": 1
     },
     {
@@ -2625,66 +2403,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/audio_event_omission.py",
-      "scope": "create_audio_event_omission_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/audio_event_projection_fallback.py",
-      "scope": "create_audio_event_projection_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/audio_event_review.py",
-      "scope": "publish_source_audio_event_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cli_generation.py",
-      "scope": "configure_parsers",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cli_generation.py",
-      "scope": "run_generation",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cli_references.py",
-      "scope": "configure_parsers",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cli_references.py",
-      "scope": "handle",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "_load_source_sample_records",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "_reconciled_cohort_outcome",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cohort_bundle.py",
-      "scope": "_validated_bundle_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/cohort_bundle_ui.py",
       "scope": "CohortReviewBundleDialog._update_actions",
       "count": 1
@@ -2729,12 +2447,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/experimental_composite_voice.py",
       "scope": "publish_experimental_composite_voice_input",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/explicit_fallback_merge.py",
-      "scope": "merge_explicit_live_fallbacks",
       "count": 1
     },
     {
@@ -2807,12 +2519,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/generation_state.py",
       "scope": "_validate_state_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/known_role_live_fallback.py",
-      "scope": "create_known_role_live_fallback_workspace",
       "count": 1
     },
     {
@@ -2945,24 +2651,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/render_hypothesis_review.py",
       "scope": "publish_render_hypothesis_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/reviewed_rejection_fallback.py",
-      "scope": "create_reviewed_rejection_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/reviewed_rejection_fallback.py",
-      "scope": "validate_reviewed_rejection_fallback_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/reviewed_waveform_publication.py",
-      "scope": "create_reviewed_waveform_publication_workspace",
       "count": 1
     },
     {
