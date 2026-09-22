@@ -15,7 +15,11 @@ from typing import Protocol, TypeAlias
 
 from vntts_artifacts.generated_audio import GeneratedAudioDocument
 
-from vntts.authoring.publication import staged_directory
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import is_standalone_ellipsis_text
@@ -326,7 +330,12 @@ def seal_sequence_replay(
         }
         review_path = staging / "sequence-review.json"
         _write_json(review_path, review)
-        os.replace(staging, output)
+        try:
+            rename_directory_no_replace(staging, output)
+        except (AtomicPublicationError, OSError) as error:
+            raise SequenceReplaySealError(
+                f"Unable to publish replay seal: {error}"
+            ) from error
         return SealedSequenceReplayResult(
             output,
             output / corpus_path.name,

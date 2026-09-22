@@ -5,6 +5,7 @@ import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest import mock
 
 from PIL import Image, ImageDraw
 from vntts_artifacts.file_integrity import sha256_file
@@ -12,6 +13,7 @@ from vntts_artifacts.generated_audio import text_sha256, write_generated_audio_m
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
 from tests.symlink_support import symlink_or_skip
+from vntts.authoring.publication import AtomicPublicationError
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.dialog_capture import CapturedDialogFrame
 from vntts.live_replay import LiveReplayRunner, load_live_replay_corpus
@@ -477,7 +479,7 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
         self.assertEqual(review["measured_baseline"]["key_dispatch_attempts"], 2)
         self.assertEqual(review["measured_baseline"]["confirmed_key_dispatches"], 2)
 
-    def test_rejects_changed_frame_and_symlinked_input(self):
+    def test_rejects_changed_frame_symlinked_input_and_concurrent_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             lines = [
@@ -564,6 +566,30 @@ class LiveReplaySequenceSealTest(unittest.TestCase):
                     sequence_plan=plan,
                     recognizer=recognize,
                 )
+            output = root / "concurrent-sealed"
+
+            def concurrent_publish(_staging, destination):
+                destination.mkdir()
+                (destination / "sentinel").write_text("existing", encoding="utf-8")
+                raise AtomicPublicationError("Publication destination already exists")
+
+            with mock.patch(
+                "vntts.live_replay_sequence_seal.rename_directory_no_replace",
+                side_effect=concurrent_publish,
+            ):
+                with self.assertRaisesRegex(SequenceReplaySealError, "already exists"):
+                    seal_sequence_replay(
+                        captured.corpus,
+                        output,
+                        story_index=story,
+                        sequence_plan=plan,
+                        recognizer=recognize,
+                        interval_seconds=0.002,
+                        timeout_seconds=5,
+                    )
+            self.assertEqual(
+                (output / "sentinel").read_text(encoding="utf-8"), "existing"
+            )
 
 
 if __name__ == "__main__":
