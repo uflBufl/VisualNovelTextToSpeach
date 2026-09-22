@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
-import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -16,7 +15,11 @@ from typing import TypeAlias
 
 from PIL import Image
 
-from vntts.authoring.publication import staged_directory
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
 from vntts.cli import cli_error, cli_messages
 from vntts.dialog_capture import (
@@ -336,7 +339,12 @@ def recover_live_replay_capture(
                 story_sha256=story_sha256,
                 plan_sha256=plan_sha256,
             )
-        os.replace(staging, output)
+        try:
+            rename_directory_no_replace(staging, output)
+        except (AtomicPublicationError, OSError) as error:
+            raise LiveReplayCaptureRecoveryError(
+                f"Unable to publish capture recovery: {error}"
+            ) from error
         return CaptureRecoveryResult(
             output,
             output / recovery_report.name,

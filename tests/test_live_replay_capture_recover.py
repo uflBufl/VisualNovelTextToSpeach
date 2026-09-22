@@ -3,11 +3,13 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 from PIL import Image, ImageDraw
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
+from vntts.authoring.publication import AtomicPublicationError
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.dialog_capture import (
     CapturedDialogFrame,
@@ -17,7 +19,10 @@ from vntts.live_replay_capture import (
     LiveReplayCaptureSession,
     ellipsis_speaker_hint,
 )
-from vntts.live_replay_capture_recover import recover_live_replay_capture
+from vntts.live_replay_capture_recover import (
+    LiveReplayCaptureRecoveryError,
+    recover_live_replay_capture,
+)
 from vntts.live_replay_sequence_seal import (
     SequenceReplaySealError,
     seal_sequence_replay,
@@ -100,7 +105,7 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
 
         return result, recognize
 
-    def test_recovers_explicit_speech_silent_run_without_rewriting_raw(self):
+    def test_recovers_explicit_speech_silent_run_and_preserves_concurrent_output(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             lines = [
@@ -244,6 +249,31 @@ class LiveReplayCaptureRecoverTest(unittest.TestCase):
             )
             self.assertEqual(sha256_file(captured.corpus), raw_sha256)
             self.assertTrue(sealed.corpus.is_file())
+
+            output = root / "concurrent-recovered"
+
+            def concurrent_publish(_staging, destination):
+                destination.mkdir()
+                (destination / "sentinel").write_text("existing", encoding="utf-8")
+                raise AtomicPublicationError("Publication destination already exists")
+
+            with mock.patch(
+                "vntts.live_replay_capture_recover.rename_directory_no_replace",
+                side_effect=concurrent_publish,
+            ):
+                with self.assertRaisesRegex(
+                    LiveReplayCaptureRecoveryError, "already exists"
+                ):
+                    recover_live_replay_capture(
+                        captured.corpus,
+                        output,
+                        story_index=story,
+                        sequence_plan=plan,
+                        minimum_events=4,
+                    )
+            self.assertEqual(
+                (output / "sentinel").read_text(encoding="utf-8"), "existing"
+            )
 
     def test_recovers_plan_frontier_from_nameplate_and_truncated_ocr(self):
         with TemporaryDirectory() as directory:
