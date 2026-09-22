@@ -8,7 +8,6 @@
     "vntts/authoring/legacy_reason_review.py": 9,
     "vntts/authoring/model_benchmark.py": 20,
     "vntts/authoring/pcm_playback.py": 14,
-    "vntts/authoring/pending_resolution.py": 10,
     "vntts/authoring/portrait_aliases.py": 16,
     "vntts/authoring/review_playback_evidence.py": 6,
     "vntts/authoring/sound_effect_benchmark.py": 9,

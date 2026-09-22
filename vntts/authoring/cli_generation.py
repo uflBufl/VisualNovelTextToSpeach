@@ -693,14 +693,19 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "pending-regeneration-command":
-        result = build_pending_regeneration_command(
+        pending_command = build_pending_regeneration_command(
             arguments.workspace,
             load_pending_resolution_plan(arguments.plan),
             batch_index=arguments.batch_index,
             batch_size=arguments.batch_size,
         )
         print(
-            json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            json.dumps(
+                pending_command.to_dict(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
         )
         return 0
     if arguments.command == "failure-regeneration-plan":
@@ -714,14 +719,19 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "failure-regeneration-command":
-        result = build_failure_regeneration_command(
+        failure_command = build_failure_regeneration_command(
             arguments.workspace,
             load_failure_regeneration_plan(arguments.plan),
             batch_index=arguments.batch_index,
             batch_size=arguments.batch_size,
         )
         print(
-            json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            json.dumps(
+                failure_command.to_dict(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
         )
         return 0
     raise AssertionError(f"Unhandled generation command: {arguments.command}")

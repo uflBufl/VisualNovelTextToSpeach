@@ -6,6 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias, TypedDict, TypeGuard
 
 from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.cohort_review import (
@@ -23,6 +24,31 @@ PENDING_RESOLUTION_PLAN_SCHEMA = "vntts.authoring-pending-resolution-plan"
 PENDING_RESOLUTION_PLAN_VERSION = 1
 RECOVER_OR_REGENERATE = "provenance_recovery_or_regeneration"
 
+JsonDocument: TypeAlias = dict[str, object]
+
+
+class _ResolutionRecord(TypedDict):
+    queue_id: str
+    line_id: str
+    text_sha256: str
+    item_sha256: str
+    audio_sha256: str
+    blocker: str
+    action: str
+
+
+class _PlanDocument(TypedDict):
+    schema: str
+    schema_version: int
+    workspace_id: str
+    workspace_config_fingerprint: str
+    queue_sha256: str
+    state_sha256: str
+    blocked_pending_count: int
+    action_counts: dict[str, int]
+    records: list[_ResolutionRecord]
+    plan_id: str
+
 
 class PendingResolutionError(CohortReviewError):
     """Pending review outcomes cannot be dispositioned from exact authority."""
@@ -33,9 +59,9 @@ class PendingResolutionPlan:
     """One immutable read-only plan for outcomes excluded from cohort review."""
 
     plan_id: str
-    document: dict
+    document: _PlanDocument
 
-    def to_dict(self):
+    def to_dict(self) -> JsonDocument:
         return dict(self.document)
 
 
@@ -49,7 +75,7 @@ class PendingRegenerationCommand:
     queue_ids: tuple[str, ...]
     command: tuple[str, ...]
 
-    def to_dict(self):
+    def to_dict(self) -> JsonDocument:
         return {
             "batch_id": self.batch_id,
             "batch_index": self.batch_index,
@@ -59,7 +85,9 @@ class PendingRegenerationCommand:
         }
 
 
-def build_pending_resolution_plan(workspace_directory):
+def build_pending_resolution_plan(
+    workspace_directory: str | Path,
+) -> PendingResolutionPlan:
     """Bind every cohort-blocked pending WAV to a conservative next action."""
     cohort_plan = build_cohort_review_plan(workspace_directory)
     try:
@@ -67,10 +95,12 @@ def build_pending_resolution_plan(workspace_directory):
     except AuthoringWorkbenchError as error:
         raise PendingResolutionError(str(error)) from error
     by_queue_id = {item.queue_id: item for item in projected}
-    records = []
-    seen = set()
-    for blocked in cohort_plan.document["blocked_items"]:
-        queue_id = blocked["queue_id"]
+    records: list[_ResolutionRecord] = []
+    seen: set[str] = set()
+    for blocked in _documents(
+        cohort_plan.document.get("blocked_items"), "Cohort blocked items"
+    ):
+        queue_id = _required_text(blocked.get("queue_id"), "Queue ID")
         if queue_id in seen:
             raise PendingResolutionError(
                 f"Pending resolution queue ID is duplicated: {queue_id!r}"
@@ -105,36 +135,59 @@ def build_pending_resolution_plan(workspace_directory):
                 "text_sha256": hashlib.sha256(item.text.encode("utf-8")).hexdigest(),
                 "item_sha256": authority.item_sha256,
                 "audio_sha256": authority.audio_sha256,
-                "blocker": blocked["reason"],
+                "blocker": _required_text(blocked.get("reason"), "Blocker"),
                 "action": RECOVER_OR_REGENERATE,
             }
         )
     records.sort(key=lambda value: value["queue_id"])
-    body = {
+    workspace_id = _required_text(
+        cohort_plan.document.get("workspace_id"), "Workspace ID"
+    )
+    workspace_fingerprint = _required_sha256(
+        cohort_plan.document.get("workspace_config_fingerprint"),
+        "Workspace config fingerprint",
+    )
+    queue_sha256 = _required_sha256(
+        cohort_plan.document.get("queue_sha256"), "Queue SHA-256"
+    )
+    state_sha256 = _required_sha256(
+        cohort_plan.document.get("state_sha256"), "State SHA-256"
+    )
+    action_counts = {RECOVER_OR_REGENERATE: len(records)} if records else {}
+    body: JsonDocument = {
         "schema": PENDING_RESOLUTION_PLAN_SCHEMA,
         "schema_version": PENDING_RESOLUTION_PLAN_VERSION,
-        "workspace_id": cohort_plan.document["workspace_id"],
-        "workspace_config_fingerprint": cohort_plan.document[
-            "workspace_config_fingerprint"
-        ],
-        "queue_sha256": cohort_plan.document["queue_sha256"],
-        "state_sha256": cohort_plan.document["state_sha256"],
+        "workspace_id": workspace_id,
+        "workspace_config_fingerprint": workspace_fingerprint,
+        "queue_sha256": queue_sha256,
+        "state_sha256": state_sha256,
         "blocked_pending_count": len(records),
-        "action_counts": ({RECOVER_OR_REGENERATE: len(records)} if records else {}),
+        "action_counts": action_counts,
         "records": records,
     }
     plan_id = canonical_document_sha256(body)
-    document = {**body, "plan_id": plan_id}
+    document: _PlanDocument = {
+        "schema": PENDING_RESOLUTION_PLAN_SCHEMA,
+        "schema_version": PENDING_RESOLUTION_PLAN_VERSION,
+        "workspace_id": workspace_id,
+        "workspace_config_fingerprint": workspace_fingerprint,
+        "queue_sha256": queue_sha256,
+        "state_sha256": state_sha256,
+        "blocked_pending_count": len(records),
+        "action_counts": action_counts,
+        "records": records,
+        "plan_id": plan_id,
+    }
     return PendingResolutionPlan(plan_id, document)
 
 
 def build_pending_regeneration_command(
-    workspace_directory,
-    plan,
+    workspace_directory: str | Path,
+    plan: object,
     *,
-    batch_index,
-    batch_size=10,
-):
+    batch_index: int,
+    batch_size: int = 10,
+) -> PendingRegenerationCommand:
     """Return one current exact-ID regeneration argv without launching it."""
     document = _validated_plan_document(plan)
     if (
@@ -195,7 +248,7 @@ def build_pending_regeneration_command(
     )
 
 
-def write_pending_resolution_plan(plan, output_path):
+def write_pending_resolution_plan(plan: object, output_path: str | Path) -> Path:
     """Publish one validated plan atomically without replacing another file."""
     document = _validated_plan_document(plan)
     return write_json_document_no_replace(
@@ -206,7 +259,7 @@ def write_pending_resolution_plan(plan, output_path):
     )
 
 
-def load_pending_resolution_plan(path):
+def load_pending_resolution_plan(path: str | Path) -> PendingResolutionPlan:
     """Load and fully validate one immutable pending-resolution plan."""
     path = Path(path).expanduser().resolve()
     try:
@@ -219,9 +272,21 @@ def load_pending_resolution_plan(path):
     return PendingResolutionPlan(validated["plan_id"], validated)
 
 
-def _validated_plan_document(plan):
+def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _documents(value: object, label: str) -> list[JsonDocument]:
+    if not isinstance(value, list) or not all(
+        _is_json_document(item) for item in value
+    ):
+        raise PendingResolutionError(f"{label} must be a list of objects")
+    return value
+
+
+def _validated_plan_document(plan: object) -> _PlanDocument:
     document = plan.document if isinstance(plan, PendingResolutionPlan) else plan
-    if not isinstance(document, dict):
+    if not _is_json_document(document):
         raise PendingResolutionError("Pending resolution plan must be an object")
     required = {
         "schema",
@@ -268,11 +333,29 @@ def _validated_plan_document(plan):
     )
     if actual_id != document["plan_id"]:
         raise PendingResolutionError("Pending resolution plan identity is invalid")
-    return document
+    return {
+        "schema": PENDING_RESOLUTION_PLAN_SCHEMA,
+        "schema_version": PENDING_RESOLUTION_PLAN_VERSION,
+        "workspace_id": _required_text(document.get("workspace_id"), "Workspace ID"),
+        "workspace_config_fingerprint": _required_sha256(
+            document.get("workspace_config_fingerprint"),
+            "Workspace config fingerprint",
+        ),
+        "queue_sha256": _required_sha256(
+            document.get("queue_sha256"), "Queue SHA-256"
+        ),
+        "state_sha256": _required_sha256(
+            document.get("state_sha256"), "State SHA-256"
+        ),
+        "blocked_pending_count": len(canonical),
+        "action_counts": expected_counts,
+        "records": canonical,
+        "plan_id": _required_sha256(document.get("plan_id"), "Plan ID"),
+    }
 
 
-def _validated_record(record):
-    if not isinstance(record, dict) or set(record) != {
+def _validated_record(record: object) -> _ResolutionRecord:
+    if not _is_json_document(record) or set(record) != {
         "queue_id",
         "line_id",
         "text_sha256",
@@ -282,27 +365,32 @@ def _validated_record(record):
         "action",
     }:
         raise PendingResolutionError("Pending resolution record fields are invalid")
-    for field, label in (("queue_id", "Queue ID"), ("line_id", "Line ID")):
-        _required_text(record.get(field), label)
-    for field, label in (
-        ("text_sha256", "Text SHA-256"),
-        ("item_sha256", "Item SHA-256"),
-        ("audio_sha256", "Audio SHA-256"),
-    ):
-        _required_sha256(record.get(field), label)
-    _required_text(record.get("blocker"), "Pending resolution blocker")
+    queue_id = _required_text(record.get("queue_id"), "Queue ID")
+    line_id = _required_text(record.get("line_id"), "Line ID")
+    text_sha256 = _required_sha256(record.get("text_sha256"), "Text SHA-256")
+    item_sha256 = _required_sha256(record.get("item_sha256"), "Item SHA-256")
+    audio_sha256 = _required_sha256(record.get("audio_sha256"), "Audio SHA-256")
+    blocker = _required_text(record.get("blocker"), "Pending resolution blocker")
     if record.get("action") != RECOVER_OR_REGENERATE:
         raise PendingResolutionError("Pending resolution action is unsupported")
-    return record
+    return {
+        "queue_id": queue_id,
+        "line_id": line_id,
+        "text_sha256": text_sha256,
+        "item_sha256": item_sha256,
+        "audio_sha256": audio_sha256,
+        "blocker": blocker,
+        "action": RECOVER_OR_REGENERATE,
+    }
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise PendingResolutionError(f"{label} must be non-empty text")
     return value
 
 
-def _required_sha256(value, label):
-    if not is_lowercase_sha256(value):
+def _required_sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or not is_lowercase_sha256(value):
         raise PendingResolutionError(f"{label} must be lowercase SHA-256")
     return value
