@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import argparse
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict
 from multiprocessing import freeze_support
 from pathlib import Path
@@ -168,19 +171,24 @@ application_name = "Visual Novel Text to Speech"
 default_xtts_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 
 
-def _add_composite_form_row(form, label_text, field, field_layout):
+def _add_composite_form_row(
+    form: QFormLayout,
+    label_text: str,
+    field: QWidget,
+    field_layout: QHBoxLayout,
+) -> QLabel:
     label = QLabel(label_text)
     label.setBuddy(field)
     form.addRow(label, field_layout)
     return label
 
 
-def _onboarding_preview(text):
+def _onboarding_preview(text: str) -> str:
     preview = " ".join(text.split())
     return f"{preview[:157]}..." if len(preview) > 160 else preview
 
 
-def create_application_icon(style, *, platform=None):
+def create_application_icon(style: QStyle, *, platform: str | None = None) -> QIcon:
     platform = sys.platform if platform is None else platform
     if platform != "darwin":
         return style.standardIcon(QStyle.StandardPixmap.SP_MediaVolume)
@@ -269,8 +277,12 @@ def build_unknown_speaker_prompt(
 
 class SettingsDialog(QDialog):
     def __init__(
-        self, settings, parent=None, *, voice_library: VoiceLibrary | None = None
-    ):
+        self,
+        settings: AppSettings,
+        parent: QWidget | None = None,
+        *,
+        voice_library: VoiceLibrary | None = None,
+    ) -> None:
         super().__init__(parent)
         self.voice_library = voice_library or application_voice_library()
         self._initialize_settings(settings)
@@ -326,12 +338,12 @@ class SettingsDialog(QDialog):
         self._build_dialog_layout(content_layout)
         self._connect_controls()
 
-    def _initialize_settings(self, settings):
+    def _initialize_settings(self, settings: AppSettings) -> None:
         self.original_settings = settings
-        self._game_pack_validation = None
+        self._game_pack_validation: tuple[object, AppSettings] | None = None
         self.setWindowTitle(f"{application_name} settings")
 
-    def _build_capture_controls(self, settings):
+    def _build_capture_controls(self, settings: AppSettings) -> QHBoxLayout:
         self.read_hotkey = HotkeyRecorder(settings.read_hotkey)
         self.live_hotkey = HotkeyRecorder(settings.live_hotkey)
         self.pause_hotkey = HotkeyRecorder(settings.pause_hotkey)
@@ -390,7 +402,7 @@ class SettingsDialog(QDialog):
         self.refresh_windows_button = refresh_windows_button
         return window_layout
 
-    def _build_engine_controls(self, settings):
+    def _build_engine_controls(self, settings: AppSettings) -> None:
         self.tts_model = QLineEdit(settings.tts_model or "")
         self.speech_backend = QComboBox()
         for label, backend, available in speech_backend_options(
@@ -427,7 +439,7 @@ class SettingsDialog(QDialog):
         self.ocr_minimum_confidence.setSuffix("%")
         self.ocr_minimum_confidence.setValue(settings.ocr_minimum_confidence)
 
-    def _build_speech_routing_controls(self, settings):
+    def _build_speech_routing_controls(self, settings: AppSettings) -> None:
         self.ocr_language = QLineEdit(settings.ocr_language)
         self.tts_language = QLineEdit(settings.tts_language or "")
         self.narrator_reference = QLineEdit(settings.tts_speaker_wav or "")
@@ -463,7 +475,7 @@ class SettingsDialog(QDialog):
         )
         self.narrator_speaker = QLineEdit(settings.narrator_speaker or "")
 
-    def _build_playback_controls(self, settings):
+    def _build_playback_controls(self, settings: AppSettings) -> None:
         self.tts_profile = QComboBox()
         self.tts_profile.addItems(["stable", "natural", "expressive"])
         self.tts_profile.setCurrentText(settings.tts_profile)
@@ -507,7 +519,7 @@ class SettingsDialog(QDialog):
         self.auto_advance_delay.setSuffix(" ms")
         self.auto_advance_delay.setValue(settings.auto_advance_delay_ms)
 
-    def _build_application_controls(self, settings):
+    def _build_application_controls(self, settings: AppSettings) -> None:
         self.warm_up_voices = QCheckBox("Warm up model and voices before gameplay")
         self.warm_up_voices.setChecked(settings.warm_up_voices)
         self.launch_at_login = QCheckBox("Launch automatically when I sign in")
@@ -532,7 +544,19 @@ class SettingsDialog(QDialog):
         self.pocket_terms_label.setWordWrap(True)
         self.pocket_terms_label.setOpenExternalLinks(True)
 
-    def _build_path_selectors(self):
+    def _build_path_selectors(
+        self,
+    ) -> tuple[
+        QHBoxLayout,
+        QHBoxLayout,
+        QHBoxLayout,
+        QHBoxLayout,
+        QHBoxLayout,
+        QHBoxLayout,
+        QHBoxLayout,
+        QHBoxLayout,
+        QHBoxLayout,
+    ]:
         (
             screenshot_layout,
             self.screenshot_browse_button,
@@ -630,7 +654,7 @@ class SettingsDialog(QDialog):
             generated_audio_manifest_layout,
         )
 
-    def _build_shortcuts_form(self):
+    def _build_shortcuts_form(self) -> QFormLayout:
         shortcuts_form = QFormLayout()
         shortcuts_form.addRow("Read once hotkey", self.read_hotkey)
         shortcuts_form.addRow("Live reading hotkey", self.live_hotkey)
@@ -643,7 +667,12 @@ class SettingsDialog(QDialog):
             shortcuts_form.addRow(self.macos_hotkey_notice)
         return shortcuts_form
 
-    def _build_capture_form(self, window_layout, screenshot_layout, diagnostics_layout):
+    def _build_capture_form(
+        self,
+        window_layout: QHBoxLayout,
+        screenshot_layout: QHBoxLayout,
+        diagnostics_layout: QHBoxLayout,
+    ) -> QFormLayout:
         capture_form = QFormLayout()
         _add_composite_form_row(
             capture_form,
@@ -668,14 +697,14 @@ class SettingsDialog(QDialog):
 
     def _build_speech_form(
         self,
-        narrator_reference_layout,
-        game_pack_layout,
-        voice_manifest_layout,
-        story_index_layout,
-        live_sequence_plan_layout,
-        live_speaker_corpus_layout,
-        generated_audio_manifest_layout,
-    ):
+        narrator_reference_layout: QHBoxLayout,
+        game_pack_layout: QHBoxLayout,
+        voice_manifest_layout: QHBoxLayout,
+        story_index_layout: QHBoxLayout,
+        live_sequence_plan_layout: QHBoxLayout,
+        live_speaker_corpus_layout: QHBoxLayout,
+        generated_audio_manifest_layout: QHBoxLayout,
+    ) -> QFormLayout:
         speech_form = QFormLayout()
         self.speech_form = speech_form
         speech_form.addRow("Speech engine (restart required)", self.speech_backend)
@@ -750,17 +779,17 @@ class SettingsDialog(QDialog):
 
     def _build_playback_form(
         self,
-        capture_form,
-        speech_form,
-        screenshot_layout,
-        diagnostics_layout,
-        game_pack_layout,
-        voice_manifest_layout,
-        story_index_layout,
-        live_sequence_plan_layout,
-        live_speaker_corpus_layout,
-        generated_audio_manifest_layout,
-    ):
+        capture_form: QFormLayout,
+        speech_form: QFormLayout,
+        screenshot_layout: QHBoxLayout,
+        diagnostics_layout: QHBoxLayout,
+        game_pack_layout: QHBoxLayout,
+        voice_manifest_layout: QHBoxLayout,
+        story_index_layout: QHBoxLayout,
+        live_sequence_plan_layout: QHBoxLayout,
+        live_speaker_corpus_layout: QHBoxLayout,
+        generated_audio_manifest_layout: QHBoxLayout,
+    ) -> QFormLayout:
         playback_form = QFormLayout()
         playback_form.addRow("Output volume", self.output_volume)
         playback_form.addRow("Speaking speed", self.speech_rate)
@@ -794,7 +823,7 @@ class SettingsDialog(QDialog):
         self.advanced_settings.toggled.connect(self._set_advanced_settings)
         return playback_form
 
-    def _build_application_form(self):
+    def _build_application_form(self) -> QFormLayout:
         application_form = QFormLayout()
         application_form.addRow("Startup readiness", self.warm_up_voices)
         application_form.addRow("macOS startup", self.launch_at_login)
@@ -803,12 +832,12 @@ class SettingsDialog(QDialog):
 
     def _build_settings_content(
         self,
-        shortcuts_form,
-        capture_form,
-        speech_form,
-        playback_form,
-        application_form,
-    ):
+        shortcuts_form: QFormLayout,
+        capture_form: QFormLayout,
+        speech_form: QFormLayout,
+        playback_form: QFormLayout,
+        application_form: QFormLayout,
+    ) -> QVBoxLayout:
         self.settings_regions = (
             self._settings_region("Keyboard shortcuts", shortcuts_form),
             self._settings_region("Capture and OCR", capture_form),
@@ -833,10 +862,10 @@ class SettingsDialog(QDialog):
         self.settings_scroll.setWidget(settings_content)
         return settings_content_layout
 
-    def _build_dialog_layout(self, settings_content_layout):
+    def _build_dialog_layout(self, settings_content_layout: QVBoxLayout) -> None:
         self.section_navigation = QComboBox()
         self.section_navigation.addItems(
-            region.title() for region in self.settings_regions
+            tuple(region.title() for region in self.settings_regions)
         )
         self.section_navigation.setAccessibleName("Settings section")
         self.section_navigation.setAccessibleDescription(
@@ -880,7 +909,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
         self._resize_for_available_screen()
 
-    def _connect_controls(self):
+    def _connect_controls(self) -> None:
         self.capture_mode.currentIndexChanged.connect(self.update_capture_controls)
         self.tts_model.textChanged.connect(self.update_terms_control)
         self.speech_backend.currentIndexChanged.connect(
@@ -904,7 +933,7 @@ class SettingsDialog(QDialog):
         self._set_advanced_settings(False)
         make_text_copyable(self)
 
-    def _set_advanced_settings(self, visible):
+    def _set_advanced_settings(self, visible: bool) -> None:
         for form, field in self._advanced_rows:
             form.setRowVisible(field, visible)
         self.speech_form.setRowVisible(
@@ -914,7 +943,7 @@ class SettingsDialog(QDialog):
         self.update_speech_backend_controls()
 
     @staticmethod
-    def _settings_region(title, form):
+    def _settings_region(title: str, form: QFormLayout) -> QGroupBox:
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         region = QGroupBox(title)
@@ -934,13 +963,13 @@ class SettingsDialog(QDialog):
 
     def _path_selector(
         self,
-        field,
-        name,
-        description,
+        field: QLineEdit,
+        name: str,
+        description: str,
         *,
-        directory=False,
-        file_filter="All files (*)",
-    ):
+        directory: bool = False,
+        file_filter: str = "All files (*)",
+    ) -> tuple[QHBoxLayout, QPushButton]:
         field.setAccessibleName(name)
         field.setAccessibleDescription(description)
         button = QPushButton("Browse...")
@@ -961,12 +990,12 @@ class SettingsDialog(QDialog):
 
     def _browse_path(
         self,
-        field,
-        name,
+        field: QLineEdit,
+        name: str,
         *,
-        directory=False,
-        file_filter="All files (*)",
-    ):
+        directory: bool = False,
+        file_filter: str = "All files (*)",
+    ) -> str:
         if directory:
             selected = QFileDialog.getExistingDirectory(
                 self,
@@ -984,13 +1013,13 @@ class SettingsDialog(QDialog):
             field.setText(selected)
         return selected
 
-    def show_settings_section(self, index):
+    def show_settings_section(self, index: int) -> None:
         if 0 <= index < len(self.settings_regions):
             for position, region in enumerate(self.settings_regions):
                 region.setVisible(position == index)
             self.settings_scroll.verticalScrollBar().setValue(0)
 
-    def _connect_validation_updates(self):
+    def _connect_validation_updates(self) -> None:
         self.narrator_reference.textEdited.connect(self._use_narrator_file)
         for recorder in self.hotkey_recorders:
             recorder.keySequenceChanged.connect(self.update_validation_summary)
@@ -1024,7 +1053,7 @@ class SettingsDialog(QDialog):
             field.toggled.connect(self.update_validation_summary)
 
     @staticmethod
-    def _directory_validation_error(label, value):
+    def _directory_validation_error(label: str, value: str) -> str | None:
         text = value.strip()
         if not text:
             return f"{label}: choose a directory."
@@ -1034,7 +1063,7 @@ class SettingsDialog(QDialog):
         return None
 
     @staticmethod
-    def _file_validation_error(label, value):
+    def _file_validation_error(label: str, value: str) -> str | None:
         text = value.strip()
         if not text:
             return None
@@ -1042,10 +1071,10 @@ class SettingsDialog(QDialog):
             return f"{label}: the selected file does not exist."
         return None
 
-    def validation_errors(self):
-        errors = []
+    def validation_errors(self) -> tuple[tuple[int, QWidget, str], ...]:
+        errors: list[tuple[int, QWidget, str]] = []
 
-        def add(section, widget, message):
+        def add(section: int, widget: QWidget, message: str | None) -> None:
             if message:
                 errors.append((section, widget, message))
 
@@ -1101,7 +1130,7 @@ class SettingsDialog(QDialog):
                 "You can listen before choosing.",
             )
         game_pack = self.game_pack.text().strip()
-        effective_settings = None
+        effective_settings: AppSettings | None = None
         if game_pack:
             try:
                 effective_settings = self._settings_with_game_pack(self._raw_settings())
@@ -1183,7 +1212,9 @@ class SettingsDialog(QDialog):
                 )
         return tuple(errors)
 
-    def update_validation_summary(self, *_args):
+    def update_validation_summary(
+        self, *_args: object
+    ) -> tuple[tuple[int, QWidget, str], ...]:
         from vntts.speech_presentation import narrator_voice_label
 
         self.narrator_voice.setText(
@@ -1201,7 +1232,7 @@ class SettingsDialog(QDialog):
             self.validation_summary.setStyleSheet("")
         return errors
 
-    def _resize_for_available_screen(self):
+    def _resize_for_available_screen(self) -> None:
         available = self.screen().availableGeometry()
         horizontal_margin = 64
         vertical_margin = 64
@@ -1212,27 +1243,29 @@ class SettingsDialog(QDialog):
             min(800, available_height),
         )
 
-    def browse_screenshot_directory(self):
+    def browse_screenshot_directory(self) -> None:
         self._browse_path(
             self.screenshot_directory,
             "Screenshot directory",
             directory=True,
         )
 
-    def browse_ocr_diagnostics_directory(self):
+    def browse_ocr_diagnostics_directory(self) -> None:
         self._browse_path(
             self.ocr_diagnostics_directory,
             "OCR diagnostics directory",
             directory=True,
         )
 
-    def choose_narrator(self):
+    def choose_narrator(self) -> None:
         dialog = GameNarratorDialog(
             self._raw_settings(), self, voice_library=self.voice_library
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         candidate = dialog.result_settings
+        if candidate is None:
+            raise RuntimeError("Narrator dialog accepted without settings")
         self.speech_backend.setCurrentIndex(
             self.speech_backend.findData(candidate.speech_backend)
         )
@@ -1251,11 +1284,11 @@ class SettingsDialog(QDialog):
             self.advanced_narrator.setChecked(False)
         self.update_validation_summary()
 
-    def _use_narrator_file(self, path):
+    def _use_narrator_file(self, path: str) -> None:
         if path.strip():
             self.update_validation_summary()
 
-    def browse_narrator_reference(self):
+    def browse_narrator_reference(self) -> None:
         selected = self._browse_path(
             self.narrator_reference,
             "Narrator reference",
@@ -1264,12 +1297,12 @@ class SettingsDialog(QDialog):
         if selected:
             self._use_narrator_file(selected)
 
-    def update_ocr_diagnostics_controls(self):
+    def update_ocr_diagnostics_controls(self) -> None:
         enabled = self.retain_uncertain_frames.isChecked()
         self.ocr_diagnostics_directory.setEnabled(enabled)
         self.diagnostics_browse_button.setEnabled(enabled)
 
-    def update_auto_advance_controls(self):
+    def update_auto_advance_controls(self) -> None:
         allowed, enabled, tooltip = auto_advance_control_state(
             self.capture_mode.currentData(),
             self.live_sequence_mode.currentData(),
@@ -1286,7 +1319,7 @@ class SettingsDialog(QDialog):
         self.auto_advance_key.setEnabled(enabled)
         self.auto_advance_delay.setEnabled(enabled)
 
-    def refresh_windows(self):
+    def refresh_windows(self) -> None:
         selected_title = self.game_window.currentText().strip()
         try:
             windows = list_windows()
@@ -1294,16 +1327,16 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Window capture unavailable", str(error))
             return
         self.game_window.clear()
-        self.game_window.addItems(window.title for window in windows)
+        self.game_window.addItems(tuple(window.title for window in windows))
         if selected_title:
             self.game_window.setCurrentText(selected_title)
 
-    def update_capture_controls(self):
+    def update_capture_controls(self) -> None:
         window_capture = self.capture_mode.currentData() == "window"
         self.game_window.setEnabled(window_capture)
         self.update_auto_advance_controls()
 
-    def update_terms_control(self):
+    def update_terms_control(self) -> None:
         backend = self.speech_backend.currentData()
         uses_xtts = backend == "coqui-xtts"
         uses_pocket = backend == "pocket-tts"
@@ -1316,7 +1349,7 @@ class SettingsDialog(QDialog):
         self.pocket_gated_model.setVisible(uses_pocket)
         self.pocket_terms_label.setVisible(uses_pocket)
 
-    def update_speech_backend_controls(self):
+    def update_speech_backend_controls(self) -> None:
         backend = self.speech_backend.currentData()
         uses_xtts = backend == "coqui-xtts"
         uses_moss = backend == "moss-tts"
@@ -1344,7 +1377,7 @@ class SettingsDialog(QDialog):
         self.speech_rate.setEnabled(uses_xtts)
         self.update_terms_control()
 
-    def validate_and_accept(self):
+    def validate_and_accept(self) -> None:
         errors = self.update_validation_summary()
         if errors:
             section, widget, _message = errors[0]
@@ -1358,8 +1391,8 @@ class SettingsDialog(QDialog):
             return
         self.accept()
 
-    def _raw_settings(self):
-        def optional_text(widget):
+    def _raw_settings(self) -> AppSettings:
+        def optional_text(widget: QLineEdit) -> str | None:
             return widget.text().strip() or None
 
         hotkeys = self.hotkey_assignments()
@@ -1419,7 +1452,7 @@ class SettingsDialog(QDialog):
             }
         )
 
-    def _settings_with_game_pack(self, settings):
+    def _settings_with_game_pack(self, settings: AppSettings) -> AppSettings:
         if not settings.game_pack:
             return settings
         selected_new_pack = settings.game_pack != self.original_settings.game_pack
@@ -1466,12 +1499,12 @@ class SettingsDialog(QDialog):
             }
         )
 
-    def settings(self):
+    def settings(self) -> AppSettings:
         return guard_auto_advance_settings(
             self._settings_with_game_pack(self._raw_settings())
         )
 
-    def hotkey_assignments(self):
+    def hotkey_assignments(self) -> dict[str, str]:
         return {
             "Read once": self.read_hotkey.hotkey(),
             "Live reading": self.live_hotkey.hotkey(),
@@ -4227,7 +4260,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.application.quit()
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     freeze_support()
     parser = argparse.ArgumentParser(
         prog="vntts-app",
