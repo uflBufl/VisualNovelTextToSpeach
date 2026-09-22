@@ -126,6 +126,7 @@
     "vntts/auto_advance_policy.py",
     "vntts/chapter_voice_preload.py",
     "vntts/calibration.py",
+    "vntts/configuration_apply.py",
     "vntts/controller.py",
     "vntts/controller_components.py",
     "vntts/cuda_probe.py",

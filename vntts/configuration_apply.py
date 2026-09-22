@@ -1,24 +1,124 @@
 """Background application of already-persisted desktop configuration."""
 
 from threading import Event
+from typing import TYPE_CHECKING, Protocol
 
+from PySide6.QtCore import QObject
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QDialog
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.settings import (
+    AppSettings,
     is_live_sequence_audio_mode,
     restart_required_setting_changes,
 )
 
 
+class _PreparationDialog(Protocol):
+    def has_pending_work(self) -> bool: ...
+
+    def apply_narrator_settings(self, settings: AppSettings) -> None: ...
+
+
+class _SettingsDialog(Protocol):
+    def exec(self) -> int: ...
+
+    def settings(self) -> AppSettings: ...
+
+
+class _Controller(Protocol):
+    settings: AppSettings
+    is_ready: bool
+
+    def shutdown(self) -> None: ...
+
+    def apply_settings(
+        self, settings: AppSettings, *, cancellation: Event
+    ) -> bool | None: ...
+
+    def prepare_startup(self) -> None: ...
+
+    def request_shutdown(self) -> None: ...
+
+    def start(self) -> bool | None: ...
+
+    def cancel_settings_apply(self, cancellation: Event) -> bool: ...
+
+
+class _Dashboard(Protocol):
+    def set_configuration(self, settings: AppSettings) -> None: ...
+
+
+class _Emitter(Protocol):
+    def emit(self) -> None: ...
+
+
+class _Signals(Protocol):
+    hotkeys_requested: _Emitter
+
+
+class _ReadinessDialog(Protocol):
+    def update_settings(self, settings: AppSettings) -> None: ...
+
+
+class _Menu(Protocol):
+    def insertAction(self, before: QAction, action: QAction) -> object: ...
+
+
 class ConfigurationApplyMixin:
-    def _refresh_preparation_settings(self):
+    cancel_configuration_action: QAction
+    configuration_runner: LatestTaskRunner
+    _configuration_generation: int | None
+    _configuration_cancellation: Event | None
+    _configuration_success_status: str | None
+    _configuration_refresh_hotkeys: bool
+    _configuration_restart: bool
+
+    if TYPE_CHECKING:
+        settings: AppSettings
+        controller: _Controller
+        dashboard: _Dashboard
+        signals: _Signals
+        pregeneration_dialog: _PreparationDialog | None
+        readiness_dialog: _ReadinessDialog | None
+        menu: _Menu
+        voice_preview_action: QAction
+        sequence_resync_action: QAction
+        sequence_expected_action: QAction
+        _controller_busy: bool
+        _shutting_down: bool
+
+        def _begin_controller_lifecycle(self) -> int: ...
+
+        def _finish_controller_lifecycle(self) -> None: ...
+
+        def _lifecycle_is_current(self, generation: int | None) -> bool: ...
+
+        def set_status(self, message: str | None) -> None: ...
+
+        def set_ready(self, ready: bool) -> None: ...
+
+        def show_error(self, message: str) -> None: ...
+
+        def _create_settings_dialog(self) -> _SettingsDialog: ...
+
+        def _create_asset_manager_dialog(self) -> _SettingsDialog: ...
+
+        def _configure_macos_launch_at_login(self, enabled: bool) -> None: ...
+
+        def _update_auto_advance_action(self) -> None: ...
+
+        def _sync_active_profile(self, settings: AppSettings) -> bool: ...
+
+    def _refresh_preparation_settings(self) -> None:
         preparation = getattr(self, "pregeneration_dialog", None)
         if preparation is not None and not preparation.has_pending_work():
             preparation.apply_narrator_settings(self.settings)
 
-    def _setup_configuration_apply(self):
+    def _setup_configuration_apply(self) -> None:
+        if not isinstance(self, QObject):
+            raise TypeError("ConfigurationApplyMixin requires a QObject host")
         self.cancel_configuration_action = QAction("Cancel settings apply")
         self.cancel_configuration_action.setVisible(False)
         self.cancel_configuration_action.setEnabled(False)
@@ -43,7 +143,7 @@ class ConfigurationApplyMixin:
         self._configuration_refresh_hotkeys = False
         self._configuration_restart = False
 
-    def _configuration_runner_active_changed(self, active):
+    def _configuration_runner_active_changed(self, active: bool) -> None:
         action = getattr(self, "cancel_configuration_action", None)
         if action is None:
             return
@@ -52,13 +152,13 @@ class ConfigurationApplyMixin:
 
     def _start_configuration_apply(
         self,
-        settings,
+        settings: AppSettings,
         *,
-        progress_status,
-        success_status,
-        refresh_hotkeys=False,
-        restart=False,
-    ):
+        progress_status: str,
+        success_status: str,
+        refresh_hotkeys: bool = False,
+        restart: bool = False,
+    ) -> None:
         self._refresh_preparation_settings()
         generation = self._begin_controller_lifecycle()
         self._configuration_generation = generation
@@ -75,7 +175,13 @@ class ConfigurationApplyMixin:
             restart,
         )
 
-    def _apply_configuration(self, settings, generation, cancellation, restart=False):
+    def _apply_configuration(
+        self,
+        settings: AppSettings,
+        generation: int,
+        cancellation: Event,
+        restart: bool = False,
+    ) -> tuple[bool, bool]:
         if restart:
             self.controller.shutdown()
             if cancellation.is_set() or not self._lifecycle_is_current(generation):
@@ -95,7 +201,7 @@ class ConfigurationApplyMixin:
                 return False, False
         return self._lifecycle_is_current(generation), applied is not False
 
-    def cancel_configuration_apply(self):
+    def cancel_configuration_apply(self) -> None:
         cancellation = self._configuration_cancellation
         if cancellation is None or not self.configuration_runner.active:
             self.set_status("No runtime configuration apply is in progress")
@@ -117,7 +223,9 @@ class ConfigurationApplyMixin:
         self.cancel_configuration_action.setEnabled(False)
         self.set_status("Runtime configuration apply is already completing")
 
-    def _configuration_apply_finished(self, result, error):
+    def _configuration_apply_finished(
+        self, result: tuple[bool, bool], error: Exception | None
+    ) -> None:
         generation = self._configuration_generation
         self._configuration_generation = None
         self._configuration_cancellation = None
@@ -147,7 +255,7 @@ class ConfigurationApplyMixin:
         self.set_status(self._configuration_success_status)
         self._configuration_success_status = None
 
-    def open_settings(self):
+    def open_settings(self) -> None:
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return
@@ -215,7 +323,7 @@ class ConfigurationApplyMixin:
         if self.readiness_dialog is not None:
             self.readiness_dialog.update_settings(self.settings)
 
-    def open_assets(self):
+    def open_assets(self) -> None:
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return
