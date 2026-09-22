@@ -656,8 +656,8 @@ class GameNarratorDialog(QDialog):
             message = (
                 f"Live reading is paused because {display_role} has no assigned "
                 "voice. Save a voice to resolve this character; reading resumes "
-                "after any other waiting speakers are resolved. Cancel returns to "
-                "the recovery choices without saving; live reading stays paused."
+                "after any other waiting speakers are resolved. Back to recovery "
+                "choices returns without saving; live reading stays paused."
             )
         else:
             message = (
@@ -667,7 +667,9 @@ class GameNarratorDialog(QDialog):
             )
         self.context_note.setText(message)
         self.context_note.show()
+        self.save_button.setText("Save voice")
         self.cancel_button.setText("Back to recovery choices")
+        self.save_button.adjustSize()
         self.cancel_button.adjustSize()
         if self.voice_library.binding(display_role) is None:
             with QSignalBlocker(self.source):

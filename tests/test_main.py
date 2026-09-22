@@ -4309,11 +4309,11 @@ class MainTest(unittest.TestCase):
         controller.speech_backend = SimpleNamespace()
         controller.live_reader = Mock(is_running=False)
 
-        def start_live():
-            controller.live_reader.is_running = True
-            return True
+        def toggle_live():
+            controller.live_reader.is_running = not controller.live_reader.is_running
+            return controller.live_reader.is_running
 
-        controller.live_reader.toggle.side_effect = start_live
+        controller.live_reader.toggle.side_effect = toggle_live
 
         self.assertTrue(controller.allow_narrator_fallback("Selone"))
         self.assertEqual(
@@ -4326,6 +4326,9 @@ class MainTest(unittest.TestCase):
         controller.unknown_speaker_handler = Mock()
         controller._offer_unknown_speaker_mapping("Selone", "Line")
         controller.unknown_speaker_handler.assert_not_called()
+        self.assertFalse(controller.toggle_live())
+        self.assertNotIn("selone", controller.narrator_fallback_speakers)
+        self.assertEqual(controller.voice_router.registry.assignments, {})
 
     def test_explicit_speaker_corpus_preflights_without_story_index(self):
         with TemporaryDirectory() as temporary_directory:

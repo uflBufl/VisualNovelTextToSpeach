@@ -241,21 +241,26 @@ def build_unknown_speaker_prompt(
     if sys.platform == "darwin":
         prompt.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
     prompt.setIcon(QMessageBox.Icon.Warning)
-    prompt.setWindowTitle("Character voice not mapped")
-    prompt.setText(f"Choose a voice for {speaker}?")
+    prompt.setWindowTitle("Voice needed")
+    prompt.setText(f"{speaker} has no assigned voice.")
     prompt.setInformativeText(
-        "You can assign a distinct voice now, or use the narrator only for "
-        "this speaker during the current live session."
+        "Live reading is waiting. Choose and save a voice, or use the narrator "
+        f"for {speaker} only in this session."
     )
-    choose = prompt.addButton("Choose voice...", QMessageBox.ButtonRole.ActionRole)
+    choose = prompt.addButton(
+        "Choose and save voice...", QMessageBox.ButtonRole.AcceptRole
+    )
     continue_button = prompt.addButton(
-        f"Use narrator for {speaker} this session",
-        QMessageBox.ButtonRole.AcceptRole,
+        "Use narrator this session",
+        QMessageBox.ButtonRole.ActionRole,
     )
     cancel_button = prompt.addButton(
-        "Cancel and pause live reading",
+        "Keep reading paused",
         QMessageBox.ButtonRole.RejectRole,
     )
+    assert choose is not None
+    assert continue_button is not None
+    assert cancel_button is not None
     prompt.setDefaultButton(choose)
     prompt.setEscapeButton(cancel_button)
     prompt.setProperty("vntts_unknown_speaker", speaker)

@@ -90,7 +90,8 @@
       "related": ["voice-editor", "dashboard", "unmapped-speaker-notification"],
       "contracts": ["voice-selection", "single-mission"],
       "stories": [
-        {"id": "unknown-speaker-prompt.awaiting-choice", "title": "Speaker recovery choice", "state": "Choose a voice, use narrator for this session, or pause live reading"}
+        {"id": "unknown-speaker-prompt.awaiting-choice", "title": "Speaker recovery choice", "state": "Open the canonical voice editor, use narrator for this session, or keep reading paused"},
+        {"id": "unknown-speaker-prompt.long-name", "title": "Long speaker and larger text", "state": "All three recovery outcomes remain visible with a long speaker name and increased text size"}
       ]
     },
     {
@@ -199,7 +200,15 @@
       "mission": "Compare an automatic story voice choice without changing the global assignment unless requested.",
       "canonical_owner": "offline-preparation",
       "related": ["offline-preparation", "voice-editor"],
-      "contracts": ["playback-evidence", "voice-selection"]
+      "contracts": ["single-mission", "responsive-form", "playback-evidence", "voice-selection"],
+      "stories": [
+        {"id": "voice-audition.reference", "title": "Choose voice and phrase", "state": "Voice reference and preview phrase are independently selectable before any change"},
+        {"id": "voice-audition.alternate", "title": "Select another voice", "state": "An alternate voice can be selected directly and changed back without cycling"},
+        {"id": "voice-audition.alternate-phrase", "title": "Select another phrase", "state": "Either preview phrase can be selected directly and changed back without cycling"},
+        {"id": "voice-audition.preview-ready", "title": "Generated preview ready", "state": "The preview is playable and an explicit story voice choice can be saved"},
+        {"id": "voice-audition.preview-failure", "title": "Preview generation failure", "state": "Failure keeps original playback and every safe recovery path available"},
+        {"id": "voice-audition.save-failure", "title": "Choice save failure", "state": "The selected decision remains retryable without returning to the beginning"}
+      ]
     },
     {
       "id": "ocr-review",

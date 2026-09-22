@@ -1077,6 +1077,10 @@ class TrayApplicationTest(unittest.TestCase):
             "Selone",
             tray_application.unknown_speaker_prompt.text(),
         )
+        self.assertIn(
+            "Live reading is waiting",
+            tray_application.unknown_speaker_prompt.informativeText(),
+        )
         self.assertTrue(
             tray_application.unknown_speaker_prompt.testAttribute(
                 Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow
@@ -1087,7 +1091,21 @@ class TrayApplicationTest(unittest.TestCase):
         )
         self.assertEqual(
             tray_application.unknown_speaker_continue_button.text(),
-            "Use narrator for Selone this session",
+            "Use narrator this session",
+        )
+        self.assertEqual(
+            tray_application.unknown_speaker_choose_button.text(),
+            "Choose and save voice...",
+        )
+        self.assertEqual(
+            tray_application.unknown_speaker_cancel_button.text(),
+            "Keep reading paused",
+        )
+        self.assertEqual(
+            tray_application.unknown_speaker_prompt.buttonRole(
+                tray_application.unknown_speaker_choose_button
+            ),
+            QMessageBox.ButtonRole.AcceptRole,
         )
         self.assertIs(
             tray_application.unknown_speaker_prompt.defaultButton(),

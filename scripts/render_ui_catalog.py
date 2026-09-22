@@ -8,6 +8,7 @@ import html
 import json
 import os
 import sys
+import wave
 from collections import defaultdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -93,7 +94,7 @@ def _render_stories(
         StorySelection,
     )
     from vntts.pregeneration_ui import OfflineAudioPreparationDialog
-    from vntts.pregeneration_voices import VoiceGroup, VoicePlan
+    from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
     from vntts.settings import AppSettings
     from vntts.voice_library import VoiceLibrary
 
@@ -122,6 +123,13 @@ def _render_stories(
     screenshots.mkdir(parents=True, exist_ok=True)
     for screenshot in screenshots.glob("*.png"):
         screenshot.unlink()
+
+    def write_silent_wav(path: Path) -> None:
+        with wave.open(str(path), "wb") as target:
+            target.setnchannels(1)
+            target.setsampwidth(2)
+            target.setframerate(16_000)
+            target.writeframes(b"\x00\x00" * 1_600)
 
     def dashboard_stories() -> Any:
         dashboard = ControlDashboard(settings)
@@ -306,8 +314,13 @@ def _render_stories(
         )
         return dashboard
 
-    def unknown_speaker_prompt() -> Any:
-        prompt, _choose, _continue, _cancel = build_unknown_speaker_prompt("Selone")
+    def unknown_speaker_prompt(*, long_name: bool = False) -> Any:
+        speaker = "The Keeper of the Moonlit Observatory" if long_name else "Selone"
+        prompt, _choose, _continue, _cancel = build_unknown_speaker_prompt(speaker)
+        if long_name:
+            font = prompt.font()
+            font.setPointSize(font.pointSize() + 3)
+            prompt.setFont(font)
         return prompt
 
     def offline_preparation(state: str) -> Any:
@@ -385,6 +398,13 @@ def _render_stories(
         voice_library.select(
             "Narrator", route="voice", source_id="preset:alba", method="manual"
         )
+        audition_service = Mock()
+        audition_service.backend = SimpleNamespace(
+            runtime_status="Apple GPU - model loaded"
+        )
+        original_reference = root / "original-reference.wav"
+        write_silent_wav(original_reference)
+        audition_service.reference_audio.return_value = original_reference
         dialog = OfflineAudioPreparationDialog(
             offline_settings,
             discovery=discovery,
@@ -393,6 +413,8 @@ def _render_stories(
             thread_pool=pool,
             game_narrator_chooser=Mock(return_value=None),
             voice_library=voice_library,
+            audition_service=audition_service,
+            preview_player=Mock(),
             automatic_activation=True,
         )
         dialog._catalog_temporary_directory = temporary
@@ -418,6 +440,26 @@ def _render_stories(
         dialog._populate_stories(content)
         if state == "confirmation":
             dialog.step.setText("Step 2 of 4 - Choose and confirm voices")
+            centurion = VoiceCandidate(
+                "character:centurion",
+                "Centurion",
+                "centurion-v1",
+                ("1" * 64,),
+                94,
+                "Closest character voice in the selected stories",
+                source_line_ids=("chapter-7:10",),
+                reference_duration_seconds=12.5,
+            )
+            knight = VoiceCandidate(
+                "character:knight",
+                "A Knight",
+                "knight-v2",
+                ("2" * 64,),
+                88,
+                "Second-best character voice match",
+                source_line_ids=("chapter-8:3",),
+                reference_duration_seconds=8.7,
+            )
             plan = VoicePlan(
                 "catalog-job",
                 "2026-09-22T00:00:00+00:00",
@@ -440,7 +482,7 @@ def _render_stories(
                         None,
                         ("chapter-7:4", "chapter-8:3"),
                         "The storm has passed.",
-                        None,
+                        "We can continue our journey.",
                         "voice",
                         "character:centurion",
                         "Centurion",
@@ -449,6 +491,8 @@ def _render_stories(
                         "c" * 64,
                         "d" * 64,
                         "automatic-character-match",
+                        candidates=(centurion, knight),
+                        candidate_inventory=(centurion, knight),
                     ),
                     VoiceGroup(
                         "selone",
@@ -471,6 +515,7 @@ def _render_stories(
                     ),
                 ),
             )
+            dialog._voice_plan = plan
             dialog._show_voice_confirmation(plan)
             dialog.content_scroll.show()
             dialog.continue_button.setFocus()
@@ -536,6 +581,34 @@ def _render_stories(
         dialog.continue_button.setFocus()
         return dialog
 
+    def voice_audition(state: str) -> Any:
+        dialog = offline_preparation("confirmation")
+        dialog._inspect_character_voice()
+        panel = dialog.voice_panel
+        if state == "alternate":
+            panel.voice_reference.setCurrentIndex(1)
+        elif state == "alternate-phrase":
+            panel.preview_phrase.setCurrentIndex(1)
+        elif state == "preview-ready":
+            preview = Path(dialog._catalog_temporary_directory.name) / "preview.wav"
+            write_silent_wav(preview)
+            panel._preview_finished(SimpleNamespace(path=preview), None)
+            panel._set_playing_source(None)
+            panel.status.setText("Generated preview ready. Use this voice if suitable.")
+        elif state == "preview-failure":
+            with patch("vntts.support.record_game_import"):
+                panel._preview_finished(
+                    SimpleNamespace(path=Path("unused.wav")),
+                    RuntimeError("The speech engine stopped before producing audio."),
+                )
+        elif state == "save-failure":
+            candidate, choice, _narrator = panel._current_entry()
+            panel._displayed = ((candidate, None, choice),)
+            panel.a_use.setEnabled(True)
+            panel.use_a()
+            panel._decision_finished(None, OSError("Application data is read-only."))
+        return dialog
+
     renderers: dict[str, Callable[[], Any]] = {
         "dashboard.stories-ready": dashboard_stories,
         "dashboard.reading-active": dashboard_reading,
@@ -543,6 +616,9 @@ def _render_stories(
         "settings.speech-and-voices": settings_speech,
         "settings.validation-error": settings_validation_error,
         "unknown-speaker-prompt.awaiting-choice": unknown_speaker_prompt,
+        "unknown-speaker-prompt.long-name": lambda: unknown_speaker_prompt(
+            long_name=True
+        ),
         "voice-editor.narrator": lambda: voice_editor("Narrator"),
         "voice-editor.live-recovery": lambda: voice_editor("Selone"),
         "voice-editor.preview-generating": lambda: voice_editor(
@@ -563,6 +639,12 @@ def _render_stories(
         ),
         "offline-preparation.failure": lambda: offline_preparation("failure"),
         "offline-preparation.completed": lambda: offline_preparation("completed"),
+        "voice-audition.reference": lambda: voice_audition("reference"),
+        "voice-audition.alternate": lambda: voice_audition("alternate"),
+        "voice-audition.alternate-phrase": lambda: voice_audition("alternate-phrase"),
+        "voice-audition.preview-ready": lambda: voice_audition("preview-ready"),
+        "voice-audition.preview-failure": lambda: voice_audition("preview-failure"),
+        "voice-audition.save-failure": lambda: voice_audition("save-failure"),
     }
     surfaces = {surface["id"]: surface for surface in catalog["surfaces"]}
     allowed_surfaces = set(surfaces)

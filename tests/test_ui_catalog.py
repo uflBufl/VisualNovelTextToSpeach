@@ -43,6 +43,7 @@ class UiCatalogTest(unittest.TestCase):
                 "settings.speech-and-voices",
                 "settings.validation-error",
                 "unknown-speaker-prompt.awaiting-choice",
+                "unknown-speaker-prompt.long-name",
             ):
                 self.assertGreater(
                     (output / "screenshots" / f"{story_id}.png").stat().st_size,
