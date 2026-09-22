@@ -257,6 +257,21 @@ class VoicePackManagerTest(unittest.TestCase):
             ):
                 manager.validate(manifest_path)
 
+    def test_validation_rejects_malformed_voice_checksum_inventory(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "marcus.wav"
+            source.write_bytes(b"local voice data")
+            manager = VoicePackManager(root / "managed")
+            manifest_path = manager.import_voice("Marcus", [source])
+            checksum_path = manifest_path.parent / "vntts-asset.json"
+            checksum = json.loads(checksum_path.read_text(encoding="utf-8"))
+            checksum["files"] = []
+            checksum_path.write_text(json.dumps(checksum), encoding="utf-8")
+
+            with self.assertRaisesRegex(ModelIntegrityError, "inventory"):
+                manager.validate(manifest_path)
+
 
 if __name__ == "__main__":
     unittest.main()

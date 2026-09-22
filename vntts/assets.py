@@ -377,9 +377,16 @@ class VoicePackManager:
         if not checksum_path.is_file():
             self._write_voice_checksums(manifest_path.parent, manifest_path)
         manifest = read_json(checksum_path, {})
+        if not isinstance(manifest, dict):
+            raise ModelIntegrityError("Voice checksum manifest is malformed")
         if manifest.get("manifest_sha256") != sha256_file(manifest_path):
             raise ModelIntegrityError("Voice manifest checksum failed")
-        for filename, expected in manifest.get("files", {}).items():
+        files = manifest.get("files")
+        if not isinstance(files, dict):
+            raise ModelIntegrityError("Voice checksum file inventory is malformed")
+        for filename, expected in files.items():
+            if not isinstance(filename, str):
+                raise ModelIntegrityError("Voice checksum filename is malformed")
             path = manifest_path.parent / filename
             if not path.is_file() or sha256_file(path) != expected:
                 raise ModelIntegrityError(
