@@ -34,7 +34,6 @@ from vntts.authoring.missing_voice_policy import (  # noqa: E402
 )
 from vntts.game_content_importer import GameContentImportError  # noqa: E402
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
-from vntts.pregeneration_acceptance import OfflineAcceptanceWorker  # noqa: E402
 from vntts.pregeneration_activation import OfflinePackActivator  # noqa: E402
 from vntts.pregeneration_generation import (  # noqa: E402
     OfflineGenerationCancelled,
@@ -109,6 +108,7 @@ class InProcessPocketGenerator(OfflineGenerationWorker):
             ),
             narrator_character="Narrator",
             include_queue_ids=queue_ids,
+            approve_validated_audio=True,
         )
         self.rendered = True
         return self.inspect(generation_input)
@@ -151,6 +151,7 @@ class InterruptingPocketGenerator(InProcessPocketGenerator):
             ),
             narrator_character="Narrator",
             include_queue_ids=queue_ids,
+            approve_validated_audio=True,
         )
         self.rendered_texts.extend(request.text for request in renderer.requests)
         if cancel_now:
@@ -985,7 +986,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             input_store=inputs,
             generator=generator,
             recovery=OfflineRecoveryWorker(generator),
-            acceptance=OfflineAcceptanceWorker(generator),
             thread_pool=pool,
         )
         visible_text = [dialog.summary.text(), dialog.resume_status.text()]
@@ -1039,7 +1039,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertTrue(generator.rendered)
             self.assertEqual(dialog.voice_plan().audition_count, 0)
             self.assertEqual(dialog.recovery_result().live_fallbacks, 1)
-            self.assertEqual(dialog.acceptance_result().approved, 1)
             self.assertEqual(dialog.pack_result().approved, 1)
             self.assertEqual(dialog.pack_result().live_fallbacks, 1)
             player_copy = " ".join(visible_text).casefold()
@@ -1258,7 +1257,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 input_store=PregenerationInputStore(jobs),
                 generator=generator,
                 recovery=OfflineRecoveryWorker(generator),
-                acceptance=OfflineAcceptanceWorker(generator),
                 thread_pool=pool,
             )
 
@@ -1351,7 +1349,6 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
                 input_store=inputs,
                 generator=resumed,
                 recovery=OfflineRecoveryWorker(resumed),
-                acceptance=OfflineAcceptanceWorker(resumed),
                 thread_pool=pool,
             )
             second.continue_button.click()

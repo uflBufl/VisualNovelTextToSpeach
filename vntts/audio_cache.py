@@ -60,7 +60,7 @@ class PersistentAudioCache:
                 return None
             self._touch_newest(path)
             return audio
-        except OSError, ValueError, TypeError:
+        except OSError, ValueError, TypeError, EOFError:
             return None
 
     def put(self, key: object, audio: object) -> Path | None:
@@ -106,7 +106,12 @@ class PersistentAudioCache:
             default=0,
         )
         timestamp = max(time_ns(), newest + 1_000_000)
-        os.utime(path, ns=(timestamp, timestamp), follow_symlinks=False)
+        try:
+            os.utime(path, ns=(timestamp, timestamp), follow_symlinks=False)
+        except NotImplementedError:
+            # Windows cannot update this timestamp without following symlinks.
+            # Keep the cache entry and use its creation time for pruning.
+            pass
 
     def _prune(self) -> None:
         files = sorted(

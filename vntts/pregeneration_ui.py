@@ -39,10 +39,6 @@ from vntts.game_content_importer import (
     Reverse1999GameImporter,
 )
 from vntts.game_narrator import load_original_reference
-from vntts.pregeneration_acceptance import (
-    OfflineAcceptanceResult,
-    OfflineAcceptanceWorker,
-)
 from vntts.pregeneration_audition_ui import (
     VoiceAuditionPanel,
     VoiceAuditionUIError,
@@ -153,7 +149,6 @@ class OfflineAudioPreparationDialog(QDialog):
         input_store: PregenerationInputStore | None = None,
         generator: OfflineGenerationWorker | None = None,
         recovery: OfflineRecoveryWorker | None = None,
-        acceptance: OfflineAcceptanceWorker | None = None,
         publisher: OfflinePackPublisher | None = None,
         importer: Reverse1999GameImporter | None = None,
         game_narrator_chooser: Callable[..., AppSettings | None] | None = None,
@@ -190,7 +185,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.input_store = input_store or PregenerationInputStore(self.job_store)
         self.generator = generator or OfflineGenerationWorker()
         self.recovery = recovery or OfflineRecoveryWorker(self.generator)
-        self.acceptance = acceptance or OfflineAcceptanceWorker(self.generator)
         self.publisher = publisher or OfflinePackPublisher(base_pack=settings.game_pack)
         self.importer = importer or Reverse1999GameImporter()
         self.game_narrator_chooser = game_narrator_chooser
@@ -241,8 +235,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.generation_runner.finished.connect(self._generation_finished)
         self.recovery_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.recovery_runner.finished.connect(self._recovery_finished)
-        self.acceptance_runner = LatestTaskRunner(self, thread_pool=thread_pool)
-        self.acceptance_runner.finished.connect(self._acceptance_finished)
         self.publication_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.publication_runner.finished.connect(self._publication_finished)
         self.progress_timer = QTimer(self)
@@ -257,7 +249,6 @@ class OfflineAudioPreparationDialog(QDialog):
             self.input_runner,
             self.generation_runner,
             self.recovery_runner,
-            self.acceptance_runner,
             self.publication_runner,
             self.saved_pack_runner,
         ):
@@ -279,7 +270,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.preparing_inputs = False
         self.generating = False
         self.recovering = False
-        self.accepting_audio = False
         self.publishing_pack = False
         self.activating_saved = False
         self._close_after_voice_cancel = False
@@ -299,7 +289,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self._generation_input: PregenerationInput | None = None
         self._generation_result: OfflineGenerationResult | None = None
         self._recovery_result: OfflineRecoveryResult | None = None
-        self._acceptance_result: OfflineAcceptanceResult | None = None
         self._pack_result: OfflinePackResult | None = None
         self._awaiting_voice_confirmation = False
         self._pending_voice_rematch = False
@@ -997,7 +986,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self._generation_input = None
         self._generation_result = None
         self._recovery_result = None
-        self._acceptance_result = None
         self._pack_result = None
         self._changes_rows = ()
         self._awaiting_voice_confirmation = False
@@ -1663,9 +1651,6 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def recovery_result(self) -> OfflineRecoveryResult | None:
         return self._recovery_result
-
-    def acceptance_result(self) -> OfflineAcceptanceResult | None:
-        return self._acceptance_result
 
     def pack_result(self) -> OfflinePackResult | None:
         return self._pack_result
@@ -3302,7 +3287,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._render_generation_result(result)
         if result.failed < 1:
             self.progress_timer.stop()
-            self._start_acceptance(result)
+            self._start_publication(result)
             return
         self.recovering = True
         self._set_import_controls(False)
@@ -3385,49 +3370,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 "automatic repair."
             )
             return
-        self._start_acceptance(result.generation)
-
-    def _start_acceptance(self, generation_result: OfflineGenerationResult) -> None:
-        self.accepting_audio = True
-        self._set_import_controls(False)
-        self.cancel_button.setText("Cancel final checks")
-        self.cancel_button.setEnabled(True)
-        self._show_phase(
-            "Checking prepared audio",
-            "Finishing technical checks and saving prepared audio...",
-            "Cancel stops final checks and closes this window. Prepared lines stay "
-            "saved; reopen and choose Continue to rerun the checks.",
-        )
-        self.acceptance_runner.start(
-            self.acceptance.accept,
-            self._generation_input,
-            generation_result,
-            self.voice_cancel_event,
-        )
-
-    def _acceptance_finished(self, result: object, error: Exception | None) -> None:
-        self.accepting_audio = False
-        self.cancel_button.setText("Cancel")
-        self.cancel_button.setEnabled(True)
-        self._set_import_controls(True)
-        if self._close_after_voice_cancel:
-            self.reject()
-            return
-        if error is None and not isinstance(result, OfflineAcceptanceResult):
-            error = TypeError("Final audio checks returned an invalid result")
-        if error is not None:
-            self.selection_panel.setVisible(True)
-            self._preparation_paused("Final checks paused", error)
-            if isinstance(error, OfflineGenerationCancelled):
-                self.resume_status.setText(
-                    "Final checks cancelled. Continue later to resume saved lines."
-                )
-                return
-            self._set_resume_error("Unable to finish offline audio", error)
-            return
-        assert isinstance(result, OfflineAcceptanceResult)
-        self._acceptance_result = result
-        self._generation_result = result.generation
         self._start_publication(result.generation)
 
     def _start_publication(self, generation_result: OfflineGenerationResult) -> None:
@@ -3598,7 +3540,6 @@ class OfflineAudioPreparationDialog(QDialog):
             or self.preparing_inputs
             or self.generating
             or self.recovering
-            or self.accepting_audio
             or self.publishing_pack
         ):
             self._close_after_voice_cancel = True
@@ -3611,8 +3552,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 if self.recovering
                 else "final save"
                 if self.publishing_pack
-                else "final checks"
-                if self.accepting_audio
                 else "generation"
                 if self.generating
                 else "offline preparation"
@@ -3644,7 +3583,6 @@ class OfflineAudioPreparationDialog(QDialog):
             or self.preparing_inputs
             or self.generating
             or self.recovering
-            or self.accepting_audio
             or self.publishing_pack
         ):
             self._cancel_or_reject()
@@ -3665,7 +3603,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.input_runner.cancel()
         self.generation_runner.cancel()
         self.recovery_runner.cancel()
-        self.acceptance_runner.cancel()
         self.publication_runner.cancel()
         self.progress_timer.stop()
         if self._narrator_player is not None:
@@ -3714,7 +3651,6 @@ class OfflineAudioPreparationDialog(QDialog):
                 self.preparing_inputs,
                 self.generating,
                 self.recovering,
-                self.accepting_audio,
                 self.publishing_pack,
                 self.activating_saved,
             )

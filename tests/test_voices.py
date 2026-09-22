@@ -20,6 +20,7 @@ from vntts.voices import (
     registry_with_voice_library,
     remember_voice_binding,
     synthesis_character,
+    synthesis_character_for_line,
 )
 
 
@@ -101,6 +102,13 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
         self.assertIs(registry.resolve("???"), narrator)
         self.assertEqual(synthesis_character("Unknown NPC"), "Unknown NPC")
         self.assertFalse(is_narrator("Unknown NPC"))
+
+    def test_quoted_character_label_uses_same_voice_identity(self):
+        self.assertEqual(synthesis_character('"Mrs. Owen"'), "Mrs. Owen")
+        self.assertEqual(
+            synthesis_character_for_line('"Mrs. Owen"', '"Mrs. Owen"'),
+            "Mrs. Owen",
+        )
 
     def test_manifest_must_be_an_object(self):
         with TemporaryDirectory() as temporary_directory:

@@ -44,6 +44,9 @@ def _inputs(root):
         queue_items=2,
         ready_items=2,
         narrator_fallback_roles=(),
+        story_index_sha256="c" * 64,
+        voice_manifest_sha256="d" * 64,
+        source_audio_semantic_evidence_sha256=None,
     )
 
 

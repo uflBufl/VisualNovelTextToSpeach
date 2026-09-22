@@ -264,6 +264,34 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
         )
         self.assertEqual(progress_manifest["entries"][0]["line_id"], item["line_id"])
 
+    def test_validated_player_audio_is_published_and_reused_without_review(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            renderer = SyntheticRenderer()
+            first = self.run_generation(
+                queue, output, renderer, approve_validated_audio=True
+            )
+            second = self.run_generation(
+                queue, output, renderer, approve_validated_audio=True
+            )
+            state = load_generation_state(first.state, queue)
+            manifest = json.loads(first.manifest.read_text(encoding="utf-8"))
+
+        self.assertEqual(first.generated, 1)
+        self.assertEqual(second.skipped_existing, 1)
+        self.assertEqual(len(renderer.requests), 1)
+        self.assertEqual(
+            (
+                state["items"][item["queue_id"]]["status"],
+                state["items"][item["queue_id"]]["review_status"],
+            ),
+            ("approved", "approved"),
+        )
+        self.assertEqual(manifest["entry_count"], 1)
+
     def test_explicit_synthesis_cache_policy_reaches_backend(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

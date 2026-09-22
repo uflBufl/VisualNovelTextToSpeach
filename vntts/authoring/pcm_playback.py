@@ -81,6 +81,7 @@ class PersistentPcmPlayer:
             device = self.audio_module.query_devices(kind="output")
             self.sample_rate = int(round(float(device["default_samplerate"])))
             max_channels = int(device["max_output_channels"])
+            self.device_name = str(device.get("name", ""))
         except Exception as error:
             raise PcmPlaybackError(
                 f"Unable to query the output device: {error}"

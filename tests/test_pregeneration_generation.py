@@ -68,6 +68,9 @@ def generation_inputs(root, *, backend="pocket-tts", model=None):
         queue_items=3,
         ready_items=3,
         narrator_fallback_roles=("Hotelier", "Poacher"),
+        story_index_sha256="c" * 64,
+        voice_manifest_sha256="d" * 64,
+        source_audio_semantic_evidence_sha256=None,
     )
     plan = VoicePlan(
         job_id="c" * 24,
@@ -490,6 +493,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             self.assertEqual(arguments.count("--sentence-segment-failed"), 1)
             self.assertEqual(arguments[arguments.index("--retries") + 1], "0")
             self.assertNotIn("--regenerate-existing", arguments)
+            self.assertIn("--approve-validated-audio", arguments)
 
     def test_cancellation_terminates_only_the_owned_worker(self):
         with TemporaryDirectory() as temporary_directory:
@@ -559,6 +563,12 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             command = worker.command()
 
         self.assertEqual(command, (sys.executable, "--offline-generation-worker"))
+
+    def test_source_app_uses_generation_only_worker(self):
+        self.assertEqual(
+            OfflineGenerationWorker().command(),
+            (sys.executable, "-m", "vntts.authoring.cli_generation"),
+        )
 
 
 if __name__ == "__main__":

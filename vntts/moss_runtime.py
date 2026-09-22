@@ -190,7 +190,7 @@ class RetainedMossRuntime:
         self.backend_factory = backend_factory
         self._operation_lock = Lock()
         self._backend: _MossBackend | None = None
-        self._model_name: object | None = None
+        self._model_configuration: tuple[object, object] | None = None
 
     def _create_backend(
         self, registry: CharacterVoiceRegistry, **options: object
@@ -222,10 +222,11 @@ class RetainedMossRuntime:
         self, registry: CharacterVoiceRegistry, **options: object
     ) -> _MossBackend | _MossBackendLease:
         model_name = options.get("model_name")
+        configuration = model_name, options.get("language", "English")
         if not moss_cpp_requested(model_name):
             return self._create_backend(registry, **options)
         with self._operation_lock:
-            if self._backend is None or self._model_name != model_name:
+            if self._backend is None or self._model_configuration != configuration:
                 shutdown_speech_backend(self._backend)
                 self._backend = None
                 self.root.mkdir(parents=True, exist_ok=True)
@@ -237,7 +238,7 @@ class RetainedMossRuntime:
                 retained_options.setdefault("persistent_audio_cache_max_entries", 512)
                 retained_options.setdefault("allow_download", True)
                 self._backend = self._create_backend(registry, **retained_options)
-                self._model_name = model_name
+                self._model_configuration = configuration
             else:
                 self._backend.registry = registry
                 if "startup_cancellation" in options:
@@ -296,7 +297,7 @@ class RetainedMossRuntime:
         with self._operation_lock:
             shutdown_speech_backend(self._backend)
             self._backend = None
-            self._model_name = None
+            self._model_configuration = None
 
 
 __all__ = ["RetainedMossRuntime"]

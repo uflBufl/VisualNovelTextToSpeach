@@ -797,6 +797,8 @@ def read_voice_reference_bytes(
 def synthesis_character(character: str | None) -> str:
     """Return the voice identity used for live and authoring synthesis."""
     original = str(character or "Narrator").strip() or "Narrator"
+    if len(original) > 2 and original[0] == original[-1] == '"':
+        original = original[1:-1].strip()
     return "Narrator" if is_unattributed_speaker(original) else original
 
 

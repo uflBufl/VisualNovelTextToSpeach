@@ -8,7 +8,7 @@ import json
 from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from vntts_artifacts import (
     VoiceGenerationQueue,
@@ -37,36 +37,13 @@ from vntts.authoring.cli_generation_options import (
     failure_repair_policy,
     missing_voice_policy,
 )
-from vntts.authoring.failure_regeneration import (
-    build_failure_regeneration_command,
-    build_failure_regeneration_plan,
-    load_failure_regeneration_plan,
-    write_failure_regeneration_plan,
-)
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import LIVE_FALLBACK_REASONS
 from vntts.authoring.missing_voice_policy import MissingVoicePolicy
-from vntts.authoring.pending_resolution import (
-    build_pending_regeneration_command,
-    build_pending_resolution_plan,
-    load_pending_resolution_plan,
-    write_pending_resolution_plan,
-)
 from vntts.authoring.source_reference_bindings import (
     SourceReferenceBindingError,
     queue_voice_overrides_from_manifest,
-)
-from vntts.authoring.specialist_failure_plan import (
-    build_specialist_failure_plan,
-    write_specialist_failure_plan,
-)
-from vntts.authoring.workbench import (
-    AuthoringWorkbenchError,
-    FailureReferenceRuntimeBinding,
-    failure_reference_runtime_binding,
-    generation_control_bindings,
-    generation_output_identity,
 )
 from vntts.speech_backend_runtime import shutdown_speech_backend
 from vntts.tts_benchmark import create_backend
@@ -76,6 +53,9 @@ from vntts.voices import (
     pocket_tts_preset_voices,
     synthesis_character_for_line,
 )
+
+if TYPE_CHECKING:
+    from vntts.authoring.workbench import FailureReferenceRuntimeBinding
 
 COMMANDS = frozenset(
     {
@@ -158,6 +138,9 @@ def _configure_generate_parser(
         ),
     )
     generate.add_argument("--include-prefer-source", action="store_true")
+    generate.add_argument(
+        "--approve-validated-audio", action="store_true", help=argparse.SUPPRESS
+    )
     generate.add_argument("--character", action="append", dest="characters")
     generate.add_argument(
         "--regenerate-existing",
@@ -350,6 +333,12 @@ def _workspace_generation_controls(
 ) -> tuple[dict[Path, str] | None, dict[str, str | int] | None]:
     if arguments.workspace is None:
         return None, None
+    from vntts.authoring.workbench import (
+        AuthoringWorkbenchError,
+        generation_control_bindings,
+        generation_output_identity,
+    )
+
     try:
         return (
             generation_control_bindings(
@@ -385,11 +374,11 @@ def _generation_inputs(
     registry, manifest_sha256, manifest_document, manifest_entries = (
         _load_stable_voice_registry(voice_manifest)
     )
-    runtime_binding = (
-        failure_reference_runtime_binding(arguments.workspace)
-        if arguments.workspace is not None
-        else None
-    )
+    runtime_binding = None
+    if arguments.workspace is not None:
+        from vntts.authoring.workbench import failure_reference_runtime_binding
+
+        runtime_binding = failure_reference_runtime_binding(arguments.workspace)
     if runtime_binding is not None:
         registry = CharacterVoiceRegistry(
             (*registry.unique_voices(), *runtime_binding.voices)
@@ -690,6 +679,7 @@ def _run_bulk_generation(
                     else "bypass"
                 ),
                 cancellation=cancellation,
+                approve_validated_audio=arguments.approve_validated_audio,
             )
         finally:
             shutdown_speech_backend(backend)
@@ -841,6 +831,11 @@ def _handle_failure_report(arguments: argparse.Namespace) -> int:
 
 
 def _handle_specialist_failure_plan(arguments: argparse.Namespace) -> int:
+    from vntts.authoring.specialist_failure_plan import (
+        build_specialist_failure_plan,
+        write_specialist_failure_plan,
+    )
+
     plan = build_specialist_failure_plan(arguments.workspace)
     if arguments.output is not None:
         write_specialist_failure_plan(plan, arguments.output)
@@ -854,6 +849,11 @@ def _handle_failure_repair_plan(arguments: argparse.Namespace) -> int:
 
 
 def _handle_pending_resolution_plan(arguments: argparse.Namespace) -> int:
+    from vntts.authoring.pending_resolution import (
+        build_pending_resolution_plan,
+        write_pending_resolution_plan,
+    )
+
     plan = build_pending_resolution_plan(arguments.workspace)
     if arguments.output is not None:
         write_pending_resolution_plan(plan, arguments.output)
@@ -862,6 +862,11 @@ def _handle_pending_resolution_plan(arguments: argparse.Namespace) -> int:
 
 
 def _handle_pending_regeneration_command(arguments: argparse.Namespace) -> int:
+    from vntts.authoring.pending_resolution import (
+        build_pending_regeneration_command,
+        load_pending_resolution_plan,
+    )
+
     command = build_pending_regeneration_command(
         arguments.workspace,
         load_pending_resolution_plan(arguments.plan),
@@ -873,6 +878,11 @@ def _handle_pending_regeneration_command(arguments: argparse.Namespace) -> int:
 
 
 def _handle_failure_regeneration_plan(arguments: argparse.Namespace) -> int:
+    from vntts.authoring.failure_regeneration import (
+        build_failure_regeneration_plan,
+        write_failure_regeneration_plan,
+    )
+
     plan = build_failure_regeneration_plan(arguments.workspace)
     if arguments.output is not None:
         write_failure_regeneration_plan(plan, arguments.output)
@@ -881,6 +891,11 @@ def _handle_failure_regeneration_plan(arguments: argparse.Namespace) -> int:
 
 
 def _handle_failure_regeneration_command(arguments: argparse.Namespace) -> int:
+    from vntts.authoring.failure_regeneration import (
+        build_failure_regeneration_command,
+        load_failure_regeneration_plan,
+    )
+
     command = build_failure_regeneration_command(
         arguments.workspace,
         load_failure_regeneration_plan(arguments.plan),
@@ -912,3 +927,18 @@ def handle(arguments: argparse.Namespace) -> int:
     if handler is None:
         raise AssertionError(f"Unhandled generation command: {arguments.command}")
     return handler(arguments)
+
+
+def create_generation_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="VNTTS offline audio generation")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    _configure_generate_parser(subparsers)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    return _generate(create_generation_parser().parse_args(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -644,6 +644,16 @@ class VoiceAuditionPanel(QGroupBox):
         if self._cancel_requested or self._shutdown_requested or self.active:
             return
         candidate, _choice, _narrator = self._current_entry()
+        from vntts.support import record_game_import
+
+        reference_sha256 = (
+            candidate.reference_sha256s[0] if candidate.reference_sha256s else None
+        )
+        record_game_import(
+            "voice-original-playback",
+            outcome="requested",
+            reference_sha256=reference_sha256,
+        )
         self._stop_player()
         self._displayed = ()
         self.a_use.setEnabled(False)
@@ -653,14 +663,21 @@ class VoiceAuditionPanel(QGroupBox):
             )
         except (OSError, ValueError, VoiceAuditionError) as error:
             self.status.setText(f"Unable to play original reference: {error}")
+            record_game_import(
+                "voice-original-playback", outcome="failed", reason=str(error)
+            )
             return
         if reference is None:
             self.status.setText("This voice has no recorded reference.")
+            record_game_import("voice-original-playback", outcome="unavailable")
             return
         try:
             payload = reference.read_bytes()
         except OSError as error:
             self.status.setText(f"Unable to play original reference: {error}")
+            record_game_import(
+                "voice-original-playback", outcome="failed", reason=str(error)
+            )
             return
         player = self._ensure_player()
         self.status.setText(

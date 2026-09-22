@@ -433,7 +433,9 @@ class TrayApplicationTest(unittest.TestCase):
 
     def test_packaged_generation_worker_runs_without_creating_qt(self):
         with (
-            patch("vntts.authoring.cli.main", return_value=0) as generation_main,
+            patch(
+                "vntts.authoring.cli_generation.main", return_value=0
+            ) as generation_main,
             patch("vntts.app.QApplication") as qt_application,
         ):
             result = main(

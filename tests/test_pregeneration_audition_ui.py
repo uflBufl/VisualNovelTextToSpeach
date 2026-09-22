@@ -365,7 +365,13 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                     self.application.processEvents()
                 calls_before = service.generate.call_count
                 self.assertTrue(panel.a_original.isEnabled())
-                panel.a_original.click()
+                with patch("vntts.support.record_game_import") as report:
+                    panel.a_original.click()
+                report.assert_any_call(
+                    "voice-original-playback",
+                    outcome="requested",
+                    reference_sha256=sha256_file(reference),
+                )
                 self.assertEqual(
                     player.play_bytes.call_args.args[0], reference.read_bytes()
                 )

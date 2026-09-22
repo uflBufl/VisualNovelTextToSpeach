@@ -33,7 +33,6 @@ from vntts.generated_audio import (  # noqa: E402
 )
 from vntts.onboarding import DiagnosticResult  # noqa: E402
 from vntts.onboarding_ui import OnboardingWizard  # noqa: E402
-from vntts.pregeneration_acceptance import OfflineAcceptanceWorker  # noqa: E402
 from vntts.pregeneration_queue import PregenerationInputStore  # noqa: E402
 from vntts.pregeneration_recovery import OfflineRecoveryWorker  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
@@ -256,7 +255,6 @@ def _first_process(root):
         input_store=inputs,
         generator=generator,
         recovery=OfflineRecoveryWorker(generator),
-        acceptance=OfflineAcceptanceWorker(generator),
         preview_player=player,
         thread_pool=pool,
         automatic_activation=True,

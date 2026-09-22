@@ -80,7 +80,7 @@ class OfflineGenerationWorker:
             return self._configured_command
         if getattr(sys, "frozen", False):
             return (sys.executable, "--offline-generation-worker")
-        return (sys.executable, "-m", "vntts.authoring.cli")
+        return (sys.executable, "-m", "vntts.authoring.cli_generation")
 
     def generate(
         self,
@@ -296,6 +296,7 @@ class OfflineGenerationWorker:
             voice_plan.synthesis_backend,
             "--generation-profile",
             generation_profile,
+            "--approve-validated-audio",
             "--narrator-character",
             "Narrator",
             "--retries",
@@ -321,11 +322,13 @@ class OfflineGenerationWorker:
             raise OfflineGenerationCancelled("Offline speech generation was cancelled")
         parsed: argparse.Namespace | None
         if self.backend_factory is not None and "--backend" in arguments:
-            from vntts.authoring.cli import create_parser
-            from vntts.authoring.cli_generation import run_generation
+            from vntts.authoring.cli_generation import (
+                create_generation_parser,
+                run_generation,
+            )
 
             command_index = arguments.index("generate")
-            parsed = create_parser().parse_args(arguments[command_index:])
+            parsed = create_generation_parser().parse_args(arguments[command_index:])
             if parsed.backend != "moss-tts":
                 parsed = None
         else:

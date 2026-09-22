@@ -35,6 +35,9 @@ def inputs(root):
         3,
         3,
         (),
+        "c" * 64,
+        "d" * 64,
+        None,
     )
     output = root / f"generation-output-{identity[:16]}"
     result = OfflineGenerationResult(

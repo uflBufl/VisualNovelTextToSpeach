@@ -8,12 +8,12 @@ from collections.abc import Iterable, Sequence
 from itertools import pairwise
 from pathlib import Path
 
+from vntts.authoring.authority import write_json_document_no_replace
 from vntts.cli import cli_error, cli_messages
 from vntts.live_replay_sequence_seal import (
     _decode_json,
     _next_visible_events,
     _read_regular_file,
-    _write_json,
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
 
@@ -169,7 +169,9 @@ def audit_live_replay_coverage(
         "human_acceptance_pending_event_ids": human_pending,
         "sources": sources,
     }
-    _write_json(output_path, document)
+    write_json_document_no_replace(
+        output_path, document, "coverage report", error_type=LiveReplayCoverageError
+    )
     return output_path, document
 
 

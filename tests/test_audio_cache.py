@@ -55,6 +55,16 @@ class PersistentAudioCacheTest(unittest.TestCase):
 
         np.testing.assert_allclose(audio, expected)
 
+    def test_cache_works_when_no_follow_utime_is_unavailable(self):
+        with TemporaryDirectory() as temporary_directory:
+            cache = PersistentAudioCache(temporary_directory)
+            with patch("vntts.audio_cache.os.utime", side_effect=NotImplementedError):
+                path = cache.put("windows", np.array([0.1, -0.1], dtype=np.float32))
+                audio = cache.get("windows")
+
+        self.assertIsNotNone(path)
+        np.testing.assert_allclose(audio, [0.1, -0.1])
+
     def test_prunes_oldest_entries_and_ignores_corruption(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -66,9 +76,11 @@ class PersistentAudioCacheTest(unittest.TestCase):
             (root / "three.npy").write_bytes(b"corrupt")
 
             files = sorted(path.stem for path in root.glob("*.npy"))
+            self.assertIsNone(cache.get("three"))
+            (root / "three.npy").write_bytes(b"")
+            self.assertIsNone(cache.get("three"))
 
         self.assertEqual(files, ["three", "two"])
-        self.assertIsNone(cache.get("three"))
 
     def test_keys_cannot_escape_cache_directory(self):
         with TemporaryDirectory() as temporary_directory:

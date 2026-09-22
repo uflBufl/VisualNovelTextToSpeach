@@ -219,6 +219,42 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
             )
             service.close()
 
+    def test_imported_voice_display_identity_does_not_invalidate_candidate(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_content(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("story",))
+            manifest = write_manifest(root / "voices")
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            document["voices"][0]["vntts.source_character"] = (
+                "Player candidate Rhiannon 123abc"
+            )
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            reference = manifest.parent / "references" / "rhiannon.wav"
+            sf.write(reference, np.tile((0.1, -0.1), 9_600), 16_000, subtype="PCM_16")
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(speech_backend="moss-tts", tts_profile="stable"),
+                manifest_path=manifest,
+            )
+            group = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            candidate = next(
+                candidate
+                for candidate in group.candidates
+                if candidate.source_character == "Player candidate Rhiannon 123abc"
+            )
+            service = VoiceAuditionPreviewService(root / "auditions")
+            try:
+                self.assertEqual(
+                    service.reference_audio(plan, group, candidate.source_id),
+                    reference.resolve(),
+                )
+            finally:
+                service.close()
+
     @patch("vntts.moss_cpp_backend.moss_cpp_requested", return_value=True)
     def test_generates_one_exact_preview_then_reuses_persistent_wav(self, _native):
         with TemporaryDirectory() as temporary_directory:

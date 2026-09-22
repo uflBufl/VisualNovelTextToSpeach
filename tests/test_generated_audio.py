@@ -4,7 +4,7 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Thread
+from threading import Event, Thread, current_thread
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -227,6 +227,88 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertFalse(library.runtime_progress)
         self.assertEqual(len(warnings), 1)
         self.assertIn("update ignored", warnings[0])
+
+    def test_preflight_keeps_entry_and_narrator_role_from_the_same_manifest(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            old_audio = root / "old.wav"
+            new_audio = root / "new.wav"
+            write_wav(old_audio, [0.0, 0.25, -0.25, 0.0])
+            write_wav(new_audio, [0.0, 0.5, -0.5, 0.0])
+            manifest = root / "generated-audio.json"
+            line_hash = text_sha256("Who is there?")
+
+            def entry(audio, speaker, voice):
+                return {
+                    "line_id": "game:unknown",
+                    "text_sha256": line_hash,
+                    "audio": audio.name,
+                    "audio_format": "wav-pcm16-mono",
+                    "audio_sha256": sha256_file(audio),
+                    "sample_rate": 24_000,
+                    "sample_count": 4,
+                    "speaker": speaker,
+                    "requested_voice_character": voice,
+                    "voice_character": voice,
+                }
+
+            write_generated_audio_manifest(
+                manifest, {}, [entry(old_audio, "???", "Narrator")]
+            )
+            library = GeneratedAudioLibrary.load_optional(manifest)
+            blocked = Event()
+            release = Event()
+            old_results = []
+            original_read_bytes = Path.read_bytes
+
+            def read_bytes(path):
+                if path == old_audio.resolve() and current_thread() is worker:
+                    blocked.set()
+                    if not release.wait(2):
+                        raise TimeoutError("Timed out waiting for manifest reload")
+                return original_read_bytes(path)
+
+            worker = Thread(
+                target=lambda: old_results.append(
+                    library.find("game:unknown", line_hash)
+                )
+            )
+            with patch.object(Path, "read_bytes", read_bytes):
+                worker.start()
+                try:
+                    self.assertTrue(blocked.wait(2))
+                    write_generated_audio_manifest(
+                        manifest, {}, [entry(new_audio, "Ada", "Ada")]
+                    )
+                    new_result = library.find("game:unknown", line_hash)
+                finally:
+                    release.set()
+                    worker.join(2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(old_results), 1)
+        self.assertEqual(old_results[0].narrator_fallback_role, "Unknown")
+        self.assertIsNone(new_result.narrator_fallback_role)
+
+    def test_reload_revalidates_metadata_when_wav_is_unchanged(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library, _audio = self.create_library(root)
+            manifest = root / "generated-audio.json"
+            line_hash = text_sha256("Hello.")
+            self.assertIsNotNone(library.find("game:1", line_hash))
+            entry = json.loads(manifest.read_text(encoding="utf-8"))["entries"][0]
+
+            write_generated_audio_manifest(manifest, {}, [{**entry, "sample_count": 5}])
+            invalid, state = library.find_with_preflight("game:1", line_hash)
+            write_generated_audio_manifest(
+                manifest, {}, [{**entry, "provider": "updated-provider"}]
+            )
+            updated = library.find("game:1", line_hash)
+
+        self.assertIsNone(invalid)
+        self.assertEqual(state, "generated-audio-metadata-mismatch")
+        self.assertEqual(updated.provider, "updated-provider")
 
     def test_character_defaults_preserve_recordings_and_apply_only_to_live_synthesis(
         self,
@@ -503,11 +585,30 @@ class GeneratedAudioTest(unittest.TestCase):
                 ],
             )
 
-            prepared = GeneratedAudioLibrary.load_optional(manifest).find(
-                "game:unknown", text_sha256("Who is there?")
+            library = GeneratedAudioLibrary.load_optional(manifest)
+            prepared = library.find("game:unknown", text_sha256("Who is there?"))
+            write_generated_audio_manifest(
+                manifest,
+                {},
+                [
+                    {
+                        "line_id": "game:unknown",
+                        "text_sha256": text_sha256("Who is there?"),
+                        "audio": "line.wav",
+                        "audio_format": "wav-pcm16-mono",
+                        "audio_sha256": sha256_file(audio),
+                        "sample_rate": 24_000,
+                        "sample_count": 4,
+                        "speaker": "Ada",
+                        "requested_voice_character": "Ada",
+                        "voice_character": "Ada",
+                    }
+                ],
             )
+            updated = library.find("game:unknown", text_sha256("Who is there?"))
 
         self.assertEqual(prepared.narrator_fallback_role, "Unknown")
+        self.assertIsNone(updated.narrator_fallback_role)
 
     def create_resolver(
         self,

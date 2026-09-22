@@ -145,6 +145,9 @@ def fixture(
         2,
         2,
         (),
+        sha256_file(story),
+        sha256_file(voices),
+        None,
         audio_event_omission_queue_ids=(items[-1]["queue_id"],)
         if include_omission
         else (),
@@ -352,6 +355,10 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 rows,
             )
             job = replace(job, story_index_sha256=sha256_file(inputs.story_index))
+            inputs = replace(
+                inputs,
+                story_index_sha256=sha256_file(inputs.story_index),
+            )
             content = inspect_story_index(inputs.story_index)
             selection = content.selections[0]
             job = replace(job, selected_story_ids=(selection.selection_id,))
@@ -500,6 +507,49 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 (items[1]["line_id"], items[1]["text_sha256"]),
                 library.live_fallbacks,
             )
+
+    def test_rejects_changed_prepared_story_before_publication(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, generation_input, generation_result, _items = fixture(root)
+            story = load_story_index_document(generation_input.story_index)
+            records = [record.to_record() for record in story.records]
+            records[0]["speaker"] = "Someone Else"
+            write_story_index_document(
+                generation_input.story_index,
+                story.metadata,
+                records,
+            )
+
+            with self.assertRaisesRegex(
+                OfflinePackError, "Prepared story index changed"
+            ):
+                OfflinePackPublisher().publish(job, generation_input, generation_result)
+
+            self.assertFalse((root / "game-packs").exists())
+
+    def test_rejects_changed_prepared_voice_manifest_and_queue(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            for path_name, label in (
+                ("voice_manifest", "voice manifest"),
+                ("queue", "generation queue"),
+            ):
+                with self.subTest(path=path_name):
+                    job, generation_input, generation_result, _items = fixture(
+                        root / path_name
+                    )
+                    path = getattr(generation_input, path_name)
+                    path.write_bytes(path.read_bytes() + b"\n")
+
+                    with self.assertRaisesRegex(
+                        OfflinePackError, f"Prepared {label} changed"
+                    ):
+                        OfflinePackPublisher().publish(
+                            job, generation_input, generation_result
+                        )
+
+                    self.assertFalse((root / path_name / "game-packs").exists())
 
     def test_publishes_exact_pure_event_omission_without_a_wav(self):
         with TemporaryDirectory() as temporary_directory:

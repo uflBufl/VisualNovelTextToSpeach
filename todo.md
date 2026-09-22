@@ -12,6 +12,13 @@ Execution labels:
 - **Validate**: implementation exists or depends on a real host; no speculative
   code changes before the stated run.
 
+## Active - Simplify the player preparation architecture
+
+- [ ] Separate route selection from audio playback using an immutable route
+      result and one playback owner. Gate: original, prepared and live fallback
+      routes preserve priority and each observed dialogue occurrence starts at
+      most one audible route.
+
 Planned implementation order after approval:
 
 1. Reproduce and fix the Windows device-quiescence race, then use the same

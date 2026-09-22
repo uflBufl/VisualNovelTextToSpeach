@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QSizePolicy,
 )
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
+from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
 from tests.test_authoring_pcm_playback import FakeAudioModule  # noqa: E402
 from tests.test_pregeneration_audition import FakeBackend, clean_wav_bytes  # noqa: E402
@@ -1206,7 +1207,8 @@ class GameNarratorTest(unittest.TestCase):
             importer.selected_installation_root.side_effect = lambda: selected_root[0]
 
             def characters(_cancel, installation_root):
-                selected_root[0] = Path(installation_root)
+                if installation_root is not None:
+                    selected_root[0] = Path(installation_root)
                 return ("Centurion" if selected_root[0] == first_root else "Rhiannon",)
 
             importer.narrator_characters.side_effect = characters
@@ -1233,6 +1235,12 @@ class GameNarratorTest(unittest.TestCase):
                     self.run_task(pool)
                 self.assertEqual(dialog.characters.currentText(), "Centurion")
                 self.assertEqual(dialog.references.currentData(), "Centurion:reference")
+                self.assertIsNone(importer.narrator_characters.call_args.args[1])
+
+                dialog.discover()
+                while pool.tasks:
+                    self.run_task(pool)
+                self.assertIsNone(importer.narrator_characters.call_args.args[1])
 
                 dialog.discover(second_root)
                 self.assertEqual(dialog.game_installation.text(), str(second_root))
@@ -1367,17 +1375,34 @@ class GameNarratorTest(unittest.TestCase):
                     story.read_text().replace("Rhiannon", "Centurion")
                 )
 
-            with patch.object(
-                importer,
-                "import_installed",
-                side_effect=importing_game,
-            ) as importing:
+            with (
+                patch.object(
+                    importer, "import_installed", side_effect=importing_game
+                ) as importing,
+                patch(
+                    "vntts.game_content_importer.load_story_index_document",
+                    wraps=load_story_index_document,
+                ) as parse_index,
+            ):
                 self.assertEqual(importer.narrator_characters(), ("Centurion",))
                 self.assertEqual(importer.narrator_characters(), ("Centurion",))
+                self.assertEqual(
+                    Reverse1999GameImporter(output_root=root).narrator_characters(),
+                    ("Centurion",),
+                )
                 self.assertEqual(importing.call_count, 1)
+                parse_index.assert_called_once()
+                (root / "reverse1999" / "narrator-banks.json").write_text(
+                    '{"Centurion": "hero3032_mainstory.bnk", "Rhiannon": "other.bnk"}'
+                )
+                self.assertEqual(
+                    importer.narrator_characters(), ("Centurion", "Rhiannon")
+                )
+                self.assertEqual(parse_index.call_count, 2)
                 importer.narrator_characters(installation_root=root / "game")
                 self.assertEqual(importing.call_count, 2)
                 self.assertEqual(importing.call_args.args[1], root / "game")
+                self.assertEqual(parse_index.call_count, 3)
 
     def test_preparation_character_picker_preselects_target_role(self):
         with TemporaryDirectory() as directory:

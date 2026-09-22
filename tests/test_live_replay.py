@@ -1087,6 +1087,27 @@ class LiveReplayTest(unittest.TestCase):
         self.assertTrue(second["consumed"])
         self.assertEqual(second["frame_index"], 2)
 
+    def test_route_replaces_prefix_observation_without_duplicate_skip(self):
+        with TemporaryDirectory() as temporary_directory:
+            corpus = load_live_replay_corpus(self.create_corpus(temporary_directory))
+            source = ReplayFrameSource(corpus.dialogue)
+            frame = source.capture()
+
+            observed = source.acknowledge_observation(
+                frame, route_kind="prefix-observation"
+            )
+            routed = source.acknowledge_route(frame, route_kind="generated")
+            repeated = source.acknowledge_observation(frame, route_kind="ocr")
+            snapshot = source.snapshot()
+
+        self.assertTrue(observed["consumed"])
+        self.assertTrue(routed["consumed"])
+        self.assertTrue(repeated["consumed"])
+        self.assertEqual(
+            snapshot["dialogues"][0]["frames"][0]["route_kind"], "generated"
+        )
+        self.assertEqual(snapshot["skipped_count"], 0)
+
     def test_stop_unblocks_an_incomplete_frame_wait_without_completion(self):
         with TemporaryDirectory() as temporary_directory:
             corpus = load_live_replay_corpus(self.create_corpus(temporary_directory))

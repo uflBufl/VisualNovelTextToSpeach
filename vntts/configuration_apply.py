@@ -9,6 +9,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QAbstractButton, QDialog, QPushButton, QTabWidget
 
 from vntts.async_ui import LatestTaskRunner
+from vntts.player_session import PlayerSessionOwner
 from vntts.settings import (
     AppSettings,
     is_live_sequence_audio_mode,
@@ -129,6 +130,7 @@ class ConfigurationApplyMixin:
     if TYPE_CHECKING:
         settings: AppSettings
         controller: _Controller
+        session_owner: PlayerSessionOwner
         dashboard: _Dashboard
         signals: _Signals
         pregeneration_dialog: _PreparationDialog | None
@@ -140,7 +142,9 @@ class ConfigurationApplyMixin:
         _controller_busy: bool
         _shutting_down: bool
 
-        def _begin_controller_lifecycle(self) -> int: ...
+        def _begin_controller_lifecycle(
+            self, cancellation: Event | None = None
+        ) -> int: ...
 
         def _finish_controller_lifecycle(self) -> None: ...
 
@@ -211,9 +215,10 @@ class ConfigurationApplyMixin:
         restart: bool = False,
     ) -> None:
         self._refresh_preparation_settings()
-        generation = self._begin_controller_lifecycle()
+        cancellation = Event()
+        generation = self._begin_controller_lifecycle(cancellation)
         self._configuration_generation = generation
-        self._configuration_cancellation = Event()
+        self._configuration_cancellation = cancellation
         self._configuration_success_status = success_status
         self._configuration_refresh_hotkeys = bool(refresh_hotkeys)
         self._configuration_restart = restart
@@ -233,24 +238,9 @@ class ConfigurationApplyMixin:
         cancellation: Event,
         restart: bool = False,
     ) -> tuple[bool, bool]:
-        if restart:
-            self.controller.shutdown()
-            if cancellation.is_set() or not self._lifecycle_is_current(generation):
-                return False, False
-        applied = self.controller.apply_settings(
-            settings,
-            cancellation=cancellation,
+        return self.session_owner.configure(
+            generation, settings, cancellation, restart=restart
         )
-        if restart and applied is not False and not cancellation.is_set():
-            self.controller.prepare_startup()
-            if cancellation.is_set() or not self._lifecycle_is_current(generation):
-                self.controller.request_shutdown()
-                return False, False
-            applied = self.controller.start()
-            if cancellation.is_set() or not self._lifecycle_is_current(generation):
-                self.controller.shutdown()
-                return False, False
-        return self._lifecycle_is_current(generation), applied is not False
 
     def cancel_configuration_apply(self) -> None:
         cancellation = self._configuration_cancellation
@@ -258,14 +248,14 @@ class ConfigurationApplyMixin:
             self.set_status("No runtime configuration apply is in progress")
             return
         if self._configuration_restart:
-            cancellation.set()
-            self.controller.request_shutdown()
+            self.session_owner.cancel()
             self.cancel_configuration_action.setEnabled(False)
             self.set_status(
                 "Cancelling narrator reload; saved selection remains for restart..."
             )
             return
         if self.controller.cancel_settings_apply(cancellation):
+            self.session_owner.cancel()
             self.cancel_configuration_action.setEnabled(False)
             self.set_status(
                 "Cancelling runtime apply; saved settings remain for restart..."

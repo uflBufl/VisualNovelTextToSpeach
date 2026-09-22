@@ -331,9 +331,9 @@ class GeneratedAudioLibrary:
         cache_size: int = 32,
     ) -> None:
         self.warn = warn or (lambda _message: None)
-        self.cache: BoundedCache[tuple[str, str, str], PreparedGeneratedAudio] = (
-            BoundedCache(cache_size)
-        )
+        self.cache: BoundedCache[
+            tuple[str, str, str], tuple[NDArray[np.float32], int]
+        ] = BoundedCache(cache_size)
         self.warned_entries: set[tuple[str, str]] = set()
         self.reload_lock = Lock()
         self.failed_reload_signature: tuple[int, int, int] | None = None
@@ -422,9 +422,15 @@ class GeneratedAudioLibrary:
         self, line_id: str, text_sha256: str
     ) -> tuple[PreparedGeneratedAudio | None, str]:
         self._reload_if_changed()
-        entry = self.index.find(line_id, text_sha256, verify_file=False)
+        with self.reload_lock:
+            index = self.index
+            narrator_fallback_roles = self.narrator_fallback_roles
+        entry = index.find(line_id, text_sha256, verify_file=False)
         if entry is None:
             return None, "generated-audio-entry-not-found"
+        narrator_fallback_role = narrator_fallback_roles.get(
+            (entry.line_id, entry.text_sha256)
+        )
         try:
             payload = entry.audio.read_bytes()
         except OSError:
@@ -443,15 +449,17 @@ class GeneratedAudioLibrary:
             entry.audio_sha256,
         )
         cached = self.cache.get(cache_key)
-        if cached is not None:
-            return cached, "generated-audio-entry-verified"
-        try:
-            samples, sample_rate = _read_pcm16_mono_wav_bytes(payload)
-        except Pcm16MonoWavError as error:
-            self._warn_once(
-                entry, f"Generated audio is invalid: {entry.audio}: {error}"
-            )
-            return None, "generated-audio-invalid-wav"
+        if cached is None:
+            try:
+                samples, sample_rate = _read_pcm16_mono_wav_bytes(payload)
+            except Pcm16MonoWavError as error:
+                self._warn_once(
+                    entry, f"Generated audio is invalid: {entry.audio}: {error}"
+                )
+                return None, "generated-audio-invalid-wav"
+            self.cache.put(cache_key, (samples, sample_rate))
+        else:
+            samples, sample_rate = cached
         if sample_rate != entry.sample_rate or len(samples) != entry.sample_count:
             self._warn_once(
                 entry,
@@ -463,15 +471,12 @@ class GeneratedAudioLibrary:
             text_sha256=entry.text_sha256,
             samples=samples,
             sample_rate=sample_rate,
-            narrator_fallback_role=self.narrator_fallback_roles.get(
-                (entry.line_id, entry.text_sha256)
-            ),
+            narrator_fallback_role=narrator_fallback_role,
             provider=getattr(entry, "provider", None),
             model=getattr(entry, "model", None),
             voice_character=getattr(entry, "voice_character", None),
             recorded_voice=recorded_voice_identity(entry),
         )
-        self.cache.put(cache_key, prepared)
         return prepared, "generated-audio-entry-verified"
 
     def find_live_fallback(

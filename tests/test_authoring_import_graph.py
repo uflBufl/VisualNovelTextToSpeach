@@ -154,6 +154,26 @@ print(json.dumps({
         self.assertFalse(observed["workbench"])
         self.assertFalse(observed["pyside"])
 
+    def test_player_generation_import_excludes_expert_workflows(self):
+        script = """
+import json
+import sys
+import vntts.authoring.cli_generation
+blocked = (
+    "vntts.authoring.cli",
+    "vntts.authoring.cli_workspace",
+    "vntts.authoring.legacy_import",
+    "vntts.authoring.reconciliation",
+    "vntts.authoring.reconciliation_merge",
+    "vntts.authoring.workspace_outcome_merge",
+)
+print(json.dumps([name for name in blocked if name in sys.modules]))
+"""
+        loaded = json.loads(
+            subprocess.check_output([sys.executable, "-c", script], text=True)
+        )
+        self.assertEqual(loaded, [])
+
     def test_speech_quality_is_independent_from_bulk_orchestration(self):
         self.assertIs(BulkSpeechQuality, SpeechQuality)
         self.assertFalse(

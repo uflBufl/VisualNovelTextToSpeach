@@ -665,7 +665,7 @@ def _load_candidate_registry(
     try:
         identity = VoiceCandidate(
             source_id=candidate.source_id,
-            source_character=voice.character,
+            source_character=voice.source_character or voice.character,
             source_speaker=voice.speaker,
             reference_sha256s=tuple(sha256_file(path) for path in voice.references),
         )
