@@ -270,6 +270,8 @@ def ensure_moss_cpp(
     )
     if explicit_server and explicit_model:
         return paths  # Explicit installations are validated by the backend, never repaired here.
+    if root.is_symlink() or root.is_junction():
+        raise TTSConfigurationError("Managed OpenMOSS directory must not be an alias")
     if sys.platform != "win32" or platform.machine().lower() not in {"amd64", "x86_64"}:
         raise TTSConfigurationError(
             "Automatic MOSS C++ setup currently supports Windows x64. Configure a native server and GGUF model on this platform."

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from zipfile import ZipFile
 
+from tests.symlink_support import symlink_or_skip
 from vntts import moss_cpp_installation as setup
 from vntts.services.tts_engine import TTSConfigurationError, TTSSynthesisError
 
@@ -174,6 +175,21 @@ class MossCppInstallationTest(unittest.TestCase):
         expected = setup.ARCHIVE[2] + sum(size for _name, _digest, size in setup.MODELS)
         self.assertEqual(raised.exception.download_space[0], expected)
         download.assert_not_called()
+
+    def test_managed_install_rejects_aliased_root(self):
+        with TemporaryDirectory() as directory:
+            base = Path(directory)
+            outside = base / "outside"
+            outside.mkdir()
+            root = base / "managed"
+            symlink_or_skip(root, outside, target_is_directory=True)
+            with (
+                patch.dict(setup.os.environ, {}, clear=True),
+                patch.object(setup.sys, "platform", "win32"),
+                patch.object(setup.platform, "machine", return_value="AMD64"),
+                self.assertRaisesRegex(TTSConfigurationError, "alias"),
+            ):
+                setup.ensure_moss_cpp(root=root)
 
     def test_space_check_includes_partial_download_and_working_space(self):
         with (
