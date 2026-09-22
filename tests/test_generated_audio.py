@@ -201,6 +201,33 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(prepared.line_id, "game:2")
         self.assertEqual(len(library.index.entries), 2)
 
+    def test_rejected_manifest_reload_keeps_previous_audio_and_route_state(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library, _audio = self.create_library(root)
+            manifest = root / "generated-audio.json"
+            warnings = []
+            library.warn = warnings.append
+            previous_index = library.index
+            previous_fallbacks = library.live_fallbacks
+            write_generated_audio_manifest(
+                manifest,
+                {
+                    "vntts.runtime.progress": True,
+                    "vntts.authoring.live_fallback": {"invalid": True},
+                },
+                [],
+            )
+
+            prepared = library.find("game:1", text_sha256("Hello."))
+
+        self.assertIsNotNone(prepared)
+        self.assertIs(library.index, previous_index)
+        self.assertIs(library.live_fallbacks, previous_fallbacks)
+        self.assertFalse(library.runtime_progress)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("update ignored", warnings[0])
+
     def test_character_defaults_preserve_recordings_and_apply_only_to_live_synthesis(
         self,
     ):

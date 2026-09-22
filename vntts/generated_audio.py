@@ -347,22 +347,25 @@ class GeneratedAudioLibrary:
 
     def _apply_index(self, index: GeneratedAudioDocument | GeneratedAudioIndex) -> None:
         _validate_generated_audio_paths(index)
-        self.index = index
-        self.runtime_progress = index.metadata.get("vntts.runtime.progress") is True
-        self.live_fallbacks = _live_fallback_index(index.metadata)
-        self.audio_event_omissions = _audio_event_omission_index(index.metadata)
+        live_fallbacks = _live_fallback_index(index.metadata)
+        audio_event_omissions = _audio_event_omission_index(index.metadata)
         generated_identities = {
             (entry.line_id, entry.text_sha256) for entry in index.entries
         }
-        if generated_identities.intersection(self.audio_event_omissions):
+        if generated_identities.intersection(audio_event_omissions):
             raise GeneratedAudioManifestError(
                 "Generated audio conflicts with an audio-event omission"
             )
-        self.narrator_fallback_roles = {
+        narrator_fallback_roles = {
             (entry.line_id, entry.text_sha256): role
             for entry in index.entries
             if (role := _narrator_fallback_role(entry)) is not None
         }
+        self.index = index
+        self.runtime_progress = index.metadata.get("vntts.runtime.progress") is True
+        self.live_fallbacks = live_fallbacks
+        self.audio_event_omissions = audio_event_omissions
+        self.narrator_fallback_roles = narrator_fallback_roles
 
     def _reload_if_changed(self) -> None:
         signature = _manifest_signature(self.manifest_path)
