@@ -7,11 +7,14 @@ import hashlib
 import io
 import json
 import wave
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypeAlias
 
 import numpy as np
+from numpy.typing import NDArray
 from vntts_artifacts import (
     VoiceGenerationQueue,
     expected_voice_generation_queue_id,
@@ -45,6 +48,8 @@ SOURCE_REPORT_SCHEMA = "r1999.story-voice-reference-candidates"
 SOURCE_REPORT_VERSION = 2
 COMPLETE_BANK_SCOPE = "complete_exact_bank"
 
+PathInput: TypeAlias = str | Path
+
 
 class ReferenceCompositeError(RuntimeError):
     """A complete-bank reference composite cannot be published safely."""
@@ -57,7 +62,7 @@ class ReferenceCompositeResult:
     duration_seconds: float
     sha256: str
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "directory": str(self.directory),
             "clips": self.clips,
@@ -66,7 +71,11 @@ class ReferenceCompositeResult:
         }
 
 
-def publish_composite_quality_review(composite_directory, state_path, output):
+def publish_composite_quality_review(
+    composite_directory: PathInput,
+    state_path: PathInput,
+    output: PathInput,
+) -> SourceReferenceQualityResult:
     """Publish one self-contained review card for an exact-bank composite run."""
     composite_directory = Path(composite_directory).expanduser().resolve()
     state_path = Path(state_path).expanduser().resolve()
@@ -104,6 +113,9 @@ def publish_composite_quality_review(composite_directory, state_path, output):
     except (BulkGenerationError, OSError, ValueError) as error:
         raise ReferenceCompositeError(str(error)) from error
     state_sha256 = sha256_file(state_path)
+    state_items = state.get("items")
+    if not isinstance(state_items, dict):
+        raise ReferenceCompositeError("Composite generation state is malformed")
     queue_by_id = {item.queue_id: item for item in queue.items}
     declared_queue_ids = evaluation.get("fixed_queue_ids")
     if (
@@ -180,7 +192,7 @@ def publish_composite_quality_review(composite_directory, state_path, output):
         excluded = []
         for index, queue_id in enumerate(declared_queue_ids, start=1):
             item = queue_by_id[queue_id]
-            result = state["items"].get(queue_id)
+            result = state_items.get(queue_id)
             status = result.get("status") if isinstance(result, dict) else "pending"
             common = {
                 "queue_id": queue_id,
@@ -189,6 +201,10 @@ def publish_composite_quality_review(composite_directory, state_path, output):
                 "text_sha256": item.text_sha256,
             }
             if status in {"generated", "approved"}:
+                if not isinstance(result, dict):
+                    raise ReferenceCompositeError(
+                        f"Generated composite result is malformed: {queue_id}"
+                    )
                 source = _contained_file(
                     state_path.parent,
                     _text(result.get("path"), f"Generated sample {queue_id} path"),
@@ -271,17 +287,17 @@ def publish_composite_quality_review(composite_directory, state_path, output):
 
 
 def publish_exact_bank_reference_composite(
-    report_path,
-    character,
-    portrait,
-    source_bank,
-    output,
+    report_path: PathInput,
+    character: object,
+    portrait: object,
+    source_bank: object,
+    output: PathInput,
     *,
-    gap_ms=120,
-    silence_dbfs=-40.0,
-    trim_trigger_ms=80,
-    trim_padding_ms=20,
-):
+    gap_ms: int = 120,
+    silence_dbfs: float = -40.0,
+    trim_trigger_ms: int = 80,
+    trim_padding_ms: int = 20,
+) -> ReferenceCompositeResult:
     """Publish all clips for one exact complete-bank identity plus a composite."""
     report_path = Path(report_path).expanduser().resolve()
     output = Path(output).expanduser().resolve()
@@ -438,7 +454,7 @@ def publish_exact_bank_reference_composite(
             )
         assert sample_rate is not None
         gap_frames = round(sample_rate * gap_ms / 1000)
-        parts = []
+        parts: list[NDArray[np.float32]] = []
         for index, samples in enumerate(trimmed_clips):
             if index:
                 parts.append(np.zeros(gap_frames, dtype=np.float32))
@@ -576,7 +592,9 @@ def publish_exact_bank_reference_composite(
         )
 
 
-def _read_pcm16_mono(payload, media_id):
+def _read_pcm16_mono(
+    payload: bytes, media_id: object
+) -> tuple[int, NDArray[np.float32]]:
     try:
         with wave.open(io.BytesIO(payload), "rb") as source:
             channels = source.getnchannels()
@@ -595,7 +613,14 @@ def _read_pcm16_mono(payload, media_id):
     return rate, np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
 
 
-def _trim_edges(samples, sample_rate, *, silence_dbfs, trigger_ms, padding_ms):
+def _trim_edges(
+    samples: NDArray[np.float32],
+    sample_rate: int,
+    *,
+    silence_dbfs: float,
+    trigger_ms: int,
+    padding_ms: int,
+) -> tuple[NDArray[np.float32], int, int]:
     threshold = 10.0 ** (float(silence_dbfs) / 20.0)
     active = np.flatnonzero(np.abs(samples) > threshold)
     if not active.size:
@@ -611,27 +636,27 @@ def _trim_edges(samples, sample_rate, *, silence_dbfs, trigger_ms, padding_ms):
     return samples[removed_start:end].copy(), removed_start, removed_end
 
 
-def _contained_file(root, relative):
+def _contained_file(root: Path, relative: object) -> Path:
     relative = _text(relative, "Reference path")
     return contained_regular_file(
         root, relative, "reference path", error_type=ReferenceCompositeError
     )
 
 
-def _text(value, label):
+def _text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ReferenceCompositeError(f"{label} must be non-empty text")
     return value.strip()
 
 
-def _sha256(value, label):
+def _sha256(value: object, label: str) -> str:
     value = _text(value, label)
     if not is_lowercase_sha256(value):
         raise ReferenceCompositeError(f"{label} must be lowercase SHA-256")
     return value
 
 
-def create_parser():
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build one experimental reference from a complete exact game bank"
     )
@@ -644,7 +669,7 @@ def create_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     options = create_parser().parse_args(argv)
     try:
         result = publish_exact_bank_reference_composite(

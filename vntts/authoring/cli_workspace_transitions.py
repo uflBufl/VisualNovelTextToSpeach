@@ -161,7 +161,7 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "experimental-composite-voice-input":
-        result = publish_experimental_composite_voice_input(
+        composite_result = publish_experimental_composite_voice_input(
             arguments.source_manifest,
             arguments.composite_directory,
             arguments.quality_review,
@@ -169,21 +169,26 @@ def handle(arguments: argparse.Namespace) -> int:
             arguments.output_directory,
         )
         print(
-            json.dumps(result.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+            json.dumps(
+                composite_result.to_dict(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
         )
         return 0
     if arguments.command == "carry-failed-controls":
-        result = carry_failed_controls(
+        carry_result = carry_failed_controls(
             arguments.source_workspace,
             arguments.target_workspace,
             arguments.queue_ids,
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(carry_result.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "failed-prompt-hypothesis-selection":
-        result = publish_failed_prompt_hypothesis_selection(
+        hypothesis_result = publish_failed_prompt_hypothesis_selection(
             arguments.plan, arguments.session, arguments.output
         )
-        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        print(json.dumps(hypothesis_result.to_dict(), indent=2, sort_keys=True))
         return 0
     raise AssertionError(f"Unhandled workspace-transition command: {arguments.command}")
