@@ -265,6 +265,15 @@ GenerationRenderer: TypeAlias = Callable[[SynthesisRequest], SynthesisChunkStrea
 PrefetchedRender: TypeAlias = tuple[str, SynthesisRequest, Future[SynthesisResult]]
 
 
+class _CapturedSilenceFailure(TypedDict):
+    wav_payload: bytes
+    queue_id: str
+    line_id: str
+    text: str
+    text_sha256: str
+    state_item: JsonDocument
+
+
 class _FailureReportRecord(TypedDict):
     queue_id: str
     line_id: str
@@ -409,14 +418,14 @@ class _GenerationExecutionResult:
     generated: int
     skipped_existing: int
     cancelled: bool
-    captured_silence_failure: dict[str, object] | None
+    captured_silence_failure: _CapturedSilenceFailure | None
 
 
 @dataclass(frozen=True)
 class _GenerationItemExecutionResult:
     generated: bool
     cancelled: bool
-    captured_silence_failure: dict[str, object] | None
+    captured_silence_failure: _CapturedSilenceFailure | None
     prefetched_render: PrefetchedRender | None
 
 
@@ -424,7 +433,7 @@ class _GenerationItemExecutionResult:
 class _GenerationFailureResult:
     last_error: str
     cancelled: bool
-    captured_silence_failure: dict[str, object] | None
+    captured_silence_failure: _CapturedSilenceFailure | None
 
 
 @dataclass
@@ -2300,7 +2309,7 @@ def _store_failed_generation_attempt(
     else:
         run.state["active"] = None
         atomic_write_json(run.state_path, run.state, sort_keys=True)
-    captured: JsonDocument | None = None
+    captured: _CapturedSilenceFailure | None = None
     if captured_partial is not None:
         captured = {
             "wav_payload": captured_partial,
@@ -2519,7 +2528,7 @@ def _execute_generation_item(
     provider_attempts = plan.provider_attempts
     run_attempts = 0
     last_error = plan.last_error
-    captured_silence_failure: JsonDocument | None = None
+    captured_silence_failure: _CapturedSilenceFailure | None = None
 
     while run_attempts < plan.attempt_limit:
         attempt = _begin_generation_attempt(
@@ -2608,7 +2617,7 @@ def _execute_generation_candidates(
     generated = 0
     skipped_existing = 0
     cancelled = False
-    captured_silence_failure: JsonDocument | None = None
+    captured_silence_failure: _CapturedSilenceFailure | None = None
     prefetched_render: PrefetchedRender | None = None
     pipeline_enabled = (
         run.provider == "moss-tts"
@@ -2668,6 +2677,8 @@ def _finalize_generation_run(
     )
     captured = execution.captured_silence_failure
     if captured is not None:
+        if evidence_directory is None:
+            raise BulkGenerationError("Silence-failure evidence directory is missing")
         publish_silence_failure_evidence(
             evidence_directory,
             captured["wav_payload"],

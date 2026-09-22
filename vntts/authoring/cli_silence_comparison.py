@@ -75,13 +75,17 @@ def handle(arguments: argparse.Namespace) -> int:
         }
     elif arguments.command == "silence-comparison-check":
         document = load_silence_comparison(arguments.comparison)
+        policy = document.get("policy")
+        samples = document.get("samples")
+        if not isinstance(policy, dict) or not isinstance(samples, list):
+            raise SilenceComparisonError("Silence comparison document is malformed")
         payload = {
             "comparison": str(arguments.comparison.expanduser().resolve()),
             "input_plan_sha256": document.get("input_plan_sha256"),
-            "production_enabled": document["policy"]["production_enabled"],
-            "requires_blind_review": document["policy"]["requires_blind_review"],
-            "sample_count": len(document["samples"]),
-            "target_seconds": document["policy"]["target_seconds"],
+            "production_enabled": policy["production_enabled"],
+            "requires_blind_review": policy["requires_blind_review"],
+            "sample_count": len(samples),
+            "target_seconds": policy["target_seconds"],
         }
     elif arguments.command == "silence-comparison-session":
         session = create_silence_comparison_session(

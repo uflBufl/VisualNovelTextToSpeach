@@ -26,7 +26,9 @@ class SilenceFailureEvidenceError(RuntimeError):
     """A rejected-WAV evidence artifact cannot be published or trusted."""
 
 
-def publish_silence_failure_evidence(output_directory, wav_payload, metadata):
+def publish_silence_failure_evidence(
+    output_directory: str | Path, wav_payload: bytes, metadata: dict[str, object]
+) -> Path:
     """Atomically publish one non-reviewable rejected WAV and its exact authority."""
     output = _new_directory(output_directory)
     if output.exists() or output.is_symlink():
@@ -62,7 +64,7 @@ def publish_silence_failure_evidence(output_directory, wav_payload, metadata):
         return output
 
 
-def load_silence_failure_evidence(directory):
+def load_silence_failure_evidence(directory: str | Path) -> dict[str, object]:
     """Validate one rejected-WAV evidence directory without making it reviewable."""
     root = Path(directory).expanduser().resolve()
     try:
@@ -158,7 +160,7 @@ def load_silence_failure_evidence(directory):
     return document
 
 
-def _probe_pcm16_mono_bytes(payload):
+def _probe_pcm16_mono_bytes(payload: bytes) -> None:
     try:
         with wave.open(io.BytesIO(payload), "rb") as source:
             if (
@@ -178,7 +180,7 @@ def _probe_pcm16_mono_bytes(payload):
         ) from error
 
 
-def _new_directory(value):
+def _new_directory(value: str | Path) -> Path:
     path = Path(value).expanduser()
     if not path.name or path.name in {".", ".."}:
         raise SilenceFailureEvidenceError(
@@ -189,7 +191,7 @@ def _new_directory(value):
     return path.parent.resolve() / path.name
 
 
-def _rename_no_replace(source, destination):
+def _rename_no_replace(source: Path, destination: Path) -> None:
     try:
         rename_directory_no_replace(source, destination)
     except AtomicPublicationError as error:

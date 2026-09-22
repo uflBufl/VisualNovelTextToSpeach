@@ -8,6 +8,7 @@ import json
 import math
 import shutil
 import wave
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,7 +65,9 @@ class SilenceComparisonInputPlan:
     samples: tuple[SilenceComparisonSample, ...]
 
 
-def load_silence_comparison_input_plan(path):
+def load_silence_comparison_input_plan(
+    path: str | Path,
+) -> SilenceComparisonInputPlan:
     """Load an exact, checksum-bound operator plan without changing its sources."""
     source = Path(path).expanduser()
     if source.is_symlink():
@@ -159,12 +162,12 @@ def load_silence_comparison_input_plan(path):
 
 
 def publish_silence_comparison(
-    samples,
-    output_directory,
+    samples: Iterable[SilenceComparisonSample],
+    output_directory: str | Path,
     *,
-    target_seconds=DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
-    input_plan_sha256=None,
-):
+    target_seconds: float = DEFAULT_INTERNAL_SILENCE_TARGET_SECONDS,
+    input_plan_sha256: str | None = None,
+) -> SilenceComparisonResult:
     """Publish immutable segmentation/compression reports for later blind review."""
     if input_plan_sha256 is not None and not is_lowercase_sha256(input_plan_sha256):
         raise SilenceComparisonError(
@@ -183,7 +186,7 @@ def publish_silence_comparison(
             f"Silence comparison destination already exists: {output}"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    checked_sources = []
+    checked_sources: list[tuple[Path, str, str]] = []
     records = []
     segmented_report_samples = []
     compressed_report_samples = []
@@ -368,7 +371,7 @@ def publish_silence_comparison(
         )
 
 
-def load_silence_comparison(directory):
+def load_silence_comparison(directory: str | Path) -> dict[str, object]:
     """Validate a published comparison and every checksum-bound artifact."""
     root = Path(directory).expanduser().resolve()
     try:
@@ -589,14 +592,14 @@ def load_silence_comparison(directory):
 
 
 def _validate_comparison_report(
-    root,
-    relative,
-    model_id,
-    model,
-    audio_field,
-    digest_field,
-    samples,
-):
+    root: Path,
+    relative: object,
+    model_id: str,
+    model: str,
+    audio_field: str,
+    digest_field: str,
+    samples: dict[str, dict[str, object]],
+) -> None:
     path = _contained_file(root, relative)
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
@@ -673,12 +676,18 @@ def _validate_comparison_report(
 
 
 def create_silence_comparison_session(
-    comparison_directory, output_directory, *, seed=0
-):
+    comparison_directory: str | Path,
+    output_directory: str | Path,
+    *,
+    seed: int = 0,
+) -> Path:
     """Create a standard blind A/B session from one verified comparison bundle."""
     root = Path(comparison_directory).expanduser().resolve()
     document = load_silence_comparison(root)
-    report_paths = tuple(_contained_file(root, value) for value in document["reports"])
+    reports = document["reports"]
+    if not isinstance(reports, list):
+        raise SilenceComparisonError("Silence comparison report inventory is malformed")
+    report_paths = tuple(_contained_file(root, value) for value in reports)
     try:
         return create_listening_session_from_reports(
             report_paths, output_directory, seed=seed
@@ -687,7 +696,7 @@ def create_silence_comparison_session(
         raise SilenceComparisonError(str(error)) from error
 
 
-def _validate_sample(value):
+def _validate_sample(value: object) -> SilenceComparisonSample:
     if not isinstance(value, SilenceComparisonSample):
         raise SilenceComparisonError(
             "Silence comparison samples must be SilenceComparisonSample values"
@@ -703,7 +712,7 @@ def _validate_sample(value):
     return value
 
 
-def _planned_audio_path(root, value, label):
+def _planned_audio_path(root: Path, value: object, label: str) -> Path:
     if (
         not isinstance(value, str)
         or not value
@@ -728,7 +737,7 @@ def _planned_audio_path(root, value, label):
     return _contained_file(root, value)
 
 
-def _validate_planned_audio(path, expected_sha256, label):
+def _validate_planned_audio(path: Path, expected_sha256: object, label: str) -> str:
     if not is_lowercase_sha256(expected_sha256):
         raise SilenceComparisonError(
             f"Silence comparison input {label} audio checksum is invalid"
@@ -743,7 +752,9 @@ def _validate_planned_audio(path, expected_sha256, label):
     return actual_sha256
 
 
-def _read_source_wav(path, label):
+def _read_source_wav(
+    path: str | Path, label: str
+) -> tuple[Path, bytes, str, np.ndarray, int]:
     source = Path(path).expanduser()
     if source.is_symlink():
         raise SilenceComparisonError(f"{label.title()} must not be a symlink")
@@ -761,7 +772,7 @@ def _read_source_wav(path, label):
             rate = wav.getframerate()
             count = wav.getnframes()
             pcm_payload = wav.readframes(count)
-        pcm = np.frombuffer(pcm_payload, dtype="<i2")
+        pcm: np.ndarray = np.frombuffer(pcm_payload, dtype="<i2")
         if len(pcm) != count:
             raise Pcm16MonoWavError("WAV sample data is incomplete")
     except (OSError, EOFError, wave.Error, Pcm16MonoWavError) as error:
@@ -775,7 +786,9 @@ def _read_source_wav(path, label):
     )
 
 
-def _model_report(model_id, model, samples):
+def _model_report(
+    model_id: str, model: str, samples: Sequence[Mapping[str, object]]
+) -> dict[str, object]:
     return {
         "schema": "vntts.voice-model-report",
         "schema_version": 1,
@@ -787,12 +800,12 @@ def _model_report(model_id, model, samples):
     }
 
 
-def _write_exact(path, payload):
+def _write_exact(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
 
 
-def _new_directory(value):
+def _new_directory(value: str | Path) -> Path:
     path = Path(value).expanduser()
     if not path.name or path.name in {".", ".."}:
         raise SilenceComparisonError("Silence comparison requires a directory name")
@@ -801,7 +814,7 @@ def _new_directory(value):
     return path.parent.resolve() / path.name
 
 
-def _contained_file(root, relative):
+def _contained_file(root: Path, relative: object) -> Path:
     return contained_regular_file(
         root,
         relative,
