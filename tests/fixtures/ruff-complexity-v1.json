@@ -93,18 +93,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/experimental_composite_voice.py",
-      "scope": "_load_composite_authority",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/experimental_composite_voice.py",
-      "scope": "_validate_experimental_composite_voice_input",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/failed_control_carry.py",
       "scope": "carry_failed_controls",
       "count": 1
@@ -227,24 +215,6 @@
       "code": "C901",
       "path": "vntts/authoring/sound_effect_benchmark.py",
       "scope": "benchmark_sound_effects",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_quality.py",
-      "scope": "publish_source_reference_quality_review",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_quality_records.py",
-      "scope": "_probe_png",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_quality_records.py",
-      "scope": "validate_source_reference_quality_review_document",
       "count": 1
     },
     {
@@ -783,18 +753,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/experimental_composite_voice.py",
-      "scope": "_load_composite_authority",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/experimental_composite_voice.py",
-      "scope": "_validate_experimental_composite_voice_input",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/failed_control_carry.py",
       "scope": "carry_failed_controls",
       "count": 1
@@ -875,24 +833,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_quality.py",
-      "scope": "publish_source_reference_quality_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_quality_records.py",
-      "scope": "_probe_png",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_quality_records.py",
-      "scope": "validate_source_reference_quality_review_document",
       "count": 1
     },
     {
@@ -1341,12 +1281,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/experimental_composite_voice.py",
-      "scope": "publish_experimental_composite_voice_input",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/failed_control_carry.py",
       "scope": "carry_failed_controls",
       "count": 1
@@ -1421,18 +1355,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_quality.py",
-      "scope": "publish_source_reference_quality_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_quality_records.py",
-      "scope": "validate_source_reference_quality_review_document",
       "count": 1
     },
     {
