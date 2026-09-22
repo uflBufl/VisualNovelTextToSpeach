@@ -3265,13 +3265,11 @@ class AppController:
         )
         try:
             self.route_trace_handler(trace)
-            trace_fields = trace.support_fields()
-            trace_fields.pop("generation", None)
             self.pipeline_event_handler(
                 "speaker-announcement-route",
                 chunk.generation,
                 monotonic(),
-                **trace_fields,
+                **trace.support_details(),
             )
         except Exception as error:
             self.error_handler(error)

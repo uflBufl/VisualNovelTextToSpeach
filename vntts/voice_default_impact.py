@@ -244,6 +244,10 @@ def _saved_voice_status(
     identity = prepared.recorded_voice
     if identity is None:
         return "unknown"
+    saved_speaker = identity["speaker"]
+    saved_references = identity["reference_sha256s"]
+    if not isinstance(saved_speaker, str) or not isinstance(saved_references, list):
+        return "unknown"
     references = group.reference_sha256s[:1]
     speaker = group.source_speaker or (
         "alba"
@@ -252,7 +256,7 @@ def _saved_voice_status(
     )
     return (
         "matching"
-        if (identity["speaker"], tuple(identity["reference_sha256s"]))
+        if (saved_speaker, tuple(saved_references))
         == (speaker, references)
         else "changed"
     )

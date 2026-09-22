@@ -19,6 +19,7 @@ from threading import Condition, Event, Lock, RLock
 from time import monotonic
 from typing import NotRequired, Protocol, TypeAlias, TypedDict
 
+import numpy as np
 from PIL import Image
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.generated_audio import (
@@ -37,10 +38,16 @@ from vntts.dialog_capture import (
 )
 from vntts.document_identity import is_lowercase_sha256
 from vntts.generated_audio import (
+    AudioEventOmissionRoute,
     AudioRouteTrace,
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
+    GeneratedAudioRoute,
+    LiveFallbackRoute,
+    LiveTTSRoute,
+    PendingGeneratedAudioRoute,
     PlaybackStatus,
+    RouteDecision,
     SourceAudioRoute,
 )
 from vntts.live import (
@@ -52,7 +59,7 @@ from vntts.live import (
 )
 from vntts.live_sequence import LiveSequencePlan
 from vntts.ocr import DialogRegion
-from vntts.playback import PreparedPlayback, outcome_for_prepared
+from vntts.playback import PlaybackOutcome, PreparedPlayback, outcome_for_prepared
 from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 from vntts.support import GenerationTimelineLog, generation_timeline_stages
@@ -129,14 +136,6 @@ class ReplayFrameSourceSnapshot(TypedDict):
     manual_advance_requests: int
     focus_probe_calls: int
     dialogues: list[ReplayDialogueSnapshot]
-
-
-class ReplaySamples(Protocol):
-    def astype(self, dtype: str, *, copy: bool) -> ReplaySamples: ...
-
-    def tobytes(self) -> bytes: ...
-
-    def __len__(self) -> int: ...
 
 
 class EllipsisSpeakerResolver(Protocol):
@@ -228,18 +227,17 @@ class ReplayAudioOutput:
     def __init__(self) -> None:
         self.played: list[ReplayPlayback] = []
 
-    def query_devices(
-        self, _device: object | None = None, _kind: object | None = None
-    ) -> dict[str, int]:
+    def query_devices(self, *, kind: str) -> dict[str, int]:
         return {"default_samplerate": 24_000}
 
     def play(
         self,
-        samples: ReplaySamples,
-        sample_rate: int | float,
-        **_options: object,
+        audio: object,
+        sample_rate: int,
+        *,
+        latency: object,
     ) -> None:
-        samples = samples.astype("<f4", copy=False)
+        samples = np.asarray(audio, dtype="<f4")
         self.played.append(
             {
                 "sample_rate": int(sample_rate),
@@ -287,12 +285,12 @@ class ReplayLiveSpeechBackend:
             "live:replay-live-tts",
         )
 
-    def play_prepared(self, prepared: object, **options: object) -> object:
-        if not isinstance(prepared, PreparedPlayback):
-            raise TypeError("Replay playback requires a PreparedPlayback")
-        playback_guard = options.get("playback_guard")
-        if playback_guard is not None and not callable(playback_guard):
-            raise TypeError("Replay playback_guard must be callable")
+    def play_prepared(
+        self,
+        prepared: PreparedPlayback,
+        *,
+        playback_guard: Callable[[], bool] | None = None,
+    ) -> PlaybackOutcome:
         completed = playback_guard is None or bool(playback_guard())
         return outcome_for_prepared(
             prepared,
@@ -317,10 +315,21 @@ class ReplayLiveSpeechBackend:
         return self.prepare_synthesis(text, **options)
 
     def speak(self, text: str, **options: object) -> object:
-        return self.play_prepared(self.prepare_synthesis(text, **options), **options)
+        playback_guard = options.get("playback_guard")
+        if playback_guard is not None and not callable(playback_guard):
+            raise TypeError("Replay playback_guard must be callable")
+        return self.play_prepared(
+            self.prepare_synthesis(text, **options),
+            playback_guard=playback_guard,
+        )
 
     def play(self, audio: object, **options: object) -> object:
-        return self.play_prepared(audio, **options)
+        if not isinstance(audio, PreparedPlayback):
+            raise TypeError("Replay playback requires a PreparedPlayback")
+        playback_guard = options.get("playback_guard")
+        if playback_guard is not None and not callable(playback_guard):
+            raise TypeError("Replay playback_guard must be callable")
+        return self.play_prepared(audio, playback_guard=playback_guard)
 
 
 class ReplayFrameSource:
@@ -697,18 +706,18 @@ class LiveReplayRunner:
             )
             return result
 
-        def prepare(chunk: SpeechChunk) -> object:
+        def prepare(chunk: SpeechChunk) -> RouteDecision:
             prepared = router.prepare_route(chunk.character, chunk.text)
             trace = prepared.trace
-            routes.append(trace.support_fields() | {"generation": chunk.generation})
+            routes.append(
+                dict(trace.support_fields()) | {"generation": chunk.generation}
+            )
             occurred_at = monotonic()
-            route_details = trace.support_fields()
-            route_details.pop("generation", None)
             timelines.record(
                 "route-decision",
                 chunk.generation,
                 occurred_at,
-                **route_details,
+                **trace.support_details(),
             )
             timelines.record(
                 "voice-resolution",
@@ -719,6 +728,18 @@ class LiveReplayRunner:
             return prepared
 
         def play(chunk: SpeechChunk, prepared: object) -> bool:
+            if not isinstance(
+                prepared,
+                (
+                    SourceAudioRoute,
+                    GeneratedAudioRoute,
+                    PendingGeneratedAudioRoute,
+                    LiveFallbackRoute,
+                    LiveTTSRoute,
+                    AudioEventOmissionRoute,
+                ),
+            ):
+                raise TypeError("Replay playback requires an audio route")
             playback_started = monotonic()
             outcome = router.play_route(
                 prepared,
@@ -1043,7 +1064,7 @@ class LiveReplayRunner:
             )
 
         def record_route(trace: AudioRouteTrace) -> None:
-            routes.append(trace.support_fields())
+            routes.append(dict(trace.support_fields()))
 
         settings = AppSettings(
             story_index=str(story_index_path),

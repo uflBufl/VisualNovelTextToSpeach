@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Mapping
 from threading import Event, Lock, current_thread
-from typing import Protocol, TypeAlias
+from typing import Protocol, TypeAlias, TypeGuard, overload
 from uuid import uuid4
 
 import numpy as np
@@ -49,9 +49,7 @@ class _StreamingAudioContext(StreamingAudioStream, Protocol):
     def close(self) -> object: ...
 
 
-class AudioOutput(Protocol):
-    def get_stream(self) -> _AudioStream: ...
-
+class PlaybackAudioOutput(Protocol):
     def query_devices(self, *, kind: str) -> object: ...
 
     def play(self, audio: object, sample_rate: int, *, latency: object) -> object: ...
@@ -59,6 +57,10 @@ class AudioOutput(Protocol):
     def wait(self) -> object: ...
 
     def stop(self) -> object: ...
+
+
+class AudioOutput(PlaybackAudioOutput, Protocol):
+    def get_stream(self) -> _AudioStream: ...
 
     def OutputStream(
         self,
@@ -70,7 +72,29 @@ class AudioOutput(Protocol):
     ) -> _StreamingAudioContext: ...
 
 
-def resolve_audio_output(audio_output: AudioOutput | None) -> AudioOutput:
+def _supports_streaming_output(value: object) -> TypeGuard[AudioOutput]:
+    return callable(getattr(value, "query_devices", None)) and callable(
+        getattr(value, "OutputStream", None)
+    )
+
+
+@overload
+def resolve_audio_output(audio_output: None) -> AudioOutput: ...
+
+
+@overload
+def resolve_audio_output(audio_output: AudioOutput) -> AudioOutput: ...
+
+
+@overload
+def resolve_audio_output(
+    audio_output: PlaybackAudioOutput,
+) -> PlaybackAudioOutput: ...
+
+
+def resolve_audio_output(
+    audio_output: PlaybackAudioOutput | None,
+) -> PlaybackAudioOutput:
     """Return an injected output module or lazily import sounddevice."""
     if audio_output is None:
         import sounddevice
@@ -78,7 +102,10 @@ def resolve_audio_output(audio_output: AudioOutput | None) -> AudioOutput:
         audio_output = sounddevice
     if isinstance(audio_output, _LoggedAudioOutput):
         return audio_output
-    if getattr(audio_output, "__name__", None) == "sounddevice":
+    if (
+        getattr(audio_output, "__name__", None) == "sounddevice"
+        and _supports_streaming_output(audio_output)
+    ):
         return _LoggedAudioOutput(audio_output)
     return audio_output
 
@@ -330,7 +357,9 @@ def playback_underflowed(
 
 
 def match_output_sample_rate(
-    audio_output: AudioOutput | None, audio: AudioData, source_sample_rate: int
+    audio_output: PlaybackAudioOutput | None,
+    audio: AudioData,
+    source_sample_rate: int,
 ) -> tuple[AudioData, int]:
     """Resample once in Python instead of relying on a live device converter."""
     query_devices = getattr(audio_output, "query_devices", None)
@@ -494,6 +523,7 @@ class SynchronousPcmPlaybackMixin:
 
 __all__ = [
     "AudioOutput",
+    "PlaybackAudioOutput",
     "StreamingAudioStream",
     "SynchronousPcmPlaybackMixin",
     "match_output_sample_rate",

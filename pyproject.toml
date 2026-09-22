@@ -239,6 +239,7 @@ files = [
     "vntts/game_pack.py",
     "vntts/game_narrator.py",
     "vntts/game_narrator_ui.py",
+    "vntts/generated_audio.py",
     "vntts/hotkeys.py",
     "vntts/hotkey_ui.py",
     "vntts/history.py",

@@ -109,6 +109,7 @@
     "vntts/game_narrator.py",
     "vntts/game_narrator_ui.py",
     "vntts/game_pack.py",
+    "vntts/generated_audio.py",
     "vntts/history.py",
     "vntts/history_ui.py",
     "vntts/hotkey_ui.py",

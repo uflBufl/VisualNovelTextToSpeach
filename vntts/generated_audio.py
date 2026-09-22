@@ -11,24 +11,39 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event, Lock
 from time import monotonic
+from typing import Protocol, TypeAlias, TypedDict, TypeGuard
 
 import numpy as np
+from numpy.typing import NDArray
 from vntts_artifacts.audio import Pcm16MonoWavError
 from vntts_artifacts.generated_audio import (
     GeneratedAudioDocument,
+    GeneratedAudioEntry,
     GeneratedAudioIndex,
     GeneratedAudioManifestError,
+    GeneratedAudioRecord,
     load_generated_audio_document,
 )
 
 from vntts.audio_output import (
+    PlaybackAudioOutput,
     match_output_sample_rate,
     resolve_audio_output,
     write_pcm_chunks,
 )
+from vntts.chapter_voice_preload import ChapterDialogue
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
-from vntts.playback import PlaybackOutcome, PlaybackStatus
+from vntts.playback import (
+    PlaybackOutcome as PlaybackOutcome,
+)
+from vntts.playback import (
+    PlaybackStatus as PlaybackStatus,
+)
+from vntts.playback import (
+    PreparedPlayback,
+)
 from vntts.settings import audio_source_policies
+from vntts.speech_backend_contract import SpeechBackend
 from vntts.speech_backend_runtime import BoundedCache, validate_speed, validate_volume
 from vntts.voices import is_unattributed_speaker, synthesis_character
 
@@ -48,13 +63,13 @@ SOURCE_AUDIO_COMPLETION_MARGIN_SECONDS = 0.35
 class PreparedGeneratedAudio:
     line_id: str
     text_sha256: str
-    samples: np.ndarray
+    samples: NDArray[np.float32]
     sample_rate: int
     narrator_fallback_role: str | None = None
     provider: str | None = None
     model: str | None = None
     voice_character: str | None = None
-    recorded_voice: dict | None = None
+    recorded_voice: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -81,7 +96,7 @@ class AudioRouteTrace:
     chunk_ordinal: int | None = None
     chunk_characters: int | None = None
 
-    def message(self):
+    def message(self) -> str:
         values = (
             ("generation", self.generation),
             ("source", self.effective_source),
@@ -98,9 +113,8 @@ class AudioRouteTrace:
             f"{key}={value if value is not None else 'none'}" for key, value in values
         )
 
-    def support_fields(self):
+    def support_details(self) -> AudioRouteDetails:
         return {
-            "generation": self.generation,
             "effective_source": self.effective_source,
             "match_result": self.match_result,
             "fallback_reason": self.fallback_reason,
@@ -111,6 +125,9 @@ class AudioRouteTrace:
             "chunk_ordinal": self.chunk_ordinal,
             "chunk_characters": self.chunk_characters,
         }
+
+    def support_fields(self) -> AudioRouteSupportFields:
+        return {"generation": self.generation, **self.support_details()}
 
 
 @dataclass(frozen=True)
@@ -158,12 +175,12 @@ class LiveFallbackDecision:
     previous_result_sha256: str | None
     decided_at: str
     decision_sha256: str
-    evidence: dict | None = None
+    evidence: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
 class LiveFallbackRoute:
-    prepared: object
+    prepared: PreparedPlayback
     decision: LiveFallbackDecision
     trace: AudioRouteTrace
     synthesis_ms: float | None
@@ -174,7 +191,7 @@ class LiveFallbackRoute:
 
 @dataclass(frozen=True)
 class LiveTTSRoute:
-    prepared: object
+    prepared: PreparedPlayback
     trace: AudioRouteTrace
     synthesis_ms: float | None
     first_audio_ms: float | None
@@ -194,7 +211,7 @@ class AudioEventOmissionDecision:
     plan_sha256: str
     spoken_text_sha256: str
     decided_at: str
-    authority: dict
+    authority: dict[str, object]
     decision_sha256: str
 
 
@@ -217,7 +234,48 @@ RouteDecision = (
 )
 
 
-def recorded_voice_identity(entry):
+class AudioRouteDetails(TypedDict):
+    effective_source: str
+    match_result: str
+    fallback_reason: str | None
+    voice_reference_id: str | None
+    line_id: str | None
+    artifact_preflight_state: str
+    chunk_id: str | None
+    chunk_ordinal: int | None
+    chunk_characters: int | None
+
+
+class AudioRouteSupportFields(AudioRouteDetails):
+    generation: int | None
+
+
+GeneratedAudioEntryLike: TypeAlias = GeneratedAudioEntry | GeneratedAudioRecord
+GeneratedAudioSource: TypeAlias = GeneratedAudioDocument | GeneratedAudioIndex
+PlaybackGuard: TypeAlias = Callable[[], bool] | None
+
+
+class _LineResolver(Protocol):
+    current_match: object | None
+
+    def resolve_exact(self, character: str, text: str) -> ChapterDialogue | None: ...
+
+    def line_for_id(self, line_id: str) -> ChapterDialogue | None: ...
+
+
+class _ResultLineResolver(_LineResolver, Protocol):
+    def resolve_exact_with_result(
+        self, character: str, text: str
+    ) -> tuple[ChapterDialogue | None, str]: ...
+
+
+def _has_result_resolver(resolver: _LineResolver) -> TypeGuard[_ResultLineResolver]:
+    return callable(getattr(resolver, "resolve_exact_with_result", None))
+
+
+def recorded_voice_identity(
+    entry: GeneratedAudioEntryLike,
+) -> dict[str, object] | None:
     """Read historical identity only when it is bound to this recording and route."""
     document = getattr(entry, "document", entry)
     if not isinstance(document, dict):
@@ -254,7 +312,7 @@ def recorded_voice_identity(entry):
     return {**identity, "reference_sha256s": list(references)}
 
 
-def _validate_generated_audio_paths(index):
+def _validate_generated_audio_paths(index: GeneratedAudioSource) -> None:
     manifest_path = getattr(index, "manifest_path", None) or getattr(index, "path")
     root = manifest_path.parent.resolve()
     for entry in index.entries:
@@ -267,18 +325,26 @@ def _validate_generated_audio_paths(index):
 
 
 class GeneratedAudioLibrary:
-    def __init__(self, index, *, warn=None, cache_size=32):
+    def __init__(
+        self,
+        index: GeneratedAudioSource,
+        *,
+        warn: Callable[[str], object] | None = None,
+        cache_size: int = 32,
+    ) -> None:
         self.warn = warn or (lambda _message: None)
-        self.cache = BoundedCache(cache_size)
-        self.warned_entries = set()
+        self.cache: BoundedCache[
+            tuple[str, str, str], PreparedGeneratedAudio
+        ] = BoundedCache(cache_size)
+        self.warned_entries: set[tuple[str, str]] = set()
         self.reload_lock = Lock()
-        self.failed_reload_signature = None
+        self.failed_reload_signature: tuple[int, int, int] | None = None
         self.manifest_path = (
             getattr(index, "manifest_path", None) or getattr(index, "path")
         ).resolve()
         self.manifest_signature = _manifest_signature(self.manifest_path)
-        self.progress_state_signature = None
-        self.progress_active = None
+        self.progress_state_signature: tuple[int, int, int] | None = None
+        self.progress_active: dict[str, object] | None = None
         self._apply_index(index)
 
     def _apply_index(self, index: GeneratedAudioDocument | GeneratedAudioIndex) -> None:
@@ -330,7 +396,13 @@ class GeneratedAudioLibrary:
             self.warned_entries.clear()
 
     @classmethod
-    def load_optional(cls, path, *, warn=None, cache_size=32):
+    def load_optional(
+        cls,
+        path: str | Path | None,
+        *,
+        warn: Callable[[str], object] | None = None,
+        cache_size: int = 32,
+    ) -> GeneratedAudioLibrary | None:
         if not path:
             return None
         try:
@@ -341,11 +413,13 @@ class GeneratedAudioLibrary:
                 warn(f"Generated audio disabled: {error}")
             return None
 
-    def find(self, line_id, text_sha256):
+    def find(self, line_id: str, text_sha256: str) -> PreparedGeneratedAudio | None:
         prepared, _state = self.find_with_preflight(line_id, text_sha256)
         return prepared
 
-    def find_with_preflight(self, line_id, text_sha256):
+    def find_with_preflight(
+        self, line_id: str, text_sha256: str
+    ) -> tuple[PreparedGeneratedAudio | None, str]:
         self._reload_if_changed()
         entry = self.index.find(line_id, text_sha256, verify_file=False)
         if entry is None:
@@ -399,11 +473,15 @@ class GeneratedAudioLibrary:
         self.cache.put(cache_key, prepared)
         return prepared, "generated-audio-entry-verified"
 
-    def find_live_fallback(self, line_id, text_sha256):
+    def find_live_fallback(
+        self, line_id: str, text_sha256: str
+    ) -> LiveFallbackDecision | None:
         self._reload_if_changed()
         return self.live_fallbacks.get((line_id, text_sha256))
 
-    def find_audio_event_omission(self, line_id, text_sha256):
+    def find_audio_event_omission(
+        self, line_id: str, text_sha256: str
+    ) -> AudioEventOmissionDecision | None:
         self._reload_if_changed()
         return self.audio_event_omissions.get((line_id, text_sha256))
 
@@ -434,7 +512,7 @@ class GeneratedAudioLibrary:
             return f"Preparing this line - attempt {attempt} of {limit}."
         return "Preparing this line now."
 
-    def _warn_once(self, entry, message):
+    def _warn_once(self, entry: GeneratedAudioEntryLike, message: str) -> None:
         identity = entry.line_id, entry.text_sha256
         if identity in self.warned_entries:
             return
@@ -450,7 +528,7 @@ def _manifest_signature(path: Path) -> tuple[int, int, int] | None:
     return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
 
 
-def _narrator_fallback_role(entry):
+def _narrator_fallback_role(entry: GeneratedAudioEntryLike) -> str | None:
     document = getattr(entry, "document", None)
     if not isinstance(document, dict):
         return None
@@ -507,17 +585,17 @@ class GeneratedAudioFallbackBackend:
 
     def __init__(
         self,
-        live_backend,
-        library,
-        line_resolver,
+        live_backend: SpeechBackend,
+        library: GeneratedAudioLibrary | None,
+        line_resolver: _LineResolver,
         *,
-        volume=1.0,
-        speed=1.0,
-        audio_output=None,
-        playback_latency="low",
-        clock=monotonic,
-        audio_source_policy="prefer-generated",
-    ):
+        volume: object = 1.0,
+        speed: object = 1.0,
+        audio_output: PlaybackAudioOutput | None = None,
+        playback_latency: object = "low",
+        clock: Callable[[], float] = monotonic,
+        audio_source_policy: str = "prefer-generated",
+    ) -> None:
         self.live_backend = live_backend
         self.library = library
         self.line_resolver = line_resolver
@@ -535,25 +613,33 @@ class GeneratedAudioFallbackBackend:
         self.source_audio_completion_stop = Event()
         self.generated_audio_stop = Event()
         self.progress_wait_stop = Event()
-        self.generated_reservations = BoundedCache(32)
-        self.active_generated_stream = None
-        self.active_playback_source = None
+        self.generated_reservations: BoundedCache[
+            tuple[str, str], PreparedGeneratedAudio
+        ] = BoundedCache(32)
+        self.active_generated_stream: object | None = None
+        self.active_playback_source: str | None = None
         self.playback_active = False
         self.live_mode_active = False
-        self.voice_override = None
-        self.progress_wait_status = lambda _message: None
-        self.progress_wait_request = lambda _line_id, _text_sha256: None
-        self.progress_line_observed = lambda _line_id, _text_sha256: None
+        self.volume = 1.0
+        self.speed = 1.0
+        self.voice_override: Callable[[str], bool] | None = None
+        self.progress_wait_status: Callable[[str], object] = lambda _message: None
+        self.progress_wait_request: Callable[[str, str], object] = (
+            lambda _line_id, _text_sha256: None
+        )
+        self.progress_line_observed: Callable[[str, str], object] = (
+            lambda _line_id, _text_sha256: None
+        )
         self.set_volume(volume, delegate=False)
         self.set_speed(speed, delegate=False)
 
-    def will_use_source_audio(self, character, text):
+    def will_use_source_audio(self, character: str, text: str) -> bool:
         """Return whether live playback for this exact line stays in the game."""
         if not self.live_mode_active:
             return False
         return self._will_use_source_audio(character, text)
 
-    def will_use_source_audio_in_live_mode(self, character, text):
+    def will_use_source_audio_in_live_mode(self, character: str, text: str) -> bool:
         """Read the future live route without advancing story-match authority."""
         current_match = getattr(self.line_resolver, "current_match", None)
         try:
@@ -562,7 +648,7 @@ class GeneratedAudioFallbackBackend:
             if hasattr(self.line_resolver, "current_match"):
                 self.line_resolver.current_match = current_match
 
-    def has_resolved_route_in_live_mode(self, character, text):
+    def has_resolved_route_in_live_mode(self, character: str, text: str) -> bool:
         """Return whether an exact line has a non-generic authorized live route."""
         current_match = getattr(self.line_resolver, "current_match", None)
         try:
@@ -610,7 +696,7 @@ class GeneratedAudioFallbackBackend:
             if hasattr(self.line_resolver, "current_match"):
                 self.line_resolver.current_match = current_match
 
-    def _will_use_source_audio(self, character, text):
+    def _will_use_source_audio(self, character: str, text: str) -> bool:
         if self.audio_source_policy != "prefer-game-audio":
             return False
         if self.voice_override is not None and self.voice_override(character):
@@ -619,13 +705,13 @@ class GeneratedAudioFallbackBackend:
         return bool(
             line is not None
             and line.line_id
-            and getattr(line, "source_audio_status", "unknown") == "available"
-            and getattr(line, "source_audio_authoritative", False)
-            and getattr(line, "source_audio_completeness", "unknown") == "full"
-            and getattr(line, "source_audio_duration_seconds", None) is not None
+            and line.source_audio_status == "available"
+            and line.source_audio_authoritative
+            and line.source_audio_completeness == "full"
+            and line.source_audio_duration_seconds is not None
         )
 
-    def has_generated_line(self, line):
+    def has_generated_line(self, line: ChapterDialogue) -> bool:
         """Reserve a verified generation for safe early-prefix expansion."""
         if (
             self.library is None
@@ -646,7 +732,7 @@ class GeneratedAudioFallbackBackend:
             self.generated_reservations.put(reservation_key, prepared)
         return True
 
-    def reserve_generated_line_for_early_playback(self, line):
+    def reserve_generated_line_for_early_playback(self, line: ChapterDialogue) -> bool:
         """Reserve only an exact line whose effective early route is generated.
 
         Prefix/cursor playback must not use the presence of a generated WAV to
@@ -659,14 +745,16 @@ class GeneratedAudioFallbackBackend:
             or (self.voice_override is not None and self.voice_override(line.speaker))
             or (
                 self.audio_source_policy == "prefer-game-audio"
-                and getattr(line, "source_audio_status", "unknown") == "available"
-                and getattr(line, "source_audio_authoritative", False)
+                and line.source_audio_status == "available"
+                and line.source_audio_authoritative
             )
         ):
             return False
         return self.has_generated_line(line)
 
-    def prepare_route(self, character, text, *, line_id=None):
+    def prepare_route(
+        self, character: str, text: str, *, line_id: str | None = None
+    ) -> RouteDecision:
         voice_overridden = self.voice_override is not None and self.voice_override(
             character
         )
@@ -689,7 +777,7 @@ class GeneratedAudioFallbackBackend:
         omission_line = line
         if omission_line is None and voice_overridden:
             omission_line = self._resolve_without_advancing(character, text)
-        fallback_reasons = []
+        fallback_reasons: list[str] = []
         artifact_preflight_state = "not-applicable"
         if voice_overridden:
             fallback_reasons.append("manual-voice-override")
@@ -697,8 +785,8 @@ class GeneratedAudioFallbackBackend:
         elif match_result != "exact":
             fallback_reasons.append(f"story-line-{match_result}")
         source_audio_completion = (
-            getattr(line, "source_audio_duration_seconds", None)
-            if line is not None
+            float(line.source_audio_duration_seconds)
+            if line is not None and line.source_audio_duration_seconds is not None
             else None
         )
         source_audio_wait = (
@@ -707,22 +795,22 @@ class GeneratedAudioFallbackBackend:
             else None
         )
         source_audio_completeness = (
-            getattr(line, "source_audio_completeness", "unknown")
+            line.source_audio_completeness
             if line is not None
             else "unknown"
         )
         source_audio_partial = bool(
             line is not None
             and self.audio_source_policy == "prefer-game-audio"
-            and getattr(line, "source_audio_status", "unknown") == "available"
-            and getattr(line, "source_audio_authoritative", False)
+            and line.source_audio_status == "available"
+            and line.source_audio_authoritative
             and source_audio_completion is not None
             and source_audio_completeness == "partial"
         )
         source_audio_full = bool(
             line is not None
-            and getattr(line, "source_audio_status", "unknown") == "available"
-            and getattr(line, "source_audio_authoritative", False)
+            and line.source_audio_status == "available"
+            and line.source_audio_authoritative
             and source_audio_completion is not None
             and source_audio_completeness == "full"
         )
@@ -746,7 +834,7 @@ class GeneratedAudioFallbackBackend:
                 PreparedSourceAudioPassThrough(
                     line.line_id,
                     line.text_sha256,
-                    getattr(line, "source_audio_id", None),
+                    line.source_audio_id,
                     (
                         source_audio_wait
                         if source_audio_completeness == "full"
@@ -765,11 +853,11 @@ class GeneratedAudioFallbackBackend:
             if source_audio_partial:
                 fallback_reasons.append("source-audio-partial-cue")
                 artifact_preflight_state = "source-audio-partial-cue"
-            elif getattr(line, "source_audio_status", "unknown") == "available":
+            elif line.source_audio_status == "available":
                 fallback_reasons.append("source-audio-authority-unavailable")
                 artifact_preflight_state = "source-audio-authority-unavailable"
             else:
-                source_status = getattr(line, "source_audio_status", "unknown")
+                source_status = line.source_audio_status
                 fallback_reasons.append(f"source-audio-{source_status}")
                 artifact_preflight_state = f"source-audio-{source_status}"
         omission = (
@@ -819,11 +907,14 @@ class GeneratedAudioFallbackBackend:
                     line.line_id,
                     artifact_preflight_state,
                 )
-                route = GeneratedAudioRoute(prepared, trace)
+                generated_route = GeneratedAudioRoute(prepared, trace)
                 return (
-                    replace(route, source_audio_lead_seconds=source_audio_wait)
+                    replace(
+                        generated_route,
+                        source_audio_lead_seconds=source_audio_wait or 0.0,
+                    )
                     if source_audio_partial
-                    else route
+                    else generated_route
                 )
             fallback_reasons.append(artifact_preflight_state)
         elif line is not None and self.audio_source_policy in {
@@ -863,19 +954,22 @@ class GeneratedAudioFallbackBackend:
             )
         if live_fallback is not None:
             _validate_live_fallback_backend(self.live_backend, live_fallback)
-        prepared = self.live_backend.prepare_playback(
+        live_text = text
+        if live_fallback is not None and live_fallback.schema_version == 6:
+            evidence = live_fallback.evidence
+            spoken_text = evidence.get("spoken_text") if evidence is not None else None
+            if not isinstance(spoken_text, str):
+                raise ValueError("Generated-audio event projection text is missing")
+            live_text = spoken_text
+        live_prepared = self.live_backend.prepare_playback(
             (
                 live_fallback.requested_voice_character
                 if live_fallback is not None
                 else synthesis_character(character)
             ),
-            (
-                live_fallback.evidence["spoken_text"]
-                if live_fallback is not None and live_fallback.schema_version == 6
-                else text
-            ),
+            live_text,
         )
-        effective_source = prepared.audio_source
+        effective_source = live_prepared.audio_source
         line_id = line.line_id if line is not None else None
         trace = AudioRouteTrace(
             None,
@@ -900,54 +994,63 @@ class GeneratedAudioFallbackBackend:
                 line_id,
                 "live-fallback-authorized",
             )
-            route = LiveFallbackRoute(
-                prepared,
+            fallback_route = LiveFallbackRoute(
+                live_prepared,
                 live_fallback,
                 trace,
-                prepared.synthesis_ms,
-                prepared.first_audio_ms,
-                prepared.cache_source,
+                live_prepared.synthesis_ms,
+                live_prepared.first_audio_ms,
+                live_prepared.cache_source,
             )
             return (
-                replace(route, source_audio_lead_seconds=source_audio_wait)
+                replace(
+                    fallback_route,
+                    source_audio_lead_seconds=source_audio_wait or 0.0,
+                )
                 if source_audio_partial
-                else route
+                else fallback_route
             )
-        route = LiveTTSRoute(
-            prepared,
+        live_route = LiveTTSRoute(
+            live_prepared,
             trace,
-            prepared.synthesis_ms,
-            prepared.first_audio_ms,
-            prepared.cache_source,
+            live_prepared.synthesis_ms,
+            live_prepared.first_audio_ms,
+            live_prepared.cache_source,
         )
         return (
-            replace(route, source_audio_lead_seconds=source_audio_wait)
+            replace(live_route, source_audio_lead_seconds=source_audio_wait or 0.0)
             if source_audio_partial
-            else route
+            else live_route
         )
 
-    def _resolve_line(self, character, text, voice_overridden):
+    def _resolve_line(
+        self, character: str, text: str, voice_overridden: bool
+    ) -> tuple[ChapterDialogue | None, str]:
         if voice_overridden:
             return None, "skipped"
-        resolve = getattr(self.line_resolver, "resolve_exact_with_result", None)
-        if callable(resolve):
-            return resolve(character, text)
+        if _has_result_resolver(self.line_resolver):
+            return self.line_resolver.resolve_exact_with_result(character, text)
         line = self.line_resolver.resolve_exact(character, text)
         return line, "exact" if line is not None else "no-match"
 
-    def _resolve_without_advancing(self, character, text):
+    def _resolve_without_advancing(
+        self, character: str, text: str
+    ) -> ChapterDialogue | None:
         current_match = getattr(self.line_resolver, "current_match", None)
         try:
-            resolve = getattr(self.line_resolver, "resolve_exact_with_result", None)
-            if callable(resolve):
-                line, _result = resolve(character, text)
+            if _has_result_resolver(self.line_resolver):
+                line, _result = self.line_resolver.resolve_exact_with_result(
+                    character, text
+                )
                 return line
             return self.line_resolver.resolve_exact(character, text)
         finally:
             if hasattr(self.line_resolver, "current_match"):
                 self.line_resolver.current_match = current_match
 
-    def play_route(self, route, *, playback_guard=None):
+    def play_route(
+        self, route: RouteDecision, *, playback_guard: PlaybackGuard = None
+    ) -> PlaybackOutcome:
         """Play one immutable route and return metrics bound to that route."""
         if isinstance(route, SourceAudioRoute):
             return self._play_source_route(route, playback_guard)
@@ -973,6 +1076,8 @@ class GeneratedAudioFallbackBackend:
         route: PendingGeneratedAudioRoute,
         playback_guard: Callable[[], bool] | None,
     ) -> PlaybackOutcome:
+        if self.library is None:
+            raise RuntimeError("Generated-audio progress route requires a library")
         self.progress_wait_stop.clear()
         self.progress_wait_request(route.line_id, route.text_sha256)
         last_status = (
@@ -1022,7 +1127,9 @@ class GeneratedAudioFallbackBackend:
             self.playback_active = False
             self.active_playback_source = None
 
-    def _play_source_route(self, route, playback_guard):
+    def _play_source_route(
+        self, route: SourceAudioRoute, playback_guard: PlaybackGuard
+    ) -> PlaybackOutcome:
         prepared = route.prepared
         if playback_guard is not None and not playback_guard():
             return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
@@ -1054,7 +1161,9 @@ class GeneratedAudioFallbackBackend:
                 self.playback_active = False
                 self.active_playback_source = None
 
-    def _play_generated_route(self, route, playback_guard):
+    def _play_generated_route(
+        self, route: GeneratedAudioRoute, playback_guard: PlaybackGuard
+    ) -> PlaybackOutcome:
         if playback_guard is not None and not playback_guard():
             return _route_outcome(
                 route,
@@ -1159,7 +1268,11 @@ class GeneratedAudioFallbackBackend:
                 self.playback_active = False
                 self.active_playback_source = None
 
-    def _play_live_route(self, route, playback_guard):
+    def _play_live_route(
+        self,
+        route: LiveFallbackRoute | LiveTTSRoute,
+        playback_guard: PlaybackGuard,
+    ) -> PlaybackOutcome:
         if playback_guard is not None and not playback_guard():
             return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
         lead_ms = 0.0
@@ -1203,7 +1316,11 @@ class GeneratedAudioFallbackBackend:
             ),
         )
 
-    def _wait_for_source_audio_lead(self, route, playback_guard):
+    def _wait_for_source_audio_lead(
+        self,
+        route: GeneratedAudioRoute | LiveFallbackRoute | LiveTTSRoute,
+        playback_guard: PlaybackGuard,
+    ) -> bool:
         seconds = float(getattr(route, "source_audio_lead_seconds", 0.0) or 0.0)
         if seconds <= 0:
             return playback_guard is None or bool(playback_guard())
@@ -1212,30 +1329,30 @@ class GeneratedAudioFallbackBackend:
         interrupted = self.source_audio_completion_stop.wait(seconds)
         return not interrupted and (playback_guard is None or bool(playback_guard()))
 
-    def prime(self, character):
+    def prime(self, character: str) -> object:
         prime = getattr(self.live_backend, "prime", None)
         return prime(character) if callable(prime) else False
 
-    def set_live_mode_active(self, active):
+    def set_live_mode_active(self, active: object) -> object:
         self.live_mode_active = bool(active)
         configure = getattr(self.live_backend, "set_live_mode_active", None)
         return configure(active) if callable(configure) else self.live_mode_active
 
-    def set_volume(self, volume, *, delegate=True):
+    def set_volume(self, volume: object, *, delegate: bool = True) -> float:
         self.volume = validate_volume(volume)
         configure = getattr(self.live_backend, "set_volume", None)
         if delegate and callable(configure):
             configure(self.volume)
         return self.volume
 
-    def set_speed(self, speed, *, delegate=True):
+    def set_speed(self, speed: object, *, delegate: bool = True) -> float:
         self.speed = validate_speed(speed)
         configure = getattr(self.live_backend, "set_speed", None)
         if delegate and callable(configure):
             configure(self.speed)
         return self.speed
 
-    def stop(self):
+    def stop(self) -> bool:
         was_playing = self.playback_active
         self.progress_wait_stop.set()
         if self.active_playback_source == "game":
@@ -1245,7 +1362,9 @@ class GeneratedAudioFallbackBackend:
         return bool(self.live_backend.stop()) or was_playing
 
 
-def _live_fallback_index(metadata):
+def _live_fallback_index(
+    metadata: dict[str, object],
+) -> dict[tuple[str, str], LiveFallbackDecision]:
     value = metadata.get("vntts.authoring.live_fallback")
     if value is None:
         return {}
@@ -1273,7 +1392,7 @@ def _live_fallback_index(metadata):
         "decided_at",
         "decision_sha256",
     }
-    indexed = {}
+    indexed: dict[tuple[str, str], LiveFallbackDecision] = {}
     for raw in value["entries"]:
         version = raw.get("schema_version") if isinstance(raw, dict) else None
         fields = common_fields | (
@@ -1408,7 +1527,27 @@ def _live_fallback_index(metadata):
         if decision_sha256 != raw["decision_sha256"]:
             raise ValueError("Generated-audio live fallback decision hash changed")
         decision = LiveFallbackDecision(
-            **raw, **({"evidence": None} if version == 1 else {})
+            schema=str(raw["schema"]),
+            schema_version=int(version),
+            reason=str(raw["reason"]),
+            provider=str(raw["provider"]),
+            model=str(raw["model"]),
+            generation_profile=str(raw["generation_profile"]),
+            queue_id=str(raw["queue_id"]),
+            line_id=str(raw["line_id"]),
+            text_sha256=str(raw["text_sha256"]),
+            speaker=str(raw["speaker"]),
+            requested_voice_character=str(raw["requested_voice_character"]),
+            previous_result_sha256=(
+                str(previous) if previous is not None else None
+            ),
+            decided_at=str(raw["decided_at"]),
+            decision_sha256=str(raw["decision_sha256"]),
+            evidence=(
+                raw["evidence"]
+                if version != 1 and isinstance(raw["evidence"], dict)
+                else None
+            ),
         )
         identity = decision.line_id, decision.text_sha256
         if identity in indexed:
@@ -1418,10 +1557,10 @@ def _live_fallback_index(metadata):
 
 
 def _validate_automatic_recovery_fallback_evidence(
-    evidence,
-    queue_id,
-    previous_result_sha256,
-):
+    evidence: object,
+    queue_id: str,
+    previous_result_sha256: str | None,
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -1481,7 +1620,9 @@ def _validate_automatic_recovery_fallback_evidence(
         raise ValueError("Generated-audio automatic recovery evidence changed")
 
 
-def _audio_event_omission_index(metadata):
+def _audio_event_omission_index(
+    metadata: dict[str, object],
+) -> dict[tuple[str, str], AudioEventOmissionDecision]:
     value = metadata.get("vntts.authoring.audio_event_omission")
     if value is None:
         return {}
@@ -1514,7 +1655,7 @@ def _audio_event_omission_index(metadata):
         "base_state_sha256",
         "queue_sha256",
     }
-    indexed = {}
+    indexed: dict[tuple[str, str], AudioEventOmissionDecision] = {}
     for raw in value["entries"]:
         authority = raw.get("authority") if isinstance(raw, dict) else None
         if (
@@ -1574,7 +1715,9 @@ def _audio_event_omission_index(metadata):
     return indexed
 
 
-def _validate_live_fallback_evidence(evidence, previous_result_sha256):
+def _validate_live_fallback_evidence(
+    evidence: object, previous_result_sha256: str | None
+) -> None:
     if isinstance(evidence, dict) and evidence.get("schema_version") == 2:
         return _validate_render_review_fallback_evidence(
             evidence, previous_result_sha256
@@ -1650,8 +1793,8 @@ def _validate_live_fallback_evidence(evidence, previous_result_sha256):
 
 
 def _validate_missing_voice_live_fallback_evidence(
-    evidence, queue_id, requested_voice_character
-):
+    evidence: object, queue_id: str, requested_voice_character: str
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -1703,8 +1846,11 @@ def _validate_missing_voice_live_fallback_evidence(
 
 
 def _validate_known_role_live_fallback_evidence(
-    evidence, queue_id, source_character, synthesis_character
-):
+    evidence: object,
+    queue_id: str,
+    source_character: str,
+    synthesis_character: str,
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -1756,12 +1902,12 @@ def _validate_known_role_live_fallback_evidence(
 
 
 def _validate_audio_event_projection_fallback_evidence(
-    evidence,
-    queue_id,
-    source_character,
-    synthesis_character,
-    previous_result_sha256,
-):
+    evidence: object,
+    queue_id: str,
+    source_character: str,
+    synthesis_character: str,
+    previous_result_sha256: str | None,
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -1831,12 +1977,12 @@ def _validate_audio_event_projection_fallback_evidence(
 
 
 def _validate_reviewed_rejection_fallback_evidence(
-    evidence,
-    queue_id,
-    source_character,
-    synthesis_character,
-    previous_result_sha256,
-):
+    evidence: object,
+    queue_id: str,
+    source_character: str,
+    synthesis_character: str,
+    previous_result_sha256: str | None,
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -1915,7 +2061,9 @@ def _validate_reviewed_rejection_fallback_evidence(
         raise ValueError("Generated-audio reviewed-rejection manifest route changed")
 
 
-def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
+def _validate_render_review_fallback_evidence(
+    evidence: object, previous_result_sha256: str | None
+) -> None:
     fields = {
         "schema",
         "schema_version",
@@ -1998,7 +2146,9 @@ def _validate_render_review_fallback_evidence(evidence, previous_result_sha256):
         )
 
 
-def _validate_live_fallback_backend(backend, decision):
+def _validate_live_fallback_backend(
+    backend: SpeechBackend, decision: LiveFallbackDecision
+) -> None:
     provider = getattr(backend, "name", None)
     model = (
         getattr(backend, "model_identity", None)
@@ -2016,7 +2166,9 @@ def _validate_live_fallback_backend(backend, decision):
         )
 
 
-def _read_pcm16_mono_wav_bytes(payload):
+def _read_pcm16_mono_wav_bytes(
+    payload: bytes,
+) -> tuple[NDArray[np.float32], int]:
     try:
         with wave.open(io.BytesIO(payload), "rb") as source:
             if source.getnchannels() != 1:
@@ -2034,25 +2186,25 @@ def _read_pcm16_mono_wav_bytes(payload):
         raise Pcm16MonoWavError(str(error)) from error
     if len(frames) != sample_count * 2:
         raise Pcm16MonoWavError("WAV frame data is truncated")
-    pcm = np.frombuffer(frames, dtype="<i2")
+    pcm: NDArray[np.int16] = np.frombuffer(frames, dtype="<i2")
     samples = np.asarray(pcm, dtype=np.float32) / 32768.0
     return samples, sample_rate
 
 
 def _route_outcome(
-    route,
-    status,
-    playback_ms,
+    route: RouteDecision,
+    status: PlaybackStatus,
+    playback_ms: float | None,
     *,
-    underflowed=False,
-    generation_limited=False,
-    first_audio_ms=None,
-    error=None,
-    source_sample_rate=None,
-    playback_sample_rate=None,
-    sample_count=None,
-    expected_playback_ms=None,
-):
+    underflowed: bool = False,
+    generation_limited: bool = False,
+    first_audio_ms: float | None = None,
+    error: str | None = None,
+    source_sample_rate: int | None = None,
+    playback_sample_rate: int | None = None,
+    sample_count: int | None = None,
+    expected_playback_ms: float | None = None,
+) -> PlaybackOutcome:
     return PlaybackOutcome(
         status,
         playback_ms,
