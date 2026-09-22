@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import unittest
 import wave
@@ -20,6 +21,18 @@ def write_wav(path: Path, frames: bytes) -> None:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_boolean_document_version_is_rejected(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "library"
+            root.mkdir()
+            (root / "voice-library.json").write_text(
+                json.dumps({"version": True, "alternatives": {}, "bindings": {}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(VoiceLibraryError, "Unsupported"):
+                VoiceLibrary(root).bindings()
+
     def test_concurrent_role_updates_are_both_retained(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory) / "library"

@@ -484,6 +484,7 @@ def _is_sha256(value: object) -> bool:
 def _validate_document(document: object) -> None:
     if (
         not isinstance(document, dict)
+        or type(document.get("version")) is not int
         or document.get("version") != VOICE_LIBRARY_VERSION
     ):
         raise VoiceLibraryError("Unsupported voice library document")
