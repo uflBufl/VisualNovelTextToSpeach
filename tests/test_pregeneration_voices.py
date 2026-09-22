@@ -711,6 +711,46 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(rhiannon.source_character, "Centurion")
             self.assertEqual(rhiannon.resolution, "saved-voice-assignment")
 
+    def test_rematching_clears_selected_story_roles_but_keeps_narrator_and_others(
+        self,
+    ):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+            registry = CharacterVoiceRegistry.from_file(manifest)
+            library.select("Narrator", route="voice", source_id="preset:marius")
+            library.select("Unrelated Role", route="narrator")
+            remember_voice_binding(
+                library,
+                registry,
+                "Rhiannon",
+                "character:centurion",
+            )
+
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+                ignore_decisions=True,
+            )
+
+            rhiannon = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            self.assertEqual(rhiannon.source_character, "Rhiannon")
+            self.assertEqual(rhiannon.resolution, "known-character-voice")
+            self.assertEqual(
+                library.binding("Rhiannon").source_sha256s,
+                rhiannon.reference_sha256s,
+            )
+            self.assertEqual(
+                library.binding("Rhiannon").provenance["method"], "automatic"
+            )
+            self.assertEqual(library.binding("Narrator").source_id, "preset:marius")
+            self.assertEqual(library.binding("Unrelated Role").route, "narrator")
+
     def test_character_defaults_apply_to_future_audio_with_manual_override_priority(
         self,
     ):
@@ -1089,9 +1129,9 @@ class VoicePlanStoreTest(unittest.TestCase):
             reopened = next(
                 value for value in reconsidered.groups if value.character == "Rhiannon"
             )
-            self.assertEqual(reopened.route, "voice")
-            self.assertEqual(reopened.reference_sha256s, resolved.reference_sha256s)
-            self.assertEqual(reconsidered.audition_count, 0)
+            self.assertEqual(reopened.route, "needs-audition")
+            self.assertEqual(reconsidered.audition_count, 1)
+            self.assertIsNone(library.binding("Rhiannon"))
 
     def test_changed_eligible_reference_requires_a_new_choice(self):
         with TemporaryDirectory() as temporary_directory:

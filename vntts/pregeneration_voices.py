@@ -464,11 +464,47 @@ class VoicePlanStore:
             files_examined=1,
             bytes_examined=_file_size(job.story_index),
         )
+        selected_line_ids = set(job.selected_line_ids)
+        records: dict[str, StoryIndexRecord] = {
+            record.line_id: record
+            for record in document.records
+            if record.line_id in selected_line_ids
+        }
+        if set(records) != selected_line_ids:
+            raise PregenerationVoiceError(
+                "Selected dialogue changed after offline preparation was planned"
+            )
         _raise_if_cancelled(cancellation)
         phase_started, cpu_started = perf_counter(), process_time()
         manifest_path = _selected_manifest(settings, manifest_path)
         registry, manifest_sha256, manifest_document = _load_registry(manifest_path)
         if self.voice_library is not None:
+            if ignore_decisions:
+                reset_roles = {
+                    normalize_character_name(
+                        synthesis_character_for_line(
+                            record.speaker, record.voice_character
+                        )
+                    )
+                    for record in records.values()
+                    if record.speakable
+                    and not (
+                        record.line_id in authoritative_source_lines
+                        and _source_audio_covers_full_line(
+                            record.document,
+                            completion_contract=source_completion,
+                            semantic_authorized=True,
+                        )
+                    )
+                }
+                for binding in self.voice_library.bindings():
+                    if (
+                        not is_narrator(binding.role)
+                        and normalize_character_name(binding.role) in reset_roles
+                    ):
+                        self.voice_library.clear(
+                            binding.role, variant_key=binding.variant_key
+                        )
             for binding in self.voice_library.bindings():
                 if (
                     binding.route == "narrator"
@@ -501,16 +537,7 @@ class VoicePlanStore:
             self._saved_independent_groups(controls) if not ignore_decisions else ()
         )
         controls_sha256 = _digest(controls)
-        records: dict[str, StoryIndexRecord] = {
-            record.line_id: record
-            for record in document.records
-            if record.line_id in set(job.selected_line_ids)
-        }
         portrait_snapshots: dict[str, PortraitSnapshot] = {}
-        if set(records) != set(job.selected_line_ids):
-            raise PregenerationVoiceError(
-                "Selected dialogue changed after offline preparation was planned"
-            )
         grouped: dict[str, list[GroupValue]] = {}
         for line_id in job.selected_line_ids:
             record = records[line_id]

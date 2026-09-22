@@ -462,10 +462,13 @@ class OfflineAudioPreparationDialog(QDialog):
         self.select_all_button.clicked.connect(lambda: self._set_all_checked(True))
         self.select_none_button = QPushButton("Select none")
         self.select_none_button.clicked.connect(lambda: self._set_all_checked(False))
-        self.change_voices = QCheckBox("Change saved voice choices")
+        self.change_voices = QCheckBox(
+            "Re-match selected story characters automatically"
+        )
         self.change_voices.toggled.connect(self._selection_changed)
         self.change_voices.setAccessibleDescription(
-            "Review previously saved ambiguous character voices again for this selection"
+            "Clear saved non-narrator choices for characters in the selected stories "
+            "and run automatic voice matching again"
         )
         selection_actions.addWidget(self.select_all_button)
         selection_actions.addWidget(self.select_none_button)
@@ -608,8 +611,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_routes.setIconSize(QSize(64, 64))
         self.voice_routes.setAccessibleName("Planned character voice routes")
         self.voice_routes.setMinimumHeight(90)
-        self.choose_character_voice = QPushButton("Choose another character's voice...")
+        self.choose_character_voice = QPushButton("Change selected voice...")
         self.choose_character_voice.setAccessibleName("Change selected character voice")
+        self.choose_character_voice.setToolTip(
+            "Choose another voice, use the narrator, or restore automatic matching."
+        )
         self.choose_character_voice.setEnabled(False)
         self.choose_character_voice.clicked.connect(self._choose_character_voice)
         self.voice_routes.currentItemChanged.connect(
