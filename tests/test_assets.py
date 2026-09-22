@@ -308,7 +308,9 @@ class ModelAssetManagerTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ModelIntegrityError, "file must not be an alias"):
+            with self.assertRaisesRegex(
+                ModelIntegrityError, "file must not be an alias"
+            ):
                 manager.download(asset.name, asset=asset)
 
     def test_model_download_rejects_aliased_partial_file(self):
@@ -327,7 +329,9 @@ class ModelAssetManagerTest(unittest.TestCase):
             outside.write_bytes(b"external")
             symlink_or_skip(model_path / "model.pth.part", outside)
 
-            with self.assertRaisesRegex(ModelIntegrityError, "file must not be an alias"):
+            with self.assertRaisesRegex(
+                ModelIntegrityError, "file must not be an alias"
+            ):
                 manager.download(asset.name, asset=asset)
 
             self.assertEqual(outside.read_bytes(), b"external")
@@ -346,6 +350,81 @@ class ModelAssetManagerTest(unittest.TestCase):
         manager = ModelAssetManager(opener=fail)
         with self.assertRaisesRegex(RuntimeError, "programming error"):
             manager._content_length("https://models.invalid/model")
+
+    def test_concurrent_downloads_serialize_one_model_without_blocking_another(self):
+        first_asset = ModelAsset(
+            name="tts_models/test/dataset/first",
+            urls=("https://models.invalid/first.pth",),
+        )
+        second_asset = ModelAsset(
+            name="tts_models/test/dataset/second",
+            urls=("https://models.invalid/second.pth",),
+        )
+        first_download_started = Event()
+        release_first_download = Event()
+        same_model_started = Event()
+        same_model_downloaded = Event()
+        different_model_done = Event()
+        requests = []
+        errors = []
+        opener = MemoryOpener(
+            {
+                first_asset.urls[0]: b"first-model",
+                second_asset.urls[0]: b"second-model",
+            }
+        )
+
+        def blocking_opener(request, timeout):
+            response = opener(request, timeout)
+            if (
+                request.get_method() == "GET"
+                and request.full_url == first_asset.urls[0]
+            ):
+                requests.append(request)
+                if len(requests) == 1:
+                    first_download_started.set()
+                    self.assertTrue(release_first_download.wait(2))
+                else:
+                    same_model_downloaded.set()
+            return response
+
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory, opener=blocking_opener)
+
+            def download(asset, done=None):
+                try:
+                    manager.download(asset.name, asset=asset)
+                    if done:
+                        done.set()
+                except BaseException as error:
+                    errors.append(error)
+
+            first = Thread(target=download, args=(first_asset,))
+            first.start()
+            self.assertTrue(first_download_started.wait(2))
+
+            def download_same_model():
+                same_model_started.set()
+                download(first_asset)
+
+            same_model = Thread(target=download_same_model)
+            same_model.start()
+            self.assertTrue(same_model_started.wait(2))
+            self.assertFalse(same_model_downloaded.wait(0.2))
+
+            different_model = Thread(
+                target=lambda: download(second_asset, different_model_done)
+            )
+            different_model.start()
+            self.assertTrue(different_model_done.wait(2))
+
+            release_first_download.set()
+            for thread in (first, same_model, different_model):
+                thread.join(2)
+                self.assertFalse(thread.is_alive())
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(requests), 1)
 
 
 class VoicePackManagerTest(unittest.TestCase):

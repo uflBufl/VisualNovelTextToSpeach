@@ -183,46 +183,54 @@ class ModelAssetManager:
         self.configure_environment()
         model_path = self.model_path(model_name)
         self._check_model_path(model_path)
-        model_path.mkdir(parents=True, exist_ok=True)
+        lock_path = model_path.with_name(f".{model_path.name}.download.lock")
+        with exclusive_advisory_lock(lock_path, blocking=True):
+            self._check_model_path(model_path)
+            model_path.mkdir(parents=True, exist_ok=True)
 
-        if self.is_ready_with_asset(model_name, asset):
-            progress(100, "Model is already downloaded and verified")
-            return model_path
+            if self.is_ready_with_asset(model_name, asset):
+                progress(100, "Model is already downloaded and verified")
+                return model_path
 
-        lengths = {url: self._content_length(url) for url in asset.urls}
-        total_bytes = sum(length for length in lengths.values() if length is not None)
-        downloaded_bytes = 0
-        for url in asset.urls:
-            filename = Path(urlparse(url).path).name
-            if not filename:
-                raise AssetError(f"Model URL has no filename: {url}")
-            output = model_path / filename
-            self._check_model_file(output, filename)
-            expected_length = lengths[url]
-            if output.is_file() and (
-                expected_length is None or output.stat().st_size == expected_length
-            ):
-                downloaded_bytes += output.stat().st_size
-                continue
-            downloaded_bytes = self._download_file(
-                url,
-                output,
-                downloaded_bytes,
-                total_bytes,
-                progress,
-                cancel_event,
+            lengths = {url: self._content_length(url) for url in asset.urls}
+            total_bytes = sum(
+                length for length in lengths.values() if length is not None
             )
-            if expected_length is not None and output.stat().st_size != expected_length:
-                raise ModelIntegrityError(
-                    f"Downloaded model file has the wrong size: {filename}"
+            downloaded_bytes = 0
+            for url in asset.urls:
+                filename = Path(urlparse(url).path).name
+                if not filename:
+                    raise AssetError(f"Model URL has no filename: {url}")
+                output = model_path / filename
+                self._check_model_file(output, filename)
+                expected_length = lengths[url]
+                if output.is_file() and (
+                    expected_length is None or output.stat().st_size == expected_length
+                ):
+                    downloaded_bytes += output.stat().st_size
+                    continue
+                downloaded_bytes = self._download_file(
+                    url,
+                    output,
+                    downloaded_bytes,
+                    total_bytes,
+                    progress,
+                    cancel_event,
                 )
+                if (
+                    expected_length is not None
+                    and output.stat().st_size != expected_length
+                ):
+                    raise ModelIntegrityError(
+                        f"Downloaded model file has the wrong size: {filename}"
+                    )
 
-        self._check_cancelled(cancel_event)
-        self._validate_upstream_hash(model_path, asset)
-        self._write_checksum_manifest(model_path, asset)
-        self.validate(model_name, asset=asset)
-        progress(100, "Model download completed and checksums passed")
-        return model_path
+            self._check_cancelled(cancel_event)
+            self._validate_upstream_hash(model_path, asset)
+            self._write_checksum_manifest(model_path, asset)
+            self.validate(model_name, asset=asset)
+            progress(100, "Model download completed and checksums passed")
+            return model_path
 
     def is_ready_with_asset(self, model_name: str, asset: ModelAsset) -> bool:
         try:
