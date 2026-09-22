@@ -148,6 +148,7 @@
     "vntts/durable_settings.py",
     "vntts/document_identity.py",
     "vntts/game_audio_decoder.py",
+    "vntts/game_content_importer.py",
     "vntts/game_narrator.py",
     "vntts/game_narrator_ui.py",
     "vntts/game_pack.py",

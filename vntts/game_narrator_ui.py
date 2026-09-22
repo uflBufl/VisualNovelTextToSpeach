@@ -1500,6 +1500,8 @@ class GameNarratorDialog(QDialog):
         manifest = None
         source_id = reference
         if not reference.startswith("preset:"):
+            if character is None:
+                raise ValueError("Choose a game character first")
             if reference not in self._prepared:
                 self._prepared[reference] = self.importer.prepare_voice_roles(
                     (character,),

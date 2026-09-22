@@ -11,10 +11,12 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
+from os import PathLike
 from pathlib import Path
+from typing import Protocol, TypeAlias
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -28,7 +30,12 @@ from vntts.chapter_voice_preload import (
 )
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
 from vntts.path_safety import contained_regular_file
-from vntts.pregeneration_setup import PregenerationSetupError, inspect_story_index
+from vntts.pregeneration_setup import (
+    GameContent,
+    PregenerationJob,
+    PregenerationSetupError,
+    inspect_story_index,
+)
 from vntts.subprocess_utils import last_output_line, terminate_process
 from vntts.voices import is_narrator, synthesis_character_for_line
 
@@ -47,18 +54,57 @@ class ImporterAvailability:
     message: str
 
 
+PathInput: TypeAlias = str | PathLike[str]
+InstallationRoots: TypeAlias = tuple[Path, Path, Path]
+InstallationParts: TypeAlias = tuple[Path | None, Path | None, Path | None]
+PopenFactory: TypeAlias = Callable[..., subprocess.Popen[str]]
+
+
+class NarratorReference(Protocol):
+    collection_title: str | None
+    line_id: str
+    text: str
+
+
+class NarratorDecoderRunner(Protocol):
+    def __call__(
+        self,
+        arguments: Sequence[str],
+        *,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]: ...
+
+
+class NarratorReferenceSession(Protocol):
+    role: str
+    references: tuple[NarratorReference, ...]
+
+    def prepare(
+        self,
+        *,
+        line_id: str | None = None,
+        decoder: Path | None = None,
+        runner: NarratorDecoderRunner | None = None,
+    ) -> Path: ...
+
+
+class GameImportRecorder(Protocol):
+    def __call__(self, stage: str, **details: object) -> None: ...
+
+
 class Reverse1999GameImporter:
-    provider_id = "reverse1999"
-    display_name = "Reverse: 1999"
+    provider_id: str = "reverse1999"
+    display_name: str = "Reverse: 1999"
 
     def __init__(
         self,
         *,
-        command=None,
-        output_root=None,
-        installation_file=None,
-        popen_factory=subprocess.Popen,
-    ):
+        command: Sequence[str] | None = None,
+        output_root: PathInput | None = None,
+        installation_file: PathInput | None = None,
+        popen_factory: PopenFactory = subprocess.Popen,
+    ) -> None:
         self._configured_command = tuple(command) if command else None
         self.output_root = Path(
             output_root or get_local_data_directory() / "game-content" / "reverse1999"
@@ -69,15 +115,15 @@ class Reverse1999GameImporter:
         ).expanduser()
         self.popen_factory = popen_factory
         self.allow_decoder_homebrew = False
-        self._narrator_session = None
+        self._narrator_session: NarratorReferenceSession | None = None
         self._operation_id = uuid.uuid4().hex[:12]
 
-    def _record(self, stage, **details):
+    def _record(self, stage: str, **details: object) -> None:
         from vntts.support import record_game_import
 
         record_game_import(stage, operation_id=self._operation_id, **details)
 
-    def availability(self):
+    def availability(self) -> ImporterAvailability:
         command = self.command()
         if command is None:
             return ImporterAvailability(
@@ -86,7 +132,7 @@ class Reverse1999GameImporter:
             )
         return ImporterAvailability(True, "Installed game import is available.")
 
-    def command(self):
+    def command(self) -> tuple[str, ...] | None:
         if self._configured_command:
             return self._configured_command
         try:
@@ -110,8 +156,14 @@ class Reverse1999GameImporter:
             return (sys.executable, "-m", "r1999extractor.bootstrap")
         return None
 
-    def import_installed(self, cancel_event=None, installation_root=None):
+    def import_installed(
+        self,
+        cancel_event: Cancellation | None = None,
+        installation_root: PathInput | None = None,
+    ) -> GameContent:
         command = self.command()
+        package_version: str | None
+        package_revision: str | None
         try:
             package = importlib.metadata.distribution("reverse1999-extractor")
             direct_url = json.loads(package.read_text("direct_url.json") or "{}")
@@ -180,7 +232,7 @@ class Reverse1999GameImporter:
         self._record("import-result", outcome="complete", index=story_index)
         return result
 
-    def _remember_installation(self, roots):
+    def _remember_installation(self, roots: InstallationRoots) -> None:
         resources, configs, audio = roots
         try:
             atomic_write_json(
@@ -203,7 +255,7 @@ class Reverse1999GameImporter:
                 reason=str(error),
             )
 
-    def _previous_installation(self):
+    def _previous_installation(self) -> InstallationRoots | None:
         """Prefer durable selection; an existing index can recover older imports."""
         try:
             saved = json.loads(self.installation_file.read_text(encoding="utf-8"))
@@ -213,8 +265,8 @@ class Reverse1999GameImporter:
             ]
             if not all(isinstance(value, str) and value for value in values):
                 raise ValueError("Invalid saved installation paths")
-            roots = tuple(Path(value) for value in values)
-            resources, configs, audio = roots
+            resources, configs, audio = (Path(value) for value in values)
+            roots = resources, configs, audio
             if not (
                 all(path.is_absolute() for path in roots)
                 and (resources / "bundles").is_dir()
@@ -268,12 +320,18 @@ class Reverse1999GameImporter:
             )
             return None
 
-    def selected_installation_root(self):
+    def selected_installation_root(self) -> Path | None:
         """Return the resource root currently reused for automatic imports."""
         roots = self._previous_installation()
         return roots[0] if roots is not None else None
 
-    def prepare_voice_candidates(self, job, cancel_event=None, *, progress=None):
+    def prepare_voice_candidates(
+        self,
+        job: PregenerationJob,
+        cancel_event: Cancellation | None = None,
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> Path | None:
         """Prepare only candidate references needed by the selected stories."""
         if job.game != self.display_name:
             return None
@@ -289,7 +347,11 @@ class Reverse1999GameImporter:
             target_story_index=job.story_index,
         )
 
-    def narrator_characters(self, cancel_event=None, installation_root=None):
+    def narrator_characters(
+        self,
+        cancel_event: Cancellation | None = None,
+        installation_root: PathInput | None = None,
+    ) -> tuple[str, ...]:
         """List voiced characters without decoding the whole audio catalog."""
         story_index = self.output_root / "reverse1999" / "narrator-index.jsonl"
         bank_index = story_index.parent / "english-bank-index.json"
@@ -332,7 +394,7 @@ class Reverse1999GameImporter:
         return result
 
     @staticmethod
-    def _bank_index_is_stale(path):
+    def _bank_index_is_stale(path: Path) -> bool:
         from r1999extractor.reverse1999_index import bank_index_staleness_reasons
 
         from vntts.support import record_game_import
@@ -353,7 +415,7 @@ class Reverse1999GameImporter:
         )
         return bool(reasons)
 
-    def narrator_references(self, character):
+    def narrator_references(self, character: str) -> tuple[NarratorReference, ...]:
         from r1999extractor.narrator_references import NarratorReferenceSession
 
         root = self.output_root / "reverse1999"
@@ -372,14 +434,14 @@ class Reverse1999GameImporter:
 
     def prepare_voice_roles(
         self,
-        roles,
-        cancel_event=None,
+        roles: Sequence[str],
+        cancel_event: Cancellation | None = None,
         *,
-        progress=None,
-        narrator=False,
-        narrator_line_id=None,
-        target_story_index=None,
-    ):
+        progress: ProgressCallback | None = None,
+        narrator: bool = False,
+        narrator_line_id: str | None = None,
+        target_story_index: PathInput | None = None,
+    ) -> Path:
         """Reuse the extractor's checksum-bound, per-role reference cache."""
         if not roles:
             raise GameContentImportError("Choose a game character first")
@@ -418,7 +480,10 @@ class Reverse1999GameImporter:
             self.narrator_references(roles[0])
         if cancel_event is not None and cancel_event.is_set():
             raise GameContentImportCancelled("Narrator preparation cancelled")
-        return self._narrator_session.prepare(
+        session = self._narrator_session
+        if session is None:
+            raise GameContentImportError("Narrator references could not be prepared")
+        return session.prepare(
             line_id=narrator_line_id,
             decoder=decoder,
             runner=partial(self._decode_narrator, cancel_event=cancel_event),
@@ -432,7 +497,7 @@ class Reverse1999GameImporter:
         cancel_event: Cancellation | None,
         progress: ProgressCallback | None,
         narrator_line_id: str | None,
-        target_story_index: str | Path | None,
+        target_story_index: PathInput | None,
     ) -> Path:
         environment = dict(os.environ)
         environment["PATH"] = os.pathsep.join(
@@ -474,11 +539,24 @@ class Reverse1999GameImporter:
                 "Reverse: 1999 voice preparation produced no usable manifest"
             ) from error
 
-    def _decode_narrator(self, arguments, *, capture_output, text, cancel_event):
+    def _decode_narrator(
+        self,
+        arguments: Sequence[str],
+        *,
+        capture_output: bool,
+        text: bool,
+        cancel_event: Cancellation | None,
+    ) -> subprocess.CompletedProcess[str]:
         stdout, stderr = self._run(arguments, cancel_event)
         return subprocess.CompletedProcess(arguments, 0, stdout, stderr)
 
-    def _run(self, arguments, cancel_event, *, environment=None):
+    def _run(
+        self,
+        arguments: Sequence[str],
+        cancel_event: Cancellation | None,
+        *,
+        environment: dict[str, str] | None = None,
+    ) -> tuple[str, str]:
         started = time.monotonic()
         self._record("process-start", executable=arguments[0])
         try:
@@ -545,7 +623,9 @@ class Reverse1999GameImporter:
         return stdout, stderr
 
 
-def _candidate_roles(job, reference_index=None):
+def _candidate_roles(
+    job: PregenerationJob, reference_index: Path | None = None
+) -> tuple[str, ...]:
     from r1999extractor.story_voice_candidates import is_playable_main_voice_reference
 
     story_index = Path(job.story_index).expanduser().resolve()
@@ -582,7 +662,7 @@ def _candidate_roles(job, reference_index=None):
             )
         )
     }
-    requested = {}
+    requested: dict[str, str] = {}
     for record in document.records:
         character = synthesis_character_for_line(
             record.speaker,
@@ -611,7 +691,7 @@ def _candidate_roles(job, reference_index=None):
     )
 
 
-def resolve_reverse1999_installation(path):
+def resolve_reverse1999_installation(path: PathInput) -> InstallationRoots:
     """Resolve one installation, including its split Windows resource folders."""
     from vntts.support import record_game_import
 
@@ -653,10 +733,17 @@ def resolve_reverse1999_installation(path):
             "The selected folder is not a complete Reverse: 1999 installation; "
             f"missing {', '.join(missing)}."
         )
+    assert resource_root is not None
+    assert config_directory is not None
+    assert audio_directory is not None
     return resource_root, config_directory, audio_directory
 
 
-def _find_installation_parts(root, search_roots, record):
+def _find_installation_parts(
+    root: Path,
+    search_roots: Sequence[Path],
+    record: GameImportRecorder,
+) -> InstallationParts:
     resource_root = root if (root / "bundles").is_dir() else None
     config_directory = None
     audio_directory = root if any(root.glob("*.bnk")) else None

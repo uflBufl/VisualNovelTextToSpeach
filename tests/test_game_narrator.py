@@ -404,6 +404,23 @@ class GameNarratorTest(unittest.TestCase):
         importer.prepare_voice_roles.return_value = manifest
         return importer
 
+    def test_game_reference_requires_a_selected_character(self):
+        importer = Mock()
+        dialog = GameNarratorDialog(
+            AppSettings(),
+            importer=importer,
+            preview_service=Mock(),
+            player=Mock(),
+        )
+        try:
+            with self.assertRaisesRegex(ValueError, "Choose a game character first"):
+                dialog._perform_candidate_action(
+                    "audio", AppSettings(), None, "game:reference", ""
+                )
+            importer.prepare_voice_roles.assert_not_called()
+        finally:
+            dialog.reject()
+
     def test_imported_catalog_preview_plays_and_reports_cached_reuse(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

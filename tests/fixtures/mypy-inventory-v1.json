@@ -1,7 +1,6 @@
 {
   "schema_version": 1,
   "maximum_errors_by_file": {
-    "vntts/app.py": 181,
-    "vntts/game_content_importer.py": 17
+    "vntts/app.py": 181
   }
 }
