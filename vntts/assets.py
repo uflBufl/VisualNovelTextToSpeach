@@ -427,8 +427,9 @@ class VoicePackManager:
                 manifest_path,
                 {"version": 2, "voices": voices},
             )
-            CharacterVoiceRegistry.from_file(manifest_path)
+            registry = CharacterVoiceRegistry.from_file(manifest_path)
             self._write_voice_checksums(pack_path, manifest_path)
+            self._remove_unreferenced_files(pack_path, registry)
             return manifest_path
 
     def import_pack(
@@ -476,9 +477,30 @@ class VoicePackManager:
             entries.sort(key=lambda item: str(item["character"]).casefold())
             output_manifest: Path = pack_path / "manifest.json"
             atomic_write_json(output_manifest, {"version": 2, "voices": entries})
-            CharacterVoiceRegistry.from_file(output_manifest)
+            imported_registry = CharacterVoiceRegistry.from_file(output_manifest)
             self._write_voice_checksums(pack_path, output_manifest)
+            self._remove_unreferenced_files(pack_path, imported_registry)
             return output_manifest
+
+    @staticmethod
+    def _remove_unreferenced_files(
+        pack_path: Path, registry: CharacterVoiceRegistry
+    ) -> None:
+        references_path = pack_path / "references"
+        referenced = {
+            reference.resolve()
+            for voice in {
+                id(voice): voice for voice in registry.voices.values()
+            }.values()
+            for reference in voice.references
+        }
+        for path in references_path.iterdir():
+            if (
+                not path.is_symlink()
+                and path.is_file()
+                and path.resolve() not in referenced
+            ):
+                path.unlink()
 
     def validate(self, manifest_path: str | os.PathLike[str]) -> Path:
         manifest_path = Path(manifest_path).expanduser().resolve()

@@ -491,6 +491,25 @@ class VoicePackManagerTest(unittest.TestCase):
             self.assertNotEqual(voice.references[0], source)
             self.assertEqual(manager.validate(manifest), manifest)
 
+    def test_import_voice_removes_replaced_managed_references(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            first = root / "first.wav"
+            second = root / "second.wav"
+            first.write_bytes(b"first voice")
+            second.write_bytes(b"second voice")
+            manager = VoicePackManager(root / "managed")
+
+            manager.import_voice("Ada", [first])
+            manifest = manager.import_voice("Ada", [second])
+            registry = CharacterVoiceRegistry.from_file(manifest)
+
+            self.assertEqual(
+                set((manifest.parent / "references").iterdir()),
+                set(registry.resolve("Ada").references),
+            )
+            self.assertEqual(manager.validate(manifest), manifest)
+
     def test_import_manifest_copies_pack_without_modifying_source(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -521,6 +540,45 @@ class VoicePackManagerTest(unittest.TestCase):
             self.assertTrue(reference.is_file())
             self.assertTrue(imported_voice.reference.is_file())
             self.assertNotEqual(imported_voice.reference, reference)
+
+    def test_import_manifest_removes_replaced_managed_references(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            manager = VoicePackManager(root / "managed")
+
+            def source_pack(name, payload):
+                directory = root / name
+                directory.mkdir()
+                reference = directory / "voice.wav"
+                reference.write_bytes(payload)
+                manifest = directory / "manifest.json"
+                manifest.write_text(
+                    json.dumps(
+                        {
+                            "voices": [
+                                {
+                                    "character": "Ada",
+                                    "speaker": "ada-v2",
+                                    "reference": reference.name,
+                                }
+                            ]
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                return manifest
+
+            manager.import_pack(source_pack("first", b"first"), pack_name="custom")
+            manifest = manager.import_pack(
+                source_pack("second", b"second"), pack_name="custom"
+            )
+            registry = CharacterVoiceRegistry.from_file(manifest)
+
+            self.assertEqual(
+                set((manifest.parent / "references").iterdir()),
+                set(registry.resolve("Ada").references),
+            )
+            self.assertEqual(manager.validate(manifest), manifest)
 
     def test_import_voice_waits_for_import_pack_and_keeps_both_voices(self):
         with TemporaryDirectory() as temporary_directory:
