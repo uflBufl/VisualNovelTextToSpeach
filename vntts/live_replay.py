@@ -409,24 +409,21 @@ class ReplayFrameSource:
         self, frame: CapturedDialogFrame, *, route_kind: str
     ) -> ReplayLedgerEvent:
         """Record a route, preserving an earlier prefix-observation receipt."""
-        identity = _replay_frame_identity(frame)
-        with self.condition:
-            event = self._event_for_identity(identity)
-            if (
-                identity is not None
-                and event["dialogue_index"] is not None
-                and self.consumed[identity[0]][identity[1]]
-            ):
-                self.route_kinds[identity[0]][identity[1]] = str(route_kind)
-                event["consumed"] = True
-                event["skip_reason"] = None
-                return event
-        return self.acknowledge(frame, route_kind=route_kind)
+        return self._acknowledge_receipt(frame, route_kind, replace_route_kind=True)
 
     def acknowledge_observation(
         self, frame: CapturedDialogFrame, *, route_kind: str
     ) -> ReplayLedgerEvent:
         """Record an OCR receipt without penalizing an already routed frame."""
+        return self._acknowledge_receipt(frame, route_kind, replace_route_kind=False)
+
+    def _acknowledge_receipt(
+        self,
+        frame: CapturedDialogFrame,
+        route_kind: str,
+        *,
+        replace_route_kind: bool,
+    ) -> ReplayLedgerEvent:
         identity = _replay_frame_identity(frame)
         with self.condition:
             event = self._event_for_identity(identity)
@@ -435,6 +432,8 @@ class ReplayFrameSource:
                 and event["dialogue_index"] is not None
                 and self.consumed[identity[0]][identity[1]]
             ):
+                if replace_route_kind:
+                    self.route_kinds[identity[0]][identity[1]] = str(route_kind)
                 event["consumed"] = True
                 event["skip_reason"] = None
                 return event
