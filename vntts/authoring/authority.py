@@ -97,7 +97,8 @@ def write_json_document_no_replace(
     error_type: type[Exception] = AuthoringAuthorityError,
 ) -> Path:
     """Atomically publish one JSON document while refusing replacement."""
-    path = Path(output).expanduser().resolve()
+    requested = Path(output).expanduser()
+    path = requested.parent.resolve() / requested.name
     payload = (
         json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     ).encode("utf-8")

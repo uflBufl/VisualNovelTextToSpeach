@@ -3,10 +3,15 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from vntts_artifacts.live_sequence import write_live_sequence_plan
 
-from vntts.live_replay_coverage import audit_live_replay_coverage
+from vntts.authoring.authority import write_json_document_no_replace
+from vntts.live_replay_coverage import (
+    LiveReplayCoverageError,
+    audit_live_replay_coverage,
+)
 
 
 class LiveReplayCoverageTest(unittest.TestCase):
@@ -149,6 +154,39 @@ class LiveReplayCoverageTest(unittest.TestCase):
                 report["human_acceptance_pending_event_ids"],
                 ["event-2"],
             )
+
+            for competitor in ("file", "symlink"):
+                with self.subTest(competitor=competitor):
+                    destination = root / f"coverage-{competitor}.json"
+                    outside = root / f"outside-{competitor}.json"
+
+                    def publish_after_competitor(path, document, label, *, error_type):
+                        if competitor == "file":
+                            destination.write_bytes(b"concurrent report")
+                        else:
+                            destination.symlink_to(outside)
+                        return write_json_document_no_replace(
+                            path, document, label, error_type=error_type
+                        )
+
+                    with (
+                        patch(
+                            "vntts.live_replay_coverage.write_json_document_no_replace",
+                            side_effect=publish_after_competitor,
+                        ),
+                        self.assertRaises(LiveReplayCoverageError),
+                    ):
+                        audit_live_replay_coverage(
+                            destination,
+                            story_index=story,
+                            sequence_plan=plan,
+                            reviews=(first, second),
+                        )
+                    if competitor == "file":
+                        self.assertEqual(destination.read_bytes(), b"concurrent report")
+                    else:
+                        self.assertTrue(destination.is_symlink())
+                        self.assertFalse(outside.exists())
 
 
 if __name__ == "__main__":
