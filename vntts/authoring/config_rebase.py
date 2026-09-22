@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
+from vntts_artifacts import VoiceGenerationQueue, VoiceGenerationQueueItem
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import VoiceManifestError, load_voice_manifest
@@ -52,10 +54,12 @@ from vntts.authoring.workspace_config import (
     workspace_missing_voice_policy,
 )
 from vntts.authoring.workspace_voice_runtime import (
+    FailureReferenceRuntimeBinding,
     load_failure_reference_runtime_binding,
     load_workspace_queue_voice_overrides,
     load_workspace_voice_registry,
 )
+from vntts.voices import CharacterVoiceRegistry
 
 CONFIG_REBASE_SCHEMA = "vntts.authoring-workspace-config-rebase"
 CONFIG_REBASE_VERSION = 4
@@ -68,9 +72,16 @@ _WORKFLOW_FIELDS = {
     "terminal_conflict_resolution",
     "config_rebase",
 }
+JsonObject = dict[str, object]
+Route = tuple[str, tuple[str, ...]]
+Snapshots = list[tuple[Path, str]]
 
 
-def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=None):
+def rebase_workspace_config(
+    source_workspace: str | Path,
+    target_workspace: str | Path,
+    workspaces_root: str | Path | None = None,
+) -> WorkspaceCreationResult:
     """Publish a successor with source terminal WAVs and target immutable config."""
     source_directory, source_document, source_workspace_sha256 = (
         load_workspace_authority(source_workspace)
@@ -78,9 +89,19 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
     target_directory, target_document, target_workspace_sha256 = (
         load_workspace_authority(target_workspace)
     )
+    source_document = _object(source_document, "Config rebase source workspace")
+    target_document = _object(target_document, "Config rebase target workspace")
+    source_info = _object(source_document.get("source"), "Config rebase source import")
+    target_info = _object(target_document.get("source"), "Config rebase target import")
+    source_import_id = _text(
+        source_info.get("import_id"), "Config rebase source import ID"
+    )
+    target_import_id = _text(
+        target_info.get("import_id"), "Config rebase target import ID"
+    )
     if source_directory == target_directory:
         raise AuthoringWorkbenchError("Config rebase requires distinct workspaces")
-    if source_document["source"]["import_id"] != target_document["source"]["import_id"]:
+    if source_import_id != target_import_id:
         raise AuthoringWorkbenchError("Config rebase workspaces use different imports")
     source_queue = source_directory / "queue.jsonl"
     target_queue = target_directory / "queue.jsonl"
@@ -217,9 +238,23 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             except (VoiceManifestError, SourceReferenceBindingError) as error:
                 raise AuthoringWorkbenchError(str(error)) from error
 
-            records = []
-            projected_state = copy.deepcopy(target_state)
-            for queue_id, result in sorted(source_state["items"].items()):
+            source_state_items = _object(
+                source_state.get("items"), "Config rebase source state items"
+            )
+            projected_state = _object(
+                copy.deepcopy(target_state), "Config rebase projected state"
+            )
+            projected_items = _object(
+                projected_state.get("items"), "Config rebase projected state items"
+            )
+            projected_state["items"] = projected_items
+            records: list[JsonObject] = []
+            for queue_id, result_value in sorted(source_state_items.items()):
+                if not isinstance(result_value, dict):
+                    continue
+                result = _object(
+                    result_value, f"Config rebase source item {queue_id!r}"
+                )
                 if not is_terminal_review_outcome(result):
                     continue
                 queue_item = queue.get(queue_id)
@@ -338,9 +373,9 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 if source_live_fallback is not None:
                     projected["live_fallback"] = copy.deepcopy(source_live_fallback)
                 if record["successor_state"] == REBASE_PENDING_KNOWN_ROLE_REUSE:
-                    projected_state["items"].pop(queue_id, None)
+                    projected_items.pop(queue_id, None)
                 else:
-                    projected_state["items"][queue_id] = projected
+                    projected_items[queue_id] = projected
                 records.append(record)
             if not records:
                 raise AuthoringWorkbenchError(
@@ -355,11 +390,17 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             rebase = {
                 "schema": CONFIG_REBASE_SCHEMA,
                 "schema_version": CONFIG_REBASE_VERSION,
-                "source_workspace_id": source_document["workspace_id"],
+                "source_workspace_id": _text(
+                    source_document.get("workspace_id"),
+                    "Config rebase source workspace ID",
+                ),
                 "source_workspace_sha256": source_workspace_sha256,
                 "source_state_sha256": source_state_sha256,
                 "source_voice_manifest_sha256": sha256_file(source_voice),
-                "target_workspace_id": target_document["workspace_id"],
+                "target_workspace_id": _text(
+                    target_document.get("workspace_id"),
+                    "Config rebase target workspace ID",
+                ),
                 "target_workspace_sha256": target_workspace_sha256,
                 "target_state_sha256": target_state_sha256,
                 "target_voice_manifest_sha256": sha256_file(target_voice),
@@ -368,10 +409,13 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 "items": records,
             }
             config_fingerprint = workspace_config_fingerprint(
-                target_document["source"]["import_id"],
+                target_import_id,
                 target_document.get("story_index"),
                 target_document.get("voice_manifest"),
-                target_document["narrator_character"],
+                _text(
+                    target_document.get("narrator_character"),
+                    "Config rebase narrator character",
+                ),
                 target_document["run_config"],
                 target_document.get("carry_forward"),
                 target_document.get("outcome_merge"),
@@ -397,14 +441,14 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
             )
             workspace_id = (
                 "resume-"
-                + target_document["source"]["import_id"].removeprefix("legacy-")
+                + target_import_id.removeprefix("legacy-")
                 + f"-{config_fingerprint[:16]}"
             )
             destination = contained_workspace_path(
                 root, Path(workspace_id), "Config rebase destination"
             )
             with staged_directory(root, prefix=".config-rebase-staging-") as staging:
-                snapshots = []
+                snapshots: Snapshots = []
                 snapshots.extend(
                     (
                         (source_directory / "workspace.json", source_workspace_sha256),
@@ -448,7 +492,11 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                 for record in records:
                     if record["successor_state"] != REBASE_PENDING_KNOWN_ROLE_REUSE:
                         continue
-                    source_item = source_state["items"][record["queue_id"]]
+                    queue_id = _text(record.get("queue_id"), "Config rebase queue ID")
+                    source_item = _object(
+                        source_state_items[queue_id],
+                        f"Config rebase source item {queue_id!r}",
+                    )
                     relative = safe_workspace_relative_path(
                         source_item.get("path"),
                         f"Config rebase pending-history {record['queue_id']!r} WAV",
@@ -466,7 +514,15 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
                         source_audio, "config rebase pending-history WAV"
                     )
                     history_audio.write_bytes(payload)
-                    snapshots.append((source_audio, record["audio_sha256"]))
+                    snapshots.append(
+                        (
+                            source_audio,
+                            _text(
+                                record.get("audio_sha256"),
+                                "Config rebase audio SHA-256",
+                            ),
+                        )
+                    )
                 target_root = staging / "provenance" / "config-rebase" / "target-root"
                 target_root.mkdir(parents=True)
                 (target_root / "workspace.json").write_bytes(
@@ -480,13 +536,19 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
 
                 output = staging / "generated-audio"
                 output.mkdir()
-                path_owners = {}
-                rebased_queue_ids = {record["queue_id"] for record in records}
-                for queue_id, result in projected_state["items"].items():
-                    if not isinstance(result, dict) or not isinstance(
-                        result.get("path"), str
+                path_owners: dict[str, str] = {}
+                rebased_queue_ids = {
+                    _text(record.get("queue_id"), "Config rebase queue ID")
+                    for record in records
+                }
+                for queue_id, result_value in projected_items.items():
+                    if not isinstance(result_value, dict) or not isinstance(
+                        result_value.get("path"), str
                     ):
                         continue
+                    result = _object(
+                        result_value, f"Config rebase projected item {queue_id!r}"
+                    )
                     relative = safe_workspace_relative_path(
                         result["path"], f"Config rebase state item {queue_id!r} WAV"
                     )
@@ -593,7 +655,11 @@ def rebase_workspace_config(source_workspace, target_workspace, workspaces_root=
         raise AuthoringWorkbenchError(str(error)) from error
 
 
-def validate_config_rebase_workspace(directory, workspace, state=None):
+def validate_config_rebase_workspace(
+    directory: str | Path,
+    workspace: Mapping[str, object],
+    state: JsonObject | None = None,
+) -> None:
     """Validate self-contained config-rebase authority and exact item projection."""
     rebase = workspace.get("config_rebase")
     if rebase is None:
@@ -724,18 +790,18 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
             )
         )
     source_state = load_workspace_json(source_state_path, "config rebase source state")
-    if not isinstance(source_state.get("items"), dict):
-        raise AuthoringWorkbenchError(
-            "Config rebase source state snapshot is malformed"
-        )
+    source_items = _object(
+        source_state.get("items"), "Config rebase source state items"
+    )
     if state is None:
         state = load_generation_state(
             directory / "generated-audio" / "generation-state.json", queue_path
         )
+    state_items = _object(state.get("items"), "Config rebase state items")
     records = rebase.get("items")
     if not isinstance(records, list) or not records:
         raise AuthoringWorkbenchError("Config rebase item ledger is empty")
-    later_extensions = {}
+    later_extensions: dict[str, JsonObject] = {}
     outcome_merge = workspace.get("outcome_merge")
     if isinstance(outcome_merge, dict) and isinstance(outcome_merge.get("items"), list):
         for item in outcome_merge["items"]:
@@ -843,7 +909,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
             raise AuthoringWorkbenchError(
                 f"Config rebase successor state is invalid for {queue_id!r}"
             )
-        source_item = source_state["items"].get(queue_id)
+        source_item = source_items.get(queue_id)
         if (
             not isinstance(source_item, dict)
             or canonical_document_sha256(source_item) != record["source_item_sha256"]
@@ -859,7 +925,7 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
             raise AuthoringWorkbenchError(
                 f"Config rebase projected source changed for {queue_id!r}"
             )
-        current = state["items"].get(queue_id)
+        current = state_items.get(queue_id)
         expected_extension = {
             key: value for key, value in record.items() if key != "queue_id"
         }
@@ -985,24 +1051,27 @@ def validate_config_rebase_workspace(directory, workspace, state=None):
         raise AuthoringWorkbenchError("Config rebase item ledger is not canonical")
     marked_ids = sorted(
         queue_id
-        for queue_id, item in state["items"].items()
+        for queue_id, item in state_items.items()
         if isinstance(item, dict) and "config_rebase" in item
     )
-    expected_marked_ids = sorted(
-        queue_id
-        for queue_id in observed_ids
-        if isinstance(state["items"].get(queue_id), dict)
-        and "config_rebase" in state["items"][queue_id]
-    )
+    expected_marked_ids = []
+    for queue_id in observed_ids:
+        item = state_items.get(queue_id)
+        if isinstance(item, dict) and "config_rebase" in item:
+            expected_marked_ids.append(queue_id)
+    expected_marked_ids.sort()
     if marked_ids != expected_marked_ids:
         raise AuthoringWorkbenchError("Config rebase state ledger is incomplete")
 
 
-def validate_config_rebase_publication_authority(state_path, state):
+def validate_config_rebase_publication_authority(
+    state_path: str | Path, state: JsonObject
+) -> None:
     """Bind marked state to one validated canonical config-rebase workspace."""
+    state_items = _object(state.get("items"), "Config rebase state items")
     marked = any(
         isinstance(item, dict) and "config_rebase" in item
-        for item in state.get("items", {}).values()
+        for item in state_items.values()
     )
     if not marked:
         return
@@ -1040,8 +1109,10 @@ def validate_config_rebase_publication_authority(state_path, state):
         raise BulkGenerationError(str(error)) from error
 
 
-def _project_source_item(result, *, exclude_live_fallback=False):
-    projected = copy.deepcopy(result)
+def _project_source_item(
+    result: Mapping[str, object], *, exclude_live_fallback: bool = False
+) -> JsonObject:
+    projected = dict(copy.deepcopy(result))
     for field in _WORKFLOW_FIELDS:
         projected.pop(field, None)
     if exclude_live_fallback:
@@ -1049,11 +1120,15 @@ def _project_source_item(result, *, exclude_live_fallback=False):
     return projected
 
 
-def _retired_route_for_queue(records, queue_id, source_route):
+def _retired_route_for_queue(
+    records: Sequence[JsonObject], queue_id: str, source_route: Route
+) -> JsonObject | None:
     character, reference_sha256s = source_route
     for record in records:
+        queue_ids = record.get("queue_ids")
         if (
-            queue_id in record["queue_ids"]
+            isinstance(queue_ids, list)
+            and queue_id in queue_ids
             and record["voice_character"] == character
             and record["reference_sha256"] in reference_sha256s
         ):
@@ -1062,15 +1137,15 @@ def _retired_route_for_queue(records, queue_id, source_route):
 
 
 def _target_route_status(
-    queue_id,
-    status,
-    review_status,
-    source_route,
-    target_route,
-    retired_variants,
-    known_role_reuse=None,
-    source_item_sha256=None,
-):
+    queue_id: str,
+    status: object,
+    review_status: object,
+    source_route: Route,
+    target_route: Route,
+    retired_variants: Sequence[JsonObject],
+    known_role_reuse: object = None,
+    source_item_sha256: object = None,
+) -> str:
     if set(source_route[1]).issubset(target_route[1]):
         return "active"
     if (
@@ -1106,14 +1181,14 @@ def _target_route_status(
 
 
 def _known_role_reuse_requeues_rejection(
-    queue_id,
-    status,
-    review_status,
-    target_route,
-    route_status,
-    known_role_reuse,
-    source_item_sha256,
-):
+    queue_id: str,
+    status: object,
+    review_status: object,
+    target_route: Route,
+    route_status: str,
+    known_role_reuse: object,
+    source_item_sha256: object,
+) -> bool:
     """Return true only for an exact rejected item authorized for a new voice."""
     if (
         not isinstance(known_role_reuse, dict)
@@ -1137,29 +1212,32 @@ def _known_role_reuse_requeues_rejection(
 
 
 def _route_reference_identity(
-    registry,
-    workspace,
-    overrides,
-    queue_item,
-    result=None,
+    registry: CharacterVoiceRegistry,
+    workspace: Mapping[str, object],
+    overrides: Mapping[str, str],
+    queue_item: VoiceGenerationQueueItem,
+    result: JsonObject | None = None,
     *,
-    source_result=None,
-    failure_reference_binding=None,
-    allow_missing=False,
-):
+    source_result: JsonObject | None = None,
+    failure_reference_binding: FailureReferenceRuntimeBinding | None = None,
+    allow_missing: bool = False,
+) -> Route:
     audio_event_result = result if result is not None else source_result
+    audio_event_composition = (
+        audio_event_result.get("audio_event_composition")
+        if isinstance(audio_event_result, dict)
+        else None
+    )
     if (
         isinstance(audio_event_result, dict)
         and audio_event_result.get("provider") == "original-game-audio-event"
-        and isinstance(audio_event_result.get("audio_event_composition"), dict)
+        and isinstance(audio_event_composition, dict)
     ):
         return (
             "Audio Event",
             (
                 require_workspace_sha256(
-                    audio_event_result["audio_event_composition"].get(
-                        "final_audio_sha256"
-                    ),
+                    audio_event_composition.get("final_audio_sha256"),
                     "Config rebase audio-event result WAV SHA-256",
                 ),
             ),
@@ -1180,19 +1258,23 @@ def _route_reference_identity(
     prior_route = _prior_config_rebase_target_route(result)
     if prior_route is not None:
         return prior_route
-    character = None
+    character: object = None
     if isinstance(result, dict):
         character = result.get("voice_character")
     character = character or overrides.get(queue_item.queue_id) or requested
     if character == "Narrator":
-        character = workspace["narrator_character"]
+        character = workspace.get("narrator_character")
+    character = _text(character, "Config rebase voice character")
     voice = registry.resolve(character)
     if voice is None or not voice.references:
         policy = workspace_missing_voice_policy(
             workspace, error_type=AuthoringWorkbenchError
         )
         if policy.applies_to(requested):
-            character = workspace["narrator_character"]
+            character = _text(
+                workspace.get("narrator_character"),
+                "Config rebase narrator character",
+            )
             voice = registry.resolve(character)
     if voice is None or not voice.references:
         if allow_missing:
@@ -1204,7 +1286,11 @@ def _route_reference_identity(
     return character, digests
 
 
-def _failure_reference_route(binding, queue_item, result):
+def _failure_reference_route(
+    binding: FailureReferenceRuntimeBinding | None,
+    queue_item: VoiceGenerationQueueItem,
+    result: object,
+) -> tuple[Route, str] | None:
     if not isinstance(result, dict):
         return None
     queue_id = queue_item.queue_id
@@ -1244,7 +1330,8 @@ def _failure_reference_route(binding, queue_item, result):
         raise AuthoringWorkbenchError(
             f"Config rebase failure-reference source voice is invalid for {queue_id!r}"
         )
-    if runtime_character is not None:
+    digests: tuple[str, ...]
+    if runtime_character is not None and binding is not None:
         voices = [
             voice for voice in binding.voices if voice.character == synthetic_character
         ]
@@ -1260,11 +1347,17 @@ def _failure_reference_route(binding, queue_item, result):
                 f"Config rebase failure-reference history changed for {queue_id!r}"
             )
     else:
+        if historical_references is None:
+            raise AuthoringWorkbenchError(
+                f"Config rebase failure-reference history is absent for {queue_id!r}"
+            )
         digests = historical_references
     return (synthetic_character, digests), requested.strip()
 
 
-def _historical_failure_reference_digests(result, synthetic_character):
+def _historical_failure_reference_digests(
+    result: Mapping[str, object], synthetic_character: object
+) -> tuple[str, ...] | None:
     repair = result.get("failure_repair")
     if (
         not isinstance(repair, dict)
@@ -1290,7 +1383,7 @@ def _historical_failure_reference_digests(result, synthetic_character):
     )
 
 
-def _prior_config_rebase_target_route(result):
+def _prior_config_rebase_target_route(result: object) -> Route | None:
     """Return the effective route owned by an immediately preceding rebase.
 
     The complete preceding item, including its earlier source provenance, is
@@ -1333,7 +1426,9 @@ def _prior_config_rebase_target_route(result):
     return character, digests
 
 
-def _rebase_audio_event_composition(source_workspace, target_workspace):
+def _rebase_audio_event_composition(
+    source_workspace: Mapping[str, object], target_workspace: Mapping[str, object]
+) -> JsonObject | None:
     source = source_workspace.get("audio_event_composition")
     target = target_workspace.get("audio_event_composition")
     if source is not None and not isinstance(source, dict):
@@ -1352,8 +1447,11 @@ def _rebase_audio_event_composition(source_workspace, target_workspace):
 
 
 def _copy_audio_event_composition_inputs(
-    source_directory, staging, composition, snapshots
-):
+    source_directory: Path,
+    staging: Path,
+    composition: Mapping[str, object],
+    snapshots: Snapshots,
+) -> None:
     paths = sorted(
         {
             value
@@ -1426,7 +1524,7 @@ def _copy_audio_event_composition_inputs(
             snapshots.append((source, digest))
 
 
-def _copy_tree(source, destination, snapshots):
+def _copy_tree(source: Path, destination: Path, snapshots: Snapshots) -> None:
     if source.is_symlink() or not source.is_dir():
         raise AuthoringWorkbenchError(f"Config rebase input tree is invalid: {source}")
     destination.mkdir(parents=True)
@@ -1446,9 +1544,19 @@ def _copy_tree(source, destination, snapshots):
         snapshots.append((path, digest))
 
 
-def _load_json_queue(path):
-    from vntts_artifacts import VoiceGenerationQueue
+def _object(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise AuthoringWorkbenchError(f"{label} is malformed")
+    return {key: item for key, item in value.items()}
 
+
+def _text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise AuthoringWorkbenchError(f"{label} is invalid")
+    return value
+
+
+def _load_json_queue(path: str | Path) -> dict[str, VoiceGenerationQueueItem]:
     try:
         queue = VoiceGenerationQueue.load(path)
     except Exception as error:
