@@ -75,7 +75,7 @@ def handle(arguments: argparse.Namespace) -> int:
         delivery_policy=arguments.delivery_policy,
         partial_source_audio_only=arguments.partial_source_audio_only,
     )
-    payload = {"summary": plan.summary.to_dict()}
+    payload: dict[str, object] = {"summary": plan.summary.to_dict()}
     if arguments.command == "build-queue":
         output = publish_generation_queue(plan, arguments.output)
         payload["output"] = str(output)

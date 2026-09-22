@@ -16,7 +16,6 @@
     "vntts/authoring/pcm_playback.py": 14,
     "vntts/authoring/pending_resolution.py": 10,
     "vntts/authoring/portrait_aliases.py": 16,
-    "vntts/authoring/queue_builder.py": 15,
     "vntts/authoring/reference_composite.py": 10,
     "vntts/authoring/reference_render_comparison.py": 20,
     "vntts/authoring/reference_selection.py": 8,

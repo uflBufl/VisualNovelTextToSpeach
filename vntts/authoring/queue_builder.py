@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -68,7 +69,7 @@ class GenerationQueueSummary:
     partial_source_audio: int = 0
     audio_event_composition: int = 0
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "story_records": self.story_records,
             "selected_records": self.selected_records,
@@ -126,14 +127,14 @@ _QUEUE_OWNED_FIELDS = frozenset(
 def plan_generation_queue(
     document: StoryIndexDocument,
     voice_manifest: tuple[VoiceManifestEntry, ...],
-    voice_manifest_path,
+    voice_manifest_path: str | Path,
     *,
     collection_ids: tuple[str, ...] | None = None,
     unknown_action: str | None = None,
     delivery_policy: str | None = None,
     partial_source_audio_only: bool = False,
     generated_at: str | None = None,
-):
+) -> GenerationQueuePlan:
     """Plan a queue from typed shared artifacts without reading producer JSON."""
     if not isinstance(document, StoryIndexDocument):
         raise GenerationQueueBuildError("story_index must be a StoryIndexDocument")
@@ -186,10 +187,10 @@ def plan_generation_queue(
         raise GenerationQueueBuildError(
             f"Unsupported delivery_policy: {delivery_policy!r}"
         )
-    annotation_origins = Counter()
-    policy_generated_items = []
+    annotation_origins: Counter[str] = Counter()
+    policy_generated_items: list[dict[str, object]] = []
 
-    items = []
+    items: list[dict[str, object]] = []
     skipped_available = 0
     skipped_unspeakable = 0
     ready = 0
@@ -359,15 +360,15 @@ def plan_generation_queue(
 
 
 def inspect_generation_queue(
-    story_index_path,
-    voice_manifest_path,
+    story_index_path: str | Path,
+    voice_manifest_path: str | Path,
     *,
     collection_ids: tuple[str, ...] | None = None,
     unknown_action: str | None = None,
     delivery_policy: str | None = None,
     partial_source_audio_only: bool = False,
     generated_at: str | None = None,
-):
+) -> GenerationQueuePlan:
     """Load public shared artifacts and return a non-mutating queue plan."""
     story_index_path = Path(story_index_path).expanduser().resolve()
     voice_manifest_path = Path(voice_manifest_path).expanduser().resolve()
@@ -393,14 +394,20 @@ def inspect_generation_queue(
     )
 
 
-def publish_generation_queue(plan: GenerationQueuePlan, output_path):
+def publish_generation_queue(
+    plan: GenerationQueuePlan, output_path: str | Path
+) -> Path:
     """Atomically publish a previously inspected queue plan."""
     if not isinstance(plan, GenerationQueuePlan):
         raise GenerationQueueBuildError("plan must be a GenerationQueuePlan")
-    return write_voice_generation_queue(output_path, plan.metadata, plan.items)
+    output = Path(output_path).expanduser().resolve()
+    write_voice_generation_queue(output, plan.metadata, plan.items)
+    return output
 
 
-def _selected_collection_ids(document, collection_ids):
+def _selected_collection_ids(
+    document: StoryIndexDocument, collection_ids: tuple[str, ...] | None
+) -> frozenset[str] | None:
     if collection_ids is None:
         return None
     normalized = tuple(dict.fromkeys(str(value).strip() for value in collection_ids))
@@ -411,15 +418,19 @@ def _selected_collection_ids(document, collection_ids):
     return frozenset(normalized)
 
 
-def _voice_index(entries):
-    result = {}
+def _voice_index(
+    entries: tuple[VoiceManifestEntry, ...],
+) -> dict[str, VoiceManifestEntry]:
+    result: dict[str, VoiceManifestEntry] = {}
     for entry in entries:
         for name in (entry.character, *entry.aliases):
             result[normalize_character_name(name)] = entry
     return result
 
 
-def _has_local_reference(entry, manifest_directory):
+def _has_local_reference(
+    entry: VoiceManifestEntry | None, manifest_directory: str | Path
+) -> bool:
     if entry is None or not entry.references:
         return False
     candidates = []
@@ -458,11 +469,11 @@ def _has_local_reference(entry, manifest_directory):
 
 def _queue_item(
     record: StoryIndexRecord,
-    voice_character,
-    action,
+    voice_character: str,
+    action: str,
     *,
-    audio_event_plan=None,
-):
+    audio_event_plan: dict[str, object] | None = None,
+) -> dict[str, object]:
     if AUDIO_EVENT_PLAN_FIELD in record.producer_fields:
         raise GenerationQueueBuildError(
             f"Story line {record.line_id!r} collides with reserved audio-event plan"
@@ -503,11 +514,11 @@ def _queue_item(
     return item
 
 
-def _counts(values):
+def _counts(values: Iterable[object]) -> dict[str, int]:
     return dict(sorted(Counter(str(value) for value in values).items()))
 
 
-def _json_sha256(value):
+def _json_sha256(value: object) -> str:
     payload = json.dumps(
         value,
         ensure_ascii=False,
