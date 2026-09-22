@@ -42,6 +42,7 @@ from vntts.game_narrator import (  # noqa: E402
     narrator_preview_plan,
 )
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
+from vntts.player_session import PlayerSessionOwner  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionPreviewService  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
@@ -1756,13 +1757,14 @@ class GameNarratorTest(unittest.TestCase):
 
     def test_narrator_reload_stops_old_worker_and_honors_cancellation(self):
         shell = Mock()
-        shell._lifecycle_is_current.return_value = True
+        shell.session_owner = PlayerSessionOwner(shell.controller)
         shell.controller.start.return_value = True
         candidate = AppSettings()
         event = Event()
+        generation = shell.session_owner.begin(event)
         self.assertEqual(
             ConfigurationApplyMixin._apply_configuration(
-                shell, candidate, 1, event, True
+                shell, candidate, generation, event, True
             ),
             (True, True),
         )
@@ -1774,7 +1776,7 @@ class GameNarratorTest(unittest.TestCase):
         event.set()
         self.assertEqual(
             ConfigurationApplyMixin._apply_configuration(
-                shell, candidate, 1, event, True
+                shell, candidate, generation, event, True
             ),
             (False, False),
         )
