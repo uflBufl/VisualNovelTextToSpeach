@@ -301,6 +301,7 @@ files = [
     "vntts/voice_default_impact.py",
     "vntts/voices.py",
     "vntts/voice_preview_ui.py",
+    "vntts/window_capture.py",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true

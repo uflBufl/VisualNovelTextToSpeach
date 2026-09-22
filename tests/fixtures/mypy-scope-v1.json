@@ -170,6 +170,7 @@
     "vntts/versioned_json.py",
     "vntts/voice_default_impact.py",
     "vntts/voice_preview_ui.py",
-    "vntts/voices.py"
+    "vntts/voices.py",
+    "vntts/window_capture.py"
   ]
 }
