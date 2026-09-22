@@ -1,6 +1,7 @@
 import hashlib
 import json
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -285,6 +286,24 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 for relative in voice["references"]:
                     probe_pcm16_mono_wav(result.directory / relative)
             self.assertNotIn("not-selected", result.story_index.read_text())
+
+    def test_materializes_narrator_by_source_id_not_friendly_label(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs, voice_plan, _manifest = self.fixture(root)
+            voice_plan = replace(
+                voice_plan,
+                groups=tuple(
+                    replace(group, source_character="Friendly narrator label")
+                    if group.route == "narrator"
+                    else group
+                    for group in voice_plan.groups
+                ),
+            )
+
+            result = PregenerationInputStore(jobs).materialize(job, voice_plan)
+
+            self.assertEqual(result.narrator_fallback_roles, ("Hotelier",))
 
     def test_materialization_records_build_and_reuse_phase_timings(self):
         with TemporaryDirectory() as temporary_directory:

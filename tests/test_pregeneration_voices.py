@@ -827,7 +827,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 ("play_rhiannon_1",),
             )
 
-    def test_player_import_accepts_empty_optional_source_voice_ids(self):
+    def test_player_import_accepts_empty_optional_source_links(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
@@ -838,6 +838,7 @@ class VoicePlanStoreTest(unittest.TestCase):
             document = json.loads(manifest.read_text(encoding="utf-8"))
             for variant in document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"]:
                 variant["source_voice_ids"] = []
+                variant["source_line_ids"] = []
             manifest.write_text(json.dumps(document), encoding="utf-8")
 
             plan = VoicePlanStore(jobs).create(
@@ -849,6 +850,8 @@ class VoicePlanStoreTest(unittest.TestCase):
             rhiannon = next(
                 group for group in plan.groups if group.character == "Rhiannon"
             )
+            self.assertEqual(rhiannon.candidates[0].source_voice_ids, ())
+            self.assertEqual(rhiannon.candidates[0].source_line_ids, ())
             self.assertEqual(len(rhiannon.candidate_inventory), 2)
             self.assertEqual(rhiannon.candidate_inventory[0].source_voice_ids, ())
 

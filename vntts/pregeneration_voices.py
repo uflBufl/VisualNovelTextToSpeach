@@ -1266,7 +1266,10 @@ def _validate_player_voice_variant(variant, index, version):
             "source_voice_ids",
             _canonical_texts(variant.get("source_voice_ids"), allow_empty=True),
         ),
-        ("source_line_ids", _canonical_texts(variant.get("source_line_ids"))),
+        (
+            "source_line_ids",
+            _canonical_texts(variant.get("source_line_ids"), allow_empty=True),
+        ),
         (
             "source_event_ids",
             _canonical_nonnegative_ints(source_event_ids),
