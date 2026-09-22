@@ -13,7 +13,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QPixmap  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QFormLayout,
+    QSizePolicy,
+)
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 
 from tests.test_authoring_pcm_playback import FakeAudioModule  # noqa: E402
@@ -115,7 +120,6 @@ class GameNarratorTest(unittest.TestCase):
                 try:
                     self.application.processEvents()
                     self.run_task(pool)
-                    dialog.prepare_button.click()
                     self.run_task(pool)
                     for _ in range(2):
                         dialog.original_button.click()
@@ -388,6 +392,9 @@ class GameNarratorTest(unittest.TestCase):
             self.application.processEvents()
             dialog.role.setCurrentText("Hotelier")
             self.assertEqual(dialog.source.currentData(), "catalog")
+            self.assertTrue(dialog.catalog_original_button.isVisibleTo(dialog))
+            self.assertFalse(dialog.original_button.isVisibleTo(dialog))
+            self.assertTrue(dialog.stop_button.isHidden())
             try:
                 dialog.preview_button.click()
                 self.run_task(pool)
@@ -395,11 +402,16 @@ class GameNarratorTest(unittest.TestCase):
                 player.playbackStateChanged.connect.call_args.args[0](
                     QtPcmPlayer.PlaybackState.PlayingState
                 )
+                self.assertFalse(dialog.stop_button.isHidden())
                 self.assertIn("Playing generated preview", dialog.status.text())
                 self.assertIn("CPU test worker", dialog.runtime.text())
                 source = player.setSource.call_args.args[0]
                 self.assertTrue(Path(source.toLocalFile()).is_file())
                 self.assertEqual(len(backend.requests), 1)
+                player.mediaStatusChanged.connect.call_args.args[0](
+                    QtPcmPlayer.MediaStatus.EndOfMedia
+                )
+                self.assertTrue(dialog.stop_button.isHidden())
 
                 dialog.preview_button.click()
                 self.run_task(pool)
@@ -493,9 +505,6 @@ class GameNarratorTest(unittest.TestCase):
                 dialog.role.setCurrentText("Hotelier")
                 dialog.source.setCurrentIndex(dialog.source.findData("preset"))
                 dialog.presets.setCurrentIndex(dialog.presets.findData("preset:marius"))
-                dialog.announcements.setCurrentIndex(
-                    dialog.announcements.findData("all-speakers")
-                )
                 self.assertIsNone(dialog.result_settings)
                 (dialog.save_button if save else dialog.cancel_button).click()
                 self.run_task(pool)
@@ -515,7 +524,9 @@ class GameNarratorTest(unittest.TestCase):
                 importer.narrator_characters.assert_not_called()
                 previews.generate.assert_not_called()
 
-    def test_character_policies_restore_recording_priority_and_save_announcements(self):
+    def test_character_policies_restore_recording_priority_and_global_announcements(
+        self,
+    ):
         for policy in ("automatic", "narrator"):
             with self.subTest(policy=policy):
                 self.select_preset()
@@ -532,8 +543,11 @@ class GameNarratorTest(unittest.TestCase):
                 self.application.processEvents()
                 dialog.role.setCurrentText("Hotelier")
                 dialog.source.setCurrentIndex(dialog.source.findData(policy))
-                dialog.announcements.setCurrentIndex(
-                    dialog.announcements.findData("narrator-fallback-roles")
+                self.assertFalse(
+                    any(
+                        choice.accessibleName() == "Announce speaker names"
+                        for choice in dialog.findChildren(type(dialog.role))
+                    )
                 )
                 dialog.save_button.click()
                 self.run_task(pool)
@@ -544,9 +558,10 @@ class GameNarratorTest(unittest.TestCase):
                 else:
                     self.assertEqual(binding.route, "narrator")
                 self.assertEqual(
-                    saved.effective_speaker_announcement_mode, "narrator-fallback-roles"
+                    saved.effective_speaker_announcement_mode,
+                    original.effective_speaker_announcement_mode,
                 )
-                self.assertFalse(saved.announce_speaker_changes)
+                self.assertTrue(saved.announce_speaker_changes)
                 self.assertTrue(original.announce_speaker_changes)
 
     def test_imported_character_save_captures_role_and_preserves_narrator_references(
@@ -800,7 +815,7 @@ class GameNarratorTest(unittest.TestCase):
         self.assertFalse(dialog.preview_button.isEnabled())
         self.assertFalse(dialog.save_button.isEnabled())
         self.assertIn("Choose a game voice", dialog.engine_guidance.text())
-        self.assertTrue(dialog.model_choice.isHidden())
+        self.assertFalse(dialog.model_choice.isHidden())
         dialog.model_details.click()
         dialog.model_choice.setText("custom-moss-model")
         self.assertEqual(
@@ -837,14 +852,96 @@ class GameNarratorTest(unittest.TestCase):
             def row(widget):
                 return dialog.form.getWidgetPosition(widget)[0]
 
+            def layout_row(layout):
+                return dialog.form.getLayoutPosition(layout)[0]
+
             self.assertLess(row(dialog.role), row(dialog.source))
             self.assertLess(row(dialog.source), row(dialog.game_controls))
-            self.assertLess(row(dialog.game_controls), row(dialog.text))
-            self.assertLess(row(dialog.text), row(dialog.engine_choice))
+            self.assertLess(row(dialog.game_controls), layout_row(dialog.preview_row))
+            self.assertLess(layout_row(dialog.preview_row), row(dialog.engine_choice))
             self.assertLess(row(dialog.engine_choice), row(dialog.model_choice))
         finally:
             dialog.reject()
             self.run_task(pool)
+
+    def test_voice_picker_fields_grow_and_buttons_stay_compact(self):
+        pool = ManualThreadPool()
+        dialog = GameNarratorDialog(
+            AppSettings(),
+            importer=Mock(),
+            preview_service=Mock(),
+            thread_pool=pool,
+            player=Mock(),
+        )
+        try:
+            self.assertGreaterEqual(dialog.width(), 900)
+            growth = QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+            self.assertEqual(dialog.form.fieldGrowthPolicy(), growth)
+            self.assertEqual(dialog.game_controls.layout().fieldGrowthPolicy(), growth)
+            for choice in dialog.findChildren(type(dialog.role)):
+                self.assertEqual(
+                    choice.sizePolicy().horizontalPolicy(),
+                    QSizePolicy.Policy.Expanding,
+                )
+            for button in (
+                dialog.folder_button,
+                dialog.discover_button,
+                dialog.original_button,
+                dialog.catalog_original_button,
+                dialog.preview_button,
+                dialog.check_impact,
+                dialog.select_affected,
+            ):
+                self.assertEqual(
+                    button.sizePolicy().horizontalPolicy(),
+                    QSizePolicy.Policy.Fixed,
+                )
+            dialog.source.setCurrentIndex(dialog.source.findData("preset"))
+            dialog.resize(900, 560)
+            dialog.show()
+            self.application.processEvents()
+            self.assertTrue(dialog.text.tabChangesFocus())
+            self.assertEqual(dialog.copy_details.text(), "Copy diagnostics")
+            self.assertTrue(dialog.stop_button.sizePolicy().retainSizeWhenHidden())
+            scroll_top = dialog.scroll.geometry().top()
+            dialog.stop_button.show()
+            self.application.processEvents()
+            self.assertEqual(dialog.scroll.geometry().top(), scroll_top)
+            dialog.stop_button.hide()
+            dialog.source.setFocus()
+            self.assertTrue(dialog.focusNextChild())
+            self.assertIs(self.application.focusWidget(), dialog.presets)
+            dialog.catalog_choice.addItem("Imported voice", "character:imported")
+            dialog.source.setCurrentIndex(dialog.source.findData("catalog"))
+            self.application.processEvents()
+            dialog.source.setFocus()
+            self.assertTrue(dialog.focusNextChild())
+            self.assertIs(self.application.focusWidget(), dialog.catalog_choice)
+            self.assertTrue(dialog.focusNextChild())
+            self.assertIs(
+                self.application.focusWidget(), dialog.catalog_original_button
+            )
+            dialog.source.setCurrentIndex(dialog.source.findData("game"))
+            self.application.processEvents()
+            self.assertTrue(dialog.folder_button.isVisible())
+            self.assertTrue(dialog.discover_button.isVisible())
+            for choice in (dialog.role, dialog.characters):
+                self.assertGreater(choice.width(), choice.sizeHint().width())
+            for button in (
+                dialog.copy_details,
+                dialog.original_button,
+                dialog.preview_button,
+                dialog.save_button,
+            ):
+                if button.isVisible():
+                    self.assertEqual(button.width(), button.sizeHint().width())
+            self.assertGreaterEqual(
+                dialog.cancel_button.width(), dialog.cancel_button.sizeHint().width()
+            )
+        finally:
+            dialog.reject()
+            while pool.tasks:
+                self.run_task(pool)
 
     def test_game_engine_model_and_consent_are_staged_for_preview_and_save(self):
         with TemporaryDirectory() as directory:
@@ -873,7 +970,6 @@ class GameNarratorTest(unittest.TestCase):
             )
             self.assertTrue(dialog.model_choice.isHidden())
             self.run_task(pool)
-            dialog.prepare_button.click()
             self.run_task(pool)
             self.run_task(pool)
             dialog.engine_choice.setCurrentIndex(
@@ -1244,7 +1340,6 @@ class GameNarratorTest(unittest.TestCase):
             if not pool.tasks:
                 dialog.discover_button.click()
             self.run_task(pool)
-            dialog.prepare_button.click()
             self.run_task(pool)
             dialog.references.setCurrentIndex(4)
             dialog.original_button.click()
@@ -1400,7 +1495,6 @@ class GameNarratorTest(unittest.TestCase):
             self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
-            dialog.prepare_button.click()
             self.run_task(pool)
             self.assertEqual(dialog.references.count(), 5)
             dialog.references.setCurrentIndex(4)
@@ -1449,7 +1543,6 @@ class GameNarratorTest(unittest.TestCase):
             dialog.settingsChanged.connect(changed.append)
             self.application.processEvents()
             self.run_task(pool)
-            dialog.prepare_button.click()
             self.run_task(pool)
 
             self.assertEqual(changed, [])
@@ -1491,7 +1584,6 @@ class GameNarratorTest(unittest.TestCase):
             self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
-            dialog.prepare_button.click()
             self.run_task(pool)
             dialog.original_button.click()
             with patch(
@@ -1523,12 +1615,10 @@ class GameNarratorTest(unittest.TestCase):
                 )
                 self.application.processEvents()
                 self.run_task(pool)
-                dialog.prepare_button.click()
                 self.run_task(pool)
                 self.assertEqual(dialog._operation, "warm")
                 self.assertTrue(dialog.references.isEnabled())
                 self.assertTrue(dialog.original_button.isEnabled())
-                self.assertFalse(dialog.prepare_button.isEnabled())
                 if action != "no play":
                     dialog.original_button.click()
                     self.assertIn("Playback will start", dialog.status.text())
@@ -1572,7 +1662,6 @@ class GameNarratorTest(unittest.TestCase):
             self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
-            dialog.prepare_button.click()
             self.run_task(pool)
             with patch(
                 "vntts.game_narrator_ui.confirm_decoder_setup", return_value=False
@@ -1600,7 +1689,6 @@ class GameNarratorTest(unittest.TestCase):
             self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
-            dialog.prepare_button.click()
             self.run_task(pool)
             self.run_task(pool)
             dialog.references.setCurrentIndex(4)
@@ -1631,7 +1719,6 @@ class GameNarratorTest(unittest.TestCase):
             self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
-            dialog.prepare_button.click()
             self.run_task(pool)
             dialog.references.setCurrentIndex(4)
             dialog.save_button.click()
@@ -1674,7 +1761,6 @@ class GameNarratorTest(unittest.TestCase):
             self.assertFalse(dialog.controls.isEnabled())
             self.assertFalse(dialog.progress.isHidden())
             self.run_task(pool)
-            dialog.prepare_button.click()
             self.assertFalse(dialog.controls.isEnabled())
             dialog.decoderProgress.emit("Downloading game-audio decoder: 1.0 MB...")
             self.assertIn("Downloading", dialog.status.text())
@@ -1739,7 +1825,6 @@ class GameNarratorTest(unittest.TestCase):
             self.choose_game_source(dialog)
             self.application.processEvents()
             self.run_task(pool)
-            dialog.prepare_button.click()
             self.run_task(pool)
             self.assertIn("MOSS", dialog.engine.text())
             self.assertTrue(dialog.terms.isHidden())
