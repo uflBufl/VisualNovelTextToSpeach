@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
+from tests.symlink_support import symlink_or_skip
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.runtime_installation import (
     _nvidia_driver_status,
@@ -399,6 +400,29 @@ class RuntimeInstallationTest(unittest.TestCase):
             updated = ensure_speech_runtime("pocket-tts")
             self.assertNotEqual(paths[0], updated[0])
             self.assertFalse(paths[0].is_dir())
+
+    def test_legacy_runtime_alias_outside_managed_storage_is_rejected(self):
+        from vntts_artifacts.atomic_io import atomic_write_json
+
+        location = managed_runtime_location("pocket-tts")
+        location.mkdir(parents=True)
+        outside = self.root / "outside-runtime"
+        outside.mkdir()
+        symlink_or_skip(
+            location / "environment",
+            outside,
+            target_is_directory=True,
+        )
+        atomic_write_json(
+            location / "verified.json",
+            {
+                "schema": "vntts.speech-runtime-installation-v1",
+                "backend": "pocket-tts",
+                "recipe": location.name,
+            },
+        )
+
+        self.assertIsNone(find_managed_speech_runtime("pocket-tts"))
 
     def test_failed_probe_is_not_discovered_and_retry_can_finish(self):
         with (

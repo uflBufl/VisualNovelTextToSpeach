@@ -65,7 +65,21 @@ def find_managed_speech_runtime(backend: str) -> Path | None:
         and report.get("recipe") == location.name
     ):
         if report["schema"] == "vntts.speech-runtime-installation-v1":
-            return location / "environment"
+            runtime = location / "environment"
+            return (
+                runtime
+                if runtime.is_dir()
+                and all(
+                    not path.is_symlink() and not path.is_junction()
+                    for path in (
+                        location.parent.parent,
+                        location.parent,
+                        location,
+                        runtime,
+                    )
+                )
+                else None
+            )
         from vntts.runtime_ownership import owned_generation
 
         generation = report.get("generation")
