@@ -455,7 +455,13 @@ class PregenerationSetupTest(unittest.TestCase):
                     }
                 ],
             )
-            with patch("vntts.pregeneration_setup.inspect_story_index") as inspect:
+            with (
+                patch("vntts.pregeneration_setup.inspect_story_index") as inspect,
+                patch(
+                    "vntts.pregeneration_setup.get_local_data_directory",
+                    return_value=path.parent / "unused-app-data",
+                ),
+            ):
                 discovery = discover_game_content(
                     AppSettings(story_index=str(path)),
                     environment={"R1999_EXTRACTOR_DATA": str(path.parent / "unused")},
