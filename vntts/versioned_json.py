@@ -10,6 +10,7 @@ from typing import TypeVar
 from vntts_artifacts.atomic_io import atomic_write_json
 
 Document = TypeVar("Document")
+_DOCUMENT_READ_LIMIT = 64 * 1024 * 1024
 
 
 def read_versioned_json(
@@ -22,7 +23,11 @@ def read_versioned_json(
 ) -> dict[str, object]:
     """Read one JSON object and enforce its document compatibility policy."""
     path = Path(path)
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    with path.open("rb") as source:
+        raw = source.read(_DOCUMENT_READ_LIMIT + 1)
+    if len(raw) > _DOCUMENT_READ_LIMIT:
+        raise ValueError(f"{document_name} exceeds the size limit")
+    payload = json.loads(raw)
     if not isinstance(payload, dict):
         raise ValueError(f"{document_name} root must be an object")
     if "schema_version" not in payload and allow_unversioned:

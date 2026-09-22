@@ -94,6 +94,29 @@ class VersionedJsonTest(unittest.TestCase):
         self.assertEqual(results, ["fallback", "fallback"])
         self.assertEqual(len(warnings), 2)
 
+    def test_loader_bounds_document_read_after_size_changes(self):
+        warnings = []
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "document.json"
+            path.write_text(
+                json.dumps({"schema_version": 1, "value": "x" * 256}),
+                encoding="utf-8",
+            )
+            with patch(
+                "vntts.versioned_json._DOCUMENT_READ_LIMIT", 128, create=True
+            ):
+                result = load_versioned_json(
+                    path,
+                    schema_version=1,
+                    document_name="test document",
+                    decode=lambda payload: payload["value"],
+                    fallback=lambda: "fallback",
+                    warn=warnings.append,
+                )
+
+        self.assertEqual(result, "fallback")
+        self.assertIn("size limit", warnings[0])
+
     def test_atomic_writer_keeps_existing_document_when_publication_fails(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "document.json"
