@@ -134,6 +134,7 @@ files = [
     "vntts/application_directories.py",
     "vntts/audio_output.py",
     "vntts/auto_advance_policy.py",
+    "vntts/chapter_voice_preload.py",
     "vntts/authoring/__init__.py",
     "vntts/authoring/advisory_lock.py",
     "vntts/authoring/audio_event_composition.py",

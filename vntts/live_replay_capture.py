@@ -37,13 +37,26 @@ PathInput = str | os.PathLike[str]
 
 
 class StoryLine(Protocol):
-    line_id: str | None
-    chapter: str
-    speaker: str
-    text: str
-    source_audio_status: str
-    source_audio_id: str | None
-    source_audio_duration_seconds: float | None
+    @property
+    def line_id(self) -> str | None: ...
+
+    @property
+    def chapter(self) -> str: ...
+
+    @property
+    def speaker(self) -> str: ...
+
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def source_audio_status(self) -> str: ...
+
+    @property
+    def source_audio_id(self) -> str | None: ...
+
+    @property
+    def source_audio_duration_seconds(self) -> float | None: ...
 
 
 class StoryResolver(Protocol):

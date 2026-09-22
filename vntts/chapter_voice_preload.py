@@ -3,13 +3,16 @@ import math
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from hashlib import sha256
 from os.path import commonprefix
 from pathlib import Path
+from typing import TypeAlias
 
 from vntts_artifacts.story_index import (
+    StoryIndexDocument,
     StoryIndexError,
     load_story_index,
     load_story_index_document,
@@ -21,16 +24,18 @@ from vntts.source_audio_semantics import (
 )
 
 VERIFIED_SOURCE_AUDIO_COMPLETION = "verified-media-duration-seconds"
+SourceAudioExtension: TypeAlias = tuple[str, str | None, float | None, str, bool]
+ResolutionDiagnostics: TypeAlias = dict[str, int | float | str]
 
 
-def _normalize(value):
+def _normalize(value: object) -> str:
     # OCR engines disagree on whether an apostrophe is straight, curly, or a
     # word boundary. Treat every form as a boundary so captured ``it's`` and
     # ``it’s`` compare identically.
     return " ".join(re.findall(r"\w+", str(value).casefold()))
 
 
-def _normalize_exact_text(value):
+def _normalize_exact_text(value: object) -> str:
     return " ".join(unicodedata.normalize("NFKC", str(value)).split()).casefold()
 
 
@@ -60,18 +65,26 @@ class ChapterMatch:
 class ChapterVoicePreloader:
     """Infer the current story chapter and rank voices likely to speak next."""
 
-    def __init__(self, dialogue=(), *, lookahead_rows=80):
+    def __init__(
+        self, dialogue: Iterable[ChapterDialogue] = (), *, lookahead_rows: int = 80
+    ) -> None:
         self.dialogue = tuple(dialogue)
-        self.last_resolution_diagnostics = {}
+        self.last_resolution_diagnostics: ResolutionDiagnostics = {}
         self.lookahead_rows = max(1, int(lookahead_rows))
-        self.by_speaker = defaultdict(list)
-        self.by_line_id = {}
-        self.by_chapter = defaultdict(list)
-        self.by_chapter_speaker = defaultdict(list)
-        self.by_exact_dialogue = defaultdict(list)
-        self.by_normalized_dialogue = defaultdict(list)
-        self.normalized_text = {}
-        self.speaker_names = {}
+        self.by_speaker: defaultdict[str, list[ChapterDialogue]] = defaultdict(list)
+        self.by_line_id: dict[str, ChapterDialogue] = {}
+        self.by_chapter: defaultdict[str, list[ChapterDialogue]] = defaultdict(list)
+        self.by_chapter_speaker: defaultdict[tuple[str, str], list[ChapterDialogue]] = (
+            defaultdict(list)
+        )
+        self.by_exact_dialogue: defaultdict[
+            tuple[str, str], list[ChapterDialogue]
+        ] = defaultdict(list)
+        self.by_normalized_dialogue: defaultdict[
+            tuple[str, str], list[ChapterDialogue]
+        ] = defaultdict(list)
+        self.normalized_text: dict[ChapterDialogue, str] = {}
+        self.speaker_names: dict[str, str] = {}
         for row in self.dialogue:
             if row.line_id:
                 self.by_line_id[row.line_id] = row
@@ -87,27 +100,34 @@ class ChapterVoicePreloader:
             self.by_normalized_dialogue[(speaker_key, _normalize(row.text))].append(row)
         for rows in self.by_chapter.values():
             rows.sort(key=lambda row: row.sequence)
-        self.current_match = None
+        self.current_match: ChapterMatch | None = None
 
     @classmethod
-    def from_document(cls, document, *, lookahead_rows=80):
-        rows = []
+    def from_document(
+        cls, document: Mapping[str, object], *, lookahead_rows: int = 80
+    ) -> ChapterVoicePreloader:
+        rows: list[ChapterDialogue] = []
         completion_contract = (
             str(document.get("source_audio_completion") or "").strip()
-            if isinstance(document, dict)
-            else ""
         )
-        for entry in document.get("dialogue", ()) if isinstance(document, dict) else ():
-            if not isinstance(entry, dict):
+        dialogue = document.get("dialogue", ())
+        for raw_entry in dialogue if isinstance(dialogue, Sequence) else ():
+            if not isinstance(raw_entry, Mapping):
                 continue
+            entry = _string_mapping(raw_entry)
             chapter = str(entry.get("chapter", "")).strip()
             speaker = str(entry.get("speaker_name") or "").strip()
             text = str(entry.get("text") or "").strip()
             if not chapter or not speaker or not text:
                 continue
+            sequence_value = entry.get("sequence", 0)
             try:
-                sequence = int(entry.get("sequence", 0))
-            except TypeError, ValueError:
+                sequence = (
+                    int(sequence_value)
+                    if isinstance(sequence_value, int | float | str | bytes | bytearray)
+                    else 0
+                )
+            except ValueError:
                 sequence = 0
             line_id = str(entry.get("line_id") or "").strip() or None
             text_hash = str(entry.get("text_sha256") or "").strip() or None
@@ -145,9 +165,12 @@ class ChapterVoicePreloader:
         return cls(rows, lookahead_rows=lookahead_rows)
 
     @classmethod
-    def load_optional(cls, path=None, *, lookahead_rows=80):
+    def load_optional(
+        cls, path: str | Path | None = None, *, lookahead_rows: int = 80
+    ) -> ChapterVoicePreloader:
         if not path:
             return cls(lookahead_rows=lookahead_rows)
+        document: StoryIndexDocument | None
         try:
             document = load_story_index_document(path)
         except StoryIndexError, ValueError:
@@ -158,13 +181,18 @@ class ChapterVoicePreloader:
                 return cls(lookahead_rows=lookahead_rows)
         else:
             metadata, indexed_lines = document.metadata, document.records
+        lines: Sequence[object] = indexed_lines
         needs_source_audio_bridge = bool(
-            indexed_lines and not hasattr(indexed_lines[0], "source_audio_status")
+            lines and not hasattr(lines[0], "source_audio_status")
         )
         completion_contract = str(metadata.get("source_audio_completion") or "").strip()
         story_titles = {
-            collection["collection_id"].strip(): collection["title"].strip()
-            for collection in metadata.get("collections") or ()
+            str(collection.get("collection_id") or "").strip(): str(
+                collection.get("title") or ""
+            ).strip()
+            for raw_collection in metadata.get("collections") or ()
+            if isinstance(raw_collection, Mapping)
+            for collection in (_string_mapping(raw_collection),)
         }
         completion_declared = completion_contract == VERIFIED_SOURCE_AUDIO_COMPLETION
         authoritative_line_ids = _validated_source_audio_line_ids(path, document)
@@ -175,7 +203,7 @@ class ChapterVoicePreloader:
                     completion_contract=completion_contract,
                     semantic_authorized=line.line_id in authoritative_line_ids,
                 )
-                for line in indexed_lines
+                for line in document.records
             }
         elif needs_source_audio_bridge or completion_declared:
             source_audio_by_line_id = _load_source_audio_extensions(
@@ -185,48 +213,40 @@ class ChapterVoicePreloader:
         else:
             source_audio_by_line_id = {}
 
-        def source_audio(line):
+        def source_audio(line: object) -> SourceAudioExtension:
             return source_audio_by_line_id.get(
-                line.line_id,
+                _line_text(line, "line_id"),
                 ("unknown", None, None, "unknown", False),
             )
 
         rows = (
             ChapterDialogue(
-                line.line_id,
-                line.chapter,
-                line.sequence,
-                line.speaker,
-                line.text,
-                line.text_sha256,
-                getattr(line, "source_audio_status", source_audio(line)[0]),
-                getattr(line, "source_audio_id", source_audio(line)[1]),
-                (
-                    source_audio(line)[2]
-                    if completion_declared
-                    else getattr(
-                        line,
-                        "source_audio_duration_seconds",
-                        source_audio(line)[2],
-                    )
-                ),
+                _line_optional_text(line, "line_id"),
+                _line_text(line, "chapter"),
+                _line_integer(line, "sequence"),
+                _line_text(line, "speaker"),
+                _line_text(line, "text"),
+                _line_optional_text(line, "text_sha256"),
+                _line_text(line, "source_audio_status", source_audio(line)[0]),
+                _line_optional_text(line, "source_audio_id", source_audio(line)[1]),
+                source_audio(line)[2],
                 source_audio(line)[3],
-                story_titles.get(getattr(line, "collection_id", None)),
+                story_titles.get(_line_text(line, "collection_id")),
                 source_audio(line)[4],
             )
-            for line in indexed_lines
+            for line in lines
         )
         return cls(rows, lookahead_rows=lookahead_rows)
 
-    def resolve_exact(self, character, text):
+    def resolve_exact(self, character: object, text: object) -> ChapterDialogue | None:
         """Resolve an OCR line without fuzzy text substitution."""
         line, _result = self.resolve_exact_with_result(character, text)
         return line
 
-    def line_for_id(self, line_id):
+    def line_for_id(self, line_id: object) -> ChapterDialogue | None:
         return self.by_line_id.get(str(line_id))
 
-    def story_title_for(self, chapter, line_id=None):
+    def story_title_for(self, chapter: str, line_id: object = None) -> str | None:
         line = self.line_for_id(line_id)
         if line is not None:
             return line.story_title
@@ -235,7 +255,7 @@ class ChapterVoicePreloader:
         titles = {row.story_title for row in self.by_chapter.get(chapter, ())}
         return next(iter(titles)) if len(titles) == 1 else None
 
-    def select_line_id(self, line_id):
+    def select_line_id(self, line_id: object) -> ChapterDialogue | None:
         """Select one checksum-bound canonical line without text re-resolution."""
         line = self.line_for_id(line_id)
         if line is None or not line.line_id or not line.text_sha256:
@@ -243,7 +263,9 @@ class ChapterVoicePreloader:
         self.current_match = ChapterMatch(line.chapter, line.sequence, 1.0)
         return line
 
-    def resolve_exact_with_result(self, character, text):
+    def resolve_exact_with_result(
+        self, character: object, text: object
+    ) -> tuple[ChapterDialogue | None, str]:
         """Return an exact line plus an explicit match result for diagnostics."""
         speaker_key = _normalize(character)
         all_candidates = self.by_exact_dialogue.get(
@@ -285,7 +307,9 @@ class ChapterVoicePreloader:
         self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
         return selected, match_result
 
-    def resolve_exact_among(self, character, text, line_ids):
+    def resolve_exact_among(
+        self, character: object, text: object, line_ids: Iterable[object]
+    ) -> tuple[ChapterDialogue | None, str]:
         """Resolve one OCR observation only among explicit cursor candidates."""
         allowed = {str(line_id) for line_id in line_ids if line_id}
         if not allowed:
@@ -329,12 +353,12 @@ class ChapterVoicePreloader:
 
     def resolve_bounded_among(
         self,
-        character,
-        text,
-        line_ids,
+        character: object,
+        text: object,
+        line_ids: Iterable[object],
         *,
-        allow_speaker_evidence=True,
-    ):
+        allow_speaker_evidence: bool = True,
+    ) -> tuple[ChapterDialogue | None, str]:
         """Resolve OCR drift only among explicit cursor-authorized line IDs."""
         allowed = tuple(dict.fromkeys(str(line_id) for line_id in line_ids if line_id))
         allowed_set = set(allowed)
@@ -382,19 +406,19 @@ class ChapterVoicePreloader:
                     "no-expected-candidates"
                 )
             return line, match_result
-        ranked = []
-        best_evidence = None
+        ranked: list[tuple[float, str, ChapterDialogue, str]] = []
+        best_evidence: tuple[dict[str, float], str] | None = None
         for line_id in allowed:
             candidate = self.by_line_id.get(line_id)
             if candidate is None or not candidate.text_sha256:
                 continue
-            evidence = {}
+            evidence: dict[str, float] = {}
             match = _bounded_text_match(text, candidate.text, evidence=evidence)
             if evidence and (
                 best_evidence is None
-                or evidence["similarity"] > best_evidence["similarity"]
+                or evidence["similarity"] > best_evidence[0]["similarity"]
             ):
-                best_evidence = {**evidence, "line_id": line_id}
+                best_evidence = (evidence, line_id)
             if match is None and allow_speaker_evidence:
                 match = _speaker_bounded_text_match(
                     character,
@@ -416,10 +440,11 @@ class ChapterVoicePreloader:
                 ranked.append((score, line_id, candidate, method))
         self.last_resolution_diagnostics["bounded_candidate_count"] = len(ranked)
         if best_evidence is not None:
+            evidence, line_id = best_evidence
             self.last_resolution_diagnostics.update(
-                best_candidate_line_id=best_evidence["line_id"],
-                best_bounded_similarity=round(best_evidence["similarity"], 4),
-                best_bounded_coverage=round(best_evidence["coverage"], 4),
+                best_candidate_line_id=line_id,
+                best_bounded_similarity=round(evidence["similarity"], 4),
+                best_bounded_coverage=round(evidence["coverage"], 4),
             )
         if not ranked:
             self.last_resolution_diagnostics.update(
@@ -442,12 +467,12 @@ class ChapterVoicePreloader:
 
     def resolve_unique_prefix(
         self,
-        character,
-        text,
+        character: object,
+        text: object,
         *,
-        minimum_characters=20,
-        candidate_filter=None,
-    ):
+        minimum_characters: int = 20,
+        candidate_filter: Callable[[ChapterDialogue], bool] | None = None,
+    ) -> ChapterDialogue | None:
         """Resolve one full indexed line from a sufficiently long OCR prefix."""
         speaker_key = _normalize(character)
         prefix = _normalize(text)
@@ -464,13 +489,15 @@ class ChapterVoicePreloader:
         self.current_match = ChapterMatch(selected.chapter, selected.sequence, 1.0)
         return selected
 
-    def resolve_unique_prefix_by_text(self, text, *, minimum_characters=20):
+    def resolve_unique_prefix_by_text(
+        self, text: object, *, minimum_characters: int = 20
+    ) -> ChapterDialogue | None:
         """Resolve one indexed line when OCR lost or corrupted its nameplate."""
         prefix = _normalize(text)
         if len(prefix) < minimum_characters:
             return None
 
-        def matches(rows):
+        def matches(rows: Iterable[ChapterDialogue]) -> list[ChapterDialogue]:
             return [
                 row
                 for row in rows
@@ -500,11 +527,11 @@ class ChapterVoicePreloader:
 
     def is_unique_incomplete_prefix(
         self,
-        character,
-        text,
+        character: object,
+        text: object,
         *,
-        minimum_characters=10,
-    ):
+        minimum_characters: int = 10,
+    ) -> bool:
         """Return whether OCR has one known line prefix but not its full text."""
         speaker_key = _normalize(character)
         prefix = _normalize(text)
@@ -519,13 +546,13 @@ class ChapterVoicePreloader:
 
     def _prefix_candidates(
         self,
-        speaker_key,
-        prefix,
+        speaker_key: str,
+        prefix: str,
         *,
-        incomplete_only=False,
-        candidate_filter=None,
-    ):
-        def matches(rows):
+        incomplete_only: bool = False,
+        candidate_filter: Callable[[ChapterDialogue], bool] | None = None,
+    ) -> list[ChapterDialogue]:
+        def matches(rows: Iterable[ChapterDialogue]) -> list[ChapterDialogue]:
             return [
                 row
                 for row in rows
@@ -547,7 +574,13 @@ class ChapterVoicePreloader:
                 return nearby
         return matches(self.by_speaker.get(speaker_key, ()))
 
-    def canonical_speaker(self, character, *, minimum_similarity=0.86, margin=0.08):
+    def canonical_speaker(
+        self,
+        character: object,
+        *,
+        minimum_similarity: float = 0.86,
+        margin: float = 0.08,
+    ) -> str:
         """Correct a unique, high-confidence OCR drift to a story speaker name."""
         original = str(character or "").strip()
         normalized = _normalize(original)
@@ -575,7 +608,9 @@ class ChapterVoicePreloader:
             return original
         return self.speaker_names[best_key]
 
-    def recommend(self, character, text, *, limit=3):
+    def recommend(
+        self, character: object, text: object, *, limit: int = 3
+    ) -> tuple[str, ...]:
         if limit <= 0 or not self.dialogue:
             return ()
         match = self._match(character, text)
@@ -608,7 +643,7 @@ class ChapterVoicePreloader:
         ranked.extend(speaker for speaker, _count in frequency.most_common())
         return tuple(ranked[:limit])
 
-    def live_voice_preflight_rows(self):
+    def live_voice_preflight_rows(self) -> tuple[ChapterDialogue, ...] | None:
         """Return the current chapter lookahead, or ``None`` before it is known."""
         if not self.dialogue:
             return ()
@@ -619,10 +654,10 @@ class ChapterVoicePreloader:
             row for row in rows if row.sequence >= self.current_match.sequence
         )[: self.lookahead_rows]
 
-    def _match(self, character, text):
+    def _match(self, character: object, text: object) -> ChapterMatch | None:
         speaker = _normalize(character)
         normalized_text = _normalize(text)
-        candidates = self.by_speaker.get(speaker, ())
+        candidates: Sequence[ChapterDialogue] = self.by_speaker.get(speaker, ())
         speaker_matched = bool(candidates)
         if not candidates:
             candidates = self.dialogue
@@ -630,7 +665,7 @@ class ChapterVoicePreloader:
         if len(normalized_text) < 8:
             chapters = {row.chapter for row in candidates}
             if speaker_matched and len(chapters) == 1:
-                row = candidates[0]
+                row = next(iter(candidates))
                 return ChapterMatch(row.chapter, row.sequence, 0.5)
             return None
 
@@ -657,7 +692,12 @@ class ChapterVoicePreloader:
         return ChapterMatch(best_row.chapter, best_row.sequence, best_score)
 
 
-def _bounded_text_match(observed, canonical, *, evidence=None):
+def _bounded_text_match(
+    observed: object,
+    canonical: object,
+    *,
+    evidence: dict[str, float] | None = None,
+) -> tuple[float, str] | None:
     canonical_text = _normalize(str(canonical).replace("_", " "))
     tokens = _normalize(str(observed).replace("_", " ")).split()
     if not canonical_text or not tokens:
@@ -694,11 +734,11 @@ def _bounded_text_match(observed, canonical, *, evidence=None):
 
 
 def _speaker_bounded_text_match(
-    observed_character,
-    observed_text,
-    canonical_speaker,
-    canonical_text,
-):
+    observed_character: object,
+    observed_text: object,
+    canonical_speaker: object,
+    canonical_text: object,
+) -> tuple[float, str] | None:
     """Match nameplate-contaminated or truncated OCR in a bounded frontier."""
     observed = _normalize(observed_text)
     canonical = _normalize(canonical_text)
@@ -751,7 +791,7 @@ def _speaker_bounded_text_match(
     return best
 
 
-def _source_audio_status(entry):
+def _source_audio_status(entry: Mapping[str, object]) -> str:
     status = str(entry.get("source_audio_status") or "").strip()
     if status:
         return status
@@ -764,7 +804,9 @@ def _source_audio_status(entry):
     }.get(str(entry.get("audio_status") or "").strip(), "unknown")
 
 
-def _source_audio_duration_seconds(entry, *, completion_contract=None):
+def _source_audio_duration_seconds(
+    entry: Mapping[str, object], *, completion_contract: str | None = None
+) -> float | None:
     value = entry.get("source_audio_duration_seconds")
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -800,12 +842,12 @@ def _source_audio_duration_seconds(entry, *, completion_contract=None):
 
 
 def _source_audio_completeness(
-    entry,
+    entry: Mapping[str, object],
     *,
-    completion_contract=None,
-    duration_seconds=None,
-    semantic_authorized=False,
-):
+    completion_contract: str | None = None,
+    duration_seconds: float | None = None,
+    semantic_authorized: bool = False,
+) -> str:
     if (
         duration_seconds is None
         or completion_contract != VERIFIED_SOURCE_AUDIO_COMPLETION
@@ -826,11 +868,11 @@ def _source_audio_completeness(
 
 
 def _source_audio_extension(
-    entry,
+    entry: Mapping[str, object],
     *,
-    completion_contract=None,
-    semantic_authorized=False,
-):
+    completion_contract: str | None = None,
+    semantic_authorized: bool = False,
+) -> SourceAudioExtension:
     source_audio_id = (
         str(entry.get("source_audio_id") or entry.get("source_voice_id") or "").strip()
         or None
@@ -854,7 +896,9 @@ def _source_audio_extension(
     )
 
 
-def _validated_source_audio_line_ids(path, document=None):
+def _validated_source_audio_line_ids(
+    path: str | Path, document: StoryIndexDocument | None = None
+) -> frozenset[str]:
     if document is None:
         return frozenset()
     if (
@@ -877,11 +921,11 @@ def _validated_source_audio_line_ids(path, document=None):
 
 
 def _source_audio_covers_full_line(
-    entry,
+    entry: Mapping[str, object],
     *,
-    completion_contract,
-    semantic_authorized,
-):
+    completion_contract: str,
+    semantic_authorized: bool,
+) -> bool:
     return (
         _source_audio_status(entry) == "available"
         and _source_audio_completeness(
@@ -897,14 +941,16 @@ def _source_audio_covers_full_line(
     )
 
 
-def _load_source_audio_extensions(path, *, completion_contract=None):
+def _load_source_audio_extensions(
+    path: str | Path, *, completion_contract: str | None = None
+) -> dict[str, SourceAudioExtension]:
     """Retain optional source-audio fields omitted by older contract readers."""
-    result = {}
+    result: dict[str, SourceAudioExtension] = {}
     try:
         with open(path, encoding="utf-8") as stream:
             next(stream, None)
             for row in stream:
-                record = json.loads(row)
+                record = _string_mapping(json.loads(row))
                 line_id = str(record.get("line_id") or "").strip()
                 if not line_id:
                     continue
@@ -916,3 +962,31 @@ def _load_source_audio_extensions(path, *, completion_contract=None):
     except OSError, TypeError, ValueError, json.JSONDecodeError:
         return {}
     return result
+
+
+def _string_mapping(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
+def _line_value(line: object, name: str, default: object = None) -> object:
+    value: object = getattr(line, name, default)
+    return value
+
+
+def _line_text(line: object, name: str, default: str = "") -> str:
+    value = _line_value(line, name, default)
+    return value if isinstance(value, str) else default
+
+
+def _line_optional_text(
+    line: object, name: str, default: str | None = None
+) -> str | None:
+    value = _line_value(line, name, default)
+    return value if isinstance(value, str) and value else default
+
+
+def _line_integer(line: object, name: str) -> int:
+    value = _line_value(line, name, 0)
+    return int(value) if isinstance(value, int | float | str | bytes | bytearray) else 0

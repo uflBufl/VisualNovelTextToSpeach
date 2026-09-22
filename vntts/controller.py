@@ -555,11 +555,12 @@ class AppController:
         stage: str,
         generation: int,
         occurred_at: float,
-        *,
-        session_id: str | None = None,
         **details: object,
     ) -> object:
-        active_session_id = session_id or self.live_reader_session_id
+        session_id = details.pop("session_id", None)
+        active_session_id = (
+            session_id if isinstance(session_id, str) else self.live_reader_session_id
+        )
         if active_session_id is not None:
             details["session_id"] = active_session_id
         return self._pipeline_event_sink(stage, generation, occurred_at, **details)
@@ -1460,7 +1461,9 @@ class AppController:
                     character, text, candidate_line_ids
                 )
                 resolved_event = (
-                    None if line is None else plan.event_for_line(line.line_id)
+                    None
+                    if line is None or line.line_id is None
+                    else plan.event_for_line(line.line_id)
                 )
                 prefix_match = "prefix" in str(match_result)
                 pending_prefix_continuation = bool(
@@ -1508,11 +1511,11 @@ class AppController:
                             "record_canonical_full_text",
                             None,
                         )
-                        if callable(record_full_text):
+                        if callable(record_full_text) and line.line_id is not None:
                             record_full_text(line_id=line.line_id)
                 snapshot = (
                     None
-                    if line is None
+                    if line is None or line.line_id is None
                     else cursor.observe_bounded_line(line.line_id, candidate_event_ids)
                 )
         if self._report_sequence_candidate_miss_if_needed(

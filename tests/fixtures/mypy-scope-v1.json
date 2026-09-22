@@ -97,6 +97,7 @@
     "vntts/authoring/workspace_state.py",
     "vntts/authoring/workspace_voice_runtime.py",
     "vntts/auto_advance_policy.py",
+    "vntts/chapter_voice_preload.py",
     "vntts/calibration.py",
     "vntts/controller.py",
     "vntts/controller_components.py",

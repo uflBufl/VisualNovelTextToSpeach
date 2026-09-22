@@ -139,7 +139,8 @@ class ReplayFrameSourceSnapshot(TypedDict):
 
 
 class EllipsisSpeakerResolver(Protocol):
-    speaker_names: Mapping[str, str]
+    @property
+    def speaker_names(self) -> Mapping[str, str]: ...
 
 
 @dataclass(frozen=True)

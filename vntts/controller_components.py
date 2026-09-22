@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from functools import partial
@@ -1116,7 +1116,9 @@ class VoiceAssignmentComponent:
             and not controller.settings.live_speaker_corpus
         ):
             return ()
-        scope = controller.chapter_voice_preloader.live_voice_preflight_rows()
+        scope: Sequence[object] | None = (
+            controller.chapter_voice_preloader.live_voice_preflight_rows()
+        )
         if not controller.chapter_voice_preloader.dialogue:
             if controller.live_speaker_corpus_error:
                 return None

@@ -256,8 +256,6 @@ PlaybackGuard: TypeAlias = Callable[[], bool] | None
 
 
 class _LineResolver(Protocol):
-    current_match: object | None
-
     def resolve_exact(self, character: str, text: str) -> ChapterDialogue | None: ...
 
     def line_for_id(self, line_id: str) -> ChapterDialogue | None: ...
@@ -646,7 +644,7 @@ class GeneratedAudioFallbackBackend:
             return self._will_use_source_audio(character, text)
         finally:
             if hasattr(self.line_resolver, "current_match"):
-                self.line_resolver.current_match = current_match
+                setattr(self.line_resolver, "current_match", current_match)
 
     def has_resolved_route_in_live_mode(self, character: str, text: str) -> bool:
         """Return whether an exact line has a non-generic authorized live route."""
@@ -694,7 +692,7 @@ class GeneratedAudioFallbackBackend:
             return True
         finally:
             if hasattr(self.line_resolver, "current_match"):
-                self.line_resolver.current_match = current_match
+                setattr(self.line_resolver, "current_match", current_match)
 
     def _will_use_source_audio(self, character: str, text: str) -> bool:
         if self.audio_source_policy != "prefer-game-audio":
@@ -817,6 +815,7 @@ class GeneratedAudioFallbackBackend:
         if (
             line is not None
             and line.line_id
+            and line.text_sha256
             and self.live_mode_active
             and self.audio_source_policy == "prefer-game-audio"
             and source_audio_full
@@ -862,7 +861,12 @@ class GeneratedAudioFallbackBackend:
                 artifact_preflight_state = f"source-audio-{source_status}"
         omission = (
             None
-            if omission_line is None or self.library is None
+            if (
+                omission_line is None
+                or not omission_line.line_id
+                or not omission_line.text_sha256
+                or self.library is None
+            )
             else self.library.find_audio_event_omission(
                 omission_line.line_id, omission_line.text_sha256
             )
@@ -881,6 +885,7 @@ class GeneratedAudioFallbackBackend:
         if (
             line is not None
             and line.line_id
+            and line.text_sha256
             and self.audio_source_policy in {"prefer-generated", "prefer-game-audio"}
             and self.library is not None
             and self.speed == 1.0
@@ -928,12 +933,18 @@ class GeneratedAudioFallbackBackend:
             fallback_reasons.append(artifact_preflight_state)
         live_fallback = (
             None
-            if line is None or self.library is None
+            if (
+                line is None
+                or not line.line_id
+                or not line.text_sha256
+                or self.library is None
+            )
             else self.library.find_live_fallback(line.line_id, line.text_sha256)
         )
         if (
             line is not None
             and line.line_id
+            and line.text_sha256
             and self.library is not None
             and self.library.runtime_progress
             and not voice_overridden
@@ -1046,7 +1057,7 @@ class GeneratedAudioFallbackBackend:
             return self.line_resolver.resolve_exact(character, text)
         finally:
             if hasattr(self.line_resolver, "current_match"):
-                self.line_resolver.current_match = current_match
+                setattr(self.line_resolver, "current_match", current_match)
 
     def play_route(
         self, route: RouteDecision, *, playback_guard: PlaybackGuard = None
