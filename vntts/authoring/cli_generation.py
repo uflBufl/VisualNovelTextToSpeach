@@ -43,8 +43,10 @@ from vntts.authoring.failure_regeneration import (
     load_failure_regeneration_plan,
     write_failure_regeneration_plan,
 )
+from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.generation_lease import BulkGenerationError
 from vntts.authoring.generation_state import LIVE_FALLBACK_REASONS
+from vntts.authoring.missing_voice_policy import MissingVoicePolicy
 from vntts.authoring.pending_resolution import (
     build_pending_regeneration_command,
     build_pending_resolution_plan,
@@ -61,6 +63,7 @@ from vntts.authoring.specialist_failure_plan import (
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
+    FailureReferenceRuntimeBinding,
     failure_reference_runtime_binding,
     generation_control_bindings,
     generation_output_identity,
@@ -93,6 +96,16 @@ COMMANDS = frozenset(
 
 
 def configure_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    _configure_generate_parser(subparsers)
+    _configure_review_parser(subparsers)
+    _configure_live_fallback_parser(subparsers)
+    _configure_state_parsers(subparsers)
+    _configure_regeneration_parsers(subparsers)
+
+
+def _configure_generate_parser(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
     generate = subparsers.add_parser(
@@ -170,6 +183,10 @@ def configure_parsers(
         ),
     )
 
+
+def _configure_review_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     review = subparsers.add_parser(
         "review", help="Approve or reject one generated queue item"
     )
@@ -177,6 +194,10 @@ def configure_parsers(
     review.add_argument("queue_id")
     review.add_argument("decision", choices=("approved", "rejected"))
 
+
+def _configure_live_fallback_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     live_fallback = subparsers.add_parser(
         "live-fallback",
         help="Authorize exact terminal Pocket live synthesis for one queue item",
@@ -211,6 +232,10 @@ def configure_parsers(
         ),
     )
 
+
+def _configure_state_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     publish = subparsers.add_parser(
         "publish", help="Rebuild the approved-only manifest from generation state"
     )
@@ -243,6 +268,10 @@ def configure_parsers(
     repairs.add_argument("--state", type=Path, required=True)
     repairs.add_argument("--queue", type=Path, required=True)
 
+
+def _configure_regeneration_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     pending_resolution = subparsers.add_parser(
         "pending-resolution-plan",
         help="Bind cohort-blocked pending WAVs to conservative next actions",
@@ -312,23 +341,18 @@ def _load_stable_voice_registry(
     return CharacterVoiceRegistry(voices), digest, document, entries
 
 
-def run_generation(
+def _workspace_generation_controls(
     arguments: argparse.Namespace,
-    *,
-    backend_factory: Callable[..., object] | None = None,
-    cancellation: object = None,
-    startup_progress: object = None,
-) -> BulkGenerationResult:
-    backend_factory = backend_factory or create_backend
-    missing_policy = missing_voice_policy(arguments)
-    repair_policy = failure_repair_policy(arguments)
-    projection_ids = tuple(arguments.audio_event_spoken_projection_queue_ids or ())
-    voice_manifest = arguments.voice_manifest.expanduser().resolve()
-    expected_workspace_controls = None
-    workspace_output_identity = None
-    if arguments.workspace is not None:
-        try:
-            expected_workspace_controls = generation_control_bindings(
+    missing_policy: MissingVoicePolicy,
+    repair_policy: FailureRepairPolicy,
+    voice_manifest: Path,
+    projection_ids: tuple[object, ...],
+) -> tuple[dict[Path, str] | None, dict[str, str | int] | None]:
+    if arguments.workspace is None:
+        return None, None
+    try:
+        return (
+            generation_control_bindings(
                 arguments.workspace,
                 queue=arguments.queue,
                 output=arguments.output,
@@ -340,10 +364,24 @@ def run_generation(
                 missing_voice_policy=missing_policy,
                 failure_repair_policy=repair_policy,
                 audio_event_spoken_projection_queue_ids=projection_ids,
-            )
-            workspace_output_identity = generation_output_identity(arguments.workspace)
-        except AuthoringWorkbenchError as error:
-            raise BulkGenerationError(str(error)) from error
+            ),
+            generation_output_identity(arguments.workspace),
+        )
+    except AuthoringWorkbenchError as error:
+        raise BulkGenerationError(str(error)) from error
+
+
+def _generation_inputs(
+    arguments: argparse.Namespace,
+    voice_manifest: Path,
+) -> tuple[
+    CharacterVoiceRegistry,
+    str,
+    dict[str, object],
+    tuple[VoiceManifestEntry, ...],
+    FailureReferenceRuntimeBinding | None,
+    VoiceGenerationQueue,
+]:
     registry, manifest_sha256, manifest_document, manifest_entries = (
         _load_stable_voice_registry(voice_manifest)
     )
@@ -360,9 +398,24 @@ def run_generation(
         policy_queue = VoiceGenerationQueue.load(arguments.queue)
     except VoiceGenerationQueueError as error:
         raise BulkGenerationError(str(error)) from error
-    synthesis_overrides = {}
+    return (
+        registry,
+        manifest_sha256,
+        manifest_document,
+        manifest_entries,
+        runtime_binding,
+        policy_queue,
+    )
+
+
+def _queue_voice_overrides(
+    manifest_document: dict[str, object],
+    manifest_entries: tuple[VoiceManifestEntry, ...],
+    policy_queue: VoiceGenerationQueue,
+    runtime_binding: FailureReferenceRuntimeBinding | None,
+) -> dict[str, str]:
     try:
-        queue_overrides = queue_voice_overrides_from_manifest(
+        overrides = queue_voice_overrides_from_manifest(
             manifest_document,
             queue_ids=(item.queue_id for item in policy_queue.items),
             voices=manifest_entries,
@@ -370,10 +423,16 @@ def run_generation(
     except SourceReferenceBindingError as error:
         raise BulkGenerationError(str(error)) from error
     if runtime_binding is not None:
-        queue_overrides = {
-            **queue_overrides,
-            **runtime_binding.queue_voice_overrides,
-        }
+        overrides.update(runtime_binding.queue_voice_overrides)
+    return overrides
+
+
+def _synthesis_character_overrides(
+    policy_queue: VoiceGenerationQueue,
+    registry: CharacterVoiceRegistry,
+    missing_policy: MissingVoicePolicy,
+) -> dict[str, str]:
+    overrides = {}
     for item in policy_queue.items:
         requested = synthesis_character_for_line(item.speaker, item.voice_character)
         voice = registry.resolve(requested)
@@ -386,15 +445,15 @@ def run_generation(
             )
             and missing_policy.applies_to(requested)
         ):
-            synthesis_overrides[requested] = "Narrator"
-    if (
-        expected_workspace_controls is not None
-        and expected_workspace_controls.get(voice_manifest) != manifest_sha256
-    ):
-        raise BulkGenerationError(
-            "Workspace voice manifest changed before backend construction"
-        )
-    control_files = {"voice_manifest": (voice_manifest, manifest_sha256)}
+            overrides[requested] = "Narrator"
+    return overrides
+
+
+def _add_voice_reference_controls(
+    control_files: dict[str, tuple[Path, str]],
+    registry: CharacterVoiceRegistry,
+    expected_workspace_controls: dict[Path, str] | None,
+) -> None:
     for index, reference in enumerate(
         sorted(
             {
@@ -412,25 +471,50 @@ def run_generation(
             and expected_workspace_controls.get(reference) != reference_sha256
         ):
             raise BulkGenerationError(f"Workspace voice reference changed: {reference}")
-        control_files[f"voice_reference:{index:04d}"] = (
-            reference,
-            reference_sha256,
+        control_files[f"voice_reference:{index:04d}"] = (reference, reference_sha256)
+
+
+def _add_runtime_binding_controls(
+    control_files: dict[str, tuple[Path, str]],
+    runtime_binding: FailureReferenceRuntimeBinding | None,
+) -> None:
+    if runtime_binding is None:
+        return
+    binding_path = (runtime_binding.directory / "binding.json").resolve()
+    control_files["failure_reference_binding"] = (
+        binding_path,
+        runtime_binding.controls[binding_path],
+    )
+    for index, path in enumerate(
+        sorted(
+            (path for path in runtime_binding.controls if path != binding_path), key=str
+        ),
+        start=1,
+    ):
+        control_files[f"failure_reference_selected:{index:04d}"] = (
+            path,
+            runtime_binding.controls[path],
         )
-    if runtime_binding is not None:
-        binding_path = (runtime_binding.directory / "binding.json").resolve()
-        control_files["failure_reference_binding"] = (
-            binding_path,
-            runtime_binding.controls[binding_path],
+
+
+def _generation_control_files(
+    arguments: argparse.Namespace,
+    registry: CharacterVoiceRegistry,
+    runtime_binding: FailureReferenceRuntimeBinding | None,
+    expected_workspace_controls: dict[Path, str] | None,
+    voice_manifest: Path,
+    manifest_sha256: str,
+) -> dict[str, tuple[Path, str]]:
+    if (
+        expected_workspace_controls is not None
+        and expected_workspace_controls.get(voice_manifest) != manifest_sha256
+    ):
+        raise BulkGenerationError(
+            "Workspace voice manifest changed before backend construction"
         )
-        selected_paths = sorted(
-            (path for path in runtime_binding.controls if path != binding_path),
-            key=str,
-        )
-        for index, path in enumerate(selected_paths, start=1):
-            control_files[f"failure_reference_selected:{index:04d}"] = (
-                path,
-                runtime_binding.controls[path],
-            )
+    control_files = {"voice_manifest": (voice_manifest, manifest_sha256)}
+    _add_voice_reference_controls(control_files, registry, expected_workspace_controls)
+    _add_runtime_binding_controls(control_files, runtime_binding)
     if expected_workspace_controls is not None:
         observed_paths = {Path(value[0]).resolve() for value in control_files.values()}
         if observed_paths != set(expected_workspace_controls):
@@ -445,8 +529,16 @@ def run_generation(
                 model_path,
                 sha256_control_path(model_path),
             )
+    return control_files
+
+
+def _narrator_reference(
+    arguments: argparse.Namespace,
+    registry: CharacterVoiceRegistry,
+    control_files: dict[str, tuple[Path, str]],
+) -> Path | str | None:
     narrator_voice = registry.resolve(arguments.narrator_character)
-    narrator_reference = (
+    reference = (
         narrator_voice.references[0]
         if narrator_voice is not None and narrator_voice.references
         else (
@@ -465,30 +557,66 @@ def run_generation(
             narrator_reference_path,
             sha256_control_path(narrator_reference_path),
         )
-    if arguments.backend == "moss-tts" and narrator_reference is None:
+    if arguments.backend == "moss-tts" and reference is None:
         raise BulkGenerationError(
             f"Narrator voice {arguments.narrator_character!r} has no reference"
         )
+    return reference
 
-    def ready_spoken_item(item: VoiceGenerationQueueItem) -> bool:
-        if not (is_spoken_queue_item(item) or item.queue_id in set(projection_ids)):
-            return False
-        requested = synthesis_character_for_line(item.speaker, item.voice_character)
-        character = queue_overrides.get(
-            item.queue_id,
-            synthesis_overrides.get(requested, requested),
-        )
-        if character == "Narrator":
-            return narrator_reference is not None
-        voice = registry.resolve(character)
-        return voice is not None and (
-            bool(voice.references)
-            or (
-                arguments.backend == "pocket-tts"
-                and voice.speaker in pocket_tts_preset_voices
-            )
-        )
 
+def _ready_spoken_item(
+    item: VoiceGenerationQueueItem,
+    *,
+    backend: str,
+    registry: CharacterVoiceRegistry,
+    narrator_reference: Path | str | None,
+    projection_ids: tuple[object, ...],
+    synthesis_overrides: dict[str, str],
+    queue_overrides: dict[str, str],
+) -> bool:
+    if not (is_spoken_queue_item(item) or item.queue_id in set(projection_ids)):
+        return False
+    requested = synthesis_character_for_line(item.speaker, item.voice_character)
+    character = queue_overrides.get(
+        item.queue_id,
+        synthesis_overrides.get(requested, requested),
+    )
+    if character == "Narrator":
+        return narrator_reference is not None
+    voice = registry.resolve(character)
+    return voice is not None and (
+        bool(voice.references)
+        or (backend == "pocket-tts" and voice.speaker in pocket_tts_preset_voices)
+    )
+
+
+def _generation_text_transform(
+    backend: str,
+    projection_ids: tuple[object, ...],
+) -> tuple[Callable[[str], str] | None, str | None]:
+    if projection_ids:
+        return audio_event_spoken_projection, "audio-event-spoken-projection-v1"
+    if backend == "moss-tts":
+        return normalize_short_trailing_ellipsis, "short-trailing-ellipsis-v1"
+    return None, None
+
+
+def _run_bulk_generation(
+    arguments: argparse.Namespace,
+    backend_factory: Callable[..., object],
+    cancellation: object,
+    startup_progress: object,
+    registry: CharacterVoiceRegistry,
+    policy_queue: VoiceGenerationQueue,
+    narrator_reference: Path | str | None,
+    control_files: dict[str, tuple[Path, str]],
+    workspace_output_identity: dict[str, str | int] | None,
+    projection_ids: tuple[object, ...],
+    synthesis_overrides: dict[str, str],
+    queue_overrides: dict[str, str],
+    missing_policy: MissingVoicePolicy,
+    repair_policy: FailureRepairPolicy,
+) -> BulkGenerationResult:
     cache_context = (
         nullcontext(arguments.cache_directory.expanduser().resolve())
         if arguments.cache_directory is not None
@@ -503,10 +631,7 @@ def run_generation(
             model_name=arguments.model,
             narrator_reference=narrator_reference,
             allow_gated_model_access=arguments.allow_gated_model_access,
-            persistent_audio_cache_max_entries=max(
-                512,
-                len(policy_queue.items) * 2,
-            ),
+            persistent_audio_cache_max_entries=max(512, len(policy_queue.items) * 2),
             startup_cancellation=cancellation,
             startup_progress=startup_progress,
         )
@@ -519,7 +644,10 @@ def run_generation(
                 or getattr(backend, "model_name", None)
                 or arguments.backend
             )
-            result = run_bulk_generation(
+            text_transform, text_transform_id = _generation_text_transform(
+                arguments.backend, projection_ids
+            )
+            return run_bulk_generation(
                 arguments.queue,
                 arguments.output,
                 backend,
@@ -532,27 +660,19 @@ def run_generation(
                 include_characters=arguments.characters,
                 include_queue_ids=arguments.queue_ids,
                 regenerate_existing=arguments.regenerate_existing,
-                item_filter=ready_spoken_item,
+                item_filter=lambda item: _ready_spoken_item(
+                    item,
+                    backend=arguments.backend,
+                    registry=registry,
+                    narrator_reference=narrator_reference,
+                    projection_ids=projection_ids,
+                    synthesis_overrides=synthesis_overrides,
+                    queue_overrides=queue_overrides,
+                ),
                 seed=arguments.seed,
                 control_files=control_files,
-                text_transform=(
-                    audio_event_spoken_projection
-                    if projection_ids
-                    else (
-                        normalize_short_trailing_ellipsis
-                        if arguments.backend == "moss-tts"
-                        else None
-                    )
-                ),
-                text_transform_id=(
-                    "audio-event-spoken-projection-v1"
-                    if projection_ids
-                    else (
-                        "short-trailing-ellipsis-v1"
-                        if arguments.backend == "moss-tts"
-                        else None
-                    )
-                ),
+                text_transform=text_transform,
+                text_transform_id=text_transform_id,
                 workspace_output_identity=workspace_output_identity,
                 synthesis_character_overrides=synthesis_overrides,
                 queue_voice_overrides=queue_overrides,
@@ -573,7 +693,61 @@ def run_generation(
             )
         finally:
             shutdown_speech_backend(backend)
-    return result
+
+
+def run_generation(
+    arguments: argparse.Namespace,
+    *,
+    backend_factory: Callable[..., object] | None = None,
+    cancellation: object = None,
+    startup_progress: object = None,
+) -> BulkGenerationResult:
+    missing_policy = missing_voice_policy(arguments)
+    repair_policy = failure_repair_policy(arguments)
+    projection_ids = tuple(arguments.audio_event_spoken_projection_queue_ids or ())
+    voice_manifest = arguments.voice_manifest.expanduser().resolve()
+    expected_controls, workspace_output_identity = _workspace_generation_controls(
+        arguments, missing_policy, repair_policy, voice_manifest, projection_ids
+    )
+    (
+        registry,
+        manifest_sha256,
+        manifest_document,
+        manifest_entries,
+        runtime_binding,
+        policy_queue,
+    ) = _generation_inputs(arguments, voice_manifest)
+    queue_overrides = _queue_voice_overrides(
+        manifest_document, manifest_entries, policy_queue, runtime_binding
+    )
+    synthesis_overrides = _synthesis_character_overrides(
+        policy_queue, registry, missing_policy
+    )
+    control_files = _generation_control_files(
+        arguments,
+        registry,
+        runtime_binding,
+        expected_controls,
+        voice_manifest,
+        manifest_sha256,
+    )
+    narrator_reference = _narrator_reference(arguments, registry, control_files)
+    return _run_bulk_generation(
+        arguments,
+        backend_factory or create_backend,
+        cancellation,
+        startup_progress,
+        registry,
+        policy_queue,
+        narrator_reference,
+        control_files,
+        workspace_output_identity,
+        projection_ids,
+        synthesis_overrides,
+        queue_overrides,
+        missing_policy,
+        repair_policy,
+    )
 
 
 def _generate(arguments: argparse.Namespace) -> int:
@@ -582,156 +756,159 @@ def _generate(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _handle_review(arguments: argparse.Namespace) -> int:
+    review_generation_item(arguments.state, arguments.queue_id, arguments.decision)
+    print(
+        json.dumps(
+            {
+                "queue_id": arguments.queue_id,
+                "decision": arguments.decision,
+                "state": str(arguments.state.expanduser().resolve()),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _handle_live_fallback(arguments: argparse.Namespace) -> int:
+    decision = authorize_live_fallback(
+        arguments.state,
+        arguments.queue,
+        arguments.queue_id,
+        reason=arguments.reason,
+        provider=arguments.provider,
+        model=arguments.model,
+        generation_profile=arguments.generation_profile,
+        evidence_workspaces=arguments.evidence_workspace,
+        evidence_reviews=arguments.evidence_review,
+    )
+    print(json.dumps(decision, indent=2, sort_keys=True))
+    return 0
+
+
+def _handle_publish(arguments: argparse.Namespace) -> int:
+    manifest = publish_generated_manifest(arguments.state)
+    print(json.dumps({"manifest": str(manifest)}, indent=2, sort_keys=True))
+    return 0
+
+
+def _handle_status(arguments: argparse.Namespace) -> int:
+    state = load_generation_state(arguments.state, arguments.queue)
+    items = state.get("items")
+    if not isinstance(items, dict) or not all(
+        isinstance(queue_id, str) and isinstance(item, dict)
+        for queue_id, item in items.items()
+    ):
+        raise BulkGenerationError("Generation state items are malformed")
+    counts: dict[str, int] = {
+        "failed": 0,
+        "generated": 0,
+        "approved": 0,
+        "omitted": 0,
+    }
+    for item in items.values():
+        status = item.get("status")
+        if isinstance(status, str) and status != "live_fallback":
+            counts[status] += 1
+    counts["live_fallback"] = sum(
+        isinstance(item.get("live_fallback"), dict) for item in items.values()
+    )
+    print(
+        json.dumps(
+            {
+                **counts,
+                "active": state.get("active"),
+                "queue_sha256": state["queue_sha256"],
+                "schema": state["schema"],
+                "state": str(arguments.state.expanduser().resolve()),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _print_document(value: object) -> None:
+    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _handle_failure_report(arguments: argparse.Namespace) -> int:
+    _print_document(generation_failure_report(arguments.state, arguments.queue))
+    return 0
+
+
+def _handle_specialist_failure_plan(arguments: argparse.Namespace) -> int:
+    plan = build_specialist_failure_plan(arguments.workspace)
+    if arguments.output is not None:
+        write_specialist_failure_plan(plan, arguments.output)
+    _print_document(plan.to_dict())
+    return 0
+
+
+def _handle_failure_repair_plan(arguments: argparse.Namespace) -> int:
+    _print_document(generation_failure_repair_plan(arguments.state, arguments.queue))
+    return 0
+
+
+def _handle_pending_resolution_plan(arguments: argparse.Namespace) -> int:
+    plan = build_pending_resolution_plan(arguments.workspace)
+    if arguments.output is not None:
+        write_pending_resolution_plan(plan, arguments.output)
+    _print_document(plan.to_dict())
+    return 0
+
+
+def _handle_pending_regeneration_command(arguments: argparse.Namespace) -> int:
+    command = build_pending_regeneration_command(
+        arguments.workspace,
+        load_pending_resolution_plan(arguments.plan),
+        batch_index=arguments.batch_index,
+        batch_size=arguments.batch_size,
+    )
+    _print_document(command.to_dict())
+    return 0
+
+
+def _handle_failure_regeneration_plan(arguments: argparse.Namespace) -> int:
+    plan = build_failure_regeneration_plan(arguments.workspace)
+    if arguments.output is not None:
+        write_failure_regeneration_plan(plan, arguments.output)
+    _print_document(plan.to_dict())
+    return 0
+
+
+def _handle_failure_regeneration_command(arguments: argparse.Namespace) -> int:
+    command = build_failure_regeneration_command(
+        arguments.workspace,
+        load_failure_regeneration_plan(arguments.plan),
+        batch_index=arguments.batch_index,
+        batch_size=arguments.batch_size,
+    )
+    _print_document(command.to_dict())
+    return 0
+
+
+COMMAND_HANDLERS: dict[str, Callable[[argparse.Namespace], int]] = {
+    "generate": _generate,
+    "review": _handle_review,
+    "live-fallback": _handle_live_fallback,
+    "publish": _handle_publish,
+    "status": _handle_status,
+    "failure-report": _handle_failure_report,
+    "specialist-failure-plan": _handle_specialist_failure_plan,
+    "failure-repair-plan": _handle_failure_repair_plan,
+    "pending-resolution-plan": _handle_pending_resolution_plan,
+    "pending-regeneration-command": _handle_pending_regeneration_command,
+    "failure-regeneration-plan": _handle_failure_regeneration_plan,
+    "failure-regeneration-command": _handle_failure_regeneration_command,
+}
+
+
 def handle(arguments: argparse.Namespace) -> int:
-    if arguments.command == "generate":
-        return _generate(arguments)
-    if arguments.command == "review":
-        review_generation_item(arguments.state, arguments.queue_id, arguments.decision)
-        print(
-            json.dumps(
-                {
-                    "queue_id": arguments.queue_id,
-                    "decision": arguments.decision,
-                    "state": str(arguments.state.expanduser().resolve()),
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
-    if arguments.command == "live-fallback":
-        decision = authorize_live_fallback(
-            arguments.state,
-            arguments.queue,
-            arguments.queue_id,
-            reason=arguments.reason,
-            provider=arguments.provider,
-            model=arguments.model,
-            generation_profile=arguments.generation_profile,
-            evidence_workspaces=arguments.evidence_workspace,
-            evidence_reviews=arguments.evidence_review,
-        )
-        print(json.dumps(decision, indent=2, sort_keys=True))
-        return 0
-    if arguments.command == "publish":
-        manifest = publish_generated_manifest(arguments.state)
-        print(json.dumps({"manifest": str(manifest)}, indent=2, sort_keys=True))
-        return 0
-    if arguments.command == "status":
-        state = load_generation_state(arguments.state, arguments.queue)
-        items = state.get("items")
-        if not isinstance(items, dict) or not all(
-            isinstance(queue_id, str) and isinstance(item, dict)
-            for queue_id, item in items.items()
-        ):
-            raise BulkGenerationError("Generation state items are malformed")
-        counts: dict[str, int] = {
-            "failed": 0,
-            "generated": 0,
-            "approved": 0,
-            "omitted": 0,
-        }
-        for item in items.values():
-            status = item.get("status")
-            if isinstance(status, str) and status != "live_fallback":
-                counts[status] += 1
-        counts["live_fallback"] = sum(
-            isinstance(item.get("live_fallback"), dict) for item in items.values()
-        )
-        print(
-            json.dumps(
-                {
-                    **counts,
-                    "active": state.get("active"),
-                    "queue_sha256": state["queue_sha256"],
-                    "schema": state["schema"],
-                    "state": str(arguments.state.expanduser().resolve()),
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
-    if arguments.command == "failure-report":
-        print(
-            json.dumps(
-                generation_failure_report(arguments.state, arguments.queue),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
-    if arguments.command == "specialist-failure-plan":
-        specialist_plan = build_specialist_failure_plan(arguments.workspace)
-        if arguments.output is not None:
-            write_specialist_failure_plan(specialist_plan, arguments.output)
-        print(
-            json.dumps(
-                specialist_plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
-            )
-        )
-        return 0
-    if arguments.command == "failure-repair-plan":
-        print(
-            json.dumps(
-                generation_failure_repair_plan(arguments.state, arguments.queue),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
-    if arguments.command == "pending-resolution-plan":
-        pending_plan = build_pending_resolution_plan(arguments.workspace)
-        if arguments.output is not None:
-            write_pending_resolution_plan(pending_plan, arguments.output)
-        print(
-            json.dumps(
-                pending_plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
-            )
-        )
-        return 0
-    if arguments.command == "pending-regeneration-command":
-        pending_command = build_pending_regeneration_command(
-            arguments.workspace,
-            load_pending_resolution_plan(arguments.plan),
-            batch_index=arguments.batch_index,
-            batch_size=arguments.batch_size,
-        )
-        print(
-            json.dumps(
-                pending_command.to_dict(),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
-    if arguments.command == "failure-regeneration-plan":
-        failure_plan = build_failure_regeneration_plan(arguments.workspace)
-        if arguments.output is not None:
-            write_failure_regeneration_plan(failure_plan, arguments.output)
-        print(
-            json.dumps(
-                failure_plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True
-            )
-        )
-        return 0
-    if arguments.command == "failure-regeneration-command":
-        failure_command = build_failure_regeneration_command(
-            arguments.workspace,
-            load_failure_regeneration_plan(arguments.plan),
-            batch_index=arguments.batch_index,
-            batch_size=arguments.batch_size,
-        )
-        print(
-            json.dumps(
-                failure_command.to_dict(),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return 0
-    raise AssertionError(f"Unhandled generation command: {arguments.command}")
+    handler = COMMAND_HANDLERS.get(arguments.command)
+    if handler is None:
+        raise AssertionError(f"Unhandled generation command: {arguments.command}")
+    return handler(arguments)
