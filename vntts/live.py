@@ -722,7 +722,9 @@ class LiveDialogReader:
             else monotonic() + max(0.0, float(timeout_seconds))
         )
 
-        def wait_for(future: Future[object]) -> None:
+        def wait_for(
+            future: Future[object] | Future[object | None] | Future[None],
+        ) -> None:
             if deadline is None:
                 future.result()
                 return
