@@ -335,6 +335,7 @@ files = [
     "vntts/runtime_ownership.py",
     "vntts/runtime_paths.py",
     "vntts/source_audio_semantics.py",
+    "vntts/speech_presentation.py",
     "vntts/speech_backend.py",
     "vntts/speech_backend_contract.py",
     "vntts/speech_backend_runtime.py",

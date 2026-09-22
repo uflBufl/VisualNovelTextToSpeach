@@ -4,11 +4,12 @@ import re
 from pathlib import Path
 
 from vntts.release_backends import SPEECH_BACKEND_LABELS
+from vntts.settings import AppSettings
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import pocket_tts_preset_voices
 
 
-def speech_runtime_label(backend):
+def speech_runtime_label(backend: object | None) -> str:
     """Describe reported compute placement without guessing from settings."""
     from vntts.generated_audio import GeneratedAudioFallbackBackend
 
@@ -24,7 +25,8 @@ def speech_runtime_label(backend):
     health = getattr(backend, "health", None)
     if isinstance(health, dict):
         process = getattr(backend, "process", None)
-        if process is None or process.poll() is not None:
+        poll = getattr(process, "poll", None)
+        if not callable(poll) or poll() is not None:
             return "Compute: engine not running."
         device = health.get("device")
         if isinstance(device, str) and device not in {"", "unknown", "None"}:
@@ -36,7 +38,9 @@ def speech_runtime_label(backend):
     return "Compute device: unknown (not reported by the engine yet)."
 
 
-def _engine_model_identity(backend, model=None, *, pocket_cloning=False):
+def _engine_model_identity(
+    backend: str, model: str | None = None, *, pocket_cloning: bool = False
+) -> tuple[str, str]:
     engine = SPEECH_BACKEND_LABELS.get(backend, backend)
     if backend == "pocket-tts":
         model = (
@@ -63,7 +67,13 @@ def _engine_model_identity(backend, model=None, *, pocket_cloning=False):
     return engine, model
 
 
-def engine_model_label(backend, model=None, *, pocket_cloning=False, compact=False):
+def engine_model_label(
+    backend: str,
+    model: str | None = None,
+    *,
+    pocket_cloning: bool = False,
+    compact: bool = False,
+) -> str:
     engine, model = _engine_model_identity(
         backend, model, pocket_cloning=pocket_cloning
     )
@@ -74,20 +84,22 @@ def engine_model_label(backend, model=None, *, pocket_cloning=False, compact=Fal
     return f"Engine: {engine}\nModel: {model}"
 
 
-def speech_configuration_rows(settings, *, narrator=None):
+def speech_configuration_rows(
+    settings: AppSettings, *, narrator: object | None = None
+) -> tuple[tuple[str, str], ...]:
     engine, model = _engine_model_identity(
         settings.speech_backend,
         settings.tts_model,
         pocket_cloning=settings.pocket_gated_model_accepted,
     )
     return (
-        ("Narrator", narrator or narrator_voice_label(settings)),
+        ("Narrator", str(narrator or narrator_voice_label(settings))),
         ("Engine", "MOSS" if settings.speech_backend == "moss-tts" else engine),
         ("Model", readable_model_name(model)),
     )
 
 
-def compact_runtime_label(message):
+def compact_runtime_label(message: str) -> str:
     """Hide placement counters, never devices, warnings or fallback reasons."""
     message = re.sub(
         r"\s*\(\d+(?:/\d+)? GPU layers\)|, \d+/\d+ GPU layers", "", message
@@ -95,7 +107,7 @@ def compact_runtime_label(message):
     return re.sub(r"; auxiliary CPU workers: \d+", "", message)
 
 
-def readable_model_name(model):
+def readable_model_name(model: object | None) -> str:
     """Keep known model names readable; retain exact identity in details."""
     if not model:
         return "Default model"
@@ -111,7 +123,7 @@ def readable_model_name(model):
     return aliases.get(name, name if len(name) <= 70 else "Custom model (see details)")
 
 
-def playback_labels(source, voice):
+def playback_labels(source: str, voice: str) -> tuple[str, str]:
     """Summarize the diagnostic source; never substitute live defaults for a WAV."""
     voice = voice.partition("; voice ID: ")[0]
     if "/" in voice or "\\" in voice:
@@ -143,10 +155,12 @@ def playback_labels(source, voice):
     return voice, "Audio source: see details"
 
 
-def narrator_voice_label(settings, voice_library: VoiceLibrary | None = None):
+def narrator_voice_label(
+    settings: AppSettings, voice_library: VoiceLibrary | None = None
+) -> str:
     binding = voice_library.binding("Narrator") if voice_library is not None else None
     source = binding.source_id if binding is not None else None
-    if source and source != "default":
+    if isinstance(source, str) and source and source != "default":
         kind, _, value = source.partition(":")
         if kind in {"character", "preset"}:
             return value.replace("_", " ").title()
@@ -176,7 +190,12 @@ def narrator_voice_label(settings, voice_library: VoiceLibrary | None = None):
     return "Not chosen yet"
 
 
-def speech_configuration_label(settings, *, narrator=None, compact=False):
+def speech_configuration_label(
+    settings: AppSettings,
+    *,
+    narrator: object | None = None,
+    compact: bool = False,
+) -> str:
     return (
         f"Narrator voice: {narrator or narrator_voice_label(settings)}"
         + (" · " if compact else "\n")
@@ -194,7 +213,7 @@ def speech_configuration_label(settings, *, narrator=None, compact=False):
     )
 
 
-def reading_policy_label(settings):
+def reading_policy_label(settings: AppSettings) -> str:
     if settings.audio_source_policy == "live-tts-only":
         policy = "Live TTS only; saved recordings are bypassed."
     elif settings.generated_audio_manifest:
