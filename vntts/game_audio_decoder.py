@@ -243,6 +243,10 @@ def ensure_game_decoder(
                 )
             name, digest = ARCHIVES[sys.platform]
             destination = root / f"{VERSION}-{sys.platform}"
+            if destination.is_symlink() or destination.is_junction():
+                raise DecoderSetupError(
+                    "Managed game-audio decoder directory must not be an alias"
+                )
             executable = destination / (
                 "vgmstream-cli.exe" if sys.platform == "win32" else "vgmstream-cli"
             )
