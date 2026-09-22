@@ -585,7 +585,7 @@ def _silence_comparison_created_at(value: object) -> datetime:
 def _validate_silence_comparison_artifacts(
     root: Path, artifacts: Iterable[object]
 ) -> dict[object, object]:
-    seen = {}
+    seen: dict[object, object] = {}
     for artifact in artifacts:
         if not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}:
             raise SilenceComparisonError("Silence comparison artifact is malformed")
