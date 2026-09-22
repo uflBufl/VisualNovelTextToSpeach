@@ -30,6 +30,14 @@ def load_catalog(path: Path) -> dict[str, Any]:
     if not isinstance(contracts, dict) or not isinstance(surfaces, list):
         raise ValueError("catalog requires contracts and surfaces")
 
+    surface_ids = _validate_surface_definitions(surfaces, contracts)
+    _validate_surface_links(surfaces, surface_ids)
+    return document
+
+
+def _validate_surface_definitions(
+    surfaces: list[dict[str, Any]], contracts: dict[str, Any]
+) -> set[str]:
     surface_ids: set[str] = set()
     story_ids: set[str] = set()
     for surface in surfaces:
@@ -51,7 +59,12 @@ def load_catalog(path: Path) -> dict[str, Any]:
             story_ids.add(story_id)
             _required_text(story, "title")
             _required_text(story, "state")
+    return surface_ids
 
+
+def _validate_surface_links(
+    surfaces: list[dict[str, Any]], surface_ids: set[str]
+) -> None:
     for surface in surfaces:
         surface_id = surface["id"]
         for related_id in surface.get("related", []):
@@ -62,7 +75,6 @@ def load_catalog(path: Path) -> dict[str, Any]:
         owner = surface["canonical_owner"]
         if owner not in surface_ids:
             raise ValueError(f"{surface_id} references unknown owner: {owner}")
-    return document
 
 
 def _required_text(value: dict[str, Any], field: str) -> str:
