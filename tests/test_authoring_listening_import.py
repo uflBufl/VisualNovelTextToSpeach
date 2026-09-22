@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -19,6 +20,7 @@ from vntts.authoring.listening_import import (
     import_listening_session,
     inspect_listening_session,
 )
+from vntts.authoring.publication import rename_directory_no_replace
 
 
 def write_listening_fixture(root):
@@ -315,6 +317,27 @@ class ListeningImportTest(unittest.TestCase):
                     for path in source.rglob("*")
                     if path.is_file()
                 },
+            )
+
+    def test_concurrent_import_does_not_overwrite_existing_destination(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = write_listening_fixture(root)
+
+            def publish_first(staging, destination):
+                shutil.copytree(staging, destination)
+                (Path(destination) / "published-elsewhere").write_text("keep")
+                return rename_directory_no_replace(staging, destination)
+
+            with patch(
+                "vntts.authoring.listening_import.rename_directory_no_replace",
+                side_effect=publish_first,
+            ):
+                result = import_listening_session(source, root / "app-data")
+
+            self.assertFalse(result.created)
+            self.assertEqual(
+                (result.destination / "published-elsewhere").read_text(), "keep"
             )
 
     def test_rejects_changed_key_path_escape_and_inconsistent_report(self):

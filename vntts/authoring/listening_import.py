@@ -18,7 +18,11 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.import_paths import default_import_root
 from vntts.authoring.private_files import private_file_is_restricted
-from vntts.authoring.publication import staged_directory
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+    staged_directory,
+)
 from vntts.authoring.workspace_foundation import load_json_object, require_sha256
 
 SESSION_SCHEMA = "r1999.model-listening-session"
@@ -203,8 +207,8 @@ def import_listening_session(
         atomic_write_json(staging / "import.json", manifest, sort_keys=True)
         _verify_controls_unchanged(inspection)
         try:
-            staging.rename(destination)
-        except OSError:
+            rename_directory_no_replace(staging, destination)
+        except AtomicPublicationError, OSError:
             if destination.exists():
                 return _validate_existing(destination, inspection)
             raise
