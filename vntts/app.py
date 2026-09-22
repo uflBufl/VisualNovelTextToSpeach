@@ -95,6 +95,7 @@ from vntts.ocr_review_ui import OCRReviewDialog
 from vntts.onboarding import OnboardingDiagnostics
 from vntts.onboarding_ui import OnboardingWizard
 from vntts.package_self_test import run_package_self_test
+from vntts.player_session import PlayerSessionOwner
 from vntts.pregeneration_activation import (
     OfflinePackActivationResult,
     OfflinePackActivator,
@@ -1595,6 +1596,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if isinstance(self.controller, AppController):
             self.controller.moss_backend_factory = self.moss_runtime
             self.controller.pocket_backend_factory = self.pocket_runtime
+        self.session_owner = PlayerSessionOwner(self.controller)
 
     def _initialize_runners(self, pregeneration_activator):
         self.live_stop_runner = LatestTaskRunner(self)
@@ -2073,7 +2075,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.run_onboarding()
             return
         if runtime_settings is not None:
-            applied = self.controller.apply_settings(runtime_settings)
+            generation = self._begin_controller_lifecycle()
+            applied = self.session_owner.attach(generation, runtime_settings)
+            self._finish_controller_lifecycle()
             if applied is False:
                 self.show_error("Unable to connect in-progress prepared audio")
                 return
@@ -2099,20 +2103,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             "Loading the speech model and voices; controls will unlock "
             "automatically when ready"
         )
-        self.controller.prepare_startup()
         self._initial_start_generation = generation
         self.initial_start_runner.start(self._initialize_controller, generation)
 
     def _initialize_controller(self, generation):
-        try:
-            ready = self.controller.start()
-        except Exception:
-            self.controller.shutdown()
-            raise
-        if not self._lifecycle_is_current(generation):
-            self.controller.shutdown()
-            return False
-        return ready
+        return self.session_owner.start(generation)
 
     def _initial_start_finished(self, ready, error):
         generation = self._initial_start_generation
@@ -2731,6 +2726,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def run_onboarding_test(self, settings):
         cancel_event = Event()
+        self._lifecycle_generation = self.session_owner.begin(cancel_event)
+        generation = self._lifecycle_generation
         self.onboarding_cancel_event = cancel_event
         self._onboarding_test_active = True
 
@@ -2813,11 +2810,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 finally:
                     self._onboarding_test_active = False
 
-        Thread(target=run_test, daemon=True).start()
+        def run_owned_test():
+            try:
+                self.session_owner.run(
+                    generation, lambda _cancellation: run_test(), None
+                )
+            finally:
+                self._onboarding_test_active = False
+
+        Thread(target=run_owned_test, daemon=True).start()
 
     def cancel_onboarding_download(self):
-        self.onboarding_cancel_event.set()
-        self.controller.request_shutdown()
+        self.session_owner.cancel()
         self.set_status("Cancelling setup test in background...")
 
     def _create_settings_dialog(self):
@@ -3031,21 +3035,22 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _start_pregeneration_activation(
         self, pack_result, success_status, generation_settings=None
     ):
-        generation = self._begin_controller_lifecycle()
         cancellation = Event()
+        generation = self._begin_controller_lifecycle(cancellation)
         self._pregeneration_activation_generation = generation
         self._pregeneration_activation_cancellation = cancellation
         self._pregeneration_activation_restore_runtime.set()
         self._pregeneration_activation_status = success_status
         self.set_status("Activating prepared offline audio in the background...")
         self.pregeneration_activation_runner.start(
-            self.pregeneration_activator.activate,
+            self.session_owner.activate,
+            generation,
+            self.pregeneration_activator,
             self.settings,
             pack_result,
-            self.controller,
             cancellation,
             self._pregeneration_activation_restore_runtime,
-            generation_settings=generation_settings,
+            generation_settings,
         )
 
     def _pregeneration_activation_finished(self, result, error):
@@ -3170,21 +3175,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _restart_controller_for_profile(self, settings, generation):
-        self.controller.shutdown()
-        if not self._lifecycle_is_current(generation):
-            return False
-        self.controller.apply_settings(settings)
-        if not self._lifecycle_is_current(generation):
-            return False
-        self.controller.prepare_startup()
-        if not self._lifecycle_is_current(generation):
-            self.controller.request_shutdown()
-            return False
-        ready = self.controller.start()
-        if not self._lifecycle_is_current(generation):
-            self.controller.shutdown()
-            return False
-        return ready
+        return self.session_owner.restart(generation, settings)
 
     def _profile_restart_finished(self, ready, error):
         generation = self._profile_restart_generation
@@ -3217,7 +3208,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if running:
             self.set_status("Unable to stop live capture for this action")
             return False
-        self._lifecycle_generation += 1
+        self._lifecycle_generation = self.session_owner.begin()
         self._live_stop_generation = self._lifecycle_generation
         self._live_stop_continuation = continuation
         self._set_modal_launchers_enabled(False)
@@ -4067,11 +4058,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.speaker_mapping_action.setEnabled(available)
         self.history_action.setEnabled(available)
 
-    def _begin_controller_lifecycle(self):
+    def _begin_controller_lifecycle(self, cancellation=None):
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
         self.diagnostics_refresh_runner.cancel()
-        self._lifecycle_generation += 1
+        self._pregeneration_activation_restore_runtime.clear()
+        self._lifecycle_generation = self.session_owner.begin(cancellation)
         self._controller_busy = True
         self._apply_controller_action_state()
         return self._lifecycle_generation
@@ -4084,6 +4076,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return (
             isinstance(generation, int)
             and generation == self._lifecycle_generation
+            and self.session_owner.is_current(generation)
             and not self._shutting_down
         )
 
@@ -4138,8 +4131,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.narrator_dialog.close()
         if self.pregeneration_dialog is not None:
             self.pregeneration_dialog.close()
-        self.controller.request_shutdown()
-        self._lifecycle_generation += 1
+        self._pregeneration_activation_restore_runtime.clear()
+        self._lifecycle_generation = self.session_owner.close()
         self._controller_busy = True
         self._live_stop_continuation = None
         self._live_stop_generation = None
@@ -4147,18 +4140,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
         self.diagnostics_refresh_runner.cancel()
-        initial_shutdown_owned = self.initial_start_runner.active
         self.initial_start_runner.cancel()
-        profile_shutdown_owned = self.profile_restart_runner.active
         self.profile_restart_runner.cancel()
         self.configuration_runner.cancel()
         self.moss_runtime_runner.cancel()
-        activation_shutdown_owned = self.pregeneration_activation_runner.active
-        self._pregeneration_activation_restore_runtime.clear()
         if self._pregeneration_activation_cancellation is not None:
             self._pregeneration_activation_cancellation.set()
         self.pregeneration_activation_runner.cancel()
-        onboarding_shutdown_owned = self._onboarding_test_active
         self.onboarding_cancel_event.set()
         self._apply_controller_action_state()
         self.resume_live_after_unknown_mapping = False
@@ -4191,13 +4179,6 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.hotkey_listener is not None:
             self.hotkey_listener.stop()
             self.hotkey_listener = None
-        if (
-            not initial_shutdown_owned
-            and not profile_shutdown_owned
-            and not onboarding_shutdown_owned
-            and not activation_shutdown_owned
-        ):
-            self.controller.shutdown()
         self.moss_runtime.shutdown()
         self.pocket_runtime.shutdown()
 

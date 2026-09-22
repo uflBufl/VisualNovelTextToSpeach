@@ -18,6 +18,8 @@ from vntts.support import record_background_operation
 class _Cancellation(Protocol):
     def is_set(self) -> bool: ...
 
+    def set(self) -> None: ...
+
 
 class _Controller(Protocol):
     @property
@@ -73,6 +75,7 @@ class OfflinePackActivator:
         restart_previous: _Cancellation | None = None,
         *,
         generation_settings: AppSettings | None = None,
+        save_settings: Callable[[AppSettings], str | Path] | None = None,
     ) -> OfflinePackActivationResult:
         if not isinstance(current_settings, AppSettings):
             raise OfflinePackActivationError("Current settings are invalid")
@@ -140,7 +143,9 @@ class OfflinePackActivator:
             _record_activation_phase("runtime-apply", phase_started, cpu_started)
             _raise_if_cancelled(cancellation)
             phase_started, cpu_started = perf_counter(), process_time()
-            settings_path = Path(self.save_settings(candidate)).expanduser()
+            settings_path = Path(
+                (save_settings or self.save_settings)(candidate)
+            ).expanduser()
             _record_activation_phase("settings-save", phase_started, cpu_started)
         except Exception as error:
             if runtime_changed or was_ready:

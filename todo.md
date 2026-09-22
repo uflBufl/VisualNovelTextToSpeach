@@ -14,10 +14,6 @@ Execution labels:
 
 ## Active - Simplify the player preparation architecture
 
-- [ ] Give one session owner responsibility for start, stop and settings/pack
-      replacement; move orchestration out of `TrayApplication` and keep the UI as
-      a caller. Gate: stale or cancelled background work cannot mutate a newer
-      session, and shutdown/restart tests pass.
 - [ ] Separate route selection from audio playback using an immutable route
       result and one playback owner. Gate: original, prepared and live fallback
       routes preserve priority and each observed dialogue occurrence starts at
