@@ -284,6 +284,7 @@ files = [
     "vntts/pregeneration_generation.py",
     "vntts/pregeneration_pack.py",
     "vntts/pregeneration_queue.py",
+    "vntts/pregeneration_voices.py",
     "vntts/pregeneration_setup.py",
     "vntts/qt_audio.py",
     "vntts/readiness_ui.py",

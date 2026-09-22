@@ -6,13 +6,19 @@ import hashlib
 import json
 import math
 import wave
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
+from typing import Protocol, TypeAlias, TypedDict
 
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.story_index import StoryIndexError
+from vntts_artifacts.story_index import (
+    StoryIndexDocument,
+    StoryIndexError,
+    StoryIndexRecord,
+)
 from vntts_artifacts.voice_generation_queue import (
     expected_voice_generation_queue_id,
     text_sha256,
@@ -37,12 +43,18 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
-from vntts.pregeneration_setup import load_verified_story_index_document
+from vntts.pregeneration_setup import (
+    PregenerationJob,
+    PregenerationJobStore,
+    load_verified_story_index_document,
+)
 from vntts.services.tts_engine import default_tts_profile, get_tts_profile
+from vntts.settings import AppSettings
 from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
+    CharacterVoice,
     CharacterVoiceRegistry,
     default_voice_choice_id,
     discover_voice_source,
@@ -55,6 +67,41 @@ from vntts.voices import (
     synthesis_character_for_line,
     voice_binding_source_id,
 )
+
+JsonObject: TypeAlias = dict[str, object]
+VariantEvidence: TypeAlias = tuple[str | None, str | None, str | None]
+PortraitSnapshot: TypeAlias = tuple[str | None, str | None]
+GroupValue: TypeAlias = tuple[
+    StoryIndexRecord,
+    str,
+    VariantEvidence,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+]
+
+
+class SynthesisControls(TypedDict):
+    backend: str
+    model: str | None
+    language: str | None
+    profile: str
+    pocket_voice_cloning: bool | None
+    narrator_speaker: str | None
+    narrator_reference: JsonObject | None
+
+
+class CandidateIdentity(TypedDict):
+    source_id: str
+    character: str
+    speaker: str
+    references: list[str]
+
+
+class Cancellation(Protocol):
+    def is_set(self) -> bool: ...
+
 
 voice_plan_schema_version = 4
 voice_decisions_schema_version = 1
@@ -75,7 +122,7 @@ class PregenerationVoiceCancelled(PregenerationVoiceError):
     """The player cancelled voice planning before publication."""
 
 
-def resolve_pregeneration_settings(settings):
+def resolve_pregeneration_settings(settings: AppSettings) -> AppSettings:
     """Normalize profiles without replacing the user's selected speech engine."""
     backend = settings.speech_backend
     if backend == "pocket-tts":
@@ -93,7 +140,9 @@ def resolve_pregeneration_settings(settings):
     return settings
 
 
-def pregeneration_narrator_source_id(settings, *, voice_library=None):
+def pregeneration_narrator_source_id(
+    settings: AppSettings, *, voice_library: VoiceLibrary | None = None
+) -> str:
     """Return the narrator source that self-service generation will use."""
     source_id = _effective_assignment_source(
         settings, "Narrator", library=voice_library
@@ -101,7 +150,7 @@ def pregeneration_narrator_source_id(settings, *, voice_library=None):
     if source_id is not None:
         return source_id
     if settings.speech_backend != "pocket-tts":
-        return default_voice_choice_id
+        return str(default_voice_choice_id)
     speaker = next(
         (
             value
@@ -129,7 +178,7 @@ class VoiceCandidate:
     source_line_ids: tuple[str, ...] = ()
     reference_duration_seconds: float | None = None
 
-    def to_document(self):
+    def to_document(self) -> JsonObject:
         value = asdict(self)
         for field in ("reference_sha256s", "source_voice_ids", "source_line_ids"):
             value[field] = list(value[field])
@@ -162,7 +211,7 @@ class VoiceGroup:
     portrait_image: str | None = None
     portrait_image_sha256: str | None = None
 
-    def to_document(self):
+    def to_document(self) -> JsonObject:
         value = asdict(self)
         for field in ("speakers", "line_ids", "reference_sha256s"):
             value[field] = list(value[field])
@@ -194,20 +243,20 @@ class VoicePlan:
     groups: tuple[VoiceGroup, ...]
 
     @property
-    def generation_line_count(self):
+    def generation_line_count(self) -> int:
         return sum(len(group.line_ids) for group in self.groups)
 
     @property
-    def audition_count(self):
+    def audition_count(self) -> int:
         return sum(group.route == "needs-audition" for group in self.groups)
 
     @property
-    def narrator_fallback_count(self):
+    def narrator_fallback_count(self) -> int:
         return sum(
             group.resolution == "automatic-narrator-fallback" for group in self.groups
         )
 
-    def to_document(self):
+    def to_document(self) -> JsonObject:
         return {
             "job_id": self.job_id,
             "created_at": self.created_at,
@@ -227,29 +276,37 @@ class VoicePlan:
 class VoiceDecisionStore:
     """Reuse explicit player choices only under identical evidence and controls."""
 
-    def __init__(self, path, *, voice_library=None, clock=None):
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        voice_library: VoiceLibrary | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.path = Path(path).expanduser()
         self.voice_library: VoiceLibrary | None = voice_library
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
-
-    def choice_for(self, group_id, decision_context_sha256):
-        return (
-            self._load()
-            .get(_decision_key(group_id, decision_context_sha256), {})
-            .get("source_id")
+        self.clock: Callable[[], datetime] = clock or (
+            lambda: datetime.now(timezone.utc)
         )
 
-    def remember(self, group, source_id):
+    def choice_for(self, group_id: str, decision_context_sha256: str) -> str | None:
+        decision = self._load().get(_decision_key(group_id, decision_context_sha256))
+        if decision is None:
+            return None
+        source_id = decision.get("source_id")
+        return source_id if isinstance(source_id, str) else None
+
+    def remember(self, group: VoiceGroup, source_id: str) -> None:
         self.remember_many(((group, source_id),))
 
-    def remember_many(self, selections):
+    def remember_many(self, selections: Iterable[tuple[VoiceGroup, str]]) -> None:
         selections = tuple(selections)
         if not selections:
             raise PregenerationVoiceError("At least one voice choice is required")
         decisions = self._load()
         decided_at = self.clock().astimezone(timezone.utc).isoformat()
-        observed_groups = set()
-        validated_selections = []
+        observed_groups: set[str] = set()
+        validated_selections: list[tuple[VoiceGroup, str]] = []
         for group, source_id in selections:
             if group.group_id in observed_groups:
                 raise PregenerationVoiceError(
@@ -333,7 +390,7 @@ class VoiceDecisionStore:
             {"decisions": decisions},
         )
 
-    def _load(self):
+    def _load(self) -> dict[str, JsonObject]:
         if not self.path.is_file():
             return {}
         try:
@@ -345,7 +402,7 @@ class VoiceDecisionStore:
             values = document.get("decisions")
             if not isinstance(values, dict):
                 raise ValueError("decisions must be an object")
-            result = {}
+            result: dict[str, JsonObject] = {}
             for key, value in values.items():
                 if (
                     not _is_sha256(key)
@@ -369,21 +426,30 @@ class VoiceDecisionStore:
 
 
 class VoicePlanStore:
-    def __init__(self, job_store, *, decisions=None, voice_library=None, clock=None):
+    def __init__(
+        self,
+        job_store: PregenerationJobStore,
+        *,
+        decisions: VoiceDecisionStore | None = None,
+        voice_library: VoiceLibrary | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.job_store = job_store
         self.decisions = decisions
         self.voice_library: VoiceLibrary | None = voice_library
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock: Callable[[], datetime] = clock or (
+            lambda: datetime.now(timezone.utc)
+        )
 
     def create(
         self,
-        job,
-        settings,
+        job: PregenerationJob,
+        settings: AppSettings,
         *,
-        manifest_path=None,
-        cancellation=None,
-        ignore_decisions=False,
-    ):
+        manifest_path: str | Path | None = None,
+        cancellation: Cancellation | None = None,
+        ignore_decisions: bool = False,
+    ) -> VoicePlan:
         _raise_if_cancelled(cancellation)
         phase_started, cpu_started = perf_counter(), process_time()
         document = _load_bound_story(job)
@@ -435,17 +501,17 @@ class VoicePlanStore:
             self._saved_independent_groups(controls) if not ignore_decisions else ()
         )
         controls_sha256 = _digest(controls)
-        records = {
+        records: dict[str, StoryIndexRecord] = {
             record.line_id: record
             for record in document.records
             if record.line_id in set(job.selected_line_ids)
         }
-        portrait_snapshots = {}
+        portrait_snapshots: dict[str, PortraitSnapshot] = {}
         if set(records) != set(job.selected_line_ids):
             raise PregenerationVoiceError(
                 "Selected dialogue changed after offline preparation was planned"
             )
-        grouped = {}
+        grouped: dict[str, list[GroupValue]] = {}
         for line_id in job.selected_line_ids:
             record = records[line_id]
             if not record.speakable or (
@@ -462,11 +528,14 @@ class VoicePlanStore:
             )
             evidence = _variant_evidence(record)
             line_source = _bound_source_for_record(record, queue_bindings)
-            bound_source = _effective_assignment_source(
-                settings,
-                character,
-                library=self.voice_library,
-            ) or line_source
+            bound_source = (
+                _effective_assignment_source(
+                    settings,
+                    character,
+                    library=self.voice_library,
+                )
+                or line_source
+            )
             portrait_image, portrait_image_sha256 = _portrait_snapshot(
                 Path(job.story_index).expanduser().resolve().parent,
                 evidence[0],
@@ -490,7 +559,7 @@ class VoicePlanStore:
             )
 
         phase_started, cpu_started = perf_counter(), process_time()
-        groups = []
+        groups: list[VoiceGroup] = []
         for group_id, values in grouped.items():
             groups.append(
                 self._resolve_group(
@@ -541,13 +610,15 @@ class VoicePlanStore:
         )
         return plan
 
-    def path_for(self, job):
-        return self.job_store.path_for(job.job_id).parent / "voice-plan.json"
+    def path_for(self, job: PregenerationJob) -> Path:
+        return Path(self.job_store.path_for(job.job_id)).parent / "voice-plan.json"
 
-    def _saved_independent_groups(self, controls):
+    def _saved_independent_groups(
+        self, controls: SynthesisControls
+    ) -> tuple[JsonObject, ...]:
         if self.decisions is None:
             return ()
-        groups = []
+        groups: list[JsonObject] = []
         for path in self.job_store.root.glob("*/voice-plan.json"):
             try:
                 plan = read_versioned_json(
@@ -557,38 +628,36 @@ class VoicePlanStore:
                 )
             except OSError, ValueError:
                 continue
-            if any(
-                plan.get(field) != controls[key]
-                for field, key in (
-                    ("synthesis_backend", "backend"),
-                    ("synthesis_model", "model"),
-                    ("synthesis_language", "language"),
-                    ("synthesis_profile", "profile"),
-                )
-            ) or plan.get("pocket_voice_cloning") != bool(
-                controls["pocket_voice_cloning"]
+            if (
+                plan.get("synthesis_backend") != controls["backend"]
+                or plan.get("synthesis_model") != controls["model"]
+                or plan.get("synthesis_language") != controls["language"]
+                or plan.get("synthesis_profile") != controls["profile"]
+                or plan.get("pocket_voice_cloning")
+                != bool(controls["pocket_voice_cloning"])
             ):
                 continue
-            if not isinstance(plan.get("groups"), list):
+            plan_groups = plan.get("groups")
+            if not isinstance(plan_groups, list):
                 continue
             groups.extend(
                 group
-                for group in plan.get("groups", ())
+                for group in plan_groups
                 if isinstance(group, dict) and group.get("route") == "voice"
             )
-        return groups
+        return tuple(groups)
 
     def _resolve_group(
         self,
-        group_id,
-        values,
-        settings,
-        registry,
-        candidate_variants,
-        controls,
-        ignore_decisions,
-        saved_groups,
-    ):
+        group_id: str,
+        values: Sequence[GroupValue],
+        settings: AppSettings,
+        registry: CharacterVoiceRegistry,
+        candidate_variants: Sequence[JsonObject],
+        controls: SynthesisControls,
+        ignore_decisions: bool,
+        saved_groups: Sequence[JsonObject],
+    ) -> VoiceGroup:
         records = tuple(value[0] for value in values)
         character = values[0][1]
         portrait, source_bank, source_voice_id = values[0][2]
@@ -670,6 +739,7 @@ class VoicePlanStore:
                 previous_candidates = previous.get("candidates", ())
                 if (
                     previous.get("group_id") != group_id
+                    or not isinstance(previous_candidates, list)
                     or not previous_candidates
                     or not all(isinstance(value, dict) for value in previous_candidates)
                 ):
@@ -680,9 +750,12 @@ class VoicePlanStore:
                 ] != candidate_identities:
                     continue
                 context = previous.get("decision_context_sha256")
-                if not _is_sha256(context):
+                if not isinstance(context, str) or not _is_sha256(context):
                     continue
-                source = self.decisions.choice_for(group_id, context)
+                decisions = self.decisions
+                if decisions is None:
+                    continue
+                source = decisions.choice_for(group_id, context)
                 if (
                     source is not None
                     and source != default_voice_choice_id
@@ -819,7 +892,11 @@ class VoicePlanStore:
                 else None
             ),
             source_speaker=candidate.speaker if candidate is not None else None,
-            reference_sha256s=tuple((selected_identity or {}).get("references", ())),
+            reference_sha256s=(
+                tuple(selected_identity["references"])
+                if selected_identity is not None
+                else ()
+            ),
             decision_context_sha256=decision_context_sha256,
             control_sha256=_digest(
                 {"controls": controls, "selected": selected_identity}
@@ -834,7 +911,7 @@ class VoicePlanStore:
         )
 
 
-def _load_bound_story(job):
+def _load_bound_story(job: PregenerationJob) -> StoryIndexDocument:
     path = Path(job.story_index).expanduser().resolve()
     try:
         document = load_verified_story_index_document(path, job.story_index_sha256)
@@ -847,18 +924,36 @@ def _load_bound_story(job):
     return document
 
 
-def _selected_manifest(settings, manifest_path):
+def _selected_manifest(
+    settings: AppSettings, manifest_path: str | Path | None
+) -> Path | None:
     value = manifest_path or settings.voice_manifest or find_default_voice_manifest()
     return Path(value).expanduser().resolve() if value else None
 
 
-def _load_registry(manifest_path):
+def _json_object(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict):
+        raise PregenerationVoiceError(f"{label} must be an object")
+    result: JsonObject = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise PregenerationVoiceError(f"{label} keys must be text")
+        result[key] = item
+    return result
+
+
+def _load_registry(
+    manifest_path: Path | None,
+) -> tuple[CharacterVoiceRegistry, str | None, JsonObject]:
     if manifest_path is None:
         return CharacterVoiceRegistry(), None, {}
     try:
         before = sha256_file(manifest_path)
         registry = CharacterVoiceRegistry.from_file(manifest_path)
-        manifest_document = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_document = _json_object(
+            json.loads(manifest_path.read_text(encoding="utf-8")),
+            "character voice manifest",
+        )
         after = sha256_file(manifest_path)
     except (json.JSONDecodeError, OSError, VoiceManifestError, ValueError) as error:
         raise PregenerationVoiceError(
@@ -869,15 +964,19 @@ def _load_registry(manifest_path):
     return registry, before, manifest_document
 
 
-def _materialize_voice_catalog(job_store, job, registry):
-    voices = []
-    payloads = {}
-    identity = []
+def _materialize_voice_catalog(
+    job_store: PregenerationJobStore,
+    job: PregenerationJob,
+    registry: CharacterVoiceRegistry,
+) -> Path:
+    voices: list[JsonObject] = []
+    payloads: dict[str, bytes] = {}
+    identity: list[tuple[str, str, list[str]]] = []
     for voice in sorted(
         registry.unique_voices(), key=lambda value: value.character.casefold()
     ):
-        references = []
-        checksums = []
+        references: list[str] = []
+        checksums: list[str] = []
         for reference in voice.references:
             payload = read_voice_reference_bytes(voice, reference)
             checksum = hashlib.sha256(payload).hexdigest()
@@ -886,7 +985,7 @@ def _materialize_voice_catalog(job_store, job, registry):
             payloads.setdefault(relative, payload)
             references.append(relative)
             checksums.append(checksum)
-        entry = {
+        entry: JsonObject = {
             "character": voice.character,
             "speaker": voice.speaker,
             "aliases": [],
@@ -897,11 +996,11 @@ def _materialize_voice_catalog(job_store, job, registry):
         voices.append(entry)
         identity.append((voice.character, voice.speaker, checksums))
     digest = _digest(identity)
-    root = job_store.path_for(job.job_id).parent
+    root = Path(job_store.path_for(job.job_id)).parent
     destination = root / f"voice-catalog-{digest[:16]}"
     manifest = destination / "manifest.json"
     if manifest.is_file():
-        return manifest
+        return Path(manifest)
     root.mkdir(parents=True, exist_ok=True)
     with staged_directory(root, prefix=".voice-catalog-") as staging:
         for relative, payload in payloads.items():
@@ -917,10 +1016,16 @@ def _materialize_voice_catalog(job_store, job, registry):
         except AtomicPublicationError:
             if not manifest.is_file():
                 raise
-    return manifest
+    return Path(manifest)
 
 
-def _candidate_for(character, settings, registry, *, assignment_source=None):
+def _candidate_for(
+    character: str,
+    settings: AppSettings,
+    registry: CharacterVoiceRegistry,
+    *,
+    assignment_source: str | None = None,
+) -> tuple[str, CharacterVoice] | None:
     source_id = assignment_source
     if source_id is None:
         source_id = _effective_assignment_source(settings, character)
@@ -936,19 +1041,24 @@ def _candidate_for(character, settings, registry, *, assignment_source=None):
 
 
 def _candidate_inventory(
-    character,
-    bound_source,
-    settings,
-    registry,
-    candidate_variants,
+    character: str,
+    bound_source: str | None,
+    settings: AppSettings,
+    registry: CharacterVoiceRegistry,
+    candidate_variants: Sequence[JsonObject],
     *,
-    assignment_source=None,
-):
+    assignment_source: str | None = None,
+) -> tuple[VoiceCandidate, ...]:
     assignment = assignment_source
-    candidates = {}
-    candidate_ranks = {}
+    candidates: dict[str, VoiceCandidate] = {}
+    candidate_ranks: dict[str, tuple[float, float]] = {}
 
-    def add(source_id, score, recommendation, variant=None):
+    def add(
+        source_id: str,
+        score: int,
+        recommendation: str,
+        variant: Mapping[str, object] | None = None,
+    ) -> None:
         voice = _candidate_from_source(source_id, registry)
         if voice is None:
             return
@@ -1042,7 +1152,12 @@ def _candidate_inventory(
     )
 
 
-def _narrator_candidate(settings, registry, *, assignment_source=None):
+def _narrator_candidate(
+    settings: AppSettings,
+    registry: CharacterVoiceRegistry,
+    *,
+    assignment_source: str | None = None,
+) -> VoiceCandidate | None:
     selected = _candidate_for(
         "Narrator",
         settings,
@@ -1068,6 +1183,8 @@ def _narrator_candidate(settings, registry, *, assignment_source=None):
         )
     source_id = pregeneration_narrator_source_id(settings)
     voice = _candidate_from_source(source_id, registry)
+    if voice is None:
+        return None
     return _ranked_candidate(
         source_id,
         voice,
@@ -1077,12 +1194,12 @@ def _narrator_candidate(settings, registry, *, assignment_source=None):
 
 
 def _effective_assignment_source(
-    settings,
-    character,
+    settings: AppSettings,
+    character: str,
     *,
     library: VoiceLibrary | None = None,
     variant_key: str | None = None,
-):
+) -> str | None:
     if library is not None:
         binding = library.binding(character, variant_key=variant_key)
         if binding is None and variant_key is not None:
@@ -1109,32 +1226,48 @@ def _effective_assignment_source(
     return None
 
 
-def _public_pocket_mode(settings):
+def _public_pocket_mode(settings: AppSettings) -> bool:
     return bool(
         settings.speech_backend == "pocket-tts"
         and not settings.pocket_gated_model_accepted
     )
 
 
-def _ranked_candidate(source_id, voice, score, recommendation, *, variant=None):
-    identity = _candidate_identity((source_id, voice))
+def _text_values(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)) or any(
+        not isinstance(item, str) for item in value
+    ):
+        raise PregenerationVoiceError("Voice candidate text values are invalid")
+    return tuple(value)
+
+
+def _ranked_candidate(
+    source_id: str,
+    voice: CharacterVoice,
+    score: int,
+    recommendation: str,
+    *,
+    variant: Mapping[str, object] | None = None,
+) -> VoiceCandidate:
     variant = variant or {}
     return VoiceCandidate(
         source_id=source_id,
         source_character=voice.source_character or voice.character,
         source_speaker=voice.speaker,
-        reference_sha256s=tuple(identity["references"]),
+        reference_sha256s=tuple(sha256_file(path) for path in voice.references),
         match_score=score,
         recommendation=recommendation,
         portrait=_optional_variant(variant.get("portrait")),
         source_bank=_optional_variant(variant.get("source_bank")),
-        source_voice_ids=tuple(variant.get("source_voice_ids", ())),
-        source_line_ids=tuple(variant.get("source_line_ids", ())),
+        source_voice_ids=_text_values(variant.get("source_voice_ids")),
+        source_line_ids=_text_values(variant.get("source_line_ids")),
         reference_duration_seconds=_reference_duration_seconds(voice.references),
     )
 
 
-def _reference_duration_seconds(references):
+def _reference_duration_seconds(references: Sequence[Path]) -> float | None:
     total = 0.0
     try:
         for reference in references:
@@ -1145,7 +1278,7 @@ def _reference_duration_seconds(references):
     return round(total, 3) if references else None
 
 
-def _voice_reference_stats(registry):
+def _voice_reference_stats(registry: CharacterVoiceRegistry) -> tuple[int, int]:
     references = {
         path.resolve()
         for voice in registry.unique_voices()
@@ -1154,7 +1287,7 @@ def _voice_reference_stats(registry):
     return len(references), sum(_file_size(path) for path in references)
 
 
-def _file_size(path):
+def _file_size(path: str | Path | None) -> int:
     if path is None:
         return 0
     try:
@@ -1163,7 +1296,9 @@ def _file_size(path):
         return 0
 
 
-def _record_plan_phase(name, started, cpu_started, **details):
+def _record_plan_phase(
+    name: str, started: float, cpu_started: float, **details: object
+) -> None:
     record_background_operation(
         f"pregeneration-voice-plan-{name}",
         (perf_counter() - started) * 1000,
@@ -1173,7 +1308,7 @@ def _record_plan_phase(name, started, cpu_started, **details):
     )
 
 
-def _candidate_decision_identity(candidate):
+def _candidate_decision_identity(candidate: VoiceCandidate) -> JsonObject:
     return {
         "source_id": candidate.source_id,
         "source_character": candidate.source_character,
@@ -1183,7 +1318,9 @@ def _candidate_decision_identity(candidate):
     }
 
 
-def _requires_audition(candidates, records):
+def _requires_audition(
+    candidates: Sequence[VoiceCandidate], records: Sequence[StoryIndexRecord]
+) -> bool:
     if len(candidates) < 2 or len(records) <= 1:
         return False
     first, second = candidates[:2]
@@ -1193,7 +1330,9 @@ def _requires_audition(candidates, records):
     )
 
 
-def _eligible_candidates(candidates):
+def _eligible_candidates(
+    candidates: tuple[VoiceCandidate, ...],
+) -> tuple[VoiceCandidate, ...]:
     if len(candidates) < 2:
         return candidates
     best_score = candidates[0].match_score
@@ -1205,24 +1344,32 @@ def _eligible_candidates(candidates):
     return (eligible or candidates[:1])[:_MAX_AUDITION_CANDIDATES]
 
 
-def _manifest_queue_bindings(manifest_document, registry):
+def _manifest_queue_bindings(
+    manifest_document: JsonObject, registry: CharacterVoiceRegistry
+) -> dict[str, str]:
     if (
         not manifest_document
         or SOURCE_REFERENCE_BINDINGS_FIELD not in manifest_document
     ):
         return {}
     try:
-        return queue_voice_overrides_from_manifest(
+        bindings = queue_voice_overrides_from_manifest(
             manifest_document,
             voices=registry.unique_voices(),
         )
+        if not isinstance(bindings, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in bindings.items()
+        ):
+            raise PregenerationVoiceError("Character voice bindings are invalid")
+        return {str(key): str(value) for key, value in bindings.items()}
     except SourceReferenceBindingError as error:
         raise PregenerationVoiceError(
             f"Character voice evidence is invalid: {error}"
         ) from error
 
 
-def _validate_player_voice_variant(variant, index, version):
+def _validate_player_voice_variant(variant: object, index: int, version: int) -> None:
     fields = {
         "variant_id",
         "character",
@@ -1252,9 +1399,7 @@ def _validate_player_voice_variant(variant, index, version):
         ("character", isinstance(character, str) and bool(character.strip())),
         (
             "portrait",
-            portrait is None
-            or isinstance(portrait, str)
-            and bool(portrait.strip()),
+            portrait is None or isinstance(portrait, str) and bool(portrait.strip()),
         ),
         ("source_bank", isinstance(source_bank, str) and bool(source_bank.strip())),
         (
@@ -1301,7 +1446,7 @@ def _validate_player_voice_variant(variant, index, version):
         )
 
 
-def _record_rejected_player_voice_candidate(reason):
+def _record_rejected_player_voice_candidate(reason: str) -> None:
     from vntts.support import record_game_import
 
     record_game_import(
@@ -1312,11 +1457,11 @@ def _record_rejected_player_voice_candidate(reason):
 
 
 def _manifest_candidate_variants(
-    manifest_document,
-    registry,
-    manifest_path,
-    story_index_sha256,
-):
+    manifest_document: JsonObject,
+    registry: CharacterVoiceRegistry,
+    manifest_path: Path | None,
+    story_index_sha256: str,
+) -> tuple[JsonObject, ...]:
     bindings = manifest_document.get(SOURCE_REFERENCE_BINDINGS_FIELD, {})
     variants = list(
         bindings.get("selected_variants", ()) if isinstance(bindings, dict) else ()
@@ -1400,7 +1545,7 @@ def _manifest_candidate_variants(
     return tuple(variants)
 
 
-def _canonical_texts(values, *, allow_empty=False):
+def _canonical_texts(values: object, *, allow_empty: bool = False) -> bool:
     if (
         not isinstance(values, list)
         or (not values and not allow_empty)
@@ -1410,20 +1555,20 @@ def _canonical_texts(values, *, allow_empty=False):
     return values == sorted(set(values), key=str.casefold)
 
 
-def _canonical_nonnegative_ints(values):
+def _canonical_nonnegative_ints(values: object) -> bool:
     return (
         isinstance(values, list)
         and all(
-            not isinstance(value, bool)
-            and isinstance(value, int)
-            and value >= 0
+            not isinstance(value, bool) and isinstance(value, int) and value >= 0
             for value in values
         )
         and values == sorted(set(values))
     )
 
 
-def _bound_source_for_record(record, bindings):
+def _bound_source_for_record(
+    record: StoryIndexRecord, bindings: Mapping[str, str]
+) -> str | None:
     if not bindings:
         return None
     queue_id = expected_voice_generation_queue_id(
@@ -1436,7 +1581,9 @@ def _bound_source_for_record(record, bindings):
     return f"character:{normalize_character_name(voice_character)}"
 
 
-def _candidate_from_source(source_id, registry):
+def _candidate_from_source(
+    source_id: str, registry: CharacterVoiceRegistry
+) -> CharacterVoice | None:
     try:
         voice = registry.resolve_source(source_id)
     except VoiceManifestError as error:
@@ -1444,13 +1591,15 @@ def _candidate_from_source(source_id, registry):
     return voice if voice is not None and _usable_voice(voice) else None
 
 
-def _usable_voice(voice):
+def _usable_voice(voice: CharacterVoice) -> bool:
     if voice.reference_root is None and not voice.references:
         return True
     return bool(voice.references) and all(path.is_file() for path in voice.references)
 
 
-def _candidate_identity(candidate):
+def _candidate_identity(
+    candidate: tuple[str, CharacterVoice] | None,
+) -> CandidateIdentity | None:
     if candidate is None:
         return None
     source_id, voice = candidate
@@ -1462,14 +1611,19 @@ def _candidate_identity(candidate):
     }
 
 
-def _variant_evidence(record):
-    return tuple(
-        _optional_variant(record.producer_fields.get(field))
-        for field in ("portrait", "source_bank", "source_voice_id")
+def _variant_evidence(record: StoryIndexRecord) -> VariantEvidence:
+    return (
+        _optional_variant(record.producer_fields.get("portrait")),
+        _optional_variant(record.producer_fields.get("source_bank")),
+        _optional_variant(record.producer_fields.get("source_voice_id")),
     )
 
 
-def _portrait_snapshot(content_root, portrait, cache):
+def _portrait_snapshot(
+    content_root: str | Path,
+    portrait: str | None,
+    cache: dict[str, PortraitSnapshot],
+) -> PortraitSnapshot:
     if portrait is None:
         return None, None
     text = str(portrait).strip()
@@ -1480,7 +1634,7 @@ def _portrait_snapshot(content_root, portrait, cache):
         return cached
     root = Path(content_root).resolve()
     names = (text,) if Path(text).suffix else (text, f"{text}.png")
-    result = (None, None)
+    result: PortraitSnapshot = (None, None)
     for name in names:
         candidate = root / "portraits" / name
         if candidate.is_symlink() or not candidate.is_file():
@@ -1501,7 +1655,7 @@ def _portrait_snapshot(content_root, portrait, cache):
     return result
 
 
-def _optional_variant(value):
+def _optional_variant(value: object) -> str | None:
     if value is None:
         return None
     if isinstance(value, (str, int)) and not isinstance(value, bool):
@@ -1510,7 +1664,9 @@ def _optional_variant(value):
     return _digest(value)
 
 
-def _sample_texts(records):
+def _sample_texts(
+    records: Sequence[StoryIndexRecord],
+) -> tuple[str, str | None]:
     eligible = list(
         dict.fromkeys(record.text.strip() for record in records if record.text.strip())
     )
@@ -1520,7 +1676,7 @@ def _sample_texts(records):
     return ranked[0], ranked[1] if len(ranked) > 1 else None
 
 
-def _synthesis_controls(settings):
+def _synthesis_controls(settings: AppSettings) -> SynthesisControls:
     return {
         "backend": settings.speech_backend,
         "model": settings.tts_model,
@@ -1540,7 +1696,7 @@ def _synthesis_controls(settings):
     }
 
 
-def _path_identity(value):
+def _path_identity(value: str | Path | None) -> JsonObject | None:
     if not value:
         return None
     path = Path(value).expanduser()
@@ -1550,13 +1706,13 @@ def _path_identity(value):
     }
 
 
-def _decision_key(group_id, decision_context_sha256):
+def _decision_key(group_id: str, decision_context_sha256: str) -> str:
     if not _is_sha256(group_id) or not _is_sha256(decision_context_sha256):
         raise PregenerationVoiceError("Voice decision identity is invalid")
     return _digest([group_id, decision_context_sha256])
 
 
-def _digest(value):
+def _digest(value: object) -> str:
     payload = json.dumps(
         value,
         ensure_ascii=False,
@@ -1566,7 +1722,7 @@ def _digest(value):
     return hashlib.sha256(payload).hexdigest()
 
 
-def _is_sha256(value):
+def _is_sha256(value: object) -> bool:
     if not isinstance(value, str) or len(value) != 64:
         return False
     try:
@@ -1576,13 +1732,13 @@ def _is_sha256(value):
     return True
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must be non-empty text")
     return value.strip()
 
 
-def _raise_if_cancelled(cancellation):
+def _raise_if_cancelled(cancellation: Cancellation | None) -> None:
     if cancellation is not None and cancellation.is_set():
         raise PregenerationVoiceCancelled("Offline voice matching was cancelled")
 
