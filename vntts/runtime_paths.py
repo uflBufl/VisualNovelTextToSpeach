@@ -19,6 +19,8 @@ RUNTIME_ENVIRONMENT_VARIABLES = {
     "moss-tts-delay": "VNTTS_MOSS_DELAY_RUNTIME",
 }
 
+_RUNTIME_RECORD_READ_LIMIT = 64 * 1024
+
 
 def source_runtime_project(backend: str) -> Path | None:
     if backend not in RUNTIME_ENVIRONMENT_VARIABLES or get_bundle_root() is not None:
@@ -54,8 +56,15 @@ def find_managed_speech_runtime(backend: str) -> Path | None:
     if marker.is_symlink() or marker.is_junction():
         return None
     try:
-        report = json.loads(marker.read_text(encoding="utf-8"))
+        with marker.open("rb") as source:
+            payload = source.read(_RUNTIME_RECORD_READ_LIMIT + 1)
     except OSError, ValueError:
+        return None
+    if len(payload) > _RUNTIME_RECORD_READ_LIMIT:
+        return None
+    try:
+        report = json.loads(payload)
+    except ValueError:
         return None
     if (
         isinstance(report, dict)

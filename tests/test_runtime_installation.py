@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -441,6 +442,25 @@ class RuntimeInstallationTest(unittest.TestCase):
         outside.write_bytes(marker.read_bytes())
         marker.unlink()
         symlink_or_skip(marker, outside)
+
+        self.assertIsNone(find_managed_speech_runtime("pocket-tts"))
+
+    def test_oversized_verification_marker_is_rejected(self):
+        runtime = self.prepared_runtime()[0]
+        marker = runtime.parents[2] / "verified.json"
+        report = json.loads(marker.read_text(encoding="utf-8"))
+        report["padding"] = "x" * (64 * 1024)
+        marker.write_text(json.dumps(report), encoding="utf-8")
+
+        self.assertIsNone(find_managed_speech_runtime("pocket-tts"))
+
+    def test_oversized_generation_owner_marker_is_rejected(self):
+        runtime = self.prepared_runtime()[0]
+        marker = runtime.parent / "owner.json"
+        marker.write_text(
+            " " * (64 * 1024) + marker.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
 
         self.assertIsNone(find_managed_speech_runtime("pocket-tts"))
 

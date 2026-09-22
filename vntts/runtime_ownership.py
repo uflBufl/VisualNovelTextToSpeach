@@ -18,6 +18,7 @@ from vntts.runtime_paths import RUNTIME_ENVIRONMENT_VARIABLES
 from vntts.services.tts_engine import TTSConfigurationError
 
 OWNER_SCHEMA = "vntts.managed-runtime-generation-v1"
+_RUNTIME_RECORD_READ_LIMIT = 64 * 1024
 
 
 def read_record(path):
@@ -25,7 +26,11 @@ def read_record(path):
     if path.is_symlink() or path.is_junction():
         return {}
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as source:
+            payload = source.read(_RUNTIME_RECORD_READ_LIMIT + 1)
+        if len(payload) > _RUNTIME_RECORD_READ_LIMIT:
+            return {}
+        value = json.loads(payload)
         return value if isinstance(value, dict) else {}
     except OSError, ValueError:
         return {}
