@@ -22,12 +22,15 @@ from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
     ImporterAvailability,
 )
+from vntts.pregeneration_acceptance import OfflineAcceptanceResult  # noqa: E402
 from vntts.pregeneration_generation import (  # noqa: E402
     OfflineGenerationCancelled,
     OfflineGenerationProgress,
+    OfflineGenerationResult,
 )
 from vntts.pregeneration_pack import (  # noqa: E402
     OfflinePackPublisher,
+    OfflinePackResult,
     OfflinePreparationChanges,
     StoryAudioCoverage,
 )
@@ -590,6 +593,19 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         self.assertIsInstance(
             dialog._story_audio_checks[("source", "story", None)][2], TypeError
         )
+        dialog._checking_story = ("source", "empty-story", None)
+        dialog._story_audio_finished((None, None, ()), None)
+        self.assertIsInstance(
+            dialog._story_audio_checks[("source", "empty-story", None)][2], TypeError
+        )
+
+        dialog._discovery_finished(object(), None)
+        self.assertIn("invalid result", dialog.source_status.text())
+
+        dialog.importing = True
+        dialog._import_finished(object(), None)
+        self.assertFalse(dialog.importing)
+        self.assertIn("invalid content", dialog.source_status.text())
 
         dialog.preparing_inputs = True
         dialog._generation_input_finished(object(), None)
@@ -604,6 +620,21 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         dialog.generating = True
         dialog._generation_finished(object(), None)
         self.assertFalse(dialog.generating)
+        self.assertIn("invalid result", dialog.resume_status.text())
+
+        dialog.recovering = True
+        dialog._recovery_finished(object(), None)
+        self.assertFalse(dialog.recovering)
+        self.assertIn("invalid result", dialog.resume_status.text())
+
+        dialog.accepting_audio = True
+        dialog._acceptance_finished(object(), None)
+        self.assertFalse(dialog.accepting_audio)
+        self.assertIn("invalid result", dialog.resume_status.text())
+
+        dialog.publishing_pack = True
+        dialog._publication_finished(object(), None)
+        self.assertFalse(dialog.publishing_pack)
         self.assertIn("invalid result", dialog.resume_status.text())
 
     def run_next_task(self, pool):
@@ -1491,7 +1522,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             content = inspect_story_index(write_story_index(root / "content"))
             store = PregenerationJobStore(root / "jobs")
             pool = ManualThreadPool()
-            generation_result = Mock(generated=2, failed=0)
+            generation_result = OfflineGenerationResult(
+                root / "output",
+                root / "state.json",
+                root / "generation-manifest.json",
+                generated=2,
+                failed=0,
+                other_terminal=0,
+            )
             generator = Mock()
             generator.generate.return_value = generation_result
             recovery = Mock()
@@ -1502,10 +1540,18 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 remaining_failed=0,
                 remaining_action_counts=(),
             )
-            acceptance_result = Mock(generation=generation_result, approved=2)
+            acceptance_result = OfflineAcceptanceResult(generation_result, approved=2)
             acceptance = Mock()
             acceptance.accept.return_value = acceptance_result
-            pack_result = Mock()
+            pack_result = OfflinePackResult(
+                identity="f" * 64,
+                directory=root / "pack",
+                manifest=root / "pack" / "game-pack.json",
+                imported=Mock(),
+                approved=2,
+                live_fallbacks=0,
+                story_lines=3,
+            )
             publisher = Mock(wraps=OfflinePackPublisher())
             publisher.publish.return_value = pack_result
             dialog = OfflineAudioPreparationDialog(
@@ -1747,7 +1793,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             pool = ManualThreadPool()
-            final = Mock(generated=2, failed=0, other_terminal=1)
+            final = OfflineGenerationResult(
+                root / "output",
+                root / "state.json",
+                root / "generation-manifest.json",
+                generated=2,
+                failed=0,
+                other_terminal=1,
+            )
             recovery_result = OfflineRecoveryResult(
                 final,
                 attempted_actions=2,
@@ -1759,10 +1812,14 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generator = Mock()
             recovery = Mock()
             recovery.generate_and_recover.return_value = recovery_result
-            acceptance_result = Mock(generation=final, approved=2)
+            acceptance_result = OfflineAcceptanceResult(final, approved=2)
             acceptance = Mock()
             acceptance.accept.return_value = acceptance_result
-            pack_result = Mock(
+            pack_result = OfflinePackResult(
+                identity="f" * 64,
+                directory=root / "pack",
+                manifest=root / "pack" / "game-pack.json",
+                imported=Mock(),
                 approved=2,
                 live_fallbacks=1,
                 story_lines=3,
@@ -1845,12 +1902,20 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             dialog._generation_input = Mock(ready_items=3)
             dialog.recovering = True
-            generation = Mock(generated=2, failed=1, other_terminal=0)
-            result = Mock(
+            generation = OfflineGenerationResult(
+                root / "output",
+                root / "state.json",
+                root / "manifest.json",
+                generated=2,
+                failed=1,
+                other_terminal=0,
+            )
+            result = OfflineRecoveryResult(
                 generation=generation,
+                attempted_actions=1,
                 recovered=1,
-                live_fallbacks=0,
                 remaining_failed=1,
+                remaining_action_counts=(("safe_resume", 1),),
             )
 
             dialog._recovery_finished(result, None)

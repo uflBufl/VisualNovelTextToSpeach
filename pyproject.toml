@@ -330,6 +330,7 @@ files = [
     "vntts/pregeneration_recovery.py",
     "vntts/pregeneration_voices.py",
     "vntts/pregeneration_setup.py",
+    "vntts/pregeneration_ui.py",
     "vntts/qt_audio.py",
     "vntts/readiness_ui.py",
     "vntts/reference_quality.py",
