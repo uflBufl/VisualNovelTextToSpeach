@@ -121,6 +121,23 @@ class OCRReviewStoreTest(unittest.TestCase):
         self.assertEqual(upgraded["schema_version"], OCR_REVIEW_SCHEMA_VERSION)
         self.assertTrue(upgraded["resolved"])
 
+    def test_stale_sample_cannot_resolve_replaced_metadata(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = OCRReviewStore(temporary_directory)
+            record_uncertain_sample(temporary_directory)
+            sample = store.pending_samples()[0]
+            replacement = json.loads(sample.metadata_path.read_text(encoding="utf-8"))
+            replacement["text"] = "A newer observation."
+            sample.metadata_path.write_text(json.dumps(replacement), encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "changed"):
+                store.mark_resolved(sample)
+
+            preserved = json.loads(sample.metadata_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(preserved["text"], "A newer observation.")
+        self.assertNotIn("resolved", preserved)
+
 
 class OCRReviewDialogTest(unittest.TestCase):
     @classmethod

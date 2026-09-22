@@ -28,7 +28,7 @@ def read_versioned_json(
     if "schema_version" not in payload and allow_unversioned:
         return payload
     version = payload.get("schema_version")
-    if isinstance(version, bool) or not isinstance(version, int):
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise ValueError(f"{document_name} schema version is missing or invalid")
     if version > schema_version or (version != schema_version and not allow_older):
         raise ValueError(f"unsupported {document_name} schema version: {version}")

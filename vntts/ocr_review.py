@@ -66,6 +66,8 @@ class OCRReviewStore:
             document_name="OCR review metadata",
             allow_unversioned=True,
         )
+        if self._sample_from_payload(sample.metadata_path, payload) != sample:
+            raise RuntimeError("OCR review sample changed before resolution")
         payload["resolved"] = True
         payload["resolved_at"] = datetime.now(timezone.utc).isoformat()
         if scope:
@@ -80,26 +82,7 @@ class OCRReviewStore:
 
     def _load_sample(self, metadata_path: Path) -> OCRReviewSample | None:
         def decode(payload: dict[str, object]) -> OCRReviewSample | None:
-            if payload.get("resolved") is True:
-                return None
-            image = payload["image"]
-            if not isinstance(image, str):
-                raise TypeError("OCR review image must be a path string")
-            image_path = metadata_path.parent / image
-            if not image_path.is_file():
-                return None
-            return OCRReviewSample(
-                metadata_path=metadata_path,
-                image_path=image_path,
-                character=str(payload.get("character") or "Narrator"),
-                text=str(payload.get("text") or ""),
-                confidence=_float_field(payload.get("confidence", 0)),
-                minimum_confidence=_float_field(payload.get("minimum_confidence", 0)),
-                preprocessing_profile=str(
-                    payload.get("preprocessing_profile") or "unknown"
-                ),
-                attempts=_int_field(payload.get("attempts", 0)),
-            )
+            return self._sample_from_payload(metadata_path, payload)
 
         def fallback() -> None:
             return None
@@ -115,3 +98,29 @@ class OCRReviewStore:
         if sample is not None and not isinstance(sample, OCRReviewSample):
             raise TypeError("OCR review loader returned an invalid sample")
         return sample
+
+    @staticmethod
+    def _sample_from_payload(
+        metadata_path: Path,
+        payload: dict[str, object],
+    ) -> OCRReviewSample | None:
+        if payload.get("resolved") is True:
+            return None
+        image = payload["image"]
+        if not isinstance(image, str):
+            raise TypeError("OCR review image must be a path string")
+        image_path = metadata_path.parent / image
+        if not image_path.is_file():
+            return None
+        return OCRReviewSample(
+            metadata_path=metadata_path,
+            image_path=image_path,
+            character=str(payload.get("character") or "Narrator"),
+            text=str(payload.get("text") or ""),
+            confidence=_float_field(payload.get("confidence", 0)),
+            minimum_confidence=_float_field(payload.get("minimum_confidence", 0)),
+            preprocessing_profile=str(
+                payload.get("preprocessing_profile") or "unknown"
+            ),
+            attempts=_int_field(payload.get("attempts", 0)),
+        )

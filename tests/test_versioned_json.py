@@ -69,6 +69,31 @@ class VersionedJsonTest(unittest.TestCase):
         self.assertEqual(future, {})
         self.assertEqual(len(warnings), 2)
 
+    def test_nonpositive_schema_versions_are_not_treated_as_compatible(self):
+        warnings = []
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "document.json"
+            results = []
+            for version in (0, -1):
+                path.write_text(
+                    json.dumps({"schema_version": version, "value": "damaged"}),
+                    encoding="utf-8",
+                )
+                results.append(
+                    load_versioned_json(
+                        path,
+                        schema_version=2,
+                        document_name="test document",
+                        decode=lambda payload: payload["value"],
+                        fallback=lambda: "fallback",
+                        warn=warnings.append,
+                        allow_older=True,
+                    )
+                )
+
+        self.assertEqual(results, ["fallback", "fallback"])
+        self.assertEqual(len(warnings), 2)
+
     def test_atomic_writer_keeps_existing_document_when_publication_fails(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "document.json"
