@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from threading import Event, Lock
+from typing import Protocol
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
@@ -50,6 +51,44 @@ AUTOMATIC_ACTION_ORDER = (
 )
 
 
+class _RecoveryGenerator(Protocol):
+    def generate(
+        self,
+        generation_input: PregenerationInput,
+        voice_plan: VoicePlan,
+        cancel_event: Event | None = None,
+        *,
+        queue_ids: tuple[str, ...] | None = None,
+    ) -> OfflineGenerationResult: ...
+
+    def repair(
+        self,
+        generation_input: PregenerationInput,
+        voice_plan: VoicePlan,
+        generation_result: OfflineGenerationResult,
+        *,
+        action: str,
+        queue_ids: tuple[str, ...],
+        cancel_event: Event | None = None,
+    ) -> OfflineGenerationResult: ...
+
+    def inspect(
+        self, generation_input: PregenerationInput
+    ) -> OfflineGenerationResult: ...
+
+
+class _RecoveryTerminalizer(Protocol):
+    def __call__(
+        self,
+        generation_input: PregenerationInput,
+        generation_result: OfflineGenerationResult,
+        queue_ids: tuple[str, ...],
+        cancel_event: Event | None,
+        *,
+        generator: _RecoveryGenerator,
+    ) -> OfflineGenerationResult: ...
+
+
 class OfflineRecoveryError(OfflineGenerationError):
     """The current generated output cannot be recovered safely."""
 
@@ -71,11 +110,11 @@ class OfflineRecoveryPlan:
     live_fallback_queue_ids: tuple[str, ...] = ()
 
     @property
-    def automatic_count(self):
+    def automatic_count(self) -> int:
         return sum(len(batch.queue_ids) for batch in self.automatic_batches)
 
     @property
-    def deferred_count(self):
+    def deferred_count(self) -> int:
         return sum(count for _action, count in self.deferred_action_counts)
 
 
@@ -89,7 +128,11 @@ class OfflineRecoveryResult:
     live_fallbacks: int = 0
 
 
-def plan_automatic_recovery(generation_input, voice_plan, generation_result):
+def plan_automatic_recovery(
+    generation_input: PregenerationInput,
+    voice_plan: VoicePlan,
+    generation_result: OfflineGenerationResult,
+) -> OfflineRecoveryPlan:
     """Derive exact safe batches from current checksum-bound failure evidence."""
     validate_offline_generation_result(
         generation_input,
@@ -111,11 +154,11 @@ def plan_automatic_recovery(generation_input, voice_plan, generation_result):
     records = document.get("records")
     if not isinstance(records, list):
         raise OfflineRecoveryError("Offline recovery plan is malformed")
-    grouped = {action: [] for action in AUTOMATIC_ACTION_ORDER}
-    deferred = Counter()
-    deferred_queue_ids = {}
-    live_fallback_queue_ids = []
-    seen_queue_ids = set()
+    grouped: dict[str, list[str]] = {action: [] for action in AUTOMATIC_ACTION_ORDER}
+    deferred: Counter[str] = Counter()
+    deferred_queue_ids: dict[str, list[str]] = {}
+    live_fallback_queue_ids: list[str] = []
+    seen_queue_ids: set[str] = set()
     for record in records:
         if not isinstance(record, dict):
             raise OfflineRecoveryError("Offline recovery record is malformed")
@@ -177,16 +220,19 @@ class OfflineRecoveryWorker:
 
     def __init__(
         self,
-        generator=None,
+        generator: _RecoveryGenerator | None = None,
         *,
-        planner=plan_automatic_recovery,
-        terminalizer=None,
-    ):
+        planner: Callable[
+            [PregenerationInput, VoicePlan, OfflineGenerationResult],
+            OfflineRecoveryPlan,
+        ] = plan_automatic_recovery,
+        terminalizer: _RecoveryTerminalizer | None = None,
+    ) -> None:
         self.generator = generator or OfflineGenerationWorker()
         self.planner = planner
         self.terminalizer = terminalizer or _terminalize_exhausted_failures
         self._priority_lock = Lock()
-        self._priority_line = None
+        self._priority_line: tuple[str, str] | None = None
 
     def prioritize_line(self, line_id: str, text_sha256: str) -> bool:
         if not all(
@@ -199,13 +245,13 @@ class OfflineRecoveryWorker:
 
     def recover(
         self,
-        generation_input,
-        voice_plan,
-        generation_result,
-        cancel_event=None,
+        generation_input: PregenerationInput,
+        voice_plan: VoicePlan,
+        generation_result: OfflineGenerationResult,
+        cancel_event: Event | None = None,
         *,
-        queue_id=None,
-    ):
+        queue_id: str | None = None,
+    ) -> OfflineRecoveryResult:
         validate_offline_generation_result(
             generation_input,
             generation_result,
@@ -218,10 +264,10 @@ class OfflineRecoveryWorker:
             return OfflineRecoveryResult(generation_result, 0, 0, 0, ())
         initial_failures = generation_result.failed
         current = generation_result
-        applied = set()
+        applied: set[tuple[str, str]] = set()
         terminalized = 0
         terminalization_attempted = False
-        scoped_initial_failures = None
+        scoped_initial_failures: int | None = None
         while True:
             plan = self.planner(generation_input, voice_plan, current)
             if queue_id is not None and scoped_initial_failures is None:
@@ -339,6 +385,8 @@ class OfflineRecoveryWorker:
                     cancel_event,
                     queue_ids=(queue_id,),
                 )
+            if current is None:
+                raise OfflineRecoveryError("Offline generation produced no result")
             result = self.recover(
                 generation_input,
                 voice_plan,
@@ -370,6 +418,8 @@ class OfflineRecoveryWorker:
     ) -> str | None:
         with self._priority_lock:
             identity, self._priority_line = self._priority_line, None
+        if identity is None:
+            return None
         queue_id = line_queue_ids.get(identity)
         return queue_id if queue_id in pending else None
 
@@ -454,7 +504,7 @@ def _ordered_generation_queue_ids(
 def _generation_queue_statuses(
     generation_result: OfflineGenerationResult,
     generation_input: PregenerationInput,
-) -> dict[object, str]:
+) -> dict[str, str]:
     try:
         state = load_generation_state(
             generation_result.state,
@@ -467,24 +517,24 @@ def _generation_queue_statuses(
     items = state.get("items")
     if not isinstance(items, dict):
         raise OfflineRecoveryError("Offline generation state is invalid")
-    statuses: dict[object, str] = {}
+    statuses: dict[str, str] = {}
     for queue_id, item in items.items():
         if not isinstance(item, dict):
             continue
         status = item.get("status")
-        if isinstance(status, str):
+        if isinstance(queue_id, str) and isinstance(status, str):
             statuses[queue_id] = status
     return statuses
 
 
 def _terminalize_exhausted_failures(
-    generation_input,
-    generation_result,
-    queue_ids,
-    cancel_event,
+    generation_input: PregenerationInput,
+    generation_result: OfflineGenerationResult,
+    queue_ids: tuple[str, ...],
+    cancel_event: Event | None,
     *,
-    generator,
-):
+    generator: _RecoveryGenerator,
+) -> OfflineGenerationResult:
     validate_offline_generation_result(
         generation_input,
         generation_result,
@@ -509,8 +559,8 @@ def _terminalize_exhausted_failures(
     return generator.inspect(generation_input)
 
 
-def _sha256(value, label):
-    if not is_lowercase_sha256(value):
+def _sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or not is_lowercase_sha256(value):
         raise OfflineRecoveryError(f"Offline recovery {label} hash is invalid")
     return value
 

@@ -12,7 +12,6 @@
     "vntts/game_content_importer.py": 17,
     "vntts/pregeneration_acceptance.py": 3,
     "vntts/pregeneration_activation.py": 5,
-    "vntts/pregeneration_recovery.py": 7,
     "vntts/pregeneration_ui.py": 119,
     "vntts/services/tts_engine.py": 19,
     "vntts/speech_presentation.py": 10,
