@@ -73,6 +73,13 @@ class ModelAssetManager:
     def model_path(self, model_name):
         return self.coqui_cache_root / model_name.replace("/", "--")
 
+    def _check_model_path(self, model_path):
+        if any(
+            path.is_symlink() or path.is_junction()
+            for path in (self.coqui_cache_root, model_path)
+        ):
+            raise ModelIntegrityError("Managed model directory must not be an alias")
+
     def is_ready(self, model_name):
         try:
             self.validate(model_name)
@@ -83,6 +90,7 @@ class ModelAssetManager:
     def validate(self, model_name, *, asset=None):
         asset = asset or self.catalog_loader(model_name)
         model_path = self.model_path(model_name)
+        self._check_model_path(model_path)
         manifest_path = model_path / asset_manifest_name
         if not manifest_path.is_file():
             self._adopt_existing_model(model_path, asset)
@@ -141,6 +149,7 @@ class ModelAssetManager:
         asset = asset or self.catalog_loader(model_name)
         self.configure_environment()
         model_path = self.model_path(model_name)
+        self._check_model_path(model_path)
         model_path.mkdir(parents=True, exist_ok=True)
 
         if self.is_ready_with_asset(model_name, asset):

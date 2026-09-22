@@ -274,6 +274,24 @@ class ModelAssetManagerTest(unittest.TestCase):
             with self.assertRaisesRegex(ModelIntegrityError, "manifest"):
                 manager.validate(asset.name, asset=asset)
 
+    def test_model_download_rejects_aliased_managed_directory(self):
+        asset = self.create_asset()
+        opener = MemoryOpener(
+            {
+                asset.urls[0]: b"model-weights",
+                asset.urls[1]: b"publisher-hash\n",
+            }
+        )
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory, opener=opener)
+            model_path = manager.download(asset.name, asset=asset)
+            outside = Path(temporary_directory) / "outside-model"
+            model_path.rename(outside)
+            symlink_or_skip(model_path, outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(ModelIntegrityError, "directory"):
+                manager.download(asset.name, asset=asset)
+
 
 class VoicePackManagerTest(unittest.TestCase):
     def test_import_voice_copies_local_references_and_builds_manifest(self):
