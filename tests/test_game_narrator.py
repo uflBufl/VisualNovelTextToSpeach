@@ -406,37 +406,66 @@ class GameNarratorTest(unittest.TestCase):
         importer.prepare_voice_roles.return_value = manifest
         return importer
 
+    @staticmethod
+    def player_candidate_manifest(root):
+        manifest = write_player_candidate_manifest(root, "a" * 64)
+        document = json.loads(manifest.read_text())
+        originals = []
+        for entry, variant, media_id, duration, origin in zip(
+            document["voices"],
+            document["vntts.player.voice_candidates"]["variants"],
+            ("562400954", "599773947"),
+            (3.17, 1.95),
+            ("exact_bank_unrouted_media", "story_line_route"),
+            strict=True,
+        ):
+            candidate = f"Player candidate Mrs. Owen {media_id}"
+            entry["character"] = candidate
+            reference = manifest.parent / entry["references"][0]
+            original = clean_wav_bytes(
+                amplitude=0.2 if not originals else 0.3, seconds=duration
+            )
+            reference.write_bytes(original)
+            originals.append(original)
+            variant.update(
+                character="Mrs. Owen",
+                voice_character=candidate,
+                duration_seconds=duration,
+                candidate_origin=origin,
+                reference_sha256=sha256_file(reference),
+            )
+        manifest.write_text(json.dumps(document))
+        return manifest, originals
+
+    def assert_saved_candidate_reopens(self, importer):
+        reopened_pool = ManualThreadPool()
+        reopened = GameNarratorDialog(
+            AppSettings(speech_backend="moss-tts"),
+            importer=importer,
+            preview_service=Mock(),
+            thread_pool=reopened_pool,
+            player=Mock(),
+        )
+        try:
+            reopened.set_voice_context(roles=("Mrs. Owen",))
+            reopened.role.setCurrentText("Mrs. Owen")
+            self.choose_game_source(reopened)
+            self.application.processEvents()
+            while reopened_pool.tasks:
+                self.run_task(reopened_pool)
+            self.assertEqual(
+                reopened.references.currentData(),
+                "character:playercandidatemrsowen599773947",
+            )
+        finally:
+            reopened.reject()
+            while reopened_pool.tasks:
+                self.run_task(reopened_pool)
+
     def test_character_game_candidates_use_story_manifest_and_exact_source(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            manifest = write_player_candidate_manifest(root, "a" * 64)
-            document = json.loads(manifest.read_text())
-            media_ids = ("562400954", "599773947")
-            originals = []
-            for entry, variant, media_id, duration, origin in zip(
-                document["voices"],
-                document["vntts.player.voice_candidates"]["variants"],
-                media_ids,
-                (3.17, 1.95),
-                ("exact_bank_unrouted_media", "story_line_route"),
-                strict=True,
-            ):
-                candidate = f"Player candidate Mrs. Owen {media_id}"
-                entry["character"] = candidate
-                reference = manifest.parent / entry["references"][0]
-                original = clean_wav_bytes(
-                    amplitude=0.2 if not originals else 0.3, seconds=duration
-                )
-                reference.write_bytes(original)
-                originals.append(original)
-                variant.update(
-                    character="Mrs. Owen",
-                    voice_character=candidate,
-                    duration_seconds=duration,
-                    candidate_origin=origin,
-                    reference_sha256=sha256_file(reference),
-                )
-            manifest.write_text(json.dumps(document))
+            manifest, originals = self.player_candidate_manifest(root)
             importer = Mock()
             importer.narrator_characters.return_value = ("Mrs. Owen",)
             importer.prepare_voice_roles.return_value = manifest
@@ -510,29 +539,7 @@ class GameNarratorTest(unittest.TestCase):
                 while pool.tasks:
                     self.run_task(pool)
 
-            reopened_pool = ManualThreadPool()
-            reopened = GameNarratorDialog(
-                AppSettings(speech_backend="moss-tts"),
-                importer=importer,
-                preview_service=Mock(),
-                thread_pool=reopened_pool,
-                player=Mock(),
-            )
-            try:
-                reopened.set_voice_context(roles=("Mrs. Owen",))
-                reopened.role.setCurrentText("Mrs. Owen")
-                self.choose_game_source(reopened)
-                self.application.processEvents()
-                while reopened_pool.tasks:
-                    self.run_task(reopened_pool)
-                self.assertEqual(
-                    reopened.references.currentData(),
-                    "character:playercandidatemrsowen599773947",
-                )
-            finally:
-                reopened.reject()
-                while reopened_pool.tasks:
-                    self.run_task(reopened_pool)
+            self.assert_saved_candidate_reopens(importer)
 
     def test_voice_context_deduplicates_quoted_role_labels(self):
         dialog = GameNarratorDialog(
