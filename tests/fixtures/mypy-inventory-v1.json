@@ -5,7 +5,6 @@
     "vntts/assets.py": 24,
     "vntts/audio_cache.py": 6,
     "vntts/authoring/cohort_bundle_ui.py": 53,
-    "vntts/authoring/delivery.py": 6,
     "vntts/authoring/legacy_reason_review.py": 9,
     "vntts/authoring/model_benchmark.py": 20,
     "vntts/authoring/pcm_playback.py": 14,

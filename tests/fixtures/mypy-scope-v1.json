@@ -39,6 +39,7 @@
     "vntts/authoring/cohort_bundle.py",
     "vntts/authoring/cohort_review.py",
     "vntts/authoring/config_rebase.py",
+    "vntts/authoring/delivery.py",
     "vntts/authoring/explicit_fallback_merge.py",
     "vntts/authoring/experimental_composite_voice.py",
     "vntts/authoring/failed_control_carry.py",

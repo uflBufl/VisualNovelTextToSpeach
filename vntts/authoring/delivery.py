@@ -62,18 +62,18 @@ class DeliveryPolicyApplication:
     provenance: dict[str, object] | None = None
 
     @property
-    def policy_generated(self):
+    def policy_generated(self) -> bool:
         return self.origin == "policy"
 
 
 def annotate_delivery(
-    text,
+    text: str,
     *,
-    speaker="Narrator",
-    previous_text=None,
-    next_text=None,
-    kind="dialogue",
-):
+    speaker: str = "Narrator",
+    previous_text: str | None = None,
+    next_text: str | None = None,
+    kind: str = "dialogue",
+) -> dict[str, object]:
     """Return the exact deterministic extractor v1 English heuristic output."""
     text = _required_exact_text(text, "text")
     speaker = _required_exact_text(speaker, "speaker")
@@ -176,8 +176,8 @@ def annotate_delivery(
 
 
 def apply_delivery_policy(
-    record: Mapping[str, object], policy=PRESERVE_DELIVERY_POLICY
-):
+    record: Mapping[str, object], policy: str | None = PRESERVE_DELIVERY_POLICY
+) -> DeliveryPolicyApplication:
     """Return a copy with source annotations preserved or explicit policy output."""
     if not isinstance(record, Mapping):
         raise DeliveryAnnotationError("record must be a mapping")
@@ -201,22 +201,25 @@ def apply_delivery_policy(
     if policy == PRESERVE_DELIVERY_POLICY:
         return DeliveryPolicyApplication(result, "none")
 
+    text = _required_exact_text(result.get("text"), "record text")
+    speaker = _required_exact_text(result.get("speaker"), "record speaker")
+    previous_text = _optional_text(result.get("previous_text"), "record previous_text")
+    next_text = _optional_text(result.get("next_text"), "record next_text")
+    kind = _required_exact_text(result.get("kind") or "dialogue", "record kind")
     inputs = {
-        "text": _required_exact_text(result.get("text"), "record text"),
-        "speaker": _required_exact_text(result.get("speaker"), "record speaker"),
-        "previous_text": _optional_text(
-            result.get("previous_text"), "record previous_text"
-        ),
-        "next_text": _optional_text(result.get("next_text"), "record next_text"),
-        "kind": _required_exact_text(result.get("kind") or "dialogue", "record kind"),
+        "text": text,
+        "speaker": speaker,
+        "previous_text": previous_text,
+        "next_text": next_text,
+        "kind": kind,
     }
     result.update(
         annotate_delivery(
-            inputs["text"],
-            speaker=inputs["speaker"],
-            previous_text=inputs["previous_text"],
-            next_text=inputs["next_text"],
-            kind=inputs["kind"],
+            text,
+            speaker=speaker,
+            previous_text=previous_text,
+            next_text=next_text,
+            kind=kind,
         )
     )
     provenance = {
@@ -229,13 +232,13 @@ def apply_delivery_policy(
     return DeliveryPolicyApplication(result, "policy", provenance)
 
 
-def _required_exact_text(value, label):
+def _required_exact_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise DeliveryAnnotationError(f"{label} must be non-empty text")
     return value
 
 
-def _optional_text(value, label):
+def _optional_text(value: object, label: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
