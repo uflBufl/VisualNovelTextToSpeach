@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import sys
 import wave
@@ -19,6 +18,10 @@ from typing import Protocol, TypedDict
 import numpy as np
 from numpy.typing import NDArray
 
+from vntts.authoring.publication import (
+    AtomicPublicationError,
+    rename_directory_no_replace,
+)
 from vntts.cuda_probe import CudaProbeError, inspect_cuda
 
 CORPUS_SCHEMA = "vntts.sound-effect-benchmark-corpus"
@@ -225,7 +228,12 @@ def benchmark_sound_effects(
             json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        os.rename(root, output_directory)
+        try:
+            rename_directory_no_replace(root, output_directory)
+        except AtomicPublicationError as error:
+            raise SoundEffectBenchmarkError(
+                f"Benchmark output already exists; refusing to overwrite: {output_directory}"
+            ) from error
     return report
 
 

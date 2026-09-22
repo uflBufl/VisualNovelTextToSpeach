@@ -1,12 +1,15 @@
 import hashlib
 import json
+import shutil
 import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 
+from vntts.authoring.publication import rename_directory_no_replace
 from vntts.authoring.sound_effect_benchmark import (
     SoundEffectBenchmarkError,
     benchmark_sound_effects,
@@ -241,6 +244,36 @@ class SoundEffectBenchmarkTest(unittest.TestCase):
                 )
 
             self.assertFalse(output.exists())
+
+    def test_concurrent_publication_does_not_overwrite(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            corpus = root / "corpus.json"
+            output = root / "output"
+            write_corpus(corpus)
+
+            def publish_first(staging, destination):
+                shutil.copytree(staging, destination)
+                (Path(destination) / "published-elsewhere").write_text("keep")
+                return rename_directory_no_replace(staging, destination)
+
+            with (
+                patch(
+                    "vntts.authoring.sound_effect_benchmark.rename_directory_no_replace",
+                    side_effect=publish_first,
+                ),
+                self.assertRaisesRegex(
+                    SoundEffectBenchmarkError, "refusing to overwrite"
+                ),
+            ):
+                benchmark_sound_effects(
+                    corpus,
+                    output,
+                    torch_module=FakeTorch(),
+                    pipeline_factory=lambda *args, **kwargs: FakePipeline(),
+                )
+
+            self.assertEqual((output / "published-elsewhere").read_text(), "keep")
 
     def test_rejects_duplicate_and_unsafe_sample_ids(self):
         with TemporaryDirectory() as directory:
