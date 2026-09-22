@@ -6,9 +6,11 @@ import copy
 import hashlib
 import io
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter, process_time
+from typing import Protocol, TypeAlias, TypedDict
 
 import numpy as np
 import soundfile as sf
@@ -16,7 +18,9 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import (
+    StoryIndexDocument,
     StoryIndexError,
+    StoryIndexRecord,
     write_story_index_document,
 )
 from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
@@ -37,8 +41,12 @@ from vntts.authoring.queue_builder import (
     inspect_generation_queue,
     publish_generation_queue,
 )
-from vntts.pregeneration_setup import load_verified_story_index_document
-from vntts.pregeneration_voices import VoicePlan
+from vntts.pregeneration_setup import (
+    PregenerationJob,
+    PregenerationJobStore,
+    load_verified_story_index_document,
+)
+from vntts.pregeneration_voices import VoiceGroup, VoicePlan
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidenceError,
     canonical_document_sha256,
@@ -48,6 +56,7 @@ from vntts.source_audio_semantics import (
 from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 from vntts.voices import (
+    CharacterVoice,
     CharacterVoiceRegistry,
     pocket_tts_preset_voices,
     read_voice_reference_bytes,
@@ -55,6 +64,18 @@ from vntts.voices import (
 )
 
 generation_input_schema_version = 4
+VoiceChoice: TypeAlias = tuple[CharacterVoice | None, tuple[str, ...], str]
+StoryRecordDocument: TypeAlias = dict[str, object]
+
+
+class EffectiveVoiceRoutes(TypedDict):
+    routes: dict[str, VoiceChoice]
+    narrator_roles: tuple[str, ...]
+    line_voice_characters: dict[str, str]
+
+
+class _Cancellation(Protocol):
+    def is_set(self) -> bool: ...
 
 
 class PregenerationQueueError(RuntimeError):
@@ -82,10 +103,16 @@ class PregenerationInput:
 
 
 class PregenerationInputStore:
-    def __init__(self, job_store):
+    def __init__(self, job_store: PregenerationJobStore) -> None:
         self.job_store = job_store
 
-    def materialize(self, job, plan, *, cancellation=None):
+    def materialize(
+        self,
+        job: PregenerationJob,
+        plan: VoicePlan,
+        *,
+        cancellation: _Cancellation | None = None,
+    ) -> PregenerationInput:
         if not isinstance(plan, VoicePlan) or plan.job_id != job.job_id:
             raise PregenerationQueueError(
                 "Voice plan does not belong to this preparation"
@@ -274,7 +301,7 @@ class PregenerationInputStore:
             ) from error
 
 
-def _load_story(job):
+def _load_story(job: PregenerationJob) -> StoryIndexDocument:
     path = Path(job.story_index).expanduser().resolve()
     try:
         return load_verified_story_index_document(path, job.story_index_sha256)
@@ -286,7 +313,7 @@ def _load_story(job):
         ) from error
 
 
-def _load_source_registry(plan):
+def _load_source_registry(plan: VoicePlan) -> CharacterVoiceRegistry:
     if not plan.voice_manifest:
         if plan.synthesis_backend == "pocket-tts":
             return CharacterVoiceRegistry()
@@ -312,7 +339,9 @@ def _load_source_registry(plan):
         ) from error
 
 
-def _selected_records(story, selected_line_ids):
+def _selected_records(
+    story: StoryIndexDocument, selected_line_ids: Sequence[str]
+) -> tuple[StoryIndexRecord, ...]:
     by_id = {record.line_id: record for record in story.records}
     try:
         records = tuple(by_id[line_id] for line_id in selected_line_ids)
@@ -325,11 +354,14 @@ def _selected_records(story, selected_line_ids):
     return records
 
 
-def _effective_voice_routes(plan, registry):
-    selections = []
-    narrator_roles = {}
+def _effective_voice_routes(
+    plan: VoicePlan, registry: CharacterVoiceRegistry
+) -> EffectiveVoiceRoutes:
+    selections: list[tuple[VoiceGroup, str, VoiceChoice]] = []
+    narrator_roles: dict[str, str] = {}
     for group in plan.groups:
         target = "Narrator" if group.route == "narrator" else group.character
+        voice: CharacterVoice | None
         if group.route == "narrator" and group.character != "Narrator":
             key = normalize_character_name(group.character)
             previous = narrator_roles.get(key)
@@ -338,7 +370,7 @@ def _effective_voice_routes(plan, registry):
         if not group.source_character:
             if group.route == "narrator" and plan.synthesis_backend == "pocket-tts":
                 voice = None
-                observed = ()
+                observed: tuple[str, ...] = ()
                 embedded = "alba"
             elif group.route == "narrator":
                 raise PregenerationQueueError(
@@ -349,7 +381,17 @@ def _effective_voice_routes(plan, registry):
                     f"Choose a voice for {group.character} before generating offline audio"
                 )
         else:
-            voice = registry.resolve(group.source_character)
+            source_id = (
+                group.narrator_candidate.source_id
+                if group.route == "narrator" and group.narrator_candidate is not None
+                else group.source_id
+            )
+            try:
+                voice = registry.resolve_source(source_id)
+            except VoiceManifestError as error:
+                raise PregenerationQueueError(
+                    f"The selected voice for {group.character} is no longer available"
+                ) from error
             embedded = None
             if voice is None or not voice.references:
                 embedded = _pocket_embedded_voice(group, plan)
@@ -367,13 +409,18 @@ def _effective_voice_routes(plan, registry):
                     raise PregenerationQueueError(
                         f"The selected voice reference changed for {group.character}"
                     )
-        speaker = embedded or voice.speaker
+        if embedded is not None:
+            speaker = embedded
+        elif isinstance(voice, CharacterVoice):
+            speaker = voice.speaker
+        else:
+            raise PregenerationQueueError("Resolved voice route has no speaker")
         choice = (voice, observed, speaker)
         selections.append((group, target, choice))
 
-    routes = {}
-    line_voice_characters = {}
-    choices_by_target = {}
+    routes: dict[str, VoiceChoice] = {}
+    line_voice_characters: dict[str, str] = {}
+    choices_by_target: dict[str, list[tuple[VoiceGroup, VoiceChoice]]] = {}
     for group, target, choice in selections:
         choices_by_target.setdefault(target, []).append((group, choice))
     for target, values in choices_by_target.items():
@@ -399,8 +446,10 @@ def _effective_voice_routes(plan, registry):
     }
 
 
-def _routed_story_records(records, line_voice_characters):
-    result = []
+def _routed_story_records(
+    records: Sequence[StoryIndexRecord], line_voice_characters: Mapping[str, str]
+) -> list[StoryRecordDocument]:
+    result: list[StoryRecordDocument] = []
     for record in records:
         value = record.to_record()
         if target := line_voice_characters.get(record.line_id):
@@ -409,11 +458,13 @@ def _routed_story_records(records, line_voice_characters):
     return result
 
 
-def _write_effective_voices(staging, effective):
+def _write_effective_voices(
+    staging: Path, effective: EffectiveVoiceRoutes
+) -> list[dict[str, object]]:
     references = staging / "references"
     references.mkdir()
-    copied = {}
-    entries = []
+    copied: dict[str, str] = {}
+    entries: list[dict[str, object]] = []
     for character, (voice, expected_hashes, speaker) in sorted(
         effective["routes"].items(), key=lambda item: item[0].casefold()
     ):
@@ -421,6 +472,10 @@ def _write_effective_voices(staging, effective):
         for source, expected in zip(
             voice.references if voice else (), expected_hashes, strict=True
         ):
+            if voice is None:
+                raise PregenerationQueueError(
+                    f"The selected voice for {character} has no reference source"
+                )
             payload = read_voice_reference_bytes(voice, source)
             if hashlib.sha256(payload).hexdigest() != expected:
                 raise PregenerationQueueError(
@@ -446,7 +501,7 @@ def _write_effective_voices(staging, effective):
     return entries
 
 
-def _pocket_embedded_voice(group, plan):
+def _pocket_embedded_voice(group: VoiceGroup, plan: VoicePlan) -> str | None:
     if plan.synthesis_backend != "pocket-tts":
         return None
     candidates = [
@@ -460,9 +515,9 @@ def _pocket_embedded_voice(group, plan):
     )
 
 
-def _audio_event_routes(queue):
-    projections = []
-    omissions = []
+def _audio_event_routes(queue: VoiceGenerationQueue) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    projections: list[str] = []
+    omissions: list[str] = []
     for item in queue.items:
         plan = audio_event_plan_for_record(item)
         if not isinstance(plan, dict) or not plan.get("requires_composition"):
@@ -471,18 +526,24 @@ def _audio_event_routes(queue):
     return tuple(sorted(projections)), tuple(sorted(omissions))
 
 
-def _runnable_generation_items(queue, effective, *, projection_ids, omission_ids):
+def _runnable_generation_items(
+    queue: VoiceGenerationQueue,
+    effective: EffectiveVoiceRoutes,
+    *,
+    projection_ids: Sequence[str],
+    omission_ids: Sequence[str],
+) -> int:
     routes = effective["routes"]
     fallback_roles = set(effective["narrator_roles"])
-    projection_ids = set(projection_ids)
-    omission_ids = set(omission_ids)
+    projection_id_set = set(projection_ids)
+    omission_id_set = set(omission_ids)
     return sum(
         1
         for item in queue.items
         if item.action == "generate"
-        and item.queue_id not in omission_ids
+        and item.queue_id not in omission_id_set
         and (
-            item.queue_id in projection_ids
+            item.queue_id in projection_id_set
             or not isinstance(audio_event_plan_for_record(item), dict)
         )
         and (
@@ -493,7 +554,7 @@ def _runnable_generation_items(queue, effective, *, projection_ids, omission_ids
     )
 
 
-def _write_reference_wav(path, payload, character):
+def _write_reference_wav(path: Path, payload: bytes, character: str) -> None:
     try:
         samples, sample_rate = sf.read(
             io.BytesIO(payload), dtype="float32", always_2d=True
@@ -511,7 +572,7 @@ def _write_reference_wav(path, payload, character):
     probe_pcm16_mono_wav(path)
 
 
-def _load_existing(directory, identity):
+def _load_existing(directory: Path, identity: str) -> PregenerationInput:
     try:
         document = read_versioned_json(
             directory / "input.json",
@@ -562,7 +623,7 @@ def _load_existing(directory, identity):
             story_index=paths["story_index"],
             voice_manifest=paths["voice_manifest"],
             queue=paths["queue"],
-            queue_sha256=document["queue_sha256"],
+            queue_sha256=_required_text(document.get("queue_sha256"), "queue SHA-256"),
             queue_items=_nonnegative_int(document.get("queue_items"), "queue items"),
             ready_items=_nonnegative_int(document.get("ready_items"), "ready items"),
             narrator_fallback_roles=tuple(roles),
@@ -580,18 +641,18 @@ def _load_existing(directory, identity):
         ) from error
 
 
-def _nonnegative_int(value, label):
+def _nonnegative_int(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{label} must be a non-negative integer")
     return value
 
 
-def _raise_if_cancelled(cancellation):
+def _raise_if_cancelled(cancellation: _Cancellation | None) -> None:
     if cancellation is not None and cancellation.is_set():
         raise PregenerationQueueCancelled("Offline preparation was cancelled")
 
 
-def _digest(value):
+def _digest(value: object) -> str:
     return hashlib.sha256(
         json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -600,11 +661,11 @@ def _digest(value):
 
 
 def project_source_audio_semantics(
-    source_story_path,
-    metadata,
-    records,
-    staging,
-):
+    source_story_path: Path,
+    metadata: dict[str, object],
+    records: list[StoryRecordDocument],
+    staging: Path,
+) -> tuple[dict[str, object], list[StoryRecordDocument], Path | None]:
     binding = metadata.get("source_audio_semantics")
     if not isinstance(binding, dict):
         return metadata, records, None
@@ -631,7 +692,12 @@ def project_source_audio_semantics(
             continue
         projected = copy.deepcopy(entry)
         projected["source_line_ids"] = sorted(
-            set(projected.get("source_line_ids", ())) & selected_line_ids
+            set(
+                _text_values(
+                    projected.get("source_line_ids"), "source evidence line IDs"
+                )
+            )
+            & selected_line_ids
         )
         if not projected["source_line_ids"]:
             raise PregenerationQueueError(
@@ -678,7 +744,21 @@ def project_source_audio_semantics(
     return projected_metadata, projected_records, destination
 
 
-def _file_size(path):
+def _required_text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} must be non-empty text")
+    return value
+
+
+def _text_values(value: object, label: str) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or not all(
+        isinstance(item, str) and item for item in value
+    ):
+        raise PregenerationQueueError(f"{label.capitalize()} are invalid")
+    return tuple(value)
+
+
+def _file_size(path: str | Path | None) -> int:
     if path is None:
         return 0
     try:
@@ -687,7 +767,9 @@ def _file_size(path):
         return 0
 
 
-def _record_input_phase(name, started, cpu_started, **details):
+def _record_input_phase(
+    name: str, started: float, cpu_started: float, **details: object
+) -> None:
     record_background_operation(
         f"pregeneration-input-{name}",
         (perf_counter() - started) * 1000,
