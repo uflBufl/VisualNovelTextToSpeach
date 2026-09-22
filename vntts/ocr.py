@@ -67,7 +67,10 @@ class DialogRegion:
 
     def __post_init__(self) -> None:
         values = (self.left, self.top, self.width, self.height)
-        if not all(isinstance(value, (int, float)) for value in values):
+        if not all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            for value in values
+        ):
             raise ValueError("Dialog region values must be numbers")
         if self.left < 0 or self.top < 0 or self.width <= 0 or self.height <= 0:
             raise ValueError("Dialog region values must be positive and normalized")

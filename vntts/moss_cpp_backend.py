@@ -265,7 +265,11 @@ def _launch_owned_process(
             process.kill()
         except OSError:
             pass
-        process.wait()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            # ponytail: the process already received the strongest local signal.
+            pass
         raise
 
 

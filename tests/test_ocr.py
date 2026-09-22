@@ -31,6 +31,17 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 
 
 class DialogRegionTest(unittest.TestCase):
+    def test_boolean_coordinates_are_rejected(self):
+        for values in (
+            (False, 0.1, 0.5, 0.5),
+            (0.0, 0.0, True, 0.5),
+        ):
+            with (
+                self.subTest(values=values),
+                self.assertRaisesRegex(ValueError, "numbers"),
+            ):
+                DialogRegion(*values)
+
     def test_tesseract_thread_limit_does_not_leak_into_application_environment(self):
         with patch.dict(os.environ, {}, clear=True):
             arguments = pytesseract_runtime.subprocess_args()

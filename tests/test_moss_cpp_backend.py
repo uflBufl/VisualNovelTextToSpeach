@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import psutil
@@ -23,6 +23,7 @@ from vntts.moss_cpp_backend import (
     MossCppVoiceRouterBackend,
     _aux_cpu_workers,
     _diagnostic_file_size,
+    _launch_owned_process,
     _native_stage_timings,
     _normalize_reference_audio,
     moss_cpp_paths,
@@ -168,6 +169,30 @@ LoopbackServer(('127.0.0.1', port), Handler).serve_forever()
 
 
 class WindowsOwnedServerTest(unittest.TestCase):
+    def test_failed_job_attachment_keeps_process_cleanup_bounded(self):
+        process = Mock()
+        process.wait.side_effect = subprocess.TimeoutExpired("server", 2)
+        with (
+            patch("vntts.moss_cpp_backend.sys.platform", "win32"),
+            patch("vntts.moss_cpp_backend.subprocess.Popen", return_value=process),
+            patch(
+                "vntts.moss_cpp_backend._WindowsKillOnCloseJob",
+                side_effect=RuntimeError("job attachment failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "job attachment failed"),
+        ):
+            _launch_owned_process(
+                ["server"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=None,
+                creationflags=0,
+            )
+
+        process.kill.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=2)
+
     @unittest.skipUnless(sys.platform == "win32", "Windows Job Object semantics")
     def test_host_crash_kills_owned_process(self):
         with TemporaryDirectory() as directory:

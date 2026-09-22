@@ -125,7 +125,12 @@ def _run(command, cancellation=None, *, timeout=900):
                                 os.killpg(process.pid, signal.SIGKILL)
                             except ProcessLookupError:
                                 pass
-                            process.wait()
+                            try:
+                                process.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                # ponytail: SIGKILL is the strongest local action;
+                                # leave OS cleanup rather than hanging forever.
+                                pass
 
 
 def probe_game_decoder(path, cancellation=None):

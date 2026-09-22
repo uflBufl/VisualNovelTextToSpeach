@@ -1,12 +1,13 @@
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Timer
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 from zipfile import ZipFile
 
 from vntts import game_audio_decoder as decoder
@@ -119,6 +120,26 @@ class GameAudioDecoderTest(unittest.TestCase):
                 )
         finally:
             timer.cancel()
+
+    def test_posix_cleanup_stays_bounded_after_sigkill(self):
+        process = Mock(pid=42)
+        process.poll.return_value = None
+        process.wait.side_effect = (
+            subprocess.TimeoutExpired("decoder", 5),
+            subprocess.TimeoutExpired("decoder", 5),
+        )
+        with (
+            patch.object(decoder.subprocess, "Popen", return_value=process),
+            patch.object(decoder.os, "name", "posix"),
+            patch.object(decoder.os, "killpg"),
+            self.assertRaisesRegex(decoder.DecoderSetupError, "timed out"),
+        ):
+            decoder._run(["decoder"], timeout=0)
+
+        self.assertEqual(
+            process.wait.call_args_list,
+            [call(timeout=5), call(timeout=5)],
+        )
 
     def test_macos_install_requires_consent_then_checks_the_result(self):
         with (
