@@ -4,23 +4,30 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.voice_generation_queue import VoiceGenerationQueue
+from vntts_artifacts.voice_generation_queue import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueItem,
+)
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
+    JsonDocument,
     load_generation_state,
     process_is_alive,
 )
 from vntts.authoring.bulk_generation import (
     _state_items as _generation_state_items,
 )
+from vntts.authoring.generation_lease import GenerationLease
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.publication import (
     AtomicPublicationError,
@@ -55,6 +62,35 @@ _copy_base_wavs = partial(
 
 SCHEMA = "vntts.authoring-explicit-fallback-merge"
 SCHEMA_VERSION = 2
+Snapshot = tuple[Path, str]
+
+
+@dataclass(frozen=True)
+class _MergePlan:
+    base_directory: Path
+    base_document: JsonDocument
+    base_workspace_sha256: str
+    source_directory: Path
+    source_workspace_sha256: str
+    base_state: JsonDocument
+    base_state_sha256: str
+    source_state: JsonDocument
+    source_state_sha256: str
+    base_queue_path: Path
+    base_queue_sha256: str
+    source_queue_path: Path
+    source_queue_sha256: str
+    ledgers: list[JsonDocument]
+    selected_items: dict[str, JsonDocument]
+    merge: JsonDocument
+
+
+@dataclass(frozen=True)
+class _MergeIdentity:
+    root: Path
+    destination: Path
+    workspace_id: str
+    config_fingerprint: str
 
 
 def merge_explicit_live_fallbacks(
@@ -64,6 +100,34 @@ def merge_explicit_live_fallbacks(
     workspaces_root: str | Path | None = None,
 ) -> WorkspaceCreationResult:
     """Publish a successor containing only named standalone fallback decisions."""
+    plan = _select_explicit_fallback_merge(base_workspace, source_workspace, queue_ids)
+    identity = _explicit_fallback_identity(plan, workspaces_root)
+    try:
+        with staged_directory(
+            identity.root, prefix=".fallback-merge-staging-"
+        ) as staging:
+            snapshots, output, target_state = _stage_explicit_fallback_merge(
+                plan, staging
+            )
+            workspace = _mutate_explicit_fallback_merge(
+                plan, identity, output, target_state
+            )
+            _validate_staged_explicit_fallback_merge(staging, output, workspace)
+            result = _publish_explicit_fallback_merge(
+                plan, identity, staging, snapshots
+            )
+            if result is not None:
+                return result
+    except (BulkGenerationError, OSError) as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return WorkspaceCreationResult(identity.destination, True)
+
+
+def _select_explicit_fallback_merge(
+    base_workspace: str | Path,
+    source_workspace: str | Path,
+    queue_ids: Iterable[str],
+) -> _MergePlan:
     base_directory, base_document, base_workspace_sha256 = load_workspace_authority(
         base_workspace
     )
@@ -127,42 +191,9 @@ def merge_explicit_live_fallbacks(
     ledgers = []
     selected_items = {}
     for queue_id in selected_ids:
-        queue_item = queue_by_id.get(queue_id)
-        source_item = source_items.get(queue_id)
-        base_item = base_items.get(queue_id)
-        if queue_item is None or queue_item.action != "generate":
-            raise AuthoringWorkbenchError(
-                f"Explicit fallback queue ID is unavailable: {queue_id!r}"
-            )
-        if (
-            not isinstance(source_item, dict)
-            or (source_item.get("status"), source_item.get("review_status"))
-            != ("live_fallback", "live_fallback")
-            or not isinstance(source_item.get("live_fallback"), dict)
-        ):
-            raise AuthoringWorkbenchError(
-                f"Explicit fallback source is not terminal: {queue_id!r}"
-            )
-        if isinstance(base_item, dict) and (
-            base_item.get("status") != "failed"
-            or base_item.get("review_status") is not None
-            or isinstance(base_item.get("live_fallback"), dict)
-        ):
-            raise AuthoringWorkbenchError(
-                f"Explicit fallback conflicts with base authority: {queue_id!r}"
-            )
-        ledger = {
-            "queue_id": queue_id,
-            "base_item_sha256": (
-                canonical_document_sha256(base_item)
-                if isinstance(base_item, dict)
-                else None
-            ),
-            "source_item_sha256": canonical_document_sha256(source_item),
-            "fallback_decision_sha256": canonical_document_sha256(
-                source_item["live_fallback"]
-            ),
-        }
+        ledger, source_item = _explicit_fallback_ledger(
+            queue_id, queue_by_id, base_items, source_items
+        )
         selected_items[queue_id] = copy.deepcopy(source_item)
         ledgers.append(ledger)
 
@@ -187,6 +218,72 @@ def merge_explicit_live_fallbacks(
                 "source_queue_sha256": source_queue_sha256,
             }
         )
+    return _MergePlan(
+        base_directory,
+        base_document,
+        base_workspace_sha256,
+        source_directory,
+        source_workspace_sha256,
+        base_state,
+        base_state_sha256,
+        source_state,
+        source_state_sha256,
+        base_queue_path,
+        base_queue_sha256,
+        source_queue_path,
+        source_queue_sha256,
+        ledgers,
+        selected_items,
+        merge,
+    )
+
+
+def _explicit_fallback_ledger(
+    queue_id: str,
+    queue_by_id: Mapping[str, VoiceGenerationQueueItem],
+    base_items: Mapping[str, JsonDocument],
+    source_items: Mapping[str, JsonDocument],
+) -> tuple[JsonDocument, JsonDocument]:
+    queue_item = queue_by_id.get(queue_id)
+    source_item = source_items.get(queue_id)
+    base_item = base_items.get(queue_id)
+    if queue_item is None or queue_item.action != "generate":
+        raise AuthoringWorkbenchError(
+            f"Explicit fallback queue ID is unavailable: {queue_id!r}"
+        )
+    if (
+        not isinstance(source_item, dict)
+        or (source_item.get("status"), source_item.get("review_status"))
+        != ("live_fallback", "live_fallback")
+        or not isinstance(source_item.get("live_fallback"), dict)
+    ):
+        raise AuthoringWorkbenchError(
+            f"Explicit fallback source is not terminal: {queue_id!r}"
+        )
+    if isinstance(base_item, dict) and (
+        base_item.get("status") != "failed"
+        or base_item.get("review_status") is not None
+        or isinstance(base_item.get("live_fallback"), dict)
+    ):
+        raise AuthoringWorkbenchError(
+            f"Explicit fallback conflicts with base authority: {queue_id!r}"
+        )
+    return {
+        "queue_id": queue_id,
+        "base_item_sha256": canonical_document_sha256(base_item)
+        if isinstance(base_item, dict)
+        else None,
+        "source_item_sha256": canonical_document_sha256(source_item),
+        "fallback_decision_sha256": canonical_document_sha256(
+            source_item["live_fallback"]
+        ),
+    }, source_item
+
+
+def _explicit_fallback_identity(
+    plan: _MergePlan, workspaces_root: str | Path | None
+) -> _MergeIdentity:
+    base_document = plan.base_document
     import_id, narrator_character = _workspace_creation_fields(base_document)
     config_fingerprint = workspace_config_fingerprint(
         import_id,
@@ -200,7 +297,7 @@ def merge_explicit_live_fallbacks(
         base_document.get("terminal_conflict_merge"),
         base_document.get("config_rebase"),
         base_document.get("audio_event_composition"),
-        merge,
+        plan.merge,
         base_document.get("known_role_live_fallback"),
         base_document.get("audio_event_omission"),
         base_document.get("audio_event_projection_fallback"),
@@ -216,130 +313,181 @@ def merge_explicit_live_fallbacks(
     destination = contained_workspace_path(
         root, Path(workspace_id), "Explicit fallback destination"
     )
+    return _MergeIdentity(root, destination, workspace_id, config_fingerprint)
+
+
+def _stage_explicit_fallback_merge(
+    plan: _MergePlan, staging: Path
+) -> tuple[tuple[Snapshot, ...], Path, JsonDocument]:
     base_snapshots = [
-        (base_directory / "workspace.json", base_workspace_sha256),
+        (plan.base_directory / "workspace.json", plan.base_workspace_sha256),
         (
-            base_directory / "generated-audio/generation-state.json",
-            base_state_sha256,
+            plan.base_directory / "generated-audio/generation-state.json",
+            plan.base_state_sha256,
         ),
-        (base_queue_path, base_queue_sha256),
+        (plan.base_queue_path, plan.base_queue_sha256),
     ]
     source_snapshots = [
-        (source_directory / "workspace.json", source_workspace_sha256),
+        (plan.source_directory / "workspace.json", plan.source_workspace_sha256),
         (
-            source_directory / "generated-audio/generation-state.json",
-            source_state_sha256,
+            plan.source_directory / "generated-audio/generation-state.json",
+            plan.source_state_sha256,
         ),
-        (source_queue_path, source_queue_sha256),
+        (plan.source_queue_path, plan.source_queue_sha256),
     ]
+    for tree_name in ("provenance", "inputs"):
+        copy_workspace_tree_snapshot(
+            plan.base_directory / tree_name,
+            staging / tree_name,
+            base_snapshots,
+            error_type=AuthoringWorkbenchError,
+        )
+    (staging / "queue.jsonl").write_bytes(
+        read_workspace_file_bytes(plan.base_queue_path, "explicit fallback base queue")
+    )
+    output = staging / "generated-audio"
+    output.mkdir()
+    target_state = copy.deepcopy(plan.base_state)
+    _copy_base_wavs(plan.base_directory, output, plan.base_state, base_snapshots)
+    return (*base_snapshots, *source_snapshots), output, target_state
+
+
+def _mutate_explicit_fallback_merge(
+    plan: _MergePlan,
+    identity: _MergeIdentity,
+    output: Path,
+    target_state: JsonDocument,
+) -> JsonDocument:
+    target_items = _generation_state_items(target_state)
+    for ledger in plan.ledgers:
+        queue_id = _required_text(ledger.get("queue_id"), "Fallback queue ID")
+        copied = copy.deepcopy(plan.selected_items[queue_id])
+        if plan.merge["schema_version"] == 1:
+            copied["explicit_fallback_merge"] = {
+                key: value for key, value in ledger.items() if key != "queue_id"
+            }
+        target_items[queue_id] = copied
+    target_state["active"] = None
+    atomic_write_json(output / "generation-state.json", target_state, sort_keys=True)
+    write_generated_manifest_from_state(target_state, output, output / "manifest.json")
+    workspace = copy.deepcopy(plan.base_document)
+    workspace.update(
+        {
+            "workspace_id": identity.workspace_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "explicit_fallback_merge": plan.merge,
+            "config_fingerprint": identity.config_fingerprint,
+        }
+    )
+    atomic_write_json(output.parent / "workspace.json", workspace, sort_keys=True)
+    return workspace
+
+
+def _validate_staged_explicit_fallback_merge(
+    staging: Path, output: Path, workspace: Mapping[str, object]
+) -> None:
+    import_snapshot = load_workspace_json(
+        staging / "provenance/import.json", "explicit fallback import snapshot"
+    )
+    validate_workspace_provenance_extensions(staging, workspace, import_snapshot)
+    load_generation_state(output / "generation-state.json", staging / "queue.jsonl")
+
+
+def _publish_explicit_fallback_merge(
+    plan: _MergePlan,
+    identity: _MergeIdentity,
+    staging: Path,
+    snapshots: Iterable[Snapshot],
+) -> WorkspaceCreationResult | None:
     try:
-        with staged_directory(root, prefix=".fallback-merge-staging-") as staging:
-            for tree_name in ("provenance", "inputs"):
-                copy_workspace_tree_snapshot(
-                    base_directory / tree_name,
-                    staging / tree_name,
-                    base_snapshots,
-                    error_type=AuthoringWorkbenchError,
-                )
-            queue_payload = read_workspace_file_bytes(
-                base_queue_path, "explicit fallback base queue"
+        with generation_publication_leases(
+            (
+                (plan.base_directory / "generated-audio", plan.base_queue_sha256),
+                (plan.source_directory / "generated-audio", plan.source_queue_sha256),
+            ),
+            process_checker=process_is_alive,
+        ) as leases:
+            _validate_explicit_fallback_publication_sources(plan, snapshots)
+            for lease in leases:
+                lease.assert_owned()
+            existing = _existing_explicit_fallback_result(
+                identity.destination, plan.merge
             )
-            (staging / "queue.jsonl").write_bytes(queue_payload)
-            output = staging / "generated-audio"
-            output.mkdir()
-            target_state = copy.deepcopy(base_state)
-            target_items = _generation_state_items(target_state)
-            _copy_base_wavs(base_directory, output, base_state, base_snapshots)
-            for ledger in ledgers:
-                queue_id = _required_text(ledger.get("queue_id"), "Fallback queue ID")
-                copied = copy.deepcopy(selected_items[queue_id])
-                if merge["schema_version"] == 1:
-                    copied["explicit_fallback_merge"] = {
-                        key: value for key, value in ledger.items() if key != "queue_id"
-                    }
-                target_items[queue_id] = copied
-            target_state["active"] = None
-            atomic_write_json(
-                output / "generation-state.json", target_state, sort_keys=True
+            if existing is not None:
+                return existing
+            raced = _publish_explicit_fallback_directory(
+                staging, identity.destination, plan.merge, leases
             )
-            write_generated_manifest_from_state(
-                target_state,
-                output,
-                output / "manifest.json",
-            )
-            workspace = copy.deepcopy(base_document)
-            workspace.update(
-                {
-                    "workspace_id": workspace_id,
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "explicit_fallback_merge": merge,
-                    "config_fingerprint": config_fingerprint,
-                }
-            )
-            atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-            import_snapshot = load_workspace_json(
-                staging / "provenance/import.json",
-                "explicit fallback import snapshot",
-            )
-            validate_workspace_provenance_extensions(
-                staging, workspace, import_snapshot
-            )
-            load_generation_state(
-                output / "generation-state.json", staging / "queue.jsonl"
+            if raced is not None:
+                return raced
+            for lease in leases:
+                lease.mark_committed()
+    except BulkGenerationError as error:
+        raise AuthoringWorkbenchError(str(error)) from error
+    return None
+
+
+def _validate_explicit_fallback_publication_sources(
+    plan: _MergePlan, snapshots: Iterable[Snapshot]
+) -> None:
+    if any(
+        any((directory / "generated-audio").rglob("*.partial.wav"))
+        for directory in (plan.base_directory, plan.source_directory)
+    ):
+        raise AuthoringWorkbenchError(
+            "Explicit fallback source became active before publication"
+        )
+    for path, digest in snapshots:
+        if not path.is_file() or sha256_file(path) != digest:
+            raise AuthoringWorkbenchError(
+                "Explicit fallback authority changed before publication"
             )
 
-            try:
-                with generation_publication_leases(
-                    (
-                        (base_directory / "generated-audio", base_queue_sha256),
-                        (source_directory / "generated-audio", source_queue_sha256),
-                    ),
-                    process_checker=process_is_alive,
-                ) as held_leases:
-                    if any(
-                        any((directory / "generated-audio").rglob("*.partial.wav"))
-                        for directory in (base_directory, source_directory)
-                    ):
-                        raise AuthoringWorkbenchError(
-                            "Explicit fallback source became active before publication"
-                        )
-                    for path, digest in (*base_snapshots, *source_snapshots):
-                        if not path.is_file() or sha256_file(path) != digest:
-                            raise AuthoringWorkbenchError(
-                                "Explicit fallback authority changed before publication"
-                            )
-                    for lease in held_leases:
-                        lease.assert_owned()
-                    if destination.exists():
-                        _directory, existing, _sha256 = load_workspace_authority(
-                            destination
-                        )
-                        if existing.get("explicit_fallback_merge") != merge:
-                            raise AuthoringWorkbenchError(
-                                "Explicit fallback destination conflicts with another merge"
-                            )
-                        return WorkspaceCreationResult(destination, False)
-                    try:
-                        rename_directory_no_replace(staging, destination)
-                    except (AtomicPublicationError, OSError) as error:
-                        if destination.exists():
-                            _directory, existing, _sha256 = load_workspace_authority(
-                                destination
-                            )
-                            if existing.get("explicit_fallback_merge") == merge:
-                                for lease in held_leases:
-                                    lease.mark_committed()
-                                return WorkspaceCreationResult(destination, False)
-                        raise AuthoringWorkbenchError(
-                            f"Unable to publish explicit fallback workspace: {error}"
-                        ) from error
-                    for lease in held_leases:
-                        lease.mark_committed()
-            except BulkGenerationError as error:
-                raise AuthoringWorkbenchError(str(error)) from error
-    except (BulkGenerationError, OSError) as error:
-        raise AuthoringWorkbenchError(str(error)) from error
-    return WorkspaceCreationResult(destination, True)
+
+def _existing_explicit_fallback_result(
+    destination: Path, merge: Mapping[str, object]
+) -> WorkspaceCreationResult | None:
+    existing = _matching_explicit_fallback_result(destination, merge)
+    if existing is not None:
+        return existing
+    if destination.exists():
+        raise AuthoringWorkbenchError(
+            "Explicit fallback destination conflicts with another merge"
+        )
+    return None
+
+
+def _matching_explicit_fallback_result(
+    destination: Path, merge: Mapping[str, object]
+) -> WorkspaceCreationResult | None:
+    if not destination.exists():
+        return None
+    _directory, existing, _sha256 = load_workspace_authority(destination)
+    return (
+        WorkspaceCreationResult(destination, False)
+        if existing.get("explicit_fallback_merge") == merge
+        else None
+    )
+
+
+def _publish_explicit_fallback_directory(
+    staging: Path,
+    destination: Path,
+    merge: Mapping[str, object],
+    leases: Iterable[GenerationLease],
+) -> WorkspaceCreationResult | None:
+    try:
+        rename_directory_no_replace(staging, destination)
+    except (AtomicPublicationError, OSError) as error:
+        existing = _matching_explicit_fallback_result(destination, merge)
+        if existing is not None:
+            for lease in leases:
+                lease.mark_committed()
+            return existing
+        raise AuthoringWorkbenchError(
+            f"Unable to publish explicit fallback workspace: {error}"
+        ) from error
+    return None
 
 
 def validate_explicit_fallback_merge_workspace(
@@ -349,10 +497,32 @@ def validate_explicit_fallback_merge_workspace(
     state: dict[str, object] | None = None,
 ) -> None:
     """Validate the self-contained fallback overlay in a published workspace."""
-    merge = workspace.get("explicit_fallback_merge")
-    if merge is None:
+    value = workspace.get("explicit_fallback_merge")
+    if value is None:
         return
-    version = merge.get("schema_version") if isinstance(merge, dict) else None
+    merge, version = _validated_explicit_fallback_merge(value)
+    expected_queue_sha256 = _validate_explicit_fallback_merge_digests(merge, version)
+    if sha256_file(Path(directory) / "queue.jsonl") != expected_queue_sha256:
+        raise AuthoringWorkbenchError("Explicit fallback base queue changed")
+    items = merge.get("items")
+    if not isinstance(items, list) or not items:
+        raise AuthoringWorkbenchError("Explicit fallback merge item ledger is empty")
+    state_items = _explicit_fallback_state_items(directory, state)
+    queue_ids = [
+        _validate_explicit_fallback_ledger(ledger, version, state_items)
+        for ledger in items
+    ]
+    if queue_ids != sorted(set(queue_ids)):
+        raise AuthoringWorkbenchError("Explicit fallback merge items are not canonical")
+
+
+def _validated_explicit_fallback_merge(value: object) -> tuple[JsonDocument, int]:
+    if not isinstance(value, dict):
+        raise AuthoringWorkbenchError(
+            "Workspace explicit fallback merge provenance is malformed"
+        )
+    merge = cast(JsonDocument, value)
+    version = merge.get("schema_version")
     fields = {
         "schema",
         "schema_version",
@@ -369,14 +539,20 @@ def validate_explicit_fallback_merge_workspace(
     if version == 2:
         fields.add("source_queue_sha256")
     if (
-        not isinstance(merge, dict)
-        or set(merge) != fields
+        set(merge) != fields
         or merge.get("schema") != SCHEMA
+        or not isinstance(version, int)
         or version not in {1, 2}
     ):
         raise AuthoringWorkbenchError(
             "Workspace explicit fallback merge provenance is malformed"
         )
+    return merge, version
+
+
+def _validate_explicit_fallback_merge_digests(
+    merge: Mapping[str, object], version: int
+) -> str:
     digest_fields = [
         "base_workspace_sha256",
         "base_state_sha256",
@@ -393,15 +569,15 @@ def validate_explicit_fallback_merge_workspace(
         require_workspace_sha256(
             merge.get(field), f"Explicit fallback {field.replace('_', ' ')}"
         )
-    expected_queue_sha256 = (
-        merge["queue_sha256"] if version == 1 else merge["base_queue_sha256"]
+    return cast(
+        str,
+        merge["queue_sha256"] if version == 1 else merge["base_queue_sha256"],
     )
-    if sha256_file(Path(directory) / "queue.jsonl") != expected_queue_sha256:
-        raise AuthoringWorkbenchError("Explicit fallback base queue changed")
-    items = merge.get("items")
-    if not isinstance(items, list) or not items:
-        raise AuthoringWorkbenchError("Explicit fallback merge item ledger is empty")
-    queue_ids = []
+
+
+def _explicit_fallback_state_items(
+    directory: str | Path, state: JsonDocument | None
+) -> dict[str, JsonDocument]:
     if state is None:
         try:
             state = load_generation_state(
@@ -410,67 +586,70 @@ def validate_explicit_fallback_merge_workspace(
             )
         except BulkGenerationError as error:
             raise AuthoringWorkbenchError(str(error)) from error
-    state_items = _state_items(state)
-    for ledger in items:
-        if not isinstance(ledger, dict) or set(ledger) != {
-            "queue_id",
-            "base_item_sha256",
-            "source_item_sha256",
-            "fallback_decision_sha256",
-        }:
-            raise AuthoringWorkbenchError("Explicit fallback merge item is malformed")
-        queue_id = ledger.get("queue_id")
-        if not isinstance(queue_id, str) or not queue_id:
-            raise AuthoringWorkbenchError("Explicit fallback queue ID is invalid")
-        if ledger.get("base_item_sha256") is not None:
-            require_workspace_sha256(
-                ledger["base_item_sha256"], "Explicit fallback base item SHA-256"
-            )
-        source_item_sha256 = require_workspace_sha256(
-            ledger.get("source_item_sha256"),
-            "Explicit fallback source item SHA-256",
+    return _state_items(state)
+
+
+def _validate_explicit_fallback_ledger(
+    ledger: object, version: int, state_items: Mapping[str, JsonDocument]
+) -> str:
+    if not isinstance(ledger, dict) or set(ledger) != {
+        "queue_id",
+        "base_item_sha256",
+        "source_item_sha256",
+        "fallback_decision_sha256",
+    }:
+        raise AuthoringWorkbenchError("Explicit fallback merge item is malformed")
+    record = cast(JsonDocument, ledger)
+    queue_id = record.get("queue_id")
+    if not isinstance(queue_id, str) or not queue_id:
+        raise AuthoringWorkbenchError("Explicit fallback queue ID is invalid")
+    if record.get("base_item_sha256") is not None:
+        require_workspace_sha256(
+            record["base_item_sha256"], "Explicit fallback base item SHA-256"
         )
-        decision_sha256 = require_workspace_sha256(
-            ledger.get("fallback_decision_sha256"),
-            "Explicit fallback decision SHA-256",
+    source_item_sha256 = require_workspace_sha256(
+        record.get("source_item_sha256"),
+        "Explicit fallback source item SHA-256",
+    )
+    decision_sha256 = require_workspace_sha256(
+        record.get("fallback_decision_sha256"),
+        "Explicit fallback decision SHA-256",
+    )
+    result = state_items.get(queue_id)
+    expected_overlay = {
+        key: value for key, value in record.items() if key != "queue_id"
+    }
+    if (
+        not isinstance(result, dict)
+        or (result.get("status"), result.get("review_status"))
+        != ("live_fallback", "live_fallback")
+        or not isinstance(result.get("live_fallback"), dict)
+        or canonical_document_sha256(result["live_fallback"]) != decision_sha256
+    ):
+        raise AuthoringWorkbenchError(
+            f"Explicit fallback result changed for {queue_id!r}"
         )
-        result = state_items.get(queue_id)
-        expected_overlay = {
-            key: value for key, value in ledger.items() if key != "queue_id"
-        }
-        if (
-            not isinstance(result, dict)
-            or (result.get("status"), result.get("review_status"))
-            != ("live_fallback", "live_fallback")
-            or not isinstance(result.get("live_fallback"), dict)
-            or canonical_document_sha256(result["live_fallback"]) != decision_sha256
-        ):
+    source_result = copy.deepcopy(result)
+    if version == 1:
+        if result.get("explicit_fallback_merge") != expected_overlay:
             raise AuthoringWorkbenchError(
                 f"Explicit fallback result changed for {queue_id!r}"
             )
-        source_result = copy.deepcopy(result)
-        if version == 1:
-            if result.get("explicit_fallback_merge") != expected_overlay:
-                raise AuthoringWorkbenchError(
-                    f"Explicit fallback result changed for {queue_id!r}"
-                )
-            source_result.pop("explicit_fallback_merge", None)
-        if canonical_document_sha256(source_result) != source_item_sha256:
-            raise AuthoringWorkbenchError(
-                f"Explicit fallback source item changed for {queue_id!r}"
-            )
-        queue_ids.append(queue_id)
-    if queue_ids != sorted(set(queue_ids)):
-        raise AuthoringWorkbenchError("Explicit fallback merge items are not canonical")
+        source_result.pop("explicit_fallback_merge", None)
+    if canonical_document_sha256(source_result) != source_item_sha256:
+        raise AuthoringWorkbenchError(
+            f"Explicit fallback source item changed for {queue_id!r}"
+        )
+    return queue_id
 
 
-def _state_items(state: Mapping[str, object]) -> dict[str, object]:
+def _state_items(state: Mapping[str, object]) -> dict[str, JsonDocument]:
     items = state.get("items")
     if not isinstance(items, dict):
         raise AuthoringWorkbenchError(
             "Explicit fallback generation items are malformed"
         )
-    return items
+    return cast(dict[str, JsonDocument], items)
 
 
 def _workspace_creation_fields(
