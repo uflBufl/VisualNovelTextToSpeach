@@ -5,15 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from time import perf_counter, process_time
+from typing import TYPE_CHECKING
 
 from platformdirs import user_data_path
 from vntts_artifacts.file_integrity import sha256_file
-from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
+from vntts_artifacts.story_index import (
+    StoryIndexDocument,
+    StoryIndexError,
+    StoryIndexRecord,
+    load_story_index_document,
+)
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
@@ -28,6 +35,9 @@ from vntts.chapter_voice_preload import (
 from vntts.settings import AppSettings
 from vntts.versioned_json import read_versioned_json, write_versioned_json
 
+if TYPE_CHECKING:
+    from vntts.pregeneration_queue import PregenerationInput
+
 job_schema_version = 1
 story_catalog_schema_version = 3
 story_catalog_minimum_bytes = 8 * 1024 * 1024
@@ -35,6 +45,7 @@ story_catalog_minimum_bytes = 8 * 1024 * 1024
 # durations and the selected backend's output format if storage estimates matter.
 ROUGH_SPEECH_CHARACTERS_PER_SECOND = 12
 PCM16_MONO_24KHZ_BYTES_PER_SECOND = 48_000
+PathInput = str | os.PathLike[str]
 
 
 class PregenerationSetupError(RuntimeError):
@@ -68,7 +79,7 @@ class GameContent:
     selections: tuple[StorySelection, ...]
 
     @property
-    def display_name(self):
+    def display_name(self) -> str:
         version = f" {self.game_version}" if self.game_version else ""
         return f"{self.game}{version}"
 
@@ -119,10 +130,11 @@ class PregenerationJob:
     estimate: PreparationEstimate
 
     @classmethod
-    def from_document(cls, document):
+    def from_document(cls, document: Mapping[str, object]) -> PregenerationJob:
         estimate = document.get("estimate")
-        if not isinstance(estimate, dict):
+        if not isinstance(estimate, Mapping):
             raise PregenerationSetupError("Saved preparation estimate is invalid")
+        estimate = _string_mapping(estimate)
         try:
             return cls(
                 job_id=_required_text(document, "job_id"),
@@ -162,14 +174,26 @@ class PregenerationJob:
                 f"Saved preparation state is invalid: {error}"
             ) from error
 
-    def to_document(self):
-        value = asdict(self)
-        value["selected_story_ids"] = list(self.selected_story_ids)
-        value["selected_line_ids"] = list(self.selected_line_ids)
-        return value
+    def to_document(self) -> dict[str, object]:
+        return {
+            "job_id": self.job_id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "status": self.status,
+            "provider_id": self.provider_id,
+            "game": self.game,
+            "game_version": self.game_version,
+            "story_index": self.story_index,
+            "story_index_sha256": self.story_index_sha256,
+            "selected_story_ids": list(self.selected_story_ids),
+            "selected_line_ids": list(self.selected_line_ids),
+            "estimate": asdict(self.estimate),
+        }
 
 
-def inspect_story_index(path, *, provider_id="local-story-index"):
+def inspect_story_index(
+    path: PathInput, *, provider_id: str = "local-story-index"
+) -> GameContent:
     started = perf_counter()
     cpu_started = process_time()
     path = Path(path).expanduser().resolve()
@@ -219,7 +243,7 @@ def inspect_story_index(path, *, provider_id="local-story-index"):
         raise PregenerationSetupError(f"Story content is invalid: {error}") from error
     from vntts.support import record_background_operation
 
-    details = {
+    details: dict[str, object] = {
         "cpu_ms": round((process_time() - cpu_started) * 1000, 3),
         "files_examined": 1,
         "cache_state": cache_state,
@@ -234,16 +258,18 @@ def inspect_story_index(path, *, provider_id="local-story-index"):
     return content
 
 
-def _story_catalog_path(checksum):
+def _story_catalog_path(checksum: str) -> Path:
     return (
-        get_local_data_directory()
+        Path(get_local_data_directory())
         / "pregeneration"
         / "story-catalogs"
         / f"{checksum}.json"
     )
 
 
-def _load_story_catalog(path, checksum, provider_id):
+def _load_story_catalog(
+    path: Path, checksum: str, provider_id: str
+) -> GameContent | None:
     catalog = _story_catalog_path(checksum)
     if not catalog.is_file():
         return None
@@ -283,7 +309,7 @@ def _load_story_catalog(path, checksum, provider_id):
         return None
 
 
-def _save_story_catalog(content):
+def _save_story_catalog(content: GameContent) -> None:
     try:
         catalog = _story_catalog_path(content.story_index_sha256)
         catalog.parent.mkdir(parents=True, exist_ok=True)
@@ -301,7 +327,7 @@ def _save_story_catalog(content):
         pass
 
 
-def _cached_story_selection(document):
+def _cached_story_selection(document: object) -> StorySelection:
     fields = {
         "selection_id",
         "title",
@@ -317,7 +343,10 @@ def _cached_story_selection(document):
         "playback_speakers",
         "generation_text_characters",
     }
-    if not isinstance(document, dict) or set(document) != fields:
+    if not isinstance(document, Mapping):
+        raise ValueError("story catalog cache selection is malformed")
+    document = _string_mapping(document)
+    if set(document) != fields:
         raise ValueError("story catalog cache selection is malformed")
     line_ids = _text_tuple(document, "line_ids")
     speakers = _text_tuple(document, "speakers", allow_empty=True)
@@ -350,14 +379,18 @@ def _cached_story_selection(document):
 
 
 @lru_cache(maxsize=8)
-def _cached_story_index_document(path, expected_sha256):
+def _cached_story_index_document(
+    path: str, expected_sha256: str
+) -> StoryIndexDocument:
     document = load_story_index_document(path)
     if sha256_file(path) != expected_sha256:
         raise ValueError("Story content changed while it was being read")
     return document
 
 
-def load_verified_story_index_document(path, expected_sha256):
+def load_verified_story_index_document(
+    path: PathInput, expected_sha256: str
+) -> StoryIndexDocument:
     """Reuse an immutable parse while still checking the current file bytes."""
     path = Path(path).expanduser().resolve()
     if sha256_file(path) != expected_sha256:
@@ -366,7 +399,9 @@ def load_verified_story_index_document(path, expected_sha256):
 
 
 @lru_cache(maxsize=8)
-def _cached_story_index(path, provider_id, expected_sha256):
+def _cached_story_index(
+    path: str, provider_id: str, expected_sha256: str
+) -> GameContent:
     content = inspect_story_index(path, provider_id=provider_id)
     if content.story_index_sha256 != expected_sha256:
         raise PregenerationSetupError(
@@ -375,18 +410,23 @@ def _cached_story_index(path, provider_id, expected_sha256):
     return content
 
 
-def discover_game_content(settings, *, environment=None, extra_paths=()):
+def discover_game_content(
+    settings: AppSettings | object,
+    *,
+    environment: Mapping[str, str] | None = None,
+    extra_paths: Iterable[PathInput] = (),
+) -> ContentDiscovery:
     """Discover bounded, known story-index locations without scanning user files."""
     environment = os.environ if environment is None else environment
-    candidates = []
+    candidates: list[tuple[PathInput, str]] = []
     if isinstance(settings, AppSettings) and settings.story_index:
         candidates.append((settings.story_index, "configured-story-index"))
     candidates.extend((path, "selected-story-index") for path in extra_paths)
-    extractor_root = environment.get("R1999_EXTRACTOR_DATA")
-    extractor_root = (
-        Path(extractor_root).expanduser()
-        if extractor_root
-        else user_data_path("Reverse1999Extractor", appauthor=False)
+    configured_extractor_root = environment.get("R1999_EXTRACTOR_DATA")
+    extractor_root: Path = (
+        Path(configured_extractor_root).expanduser()
+        if configured_extractor_root
+        else Path(user_data_path("Reverse1999Extractor", appauthor=False))
     )
     candidates.append(
         (
@@ -402,9 +442,9 @@ def discover_game_content(settings, *, environment=None, extra_paths=()):
         (extractor_root / "reverse1999" / "story-index.jsonl", "reverse1999")
     )
 
-    discovered = []
-    errors = []
-    seen = set()
+    discovered: list[GameContent] = []
+    errors: list[str] = []
+    seen: set[Path] = set()
     for raw_path, provider_id in candidates:
         path = Path(raw_path).expanduser().resolve()
         if path in seen or not path.is_file():
@@ -426,13 +466,15 @@ def discover_game_content(settings, *, environment=None, extra_paths=()):
     return ContentDiscovery(tuple(discovered), tuple(errors))
 
 
-def estimate_preparation(content, selected_story_ids):
+def estimate_preparation(
+    content: GameContent, selected_story_ids: Iterable[object]
+) -> PreparationEstimate:
     selected_ids = _normalized_selection_ids(content, selected_story_ids)
     selected = tuple(
         value for value in content.selections if value.selection_id in selected_ids
     )
     generation_lines = sum(value.generation_lines for value in selected)
-    speakers = set()
+    speakers: set[str] = set()
     for value in selected:
         if value.generation_lines:
             speakers.update(value.speakers)
@@ -454,7 +496,9 @@ def estimate_preparation(content, selected_story_ids):
     )
 
 
-def estimate_generation_resources(generation_input):
+def estimate_generation_resources(
+    generation_input: PregenerationInput,
+) -> GenerationResourceEstimate:
     """Estimate remaining PCM WAV storage from the exact private queue."""
     try:
         if sha256_file(generation_input.queue) != generation_input.queue_sha256:
@@ -485,6 +529,7 @@ def estimate_generation_resources(generation_input):
         ) from error
     terminal = {"generated", "approved", "live_fallback", "omitted", "not_reproducible"}
     omissions = set(generation_input.audio_event_omission_queue_ids)
+    state_items = _generation_state_items(state)
     items = tuple(
         item
         for item in queue.items
@@ -493,7 +538,7 @@ def estimate_generation_resources(generation_input):
     remaining = tuple(
         item
         for item in items
-        if state["items"].get(item.queue_id, {}).get("status") not in terminal
+        if state_items.get(item.queue_id, {}).get("status") not in terminal
     )
     total_characters = sum(len(item.text) for item in items)
     remaining_characters = sum(len(item.text) for item in remaining)
@@ -512,17 +557,22 @@ def estimate_generation_resources(generation_input):
 
 
 class PregenerationJobStore:
-    def __init__(self, root=None, *, clock=None):
+    def __init__(
+        self,
+        root: PathInput | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.root = Path(
             root or get_local_data_directory() / "pregeneration" / "jobs"
         ).expanduser()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
-    def _selection_path(self, content):
+    def _selection_path(self, content: GameContent) -> Path:
         checksum = _sha256_text({"checksum": content.story_index_sha256}, "checksum")
         return self.root / "selections" / f"{checksum}.json"
 
-    def selection_for_content(self, content):
+    def selection_for_content(self, content: GameContent) -> tuple[str, ...] | None:
         path = self._selection_path(content)
         try:
             document = read_versioned_json(
@@ -546,7 +596,9 @@ class PregenerationJobStore:
                 f"Saved story selection is invalid: {error}"
             ) from error
 
-    def save_selection(self, content, selected_story_ids):
+    def save_selection(
+        self, content: GameContent, selected_story_ids: Iterable[object]
+    ) -> None:
         selected = tuple(selected_story_ids)
         if selected:
             selected = _normalized_selection_ids(content, selected)
@@ -561,7 +613,9 @@ class PregenerationJobStore:
             },
         )
 
-    def create_or_resume(self, content, selected_story_ids):
+    def create_or_resume(
+        self, content: GameContent, selected_story_ids: Iterable[object]
+    ) -> PregenerationJob:
         selected_ids = _normalized_selection_ids(content, selected_story_ids)
         selected = tuple(
             value for value in content.selections if value.selection_id in selected_ids
@@ -604,7 +658,7 @@ class PregenerationJobStore:
         write_versioned_json(path, job_schema_version, job.to_document())
         return job
 
-    def load(self, job_id):
+    def load(self, job_id: str) -> PregenerationJob:
         path = self.path_for(job_id)
         try:
             document = read_versioned_json(
@@ -621,17 +675,17 @@ class PregenerationJobStore:
             raise PregenerationSetupError("Saved preparation identity changed")
         return job
 
-    def latest_for_content(self, content):
+    def latest_for_content(self, content: GameContent) -> PregenerationJob | None:
         return max(
             self.jobs_for_content(content),
             key=lambda value: value.updated_at,
             default=None,
         )
 
-    def jobs_for_content(self, content):
+    def jobs_for_content(self, content: GameContent) -> tuple[PregenerationJob, ...]:
         if not self.root.is_dir():
             return ()
-        matches = []
+        matches: list[PregenerationJob] = []
         for path in self.root.glob("*/job.json"):
             try:
                 job = self.load(path.parent.name)
@@ -641,10 +695,10 @@ class PregenerationJobStore:
                 matches.append(job)
         return tuple(matches)
 
-    def source_story_indexes(self):
+    def source_story_indexes(self) -> tuple[Path, ...]:
         if not self.root.is_dir():
             return ()
-        sources = []
+        sources: list[Path] = []
         for path in self.root.glob("*/job.json"):
             try:
                 job = self.load(path.parent.name)
@@ -655,15 +709,15 @@ class PregenerationJobStore:
                 sources.append(source)
         return tuple(dict.fromkeys(sources))
 
-    def prepared_story_ids(self, content):
+    def prepared_story_ids(self, content: GameContent) -> frozenset[str]:
         return frozenset(
             selection_id
             for selection_id, status in self.story_statuses(content).items()
             if status == "ready"
         )
 
-    def story_statuses(self, content):
-        statuses = {}
+    def story_statuses(self, content: GameContent) -> dict[str, str]:
+        statuses: dict[str, str] = {}
         for job in self.jobs_for_content(content):
             prepared = job.status == "prepared" or self._has_published_pack(job)
             for selection_id in job.selected_story_ids:
@@ -673,14 +727,14 @@ class PregenerationJobStore:
                     statuses[selection_id] = "in_progress"
         return statuses
 
-    def _has_published_pack(self, job):
+    def _has_published_pack(self, job: PregenerationJob) -> bool:
         return bool(self.published_packs(job))
 
-    def published_packs(self, job):
+    def published_packs(self, job: PregenerationJob) -> tuple[Path, ...]:
         root = self.path_for(job.job_id).parent / "game-packs"
         if not root.is_dir():
             return ()
-        manifests = []
+        manifests: list[Path] = []
         for manifest in root.glob("pack-*/game-pack.json"):
             identity = manifest.parent.name.removeprefix("pack-")
             if len(identity) == 24 and manifest.is_file():
@@ -691,7 +745,7 @@ class PregenerationJobStore:
                 manifests.append(manifest)
         return tuple(manifests)
 
-    def mark_prepared(self, job):
+    def mark_prepared(self, job: PregenerationJob) -> PregenerationJob:
         if not isinstance(job, PregenerationJob):
             raise PregenerationSetupError("Preparation job is invalid")
         current = self.load(job.job_id)
@@ -711,7 +765,7 @@ class PregenerationJobStore:
         )
         return prepared
 
-    def path_for(self, job_id):
+    def path_for(self, job_id: str) -> Path:
         if not isinstance(job_id, str) or len(job_id) != 24:
             raise PregenerationSetupError("Preparation identity is invalid")
         try:
@@ -721,10 +775,17 @@ class PregenerationJobStore:
         return self.root / job_id / "job.json"
 
 
-def _story_selections(document, authoritative_source_lines=frozenset()):
+def _story_selections(
+    document: StoryIndexDocument,
+    authoritative_source_lines: Iterable[str] = frozenset(),
+) -> tuple[StorySelection, ...]:
     metadata = getattr(document, "metadata", {})
+    raw_completion_contract = metadata.get("source_audio_completion")
+    completion_contract = (
+        raw_completion_contract if isinstance(raw_completion_contract, str) else None
+    )
     if document.collections:
-        records_by_collection = {}
+        records_by_collection: dict[str | None, list[StoryIndexRecord]] = {}
         for record in document.records:
             records_by_collection.setdefault(record.collection_id, []).append(record)
         groups = [
@@ -738,7 +799,7 @@ def _story_selections(document, authoritative_source_lines=frozenset()):
             for collection in document.collections
         ]
     else:
-        records_by_chapter = {}
+        records_by_chapter: dict[str, list[StoryIndexRecord]] = {}
         for record in document.records:
             records_by_chapter.setdefault(record.chapter, []).append(record)
         groups = [
@@ -760,7 +821,7 @@ def _story_selections(document, authoritative_source_lines=frozenset()):
             kind,
             order,
             records,
-            completion_contract=metadata.get("source_audio_completion"),
+            completion_contract=completion_contract,
             authoritative_source_lines=authoritative_source_lines,
         )
         for selection_id, title, kind, order, records in groups
@@ -768,7 +829,7 @@ def _story_selections(document, authoritative_source_lines=frozenset()):
     )
 
 
-def _is_outdated_reverse1999_index(path):
+def _is_outdated_reverse1999_index(path: Path) -> bool:
     try:
         with path.open(encoding="utf-8") as stream:
             metadata = json.loads(next(stream))
@@ -782,15 +843,15 @@ def _is_outdated_reverse1999_index(path):
 
 
 def _selection_from_records(
-    selection_id,
-    title,
-    kind,
-    order,
-    records,
+    selection_id: str,
+    title: str,
+    kind: str,
+    order: int,
+    records: Sequence[StoryIndexRecord],
     *,
-    completion_contract=None,
-    authoritative_source_lines=frozenset(),
-):
+    completion_contract: str | None = None,
+    authoritative_source_lines: Iterable[str] = frozenset(),
+) -> StorySelection:
     speakable = tuple(record for record in records if record.speakable)
     original = tuple(
         record
@@ -836,7 +897,9 @@ def _selection_from_records(
     return selection
 
 
-def _generation_text_characters(content, selected_ids):
+def _generation_text_characters(
+    content: GameContent, selected_ids: Iterable[str]
+) -> int:
     return sum(
         selection.generation_text_characters
         for selection in content.selections
@@ -844,13 +907,15 @@ def _generation_text_characters(content, selected_ids):
     )
 
 
-def _rough_audio_seconds(text_characters):
+def _rough_audio_seconds(text_characters: int) -> int:
     return (
         text_characters + ROUGH_SPEECH_CHARACTERS_PER_SECOND - 1
     ) // ROUGH_SPEECH_CHARACTERS_PER_SECOND
 
 
-def _normalized_selection_ids(content, selected_story_ids):
+def _normalized_selection_ids(
+    content: GameContent, selected_story_ids: Iterable[object]
+) -> tuple[str, ...]:
     requested = tuple(dict.fromkeys(str(value).strip() for value in selected_story_ids))
     if not requested or any(not value for value in requested):
         raise PregenerationSetupError("Select at least one story or chapter")
@@ -865,14 +930,14 @@ def _normalized_selection_ids(content, selected_story_ids):
     )
 
 
-def _required_text(document, name):
+def _required_text(document: Mapping[str, object], name: str) -> str:
     value = document[name]
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be non-empty text")
     return value.strip()
 
 
-def _optional_text(value):
+def _optional_text(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
@@ -880,7 +945,7 @@ def _optional_text(value):
     return value.strip()
 
 
-def _sha256_text(document, name):
+def _sha256_text(document: Mapping[str, object], name: str) -> str:
     value = _required_text(document, name)
     if len(value) != 64:
         raise ValueError(f"{name} must be SHA-256 text")
@@ -888,13 +953,15 @@ def _sha256_text(document, name):
     return value
 
 
-def _text_tuple(document, name, *, allow_empty=False):
+def _text_tuple(
+    document: Mapping[str, object], name: str, *, allow_empty: bool = False
+) -> tuple[str, ...]:
     values = document[name]
     if not isinstance(values, list) or not values and not allow_empty:
         raise ValueError(
             f"{name} must be a{' non-empty' if not allow_empty else ''} list"
         )
-    result = tuple(values)
+    result = tuple(value for value in values if isinstance(value, str))
     if not all(isinstance(value, str) and value.strip() for value in result):
         raise ValueError(f"{name} must contain non-empty text")
     if len(set(result)) != len(result):
@@ -902,15 +969,35 @@ def _text_tuple(document, name, *, allow_empty=False):
     return result
 
 
-def _nonnegative_int(document, name):
+def _nonnegative_int(document: Mapping[str, object], name: str) -> int:
     value = document[name]
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
     return value
 
 
-def _optional_nonnegative_int(document, name):
+def _optional_nonnegative_int(document: Mapping[str, object], name: str) -> int:
     return 0 if name not in document else _nonnegative_int(document, name)
+
+
+def _string_mapping(value: Mapping[object, object]) -> Mapping[str, object]:
+    if not all(isinstance(key, str) for key in value):
+        raise ValueError("document keys must be text")
+    return {str(key): item for key, item in value.items()}
+
+
+def _generation_state_items(
+    state: Mapping[str, object],
+) -> dict[str, Mapping[str, object]]:
+    raw_items = state.get("items")
+    if not isinstance(raw_items, Mapping):
+        raise PregenerationSetupError("Generation state items are invalid")
+    result: dict[str, Mapping[str, object]] = {}
+    for queue_id, item in raw_items.items():
+        if not isinstance(queue_id, str) or not isinstance(item, Mapping):
+            raise PregenerationSetupError("Generation state items are invalid")
+        result[queue_id] = _string_mapping(item)
+    return result
 
 
 __all__ = [

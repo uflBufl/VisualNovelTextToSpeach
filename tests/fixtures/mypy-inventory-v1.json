@@ -51,7 +51,6 @@
     "vntts/pregeneration_generation.py": 20,
     "vntts/pregeneration_queue.py": 17,
     "vntts/pregeneration_recovery.py": 7,
-    "vntts/pregeneration_setup.py": 41,
     "vntts/pregeneration_ui.py": 119,
     "vntts/pregeneration_voices.py": 50,
     "vntts/runtime_ownership.py": 12,

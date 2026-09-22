@@ -923,7 +923,7 @@ def _validated_source_audio_line_ids(
 def _source_audio_covers_full_line(
     entry: Mapping[str, object],
     *,
-    completion_contract: str,
+    completion_contract: str | None,
     semantic_authorized: bool,
 ) -> bool:
     return (
