@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -25,7 +26,7 @@ from vntts.chapter_voice_preload import (
     _source_audio_covers_full_line,
     _validated_source_audio_line_ids,
 )
-from vntts.game_audio_decoder import ensure_game_decoder
+from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
 from vntts.path_safety import contained_regular_file
 from vntts.pregeneration_setup import PregenerationSetupError, inspect_story_index
 from vntts.subprocess_utils import last_output_line, terminate_process
@@ -391,20 +392,48 @@ class Reverse1999GameImporter:
             allow_homebrew=self.allow_decoder_homebrew,
         )
         if narrator:
-            if len(roles) != 1:
-                raise GameContentImportError("Choose one narrator character at a time")
-            if (
-                self._narrator_session is None
-                or self._narrator_session.role != roles[0]
-            ):
-                self.narrator_references(roles[0])
-            if cancel_event is not None and cancel_event.is_set():
-                raise GameContentImportCancelled("Narrator preparation cancelled")
-            return self._narrator_session.prepare(
-                line_id=narrator_line_id,
-                decoder=decoder,
-                runner=partial(self._decode_narrator, cancel_event=cancel_event),
+            return self._prepare_narrator_voice(
+                roles, decoder, cancel_event, narrator_line_id
             )
+        return self._prepare_role_voice_candidates(
+            roles,
+            command,
+            decoder,
+            cancel_event,
+            progress,
+            narrator_line_id,
+            target_story_index,
+        )
+
+    def _prepare_narrator_voice(
+        self,
+        roles: Sequence[str],
+        decoder: Path,
+        cancel_event: Cancellation | None,
+        narrator_line_id: str | None,
+    ) -> Path:
+        if len(roles) != 1:
+            raise GameContentImportError("Choose one narrator character at a time")
+        if self._narrator_session is None or self._narrator_session.role != roles[0]:
+            self.narrator_references(roles[0])
+        if cancel_event is not None and cancel_event.is_set():
+            raise GameContentImportCancelled("Narrator preparation cancelled")
+        return self._narrator_session.prepare(
+            line_id=narrator_line_id,
+            decoder=decoder,
+            runner=partial(self._decode_narrator, cancel_event=cancel_event),
+        )
+
+    def _prepare_role_voice_candidates(
+        self,
+        roles: Sequence[str],
+        command: Sequence[str],
+        decoder: Path,
+        cancel_event: Cancellation | None,
+        progress: ProgressCallback | None,
+        narrator_line_id: str | None,
+        target_story_index: str | Path | None,
+    ) -> Path:
         environment = dict(os.environ)
         environment["PATH"] = os.pathsep.join(
             (str(decoder.parent), environment.get("PATH", ""))
@@ -419,8 +448,6 @@ class Reverse1999GameImporter:
         ]
         if target_story_index is not None:
             arguments.extend(("--target-story-index", str(target_story_index)))
-        if narrator:
-            arguments.append("--narrator")
         if narrator_line_id is not None:
             arguments.extend(("--narrator-line-id", narrator_line_id))
         for role in roles:
