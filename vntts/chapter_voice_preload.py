@@ -77,9 +77,9 @@ class ChapterVoicePreloader:
         self.by_chapter_speaker: defaultdict[tuple[str, str], list[ChapterDialogue]] = (
             defaultdict(list)
         )
-        self.by_exact_dialogue: defaultdict[
-            tuple[str, str], list[ChapterDialogue]
-        ] = defaultdict(list)
+        self.by_exact_dialogue: defaultdict[tuple[str, str], list[ChapterDialogue]] = (
+            defaultdict(list)
+        )
         self.by_normalized_dialogue: defaultdict[
             tuple[str, str], list[ChapterDialogue]
         ] = defaultdict(list)
@@ -107,9 +107,7 @@ class ChapterVoicePreloader:
         cls, document: Mapping[str, object], *, lookahead_rows: int = 80
     ) -> ChapterVoicePreloader:
         rows: list[ChapterDialogue] = []
-        completion_contract = (
-            str(document.get("source_audio_completion") or "").strip()
-        )
+        completion_contract = str(document.get("source_audio_completion") or "").strip()
         dialogue = document.get("dialogue", ())
         for raw_entry in dialogue if isinstance(dialogue, Sequence) else ():
             if not isinstance(raw_entry, Mapping):

@@ -331,9 +331,9 @@ class GeneratedAudioLibrary:
         cache_size: int = 32,
     ) -> None:
         self.warn = warn or (lambda _message: None)
-        self.cache: BoundedCache[
-            tuple[str, str, str], PreparedGeneratedAudio
-        ] = BoundedCache(cache_size)
+        self.cache: BoundedCache[tuple[str, str, str], PreparedGeneratedAudio] = (
+            BoundedCache(cache_size)
+        )
         self.warned_entries: set[tuple[str, str]] = set()
         self.reload_lock = Lock()
         self.failed_reload_signature: tuple[int, int, int] | None = None
@@ -793,9 +793,7 @@ class GeneratedAudioFallbackBackend:
             else None
         )
         source_audio_completeness = (
-            line.source_audio_completeness
-            if line is not None
-            else "unknown"
+            line.source_audio_completeness if line is not None else "unknown"
         )
         source_audio_partial = bool(
             line is not None
@@ -1234,10 +1232,9 @@ class GeneratedAudioFallbackBackend:
                             stream,
                             samples,
                             sample_rate,
-                            lambda: self.generated_audio_stop.is_set()
-                            or (
-                                playback_guard is not None
-                                and not playback_guard()
+                            lambda: (
+                                self.generated_audio_stop.is_set()
+                                or (playback_guard is not None and not playback_guard())
                             ),
                         )
                 else:
@@ -1549,9 +1546,7 @@ def _live_fallback_index(
             text_sha256=str(raw["text_sha256"]),
             speaker=str(raw["speaker"]),
             requested_voice_character=str(raw["requested_voice_character"]),
-            previous_result_sha256=(
-                str(previous) if previous is not None else None
-            ),
+            previous_result_sha256=(str(previous) if previous is not None else None),
             decided_at=str(raw["decided_at"]),
             decision_sha256=str(raw["decision_sha256"]),
             evidence=(

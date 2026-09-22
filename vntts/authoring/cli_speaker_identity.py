@@ -97,9 +97,7 @@ def handle(arguments: argparse.Namespace) -> int:
         draft = _read_pair_draft(arguments.pairs)
         labels_document = build_labelled_pairs(inventory, draft)
         write_labelled_pairs(labels_document, arguments.output)
-        _print(
-            {"output": str(arguments.output.resolve()), **_summary(labels_document)}
-        )
+        _print({"output": str(arguments.output.resolve()), **_summary(labels_document)})
         return 0
     if arguments.command == "speaker-identity-model-install":
         _print(install_managed_speaker_identity_model(source=arguments.source))

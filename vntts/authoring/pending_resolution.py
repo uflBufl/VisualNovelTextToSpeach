@@ -341,12 +341,8 @@ def _validated_plan_document(plan: object) -> _PlanDocument:
             document.get("workspace_config_fingerprint"),
             "Workspace config fingerprint",
         ),
-        "queue_sha256": _required_sha256(
-            document.get("queue_sha256"), "Queue SHA-256"
-        ),
-        "state_sha256": _required_sha256(
-            document.get("state_sha256"), "State SHA-256"
-        ),
+        "queue_sha256": _required_sha256(document.get("queue_sha256"), "Queue SHA-256"),
+        "state_sha256": _required_sha256(document.get("state_sha256"), "State SHA-256"),
         "blocked_pending_count": len(canonical),
         "action_counts": expected_counts,
         "records": canonical,

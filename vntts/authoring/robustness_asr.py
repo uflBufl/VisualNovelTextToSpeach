@@ -114,9 +114,7 @@ def _words(text: str) -> tuple[str, ...]:
     )
 
 
-def _edit_counts(
-    expected: Sequence[str], observed: Sequence[str]
-) -> dict[str, int]:
+def _edit_counts(expected: Sequence[str], observed: Sequence[str]) -> dict[str, int]:
     rows = len(expected) + 1
     columns = len(observed) + 1
     table: list[list[_EditCounts]] = [
@@ -234,9 +232,7 @@ class _WhisperTranscriber:
         # Transformers 4.57.6 passes the source rate twice to torchaudio,
         # leaving non-16k audio unresampled. Supply Whisper's native rate.
         if rate != 16_000:
-            samples = np.asarray(
-                resample_poly(samples, 16_000, rate), dtype=np.float32
-            )
+            samples = np.asarray(resample_poly(samples, 16_000, rate), dtype=np.float32)
         return {"array": samples, "sampling_rate": 16_000}
 
     @staticmethod
@@ -297,7 +293,9 @@ def _sample_records(value: object) -> list[_RobustnessSample]:
             raise SpeechRobustnessAsrError("Robustness corpus synthesis is invalid")
         samples.append(
             {
-                "workspace_id": _text_field(value_record, "workspace_id", "Workspace ID"),
+                "workspace_id": _text_field(
+                    value_record, "workspace_id", "Workspace ID"
+                ),
                 "queue_id": _text_field(value_record, "queue_id", "Queue ID"),
                 "audio_sha256": _text_field(
                     value_record, "audio_sha256", "Audio checksum"
@@ -305,9 +303,7 @@ def _sample_records(value: object) -> list[_RobustnessSample]:
                 "text_sha256": _text_field(
                     value_record, "text_sha256", "Text checksum"
                 ),
-                "human_label": _text_field(
-                    value_record, "human_label", "Human label"
-                ),
+                "human_label": _text_field(value_record, "human_label", "Human label"),
                 "text": _text_field(value_record, "text", "Expected text"),
                 "audio": _text_field(value_record, "audio", "Audio path"),
                 "synthesis": synthesis,
@@ -343,9 +339,7 @@ def _asr_records(value: object) -> list[_AsrRecord]:
     return [_asr_record(record) for record in value]
 
 
-def _distribution(
-    records: Sequence[_AsrRecord], metric: _RateMetric
-) -> JsonDocument:
+def _distribution(records: Sequence[_AsrRecord], metric: _RateMetric) -> JsonDocument:
     values = sorted(float(record["comparison"][metric]) for record in records)
     if not values:
         return {"count": 0, "mean": None, "median": None, "maximum": None}

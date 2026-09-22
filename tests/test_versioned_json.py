@@ -102,9 +102,7 @@ class VersionedJsonTest(unittest.TestCase):
                 json.dumps({"schema_version": 1, "value": "x" * 256}),
                 encoding="utf-8",
             )
-            with patch(
-                "vntts.versioned_json._DOCUMENT_READ_LIMIT", 128, create=True
-            ):
+            with patch("vntts.versioned_json._DOCUMENT_READ_LIMIT", 128, create=True):
                 result = load_versioned_json(
                     path,
                     schema_version=1,

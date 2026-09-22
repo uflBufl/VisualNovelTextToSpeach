@@ -256,8 +256,7 @@ def _saved_voice_status(
     )
     return (
         "matching"
-        if (saved_speaker, tuple(saved_references))
-        == (speaker, references)
+        if (saved_speaker, tuple(saved_references)) == (speaker, references)
         else "changed"
     )
 

@@ -35,7 +35,6 @@ def published_pack(root):
 
 
 class OfflinePackActivatorTest(unittest.TestCase):
-
     def test_mixed_pack_activation_routes_original_and_generated_without_live_synthesis(
         self,
     ):

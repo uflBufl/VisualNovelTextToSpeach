@@ -459,9 +459,7 @@ def recognize_live_frame(
         ocr_language,
         correction_dictionary,
     )
-    recognized_text = (
-        "..." if detect_standalone_ellipsis_frame(image) else result.text
-    )
+    recognized_text = "..." if detect_standalone_ellipsis_frame(image) else result.text
     recognized_character = result.character
     if recognized_text == "..." and ellipsis_speaker_resolver is not None:
         recognized_character = ellipsis_speaker_hint(

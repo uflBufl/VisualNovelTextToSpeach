@@ -131,9 +131,12 @@ class Win32WindowBackend:
         if title_length <= 0:
             return None
         title_buffer = ctypes.create_unicode_buffer(title_length + 1)
-        if self._integer(
-            self._call("GetWindowTextW", handle, title_buffer, len(title_buffer))
-        ) <= 0:
+        if (
+            self._integer(
+                self._call("GetWindowTextW", handle, title_buffer, len(title_buffer))
+            )
+            <= 0
+        ):
             return None
         title = title_buffer.value.strip()
         if not title:
@@ -205,16 +208,20 @@ class MacOSWindowBackend:
             return None
         title = f"{owner} - {name}" if name and name != owner else owner
         return WindowInfo(
-            handle=int(getattr(values, "__getitem__")(getattr(quartz, "kCGWindowNumber"))),
+            handle=int(
+                getattr(values, "__getitem__")(getattr(quartz, "kCGWindowNumber"))
+            ),
             title=title,
             process_id=int(get_value(getattr(quartz, "kCGWindowOwnerPID"), 0)),
-            minimized=not bool(get_value(getattr(quartz, "kCGWindowIsOnscreen"), False)),
+            minimized=not bool(
+                get_value(getattr(quartz, "kCGWindowIsOnscreen"), False)
+            ),
         )
 
     def _copy_windows(self, option: int, window_id: int = 0) -> Sequence[object]:
-        windows: Sequence[object] = getattr(
-            self.quartz, "CGWindowListCopyWindowInfo"
-        )(option, window_id)
+        windows: Sequence[object] = getattr(self.quartz, "CGWindowListCopyWindowInfo")(
+            option, window_id
+        )
         if windows is None:
             raise WindowCaptureError(
                 "macOS did not return window information; allow Screen Recording "
@@ -243,9 +250,8 @@ class MacOSWindowBackend:
             int(handle),
         )
         for item in values:
-            if (
-                int(getattr(item, "get")(getattr(quartz, "kCGWindowNumber"), -1))
-                == int(handle)
+            if int(getattr(item, "get")(getattr(quartz, "kCGWindowNumber"), -1)) == int(
+                handle
             ):
                 return self._window_info(item)
         return None
@@ -257,9 +263,8 @@ class MacOSWindowBackend:
             int(handle),
         )
         for item in values:
-            if (
-                int(getattr(item, "get")(getattr(quartz, "kCGWindowNumber"), -1))
-                != int(handle)
+            if int(getattr(item, "get")(getattr(quartz, "kCGWindowNumber"), -1)) != int(
+                handle
             ):
                 continue
             bounds = getattr(item, "get")(getattr(quartz, "kCGWindowBounds")) or {}
@@ -353,7 +358,9 @@ class LinuxX11WindowBackend:
         self, window: object, name: str, property_type: object = 0
     ) -> Sequence[object] | bytes | None:
         try:
-            value = getattr(window, "get_full_property")(self._atom(name), property_type)
+            value = getattr(window, "get_full_property")(
+                self._atom(name), property_type
+            )
         except Exception:
             return None
         value = None if value is None else getattr(value, "value")
@@ -392,9 +399,11 @@ class LinuxX11WindowBackend:
         if value is not None:
             if isinstance(value, bytes):
                 return value.decode("utf-8", errors="replace").strip()
-            return bytes(self._integer(item) for item in value).decode(
-                "utf-8", errors="replace"
-            ).strip()
+            return (
+                bytes(self._integer(item) for item in value)
+                .decode("utf-8", errors="replace")
+                .strip()
+            )
         try:
             return (getattr(window, "get_wm_name")() or "").strip()
         except Exception:

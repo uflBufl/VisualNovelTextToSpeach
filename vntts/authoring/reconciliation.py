@@ -915,7 +915,9 @@ def build_authoring_reconciliation(
 
 
 def _terminal_conflicts(
-    occurrence_index: OccurrenceIndex, *, resolved_queue_ids: set[str] | frozenset[str] = frozenset()
+    occurrence_index: OccurrenceIndex,
+    *,
+    resolved_queue_ids: set[str] | frozenset[str] = frozenset(),
 ) -> list[JsonObject]:
     conflicts: list[JsonObject] = []
     for queue_id, occurrences in sorted(occurrence_index.items()):
@@ -1152,7 +1154,9 @@ def _snapshot_quality_card(
 ) -> None:
     generated_samples = card["generated_samples"]
     if not isinstance(generated_samples, list):
-        raise AuthoringReconciliationError("Quality review generated samples are malformed")
+        raise AuthoringReconciliationError(
+            "Quality review generated samples are malformed"
+        )
     records: list[tuple[object, str, str]] = [
         (card["reference"], "audio", "audio_sha256"),
         *((sample, "audio", "audio_sha256") for sample in generated_samples),
@@ -1328,8 +1332,7 @@ def _object_list(value: object, label: str) -> list[object]:
 def _state_items(state: StateObject) -> dict[str, JsonObject]:
     items = state.get("items")
     if not isinstance(items, dict) or not all(
-        isinstance(key, str) and isinstance(value, dict)
-        for key, value in items.items()
+        isinstance(key, str) and isinstance(value, dict) for key, value in items.items()
     ):
         raise AuthoringReconciliationError("Generation state items are malformed")
     return {

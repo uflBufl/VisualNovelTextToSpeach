@@ -1028,9 +1028,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 json.dumps({"schema_version": 1, "operation": "x" * 256}),
                 encoding="utf-8",
             )
-            with patch(
-                "vntts.support._PERSISTED_SUPPORT_READ_LIMIT", 128, create=True
-            ):
+            with patch("vntts.support._PERSISTED_SUPPORT_READ_LIMIT", 128, create=True):
                 report = PregenerationSupportState(path).report()
 
         self.assertEqual(report, {"available": False})
@@ -1095,9 +1093,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 return result
 
             with (
-                patch(
-                    "vntts.support._ACTIVE_CONTENT_READ_LIMIT", 128, create=True
-                ),
+                patch("vntts.support._ACTIVE_CONTENT_READ_LIMIT", 128, create=True),
                 patch("vntts.support.Path.stat", autospec=True, side_effect=stale_stat),
             ):
                 active = collect_active_content_identity(
@@ -1135,9 +1131,7 @@ class SupportBundleBuilderTest(unittest.TestCase):
                 return result
 
             with (
-                patch(
-                    "vntts.support._ACTIVE_CONTENT_READ_LIMIT", 128, create=True
-                ),
+                patch("vntts.support._ACTIVE_CONTENT_READ_LIMIT", 128, create=True),
                 patch("vntts.support.Path.stat", autospec=True, side_effect=stale_stat),
             ):
                 active = collect_active_content_identity(

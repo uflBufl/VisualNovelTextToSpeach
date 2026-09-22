@@ -209,9 +209,7 @@ def validate_reference_selection_provenance(
     entry = matching[0]
     selected = provenance.get("selected_reference")
     if not isinstance(selected, str):
-        raise ReferenceSelectionError(
-            "Selected voice reference identity is malformed"
-        )
+        raise ReferenceSelectionError("Selected voice reference identity is malformed")
     if not entry.references or entry.references[0] != selected:
         raise ReferenceSelectionError(
             "Selected voice reference is not first in the manifest"

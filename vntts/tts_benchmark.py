@@ -247,9 +247,7 @@ def create_backend(
     model_name = options.get("model_name")
     model_revision = options.get("model_revision")
     narrator_reference = options.get("narrator_reference")
-    moss_streaming_first_chunk_frames = options.get(
-        "moss_streaming_first_chunk_frames"
-    )
+    moss_streaming_first_chunk_frames = options.get("moss_streaming_first_chunk_frames")
     moss_streaming_interval = options.get("moss_streaming_interval")
     startup_cancellation = options.get("startup_cancellation")
     startup_progress = options.get("startup_progress")
@@ -284,9 +282,7 @@ def create_backend(
             create_pocket_worker_backend(
                 registry,
                 voice_state_cache_directory=cache_root / "voices",
-                allow_gated_model_access=options.get(
-                    "allow_gated_model_access", False
-                ),
+                allow_gated_model_access=options.get("allow_gated_model_access", False),
                 **common,
             ),
             name,
@@ -411,9 +407,7 @@ def load_tts_benchmark_corpus(path: PathInput) -> BenchmarkCorpus:
         if not text:
             raise ValueError(f"TTS benchmark sample {index} has no text")
         sample_id = (
-            str(sample["id"])
-            if strict
-            else str(sample.get("id") or f"sample-{index}")
+            str(sample["id"]) if strict else str(sample.get("id") or f"sample-{index}")
         )
         if sample_id in seen_ids:
             raise ValueError(f"Duplicate TTS benchmark sample ID: {sample_id!r}")

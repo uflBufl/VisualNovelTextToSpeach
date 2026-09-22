@@ -537,10 +537,7 @@ def _validate_labels_shape(document: Mapping[str, object]) -> None:
         "partition",
         "relationship",
     }
-    if any(
-        not isinstance(item, dict) or not required <= item.keys()
-        for item in pairs
-    ):
+    if any(not isinstance(item, dict) or not required <= item.keys() for item in pairs):
         raise SpeakerIdentityError("Speaker labels contain an invalid pair")
 
 

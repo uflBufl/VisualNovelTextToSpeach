@@ -102,10 +102,9 @@ def resolve_audio_output(
         audio_output = sounddevice
     if isinstance(audio_output, _LoggedAudioOutput):
         return audio_output
-    if (
-        getattr(audio_output, "__name__", None) == "sounddevice"
-        and _supports_streaming_output(audio_output)
-    ):
+    if getattr(
+        audio_output, "__name__", None
+    ) == "sounddevice" and _supports_streaming_output(audio_output):
         return _LoggedAudioOutput(audio_output)
     return audio_output
 
@@ -462,6 +461,7 @@ class SynchronousPcmPlaybackMixin:
                     dtype="float32",
                     latency=self.playback_latency,
                 ) as stream:
+
                     def cancelled() -> bool:
                         return stop_requested.is_set() or (
                             playback_guard is not None and not playback_guard()

@@ -591,9 +591,7 @@ class VoicePlanStoreTest(unittest.TestCase):
                 jobs,
                 decisions=decisions,
                 voice_library=library,
-            ).create(
-                changed_job, settings, manifest_path=manifest
-            )
+            ).create(changed_job, settings, manifest_path=manifest)
             saved_group = next(
                 group for group in saved.groups if group.character == "Rhiannon"
             )
@@ -1028,7 +1026,10 @@ class VoicePlanStoreTest(unittest.TestCase):
                 group for group in plan.groups if group.character == "Rhiannon"
             )
             self.assertEqual(
-                [candidate.source_character for candidate in rhiannon.candidate_inventory],
+                [
+                    candidate.source_character
+                    for candidate in rhiannon.candidate_inventory
+                ],
                 ["Player candidate Rhiannon 1"],
             )
 

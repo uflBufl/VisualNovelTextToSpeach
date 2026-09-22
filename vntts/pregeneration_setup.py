@@ -379,9 +379,7 @@ def _cached_story_selection(document: object) -> StorySelection:
 
 
 @lru_cache(maxsize=8)
-def _cached_story_index_document(
-    path: str, expected_sha256: str
-) -> StoryIndexDocument:
+def _cached_story_index_document(path: str, expected_sha256: str) -> StoryIndexDocument:
     document = load_story_index_document(path)
     if sha256_file(path) != expected_sha256:
         raise ValueError("Story content changed while it was being read")

@@ -225,9 +225,7 @@ class GameAudioDecoderTest(unittest.TestCase):
         executable.write_bytes(b"decoder")
         outside = self.root / "outside-verification.json"
         outside.write_text(
-            json.dumps(
-                {"vgmstream-cli": hashlib.sha256(b"decoder").hexdigest()}
-            ),
+            json.dumps({"vgmstream-cli": hashlib.sha256(b"decoder").hexdigest()}),
             encoding="utf-8",
         )
         symlink_or_skip(folder / "verified.json", outside)
@@ -251,9 +249,7 @@ class GameAudioDecoderTest(unittest.TestCase):
         executable.write_bytes(b"decoder")
         (folder / "verified.json").write_text(
             " " * (64 * 1024)
-            + json.dumps(
-                {"vgmstream-cli": hashlib.sha256(b"decoder").hexdigest()}
-            ),
+            + json.dumps({"vgmstream-cli": hashlib.sha256(b"decoder").hexdigest()}),
             encoding="utf-8",
         )
 
@@ -275,9 +271,7 @@ class GameAudioDecoderTest(unittest.TestCase):
         executable = outside / "vgmstream-cli"
         executable.write_bytes(b"decoder")
         (outside / "verified.json").write_text(
-            json.dumps(
-                {"vgmstream-cli": hashlib.sha256(b"decoder").hexdigest()}
-            ),
+            json.dumps({"vgmstream-cli": hashlib.sha256(b"decoder").hexdigest()}),
             encoding="utf-8",
         )
         symlink_or_skip(

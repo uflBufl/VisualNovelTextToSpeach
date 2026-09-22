@@ -130,7 +130,9 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, ambiguous, _manifest = ambiguous_fixture(root)
-            group = replace(ambiguous, route="voice", resolution="known-character-voice")
+            group = replace(
+                ambiguous, route="voice", resolution="known-character-voice"
+            )
             plan = replace(
                 plan,
                 groups=tuple(

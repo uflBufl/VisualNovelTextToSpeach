@@ -325,9 +325,7 @@ def _mono_pcm(value: object) -> NDArray[np.float32]:
     return np.ascontiguousarray(pcm, dtype=np.float32)
 
 
-def _write_pcm16_mono(
-    path: Path, pcm: NDArray[np.float32], sample_rate: int
-) -> None:
+def _write_pcm16_mono(path: Path, pcm: NDArray[np.float32], sample_rate: int) -> None:
     encoded = np.rint(np.clip(pcm, -1, 1) * 32767).astype("<i2").tobytes()
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)

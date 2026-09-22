@@ -851,7 +851,9 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.reject_button.text(), "Reject")
             self.assertIn("Ctrl+R", dialog.review_play.accessibleDescription())
             self.assertIn("Ctrl+Enter", dialog.approve.accessibleDescription())
-            self.assertIn("Ctrl+Backspace", dialog.reject_button.accessibleDescription())
+            self.assertIn(
+                "Ctrl+Backspace", dialog.reject_button.accessibleDescription()
+            )
             modifiers = (
                 Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
             )

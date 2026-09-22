@@ -544,12 +544,12 @@ def _state_items(
         if not isinstance(queue_id, str) or not isinstance(item, Mapping):
             raise OfflineGenerationError("Offline generation state items are invalid")
         result[queue_id] = {
-            str(key): value
-            for key, value in item.items()
-            if isinstance(key, str)
+            str(key): value for key, value in item.items() if isinstance(key, str)
         }
         if len(result[queue_id]) != len(item):
-            raise OfflineGenerationError("Offline generation state item keys are invalid")
+            raise OfflineGenerationError(
+                "Offline generation state item keys are invalid"
+            )
     return result
 
 

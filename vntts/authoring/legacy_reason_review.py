@@ -91,9 +91,7 @@ def build_legacy_reason_review(
         sample_reasons = _string_values(
             sample.get("human_defect_reasons", ()), "Sample defect reasons"
         )
-        reasons = tuple(
-            sorted(set(sample_reasons) - {"unspecified"})
-        )
+        reasons = tuple(sorted(set(sample_reasons) - {"unspecified"}))
         known[key] = reasons
         if frozenset(sample_reasons) not in _UNCLASSIFIED_REASONS:
             continue

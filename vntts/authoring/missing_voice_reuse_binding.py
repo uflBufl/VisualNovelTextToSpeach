@@ -93,9 +93,9 @@ def publish_missing_voice_reuse_binding(
         raise MissingVoiceReuseBindingError(
             "Render hypotheses require a selection artifact, not a voice binding"
         )
-    if bundle["plan"].get("plan_id") != document["plan_id"] or bundle[
-        "plan"
-    ].get("sha256") != sha256_file(plan_path):
+    if bundle["plan"].get("plan_id") != document["plan_id"] or bundle["plan"].get(
+        "sha256"
+    ) != sha256_file(plan_path):
         raise MissingVoiceReuseBindingError(
             "Missing-voice review belongs to a different immutable plan"
         )
@@ -326,7 +326,9 @@ def publish_missing_voice_reuse_binding(
                 **decision_body,
                 "decision_id": canonical_document_sha256(decision_body),
             }
-            atomic_write_json(staging / "decision.json", decision_artifact, sort_keys=True)
+            atomic_write_json(
+                staging / "decision.json", decision_artifact, sort_keys=True
+            )
             inventory = [
                 {
                     "path": "decision.json",
