@@ -649,8 +649,8 @@ class AppController:
         character: str,
         source_id: str,
         *,
-        commit_settings: Callable[[object], object] | None = None,
-    ) -> object:
+        commit_settings: Callable[[AppSettings], object] | None = None,
+    ) -> AppSettings:
         return self.voice_assignments.assign(
             character,
             source_id,
@@ -661,8 +661,8 @@ class AppController:
         self,
         character: str,
         *,
-        commit_settings: Callable[[object], object] | None = None,
-    ) -> object:
+        commit_settings: Callable[[AppSettings], object] | None = None,
+    ) -> AppSettings:
         return self.voice_assignments.clear(
             character,
             commit_settings=commit_settings,
@@ -672,8 +672,8 @@ class AppController:
         self,
         enabled: bool,
         *,
-        commit_settings: Callable[[object], object] | None = None,
-    ) -> object:
+        commit_settings: Callable[[AppSettings], object] | None = None,
+    ) -> AppSettings:
         return self.voice_assignments.set_force_live_narrator(
             enabled,
             commit_settings=commit_settings,

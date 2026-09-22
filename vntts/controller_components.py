@@ -981,8 +981,8 @@ class VoiceAssignmentComponent:
         character: str,
         source_id: str,
         *,
-        commit_settings: Callable[[object], object] | None = None,
-    ) -> object:
+        commit_settings: Callable[[AppSettings], object] | None = None,
+    ) -> AppSettings:
         character = (character or "").strip()
         if not character:
             raise ValueError("Enter a narrator or character name")
@@ -1028,8 +1028,8 @@ class VoiceAssignmentComponent:
         self,
         character: str,
         *,
-        commit_settings: Callable[[object], object] | None = None,
-    ) -> object:
+        commit_settings: Callable[[AppSettings], object] | None = None,
+    ) -> AppSettings:
         character = (character or "").strip()
         if not character:
             raise ValueError("Enter a narrator or character name")
@@ -1065,8 +1065,8 @@ class VoiceAssignmentComponent:
         self,
         enabled: bool,
         *,
-        commit_settings: Callable[[object], object] | None = None,
-    ) -> object:
+        commit_settings: Callable[[AppSettings], object] | None = None,
+    ) -> AppSettings:
         controller = self.controller
         if controller.is_live_running:
             raise RuntimeError("Stop live reading before changing Narrator routing")
