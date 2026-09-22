@@ -254,89 +254,22 @@ def create_listening_session_from_reports(
     resolved_paths = [Path(path).expanduser().resolve() for path in report_paths]
     if len(resolved_paths) < 2:
         raise ModelListeningError("At least two model reports are required")
-    selected_ids: frozenset[str] | None = None
-    if sample_ids is not None:
-        raw_selected_ids = tuple(sample_ids)
-        if not raw_selected_ids or any(
-            not isinstance(value, str) or not value.strip()
-            for value in raw_selected_ids
-        ):
-            raise ModelListeningError(
-                "Selected model-report sample IDs must be non-empty text"
-            )
-        if len(raw_selected_ids) != len(set(raw_selected_ids)):
-            raise ModelListeningError("Selected model-report sample IDs are duplicated")
-        selected_ids = frozenset(raw_selected_ids)
+    selected_ids = _selected_model_report_ids(sample_ids)
     model_metadata: dict[str, ListeningModel] = {}
     audio_by_model: defaultdict[str, dict[str, AudioRecord]] = defaultdict(dict)
     corpus_items: dict[str, CorpusItem] = {}
     for report_path in resolved_paths:
-        report, samples = _load_model_report(report_path)
-        backend = report["backend"]
-        model_id = report["model_id"]
-        metadata = model_metadata.setdefault(
-            model_id,
-            {
-                "model_id": model_id,
-                "provider": str(report.get("provider") or backend),
-                "model": str(report.get("model") or model_id),
-                "reports": [],
-            },
+        _collect_model_report_samples(
+            report_path,
+            selected_ids,
+            model_metadata,
+            audio_by_model,
+            corpus_items,
         )
-        report_name = str(report_path)
-        if report_name not in metadata["reports"]:
-            metadata["reports"].append(report_name)
-        for sample in samples:
-            if selected_ids is not None and sample["id"] not in selected_ids:
-                continue
-            text = sample["text"]
-            normalized = _normalized_text(text)
-            audio = sample["resolved_audio"]
-            text_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-            sample_id = sample["id"]
-            identity = sample_id
-            queue_id = f"corpus:{identity}:{text_hash[:16]}"
-            existing = audio_by_model[model_id].get(queue_id)
-            audio_record: AudioRecord = {
-                "path": audio,
-                "sha256": sample["audio_sha256"],
-            }
-            if existing is not None and existing != audio_record:
-                raise ModelListeningError(
-                    f"Model {model_id} has multiple outputs for sample {identity!r}"
-                )
-            audio_by_model[model_id][queue_id] = audio_record
-            current = corpus_items.get(queue_id)
-            item: CorpusItem = {
-                "queue_id": queue_id,
-                "line_id": sample["line_id"],
-                "text_sha256": text_hash,
-                "text": text,
-            }
-            if current is not None and (
-                current["text_sha256"] != text_hash
-                or _normalized_text(current["text"]) != normalized
-            ):
-                raise ModelListeningError(
-                    f"Model reports disagree on shared sample {identity!r}"
-                )
-            corpus_items.setdefault(queue_id, item)
     if selected_ids is not None:
-        shared_ids = {
-            item["queue_id"].removeprefix("corpus:").rsplit(":", 1)[0]
-            for item in corpus_items.values()
-            if sum(
-                item["queue_id"] in audio_by_model[model_id]
-                for model_id in model_metadata
-            )
-            >= 2
-        }
-        missing = sorted(selected_ids - shared_ids)
-        if missing:
-            raise ModelListeningError(
-                "Selected samples do not have complete audio from two models: "
-                + ", ".join(missing)
-            )
+        _validate_selected_samples(
+            selected_ids, model_metadata, audio_by_model, corpus_items
+        )
     sources, source_sha256 = _source_digest(resolved_paths)
     return _write_listening_session(
         output_directory,
@@ -347,6 +280,110 @@ def create_listening_session_from_reports(
         source_sha256=source_sha256,
         seed=seed,
     )
+
+
+def _selected_model_report_ids(
+    sample_ids: Iterable[str] | None,
+) -> frozenset[str] | None:
+    if sample_ids is None:
+        return None
+    raw_selected_ids = tuple(sample_ids)
+    if not raw_selected_ids or any(
+        not isinstance(value, str) or not value.strip() for value in raw_selected_ids
+    ):
+        raise ModelListeningError(
+            "Selected model-report sample IDs must be non-empty text"
+        )
+    if len(raw_selected_ids) != len(set(raw_selected_ids)):
+        raise ModelListeningError("Selected model-report sample IDs are duplicated")
+    return frozenset(raw_selected_ids)
+
+
+def _collect_model_report_samples(
+    report_path: Path,
+    selected_ids: frozenset[str] | None,
+    model_metadata: dict[str, ListeningModel],
+    audio_by_model: defaultdict[str, dict[str, AudioRecord]],
+    corpus_items: dict[str, CorpusItem],
+) -> None:
+    report, samples = _load_model_report(report_path)
+    backend = report["backend"]
+    model_id = report["model_id"]
+    metadata = model_metadata.setdefault(
+        model_id,
+        {
+            "model_id": model_id,
+            "provider": str(report.get("provider") or backend),
+            "model": str(report.get("model") or model_id),
+            "reports": [],
+        },
+    )
+    report_name = str(report_path)
+    if report_name not in metadata["reports"]:
+        metadata["reports"].append(report_name)
+    for sample in samples:
+        if selected_ids is None or sample["id"] in selected_ids:
+            _collect_model_sample(model_id, sample, audio_by_model, corpus_items)
+
+
+def _collect_model_sample(
+    model_id: str,
+    sample: ModelReportSample,
+    audio_by_model: defaultdict[str, dict[str, AudioRecord]],
+    corpus_items: dict[str, CorpusItem],
+) -> None:
+    text = sample["text"]
+    normalized = _normalized_text(text)
+    text_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    identity = sample["id"]
+    queue_id = f"corpus:{identity}:{text_hash[:16]}"
+    audio_record: AudioRecord = {
+        "path": sample["resolved_audio"],
+        "sha256": sample["audio_sha256"],
+    }
+    existing = audio_by_model[model_id].get(queue_id)
+    if existing is not None and existing != audio_record:
+        raise ModelListeningError(
+            f"Model {model_id} has multiple outputs for sample {identity!r}"
+        )
+    audio_by_model[model_id][queue_id] = audio_record
+    item: CorpusItem = {
+        "queue_id": queue_id,
+        "line_id": sample["line_id"],
+        "text_sha256": text_hash,
+        "text": text,
+    }
+    current = corpus_items.get(queue_id)
+    if current is not None and (
+        current["text_sha256"] != text_hash
+        or _normalized_text(current["text"]) != normalized
+    ):
+        raise ModelListeningError(
+            f"Model reports disagree on shared sample {identity!r}"
+        )
+    corpus_items.setdefault(queue_id, item)
+
+
+def _validate_selected_samples(
+    selected_ids: frozenset[str],
+    model_metadata: dict[str, ListeningModel],
+    audio_by_model: defaultdict[str, dict[str, AudioRecord]],
+    corpus_items: dict[str, CorpusItem],
+) -> None:
+    shared_ids = {
+        item["queue_id"].removeprefix("corpus:").rsplit(":", 1)[0]
+        for item in corpus_items.values()
+        if sum(
+            item["queue_id"] in audio_by_model[model_id] for model_id in model_metadata
+        )
+        >= 2
+    }
+    missing = sorted(selected_ids - shared_ids)
+    if missing:
+        raise ModelListeningError(
+            "Selected samples do not have complete audio from two models: "
+            + ", ".join(missing)
+        )
 
 
 def create_listening_session(
@@ -496,6 +533,23 @@ def load_listening_session(path: PathInput) -> ListeningSession:
         {SESSION_SCHEMA, LEGACY_SESSION_SCHEMA},
         "listening session",
     )
+    trials = _session_trials(session)
+    current_schema = session.get("schema") == SESSION_SCHEMA
+    legacy_audio_hashes = (
+        {} if current_schema else _legacy_import_audio_hashes(path.parent)
+    )
+    typed_trials = _typed_listening_trials(trials)
+    _validate_listening_trial_ids(typed_trials, len(trials))
+    _validate_listening_progress(session, typed_trials)
+    for trial in typed_trials:
+        _validate_listening_trial(path, trial, current_schema, legacy_audio_hashes)
+    if not _is_listening_session(session):
+        raise ModelListeningError("Listening session is invalid")
+    _load_blind_key(path, session)
+    return _public_session(session)
+
+
+def _session_trials(session: dict[str, object]) -> list[object]:
     trials = _object_list(session.get("trials"))
     if trials is None or session.get("trial_count") != len(trials):
         raise ModelListeningError("Listening session trial count is invalid")
@@ -503,111 +557,122 @@ def load_listening_session(path: PathInput) -> ListeningSession:
         "dimensions"
     ) != list(LEGACY_DIMENSIONS):
         raise ModelListeningError("Listening session decision mode is invalid")
-    current_schema = session.get("schema") == SESSION_SCHEMA
-    legacy_audio_hashes = (
-        {} if current_schema else _legacy_import_audio_hashes(path.parent)
-    )
+    return trials
+
+
+def _typed_listening_trials(
+    trials: Sequence[object],
+) -> list[_ValidatedListeningTrial]:
     typed_trials: list[_ValidatedListeningTrial] = []
     for raw_trial in trials:
         if not _is_listening_trial(raw_trial):
             raise ModelListeningError("Listening session trial is invalid")
         typed_trials.append(raw_trial)
-    trial_ids = [trial["trial_id"] for trial in typed_trials]
-    if len(trial_ids) != len(trials) or len(set(trial_ids)) != len(trials):
+    return typed_trials
+
+
+def _validate_listening_trial_ids(
+    trials: Sequence[_ValidatedListeningTrial], trial_count: int
+) -> None:
+    trial_ids = [trial["trial_id"] for trial in trials]
+    if len(trial_ids) != trial_count or len(set(trial_ids)) != trial_count:
         raise ModelListeningError("Listening session trial IDs are invalid")
-    completed = sum(trial["rating"] is not None for trial in typed_trials)
+
+
+def _validate_listening_progress(
+    session: Mapping[str, object], trials: Sequence[_ValidatedListeningTrial]
+) -> None:
+    completed = sum(trial["rating"] is not None for trial in trials)
     if session.get("completed_count") != completed:
         raise ModelListeningError("Listening session progress is inconsistent")
-    for trial in typed_trials:
-        if current_schema:
-            line_id = trial.get("line_id")
-            text = trial.get("text")
-            text_hash = trial.get("text_sha256")
-            if not isinstance(line_id, str) or not line_id.strip():
-                raise ModelListeningError(
-                    f"Listening trial line identity is invalid: {trial['trial_id']}"
-                )
-            if (
-                not isinstance(text, str)
-                or not text
-                or not is_lowercase_sha256(text_hash)
-            ):
-                raise ModelListeningError(
-                    f"Listening trial text identity is invalid: {trial['trial_id']}"
-                )
-            if (
-                hashlib.sha256(_normalized_text(text).encode("utf-8")).hexdigest()
-                != text_hash
-            ):
-                raise ModelListeningError(
-                    f"Listening trial text hash changed: {trial['trial_id']}"
-                )
-        rating = trial.get("rating")
-        if rating is not None and (
-            not isinstance(rating, dict)
-            or rating.get("preference") not in {"a", "b", "tie"}
-            or rating.get("acceptability") not in {None, "neither"}
-            or (
-                rating.get("acceptability") == "neither"
-                and rating.get("preference") != "tie"
-            )
-        ):
-            raise ModelListeningError(
-                f"Listening trial rating is invalid: {trial['trial_id']}"
-            )
-        audio = trial.get("audio")
-        if not _is_trial_audio(audio):
-            raise ModelListeningError(
-                f"Listening trial audio is invalid: {trial['trial_id']}"
-            )
-        expected_hashes = trial.get("audio_sha256")
-        if current_schema and (not _is_trial_audio(expected_hashes)):
-            raise ModelListeningError(
-                f"Listening trial audio hashes are invalid: {trial['trial_id']}"
-            )
-        audio_hashes = expected_hashes if _is_trial_audio(expected_hashes) else None
-        audio_pairs: tuple[tuple[Literal["a"], str], tuple[Literal["b"], str]] = (
-            ("a", audio["a"]),
-            ("b", audio["b"]),
+
+
+def _validate_listening_trial(
+    path: Path,
+    trial: _ValidatedListeningTrial,
+    current_schema: bool,
+    legacy_audio_hashes: Mapping[str, str],
+) -> None:
+    if current_schema:
+        _validate_current_trial_identity(trial)
+    _validate_listening_trial_rating(trial)
+    _validate_listening_trial_audio(path, trial, current_schema, legacy_audio_hashes)
+
+
+def _validate_current_trial_identity(trial: _ValidatedListeningTrial) -> None:
+    line_id = trial.get("line_id")
+    text = trial.get("text")
+    text_hash = trial.get("text_sha256")
+    if not isinstance(line_id, str) or not line_id.strip():
+        raise ModelListeningError(
+            f"Listening trial line identity is invalid: {trial['trial_id']}"
         )
-        for side, relative in audio_pairs:
-            candidate = _within(path.parent, relative, "listening trial audio")
-            if not candidate.is_file():
-                raise ModelListeningError(
-                    f"Listening trial audio is missing: {candidate}"
-                )
-            expected_hash = (
-                audio_hashes[side]
-                if audio_hashes is not None
-                else legacy_audio_hashes.get(relative)
-            )
-            _verify_pcm_audio(candidate, expected_hash, "listening trial audio")
-    if not _is_listening_session(session):
-        raise ModelListeningError("Listening session is invalid")
-    _load_blind_key(path, session)
-    return _public_session(session)
+    if not isinstance(text, str) or not text or not is_lowercase_sha256(text_hash):
+        raise ModelListeningError(
+            f"Listening trial text identity is invalid: {trial['trial_id']}"
+        )
+    if hashlib.sha256(_normalized_text(text).encode("utf-8")).hexdigest() != text_hash:
+        raise ModelListeningError(
+            f"Listening trial text hash changed: {trial['trial_id']}"
+        )
+
+
+def _validate_listening_trial_rating(trial: _ValidatedListeningTrial) -> None:
+    rating = trial.get("rating")
+    if rating is not None and (
+        not isinstance(rating, dict)
+        or rating.get("preference") not in {"a", "b", "tie"}
+        or rating.get("acceptability") not in {None, "neither"}
+        or (
+            rating.get("acceptability") == "neither"
+            and rating.get("preference") != "tie"
+        )
+    ):
+        raise ModelListeningError(
+            f"Listening trial rating is invalid: {trial['trial_id']}"
+        )
+
+
+def _validate_listening_trial_audio(
+    path: Path,
+    trial: _ValidatedListeningTrial,
+    current_schema: bool,
+    legacy_audio_hashes: Mapping[str, str],
+) -> None:
+    audio = trial.get("audio")
+    if not _is_trial_audio(audio):
+        raise ModelListeningError(
+            f"Listening trial audio is invalid: {trial['trial_id']}"
+        )
+    expected_hashes = trial.get("audio_sha256")
+    if current_schema and not _is_trial_audio(expected_hashes):
+        raise ModelListeningError(
+            f"Listening trial audio hashes are invalid: {trial['trial_id']}"
+        )
+    audio_hashes = expected_hashes if _is_trial_audio(expected_hashes) else None
+    audio_pairs: tuple[tuple[Literal["a"], str], tuple[Literal["b"], str]] = (
+        ("a", audio["a"]),
+        ("b", audio["b"]),
+    )
+    for side, relative in audio_pairs:
+        candidate = _within(path.parent, relative, "listening trial audio")
+        if not candidate.is_file():
+            raise ModelListeningError(f"Listening trial audio is missing: {candidate}")
+        expected_hash = (
+            audio_hashes[side]
+            if audio_hashes is not None
+            else legacy_audio_hashes.get(relative)
+        )
+        _verify_pcm_audio(candidate, expected_hash, "listening trial audio")
 
 
 def _load_blind_key(
     session_path: PathInput, session: _ValidatedListeningSession
 ) -> ListeningKey:
     key_path = Path(session_path).expanduser().resolve().with_name(".blind-key.json")
-    if key_path.is_file() and not private_file_is_restricted(key_path):
-        raise ModelListeningError("Listening session blind key mode must be 0600")
-    if not key_path.is_file() or sha256_file(key_path) != session.get(
-        "blind_key_sha256"
-    ):
-        raise ModelListeningError("Listening session blind key is missing or changed")
-    expected_schema = (
-        LEGACY_KEY_SCHEMA
-        if session.get("schema") == LEGACY_SESSION_SCHEMA
-        else KEY_SCHEMA
-    )
-    key = _load_schema(key_path, {expected_schema}, "listening key")
-    if key.get("source_kind") != session.get("source_kind") or key.get(
-        "source_sha256"
-    ) != session.get("source_sha256"):
-        raise ModelListeningError("Listening session source identity changed")
+    _validate_blind_key_file(key_path, session)
+    key = _load_schema(key_path, {_blind_key_schema(session)}, "listening key")
+    _validate_blind_key_identity(key, session)
     if not _is_listening_key(key):
         raise ModelListeningError("Listening session blind key is invalid")
     models = key["models"]
@@ -615,59 +680,114 @@ def _load_blind_key(
     model_ids = [model["model_id"] for model in models]
     if len(model_ids) != len(set(model_ids)):
         raise ModelListeningError("Listening session blind key models are invalid")
-    assignment_ids = [
-        item.get("trial_id") for item in assignments if isinstance(item, dict)
-    ]
-    trial_ids = [trial["trial_id"] for trial in session["trials"]]
-    if len(assignment_ids) != len(assignments) or sorted(assignment_ids) != sorted(
-        trial_ids
+    _validate_assignment_coverage(assignments, session["trials"])
+    _validate_blind_assignments(key_path, session, assignments, model_ids)
+    return key
+
+
+def _validate_blind_key_file(
+    key_path: Path, session: _ValidatedListeningSession
+) -> None:
+    if key_path.is_file() and not private_file_is_restricted(key_path):
+        raise ModelListeningError("Listening session blind key mode must be 0600")
+    if not key_path.is_file() or sha256_file(key_path) != session.get(
+        "blind_key_sha256"
     ):
+        raise ModelListeningError("Listening session blind key is missing or changed")
+
+
+def _blind_key_schema(session: _ValidatedListeningSession) -> str:
+    return (
+        LEGACY_KEY_SCHEMA
+        if session.get("schema") == LEGACY_SESSION_SCHEMA
+        else KEY_SCHEMA
+    )
+
+
+def _validate_blind_key_identity(
+    key: Mapping[str, object], session: _ValidatedListeningSession
+) -> None:
+    if key.get("source_kind") != session.get("source_kind") or key.get(
+        "source_sha256"
+    ) != session.get("source_sha256"):
+        raise ModelListeningError("Listening session source identity changed")
+
+
+def _validate_assignment_coverage(
+    assignments: Sequence[BlindAssignment], trials: Sequence[_ValidatedListeningTrial]
+) -> None:
+    assignment_ids = [item["trial_id"] for item in assignments]
+    trial_ids = [trial["trial_id"] for trial in trials]
+    if sorted(assignment_ids) != sorted(trial_ids):
         raise ModelListeningError("Listening session blind assignments are incomplete")
+
+
+def _validate_blind_assignments(
+    key_path: Path,
+    session: _ValidatedListeningSession,
+    assignments: Sequence[BlindAssignment],
+    model_ids: Sequence[str],
+) -> None:
     for assignment in assignments:
         trial = next(
             item
             for item in session["trials"]
             if item["trial_id"] == assignment["trial_id"]
         )
-        sides = []
-        for side in ("a", "b"):
-            value = assignment.get(side)
-            if not isinstance(value, dict) or value.get("model_id") not in model_ids:
-                raise ModelListeningError(
-                    "Listening session blind assignment is invalid"
-                )
-            if session.get("schema") == SESSION_SCHEMA:
-                expected_hash = value.get("audio_sha256")
-                if not is_lowercase_sha256(expected_hash):
-                    raise ModelListeningError(
-                        "Listening session blind assignment audio hash is invalid"
-                    )
-                source = Path(str(value.get("source") or "")).expanduser()
-                if source.is_file():
-                    _verify_pcm_audio(
-                        source.resolve(), expected_hash, "blind source audio"
-                    )
-                if trial["audio_sha256"].get(side) != expected_hash:
-                    raise ModelListeningError(
-                        "Listening session alias and assignment hashes disagree"
-                    )
-            else:
-                source = Path(str(value.get("source") or "")).expanduser()
-                if source.is_file():
-                    alias = _within(
-                        key_path.parent,
-                        trial["audio"][side],
-                        "legacy blind audio alias",
-                    )
-                    _verify_pcm_audio(
-                        source.resolve(), sha256_file(alias), "blind source audio"
-                    )
-            sides.append(value["model_id"])
+        sides = _validate_blind_assignment_sides(
+            key_path, session, trial, assignment, model_ids
+        )
         if sides[0] == sides[1]:
             raise ModelListeningError(
                 "Listening trial cannot compare a model with itself"
             )
-    return key
+
+
+def _validate_blind_assignment_sides(
+    key_path: Path,
+    session: _ValidatedListeningSession,
+    trial: _ValidatedListeningTrial,
+    assignment: BlindAssignment,
+    model_ids: Sequence[str],
+) -> tuple[str, str]:
+    values: list[str] = []
+    for side in ("a", "b"):
+        value = assignment[side]
+        if value["model_id"] not in model_ids:
+            raise ModelListeningError("Listening session blind assignment is invalid")
+        _validate_blind_assignment_audio(key_path, session, trial, side, value)
+        values.append(value["model_id"])
+    return values[0], values[1]
+
+
+def _validate_blind_assignment_audio(
+    key_path: Path,
+    session: _ValidatedListeningSession,
+    trial: _ValidatedListeningTrial,
+    side: Literal["a", "b"],
+    value: AssignmentArm,
+) -> None:
+    source = Path(value["source"] or "").expanduser()
+    if session.get("schema") == SESSION_SCHEMA:
+        expected_hash = value.get("audio_sha256")
+        if not is_lowercase_sha256(expected_hash):
+            raise ModelListeningError(
+                "Listening session blind assignment audio hash is invalid"
+            )
+        if source.is_file():
+            _verify_pcm_audio(source.resolve(), expected_hash, "blind source audio")
+        if trial["audio_sha256"].get(side) != expected_hash:
+            raise ModelListeningError(
+                "Listening session alias and assignment hashes disagree"
+            )
+        return
+    if source.is_file():
+        alias = _within(
+            key_path.parent,
+            trial["audio"][side],
+            "legacy blind audio alias",
+        )
+        _verify_pcm_audio(source.resolve(), sha256_file(alias), "blind source audio")
 
 
 def next_pending_trial(session: Mapping[str, object]) -> ListeningTrial | None:
@@ -800,7 +920,24 @@ def _report_fields(
 ) -> ReportFields:
     supports_acceptability = session.get("schema") == SESSION_SCHEMA
     assignments = {item["trial_id"]: item for item in key["assignments"]}
-    stats: dict[str, ModelStats] = {
+    stats = _model_stats(key["models"])
+    pairwise = _pairwise_stats()
+    for trial in session["trials"]:
+        _record_report_trial(trial, assignments, stats, pairwise)
+    models = _report_models(stats, supports_acceptability)
+    completed, total = listening_progress(session)
+    return {
+        "complete": completed == total,
+        "completed_trials": completed,
+        "pending_trials": total - completed,
+        "manual_selection_required": True,
+        "models": models,
+        "pairwise": _report_pairwise(pairwise, supports_acceptability),
+    }
+
+
+def _model_stats(models: Sequence[ListeningModel]) -> dict[str, ModelStats]:
+    return {
         model["model_id"]: {
             "model_id": model["model_id"],
             "provider": model["provider"],
@@ -811,9 +948,12 @@ def _report_fields(
             "rejections": 0,
             "reviewed_trials": 0,
         }
-        for model in key["models"]
+        for model in models
     }
-    pairwise: defaultdict[tuple[str, str], PairwiseStats] = defaultdict(
+
+
+def _pairwise_stats() -> defaultdict[tuple[str, str], PairwiseStats]:
+    return defaultdict(
         lambda: {
             "trials": 0,
             "left_wins": 0,
@@ -822,64 +962,71 @@ def _report_fields(
             "neither_acceptable": 0,
         }
     )
-    for trial in session["trials"]:
-        rating = trial.get("rating")
-        if rating is None:
-            continue
-        assignment = assignments.get(trial["trial_id"])
-        if assignment is None:
-            raise ModelListeningError(f"Blind key is missing {trial['trial_id']}")
-        side_models = {side: assignment[side]["model_id"] for side in ("a", "b")}
-        for model_id in side_models.values():
-            if model_id not in stats:
-                raise ModelListeningError(
-                    f"Blind key references unknown model {model_id!r}"
-                )
-            stats[model_id]["reviewed_trials"] += 1
-        preferred = rating["preference"]
-        neither_acceptable = rating.get("acceptability") == "neither"
-        if neither_acceptable:
-            stats[side_models["a"]]["rejections"] += 1
-            stats[side_models["b"]]["rejections"] += 1
-        elif preferred == "tie":
-            stats[side_models["a"]]["ties"] += 1
-            stats[side_models["b"]]["ties"] += 1
-        else:
-            stats[side_models[preferred]]["wins"] += 1
-            stats[side_models["b" if preferred == "a" else "a"]]["losses"] += 1
-        left, right = sorted(side_models.values())
-        comparison = pairwise[(left, right)]
-        comparison["trials"] += 1
-        if neither_acceptable:
-            comparison["neither_acceptable"] += 1
-        elif preferred == "tie":
-            comparison["ties"] += 1
-        elif side_models[preferred] == left:
-            comparison["left_wins"] += 1
-        else:
-            comparison["right_wins"] += 1
-    models: list[ReportModel] = []
-    for value in stats.values():
-        total = value["wins"] + value["losses"] + value["ties"]
-        preference: PreferenceStats = {
-            "wins": value["wins"],
-            "losses": value["losses"],
-            "ties": value["ties"],
-            "rate": round((value["wins"] + 0.5 * value["ties"]) / total, 4)
-            if total
-            else None,
-        }
-        if supports_acceptability:
-            preference["rejections"] = value["rejections"]
-        models.append(
-            {
-                "model_id": value["model_id"],
-                "provider": value["provider"],
-                "model": value["model"],
-                "reviewed_trials": value["reviewed_trials"],
-                "preference": preference,
-            }
-        )
+
+
+def _record_report_trial(
+    trial: _ValidatedListeningTrial,
+    assignments: Mapping[str, BlindAssignment],
+    stats: dict[str, ModelStats],
+    pairwise: defaultdict[tuple[str, str], PairwiseStats],
+) -> None:
+    rating = trial.get("rating")
+    if rating is None:
+        return
+    assignment = assignments.get(trial["trial_id"])
+    if assignment is None:
+        raise ModelListeningError(f"Blind key is missing {trial['trial_id']}")
+    side_models = {side: assignment[side]["model_id"] for side in ("a", "b")}
+    _record_model_preference(stats, side_models, rating)
+    _record_pairwise_preference(pairwise, side_models, rating)
+
+
+def _record_model_preference(
+    stats: dict[str, ModelStats],
+    side_models: Mapping[str, str],
+    rating: StoredTrialRating,
+) -> None:
+    for model_id in side_models.values():
+        if model_id not in stats:
+            raise ModelListeningError(
+                f"Blind key references unknown model {model_id!r}"
+            )
+        stats[model_id]["reviewed_trials"] += 1
+    preferred = rating["preference"]
+    if rating.get("acceptability") == "neither":
+        stats[side_models["a"]]["rejections"] += 1
+        stats[side_models["b"]]["rejections"] += 1
+    elif preferred == "tie":
+        stats[side_models["a"]]["ties"] += 1
+        stats[side_models["b"]]["ties"] += 1
+    else:
+        stats[side_models[preferred]]["wins"] += 1
+        stats[side_models["b" if preferred == "a" else "a"]]["losses"] += 1
+
+
+def _record_pairwise_preference(
+    pairwise: defaultdict[tuple[str, str], PairwiseStats],
+    side_models: Mapping[str, str],
+    rating: StoredTrialRating,
+) -> None:
+    left, right = sorted(side_models.values())
+    comparison = pairwise[(left, right)]
+    comparison["trials"] += 1
+    preferred = rating["preference"]
+    if rating.get("acceptability") == "neither":
+        comparison["neither_acceptable"] += 1
+    elif preferred == "tie":
+        comparison["ties"] += 1
+    elif side_models[preferred] == left:
+        comparison["left_wins"] += 1
+    else:
+        comparison["right_wins"] += 1
+
+
+def _report_models(
+    stats: Mapping[str, ModelStats], supports_acceptability: bool
+) -> list[ReportModel]:
+    models = [_report_model(value, supports_acceptability) for value in stats.values()]
     models.sort(
         key=lambda item: (
             -(
@@ -893,106 +1040,166 @@ def _report_fields(
     )
     for rank, model in enumerate(models, start=1):
         model["rank"] = rank
-    completed, total = listening_progress(session)
-    return {
-        "complete": completed == total,
-        "completed_trials": completed,
-        "pending_trials": total - completed,
-        "manual_selection_required": True,
-        "models": models,
-        "pairwise": [
-            {
-                "left_model": left,
-                "right_model": right,
-                **(
-                    values
-                    if supports_acceptability
-                    else {
-                        field: value
-                        for field, value in values.items()
-                        if field != "neither_acceptable"
-                    }
-                ),
-            }
-            for (left, right), values in sorted(pairwise.items())
-        ],
+    return models
+
+
+def _report_model(value: ModelStats, supports_acceptability: bool) -> ReportModel:
+    total = value["wins"] + value["losses"] + value["ties"]
+    preference: PreferenceStats = {
+        "wins": value["wins"],
+        "losses": value["losses"],
+        "ties": value["ties"],
+        "rate": round((value["wins"] + 0.5 * value["ties"]) / total, 4)
+        if total
+        else None,
     }
+    if supports_acceptability:
+        preference["rejections"] = value["rejections"]
+    return {
+        "model_id": value["model_id"],
+        "provider": value["provider"],
+        "model": value["model"],
+        "reviewed_trials": value["reviewed_trials"],
+        "preference": preference,
+    }
+
+
+def _report_pairwise(
+    pairwise: Mapping[tuple[str, str], PairwiseStats], supports_acceptability: bool
+) -> list[dict[str, object]]:
+    return [
+        {
+            "left_model": left,
+            "right_model": right,
+            **(
+                values
+                if supports_acceptability
+                else {
+                    field: value
+                    for field, value in values.items()
+                    if field != "neither_acceptable"
+                }
+            ),
+        }
+        for (left, right), values in sorted(pairwise.items())
+    ]
 
 
 def _load_model_report(path: PathInput) -> tuple[ModelReport, list[ModelReportSample]]:
     report = _load_schema(
         path, {MODEL_REPORT_SCHEMA, TTS_MODEL_REPORT_SCHEMA}, "model report"
     )
-    backend = report.get("backend")
-    model_id = report.get("model_id")
+    parsed_report = _model_report_metadata(report, path)
     samples = report.get("samples")
-    if not isinstance(backend, str) or not backend.strip():
-        raise ModelListeningError(f"Model report backend is invalid: {path}")
-    if not isinstance(model_id, str) or not model_id.strip():
-        raise ModelListeningError(f"Model report model_id is invalid: {path}")
     if not isinstance(samples, list) or not samples:
         raise ModelListeningError(f"Model report samples are invalid: {path}")
     parsed: list[ModelReportSample] = []
     seen_ids: set[str] = set()
     report_root = Path(path).expanduser().resolve().parent
     for index, sample in enumerate(samples, start=1):
-        if not _is_json_object(sample):
-            raise ModelListeningError(f"Model report sample {index} must be an object")
-        sample_id = sample.get("id")
-        line_id = sample.get("line_id")
-        text = sample.get("text")
-        text_hash = sample.get("text_sha256")
-        audio_hash = sample.get("audio_sha256")
-        if not isinstance(sample_id, str) or not sample_id.strip():
-            raise ModelListeningError(f"Model report sample {index} id is invalid")
-        if sample_id in seen_ids:
-            raise ModelListeningError(
-                f"Duplicate model report sample ID: {sample_id!r}"
-            )
-        seen_ids.add(sample_id)
-        if not isinstance(line_id, str) or not line_id.strip():
-            raise ModelListeningError(f"Model report sample {index} line_id is invalid")
-        if not isinstance(text, str) or not text:
-            raise ModelListeningError(f"Model report sample {index} text is invalid")
-        if (
-            not is_lowercase_sha256(text_hash)
-            or hashlib.sha256(text.encode("utf-8")).hexdigest() != text_hash
-        ):
-            raise ModelListeningError(
-                f"Model report sample {index} text_sha256 does not match exact text"
-            )
-        outcome = sample.get("outcome", "complete")
-        if outcome not in {"complete", "limited", "cancelled", "error"}:
-            raise ModelListeningError(f"Model report sample {index} outcome is invalid")
-        if outcome != "complete":
-            continue
-        if not isinstance(audio_hash, str) or not is_lowercase_sha256(audio_hash):
-            raise ModelListeningError(
-                f"Model report sample {index} audio_sha256 is invalid"
-            )
-        raw_audio = sample.get("audio")
-        if not isinstance(raw_audio, str) or not raw_audio.strip():
-            raise ModelListeningError(f"Model report sample {index} audio is invalid")
-        audio = Path(raw_audio).expanduser()
-        if not audio.is_absolute():
-            audio = report_root / audio
-        audio = audio.resolve()
-        _verify_pcm_audio(audio, audio_hash, "model report audio")
-        parsed.append(
-            {
-                "id": sample_id.strip(),
-                "line_id": line_id.strip(),
-                "text": text,
-                "text_sha256": text_hash,
-                "audio_sha256": audio_hash,
-                "resolved_audio": audio,
-            }
-        )
-    parsed_report: ModelReport = {
-        "backend": backend.strip(),
-        "model_id": model_id.strip(),
-    }
+        parsed_sample = _parse_model_report_sample(sample, index, seen_ids, report_root)
+        if parsed_sample is not None:
+            parsed.append(parsed_sample)
     return parsed_report, parsed
+
+
+def _model_report_metadata(
+    report: Mapping[str, object], path: PathInput
+) -> ModelReport:
+    backend = report.get("backend")
+    model_id = report.get("model_id")
+    if not isinstance(backend, str) or not backend.strip():
+        raise ModelListeningError(f"Model report backend is invalid: {path}")
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise ModelListeningError(f"Model report model_id is invalid: {path}")
+    return {"backend": backend.strip(), "model_id": model_id.strip()}
+
+
+def _parse_model_report_sample(
+    sample: object,
+    index: int,
+    seen_ids: set[str],
+    report_root: Path,
+) -> ModelReportSample | None:
+    if not _is_json_object(sample):
+        raise ModelListeningError(f"Model report sample {index} must be an object")
+    sample_id = _model_report_sample_id(sample, index, seen_ids)
+    text_fields = _model_report_sample_text(sample, index)
+    if text_fields is None:
+        return None
+    line_id, text, text_hash = text_fields
+    return _model_report_sample_audio(
+        sample, index, report_root, sample_id, line_id, text, text_hash
+    )
+
+
+def _model_report_sample_id(
+    sample: Mapping[str, object], index: int, seen_ids: set[str]
+) -> str:
+    sample_id = sample.get("id")
+    if not isinstance(sample_id, str) or not sample_id.strip():
+        raise ModelListeningError(f"Model report sample {index} id is invalid")
+    if sample_id in seen_ids:
+        raise ModelListeningError(f"Duplicate model report sample ID: {sample_id!r}")
+    seen_ids.add(sample_id)
+    return sample_id
+
+
+def _model_report_sample_text(
+    sample: Mapping[str, object], index: int
+) -> tuple[str, str, str] | None:
+    line_id = sample.get("line_id")
+    text = sample.get("text")
+    text_hash = sample.get("text_sha256")
+    if not isinstance(line_id, str) or not line_id.strip():
+        raise ModelListeningError(f"Model report sample {index} line_id is invalid")
+    if not isinstance(text, str) or not text:
+        raise ModelListeningError(f"Model report sample {index} text is invalid")
+    if (
+        not is_lowercase_sha256(text_hash)
+        or hashlib.sha256(text.encode("utf-8")).hexdigest() != text_hash
+    ):
+        raise ModelListeningError(
+            f"Model report sample {index} text_sha256 does not match exact text"
+        )
+    outcome = sample.get("outcome", "complete")
+    if outcome not in {"complete", "limited", "cancelled", "error"}:
+        raise ModelListeningError(f"Model report sample {index} outcome is invalid")
+    if outcome != "complete":
+        return None
+    return line_id, text, text_hash
+
+
+def _model_report_sample_audio(
+    sample: Mapping[str, object],
+    index: int,
+    report_root: Path,
+    sample_id: str,
+    line_id: str,
+    text: str,
+    text_hash: str,
+) -> ModelReportSample:
+    audio_hash = sample.get("audio_sha256")
+    if not isinstance(audio_hash, str) or not is_lowercase_sha256(audio_hash):
+        raise ModelListeningError(
+            f"Model report sample {index} audio_sha256 is invalid"
+        )
+    raw_audio = sample.get("audio")
+    if not isinstance(raw_audio, str) or not raw_audio.strip():
+        raise ModelListeningError(f"Model report sample {index} audio is invalid")
+    audio = Path(raw_audio).expanduser()
+    if not audio.is_absolute():
+        audio = report_root / audio
+    audio = audio.resolve()
+    _verify_pcm_audio(audio, audio_hash, "model report audio")
+    return {
+        "id": sample_id.strip(),
+        "line_id": line_id.strip(),
+        "text": text,
+        "text_sha256": text_hash,
+        "audio_sha256": audio_hash,
+        "resolved_audio": audio,
+    }
 
 
 def _verify_pcm_audio(path: PathInput, expected_hash: object, label: str) -> None:
