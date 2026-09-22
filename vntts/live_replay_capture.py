@@ -80,7 +80,8 @@ class ChapterBoundStoryResolver(Protocol):
 
 @runtime_checkable
 class CapturedImageFrame(Protocol):
-    image: Image.Image
+    @property
+    def image(self) -> Image.Image: ...
 
 
 class FrameSpecification(TypedDict):

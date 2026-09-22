@@ -2,11 +2,13 @@
 
 import os
 import sys
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import blake2b
 from pathlib import Path
 from time import monotonic
+from typing import Protocol, TypeAlias
 from uuid import uuid4
 
 import mss
@@ -15,16 +17,34 @@ from PIL import Image, ImageFilter
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.dialog import is_empty, speak_dialog
 from vntts.ocr import (
+    DialogRegion,
+    OCRResult,
+    UncertainFrameRecorder,
+    VoiceRegistry,
     default_minimum_ocr_confidence,
     get_dialog_region,
     recognize_dialog_image_result,
 )
-from vntts.ocr_backend import TesseractOCRBackend
+from vntts.ocr_backend import OCRBackend, TesseractOCRBackend
+from vntts.ocr_corrections import OCRCorrectionDictionary
 from vntts.services.tts_engine import AudioPlaybackError, TTSError
 from vntts.voices import VoiceManifestError
 from vntts.window_capture import ensure_screen_capture_supported
 
 default_screenshot_directory = Path("logs/screenshots")
+PathInput: TypeAlias = str | os.PathLike[str]
+Clock: TypeAlias = Callable[[], float]
+
+
+class ScreenshotSettings(Protocol):
+    @property
+    def screenshot_directory(self) -> str: ...
+
+
+class DialogVoiceRouter(Protocol):
+    registry: VoiceRegistry
+
+    def speak(self, character: str, text: str) -> object: ...
 
 
 class ScreenCaptureError(RuntimeError):
@@ -36,7 +56,7 @@ class OCRError(RuntimeError):
 
 
 class OCRUncertainError(OCRError):
-    def __init__(self, result, minimum_confidence):
+    def __init__(self, result: OCRResult, minimum_confidence: float) -> None:
         self.result = result
         self.minimum_confidence = minimum_confidence
         super().__init__(
@@ -55,7 +75,7 @@ class CapturedDialogFrame:
     capture_ms: float
 
 
-def get_screenshot_directory(settings=None):
+def get_screenshot_directory(settings: ScreenshotSettings | None = None) -> Path:
     if settings is not None:
         return Path(settings.screenshot_directory).expanduser()
 
@@ -66,19 +86,19 @@ def get_screenshot_directory(settings=None):
     return Path(configured_directory)
 
 
-def create_screenshot_path(screenshot_directory):
+def create_screenshot_path(screenshot_directory: PathInput) -> Path:
     screenshot_directory = Path(screenshot_directory)
     formatted_date = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     return screenshot_directory / f"dialog-{formatted_date}-{uuid4().hex}.png"
 
 
 def capture_dialog(
-    screenshot_directory=None,
+    screenshot_directory: PathInput | None = None,
     *,
-    save_screenshot=True,
-    region=None,
-    capture_target=None,
-):
+    save_screenshot: bool = True,
+    region: DialogRegion | None = None,
+    capture_target: object | None = None,
+) -> tuple[Image.Image, Path | None]:
     try:
         ensure_screen_capture_supported()
         if screenshot_directory is None:
@@ -88,11 +108,11 @@ def capture_dialog(
 
         with mss.mss() as sct:
             region = region or get_dialog_region()
-            dialog_box = (
-                capture_target.capture_box(region)
-                if capture_target is not None
-                else region.capture_box(sct.monitors[1])
-            )
+            if capture_target is None:
+                dialog_box = region.capture_box(sct.monitors[1])
+            else:
+                capture_box = getattr(capture_target, "capture_box")
+                dialog_box = capture_box(region)
             screenshot = sct.grab(dialog_box)
 
             image = Image.frombytes(
@@ -113,13 +133,13 @@ def capture_dialog(
 
 
 def recognize_screenshot_result(
-    image,
-    voice_registry=None,
-    minimum_confidence=default_minimum_ocr_confidence,
-    ocr_language="eng",
-    correction_dictionary=None,
-    ocr_backend=None,
-):
+    image: Image.Image,
+    voice_registry: VoiceRegistry | None = None,
+    minimum_confidence: float = default_minimum_ocr_confidence,
+    ocr_language: str = "eng",
+    correction_dictionary: OCRCorrectionDictionary | None = None,
+    ocr_backend: OCRBackend | None = None,
+) -> OCRResult:
     try:
         backend = ocr_backend or TesseractOCRBackend(recognize_dialog_image_result)
         result = backend.recognize(
@@ -137,7 +157,12 @@ def recognize_screenshot_result(
         raise OCRError(str(error)) from error
 
 
-def capture_live_frame(screenshot_directory, capture_target=None, *, clock=monotonic):
+def capture_live_frame(
+    screenshot_directory: PathInput,
+    capture_target: object | None = None,
+    *,
+    clock: Clock = monotonic,
+) -> CapturedDialogFrame:
     capture_started = clock()
     image, _output = capture_dialog(
         screenshot_directory,
@@ -150,9 +175,16 @@ def capture_live_frame(screenshot_directory, capture_target=None, *, clock=monot
     )
 
 
-def fingerprint_dialog_frame(frame):
+def _frame_image(frame: object) -> Image.Image:
+    image = getattr(frame, "image", None)
+    if not isinstance(image, Image.Image):
+        raise TypeError("Dialog frame has no image")
+    return image
+
+
+def fingerprint_dialog_frame(frame: object) -> bytes:
     """Fingerprint bright dialogue glyphs while ignoring the animated backdrop."""
-    grayscale = frame.image.convert("L")
+    grayscale = _frame_image(frame).convert("L")
     # Dialogue boxes in supported games are translucent, so hashing the whole
     # crop makes character animation and video behind the box look like new
     # dialogue. Keep only the bright glyph cores before downsampling. Using the
@@ -161,13 +193,13 @@ def fingerprint_dialog_frame(frame):
     width, height = grayscale.size
 
     def glyph_band(
-        top,
-        bottom,
-        output_height,
-        minimum_brightness,
+        top: int,
+        bottom: int,
+        output_height: int,
+        minimum_brightness: int,
         *,
-        ignore_continue_indicator=False,
-    ):
+        ignore_continue_indicator: bool = False,
+    ) -> bytes:
         band = grayscale.crop((0, top, width, bottom))
         if ignore_continue_indicator:
             # Clear the chrome before measuring the band's brightest pixel;
@@ -189,9 +221,10 @@ def fingerprint_dialog_frame(frame):
         )
         # Collapse resize ringing so sub-pixel capture noise cannot invalidate
         # the cache.
-        return mask.point(
+        glyph_bytes: bytes = mask.point(
             tuple(255 if value >= 32 else 0 for value in range(256))
         ).tobytes()
+        return glyph_bytes
 
     # Speaker labels are often dimmer than dialogue, so fingerprint the upper
     # label and lower text bands independently. The overlap accommodates games
@@ -209,7 +242,7 @@ def fingerprint_dialog_frame(frame):
     return blake2b(label + dialog, digest_size=16).digest()
 
 
-def fingerprint_dialog_render_activity(frame):
+def fingerprint_dialog_render_activity(frame: object) -> bytes:
     """Fingerprint high-fidelity dialogue glyph activity, not screen identity.
 
     The ordinary dialogue fingerprint is intentionally compact and may map a
@@ -217,7 +250,7 @@ def fingerprint_dialog_render_activity(frame):
     Render completion needs the opposite tradeoff: retain small new glyphs, but
     ignore the portrait, continue indicator and most animated backdrop pixels.
     """
-    grayscale = frame.image.convert("L")
+    grayscale = _frame_image(frame).convert("L")
     width, height = grayscale.size
     left = min(width - 1, max(0, round(width * 0.18)))
     right = max(left + 1, min(width, round(width * 0.92)))
@@ -234,7 +267,7 @@ def fingerprint_dialog_render_activity(frame):
     return blake2b(mask.tobytes(), digest_size=16).digest()
 
 
-def dialog_glyphs_visible(frame):
+def dialog_glyphs_visible(frame: object) -> bool:
     """Return whether the dialogue band has plausible bright text pixels.
 
     This deliberately remains a cheap, OCR-free fail-closed gate. Three pixels
@@ -242,21 +275,23 @@ def dialog_glyphs_visible(frame):
     while a mostly bright crop is treated as a popup or calibration failure
     rather than dialogue.
     """
-    grayscale = frame.image.convert("L")
+    grayscale = _frame_image(frame).convert("L")
     width, height = grayscale.size
     dialog_top = min(height - 1, round(height * 0.25))
     dialog = grayscale.crop((0, dialog_top, width, height))
-    histogram = dialog.histogram()
+    histogram: list[int] = dialog.histogram()
     bright_pixels = sum(histogram[160:])
-    pixels = max(1, dialog.width * dialog.height)
+    dialog_width: int = dialog.width
+    dialog_height: int = dialog.height
+    pixels = max(1, dialog_width * dialog_height)
     return 3 <= bright_pixels <= round(pixels * 0.25)
 
 
-def dialog_completion_cue_visible(frame):
+def dialog_completion_cue_visible(frame: object) -> bool:
     """Detect the game's small downward continue indicator, not dialogue text."""
     if not dialog_glyphs_visible(frame):
         return False
-    grayscale = frame.image.convert("L")
+    grayscale = _frame_image(frame).convert("L")
     width, height = grayscale.size
     left = min(width - 1, round(width * 0.94))
     top = min(height - 1, round(height * 0.68))
@@ -308,7 +343,7 @@ def dialog_completion_cue_visible(frame):
     return False
 
 
-def detect_standalone_ellipsis_frame(image):
+def detect_standalone_ellipsis_frame(image: object) -> bool:
     """Detect three isolated dialogue-band dots without relying on OCR text."""
     if not isinstance(image, Image.Image):
         return False
@@ -372,19 +407,25 @@ def detect_standalone_ellipsis_frame(image):
     ) <= 2.5 and all(4 <= gap <= 9 for gap in gaps)
 
 
-def is_standalone_ellipsis_text(value):
+def is_standalone_ellipsis_text(value: object) -> bool:
     """Accept Unicode or ASCII ellipsis with arbitrary surrounding whitespace."""
     text = "".join(str(value).split())
     return text.replace("…", "...") == "..."
 
 
-def ellipsis_speaker_hint(character, raw_text, story_resolver):
+def ellipsis_speaker_hint(
+    character: str | None,
+    raw_text: str | None,
+    story_resolver: object,
+) -> str:
     """Recover an ellipsis nameplate only from checksum-bound story speakers."""
     observed = str(character or "Narrator").strip() or "Narrator"
     if observed.casefold() not in {"narrator", "unknown", "???"}:
         return observed
     prefix = str(raw_text or "").strip().casefold()
     speaker_names = getattr(story_resolver, "speaker_names", {})
+    if not isinstance(speaker_names, Mapping):
+        return observed
     for name in sorted(set(speaker_names.values()), key=len, reverse=True):
         normalized = str(name).strip()
         if normalized and prefix.startswith(normalized.casefold()):
@@ -393,29 +434,33 @@ def ellipsis_speaker_hint(character, raw_text, story_resolver):
 
 
 def recognize_live_frame(
-    frame,
-    voice_registry=None,
-    minimum_confidence=default_minimum_ocr_confidence,
-    uncertain_handler=None,
-    uncertain_frame_recorder=None,
-    diagnostic_handler=None,
-    voice_resolver=None,
-    ocr_language="eng",
-    correction_dictionary=None,
-    ellipsis_speaker_resolver=None,
+    frame: object,
+    voice_registry: VoiceRegistry | None = None,
+    minimum_confidence: float = default_minimum_ocr_confidence,
+    uncertain_handler: Callable[[OCRResult, float], object] | None = None,
+    uncertain_frame_recorder: UncertainFrameRecorder | None = None,
+    diagnostic_handler: Callable[[DiagnosticSnapshot], object] | None = None,
+    voice_resolver: Callable[[str], str] | None = None,
+    ocr_language: str = "eng",
+    correction_dictionary: OCRCorrectionDictionary | None = None,
+    ellipsis_speaker_resolver: object | None = None,
     *,
-    clock=monotonic,
-):
+    clock: Clock = monotonic,
+) -> tuple[str | None, str]:
+    image = _frame_image(frame)
+    capture_ms = getattr(frame, "capture_ms", None)
+    if not isinstance(capture_ms, (int, float)) or isinstance(capture_ms, bool):
+        raise TypeError("Dialog frame has no capture timing")
     ocr_started = clock()
     result = recognize_screenshot_result(
-        frame.image,
+        image,
         voice_registry,
         minimum_confidence,
         ocr_language,
         correction_dictionary,
     )
     recognized_text = (
-        "..." if detect_standalone_ellipsis_frame(frame.image) else result.text
+        "..." if detect_standalone_ellipsis_frame(image) else result.text
     )
     recognized_character = result.character
     if recognized_text == "..." and ellipsis_speaker_resolver is not None:
@@ -426,7 +471,7 @@ def recognize_live_frame(
         )
     ocr_ms = (clock() - ocr_started) * 1000
     snapshot = DiagnosticSnapshot(
-        image=frame.image,
+        image=image,
         character=recognized_character or "Narrator",
         text=recognized_text,
         confidence=result.confidence,
@@ -436,7 +481,7 @@ def recognize_live_frame(
             if voice_resolver is not None
             else "Not loaded"
         ),
-        capture_ms=frame.capture_ms,
+        capture_ms=capture_ms,
         ocr_ms=ocr_ms,
         corrections=result.corrections,
     )
@@ -449,7 +494,7 @@ def recognize_live_frame(
     ):
         if uncertain_frame_recorder is not None:
             uncertain_frame_recorder.record(
-                frame.image,
+                image,
                 result,
                 minimum_confidence,
             )
@@ -462,12 +507,12 @@ def recognize_live_frame(
 
 
 def recognize_screenshot(
-    image,
-    voice_registry=None,
-    minimum_confidence=default_minimum_ocr_confidence,
-    ocr_language="eng",
-    correction_dictionary=None,
-):
+    image: Image.Image,
+    voice_registry: VoiceRegistry | None = None,
+    minimum_confidence: float = default_minimum_ocr_confidence,
+    ocr_language: str = "eng",
+    correction_dictionary: OCRCorrectionDictionary | None = None,
+) -> tuple[str, str]:
     result = recognize_screenshot_result(
         image,
         voice_registry,
@@ -481,18 +526,18 @@ def recognize_screenshot(
 
 
 def analyze_dialog_snapshot(
-    screenshot_directory,
-    voice_registry=None,
-    capture_target=None,
-    minimum_confidence=default_minimum_ocr_confidence,
+    screenshot_directory: PathInput,
+    voice_registry: VoiceRegistry | None = None,
+    capture_target: object | None = None,
+    minimum_confidence: float = default_minimum_ocr_confidence,
     *,
-    save_screenshot=False,
-    diagnostic_handler=None,
-    voice_resolver=None,
-    clock=monotonic,
-    ocr_language="eng",
-    correction_dictionary=None,
-):
+    save_screenshot: bool = False,
+    diagnostic_handler: Callable[[DiagnosticSnapshot], object] | None = None,
+    voice_resolver: Callable[[str], str] | None = None,
+    clock: Clock = monotonic,
+    ocr_language: str = "eng",
+    correction_dictionary: OCRCorrectionDictionary | None = None,
+) -> tuple[Image.Image, Path | None, OCRResult]:
     capture_started = clock()
     image, output = capture_dialog(
         screenshot_directory,
@@ -531,17 +576,17 @@ def analyze_dialog_snapshot(
 
 
 def read_dialog(
-    voice_router,
-    screenshot_directory,
-    capture_target=None,
-    speech_handler=None,
-    minimum_confidence=default_minimum_ocr_confidence,
-    uncertain_frame_recorder=None,
-    diagnostic_handler=None,
-    voice_resolver=None,
-    ocr_language="eng",
-    correction_dictionary=None,
-):
+    voice_router: DialogVoiceRouter,
+    screenshot_directory: PathInput,
+    capture_target: object | None = None,
+    speech_handler: Callable[[str, str], object] | None = None,
+    minimum_confidence: float = default_minimum_ocr_confidence,
+    uncertain_frame_recorder: UncertainFrameRecorder | None = None,
+    diagnostic_handler: Callable[[DiagnosticSnapshot], object] | None = None,
+    voice_resolver: Callable[[str], str] | None = None,
+    ocr_language: str = "eng",
+    correction_dictionary: OCRCorrectionDictionary | None = None,
+) -> None:
     image, output, result = analyze_dialog_snapshot(
         screenshot_directory,
         voice_router.registry,
@@ -579,18 +624,18 @@ def read_dialog(
 
 
 def read_dialog_safely(
-    voice_router,
-    screenshot_directory,
-    error_handler=None,
-    capture_target=None,
-    speech_handler=None,
-    minimum_confidence=default_minimum_ocr_confidence,
-    uncertain_frame_recorder=None,
-    diagnostic_handler=None,
-    voice_resolver=None,
-    ocr_language="eng",
-    correction_dictionary=None,
-):
+    voice_router: DialogVoiceRouter,
+    screenshot_directory: PathInput,
+    error_handler: Callable[[Exception], object] | None = None,
+    capture_target: object | None = None,
+    speech_handler: Callable[[str, str], object] | None = None,
+    minimum_confidence: float = default_minimum_ocr_confidence,
+    uncertain_frame_recorder: UncertainFrameRecorder | None = None,
+    diagnostic_handler: Callable[[DiagnosticSnapshot], object] | None = None,
+    voice_resolver: Callable[[str], str] | None = None,
+    ocr_language: str = "eng",
+    correction_dictionary: OCRCorrectionDictionary | None = None,
+) -> None:
     try:
         read_dialog(
             voice_router,
@@ -608,7 +653,7 @@ def read_dialog_safely(
         (error_handler or report_runtime_error)(error)
 
 
-def format_runtime_error(error):
+def format_runtime_error(error: BaseException) -> str:
     if isinstance(error, ScreenCaptureError):
         message = f"Screen capture failed: {error}"
     elif isinstance(error, OCRError):
@@ -626,5 +671,5 @@ def format_runtime_error(error):
     return message
 
 
-def report_runtime_error(error):
+def report_runtime_error(error: BaseException) -> None:
     print(format_runtime_error(error), file=sys.stderr)
