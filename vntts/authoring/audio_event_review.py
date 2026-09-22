@@ -10,7 +10,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vntts_artifacts import VoiceGenerationQueue, VoiceGenerationQueueError
+from vntts_artifacts import (
+    VoiceGenerationQueue,
+    VoiceGenerationQueueError,
+    VoiceGenerationQueueItem,
+)
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import (
     Pcm16MonoWavError,
@@ -324,6 +328,21 @@ def _validate_review_document(
     queue_snapshot: AuthoritySnapshot,
     audio_snapshot: AuthoritySnapshot,
 ) -> None:
+    queue = _validate_review_schema_and_queue_authority(review, queue_snapshot)
+    item = _review_queue_item(review, queue)
+    plan = _validate_review_plan(review, item)
+    _validate_review_item_identity(review, item)
+    candidate = _review_candidate(review)
+    _validate_review_candidate_audio(candidate, audio_snapshot)
+    source = _validate_source_evidence(candidate.get("source"))
+    _validate_review_identities(
+        review, candidate, source, item, plan, queue_snapshot, audio_snapshot
+    )
+
+
+def _validate_review_schema_and_queue_authority(
+    review: dict[str, object], queue_snapshot: AuthoritySnapshot
+) -> VoiceGenerationQueue:
     if (
         review.get("schema") != AUDIO_EVENT_REVIEW_SCHEMA
         or review.get("schema_version") != AUDIO_EVENT_REVIEW_VERSION
@@ -335,15 +354,33 @@ def _validate_review_document(
         queue = _load_queue_snapshot(queue_snapshot.payload)
     except VoiceGenerationQueueError as error:
         raise AudioEventReviewError(str(error)) from error
+    return queue
+
+
+def _review_queue_item(
+    review: dict[str, object], queue: VoiceGenerationQueue
+) -> VoiceGenerationQueueItem:
     queue_id = _required_text(review.get("queue_id"), "review queue ID")
     item = next((value for value in queue.items if value.queue_id == queue_id), None)
     if item is None:
         raise AudioEventReviewError("Audio-event review queue item is absent")
+    return item
+
+
+def _validate_review_plan(
+    review: dict[str, object], item: VoiceGenerationQueueItem
+) -> dict[str, object]:
     plan = _required_single_tongue_click_plan(item.document)
     if review.get("audio_event_plan") != plan or review.get(
         "audio_event_plan_sha256"
     ) != canonical_document_sha256(plan):
         raise AudioEventReviewError("Audio-event review plan changed")
+    return plan
+
+
+def _validate_review_item_identity(
+    review: dict[str, object], item: VoiceGenerationQueueItem
+) -> None:
     for field, expected in (
         ("line_id", item.line_id),
         ("speaker", item.speaker),
@@ -353,7 +390,11 @@ def _validate_review_document(
     ):
         if review.get(field) != expected:
             raise AudioEventReviewError(f"Audio-event review {field} changed")
-    candidate = _review_candidate(review)
+
+
+def _validate_review_candidate_audio(
+    candidate: dict[str, object], audio_snapshot: AuthoritySnapshot
+) -> None:
     if candidate.get("audio_sha256") != audio_snapshot.sha256:
         raise AudioEventReviewError("Audio-event review audio changed")
     try:
@@ -370,7 +411,17 @@ def _validate_review_document(
         or candidate.get("peak") != info.peak
     ):
         raise AudioEventReviewError("Audio-event review WAV metadata changed")
-    source = _validate_source_evidence(candidate.get("source"))
+
+
+def _validate_review_identities(
+    review: dict[str, object],
+    candidate: dict[str, object],
+    source: dict[str, object],
+    item: VoiceGenerationQueueItem,
+    plan: dict[str, object],
+    queue_snapshot: AuthoritySnapshot,
+    audio_snapshot: AuthoritySnapshot,
+) -> None:
     candidate_identity = {
         "queue_sha256": queue_snapshot.sha256,
         "queue_id": item.queue_id,
