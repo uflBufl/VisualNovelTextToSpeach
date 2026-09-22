@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 import numpy as np
 
+from vntts.audio_cache import BoundedCache
 from vntts.speech_backend import SpeechBackendCapabilities
-from vntts.speech_backend_runtime import BoundedCache
 from vntts.synthesis import (
     SynthesisCachePolicy,
     SynthesisChunk,

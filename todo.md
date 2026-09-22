@@ -113,18 +113,6 @@ Planned implementation order after approval:
 
 ## P1 - Reduce preparation and post-generation saving latency
 
-- [ ] **Collect one fresh preparation profile:** run cold and unchanged preparation
-      and inspect the recorded `pregeneration-voice-plan-*` and
-      `pregeneration-input-*` phases. Time the cold full-index parse in
-      `load_verified_story_index_document` separately and check whether planning
-      and materialization reuse it within one process. The earlier run spent
-      23.65 seconds creating its voice plan and 20.16 seconds preparing generation
-      input, but did not show
-      which index read, reference check/hash/copy, identity lookup or queue build
-      caused it. Select an optimization only from measured repeated work. Keep deep
-      validation at trust and activation boundaries; file mtime/size is not proof of
-      integrity. Gate: cold and unchanged runs produce identical plans and the
-      support archive identifies the dominant phase and cache/reuse state.
 - [ ] **Collect one fresh finalization profile:** inspect the recorded
       `pregeneration-acceptance-*`, `pregeneration-publication-*`,
       `pregeneration-activation-*` and existing `game-pack-validation` phases from
@@ -204,3 +192,9 @@ Planned implementation order after approval:
       SoundEffect v2 using a small fixed corpus and multiple checksum-bound seeds.
       Require technical and blinded perceptual approval before adding a provider;
       unsupported effects remain explicit omissions.
+
+## P2 - Consolidate authoring staging
+
+- [ ] Share the base workspace staging steps used by audio-event omission and
+      spoken-projection fallback. Keep their terminal state mutations and
+      validators separate. Gate: repeat-call and changed-authority tests pass.

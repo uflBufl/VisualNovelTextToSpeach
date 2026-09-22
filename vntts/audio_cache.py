@@ -1,9 +1,10 @@
 import json
 import os
+from collections import OrderedDict
 from hashlib import blake2b
 from pathlib import Path
 from time import time_ns
-from typing import TypeAlias
+from typing import Generic, TypeAlias, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -11,6 +12,33 @@ from vntts_artifacts.atomic_io import atomic_output_path
 
 PathInput: TypeAlias = str | os.PathLike[str]
 AudioArray: TypeAlias = NDArray[np.float32]
+CacheKey = TypeVar("CacheKey")
+CacheValue = TypeVar("CacheValue")
+
+
+class BoundedCache(Generic[CacheKey, CacheValue]):
+    """Small least-recently-used cache shared by speech backends."""
+
+    def __init__(self, max_entries: int) -> None:
+        self.max_entries = max(0, int(max_entries))
+        self._values: OrderedDict[CacheKey, CacheValue] = OrderedDict()
+
+    def get(self, key: CacheKey) -> CacheValue | None:
+        value = self._values.pop(key, None)
+        if value is not None:
+            self._values[key] = value
+        return value
+
+    def put(self, key: CacheKey, value: CacheValue) -> None:
+        if self.max_entries == 0:
+            return
+        self._values.pop(key, None)
+        self._values[key] = value
+        while len(self._values) > self.max_entries:
+            self._values.popitem(last=False)
+
+    def clear(self) -> None:
+        self._values.clear()
 
 
 class PersistentAudioCache:

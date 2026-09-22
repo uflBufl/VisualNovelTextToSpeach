@@ -142,7 +142,7 @@ class PregenerationInputStore:
                 )
                 story_metadata, selected_records, semantic_evidence = (
                     project_source_audio_semantics(
-                        Path(job.story_index).expanduser().resolve(),
+                        story,
                         story.metadata,
                         routed_records,
                         staging,
@@ -698,7 +698,7 @@ def _digest(value: object) -> str:
 
 
 def project_source_audio_semantics(
-    source_story_path: Path,
+    source_story: StoryIndexDocument,
     metadata: dict[str, object],
     records: list[StoryRecordDocument],
     staging: Path,
@@ -706,9 +706,9 @@ def project_source_audio_semantics(
     binding = metadata.get("source_audio_semantics")
     if not isinstance(binding, dict):
         return metadata, records, None
-    source = source_story_path.parent / "source-audio-semantic-evidence.json"
+    source = source_story.path.parent / "source-audio-semantic-evidence.json"
     try:
-        evidence = load_source_audio_semantic_evidence(source, source_story_path)
+        evidence = load_source_audio_semantic_evidence(source, source_story)
     except (OSError, SourceAudioSemanticEvidenceError, ValueError) as error:
         raise PregenerationQueueError(
             f"Selected dialogue source-audio evidence is invalid: {error}"

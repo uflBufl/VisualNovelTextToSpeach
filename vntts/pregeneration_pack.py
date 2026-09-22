@@ -955,7 +955,7 @@ def _write_cumulative_story(
         raise OfflinePackError("Cumulative story selection changed")
     story_copy.parent.mkdir(parents=True, exist_ok=True)
     metadata, records, semantic_copy = project_source_audio_semantics(
-        source_story.path,
+        source_story,
         source_story.metadata,
         records,
         story_copy.parent,

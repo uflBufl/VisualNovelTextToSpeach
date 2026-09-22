@@ -1,6 +1,5 @@
 import re
 import warnings
-from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from os import PathLike
 from threading import Lock
@@ -9,6 +8,7 @@ from typing import Protocol, TypeAlias
 
 import numpy as np
 
+from vntts.audio_cache import BoundedCache
 from vntts.audio_output import AudioData, AudioOutput, SynchronousPcmPlaybackMixin
 from vntts.playback import PlaybackStatus, PreparedPlayback
 from vntts.synthesis import SynthesisCachePolicy
@@ -160,8 +160,7 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
         self.set_volume(volume)
         self.cached_speakers: set[str] = set()
         self.persisted_voice_cache = bool(persisted_voice_cache)
-        self.audio_cache_size = max(0, int(audio_cache_size))
-        self.audio_cache: OrderedDict[object, object] = OrderedDict()
+        self.audio_cache: BoundedCache[object, object] = BoundedCache(audio_cache_size)
         # Coqui model inference and the audio device are independent resources.
         # Separate locks let live mode prepare the next sentence while the
         # current sentence is playing, without allowing two model inferences or
@@ -315,13 +314,12 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
         spoken_text = prepare_speech_text(text)
         cache_key = self._audio_cache_key(spoken_text, arguments)
         can_reuse_cached_audio = speaker_wav is None or speaker is None
-        if (
-            cache_policy is SynthesisCachePolicy.USE
-            and can_reuse_cached_audio
-            and cache_key in self.audio_cache
-        ):
-            audio = self.audio_cache.pop(cache_key)
-            self.audio_cache[cache_key] = audio
+        audio = (
+            self.audio_cache.get(cache_key)
+            if cache_policy is SynthesisCachePolicy.USE and can_reuse_cached_audio
+            else None
+        )
+        if audio is not None:
             self.last_synthesis_ms = 0.0
             self.last_cache_source = "memory-cache"
             return audio
@@ -352,7 +350,7 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
             not self.last_synthesis_cancelled
             and cache_policy is not SynthesisCachePolicy.BYPASS
         ):
-            self._cache_audio(cache_key, audio)
+            self.audio_cache.put(cache_key, audio)
         return audio
 
     def _audio_cache_key(self, text: str, arguments: Mapping[str, object]) -> object:
@@ -383,14 +381,6 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
         except TypeError:
             return repr(value)
         return value
-
-    def _cache_audio(self, cache_key: object, audio: object) -> None:
-        if self.audio_cache_size == 0:
-            return
-        self.audio_cache.pop(cache_key, None)
-        self.audio_cache[cache_key] = audio
-        while len(self.audio_cache) > self.audio_cache_size:
-            self.audio_cache.popitem(last=False)
 
     def _resolve_speaker(
         self, speaker: str | None, speaker_wav: SpeakerWav | None = None

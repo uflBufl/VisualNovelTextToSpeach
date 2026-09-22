@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from collections import Counter
 from datetime import datetime, timezone
@@ -64,12 +63,14 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
     load_workspace_json,
     read_workspace_file_bytes,
-    require_workspace_sha256,
     safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
 )
 from vntts.authoring.workspace_config import workspace_config_fingerprint
-from vntts.authoring.workspace_foundation import copy_workspace_tree_snapshot
+from vntts.authoring.workspace_foundation import (
+    copy_generation_wavs,
+    copy_workspace_tree_snapshot,
+)
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 
 
@@ -450,42 +451,16 @@ def merge_terminal_conflict_resolution(
             output = staging / "generated-audio"
             output.mkdir()
             target_state = copy.deepcopy(base_state)
-            path_owners: dict[str, str] = {}
-            for queue_id, result in _generation_state_items(base_state).items():
-                if not isinstance(result, dict) or not isinstance(
-                    result.get("path"), str
-                ):
-                    continue
-                relative = safe_workspace_relative_path(
-                    result["path"], f"Base generation item {queue_id!r} path"
-                )
-                owner = path_owners.setdefault(relative.as_posix(), queue_id)
-                if owner != queue_id:
-                    raise AuthoringWorkbenchError(
-                        f"Base generation WAV path collides with {owner!r}"
-                    )
-                source_audio_path = contained_workspace_path(
-                    base_directory / "generated-audio",
-                    relative,
-                    "Base generation WAV",
-                )
-                payload = read_workspace_file_bytes(
-                    source_audio_path, "base generation WAV"
-                )
-                digest = hashlib.sha256(payload).hexdigest()
-                if digest != require_workspace_sha256(
-                    result.get("file_sha256"),
-                    f"Base item {queue_id!r} WAV SHA-256",
-                ):
-                    raise AuthoringWorkbenchError(
-                        f"Base generation WAV changed for {queue_id!r}"
-                    )
-                target = contained_workspace_path(
-                    output, relative, "Conflict merge base WAV"
-                )
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(payload)
-                base_snapshots.append((source_audio_path, digest))
+            _generation_state_items(base_state)
+            path_owners = copy_generation_wavs(
+                base_directory,
+                output,
+                base_state,
+                base_snapshots,
+                "Conflict merge base WAV",
+                AuthoringWorkbenchError,
+                source_label="Base generation WAV",
+            )
             for merge_ledger in ledgers:
                 queue_id = merge_ledger["queue_id"]
                 source_item = selected_items[queue_id]

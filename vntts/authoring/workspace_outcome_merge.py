@@ -69,6 +69,7 @@ from vntts.authoring.workspace_creation import (
     _read_file_bytes,
     default_workspaces_root,
 )
+from vntts.authoring.workspace_foundation import copy_generation_wavs
 
 _terminal_review_outcome = is_terminal_review_outcome
 _workspace_config_fingerprint = workspace_config_fingerprint
@@ -470,34 +471,16 @@ def _stage_outcome_merge_base(
     output = staging / "generated-audio"
     output.mkdir()
     target_state = copy.deepcopy(base.state)
-    path_owners: dict[str, str] = {}
-    for queue_id, result in _outcome_state_items(base.state).items():
-        if not isinstance(result.get("path"), str):
-            continue
-        relative = _safe_relative(
-            result["path"], f"Base generation item {queue_id!r} path"
-        )
-        owner = path_owners.setdefault(relative.as_posix(), queue_id)
-        if owner != queue_id:
-            raise AuthoringWorkbenchError(
-                f"Base generation WAV path collides with {owner!r}"
-            )
-        source_path = _within(
-            base.directory / "generated-audio", relative, "Base generation WAV"
-        )
-        payload = _read_file_bytes(source_path, "base generation WAV")
-        digest = hashlib.sha256(payload).hexdigest()
-        if digest != _require_sha256(
-            result.get("file_sha256"),
-            f"Base item {queue_id!r} WAV SHA-256",
-        ):
-            raise AuthoringWorkbenchError(
-                f"Base generation WAV changed for {queue_id!r}"
-            )
-        target_path = _within(output, relative, "Merged base WAV")
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_bytes(payload)
-        base_snapshots.append((source_path, digest))
+    _outcome_state_items(base.state)
+    path_owners = copy_generation_wavs(
+        base.directory,
+        output,
+        base.state,
+        base_snapshots,
+        "Merged base WAV",
+        AuthoringWorkbenchError,
+        source_label="Base generation WAV",
+    )
     return output, target_state, path_owners, base_snapshots
 
 

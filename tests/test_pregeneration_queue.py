@@ -507,7 +507,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
             1,
         )
         self.assertEqual(evidence_load.call_count, 2)
-        self.assertEqual(story_load.call_count, 2)
+        self.assertEqual(story_load.call_count, 1)
 
     def test_same_identity_resumes_without_rewriting(self):
         with TemporaryDirectory() as temporary_directory:

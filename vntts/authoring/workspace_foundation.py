@@ -121,7 +121,7 @@ def copy_generation_wavs(
     target_label: str,
     error_type: type[Exception] = ValueError,
     source_label: str = "Base WAV",
-) -> None:
+) -> dict[str, str]:
     """Copy checksum-bound generated WAVs into an immutable successor."""
     items = state.get("items")
     if not isinstance(items, Mapping):
@@ -159,6 +159,7 @@ def copy_generation_wavs(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
         snapshots.append((source, digest))
+    return owners
 
 
 __all__ = [
