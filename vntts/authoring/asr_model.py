@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias, TypedDict
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.managed_model_installation import (
@@ -16,6 +18,22 @@ from vntts.settings import get_local_data_directory
 
 MANAGED_ASR_SCHEMA = "vntts.managed-authoring-asr-model"
 MANAGED_ASR_VERSION = 1
+
+PathInput: TypeAlias = str | Path
+JsonDocument: TypeAlias = dict[str, object]
+
+
+class ManagedAsrModelStatus(TypedDict):
+    model_id: str
+    repository: str
+    revision: str
+    installation: str
+    model_directory: str
+    status: str
+    reason: str | None
+    expected_tree_sha256: str
+    actual_tree_sha256: str | None
+    licenses: list[dict[str, str]]
 
 
 class ManagedAsrModelError(RuntimeError):
@@ -35,6 +53,9 @@ class ManagedAsrModel:
     snapshot_license_url: str
     upstream_license: str
     upstream_license_url: str
+
+
+ModelFetcher: TypeAlias = Callable[[ManagedAsrModel, str], PathInput]
 
 
 WHISPER_TINY_EN = ManagedAsrModel(
@@ -62,19 +83,21 @@ WHISPER_TINY_EN = ManagedAsrModel(
 )
 
 
-def managed_asr_root(root=None):
+def managed_asr_root(root: PathInput | None = None) -> Path:
     """Return the device-local authoring model root."""
     if root is not None:
         return Path(root).expanduser().resolve()
     return (get_local_data_directory() / "authoring" / "models" / "asr").resolve()
 
 
-def managed_asr_installation(model=WHISPER_TINY_EN, *, root=None):
+def managed_asr_installation(
+    model: ManagedAsrModel = WHISPER_TINY_EN, *, root: PathInput | None = None
+) -> Path:
     """Return the immutable installation directory for ``model``."""
     return model_installation(managed_asr_root(root), _files(model))
 
 
-def _files(model):
+def _files(model: ManagedAsrModel) -> ManagedModelFiles:
     return ManagedModelFiles(
         model.model_id,
         model.repository,
@@ -84,7 +107,7 @@ def _files(model):
     )
 
 
-def _metadata(model):
+def _metadata(model: ManagedAsrModel) -> JsonDocument:
     body = {
         "schema": MANAGED_ASR_SCHEMA,
         "schema_version": MANAGED_ASR_VERSION,
@@ -109,7 +132,7 @@ def _metadata(model):
     return {**body, "installation_id": canonical_document_sha256(body)}
 
 
-def _notice(model):
+def _notice(model: ManagedAsrModel) -> str:
     return (
         f"{model.repository} at revision {model.revision}\n"
         f"Snapshot license: {model.snapshot_license} ({model.snapshot_license_url})\n"
@@ -120,7 +143,9 @@ def _notice(model):
     )
 
 
-def managed_asr_status(model=WHISPER_TINY_EN, *, root=None):
+def managed_asr_status(
+    model: ManagedAsrModel = WHISPER_TINY_EN, *, root: PathInput | None = None
+) -> ManagedAsrModelStatus:
     """Return a deterministic, read-only status document."""
     installation = managed_asr_installation(model, root=root)
     metadata = _metadata(model)
@@ -135,7 +160,9 @@ def managed_asr_status(model=WHISPER_TINY_EN, *, root=None):
     return status
 
 
-def resolve_managed_asr_model(model=WHISPER_TINY_EN, *, root=None):
+def resolve_managed_asr_model(
+    model: ManagedAsrModel = WHISPER_TINY_EN, *, root: PathInput | None = None
+) -> Path:
     """Resolve an already installed model or fail with actionable guidance."""
     status = managed_asr_status(model, root=root)
     if status["status"] != "installed":
@@ -147,7 +174,7 @@ def resolve_managed_asr_model(model=WHISPER_TINY_EN, *, root=None):
     return Path(status["model_directory"])
 
 
-def _download_file(model, filename):
+def _download_file(model: ManagedAsrModel, filename: str) -> Path:
     try:
         from huggingface_hub import hf_hub_download
 
@@ -165,12 +192,12 @@ def _download_file(model, filename):
 
 
 def install_managed_asr_model(
-    model=WHISPER_TINY_EN,
+    model: ManagedAsrModel = WHISPER_TINY_EN,
     *,
-    root=None,
-    source=None,
-    fetch_file=None,
-):
+    root: PathInput | None = None,
+    source: PathInput | None = None,
+    fetch_file: ModelFetcher | None = None,
+) -> ManagedAsrModelStatus:
     """Atomically import or download and verify one pinned model snapshot."""
     installation = managed_asr_installation(model, root=root)
     fetch = _download_file if fetch_file is None else fetch_file

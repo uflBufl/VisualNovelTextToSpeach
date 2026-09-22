@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias, TypedDict
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.managed_model_installation import (
@@ -36,6 +38,24 @@ MODEL_FILES = {
 MANAGED_MODEL_SCHEMA = "vntts.managed-speaker-embedding-model"
 MANAGED_MODEL_VERSION = 1
 
+PathInput: TypeAlias = str | Path
+JsonDocument: TypeAlias = dict[str, object]
+ModelFetcher: TypeAlias = Callable[[str], PathInput]
+
+
+class ManagedSpeakerIdentityModelStatus(TypedDict):
+    model_id: str
+    repository: str
+    revision: str
+    installation: str
+    model_directory: str
+    status: str
+    reason: str | None
+    expected_files: dict[str, str]
+    actual_files: dict[str, str | None]
+    licenses: list[dict[str, str]]
+    runtime: dict[str, str | int]
+
 
 class SpeakerIdentityModelError(RuntimeError):
     """The pinned speaker-embedding model is missing, corrupt, or unavailable."""
@@ -51,7 +71,7 @@ class ManagedSpeakerIdentityModel:
     implementation_revision: str = IMPLEMENTATION_REVISION
 
 
-def _files():
+def _files() -> ManagedModelFiles:
     return ManagedModelFiles(
         MODEL_ID,
         REPOSITORY,
@@ -61,7 +81,7 @@ def _files():
     )
 
 
-def managed_speaker_identity_root(root=None):
+def managed_speaker_identity_root(root: PathInput | None = None) -> Path:
     if root is not None:
         return Path(root).expanduser().resolve()
     return (
@@ -69,11 +89,11 @@ def managed_speaker_identity_root(root=None):
     ).resolve()
 
 
-def managed_speaker_identity_installation(*, root=None):
+def managed_speaker_identity_installation(*, root: PathInput | None = None) -> Path:
     return model_installation(managed_speaker_identity_root(root), _files())
 
 
-def _metadata():
+def _metadata() -> JsonDocument:
     body = {
         "schema": MANAGED_MODEL_SCHEMA,
         "schema_version": MANAGED_MODEL_VERSION,
@@ -107,7 +127,7 @@ def _metadata():
     return {**body, "installation_id": canonical_document_sha256(body)}
 
 
-def _notice():
+def _notice() -> str:
     return (
         f"{REPOSITORY} at revision {REVISION}\n"
         f"Model snapshot license: {MODEL_LICENSE} ({MODEL_LICENSE_URL})\n"
@@ -118,7 +138,9 @@ def _notice():
     )
 
 
-def managed_speaker_identity_status(*, root=None):
+def managed_speaker_identity_status(
+    *, root: PathInput | None = None
+) -> ManagedSpeakerIdentityModelStatus:
     installation = managed_speaker_identity_installation(root=root)
     metadata = _metadata()
     status = managed_model_status(
@@ -133,7 +155,7 @@ def managed_speaker_identity_status(*, root=None):
     return status
 
 
-def resolve_managed_speaker_identity_model(*, root=None):
+def resolve_managed_speaker_identity_model(*, root: PathInput | None = None) -> Path:
     status = managed_speaker_identity_status(root=root)
     if status["status"] != "installed":
         detail = f": {status['reason']}" if status["reason"] else ""
@@ -144,7 +166,7 @@ def resolve_managed_speaker_identity_model(*, root=None):
     return Path(status["model_directory"])
 
 
-def _download_file(filename):
+def _download_file(filename: str) -> Path:
     try:
         from huggingface_hub import hf_hub_download
 
@@ -161,7 +183,12 @@ def _download_file(filename):
         ) from error
 
 
-def install_managed_speaker_identity_model(*, root=None, source=None, fetch_file=None):
+def install_managed_speaker_identity_model(
+    *,
+    root: PathInput | None = None,
+    source: PathInput | None = None,
+    fetch_file: ModelFetcher | None = None,
+) -> ManagedSpeakerIdentityModelStatus:
     installation = managed_speaker_identity_installation(root=root)
     fetch = _download_file if fetch_file is None else fetch_file
     result = install_managed_model(
