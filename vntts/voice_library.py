@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock, RLock
-from typing import Literal
+from typing import Literal, TypedDict, TypeGuard
 
 from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -29,6 +29,39 @@ _ROUTES = {"voice", "narrator", "live-fallback"}
 _CROSS_STAT_IDENTITY_RELIABLE = os.name != "nt"
 _THREAD_LOCKS_GUARD = Lock()
 _THREAD_LOCKS: dict[Path, RLock] = {}
+
+
+class _ProvenanceDocument(TypedDict):
+    method: Literal["automatic", "manual"]
+    evidence: object
+    algorithm: str | None
+    timestamp: str
+
+
+class _AlternativeItemDocument(TypedDict):
+    sha256: str
+    discovery: _ProvenanceDocument
+
+
+class _AlternativeGroupDocument(TypedDict):
+    role: str
+    variant_key: str | None
+    items: list[_AlternativeItemDocument]
+
+
+class _BindingDocument(TypedDict):
+    role: str
+    variant_key: str | None
+    route: VoiceRoute
+    source_sha256s: list[str]
+    source_id: str | None
+    provenance: _ProvenanceDocument
+
+
+class _VoiceLibraryDocument(TypedDict):
+    version: int
+    alternatives: dict[str, _AlternativeGroupDocument]
+    bindings: dict[str, _BindingDocument]
 
 
 def _thread_lock(path: Path) -> RLock:
@@ -140,7 +173,7 @@ class VoiceLibrary:
             checksum,
             self._blob_path(checksum),
             next(
-                item["discovery"]
+                dict(item["discovery"])
                 for item in document["alternatives"][identity]["items"]
                 if item["sha256"] == checksum
             ),
@@ -203,9 +236,8 @@ class VoiceLibrary:
                 _validate_route_source(
                     selection.route, selected_checksums, selection.source_id
                 )
-                alternatives = (
-                    document["alternatives"].get(identity, {}).get("items", [])
-                )
+                group = document["alternatives"].get(identity)
+                alternatives = group["items"] if group is not None else []
                 available = {item["sha256"] for item in alternatives}
                 if any(checksum not in available for checksum in selected_checksums):
                     raise VoiceLibraryError(
@@ -238,7 +270,7 @@ class VoiceLibrary:
         bindings = tuple(bindings)
         with self._write_transaction():
             document = self._load()
-            replacement: dict[str, dict[str, object]] = {}
+            replacement: dict[str, _BindingDocument] = {}
             for binding in bindings:
                 identity, display_role, display_variant = _role_identity(
                     binding.role, binding.variant_key
@@ -249,13 +281,12 @@ class VoiceLibrary:
                     binding.route,
                     tuple(binding.source_sha256s),
                     binding.source_id,
-                    dict(binding.provenance),
+                    _validated_provenance(binding.provenance),
                 )
+                group = document["alternatives"].get(identity)
                 available = {
                     item["sha256"]
-                    for item in document["alternatives"]
-                    .get(identity, {})
-                    .get("items", [])
+                    for item in (group["items"] if group is not None else [])
                 }
                 if any(
                     checksum not in available for checksum in binding.source_sha256s
@@ -315,7 +346,7 @@ class VoiceLibrary:
                 group["variant_key"],
                 item["sha256"],
                 self._blob_path(item["sha256"]),
-                item["discovery"],
+                dict(item["discovery"]),
             )
             for item in group["items"]
         )
@@ -358,7 +389,7 @@ class VoiceLibrary:
             shutil.copytree(self.root, target.root)
         return target
 
-    def _load(self) -> dict[str, object]:
+    def _load(self) -> _VoiceLibraryDocument:
         if not self.path.exists():
             return {
                 "version": VOICE_LIBRARY_VERSION,
@@ -371,10 +402,11 @@ class VoiceLibrary:
             document = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise VoiceLibraryError(f"Unable to read voice library: {error}") from error
-        _validate_document(document)
-        return document
+        if _validate_document(document):
+            return document
+        raise VoiceLibraryError("Unsupported voice library document")
 
-    def _write(self, document: dict[str, object]) -> None:
+    def _write(self, document: _VoiceLibraryDocument) -> None:
         _validate_document(document)
         self.root.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.path, document, sort_keys=True)
@@ -469,14 +501,14 @@ def _read_wav(reference: str | Path) -> bytes:
     return payload
 
 
-def _file_identity(value):
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int]:
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
 
 
 def _provenance(
     method: object, evidence: object | None, algorithm: object, timestamp: object
-) -> dict[str, object]:
-    if not isinstance(method, str) or method not in {"automatic", "manual"}:
+) -> _ProvenanceDocument:
+    if not _is_provenance_method(method):
         raise VoiceLibraryError("Voice provenance method must be automatic or manual")
     if algorithm is not None and (
         not isinstance(algorithm, str) or not algorithm.strip()
@@ -487,7 +519,7 @@ def _provenance(
     ):
         raise VoiceLibraryError("Voice timestamp must be non-empty text")
     try:
-        safe_evidence = json.loads(json.dumps(evidence))
+        safe_evidence: object = json.loads(json.dumps(evidence))
     except (TypeError, ValueError) as error:
         raise VoiceLibraryError("Voice evidence must be JSON data") from error
     return {
@@ -504,8 +536,8 @@ def _binding_document(
     route: VoiceRoute,
     source_sha256s: tuple[str, ...],
     source_id: str | None,
-    provenance: dict[str, object],
-) -> dict[str, object]:
+    provenance: _ProvenanceDocument,
+) -> _BindingDocument:
     _validate_route_source(route, source_sha256s, source_id)
     return {
         "role": role,
@@ -522,7 +554,7 @@ def _validate_route_source(
     source_sha256s: tuple[str, ...],
     source_id: object,
 ) -> None:
-    if not isinstance(route, str) or route not in _ROUTES:
+    if not _is_voice_route(route):
         raise VoiceLibraryError("Voice route must be voice, narrator, or live-fallback")
     if route == "voice":
         if bool(source_sha256s) == (source_id is not None):
@@ -535,14 +567,24 @@ def _validate_route_source(
         raise VoiceLibraryError(f"{route} route cannot have a voice source")
 
 
-def _to_binding(raw: dict[str, object]) -> VoiceBinding:
+def _is_voice_route(value: object) -> TypeGuard[VoiceRoute]:
+    return isinstance(value, str) and value in _ROUTES
+
+
+def _is_provenance_method(
+    value: object,
+) -> TypeGuard[Literal["automatic", "manual"]]:
+    return isinstance(value, str) and value in {"automatic", "manual"}
+
+
+def _to_binding(raw: _BindingDocument) -> VoiceBinding:
     return VoiceBinding(
         raw["role"],
         raw["variant_key"],
         raw["route"],
         tuple(raw["source_sha256s"]),
         raw["source_id"],
-        raw["provenance"],
+        dict(raw["provenance"]),
     )
 
 
@@ -563,7 +605,7 @@ def _selected_checksums(
     return values
 
 
-def _is_sha256(value: object) -> bool:
+def _is_sha256(value: object) -> TypeGuard[str]:
     return (
         isinstance(value, str)
         and len(value) == 64
@@ -571,7 +613,7 @@ def _is_sha256(value: object) -> bool:
     )
 
 
-def _validate_document(document: object) -> None:
+def _validate_document(document: object) -> TypeGuard[_VoiceLibraryDocument]:
     if (
         not isinstance(document, dict)
         or type(document.get("version")) is not int
@@ -586,6 +628,7 @@ def _validate_document(document: object) -> None:
         _validate_alternative_group(identity, group)
     for identity, binding in bindings.items():
         _validate_binding(identity, binding, alternatives)
+    return True
 
 
 def _validate_alternative_group(identity: object, group: object) -> None:
@@ -643,7 +686,7 @@ def _validate_binding(
     _validate_provenance(binding.get("provenance"))
 
 
-def _validate_provenance(value: object) -> None:
+def _validate_provenance(value: object) -> TypeGuard[_ProvenanceDocument]:
     if not isinstance(value, dict) or set(value) != {
         "method",
         "evidence",
@@ -660,6 +703,13 @@ def _validate_provenance(value: object) -> None:
         value.get("algorithm"),
         timestamp,
     )
+    return True
+
+
+def _validated_provenance(value: object) -> _ProvenanceDocument:
+    if _validate_provenance(value):
+        return value
+    raise VoiceLibraryError("Voice provenance is invalid")
 
 
 __all__ = [

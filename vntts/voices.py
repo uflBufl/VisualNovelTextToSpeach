@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
-from typing import Protocol
+from typing import Literal, Protocol
 
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError as VoiceManifestError,
@@ -317,7 +317,7 @@ def discover_voice_source(
     source_id: str,
     *,
     variant_key: str | None = None,
-    method: str = "automatic",
+    method: Literal["automatic", "manual"] = "automatic",
     evidence: object | None = None,
     algorithm: str | None = None,
 ) -> tuple[str, ...]:
@@ -350,7 +350,7 @@ def remember_voice_binding(
     source_id: str,
     *,
     variant_key: str | None = None,
-    method: str = "manual",
+    method: Literal["automatic", "manual"] = "manual",
     evidence: object | None = None,
     algorithm: str | None = None,
     only_if_unbound: bool = False,
