@@ -1,7 +1,6 @@
 """Background application of already-persisted desktop configuration."""
 
 from collections.abc import Callable
-from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Protocol
 
@@ -29,12 +28,14 @@ class _SettingsDialog(Protocol):
     def settings(self) -> AppSettings: ...
 
 
-SettingsCommit = Callable[[AppSettings], Path]
+SettingsCommit = Callable[[AppSettings], object]
 
 
 class _Controller(Protocol):
     settings: AppSettings
-    is_ready: bool
+
+    @property
+    def is_ready(self) -> bool: ...
 
     def shutdown(self) -> None: ...
 
@@ -57,21 +58,21 @@ class _Controller(Protocol):
         character: str,
         source_id: str,
         *,
-        commit_settings: SettingsCommit,
+        commit_settings: SettingsCommit | None = None,
     ) -> AppSettings: ...
 
     def clear_voice_assignment(
         self,
         character: str,
         *,
-        commit_settings: SettingsCommit,
+        commit_settings: SettingsCommit | None = None,
     ) -> AppSettings: ...
 
     def set_force_live_narrator(
         self,
         enabled: bool,
         *,
-        commit_settings: SettingsCommit,
+        commit_settings: SettingsCommit | None = None,
     ) -> AppSettings: ...
 
 
