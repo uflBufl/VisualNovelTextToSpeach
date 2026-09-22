@@ -494,7 +494,7 @@ class AppController:
         self._pipeline_event_sink = pipeline_event_handler or (
             lambda _stage, _generation, _occurred_at, **_details: None
         )
-        self.live_reader_session_id = None
+        self.live_reader_session_id: str | None = None
         self.pipeline_event_handler = self._record_pipeline_event
         self.live_sequence_plan_factory = live_sequence_plan_factory
         self.sequence_prefetch_lock = Lock()
@@ -2492,7 +2492,7 @@ class AppController:
                 and isinstance(outcome.first_audio_ms, (int, float))
                 and not isinstance(outcome.first_audio_ms, bool)
             )
-            if successful or audible:
+            if (successful or audible) and isinstance(outcome, PlaybackOutcome):
                 route = str(outcome.audio_source or "unknown")
                 existing = self.sequence_event_terminal_routes.setdefault(
                     lease,
