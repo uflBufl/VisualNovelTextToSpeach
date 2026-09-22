@@ -511,6 +511,7 @@ def merge_terminal_conflict_resolution(
                     raise AuthoringWorkbenchError(
                         f"Terminal conflict WAV path collides with {conflict_owner!r}"
                     )
+                path_owners[relative.as_posix()] = queue_id
                 target = contained_workspace_path(
                     output, relative, "Resolved terminal conflict WAV"
                 )

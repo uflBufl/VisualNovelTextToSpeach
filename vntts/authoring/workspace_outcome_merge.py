@@ -545,6 +545,7 @@ def _overlay_outcome_merge_items(
             raise AuthoringWorkbenchError(
                 f"Outcome merge WAV path collides with {owner!r}"
             )
+        path_owners[relative.as_posix()] = queue_id
         target_audio = _within(output, relative, "Merged outcome WAV")
         target_audio.parent.mkdir(parents=True, exist_ok=True)
         target_audio.write_bytes(sources.audio[queue_id][1])
