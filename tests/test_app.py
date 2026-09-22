@@ -1400,7 +1400,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(controller.is_live_running)
         self.assertEqual(controller.toggle_live.call_count, 2)
         controller.unresolved_live_speakers.assert_called_once_with()
-        controller.live_reader.wait.assert_called_once_with()
+        controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         self.assertFalse(tray_application.resume_live_after_unknown_mapping)
         tray_application.shutdown()
 
@@ -2422,7 +2422,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(controller.is_live_running)
         self.assertEqual(controller.toggle_live.call_count, 2)
         controller.unresolved_live_speakers.assert_called_once_with()
-        controller.live_reader.wait.assert_called_once_with()
+        controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         tray_application.shutdown()
 
     def test_history_dialog_uses_controller_session_and_replay(self):
@@ -2475,7 +2475,7 @@ class TrayApplicationTest(unittest.TestCase):
         self.assertTrue(controller.is_live_running)
         self.assertEqual(controller.toggle_live.call_count, 2)
         controller.unresolved_live_speakers.assert_called_once_with()
-        controller.live_reader.wait.assert_called_once_with()
+        controller.live_reader.wait.assert_called_once_with(timeout_seconds=5.0)
         tray_application.shutdown()
 
     def test_support_bundle_export_runs_with_sanitized_runtime_inputs(self):
