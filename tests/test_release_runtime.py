@@ -16,7 +16,6 @@ from vntts.release_runtime import (
     _replace_posix_interpreter_link,
     _runtime_interpreter,
     _runtime_site,
-    _sha256,
     stage_pocket_runtime,
 )
 
@@ -382,16 +381,6 @@ class ReleaseRuntimeTest(unittest.TestCase):
                     run=runner,
                 )
             self.assertIn("-B", runner.call_args.args[0])
-
-    def test_sha256_is_stable(self):
-        with TemporaryDirectory() as directory:
-            path = Path(directory) / "value"
-            path.write_bytes(b"abc")
-
-            self.assertEqual(
-                _sha256(path),
-                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-            )
 
 
 if __name__ == "__main__":
