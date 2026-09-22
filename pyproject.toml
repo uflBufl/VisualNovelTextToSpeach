@@ -165,6 +165,7 @@ files = [
     "vntts/authoring/cli_voice_quality.py",
     "vntts/authoring/cli_workspace.py",
     "vntts/authoring/cli_workspace_transitions.py",
+    "vntts/authoring/cohort_bundle.py",
     "vntts/authoring/explicit_fallback_merge.py",
     "vntts/authoring/failed_control_carry.py",
     "vntts/authoring/failed_prompt_hypothesis.py",
