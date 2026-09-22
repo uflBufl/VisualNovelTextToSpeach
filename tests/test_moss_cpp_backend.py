@@ -11,7 +11,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -169,6 +169,30 @@ LoopbackServer(('127.0.0.1', port), Handler).serve_forever()
 
 
 class WindowsOwnedServerTest(unittest.TestCase):
+    def test_forced_server_shutdown_stays_bounded_when_wait_never_finishes(self):
+        server = Mock()
+        server.poll.return_value = None
+        server.wait.side_effect = (
+            subprocess.TimeoutExpired("server", 2),
+            subprocess.TimeoutExpired("server", 2),
+        )
+        backend = object.__new__(MossCppVoiceRouterBackend)
+        backend.server_lock = Lock()
+        backend.server = server
+        backend.server_job = None
+        backend.server_log = None
+        backend.server_directory = None
+        backend.server_info = {}
+        backend._runtime_status = None
+        backend._registered_references = {}
+
+        backend._stop_server()
+
+        server.terminate.assert_called_once_with()
+        server.kill.assert_called_once_with()
+        self.assertEqual(server.wait.call_count, 2)
+        self.assertIsNone(backend.server)
+
     def test_failed_job_attachment_keeps_process_cleanup_bounded(self):
         process = Mock()
         process.wait.side_effect = subprocess.TimeoutExpired("server", 2)

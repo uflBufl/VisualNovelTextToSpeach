@@ -1624,7 +1624,10 @@ class IsolatedSpeechBackend:
                 process.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait(timeout=2.0)
+                try:
+                    process.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass  # Kill is final; do not turn shutdown into another hang.
 
     def _resolve_audio_output(self) -> AudioOutput:
         audio_output = resolve_audio_output(self.audio_output)

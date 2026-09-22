@@ -1,5 +1,6 @@
 import os
 import queue
+import subprocess
 import sys
 import unittest
 from io import BytesIO
@@ -141,6 +142,23 @@ class FakeProcess:
 
 
 class SpeechWorkerTest(unittest.TestCase):
+    def test_forced_worker_shutdown_stays_bounded_when_wait_never_finishes(self):
+        process = MagicMock()
+        process.poll.return_value = None
+        process.wait.side_effect = (
+            subprocess.TimeoutExpired("worker", 2),
+            subprocess.TimeoutExpired("worker", 2),
+        )
+        backend = object.__new__(IsolatedSpeechBackend)
+        backend.process = process
+
+        backend._terminate_process(process)
+
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.call_count, 2)
+        self.assertIsNone(backend.process)
+
     def test_health_gate_covers_shared_and_binary_sensitive_dependencies(self):
         common = {
             "numpy",

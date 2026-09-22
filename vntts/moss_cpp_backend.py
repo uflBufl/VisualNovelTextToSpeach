@@ -1752,7 +1752,10 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
                         server.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         server.kill()
-                        server.wait(timeout=2)
+                        try:
+                            server.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            pass  # Kill is final; do not turn shutdown into another hang.
             finally:
                 if job is not None:
                     job.close()
