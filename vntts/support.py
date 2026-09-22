@@ -923,11 +923,19 @@ def preserve_previous_session(directory: str | Path) -> SupportDocument:
 
 
 def _previous_generation_timelines(path: Path) -> list[SupportDocument]:
+    if path.is_symlink():
+        return []
+    limit = 2 * 1024 * 1024
     try:
-        if path.stat().st_size > 2 * 1024 * 1024:
-            return []
-        document = json.loads(path.read_bytes())
-    except OSError, UnicodeError, json.JSONDecodeError:
+        with path.open("rb") as source:
+            payload = source.read(limit + 1)
+    except OSError:
+        return []
+    if len(payload) > limit:
+        return []
+    try:
+        document = json.loads(payload)
+    except UnicodeError, json.JSONDecodeError:
         return []
     if not isinstance(document, dict) or not isinstance(
         document.get("timelines"), list

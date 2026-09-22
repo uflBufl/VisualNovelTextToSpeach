@@ -472,6 +472,24 @@ class RuntimeSupportLogTest(unittest.TestCase):
         self.assertNotIn(str(Path.home()), repr(snapshot))
         self.assertNotIn("PRIVATE DIALOGUE", repr(snapshot))
 
+    def test_previous_session_ignores_aliased_generation_timelines(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            directory = root / "diagnostics"
+            directory.mkdir()
+            outside = root / "outside.json"
+            outside.write_text(
+                json.dumps(
+                    {"timelines": [{"generation": 1, "events": [{"stage": "capture"}]}]}
+                ),
+                encoding="utf-8",
+            )
+            symlink_or_skip(directory / "generation-timelines.json", outside)
+
+            snapshot = preserve_previous_session(directory)
+
+        self.assertEqual(snapshot, {"available": False})
+
     def test_log_is_bounded_and_returns_a_copy(self):
         log = RuntimeSupportLog(
             maximum_entries=2,
