@@ -31,7 +31,10 @@ from vntts.pregeneration_pack import (  # noqa: E402
     OfflinePreparationChanges,
     StoryAudioCoverage,
 )
-from vntts.pregeneration_queue import PregenerationQueueCancelled  # noqa: E402
+from vntts.pregeneration_queue import (  # noqa: E402
+    PregenerationInput,
+    PregenerationQueueCancelled,
+)
 from vntts.pregeneration_recovery import OfflineRecoveryResult  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
@@ -45,7 +48,10 @@ from vntts.pregeneration_setup import (  # noqa: E402
     load_verified_story_index_document,
 )
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog  # noqa: E402
-from vntts.pregeneration_voices import PregenerationVoiceCancelled  # noqa: E402
+from vntts.pregeneration_voices import (  # noqa: E402
+    PregenerationVoiceCancelled,
+    VoicePlan,
+)
 from vntts.settings import AppSettings  # noqa: E402
 from vntts.source_audio_semantics import (  # noqa: E402
     SEMANTIC_EVIDENCE_METHOD,
@@ -54,6 +60,23 @@ from vntts.source_audio_semantics import (  # noqa: E402
 from vntts.ui_text import plain_label_text  # noqa: E402
 from vntts.versioned_json import write_versioned_json  # noqa: E402
 from vntts.voice_library import VoiceLibrary  # noqa: E402
+
+
+def empty_voice_plan() -> VoicePlan:
+    return VoicePlan(
+        job_id="a" * 24,
+        created_at="2026-09-22T00:00:00+00:00",
+        story_index_sha256="b" * 64,
+        voice_manifest=None,
+        voice_manifest_sha256=None,
+        synthesis_backend="pocket-tts",
+        synthesis_model=None,
+        synthesis_language="en",
+        synthesis_profile="default",
+        pocket_voice_cloning=False,
+        synthesis_controls_sha256="c" * 64,
+        groups=(),
+    )
 
 
 def write_story_index(root, *, generated_text="Generate me."):
@@ -2019,7 +2042,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             pool = ManualThreadPool()
-            voice_plan = Mock()
+            voice_plan = empty_voice_plan()
             voice_plan_store = Mock()
             voice_plan_store.create.return_value = voice_plan
             input_store = Mock()
@@ -2057,7 +2080,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             pool = ManualThreadPool()
-            voice_plan = Mock(audition_count=0)
+            voice_plan = empty_voice_plan()
             voice_plan_store = Mock()
             voice_plan_store.create.return_value = voice_plan
             dialog = OfflineAudioPreparationDialog(
@@ -2165,10 +2188,20 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
             pool = ManualThreadPool()
-            voice_plan = Mock()
+            voice_plan = empty_voice_plan()
             voice_plan_store = Mock()
             voice_plan_store.create.return_value = voice_plan
-            generation_input = Mock(ready_items=2)
+            generation_input = PregenerationInput(
+                identity="d" * 64,
+                directory=root / "generation-input",
+                story_index=root / "story-index.jsonl",
+                voice_manifest=root / "voice-manifest.json",
+                queue=root / "queue.jsonl",
+                queue_sha256="e" * 64,
+                queue_items=2,
+                ready_items=2,
+                narrator_fallback_roles=(),
+            )
             input_store = Mock()
             input_store.materialize.return_value = generation_input
             generator = Mock()
@@ -2198,7 +2231,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.select_all_button.click()
             dialog.continue_button.click()
             self.run_next_task(pool)
-            self.run_next_task(pool)
+            with patch(
+                "vntts.pregeneration_ui.estimate_generation_resources",
+                return_value=None,
+            ):
+                self.run_next_task(pool)
             dialog.continue_button.click()
             self.assertTrue(dialog.generating)
 
