@@ -55,7 +55,11 @@ class OfflinePackActivatorTest(unittest.TestCase):
             )
             inputs = replace(
                 inputs,
+                story_index_sha256=sha256_file(inputs.story_index),
                 source_audio_semantic_evidence=(
+                    inputs.story_index.parent / "source-audio-semantic-evidence.json"
+                ),
+                source_audio_semantic_evidence_sha256=sha256_file(
                     inputs.story_index.parent / "source-audio-semantic-evidence.json"
                 ),
             )

@@ -21,6 +21,7 @@ from vntts.document_identity import canonical_document_sha256  # noqa: E402
 from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
     ImporterAvailability,
+    Reverse1999GameImporter,
 )
 from vntts.pregeneration_generation import (  # noqa: E402
     OfflineGenerationCancelled,
@@ -573,9 +574,19 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             "vntts.pregeneration_ui.application_voice_library",
             return_value=self._voice_library,
         )
+        self._importer_patch = patch(
+            "vntts.pregeneration_ui.Reverse1999GameImporter",
+            side_effect=lambda: Reverse1999GameImporter(
+                output_root=Path(self._voice_library_directory.name) / "game-content",
+                installation_file=Path(self._voice_library_directory.name)
+                / "installation.json",
+            ),
+        )
         self._voice_library_patch.start()
+        self._importer_patch.start()
 
     def tearDown(self):
+        self._importer_patch.stop()
         self._voice_library_patch.stop()
         self._voice_library_directory.cleanup()
 

@@ -1493,7 +1493,11 @@ def _validate_player_voice_variant(variant: object, index: int, version: int) ->
     }
     if version >= 2:
         fields.add("portrait_image_sha256")
-    if not isinstance(variant, dict) or set(variant) != fields:
+    if (
+        not isinstance(variant, dict)
+        or not fields <= set(variant)
+        or set(variant) - fields - {"candidate_origin"}
+    ):
         raise PregenerationVoiceError(f"Player voice candidate {index} is malformed")
     character = variant.get("character")
     portrait = variant.get("portrait")
@@ -1545,6 +1549,11 @@ def _validate_player_voice_variant(variant: object, index: int, version: int) ->
             version < 2
             or variant.get("portrait_image_sha256") is None
             or _is_sha256(variant["portrait_image_sha256"]),
+        ),
+        (
+            "candidate_origin",
+            variant.get("candidate_origin")
+            in {None, "exact_bank_unrouted_media", "story_line_route"},
         ),
     )
     invalid = next((field for field, valid in checks if not valid), None)
@@ -1651,6 +1660,24 @@ def _manifest_candidate_variants(
         seen.add(variant_id)
         variants.append(dict(variant))
     return tuple(variants)
+
+
+def validated_player_voice_candidates(
+    manifest_path: Path,
+) -> tuple[CharacterVoiceRegistry, tuple[JsonObject, ...]]:
+    """Read the same checksum-validated candidates used by story preparation."""
+    registry, _digest, document = _load_registry(manifest_path)
+    player = _json_object(
+        document.get(PLAYER_VOICE_CANDIDATES_FIELD), "player voice candidates"
+    )
+    story_sha256 = player.get("story_index_sha256")
+    if not isinstance(story_sha256, str) or not _is_sha256(story_sha256):
+        raise PregenerationVoiceError(
+            "Player voice candidate story checksum is invalid"
+        )
+    return registry, _manifest_candidate_variants(
+        document, registry, manifest_path, story_sha256
+    )
 
 
 def _canonical_texts(values: object, *, allow_empty: bool = False) -> bool:

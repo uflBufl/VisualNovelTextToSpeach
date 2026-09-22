@@ -278,8 +278,16 @@ class VoiceAuditionPreviewService:
         telemetry.stage = "render"
         attempt = self._failed_preview_attempts.get(identity, 0)
         telemetry.seed = _preview_seed(plan, attempt)
+        voice = registry.resolve_source(candidate.source_id)
+        assert voice is not None
         result = self._render_preview(
-            plan, candidate, preview_text, telemetry.seed, attempt, cancellation, notify
+            plan,
+            voice.character,
+            preview_text,
+            telemetry.seed,
+            attempt,
+            cancellation,
+            notify,
         )
         if result.completion is not SynthesisCompletion.COMPLETE:
             self._record_failed_preview_attempt(plan, identity)
@@ -365,7 +373,7 @@ class VoiceAuditionPreviewService:
     def _render_preview(
         self,
         plan: VoicePlan,
-        candidate: VoiceCandidate,
+        voice_character: str,
         preview_text: str,
         seed: int | None,
         attempt: int,
@@ -373,7 +381,7 @@ class VoiceAuditionPreviewService:
         notify: ProgressReporter,
     ) -> SynthesisResult:
         request = SynthesisRequest(
-            voice=candidate.source_character,
+            voice=voice_character,
             text=preview_text,
             seed=seed,
             generation_profile=plan.synthesis_profile,

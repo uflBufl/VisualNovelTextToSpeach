@@ -12,13 +12,6 @@ Execution labels:
 - **Validate**: implementation exists or depends on a real host; no speculative
   code changes before the stated run.
 
-## Active - Simplify the player preparation architecture
-
-- [ ] Separate route selection from audio playback using an immutable route
-      result and one playback owner. Gate: original, prepared and live fallback
-      routes preserve priority and each observed dialogue occurrence starts at
-      most one audible route.
-
 Planned implementation order after approval:
 
 1. Reproduce and fix the Windows device-quiescence race, then use the same
@@ -72,12 +65,13 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
-- [ ] **Validate Mrs. Owen on fresh Windows state:** multiple portrait expressions
-      now count as one safe bank owner. The exact Windows settings shape
-      (`voice_manifest` plus `Narrator: character:narrator`) now invokes candidate
-      preparation and merges its inventory while retaining the configured narrator
-      and saved voices. Gate: inspection exposes accepted media `562400954` for
-      playback, preview and saving.
+- [ ] **Validate Mrs. Owen on fresh Windows state:** after updating the extractor,
+      open her voice from both Voices and Stories. Both must expose the same
+      checksum-bound 3.17-second media `562400954` and 1.95-second media
+      `599773947`, without duplicate quoted role labels. Play the original,
+      generate a preview, save the 3.17-second candidate, reopen, and prepare a
+      story. Gate: the saved choice remains selected and offline generation uses
+      that exact reference; no automatic choice silently replaces it.
 - [ ] **Validate the Windows preview startup repair:** Python 3.14 `Popen` does not
       retain a `_thread` handle, so the suspended owned MOSS process failed before
       model loading. The launcher now finds and resumes the process thread through
@@ -121,8 +115,11 @@ Planned implementation order after approval:
 
 - [ ] **Collect one fresh preparation profile:** run cold and unchanged preparation
       and inspect the recorded `pregeneration-voice-plan-*` and
-      `pregeneration-input-*` phases. The earlier run spent 23.65 seconds creating
-      its voice plan and 20.16 seconds preparing generation input, but did not show
+      `pregeneration-input-*` phases. Time the cold full-index parse in
+      `load_verified_story_index_document` separately and check whether planning
+      and materialization reuse it within one process. The earlier run spent
+      23.65 seconds creating its voice plan and 20.16 seconds preparing generation
+      input, but did not show
       which index read, reference check/hash/copy, identity lookup or queue build
       caused it. Select an optimization only from measured repeated work. Keep deep
       validation at trust and activation boundaries; file mtime/size is not proof of

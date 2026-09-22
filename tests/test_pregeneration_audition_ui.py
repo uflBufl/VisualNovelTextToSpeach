@@ -19,6 +19,7 @@ from tests.test_pregeneration_setup import (  # noqa: E402
     ManualThreadPool,
     write_story_index,
 )
+from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
 from vntts.pregeneration_audition import (  # noqa: E402
     VoiceAuditionCancelled,
     VoiceAuditionPreviewService,
@@ -1000,9 +1001,19 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 Path(self._voice_library_directory.name) / "library"
             ),
         )
+        self._importer_patch = patch(
+            "vntts.pregeneration_ui.Reverse1999GameImporter",
+            side_effect=lambda: Reverse1999GameImporter(
+                output_root=Path(self._voice_library_directory.name) / "game-content",
+                installation_file=Path(self._voice_library_directory.name)
+                / "installation.json",
+            ),
+        )
         self._voice_library_patch.start()
+        self._importer_patch.start()
 
     def tearDown(self):
+        self._importer_patch.stop()
         self._voice_library_patch.stop()
         self._voice_library_directory.cleanup()
 

@@ -42,6 +42,7 @@ from vntts.game_narrator import (  # noqa: E402
     narrator_preview_plan,
 )
 from vntts.game_narrator_ui import GameNarratorDialog  # noqa: E402
+from vntts.player_session import PlayerSessionOwner  # noqa: E402
 from vntts.pregeneration_audition import VoiceAuditionPreviewService  # noqa: E402
 from vntts.pregeneration_setup import (  # noqa: E402
     ContentDiscovery,
@@ -404,6 +405,157 @@ class GameNarratorTest(unittest.TestCase):
         )
         importer.prepare_voice_roles.return_value = manifest
         return importer
+
+    @staticmethod
+    def player_candidate_manifest(root):
+        manifest = write_player_candidate_manifest(root, "a" * 64)
+        document = json.loads(manifest.read_text())
+        originals = []
+        for entry, variant, media_id, duration, origin in zip(
+            document["voices"],
+            document["vntts.player.voice_candidates"]["variants"],
+            ("562400954", "599773947"),
+            (3.17, 1.95),
+            ("exact_bank_unrouted_media", "story_line_route"),
+            strict=True,
+        ):
+            candidate = f"Player candidate Mrs. Owen {media_id}"
+            entry["character"] = candidate
+            reference = manifest.parent / entry["references"][0]
+            original = clean_wav_bytes(
+                amplitude=0.2 if not originals else 0.3, seconds=duration
+            )
+            reference.write_bytes(original)
+            originals.append(original)
+            variant.update(
+                character="Mrs. Owen",
+                voice_character=candidate,
+                duration_seconds=duration,
+                candidate_origin=origin,
+                reference_sha256=sha256_file(reference),
+            )
+        manifest.write_text(json.dumps(document))
+        return manifest, originals
+
+    def assert_saved_candidate_reopens(self, importer):
+        reopened_pool = ManualThreadPool()
+        reopened = GameNarratorDialog(
+            AppSettings(speech_backend="moss-tts"),
+            importer=importer,
+            preview_service=Mock(),
+            thread_pool=reopened_pool,
+            player=Mock(),
+        )
+        try:
+            reopened.set_voice_context(roles=("Mrs. Owen",))
+            reopened.role.setCurrentText("Mrs. Owen")
+            self.choose_game_source(reopened)
+            self.application.processEvents()
+            while reopened_pool.tasks:
+                self.run_task(reopened_pool)
+            self.assertEqual(
+                reopened.references.currentData(),
+                "character:playercandidatemrsowen599773947",
+            )
+        finally:
+            reopened.reject()
+            while reopened_pool.tasks:
+                self.run_task(reopened_pool)
+
+    def test_character_game_candidates_use_story_manifest_and_exact_source(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, originals = self.player_candidate_manifest(root)
+            importer = Mock()
+            importer.narrator_characters.return_value = ("Mrs. Owen",)
+            importer.prepare_voice_roles.return_value = manifest
+            previews = Mock()
+            previews.generate.return_value = SimpleNamespace(path=root / "preview.wav")
+            pool, player = ManualThreadPool(), Mock()
+            dialog = GameNarratorDialog(
+                AppSettings(speech_backend="moss-tts"),
+                importer=importer,
+                preview_service=previews,
+                thread_pool=pool,
+                player=player,
+                binder=partial(
+                    bind_voice_library_selection, root=self._voice_library.root
+                ),
+            )
+            try:
+                dialog.set_voice_context(roles=('"Mrs. Owen"', "Mrs. Owen"))
+                dialog.role.setCurrentText("Mrs. Owen")
+                self.choose_game_source(dialog)
+                self.application.processEvents()
+                self.run_task(pool)  # Discover.
+                self.run_task(pool)  # Prepare the Stories-compatible manifest.
+
+                selected_source = "character:playercandidatemrsowen562400954"
+                self.assertEqual(dialog.references.count(), 2, dialog.status.text())
+                self.assertEqual(
+                    tuple(
+                        dialog.references.itemData(index)
+                        for index in range(dialog.references.count())
+                    ),
+                    (
+                        selected_source,
+                        "character:playercandidatemrsowen599773947",
+                    ),
+                )
+                self.assertIn("3.170 s", dialog.references.itemText(0))
+                self.assertIn("exact bank media", dialog.references.itemText(0))
+                self.assertIn("1.950 s", dialog.references.itemText(1))
+                self.assertIn("story line", dialog.references.itemText(1))
+                importer.narrator_references.assert_not_called()
+                importer.prepare_voice_roles.assert_called_once_with(
+                    ("Mrs. Owen",),
+                    dialog.cancellation,
+                    progress=dialog.decoderProgress.emit,
+                    narrator=False,
+                )
+
+                dialog.original_button.click()
+                self.run_task(pool)
+                player.play_bytes.assert_called_once()
+                self.assertEqual(player.play_bytes.call_args.args[0], originals[0])
+                self.assertIn(selected_source, dialog.reference_details.toolTip())
+                dialog.preview_button.click()
+                self.run_task(pool)
+                self.assertEqual(
+                    previews.generate.call_args.args[0].groups[0].source_id,
+                    selected_source,
+                )
+                dialog.references.setCurrentIndex(1)
+                dialog.save_button.click()
+                self.run_task(pool)
+                self.run_task(pool)
+                self.assertEqual(
+                    dialog._saved_role_voice("Mrs. Owen", narrator=False)[1],
+                    "character:playercandidatemrsowen599773947",
+                )
+            finally:
+                if not dialog._closed:
+                    dialog.reject()
+                while pool.tasks:
+                    self.run_task(pool)
+
+            self.assert_saved_candidate_reopens(importer)
+
+    def test_voice_context_deduplicates_quoted_role_labels(self):
+        dialog = GameNarratorDialog(
+            AppSettings(), importer=Mock(), preview_service=Mock(), player=Mock()
+        )
+        try:
+            dialog.set_voice_context(roles=('"Mrs. Owen"', "Mrs. Owen"))
+            matching = [
+                dialog.role.itemText(index)
+                for index in range(dialog.role.count())
+                if dialog.role.itemText(index) == "Mrs. Owen"
+            ]
+            self.assertEqual(matching, ["Mrs. Owen"])
+            self.assertNotIn('"Mrs. Owen"', matching)
+        finally:
+            dialog.reject()
 
     def test_game_reference_requires_a_selected_character(self):
         importer = Mock()
@@ -1386,23 +1538,37 @@ class GameNarratorTest(unittest.TestCase):
             ):
                 self.assertEqual(importer.narrator_characters(), ("Centurion",))
                 self.assertEqual(importer.narrator_characters(), ("Centurion",))
+                cache = root / "reverse1999" / "narrator-characters.json"
+                self.assertTrue(cache.is_file())
+                Reverse1999GameImporter._cached_narrator_characters.cache_clear()
                 self.assertEqual(
                     Reverse1999GameImporter(output_root=root).narrator_characters(),
                     ("Centurion",),
                 )
                 self.assertEqual(importing.call_count, 1)
                 parse_index.assert_called_once()
+                cache.write_text("{")
+                Reverse1999GameImporter._cached_narrator_characters.cache_clear()
+                self.assertEqual(importer.narrator_characters(), ("Centurion",))
+                self.assertEqual(parse_index.call_count, 2)
                 (root / "reverse1999" / "narrator-banks.json").write_text(
                     '{"Centurion": "hero3032_mainstory.bnk", "Rhiannon": "other.bnk"}'
                 )
                 self.assertEqual(
                     importer.narrator_characters(), ("Centurion", "Rhiannon")
                 )
-                self.assertEqual(parse_index.call_count, 2)
+                self.assertEqual(parse_index.call_count, 3)
+                story = root / "reverse1999" / "story-index.jsonl"
+                (root / "reverse1999" / "narrator-index.jsonl").write_text(
+                    story.read_text()
+                )
+                self.assertEqual(
+                    importer.narrator_characters(), ("Centurion", "Rhiannon")
+                )
+                self.assertEqual(parse_index.call_count, 4)
                 importer.narrator_characters(installation_root=root / "game")
                 self.assertEqual(importing.call_count, 2)
                 self.assertEqual(importing.call_args.args[1], root / "game")
-                self.assertEqual(parse_index.call_count, 3)
 
     def test_preparation_character_picker_preselects_target_role(self):
         with TemporaryDirectory() as directory:
@@ -1598,13 +1764,14 @@ class GameNarratorTest(unittest.TestCase):
 
     def test_narrator_reload_stops_old_worker_and_honors_cancellation(self):
         shell = Mock()
-        shell._lifecycle_is_current.return_value = True
+        shell.session_owner = PlayerSessionOwner(shell.controller)
         shell.controller.start.return_value = True
         candidate = AppSettings()
         event = Event()
+        generation = shell.session_owner.begin(event)
         self.assertEqual(
             ConfigurationApplyMixin._apply_configuration(
-                shell, candidate, 1, event, True
+                shell, candidate, generation, event, True
             ),
             (True, True),
         )
@@ -1616,7 +1783,7 @@ class GameNarratorTest(unittest.TestCase):
         event.set()
         self.assertEqual(
             ConfigurationApplyMixin._apply_configuration(
-                shell, candidate, 1, event, True
+                shell, candidate, generation, event, True
             ),
             (False, False),
         )
