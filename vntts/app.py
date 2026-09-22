@@ -3441,6 +3441,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.set_configuration(candidate)
         return candidate
 
+    def _apply_narrator_to_preparation(
+        self,
+        dialog: GameNarratorDialog,
+        candidate: AppSettings,
+        preparation: OfflineAudioPreparationDialog | None,
+    ) -> bool:
+        if preparation is not self.pregeneration_dialog or preparation is None:
+            return False
+        preparation.apply_narrator_settings(candidate, voice_changed=True)
+        if dialog.select_affected_after_save is not True:
+            return False
+        preparation.select_voice_affected_stories(dialog._impact_results)
+        return True
+
     def _narrator_finished(self, result):
         dialog = self.narrator_dialog
         if dialog is None:
@@ -3479,13 +3493,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     and dialog.voice_library.binding(mapping_speaker) is not None
                 )
                 profile_synced = self._sync_active_profile(candidate)
-                if preparation is self.pregeneration_dialog and preparation is not None:
-                    preparation.apply_narrator_settings(candidate, voice_changed=True)
-                    if dialog.select_affected_after_save is True:
-                        preparation.select_voice_affected_stories(
-                            dialog._impact_results
-                        )
-                        return_to_stories = True
+                return_to_stories |= self._apply_narrator_to_preparation(
+                    dialog, candidate, preparation
+                )
                 if saved_assignment is None:
                     self._reload_game_narrator(profile_synced)
                 else:
