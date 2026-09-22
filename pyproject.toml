@@ -210,6 +210,7 @@ files = [
     "vntts/authoring/offline_fallback_authority.py",
     "vntts/authoring/pcm_playback.py",
     "vntts/authoring/pending_resolution.py",
+    "vntts/authoring/portrait_aliases.py",
     "vntts/authoring/private_files.py",
     "vntts/authoring/publication.py",
     "vntts/authoring/queue_builder.py",

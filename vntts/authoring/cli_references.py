@@ -493,12 +493,19 @@ def handle(arguments: argparse.Namespace) -> int:
         print(json.dumps(known_role_binding.to_dict(), indent=2, sort_keys=True))
         return 0
     if arguments.command == "portrait-alias-plan":
-        plan = build_portrait_alias_plan(
+        portrait_alias_plan = build_portrait_alias_plan(
             arguments.quality_review,
             max_dhash_distance=arguments.max_dhash_distance,
         )
-        write_portrait_alias_plan(plan, arguments.output)
-        print(json.dumps(plan.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+        write_portrait_alias_plan(portrait_alias_plan, arguments.output)
+        print(
+            json.dumps(
+                portrait_alias_plan.to_dict(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     if arguments.command == "portrait-alias-decision":
         decision = build_portrait_alias_decision(
