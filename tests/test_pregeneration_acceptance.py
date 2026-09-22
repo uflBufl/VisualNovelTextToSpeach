@@ -1,5 +1,4 @@
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -53,7 +52,6 @@ class OfflineAcceptanceWorkerTest(unittest.TestCase):
     def test_no_pending_wavs_reuses_validated_generation_result(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, generation = inputs(Path(temporary_directory))
-            generation = replace(generation, pending_review=0)
             state = {
                 "items": {
                     "a": {"status": "approved", "review_status": "approved"},
@@ -76,12 +74,11 @@ class OfflineAcceptanceWorkerTest(unittest.TestCase):
 
         generator.inspect.assert_not_called()
         self.assertIs(result.generation, generation)
+        self.assertEqual(result.approved, 1)
 
-    def test_accepts_all_pending_wavs_in_one_automatic_cohort(self):
+    def test_pending_audio_is_rejected_without_a_review_decision(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, first = inputs(Path(temporary_directory))
-            generator = Mock()
-            authorities = {"a": Mock(), "b": Mock()}
             state = {
                 "items": {
                     "b": {"status": "generated", "review_status": "pending_review"},
@@ -98,46 +95,17 @@ class OfflineAcceptanceWorkerTest(unittest.TestCase):
                     "vntts.pregeneration_acceptance.load_generation_state",
                     return_value=state,
                 ),
-                patch(
-                    "vntts.pregeneration_acceptance.generation_review_authorities",
-                    return_value=authorities,
-                ) as snapshot,
-                patch(
-                    "vntts.pregeneration_acceptance.review_generation_cohort"
-                ) as commit,
-                patch(
-                    "vntts.pregeneration_acceptance.record_background_operation"
-                ) as record,
+                self.assertRaisesRegex(OfflineAcceptanceError, "unfinished items"),
             ):
-                result = OfflineAcceptanceWorker(generator).accept(
-                    generation_input,
-                    first,
-                )
+                OfflineAcceptanceWorker().accept(generation_input, first)
 
-        snapshot.assert_called_once_with(first.state, ("a", "b"))
-        self.assertEqual(commit.call_args.args[3], "approved")
-        self.assertEqual(commit.call_args.kwargs["provenance"]["human_reviewed"], False)
-        self.assertEqual(result.approved, 2)
-        self.assertEqual(result.generation.pending_review, 0)
-        self.assertEqual(
-            [call.args[0] for call in record.call_args_list],
-            [
-                "pregeneration-acceptance-validation",
-                "pregeneration-acceptance-state-load",
-                "pregeneration-acceptance-authority-snapshot",
-                "pregeneration-acceptance-decision-commit",
-            ],
-        )
-
-    def test_cancelled_acceptance_does_not_snapshot_or_commit(self):
+    def test_cancelled_validation_does_not_load_state(self):
         with TemporaryDirectory() as temporary_directory:
             generation_input, result = inputs(Path(temporary_directory))
             cancellation = Event()
             cancellation.set()
 
-            with patch(
-                "vntts.pregeneration_acceptance.generation_review_authorities"
-            ) as snapshot:
+            with patch("vntts.pregeneration_acceptance.load_generation_state") as load:
                 with self.assertRaises(OfflineGenerationCancelled):
                     OfflineAcceptanceWorker(Mock()).accept(
                         generation_input,
@@ -145,7 +113,7 @@ class OfflineAcceptanceWorkerTest(unittest.TestCase):
                         cancellation,
                     )
 
-        snapshot.assert_not_called()
+        load.assert_not_called()
 
     def test_rejects_generation_state_without_an_item_mapping(self):
         with TemporaryDirectory() as temporary_directory:

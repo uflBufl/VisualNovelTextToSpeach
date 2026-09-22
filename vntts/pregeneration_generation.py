@@ -296,6 +296,7 @@ class OfflineGenerationWorker:
             voice_plan.synthesis_backend,
             "--generation-profile",
             generation_profile,
+            "--approve-validated-audio",
             "--narrator-character",
             "Narrator",
             "--retries",

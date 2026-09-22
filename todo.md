@@ -12,6 +12,21 @@ Execution labels:
 - **Validate**: implementation exists or depends on a real host; no speculative
   code changes before the stated run.
 
+## Active - Simplify the player preparation architecture
+
+- [ ] Remove obsolete legacy import, compatibility exports and multi-workspace
+      reconciliation from the shipped player path after the new preparation
+      contract works. Keep only authoring tools that have a current use case.
+      Gate: player startup, generation and pack import need no expert workflow.
+- [ ] Give one session owner responsibility for start, stop and settings/pack
+      replacement; move orchestration out of `TrayApplication` and keep the UI as
+      a caller. Gate: stale or cancelled background work cannot mutate a newer
+      session, and shutdown/restart tests pass.
+- [ ] Separate route selection from audio playback using an immutable route
+      result and one playback owner. Gate: original, prepared and live fallback
+      routes preserve priority and each observed dialogue occurrence starts at
+      most one audible route.
+
 Planned implementation order after approval:
 
 1. Reproduce and fix the Windows device-quiescence race, then use the same

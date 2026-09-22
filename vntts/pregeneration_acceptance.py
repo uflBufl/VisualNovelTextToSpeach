@@ -1,17 +1,12 @@
-"""Automatic acceptance of technically validated self-service WAVs."""
+"""Read-only validation of prepared audio from older callers."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from threading import Event
 from time import perf_counter, process_time
 
-from vntts.authoring.bulk_generation import (
-    BulkGenerationError,
-    generation_review_authorities,
-    load_generation_state,
-    review_generation_cohort,
-)
+from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -52,8 +47,6 @@ class OfflineAcceptanceWorker:
         )
         _record_acceptance_phase("validation", phase_started, cpu_started)
         _raise_if_cancelled(cancel_event)
-        if generation_result.pending_review == 0:
-            return OfflineAcceptanceResult(generation_result, 0)
         phase_started, cpu_started = perf_counter(), process_time()
         try:
             state = load_generation_state(
@@ -68,66 +61,25 @@ class OfflineAcceptanceWorker:
         items = state.get("items")
         if not isinstance(items, dict):
             raise OfflineAcceptanceError("Offline generation state is invalid")
-        pending = tuple(
-            sorted(
-                queue_id
-                for queue_id, item in items.items()
-                if isinstance(queue_id, str)
-                and isinstance(item, dict)
-                and (item.get("status"), item.get("review_status"))
-                == ("generated", "pending_review")
-            )
+        approved = sum(
+            (item.get("status"), item.get("review_status")) == ("approved", "approved")
+            for item in items.values()
+            if isinstance(item, dict)
         )
-        if not pending:
-            return OfflineAcceptanceResult(generation_result, 0)
+        if any(
+            not isinstance(item, dict)
+            or (item.get("status"), item.get("review_status"))
+            not in {("approved", "approved"), ("live_fallback", "live_fallback")}
+            for item in items.values()
+        ):
+            raise OfflineAcceptanceError("Prepared audio has unfinished items")
         _raise_if_cancelled(cancel_event)
-        try:
-            phase_started, cpu_started = perf_counter(), process_time()
-            authorities = generation_review_authorities(
-                generation_result.state,
-                pending,
-            )
-            _record_acceptance_phase(
-                "authority-snapshot",
-                phase_started,
-                cpu_started,
-                item_count=len(pending),
-            )
-            _raise_if_cancelled(cancel_event)
-            phase_started, cpu_started = perf_counter(), process_time()
-            review_generation_cohort(
-                generation_result.state,
-                generation_input.queue,
-                authorities,
-                "approved",
-                provenance={
-                    "schema": "vntts.self-service-automatic-acceptance",
-                    "schema_version": 1,
-                    "decision_source": "generation-technical-gates",
-                    "human_reviewed": False,
-                },
-            )
-            _record_acceptance_phase(
-                "decision-commit",
-                phase_started,
-                cpu_started,
-                item_count=len(pending),
-            )
-        except OfflineGenerationCancelled:
-            raise
-        except (BulkGenerationError, OSError, ValueError) as error:
-            raise OfflineAcceptanceError(
-                f"Unable to accept generated audio: {error}"
-            ) from error
-        return OfflineAcceptanceResult(
-            replace(generation_result, pending_review=0),
-            len(pending),
-        )
+        return OfflineAcceptanceResult(generation_result, approved)
 
 
 def _raise_if_cancelled(cancel_event: Event | None) -> None:
     if cancel_event is not None and cancel_event.is_set():
-        raise OfflineGenerationCancelled("Automatic audio acceptance was cancelled")
+        raise OfflineGenerationCancelled("Prepared audio validation was cancelled")
 
 
 def _record_acceptance_phase(

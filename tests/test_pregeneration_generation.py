@@ -493,6 +493,7 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
             self.assertEqual(arguments.count("--sentence-segment-failed"), 1)
             self.assertEqual(arguments[arguments.index("--retries") + 1], "0")
             self.assertNotIn("--regenerate-existing", arguments)
+            self.assertIn("--approve-validated-audio", arguments)
 
     def test_cancellation_terminates_only_the_owned_worker(self):
         with TemporaryDirectory() as temporary_directory:

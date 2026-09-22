@@ -482,6 +482,7 @@ class _GenerationExecutionContext:
     recorded_voices: dict[str, RecordedVoice]
     evidence_directory: Path | None
     regenerate_existing: bool
+    approve_validated_audio: bool
 
 
 @dataclass(frozen=True)
@@ -2155,8 +2156,10 @@ def _store_successful_generation_attempt(
 ) -> None:
     item = plan.item
     value: JsonDocument = {
-        "status": "generated",
-        "review_status": "pending_review",
+        "status": "approved" if run.approve_validated_audio else "generated",
+        "review_status": "approved"
+        if run.approve_validated_audio
+        else "pending_review",
         "attempts": attempts,
         "attempts_by_provider": dict(sorted(attempts_by_provider.items())),
         "path": plan.relative.as_posix(),
@@ -3012,6 +3015,7 @@ def run_bulk_generation(
     silence_failure_evidence: object = None,
     audio_event_spoken_projection_queue_ids: Sequence[object] | None = None,
     synthesis_cache_policy: object = SynthesisCachePolicy.BYPASS,
+    approve_validated_audio: bool = False,
 ) -> BulkGenerationResult:
     """Render selected queue items with no device playback and resumable state."""
     configuration = _prepare_generation_configuration(
@@ -3142,6 +3146,7 @@ def run_bulk_generation(
         recorded_voices=recorded_voices,
         evidence_directory=evidence_directory,
         manifest_path=manifest_path,
+        approve_validated_audio=approve_validated_audio,
     )
 
 
@@ -3184,6 +3189,7 @@ def _run_generation_execution(
     recorded_voices: dict[str, RecordedVoice],
     evidence_directory: Path | None,
     manifest_path: Path,
+    approve_validated_audio: bool,
 ) -> BulkGenerationResult:
     with (
         _GenerationLease(
@@ -3256,6 +3262,7 @@ def _run_generation_execution(
                 recorded_voices=recorded_voices,
                 evidence_directory=evidence_directory,
                 regenerate_existing=regenerate_existing,
+                approve_validated_audio=approve_validated_audio,
             )
         )
         return _finalize_generation_run(

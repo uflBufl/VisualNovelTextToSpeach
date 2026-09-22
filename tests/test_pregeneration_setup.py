@@ -22,7 +22,6 @@ from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
     ImporterAvailability,
 )
-from vntts.pregeneration_acceptance import OfflineAcceptanceResult  # noqa: E402
 from vntts.pregeneration_generation import (  # noqa: E402
     OfflineGenerationCancelled,
     OfflineGenerationProgress,
@@ -625,11 +624,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         dialog.recovering = True
         dialog._recovery_finished(object(), None)
         self.assertFalse(dialog.recovering)
-        self.assertIn("invalid result", dialog.resume_status.text())
-
-        dialog.accepting_audio = True
-        dialog._acceptance_finished(object(), None)
-        self.assertFalse(dialog.accepting_audio)
         self.assertIn("invalid result", dialog.resume_status.text())
 
         dialog.publishing_pack = True
@@ -1595,9 +1589,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 remaining_failed=0,
                 remaining_action_counts=(),
             )
-            acceptance_result = OfflineAcceptanceResult(generation_result, approved=2)
-            acceptance = Mock()
-            acceptance.accept.return_value = acceptance_result
             pack_result = OfflinePackResult(
                 identity="f" * 64,
                 directory=root / "pack",
@@ -1615,7 +1606,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 job_store=store,
                 generator=generator,
                 recovery=recovery,
-                acceptance=acceptance,
                 publisher=publisher,
                 thread_pool=pool,
             )
@@ -1654,10 +1644,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.cancel_button.text(), "Cancel generation")
             self.run_next_task(pool)
 
-            self.assertTrue(dialog.accepting_audio)
-            self.assertEqual(dialog.cancel_button.text(), "Cancel final checks")
-            self.run_next_task(pool)
-
             self.assertTrue(dialog.publishing_pack)
             self.assertEqual(dialog.cancel_button.text(), "Cancel final save")
             self.run_next_task(pool)
@@ -1669,7 +1655,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertFalse(dialog.planning_voices)
             self.assertFalse(dialog.preparing_inputs)
             self.assertFalse(dialog.generating)
-            self.assertFalse(dialog.accepting_audio)
             self.assertFalse(dialog.publishing_pack)
             self.assertIs(dialog.pack_result(), pack_result)
             self.assertTrue(store.path_for(dialog.job().job_id).is_file())
@@ -1849,7 +1834,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn("Partially prepared", dialog.stories.item(0).text())
             dialog.deleteLater()
 
-    def test_each_dialogue_is_recovered_before_final_acceptance(self):
+    def test_each_dialogue_is_recovered_before_pack_publication(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
@@ -1873,9 +1858,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generator = Mock()
             recovery = Mock()
             recovery.generate_and_recover.return_value = recovery_result
-            acceptance_result = OfflineAcceptanceResult(final, approved=2)
-            acceptance = Mock()
-            acceptance.accept.return_value = acceptance_result
             pack_result = OfflinePackResult(
                 identity="f" * 64,
                 directory=root / "pack",
@@ -1894,7 +1876,6 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 job_store=PregenerationJobStore(root / "jobs"),
                 generator=generator,
                 recovery=recovery,
-                acceptance=acceptance,
                 publisher=publisher,
                 thread_pool=pool,
             )
@@ -1907,12 +1888,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.run_next_task(pool)
 
             self.assertFalse(dialog.recovering)
-            self.assertTrue(dialog.accepting_audio)
-            recovery.generate_and_recover.assert_called_once()
-            self.run_next_task(pool)
-
-            self.assertFalse(dialog.accepting_audio)
             self.assertTrue(dialog.publishing_pack)
+            recovery.generate_and_recover.assert_called_once()
             self.run_next_task(pool)
 
             self.assertFalse(dialog.publishing_pack)
@@ -1954,12 +1931,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             content = inspect_story_index(write_story_index(root / "content"))
-            acceptance = Mock()
             dialog = OfflineAudioPreparationDialog(
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=PregenerationJobStore(root / "jobs"),
-                acceptance=acceptance,
             )
             dialog._generation_input = Mock(ready_items=3)
             dialog.recovering = True
@@ -1984,8 +1959,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertEqual(dialog.progress_phase.text(), "Automatic recovery paused")
             self.assertIn("not complete", dialog.resume_status.text())
             self.assertEqual(dialog.progress_bar.value(), 2)
-            self.assertFalse(dialog.accepting_audio)
-            acceptance.accept.assert_not_called()
+            self.assertFalse(dialog.publishing_pack)
             dialog.deleteLater()
 
     def test_missing_content_has_one_plain_recovery_action(self):

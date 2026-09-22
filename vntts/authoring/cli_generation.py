@@ -158,6 +158,9 @@ def _configure_generate_parser(
         ),
     )
     generate.add_argument("--include-prefer-source", action="store_true")
+    generate.add_argument(
+        "--approve-validated-audio", action="store_true", help=argparse.SUPPRESS
+    )
     generate.add_argument("--character", action="append", dest="characters")
     generate.add_argument(
         "--regenerate-existing",
@@ -690,6 +693,7 @@ def _run_bulk_generation(
                     else "bypass"
                 ),
                 cancellation=cancellation,
+                approve_validated_audio=arguments.approve_validated_audio,
             )
         finally:
             shutdown_speech_backend(backend)
