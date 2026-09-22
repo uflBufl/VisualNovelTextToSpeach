@@ -66,9 +66,11 @@ class PersistentAudioCacheTest(unittest.TestCase):
             (root / "three.npy").write_bytes(b"corrupt")
 
             files = sorted(path.stem for path in root.glob("*.npy"))
+            self.assertIsNone(cache.get("three"))
+            (root / "three.npy").write_bytes(b"")
+            self.assertIsNone(cache.get("three"))
 
         self.assertEqual(files, ["three", "two"])
-        self.assertIsNone(cache.get("three"))
 
     def test_keys_cannot_escape_cache_directory(self):
         with TemporaryDirectory() as temporary_directory:

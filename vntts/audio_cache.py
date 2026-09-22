@@ -60,7 +60,7 @@ class PersistentAudioCache:
                 return None
             self._touch_newest(path)
             return audio
-        except OSError, ValueError, TypeError:
+        except OSError, ValueError, TypeError, EOFError:
             return None
 
     def put(self, key: object, audio: object) -> Path | None:
