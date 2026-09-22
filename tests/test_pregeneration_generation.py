@@ -68,6 +68,9 @@ def generation_inputs(root, *, backend="pocket-tts", model=None):
         queue_items=3,
         ready_items=3,
         narrator_fallback_roles=("Hotelier", "Poacher"),
+        story_index_sha256="c" * 64,
+        voice_manifest_sha256="d" * 64,
+        source_audio_semantic_evidence_sha256=None,
     )
     plan = VoicePlan(
         job_id="c" * 24,
