@@ -8,10 +8,13 @@ import json
 import os
 import shutil
 import socket
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
+from types import TracebackType
+from typing import Literal, Protocol, TypeAlias
 from uuid import uuid4
 
 import numpy as np
@@ -42,6 +45,7 @@ from vntts.authoring.advisory_lock import (
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
+    JsonDocument,
     load_generation_state,
     process_is_alive,
     validate_authoring_publication_authority,
@@ -76,6 +80,38 @@ from vntts.source_audio_semantics import (
 from vntts.voices import synthesis_character_for_line
 
 _canonical_sha256 = canonical_document_sha256
+Inventory: TypeAlias = dict[Path, str]
+DecisionRecord: TypeAlias = dict[str, object]
+Producer: TypeAlias = dict[str, str]
+
+
+class _QueueItem(Protocol):
+    queue_id: str
+    speaker: str
+    voice_character: str | None
+
+
+class _Queue(Protocol):
+    items: Sequence[_QueueItem]
+    metadata: Mapping[str, object]
+
+
+class _StoryRecord(Protocol):
+    line_id: str
+    text_sha256: str
+
+
+class _Story(Protocol):
+    metadata: Mapping[str, object]
+    records: Sequence[_StoryRecord]
+    game: str | None
+    language: str | None
+
+
+class _VoiceEntry(Protocol):
+    character: str
+    aliases: Sequence[str]
+    references: Sequence[str]
 
 
 class FinalGamePackError(RuntimeError):
@@ -97,7 +133,7 @@ class FinalGamePackResult:
     source_queue_sha256: str
     source_state_sha256: str
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["directory"] = str(self.directory)
         payload["manifest"] = str(self.manifest)
@@ -113,20 +149,20 @@ class FinalGamePackResult:
 
 
 def publish_final_game_pack(
-    destination,
+    destination: str | Path,
     *,
-    state_path,
-    queue_path,
-    story_index_path,
-    voice_manifest_path,
-    live_sequence_plan_path=None,
-    source_audio_semantic_evidence_path=None,
-    failure_reference_binding_path=None,
-    game_id=None,
-    game_version,
-    producers,
-    created_at=None,
-):
+    state_path: str | Path,
+    queue_path: str | Path,
+    story_index_path: str | Path,
+    voice_manifest_path: str | Path,
+    live_sequence_plan_path: str | Path | None = None,
+    source_audio_semantic_evidence_path: str | Path | None = None,
+    failure_reference_binding_path: str | Path | None = None,
+    game_id: object | None = None,
+    game_version: object,
+    producers: object,
+    created_at: str | None = None,
+) -> FinalGamePackResult:
     """Stage, verify and atomically publish one immutable game-pack directory."""
     destination = _new_destination(destination)
     state_path = Path(state_path).expanduser().resolve()
@@ -165,7 +201,14 @@ def publish_final_game_pack(
     destination.parent.mkdir(parents=True, exist_ok=True)
     with _PublicationLease(destination) as publication_lease:
         with generation_publication_leases(
-            ((state_path.parent, initial_state["queue_sha256"]),),
+            (
+                (
+                    state_path.parent,
+                    _required_text(
+                        initial_state.get("queue_sha256"), "queue SHA-256"
+                    ),
+                ),
+            ),
             process_checker=process_is_alive,
         ) as generation_leases:
             generation_lease = generation_leases[0]
@@ -212,7 +255,10 @@ def publish_final_game_pack(
                         )
                     except FailureReferenceBindingError as error:
                         raise FinalGamePackError(str(error)) from error
-                    authority = failure_reference_document["source_authority"]
+                    authority = _required_mapping(
+                        failure_reference_document.get("source_authority"),
+                        "failure-reference source authority",
+                    )
                     if (
                         authority["queue_sha256"] != queue_sha256
                         or authority["voice_manifest_sha256"] != voice_sha256
@@ -232,7 +278,10 @@ def publish_final_game_pack(
                         inventory,
                         "failure-reference binding",
                     )
-                    for group in failure_reference_document["groups"]:
+                    for group in _mapping_sequence(
+                        failure_reference_document.get("groups"),
+                        "failure-reference groups",
+                    ):
                         relative = _safe_relative(
                             group["reference"], "Selected reference"
                         )
@@ -459,9 +508,12 @@ def publish_final_game_pack(
                                     None
                                     if not reviewed_waveform_records
                                     else {
-                                        "batch_id": state[
-                                            "reviewed_waveform_publication"
-                                        ]["batch_id"],
+                                        "batch_id": _required_mapping(
+                                            state.get(
+                                                "reviewed_waveform_publication"
+                                            ),
+                                            "reviewed-waveform publication",
+                                        ).get("batch_id"),
                                         "approved_count": len(
                                             reviewed_waveform_records
                                         ),
@@ -519,14 +571,14 @@ def publish_final_game_pack(
 
 
 class _PublicationLease:
-    def __init__(self, destination):
+    def __init__(self, destination: Path) -> None:
         self.destination = destination
         self.path = destination.parent / f".{destination.name}.publication.json"
         self.guard_path = self.path.with_suffix(".guard")
         self.owner = uuid4().hex
         self.committed = False
 
-    def __enter__(self):
+    def __enter__(self) -> _PublicationLease:
         payload = {
             "schema": "vntts.game-pack-publication-lease",
             "schema_version": 1,
@@ -577,7 +629,12 @@ class _PublicationLease:
             ) from error
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
         ownership_lost = False
         try:
             with exclusive_advisory_lock(self.guard_path, blocking=True):
@@ -598,7 +655,7 @@ class _PublicationLease:
             )
         return False
 
-    def assert_owned(self):
+    def assert_owned(self) -> None:
         try:
             document = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
@@ -610,10 +667,10 @@ class _PublicationLease:
                 "Final game-pack publication lease ownership was lost"
             )
 
-    def mark_committed(self):
+    def mark_committed(self) -> None:
         self.committed = True
 
-    def _existing_is_live(self, document):
+    def _existing_is_live(self, document: object) -> bool:
         if (
             not isinstance(document, dict)
             or document.get("schema") != "vntts.game-pack-publication-lease"
@@ -631,9 +688,9 @@ class _PublicationLease:
         expected_start = document.get("process_started_at")
         if not expected_start:
             return True
-        return process_started_at(pid) == expected_start
+        return bool(process_started_at(pid) == expected_start)
 
-    def _archive_stale(self, expected_payload):
+    def _archive_stale(self, expected_payload: bytes) -> None:
         try:
             payload = self.path.read_bytes()
         except OSError as error:
@@ -657,13 +714,14 @@ class _PublicationLease:
         os.replace(self.path, archive)
 
 
-def _require_final_review_state(state, queue):
+def _require_final_review_state(state: JsonDocument, queue: _Queue) -> None:
     if state.get("active") is not None:
         raise FinalGamePackError(
             "Generation state has an active or interrupted attempt; resume it first"
         )
     queue_ids = {item.queue_id for item in queue.items}
-    state_ids = set(state["items"])
+    items = _state_items(state)
+    state_ids = set(items)
     if state_ids != queue_ids:
         missing = queue_ids.difference(state_ids)
         extra = state_ids.difference(queue_ids)
@@ -676,7 +734,7 @@ def _require_final_review_state(state, queue):
         )
     pending = []
     failed = []
-    for queue_id, item in state["items"].items():
+    for queue_id, item in items.items():
         if item.get("status") == "failed":
             failed.append(queue_id)
         elif item.get("review_status") == "pending_review":
@@ -691,40 +749,43 @@ def _require_final_review_state(state, queue):
         )
 
 
-def _review_counts(state):
+def _review_counts(state: JsonDocument) -> dict[str, int]:
+    items = _state_items(state)
     return {
         "approved_count": sum(
-            item.get("status") == "approved" for item in state["items"].values()
+            item.get("status") == "approved" for item in items.values()
         ),
         "rejected_count": sum(
-            item.get("review_status") == "rejected" for item in state["items"].values()
+            item.get("review_status") == "rejected" for item in items.values()
         ),
         "live_fallback_count": sum(
             isinstance(item.get("live_fallback"), dict)
-            for item in state["items"].values()
+            for item in items.values()
         ),
         "omitted_count": sum(
             isinstance(item.get("audio_event_omission"), dict)
-            for item in state["items"].values()
+            for item in items.values()
         ),
-        "state_item_count": len(state["items"]),
+        "state_item_count": len(items),
     }
 
 
-def _reviewed_waveform_supersedes_legacy_authority(state):
+def _reviewed_waveform_supersedes_legacy_authority(state: JsonDocument) -> bool:
     migrated = reviewed_waveform_publication_queue_ids(state)
     approved = {
         queue_id
-        for queue_id, item in state["items"].items()
+        for queue_id, item in _state_items(state).items()
         if item.get("status") == "approved" and item.get("review_status") == "approved"
     }
     return bool(approved) and migrated == approved
 
 
-def _decision_records(state, queue, field, label):
+def _decision_records(
+    state: JsonDocument, queue: _Queue, field: str, label: str
+) -> list[DecisionRecord]:
     queue_ids = {item.queue_id for item in queue.items}
     records = []
-    for queue_id, item in state["items"].items():
+    for queue_id, item in _state_items(state).items():
         decision = item.get(field)
         if not isinstance(decision, dict):
             continue
@@ -739,7 +800,9 @@ def _decision_records(state, queue, field, label):
     return sorted(records, key=lambda value: (value["line_id"], value["text_sha256"]))
 
 
-def _reviewed_waveform_publication_records(state, queue):
+def _reviewed_waveform_publication_records(
+    state: JsonDocument, queue: _Queue
+) -> list[DecisionRecord]:
     publication = state.get("reviewed_waveform_publication")
     if not isinstance(publication, dict):
         return []
@@ -767,7 +830,9 @@ def _reviewed_waveform_publication_records(state, queue):
     return sorted(records, key=lambda value: (value["line_id"], value["text_sha256"]))
 
 
-def _copy_control(source, destination, inventory, label):
+def _copy_control(
+    source: str | Path, destination: str | Path, inventory: Inventory, label: str
+) -> str:
     source = Path(source).expanduser().resolve()
     destination = Path(destination)
     digest = _capture_control(source, inventory, label)
@@ -782,12 +847,12 @@ def _copy_control(source, destination, inventory, label):
     return digest
 
 
-def _capture_control(source, inventory, label):
+def _capture_control(source: str | Path, inventory: Inventory, label: str) -> str:
     source = Path(source).expanduser().resolve()
     if not source.is_file():
         raise FinalGamePackError(f"{label.capitalize()} does not exist: {source}")
     try:
-        digest = sha256_file(source)
+        digest = str(sha256_file(source))
     except OSError as error:
         raise FinalGamePackError(
             f"Unable to checksum {label} {source}: {error}"
@@ -799,7 +864,7 @@ def _capture_control(source, inventory, label):
     return digest
 
 
-def _assert_controls_unchanged(inventory):
+def _assert_controls_unchanged(inventory: Inventory) -> None:
     for source, expected in inventory.items():
         try:
             actual = sha256_file(source)
@@ -814,16 +879,16 @@ def _assert_controls_unchanged(inventory):
 
 
 def _copy_portable_voice_manifest_and_references(
-    source_manifest,
-    destination_manifest,
-    document,
-    entries,
-    inventory,
-):
+    source_manifest: Path,
+    destination_manifest: Path,
+    document: JsonDocument,
+    entries: Sequence[_VoiceEntry],
+    inventory: Inventory,
+) -> DecisionRecord | None:
     source_root = source_manifest.parent.resolve()
     destination_root = destination_manifest.parent
-    copied = {}
-    projections = []
+    copied: dict[Path, str] = {}
+    projections: list[DecisionRecord] = []
     rewritten = copy.deepcopy(document)
     raw_voices = rewritten.get("voices")
     if not isinstance(raw_voices, list) or len(raw_voices) != len(entries):
@@ -912,7 +977,7 @@ def _copy_portable_voice_manifest_and_references(
     }
 
 
-def _contained_source(root, relative, label):
+def _contained_source(root: str | Path, relative: PurePosixPath, label: str) -> Path:
     root = Path(root).resolve()
     candidate = (root / Path(*relative.parts)).resolve()
     try:
@@ -926,7 +991,7 @@ def _contained_source(root, relative, label):
     return candidate
 
 
-def _safe_relative(value, label):
+def _safe_relative(value: object, label: str) -> PurePosixPath:
     if not isinstance(value, str) or not value.strip() or "\\" in value:
         raise FinalGamePackError(f"{label} must be a safe POSIX-relative path")
     relative = PurePosixPath(value.strip())
@@ -937,14 +1002,15 @@ def _safe_relative(value, label):
     return relative
 
 
-def _load_story(path):
+def _load_story(path: Path) -> _Story:
     try:
-        return load_story_index_document(path)
+        story: _Story = load_story_index_document(path)
+        return story
     except StoryIndexError as error:
         raise FinalGamePackError(str(error)) from error
 
 
-def _load_voices(path):
+def _load_voices(path: Path) -> tuple[JsonDocument, Sequence[_VoiceEntry]]:
     try:
         document, entries = load_voice_manifest(path, allow_legacy=False)
     except VoiceManifestError as error:
@@ -953,18 +1019,22 @@ def _load_voices(path):
 
 
 def _validate_source_bindings(
-    queue_metadata,
+    queue_metadata: Mapping[str, object],
     *,
-    queue_path,
-    story_index_path,
-    voice_manifest_path,
-    story_sha256,
-    voice_manifest_sha256,
-    reviewed_waveform_publication=None,
-):
+    queue_path: Path,
+    story_index_path: Path,
+    voice_manifest_path: Path,
+    story_sha256: str,
+    voice_manifest_sha256: str,
+    reviewed_waveform_publication: object | None = None,
+) -> bool:
     def declared_binding(
-        path_field, hash_field, label, migration_hash_field, selected_sha256
-    ):
+        path_field: str,
+        hash_field: str,
+        label: str,
+        migration_hash_field: str,
+        selected_sha256: str,
+    ) -> tuple[Path | None, str]:
         declared_path = queue_metadata.get(path_field)
         declared_hash = queue_metadata.get(hash_field)
         if not isinstance(declared_path, str) or not declared_path.strip():
@@ -1027,7 +1097,9 @@ def _validate_source_bindings(
     )
 
 
-def _load_stable_state(state_path, queue, queue_sha256):
+def _load_stable_state(
+    state_path: Path, queue: _Queue, queue_sha256: str
+) -> tuple[JsonDocument, str]:
     try:
         payload = state_path.read_bytes()
         state = json.loads(payload)
@@ -1046,7 +1118,7 @@ def _load_stable_state(state_path, queue, queue_sha256):
     return state, hashlib.sha256(payload).hexdigest()
 
 
-def _validate_story_identity(state, story):
+def _validate_story_identity(state: JsonDocument, story: _Story) -> None:
     for field in ("game", "language"):
         state_value = state.get(field)
         story_value = getattr(story, field)
@@ -1061,34 +1133,34 @@ def _validate_story_identity(state, story):
 
 
 def _verify_voice_control_provenance(
-    state,
-    queue,
-    voice_manifest_path,
-    voice_document,
-    voice_entries,
+    state: JsonDocument,
+    queue: _Queue,
+    voice_manifest_path: Path,
+    voice_document: JsonDocument,
+    voice_entries: Sequence[_VoiceEntry],
     *,
-    failure_reference_binding_path=None,
-    failure_reference_document=None,
-):
+    failure_reference_binding_path: Path | None = None,
+    failure_reference_document: JsonDocument | None = None,
+) -> DecisionRecord | None:
     migrated = reviewed_waveform_publication_queue_ids(state)
     registry = state.get("synthesis_controls")
     if not isinstance(registry, dict):
         if any(
             result.get("status") == "approved" and queue_id not in migrated
-            for queue_id, result in state["items"].items()
+            for queue_id, result in _state_items(state).items()
         ):
             raise FinalGamePackError(
                 "Generation state lacks per-control synthesis provenance; regenerate or migrate it first"
             )
         registry = {}
-    required_paths = {
+    required_paths: dict[Path, tuple[str, Callable[[str], bool]]] = {
         voice_manifest_path.resolve(): (
             _source_sha256(voice_manifest_path, "voice manifest"),
             lambda role: role == "voice_manifest",
         )
     }
     source_root = voice_manifest_path.parent.resolve()
-    narrator_reference_bindings = {}
+    narrator_reference_bindings: dict[str, set[tuple[Path, str]]] = {}
     for entry in voice_entries:
         names = (entry.character, *entry.aliases)
         for configured in entry.references:
@@ -1118,7 +1190,7 @@ def _verify_voice_control_provenance(
         else None
     )
     failure_reference_overrides = {}
-    failure_reference_paths = {}
+    failure_reference_paths: dict[Path, tuple[str, Callable[[str], bool]]] = {}
     combined_overrides = dict(queue_voice_overrides)
     combined_overrides_digest = queue_voice_overrides_digest
     if failure_reference_document is not None:
@@ -1127,7 +1199,10 @@ def _verify_voice_control_provenance(
                 "Failure-reference binding document has no source path"
             )
         failure_reference_overrides = dict(
-            failure_reference_document["queue_voice_overrides"]
+            _text_mapping(
+                failure_reference_document.get("queue_voice_overrides"),
+                "failure-reference voice overrides",
+            )
         )
         combined_overrides.update(failure_reference_overrides)
         combined_overrides_digest = queue_voice_overrides_sha256(combined_overrides)
@@ -1139,7 +1214,10 @@ def _verify_voice_control_provenance(
             lambda role: role == "failure_reference_binding",
         )
         binding_root = failure_reference_binding_path.parent.resolve()
-        for group in failure_reference_document["groups"]:
+        for group in _mapping_sequence(
+            failure_reference_document.get("groups"),
+            "failure-reference groups",
+        ):
             relative = _safe_relative(group["reference"], "Selected reference")
             source = _contained_source(binding_root, relative, "selected reference")
             digest = _source_sha256(source, "selected reference")
@@ -1170,7 +1248,7 @@ def _verify_voice_control_provenance(
             "character": narrator_character,
             "reference_sha256s": configured_digests,
         }
-    for queue_id, result in state["items"].items():
+    for queue_id, result in _state_items(state).items():
         if result.get("status") in {"live_fallback", "omitted"} or (
             result.get("status") == "generated"
             and result.get("review_status") == "rejected"
@@ -1196,7 +1274,9 @@ def _verify_voice_control_provenance(
         }
         configuration = result.get("synthesis_configuration")
         if configuration is not None:
-            provenance_document.update(configuration)
+            provenance_document.update(
+                _required_mapping(configuration, "synthesis configuration")
+            )
         calculated = canonical_document_sha256(provenance_document)
         if calculated != provenance:
             raise FinalGamePackError(
@@ -1239,8 +1319,11 @@ def _verify_voice_control_provenance(
             for control in controls
             if str(control.get("role", "")).startswith("narrator_selection:")
         ]
-        effective_character = result.get("voice_character") or (
-            synthesis_character_for_line(item.speaker, item.voice_character)
+        synthesis_character: Callable[[str, str | None], str] = (
+            synthesis_character_for_line
+        )
+        effective_character = result.get("voice_character") or synthesis_character(
+            item.speaker, item.voice_character
         )
         expected_override = combined_overrides.get(queue_id)
         binding = result.get("source_reference_binding")
@@ -1314,20 +1397,25 @@ def _verify_voice_control_provenance(
     return {"character": character, "reference_sha256": digest}
 
 
-def _validate_story_records(records, story, label):
+def _validate_story_records(
+    records: Sequence[DecisionRecord], story: _Story, label: str
+) -> None:
     lines = {record.line_id: record for record in story.records}
     for record in records:
-        line = lines.get(record["line_id"])
-        if line is None or line.text_sha256 != record["text_sha256"]:
+        line_id = record.get("line_id")
+        if not isinstance(line_id, str):
+            raise FinalGamePackError(f"{label} has no valid story line id")
+        line = lines.get(line_id)
+        if line is None or line.text_sha256 != record.get("text_sha256"):
             raise FinalGamePackError(
                 f"{label} {record['line_id']!r} does not match the story index"
             )
 
 
-def _validate_producers(producers):
+def _validate_producers(producers: object) -> list[Producer]:
     if not isinstance(producers, (list, tuple)) or not producers:
         raise FinalGamePackError("At least one producer name/version is required")
-    validated = []
+    validated: list[Producer] = []
     for index, producer in enumerate(producers):
         if not isinstance(producer, dict) or set(producer) != {"name", "version"}:
             raise FinalGamePackError(
@@ -1344,16 +1432,16 @@ def _validate_producers(producers):
     return validated
 
 
-def _source_sha256(path, label):
+def _source_sha256(path: str | Path, label: str) -> str:
     try:
-        return sha256_file(path)
+        return str(sha256_file(path))
     except OSError as error:
         raise FinalGamePackError(
             f"Unable to checksum {label} {path}: {error}"
         ) from error
 
 
-def _new_destination(value):
+def _new_destination(value: str | Path) -> Path:
     try:
         candidate = Path(value).expanduser()
     except TypeError as error:
@@ -1367,15 +1455,45 @@ def _new_destination(value):
     return candidate.parent.resolve() / candidate.name
 
 
-def _path_exists(path):
+def _path_exists(path: str | Path) -> bool:
     return os.path.lexists(path)
 
 
-def _required_text(value, label):
+def _required_mapping(value: object, label: str) -> dict[str, object]:
+    if not isinstance(value, Mapping) or not all(
+        isinstance(key, str) for key in value
+    ):
+        raise FinalGamePackError(f"{label.capitalize()} is invalid")
+    return {str(key): item for key, item in value.items()}
+
+
+def _mapping_sequence(value: object, label: str) -> tuple[dict[str, object], ...]:
+    if not isinstance(value, list):
+        raise FinalGamePackError(f"{label.capitalize()} are invalid")
+    return tuple(_required_mapping(item, label) for item in value)
+
+
+def _text_mapping(value: object, label: str) -> dict[str, str]:
+    document = _required_mapping(value, label)
+    if not all(isinstance(item, str) for item in document.values()):
+        raise FinalGamePackError(f"{label.capitalize()} is invalid")
+    return {key: str(item) for key, item in document.items()}
+
+
+def _state_items(state: JsonDocument) -> dict[str, dict[str, object]]:
+    return {
+        queue_id: _required_mapping(item, "generation state item")
+        for queue_id, item in _required_mapping(
+            state.get("items"), "generation state items"
+        ).items()
+    }
+
+
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise FinalGamePackError(f"{label.capitalize()} must be non-empty text")
     return value.strip()
 
 
-def _now():
+def _now() -> str:
     return datetime.now(timezone.utc).isoformat()

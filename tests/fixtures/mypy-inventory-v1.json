@@ -11,7 +11,6 @@
     "vntts/authoring/config_rebase.py": 15,
     "vntts/authoring/delivery.py": 6,
     "vntts/authoring/experimental_composite_voice.py": 10,
-    "vntts/authoring/game_pack.py": 34,
     "vntts/authoring/legacy_reason_review.py": 9,
     "vntts/authoring/managed_model_installation.py": 5,
     "vntts/authoring/missing_voice_reuse.py": 25,
