@@ -463,6 +463,38 @@ def validate_audio_event_projection_fallback_workspace(
     batch = workspace.get("audio_event_projection_fallback")
     if batch is None:
         return
+    batch = _validated_projection_batch(batch)
+    root = Path(directory)
+    snapshots = _projection_authority_snapshots(root, batch)
+    base_state = load_workspace_json(
+        snapshots["base_state_path"], "audio-event projection base state"
+    )
+    base_state_items = base_state.get("items")
+    queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
+        root,
+        workspace,
+        "audio-event projection workspace",
+        error_type=AuthoringWorkbenchError,
+    )
+    if sha256_file(root / "queue.jsonl") != batch["queue_sha256"]:
+        raise AuthoringWorkbenchError("Audio-event projection queue changed")
+    state_items = _generation_state_items(state)
+    queue_by_id = {item.queue_id: item for item in queue.items}
+    items = batch.get("items")
+    if not isinstance(items, list) or not items:
+        raise AuthoringWorkbenchError("Audio-event projection ledger is empty")
+    observed = [
+        _validate_projection_ledger(
+            ledger, batch, queue_by_id, base_state_items, state_items
+        )
+        for ledger in items
+    ]
+    if observed != sorted(set(observed)):
+        raise AuthoringWorkbenchError("Audio-event projection items are not canonical")
+
+
+def _validated_projection_batch(value: object) -> dict[str, object]:
+    batch = value
     fields = {
         "schema",
         "schema_version",
@@ -505,7 +537,12 @@ def validate_audio_event_projection_fallback_workspace(
         require_workspace_sha256(
             batch.get(field), f"Audio-event projection fallback {field}"
         )
-    root = Path(directory)
+    return batch
+
+
+def _projection_authority_snapshots(
+    root: Path, batch: dict[str, object]
+) -> dict[str, Path]:
     snapshots = {}
     for path_field, hash_field, label in (
         ("base_workspace_path", "base_workspace_sha256", "base workspace"),
@@ -522,68 +559,57 @@ def validate_audio_event_projection_fallback_workspace(
                 f"Audio-event projection {label} authority changed"
             )
         snapshots[path_field] = source
-    base_state = load_workspace_json(
-        snapshots["base_state_path"], "audio-event projection base state"
+    return snapshots
+
+
+def _validate_projection_ledger(
+    ledger: object,
+    batch: dict[str, object],
+    queue_by_id: Mapping[str, object],
+    base_state_items: object,
+    state_items: Mapping[str, dict[str, object]],
+) -> str:
+    ledger_fields = {
+        "queue_id",
+        "line_id",
+        "text_sha256",
+        "speaker",
+        "plan_sha256",
+        "spoken_text",
+        "spoken_text_sha256",
+        "base_result_sha256",
+    }
+    if not isinstance(ledger, dict) or set(ledger) != ledger_fields:
+        raise AuthoringWorkbenchError("Audio-event projection item is malformed")
+    queue_id = ledger.get("queue_id")
+    queue_item = queue_by_id.get(queue_id) if isinstance(queue_id, str) else None
+    base_result = (
+        base_state_items.get(queue_id)
+        if isinstance(base_state_items, dict) and isinstance(queue_id, str)
+        else None
     )
-    base_state_items = base_state.get("items")
-    queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
-        root,
-        workspace,
-        "audio-event projection workspace",
-        error_type=AuthoringWorkbenchError,
-    )
-    if sha256_file(root / "queue.jsonl") != batch["queue_sha256"]:
-        raise AuthoringWorkbenchError("Audio-event projection queue changed")
-    state_items = _generation_state_items(state)
-    queue_by_id = {item.queue_id: item for item in queue.items}
-    items = batch.get("items")
-    if not isinstance(items, list) or not items:
-        raise AuthoringWorkbenchError("Audio-event projection ledger is empty")
-    observed: list[str] = []
-    for ledger in items:
-        ledger_fields = {
-            "queue_id",
-            "line_id",
-            "text_sha256",
-            "speaker",
-            "plan_sha256",
-            "spoken_text",
-            "spoken_text_sha256",
-            "base_result_sha256",
-        }
-        if not isinstance(ledger, dict) or set(ledger) != ledger_fields:
-            raise AuthoringWorkbenchError("Audio-event projection item is malformed")
-        queue_id = ledger.get("queue_id")
-        queue_item = queue_by_id.get(queue_id) if isinstance(queue_id, str) else None
-        base_result = (
-            base_state_items.get(queue_id)
-            if isinstance(base_state_items, dict) and isinstance(queue_id, str)
-            else None
+    result = state_items.get(queue_id) if isinstance(queue_id, str) else None
+    decision = result.get("live_fallback") if isinstance(result, dict) else None
+    evidence = decision.get("evidence") if isinstance(decision, dict) else None
+    if (
+        not isinstance(queue_id, str)
+        or queue_item is None
+        or not isinstance(base_result, dict)
+        or canonical_document_sha256(base_result) != ledger["base_result_sha256"]
+        or not isinstance(decision, dict)
+        or not isinstance(evidence, dict)
+        or evidence.get("base_result") != base_result
+        or evidence.get("batch_id") != batch["batch_id"]
+        or evidence.get("plan_sha256") != ledger["plan_sha256"]
+        or evidence.get("spoken_text") != ledger["spoken_text"]
+        or evidence.get("spoken_text_sha256") != ledger["spoken_text_sha256"]
+        or decision.get("previous_result_sha256") != ledger["base_result_sha256"]
+        or decision.get("requested_voice_character") != SYNTHESIS_CHARACTER
+    ):
+        raise AuthoringWorkbenchError(
+            f"Audio-event projection result changed for {queue_id!r}"
         )
-        result = state_items.get(queue_id) if isinstance(queue_id, str) else None
-        decision = result.get("live_fallback") if isinstance(result, dict) else None
-        evidence = decision.get("evidence") if isinstance(decision, dict) else None
-        if (
-            not isinstance(queue_id, str)
-            or queue_item is None
-            or not isinstance(base_result, dict)
-            or canonical_document_sha256(base_result) != ledger["base_result_sha256"]
-            or not isinstance(decision, dict)
-            or not isinstance(evidence, dict)
-            or evidence.get("base_result") != base_result
-            or evidence.get("batch_id") != batch["batch_id"]
-            or evidence.get("plan_sha256") != ledger["plan_sha256"]
-            or evidence.get("spoken_text") != ledger["spoken_text"]
-            or evidence.get("spoken_text_sha256") != ledger["spoken_text_sha256"]
-            or decision.get("previous_result_sha256") != ledger["base_result_sha256"]
-            or decision.get("requested_voice_character") != SYNTHESIS_CHARACTER
-        ):
-            raise AuthoringWorkbenchError(
-                f"Audio-event projection result changed for {queue_id!r}"
-            )
-        observed.append(queue_id)
-    if observed != sorted(set(observed)):
-        raise AuthoringWorkbenchError("Audio-event projection items are not canonical")
+    return queue_id
 
 
 __all__ = [
