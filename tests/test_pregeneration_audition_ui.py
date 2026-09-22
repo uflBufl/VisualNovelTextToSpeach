@@ -187,11 +187,13 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, group = with_second_candidate(plan, group)
             decisions = VoiceDecisionStore(root / "decisions.json")
             preview_service = Mock()
-            preview_service.generate.side_effect = (
-                lambda _plan, _group, source, **_options: Mock(
-                    path=root / f"{source.removeprefix('character:')}.wav"
-                )
-            )
+
+            def generated_preview(_plan, _group, source, **_options):
+                path = root / f"{source.removeprefix('character:')}.wav"
+                path.write_bytes(clean_wav_bytes())
+                return Mock(path=path)
+
+            preview_service.generate.side_effect = generated_preview
             player = Mock()
             pool = ManualThreadPool()
             completed = Mock()
@@ -219,7 +221,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             panel.a_play.click()
-            self.assertEqual(player.play.call_count, 4)
+            self.assertEqual(player.play_bytes.call_count, 4)
             panel.a_use.click()
             self.assertIn("Saving", panel.status.text())
             pool.tasks.pop().run()
@@ -308,7 +310,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             service.reference_audio.side_effect = (
                 VoiceAuditionPreviewService().reference_audio
             )
-            service.generate.return_value = Mock(path=root / "generated.wav")
+            generated = root / "generated.wav"
+            generated.write_bytes(clean_wav_bytes())
+            service.generate.return_value = Mock(path=generated)
             player = Mock()
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
@@ -333,7 +337,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 self.assertTrue(panel.a_original.isEnabled())
                 panel.a_original.click()
                 self.assertEqual(
-                    Path(player.setSource.call_args.args[0].toLocalFile()),
+                    player.play_bytes.call_args.args[0], reference.read_bytes()
+                )
+                self.assertEqual(
+                    Path(player.play_bytes.call_args.kwargs["source"]).resolve(),
                     reference.resolve(),
                 )
                 self.assertEqual(service.generate.call_count, calls_before)
@@ -341,8 +348,11 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertTrue(panel.a_use.isEnabled())
             panel.a_play.click()
             self.assertEqual(
-                Path(player.setSource.call_args.args[0].toLocalFile()),
-                root / "generated.wav",
+                player.play_bytes.call_args.args[0], generated.read_bytes()
+            )
+            self.assertEqual(
+                Path(player.play_bytes.call_args.kwargs["source"]).resolve(),
+                generated.resolve(),
             )
 
             # Narrator selection stores "default", but its original uses its actual source.
@@ -351,7 +361,10 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.application.processEvents()
             panel.a_original.click()
             self.assertEqual(
-                Path(player.setSource.call_args.args[0].toLocalFile()),
+                player.play_bytes.call_args.args[0], reference_b.read_bytes()
+            )
+            self.assertEqual(
+                Path(player.play_bytes.call_args.kwargs["source"]).resolve(),
                 reference_b.resolve(),
             )
             self.assertEqual(
@@ -360,13 +373,13 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             reference_b.write_bytes(b"changed")
             player.reset_mock()
             panel.a_original.click()
-            player.play.assert_not_called()
+            player.play_bytes.assert_not_called()
             self.assertIn("changed", panel.status.text())
             self.assertEqual(service.generate.call_count, 2)
             panel.cancel()
             player.reset_mock()
             panel._play_original()
-            player.play.assert_not_called()
+            player.play_bytes.assert_not_called()
 
     def test_rejecting_all_candidates_does_not_save_a_rejected_voice(self):
         with TemporaryDirectory() as directory:

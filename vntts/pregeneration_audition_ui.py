@@ -7,7 +7,7 @@ from pathlib import Path
 from traceback import format_exception
 from typing import Protocol, TypeAlias
 
-from PySide6.QtCore import Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -71,9 +71,7 @@ class _VoiceAuditionPreviewer(Protocol):
 class _PreviewPlayer(Protocol):
     def stop(self) -> None: ...
 
-    def setSource(self, source: QUrl) -> None: ...
-
-    def play(self) -> None: ...
+    def play_bytes(self, payload: bytes, source: str) -> object | None: ...
 
 
 class _EngineModelLabel(Protocol):
@@ -597,16 +595,22 @@ class VoiceAuditionPanel(QGroupBox):
         self._previews[self._preview_key(candidate)] = preview
         self._displayed = ((candidate, preview, choice),)
         self._set_decision_actions(True)
-        self._play_preview(preview)
         self.status.setText(
             "Playing the generated preview. Accept this voice only if the sample is suitable."
         )
+        if not self._play_preview(preview):
+            self._displayed = ()
+            self.a_use.setEnabled(False)
 
-    def _play_preview(self, preview: _PreviewAudio) -> None:
+    def _play_preview(self, preview: _PreviewAudio) -> bool:
+        try:
+            payload = preview.path.read_bytes()
+        except OSError as error:
+            self.status.setText(f"Unable to play generated preview: {error}")
+            return False
         player = self._ensure_player()
         player.stop()
-        player.setSource(QUrl.fromLocalFile(str(preview.path)))
-        player.play()
+        return player.play_bytes(payload, source=str(preview.path)) is not None
 
     def _preview_key(self, candidate: VoiceCandidate) -> PreviewKey:
         return candidate.source_id, self._sample_text
@@ -628,14 +632,19 @@ class VoiceAuditionPanel(QGroupBox):
         if reference is None:
             self.status.setText("This voice has no recorded reference.")
             return
+        try:
+            payload = reference.read_bytes()
+        except OSError as error:
+            self.status.setText(f"Unable to play original reference: {error}")
+            return
         player = self._ensure_player()
-        player.setSource(QUrl.fromLocalFile(str(reference)))
-        player.play()
+        self.status.setText(
+            f"Starting the original reference for {candidate.source_character}..."
+        )
+        if player.play_bytes(payload, source=str(reference)) is None:
+            return
         self._displayed = ((candidate, None, self._current_entry()[1]),)
         self.a_use.setEnabled(True)
-        self.status.setText(
-            f"Playing the original reference for {candidate.source_character}."
-        )
 
     def _record_choice(self, source_id: str, status_message: str | None = None) -> None:
         if self._group_index >= len(self._groups) or self.decision_runner.active:
@@ -751,7 +760,13 @@ class VoiceAuditionPanel(QGroupBox):
 
     def _ensure_player(self) -> _PreviewPlayer:
         if self.player is None:
-            self.player = QMediaPlayer(self)
+            player = QMediaPlayer(self)
+            player.errorOccurred.connect(
+                lambda _code, message: self.status.setText(
+                    f"Unable to play voice sample: {message}"
+                )
+            )
+            self.player = player
         return self.player
 
     def _stop_player(self) -> None:
