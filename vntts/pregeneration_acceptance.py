@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from threading import Event
 from time import perf_counter, process_time
 
 from vntts.authoring.bulk_generation import (
@@ -18,6 +19,7 @@ from vntts.pregeneration_generation import (
     OfflineGenerationWorker,
     validate_offline_generation_result,
 )
+from vntts.pregeneration_queue import PregenerationInput
 from vntts.support import record_background_operation
 
 
@@ -32,10 +34,15 @@ class OfflineAcceptanceResult:
 
 
 class OfflineAcceptanceWorker:
-    def __init__(self, generator=None):
+    def __init__(self, generator: object | None = None) -> None:
         self.generator = generator or OfflineGenerationWorker()
 
-    def accept(self, generation_input, generation_result, cancel_event=None):
+    def accept(
+        self,
+        generation_input: PregenerationInput,
+        generation_result: OfflineGenerationResult,
+        cancel_event: Event | None = None,
+    ) -> OfflineAcceptanceResult:
         phase_started, cpu_started = perf_counter(), process_time()
         validate_offline_generation_result(
             generation_input,
@@ -58,11 +65,15 @@ class OfflineAcceptanceWorker:
                 f"Unable to inspect generated audio: {error}"
             ) from error
         _record_acceptance_phase("state-load", phase_started, cpu_started)
+        items = state.get("items")
+        if not isinstance(items, dict):
+            raise OfflineAcceptanceError("Offline generation state is invalid")
         pending = tuple(
             sorted(
                 queue_id
-                for queue_id, item in state.get("items", {}).items()
-                if isinstance(item, dict)
+                for queue_id, item in items.items()
+                if isinstance(queue_id, str)
+                and isinstance(item, dict)
                 and (item.get("status"), item.get("review_status"))
                 == ("generated", "pending_review")
             )
@@ -114,12 +125,14 @@ class OfflineAcceptanceWorker:
         )
 
 
-def _raise_if_cancelled(cancel_event):
+def _raise_if_cancelled(cancel_event: Event | None) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise OfflineGenerationCancelled("Automatic audio acceptance was cancelled")
 
 
-def _record_acceptance_phase(name, started, cpu_started, **details):
+def _record_acceptance_phase(
+    name: str, started: float, cpu_started: float, **details: object
+) -> None:
     record_background_operation(
         f"pregeneration-acceptance-{name}",
         (perf_counter() - started) * 1000,

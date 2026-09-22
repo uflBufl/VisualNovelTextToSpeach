@@ -5,7 +5,10 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import Mock, patch
 
-from vntts.pregeneration_acceptance import OfflineAcceptanceWorker
+from vntts.pregeneration_acceptance import (
+    OfflineAcceptanceError,
+    OfflineAcceptanceWorker,
+)
 from vntts.pregeneration_generation import (
     OfflineGenerationCancelled,
     OfflineGenerationResult,
@@ -140,6 +143,18 @@ class OfflineAcceptanceWorkerTest(unittest.TestCase):
                     )
 
         snapshot.assert_not_called()
+
+    def test_rejects_generation_state_without_an_item_mapping(self):
+        with TemporaryDirectory() as temporary_directory:
+            generation_input, generation = inputs(Path(temporary_directory))
+            with (
+                patch(
+                    "vntts.pregeneration_acceptance.load_generation_state",
+                    return_value={"items": []},
+                ),
+                self.assertRaisesRegex(OfflineAcceptanceError, "state is invalid"),
+            ):
+                OfflineAcceptanceWorker().accept(generation_input, generation)
 
 
 if __name__ == "__main__":
