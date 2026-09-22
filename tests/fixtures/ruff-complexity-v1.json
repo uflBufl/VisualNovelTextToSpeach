@@ -81,42 +81,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "_load_bound_review_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "_normalize_sample_assessments",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "_plan_identity_and_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "_validated_decision_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "build_cohort_review_decision",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "build_cohort_review_plan",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/delivery.py",
       "scope": "annotate_delivery",
       "count": 1
@@ -191,30 +155,6 @@
       "code": "C901",
       "path": "vntts/authoring/failure_repair.py",
       "scope": "compress_single_sentence_boundary_silence",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/game_pack.py",
-      "scope": "_copy_portable_voice_manifest_and_references",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/game_pack.py",
-      "scope": "_validate_source_bindings",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/game_pack.py",
-      "scope": "_verify_voice_control_provenance",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/game_pack.py",
-      "scope": "publish_final_game_pack",
       "count": 1
     },
     {
@@ -1383,36 +1323,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "_load_bound_review_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "_plan_identity_and_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "_validated_decision_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "build_cohort_review_decision",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "build_cohort_review_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/experimental_composite_voice.py",
       "scope": "_load_composite_authority",
       "count": 1
@@ -1463,24 +1373,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/failure_repair.py",
       "scope": "compress_single_sentence_boundary_silence",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/game_pack.py",
-      "scope": "_copy_portable_voice_manifest_and_references",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/game_pack.py",
-      "scope": "_verify_voice_control_provenance",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/game_pack.py",
-      "scope": "publish_final_game_pack",
       "count": 1
     },
     {
@@ -2349,30 +2241,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "_load_bound_review_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "_validated_decision_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "build_cohort_review_decision",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/cohort_review.py",
-      "scope": "build_cohort_review_plan",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/experimental_composite_voice.py",
       "scope": "publish_experimental_composite_voice_input",
       "count": 1
@@ -2423,18 +2291,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/failure_repair.py",
       "scope": "compress_single_sentence_boundary_silence",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/game_pack.py",
-      "scope": "_verify_voice_control_provenance",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/game_pack.py",
-      "scope": "publish_final_game_pack",
       "count": 1
     },
     {
