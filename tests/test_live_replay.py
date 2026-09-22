@@ -1437,6 +1437,16 @@ class LiveReplayTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "observation sha256"):
                 load_live_replay_corpus(path)
 
+    def test_incomplete_dialog_region_is_a_validation_error(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = self.create_corpus(temporary_directory)
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["dialog_region"] = {"left": 0}
+            path.write_text(json.dumps(document), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "coordinates must be numbers"):
+                load_live_replay_corpus(path)
+
     def test_serialized_media_paths_are_contained_and_not_symlinks(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

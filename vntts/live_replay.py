@@ -1506,10 +1506,10 @@ def _decode_region(value: JsonValue | None) -> DialogRegion | None:
         return None
     if not isinstance(value, dict):
         raise ValueError("Live replay dialog_region must be an object")
-    left = _region_coordinate(value["left"])
-    top = _region_coordinate(value["top"])
-    width = _region_coordinate(value["width"])
-    height = _region_coordinate(value["height"])
+    left = _region_coordinate(value.get("left"))
+    top = _region_coordinate(value.get("top"))
+    width = _region_coordinate(value.get("width"))
+    height = _region_coordinate(value.get("height"))
     return DialogRegion(left, top, width, height)
 
 
