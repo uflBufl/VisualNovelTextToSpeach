@@ -21,6 +21,9 @@ OWNER_SCHEMA = "vntts.managed-runtime-generation-v1"
 
 
 def read_record(path):
+    path = Path(path)
+    if path.is_symlink() or path.is_junction():
+        return {}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
         return value if isinstance(value, dict) else {}

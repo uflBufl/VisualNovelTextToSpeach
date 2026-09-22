@@ -434,6 +434,16 @@ class RuntimeInstallationTest(unittest.TestCase):
 
         self.assertIsNone(find_managed_speech_runtime("pocket-tts"))
 
+    def test_aliased_generation_owner_marker_is_rejected(self):
+        runtime = self.prepared_runtime()[0]
+        marker = runtime.parent / "owner.json"
+        outside = self.root / "outside-owner.json"
+        outside.write_bytes(marker.read_bytes())
+        marker.unlink()
+        symlink_or_skip(marker, outside)
+
+        self.assertIsNone(find_managed_speech_runtime("pocket-tts"))
+
     def test_failed_probe_is_not_discovered_and_retry_can_finish(self):
         with (
             patch("vntts.runtime_installation._run", side_effect=self.install),
