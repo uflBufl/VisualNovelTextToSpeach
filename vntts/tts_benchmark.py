@@ -4,20 +4,17 @@ import os
 import platform
 import re
 import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import perf_counter, process_time
+from typing import NotRequired, Protocol, TypeAlias, TypedDict, TypeGuard, overload
 
 import numpy as np
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
-
-try:
-    import resource
-except ImportError:  # pragma: no cover - unavailable on Windows
-    resource = None
 
 from vntts.cli import cli_error, cli_messages
 from vntts.services.tts_engine import TTSEngine
@@ -31,8 +28,10 @@ from vntts.speech_worker import (
 )
 from vntts.synthesis import (
     SynthesisCachePolicy,
+    SynthesisChunkStream,
     SynthesisCompletion,
     SynthesisRequest,
+    SynthesisResult,
 )
 from vntts.versioned_json import read_versioned_json
 from vntts.voices import (
@@ -48,10 +47,131 @@ TTS_BENCHMARK_CORPUS_VERSION = 1
 TTS_BENCHMARK_CORPUS_SCHEMA = "vntts.tts-benchmark-corpus"
 TTS_BENCHMARK_REPORT_SCHEMA = "vntts.tts-benchmark-report"
 TTS_BENCHMARK_REPORT_VERSION = 1
+PathInput: TypeAlias = str | os.PathLike[str]
+Clock: TypeAlias = Callable[[], float]
+BackendFactory: TypeAlias = Callable[[str, CharacterVoiceRegistry, PathInput], object]
 
 
-def _rss_mb():
-    if resource is None:
+class BenchmarkCorpusSample(TypedDict):
+    id: str
+    line_id: str
+    character: str
+    text: str
+    text_sha256: str
+
+
+class BenchmarkCorpus(TypedDict):
+    name: str
+    samples: list[BenchmarkCorpusSample]
+
+
+class BenchmarkSampleInput(TypedDict):
+    character: str
+    text: str
+    id: NotRequired[str]
+    line_id: NotRequired[str]
+    text_sha256: NotRequired[str]
+
+
+class CacheStageReport(TypedDict):
+    cache_source: str | None
+    first_pcm_ms: float | None
+    wall_ms: float | None
+    underrun: None
+    generation_limited: bool | None
+    realtime_factor: NotRequired[float]
+
+
+class BenchmarkSampleReport(TypedDict):
+    id: str
+    line_id: str
+    character: str
+    text: str
+    text_sha256: str
+    audio: str
+    audio_sha256: str
+    duration_seconds: float
+    conditioning_ms: float
+    first_audio_ms: float | None
+    generation_wall_ms: float
+    generation_cpu_ms: float
+    realtime_factor: float
+    cached_replay_ms: float
+    fresh: CacheStageReport
+    memory_cache: CacheStageReport
+    persistent_cache: CacheStageReport
+    dialogue_to_first_pcm_ms: float | None
+    speaker_similarity_rating: None
+    artifact_rating: None
+
+
+class BenchmarkReport(TypedDict):
+    schema: str
+    schema_version: int
+    version: int
+    model_id: str
+    seed: int | None
+    backend: str
+    platform: str
+    python: str
+    startup_wall_ms: float
+    startup_cpu_ms: float
+    peak_rss_mb: float | None
+    corpus: str | None
+    samples: list[BenchmarkSampleReport]
+
+
+class _RenderableBackend(Protocol):
+    def render(self, request: SynthesisRequest) -> SynthesisChunkStream: ...
+
+
+class BenchmarkBackend(_RenderableBackend, Protocol):
+    registry: CharacterVoiceRegistry
+
+
+class _ClearableCache(Protocol):
+    def clear(self) -> None: ...
+
+
+class _PersistentCacheBackend(_RenderableBackend, Protocol):
+    persistent_audio_cache: object
+    audio_cache: _ClearableCache
+
+
+def _is_renderable_backend(value: object) -> TypeGuard[_RenderableBackend]:
+    return callable(getattr(value, "render", None))
+
+
+def _require_renderable_backend(value: object, name: str) -> _RenderableBackend:
+    if not _is_renderable_backend(value):
+        raise RuntimeError(f"Benchmark backend {name!r} has no typed renderer")
+    return value
+
+
+def _is_benchmark_backend(value: object) -> TypeGuard[BenchmarkBackend]:
+    return isinstance(
+        getattr(value, "registry", None), CharacterVoiceRegistry
+    ) and _is_renderable_backend(value)
+
+
+def _require_benchmark_backend(value: object, name: str) -> BenchmarkBackend:
+    if not _is_benchmark_backend(value):
+        raise RuntimeError(f"Benchmark backend {name!r} is missing its typed contract")
+    return value
+
+
+def _is_persistent_cache_backend(
+    value: object,
+) -> TypeGuard[_PersistentCacheBackend]:
+    return hasattr(value, "persistent_audio_cache") and callable(
+        getattr(getattr(value, "audio_cache", None), "clear", None)
+    )
+
+
+def _rss_mb() -> float | None:
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - unavailable on Windows
         return None
     value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if sys.platform != "darwin":
@@ -59,7 +179,7 @@ def _rss_mb():
     return value / (1024 * 1024)
 
 
-def write_wav(path, audio, sample_rate):
+def write_wav(path: PathInput, audio: object, sample_rate: int) -> Path:
     samples = np.asarray(audio, dtype=np.float32)
     if samples.ndim == 2 and samples.shape[1] in {1, 2}:
         samples = (
@@ -69,28 +189,74 @@ def write_wav(path, audio, sample_rate):
         )
     if samples.ndim != 1:
         raise ValueError("Benchmark renderer PCM must be mono or frames-by-channel")
-    return write_pcm16_wav(path, samples, sample_rate)
+    return Path(write_pcm16_wav(path, samples, sample_rate))
+
+
+@overload
+def create_backend(
+    name: str,
+    registry: CharacterVoiceRegistry,
+    cache_root: PathInput,
+    *,
+    model_name: object | None = None,
+    model_revision: object | None = None,
+    narrator_reference: PathInput | None = None,
+    moss_streaming_first_chunk_frames: int | None = None,
+    moss_streaming_interval: float | None = None,
+    startup_cancellation: object | None = None,
+    startup_progress: object | None = None,
+    terms_accepted: bool = False,
+    allow_gated_model_access: bool = False,
+    require_cuda: bool = False,
+    persistent_audio_cache_max_entries: int | None = None,
+) -> BenchmarkBackend: ...
+
+
+@overload
+def create_backend(
+    name: str,
+    registry: CharacterVoiceRegistry,
+    cache_root: PathInput,
+    **options: object,
+) -> BenchmarkBackend: ...
 
 
 def create_backend(
-    name,
-    registry,
-    cache_root,
-    *,
-    model_name=None,
-    model_revision=None,
-    narrator_reference=None,
-    moss_streaming_first_chunk_frames=None,
-    moss_streaming_interval=None,
-    startup_cancellation=None,
-    startup_progress=None,
-    terms_accepted=False,
-    allow_gated_model_access=False,
-    require_cuda=False,
-    persistent_audio_cache_max_entries=None,
-):
+    name: str,
+    registry: CharacterVoiceRegistry,
+    cache_root: PathInput,
+    **options: object,
+) -> BenchmarkBackend:
+    allowed_options = {
+        "model_name",
+        "model_revision",
+        "narrator_reference",
+        "moss_streaming_first_chunk_frames",
+        "moss_streaming_interval",
+        "startup_cancellation",
+        "startup_progress",
+        "terms_accepted",
+        "allow_gated_model_access",
+        "require_cuda",
+        "persistent_audio_cache_max_entries",
+    }
+    unexpected = sorted(set(options) - allowed_options)
+    if unexpected:
+        raise TypeError(f"Unexpected benchmark backend option: {unexpected[0]}")
     cache_root = Path(cache_root)
-    common = {
+    model_name = options.get("model_name")
+    model_revision = options.get("model_revision")
+    narrator_reference = options.get("narrator_reference")
+    moss_streaming_first_chunk_frames = options.get(
+        "moss_streaming_first_chunk_frames"
+    )
+    moss_streaming_interval = options.get("moss_streaming_interval")
+    startup_cancellation = options.get("startup_cancellation")
+    startup_progress = options.get("startup_progress")
+    persistent_audio_cache_max_entries = options.get(
+        "persistent_audio_cache_max_entries"
+    )
+    common: dict[str, object] = {
         "persistent_audio_cache_directory": cache_root / "audio",
         **(
             {"persistent_audio_cache_max_entries": (persistent_audio_cache_max_entries)}
@@ -114,17 +280,25 @@ def create_backend(
         ),
     }
     if name == "pocket-tts":
-        return create_pocket_worker_backend(
-            registry,
-            voice_state_cache_directory=cache_root / "voices",
-            allow_gated_model_access=allow_gated_model_access,
-            **common,
+        return _require_benchmark_backend(
+            create_pocket_worker_backend(
+                registry,
+                voice_state_cache_directory=cache_root / "voices",
+                allow_gated_model_access=options.get(
+                    "allow_gated_model_access", False
+                ),
+                **common,
+            ),
+            name,
         )
     if name == "chatterbox-nano":
-        return create_chatterbox_worker_backend(
-            registry,
-            conditioning_cache_directory=cache_root / "conditionals",
-            **common,
+        return _require_benchmark_backend(
+            create_chatterbox_worker_backend(
+                registry,
+                conditioning_cache_directory=cache_root / "conditionals",
+                **common,
+            ),
+            name,
         )
     if name == "moss-tts":
         streaming_options = {
@@ -135,37 +309,43 @@ def create_backend(
             }.items()
             if value is not None
         }
-        return create_moss_worker_backend(
-            registry,
-            **({"model_name": str(model_name)} if model_name is not None else {}),
-            **streaming_options,
-            prompt_cache_directory=cache_root / "prompt-codes",
-            **common,
+        return _require_benchmark_backend(
+            create_moss_worker_backend(
+                registry,
+                **({"model_name": str(model_name)} if model_name is not None else {}),
+                **streaming_options,
+                prompt_cache_directory=cache_root / "prompt-codes",
+                **common,
+            ),
+            name,
         )
     if name == "moss-tts-delay":
-        return create_moss_delay_worker_backend(
-            registry,
-            **({"model_name": str(model_name)} if model_name is not None else {}),
-            **(
-                {"model_revision": str(model_revision)}
-                if model_revision is not None
-                else {}
+        return _require_benchmark_backend(
+            create_moss_delay_worker_backend(
+                registry,
+                **({"model_name": str(model_name)} if model_name is not None else {}),
+                **(
+                    {"model_revision": str(model_revision)}
+                    if model_revision is not None
+                    else {}
+                ),
+                generation_profile="expressive",
+                require_cuda=options.get("require_cuda", False),
+                **(
+                    {"startup_cancellation": startup_cancellation}
+                    if startup_cancellation is not None
+                    else {}
+                ),
+                **(
+                    {"narrator_reference": narrator_reference}
+                    if narrator_reference is not None
+                    else {}
+                ),
             ),
-            generation_profile="expressive",
-            require_cuda=require_cuda,
-            **(
-                {"startup_cancellation": startup_cancellation}
-                if startup_cancellation is not None
-                else {}
-            ),
-            **(
-                {"narrator_reference": narrator_reference}
-                if narrator_reference is not None
-                else {}
-            ),
+            name,
         )
     if name == "coqui-xtts":
-        if terms_accepted is not True:
+        if options.get("terms_accepted", False) is not True:
             raise ValueError(
                 "XTTS v2 requires explicit acceptance of the Coqui Public Model "
                 "License in the model-variant document"
@@ -178,15 +358,17 @@ def create_backend(
             language="en",
             persisted_voice_cache=False,
         )
-        return XTTSVoiceRouterBackend(
-            CharacterVoiceRouter(engine, registry, force_reference_audio=True)
+        voice_router_factory: Callable[..., object] = CharacterVoiceRouter
+        xtts_backend_factory: Callable[..., BenchmarkBackend] = XTTSVoiceRouterBackend
+        return xtts_backend_factory(
+            voice_router_factory(engine, registry, force_reference_audio=True)
         )
     raise ValueError(f"Unsupported benchmark backend: {name}")
 
 
-def load_tts_benchmark_corpus(path):
+def load_tts_benchmark_corpus(path: PathInput) -> BenchmarkCorpus:
     document = read_versioned_json(
-        path,
+        Path(path),
         schema_version=TTS_BENCHMARK_CORPUS_VERSION,
         document_name="TTS benchmark corpus",
     )
@@ -196,9 +378,12 @@ def load_tts_benchmark_corpus(path):
             f"Unsupported TTS benchmark corpus schema: {declared_schema!r}"
         )
     strict = declared_schema == TTS_BENCHMARK_CORPUS_SCHEMA
-    samples = []
-    seen_ids = set()
-    for index, sample in enumerate(document.get("samples", ()), start=1):
+    raw_samples = document.get("samples", ())
+    if not isinstance(raw_samples, list):
+        raise ValueError("TTS benchmark corpus samples must be an array")
+    samples: list[BenchmarkCorpusSample] = []
+    seen_ids: set[str] = set()
+    for index, sample in enumerate(raw_samples, start=1):
         if not isinstance(sample, dict):
             raise ValueError(f"TTS benchmark sample {index} must be an object")
         if not strict and any(key in sample for key in ("line_id", "text_sha256")):
@@ -214,7 +399,7 @@ def load_tts_benchmark_corpus(path):
                         f"Strict TTS benchmark sample {index} {field} must be "
                         "non-empty text"
                     )
-            character = sample["character"]
+            character = str(sample["character"])
         else:
             character = str(sample.get("character") or "Narrator").strip() or "Narrator"
         raw_text = sample.get("text")
@@ -226,12 +411,14 @@ def load_tts_benchmark_corpus(path):
         if not text:
             raise ValueError(f"TTS benchmark sample {index} has no text")
         sample_id = (
-            sample["id"] if strict else str(sample.get("id") or f"sample-{index}")
+            str(sample["id"])
+            if strict
+            else str(sample.get("id") or f"sample-{index}")
         )
         if sample_id in seen_ids:
             raise ValueError(f"Duplicate TTS benchmark sample ID: {sample_id!r}")
         seen_ids.add(sample_id)
-        line_id = sample["line_id"] if strict else sample_id
+        line_id = str(sample["line_id"]) if strict else sample_id
         text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if strict:
             if not sample.get("id") or not sample.get("line_id"):
@@ -259,7 +446,7 @@ def load_tts_benchmark_corpus(path):
     }
 
 
-def _safe_component(value, label):
+def _safe_component(value: object, label: str) -> str:
     raw = str(value).strip()
     if not raw or raw in {".", ".."}:
         raise ValueError(f"{label} is not a safe output name: {value!r}")
@@ -269,7 +456,7 @@ def _safe_component(value, label):
     return safe
 
 
-def _contained_child(root, name, label):
+def _contained_child(root: PathInput, name: str, label: str) -> Path:
     root = Path(root).expanduser().resolve()
     candidate = (root / name).resolve()
     if candidate.parent != root:
@@ -277,7 +464,13 @@ def _contained_child(root, name, label):
     return candidate
 
 
-def _validate_render_result(result, request, stage, *, expected_cache_source):
+def _validate_render_result(
+    result: SynthesisResult,
+    request: SynthesisRequest,
+    stage: str,
+    *,
+    expected_cache_source: str,
+) -> SynthesisResult:
     if result.completion is not SynthesisCompletion.COMPLETE:
         raise RuntimeError(
             f"{stage} render did not complete: {result.completion.value}"
@@ -298,26 +491,29 @@ def _validate_render_result(result, request, stage, *, expected_cache_source):
 
 
 def benchmark_backend(
-    backend_name,
-    registry,
-    characters,
-    text,
-    output_directory,
+    backend_name: str,
+    registry: CharacterVoiceRegistry,
+    characters: Sequence[str],
+    text: str,
+    output_directory: PathInput,
     *,
-    benchmark_samples=None,
-    corpus_name=None,
-    model_id=None,
-    seed=None,
-    backend_factory=create_backend,
-    clock=perf_counter,
-    cpu_clock=process_time,
-):
+    benchmark_samples: Sequence[BenchmarkCorpusSample | BenchmarkSampleInput]
+    | None = None,
+    corpus_name: str | None = None,
+    model_id: object | None = None,
+    seed: int | None = None,
+    backend_factory: BackendFactory = create_backend,
+    clock: Clock = perf_counter,
+    cpu_clock: Clock = process_time,
+) -> BenchmarkReport:
     """Finish every sample in staging before publishing this run's WAVs."""
     output_directory = Path(output_directory).expanduser().resolve()
     output_directory.parent.mkdir(parents=True, exist_ok=True)
-    created_backends = []
+    created_backends: list[object] = []
 
-    def tracked_backend_factory(name, registry, cache):
+    def tracked_backend_factory(
+        name: str, registry: CharacterVoiceRegistry, cache: PathInput
+    ) -> object:
         backend = backend_factory(name, registry, cache)
         created_backends.append(backend)
         return backend
@@ -357,7 +553,7 @@ def benchmark_backend(
                 raise stop_error
 
         staging_root = Path(staging_directory).resolve()
-        publications = []
+        publications: list[tuple[BenchmarkSampleReport, Path, Path]] = []
         for sample in report["samples"]:
             staged = Path(sample["audio"]).resolve()
             if staged.parent != staging_root or not staged.is_file():
@@ -386,31 +582,32 @@ def benchmark_backend(
 
 
 def _benchmark_backend_staged(
-    backend_name,
-    registry,
-    characters,
-    text,
-    output_directory,
+    backend_name: str,
+    registry: CharacterVoiceRegistry,
+    characters: Sequence[str],
+    text: str,
+    output_directory: PathInput,
     *,
-    benchmark_samples=None,
-    corpus_name=None,
-    model_id=None,
-    seed=None,
-    backend_factory=create_backend,
-    clock=perf_counter,
-    cpu_clock=process_time,
-):
+    benchmark_samples: Sequence[BenchmarkCorpusSample | BenchmarkSampleInput]
+    | None = None,
+    corpus_name: str | None = None,
+    model_id: object | None = None,
+    seed: int | None = None,
+    backend_factory: BackendFactory = create_backend,
+    clock: Clock = perf_counter,
+    cpu_clock: Clock = process_time,
+) -> BenchmarkReport:
     output_directory = Path(output_directory).expanduser().resolve()
     backend_component = _safe_component(backend_name, "Backend")
-    work_items = tuple(
+    work_items: tuple[BenchmarkCorpusSample | BenchmarkSampleInput, ...] = tuple(
         benchmark_samples
         or (
             {"id": character, "character": character, "text": text}
             for character in characters
         )
     )
-    output_names = []
-    seen_ids = set()
+    output_names: list[str] = []
+    seen_ids: set[str] = set()
     for index, item in enumerate(work_items, start=1):
         sample_id = str(item.get("id") or item.get("character") or f"sample-{index}")
         if sample_id in seen_ids:
@@ -426,33 +623,34 @@ def _benchmark_backend_staged(
     with TemporaryDirectory() as temporary_directory:
         wall_started = clock()
         cpu_started = cpu_clock()
-        backend = backend_factory(backend_name, registry, temporary_directory)
+        raw_backend = backend_factory(backend_name, registry, temporary_directory)
+        backend = _require_renderable_backend(raw_backend, backend_name)
+        generation_profile = getattr(backend, "generation_profile", "stable")
+        if not isinstance(generation_profile, str):
+            generation_profile = "stable"
         startup_wall_ms = (clock() - wall_started) * 1000
         startup_cpu_ms = (cpu_clock() - cpu_started) * 1000
-        samples = []
+        samples: list[BenchmarkSampleReport] = []
         for item, output_name in zip(work_items, output_names, strict=True):
             sample_id = str(item.get("id") or item["character"])
             character = item["character"]
             sample_text = item["text"]
             conditioning_started = clock()
-            backend.prime(character)
+            prime = getattr(backend, "prime", None)
+            if callable(prime):
+                prime(character)
             conditioning_ms = (clock() - conditioning_started) * 1000
             generation_started = clock()
             cpu_started = cpu_clock()
-            render = getattr(backend, "render", None)
-            if not callable(render):
-                raise RuntimeError(
-                    f"Benchmark backend {backend_name!r} has no typed renderer"
-                )
             fresh_request = SynthesisRequest(
                 voice=character,
                 text=sample_text,
                 seed=seed,
-                generation_profile=getattr(backend, "generation_profile", "stable"),
+                generation_profile=generation_profile,
                 cache_policy=SynthesisCachePolicy.REFRESH,
             )
             rendered = _validate_render_result(
-                render(fresh_request).collect(),
+                backend.render(fresh_request).collect(),
                 fresh_request,
                 "Fresh",
                 expected_cache_source="fresh-generation",
@@ -474,7 +672,7 @@ def _benchmark_backend_staged(
                 fresh_request, cache_policy=SynthesisCachePolicy.USE
             )
             memory_rendered = _validate_render_result(
-                render(cache_request).collect(),
+                backend.render(cache_request).collect(),
                 cache_request,
                 "Memory-cache",
                 expected_cache_source="memory-cache",
@@ -493,10 +691,12 @@ def _benchmark_backend_staged(
             persistent_underrun = None
             persistent_generation_limited = None
             if hasattr(backend, "persistent_audio_cache"):
+                if not _is_persistent_cache_backend(backend):
+                    raise RuntimeError("Persistent backend has no memory cache")
                 backend.audio_cache.clear()
                 persistent_started = clock()
                 persistent_rendered = _validate_render_result(
-                    render(cache_request).collect(),
+                    backend.render(cache_request).collect(),
                     cache_request,
                     "Persistent-cache",
                     expected_cache_source="persistent-cache",
@@ -587,7 +787,7 @@ def _benchmark_backend_staged(
     }
 
 
-def write_report(report, output_directory):
+def write_report(report: Mapping[str, object], output_directory: PathInput) -> Path:
     output_directory = Path(output_directory).expanduser().resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     backend_component = _safe_component(report["backend"], "Backend")
@@ -598,7 +798,7 @@ def write_report(report, output_directory):
     return path
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark a live TTS backend")
     parser.add_argument(
         "--backend",
@@ -626,7 +826,7 @@ def build_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     manifest = arguments.manifest or find_default_voice_manifest()
     narrator_reference = (
@@ -635,9 +835,11 @@ def main(argv=None):
         else None
     )
     if narrator_reference is not None and not narrator_reference.is_file():
-        return cli_error(f"Narrator reference does not exist: {narrator_reference}")
+        cli_error(f"Narrator reference does not exist: {narrator_reference}")
+        return 1
     if manifest is None and narrator_reference is None:
-        return cli_error("No complete voice manifest is available")
+        cli_error("No complete voice manifest is available")
+        return 1
     registry = (
         CharacterVoiceRegistry.from_file(manifest)
         if manifest is not None
@@ -659,8 +861,9 @@ def main(argv=None):
         if not is_narrator(character) and registry.resolve(character) is None
     ]
     if missing:
-        return cli_error(f"Voice is not available: {missing[0]}")
-    backend_factory = create_backend
+        cli_error(f"Voice is not available: {missing[0]}")
+        return 1
+    backend_factory: BackendFactory = create_backend
     if any(
         value is not None
         for value in (
@@ -672,7 +875,9 @@ def main(argv=None):
         )
     ):
 
-        def backend_factory(name, registry, cache):
+        def configured_backend_factory(
+            name: str, registry: CharacterVoiceRegistry, cache: PathInput
+        ) -> object:
             return create_backend(
                 name,
                 registry,
@@ -688,6 +893,8 @@ def main(argv=None):
                 ),
             )
 
+        backend_factory = configured_backend_factory
+
     report = benchmark_backend(
         arguments.backend,
         registry,
@@ -701,7 +908,7 @@ def main(argv=None):
         backend_factory=backend_factory,
     )
     report_path = write_report(report, arguments.output)
-    return cli_messages(
+    cli_messages(
         (
             report_path,
             *(
@@ -712,6 +919,7 @@ def main(argv=None):
             ),
         )
     )
+    return 0
 
 
 if __name__ == "__main__":

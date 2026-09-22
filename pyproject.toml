@@ -348,6 +348,7 @@ files = [
     "vntts/support.py",
     "vntts/support_ui.py",
     "vntts/synthesis.py",
+    "vntts/tts_benchmark.py",
     "vntts/ui_text.py",
     "vntts/versioned_json.py",
     "vntts/voice_default_impact.py",

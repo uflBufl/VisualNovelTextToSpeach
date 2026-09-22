@@ -169,6 +169,7 @@ def _is_cancellation_signal(value: object) -> TypeGuard[_CancellationSignal]:
 
 class _XTTSVoiceRouter(Protocol):
     tts: object
+    registry: CharacterVoiceRegistry
 
     def prepare_playback(
         self,
@@ -330,6 +331,7 @@ class XTTSVoiceRouterBackend:
         self, voice_router: _XTTSVoiceRouter, *, clock: Clock = monotonic
     ) -> None:
         self.voice_router = voice_router
+        self.registry = voice_router.registry
         self.clock = clock
         sample_rate = getattr(voice_router.tts, "sample_rate", 24_000)
         self.sample_rate = (

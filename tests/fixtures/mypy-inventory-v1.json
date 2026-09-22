@@ -9,7 +9,6 @@
     "vntts/authoring/workbench_ui.py": 112,
     "vntts/durable_settings.py": 10,
     "vntts/game_content_importer.py": 17,
-    "vntts/pregeneration_ui.py": 119,
-    "vntts/tts_benchmark.py": 15
+    "vntts/pregeneration_ui.py": 119
   }
 }
