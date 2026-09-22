@@ -5,6 +5,7 @@
     "vntts/asset_ui.py",
     "vntts/async_ui.py",
     "vntts/audio_cache.py",
+    "vntts/audio_lifecycle.py",
     "vntts/audio_output.py",
     "vntts/authoring/__init__.py",
     "vntts/authoring/advisory_lock.py",
@@ -229,6 +230,7 @@
     "vntts/ui_text.py",
     "vntts/versioned_json.py",
     "vntts/voice_default_impact.py",
+    "vntts/voice_library.py",
     "vntts/voice_preview_ui.py",
     "vntts/voices.py",
     "vntts/window_capture.py"

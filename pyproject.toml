@@ -133,6 +133,7 @@ python_version = "3.14"
 files = [
     "vntts/application_directories.py",
     "vntts/audio_cache.py",
+    "vntts/audio_lifecycle.py",
     "vntts/audio_output.py",
     "vntts/auto_advance.py",
     "vntts/auto_advance_policy.py",
@@ -359,6 +360,7 @@ files = [
     "vntts/ui_text.py",
     "vntts/versioned_json.py",
     "vntts/voice_default_impact.py",
+    "vntts/voice_library.py",
     "vntts/voices.py",
     "vntts/voice_preview_ui.py",
     "vntts/window_capture.py",
