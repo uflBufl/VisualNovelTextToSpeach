@@ -224,6 +224,7 @@ files = [
     "vntts/authoring/robustness_corpus.py",
     "vntts/authoring/silence_comparison.py",
     "vntts/authoring/silence_evidence.py",
+    "vntts/authoring/sound_effect_benchmark.py",
     "vntts/authoring/speech_quality.py",
     "vntts/authoring/specialist_failure_plan.py",
     "vntts/authoring/source_reference_bindings.py",

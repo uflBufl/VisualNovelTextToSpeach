@@ -9,12 +9,15 @@ import os
 import re
 import sys
 import wave
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
+from typing import Protocol, TypedDict
 
 import numpy as np
+from numpy.typing import NDArray
 
 from vntts.cuda_probe import CudaProbeError, inspect_cuda
 
@@ -30,7 +33,27 @@ class SoundEffectBenchmarkError(RuntimeError):
     """The bounded sound-effect experiment cannot be published safely."""
 
 
-def load_sound_effect_corpus(path):
+class SoundEffectSample(TypedDict):
+    id: str
+    kind: str
+    prompt: str
+    seconds: float
+
+
+class SoundEffectCorpus(TypedDict):
+    path: Path
+    sha256: str
+    name: str
+    samples: list[SoundEffectSample]
+
+
+class SoundEffectPipeline(Protocol):
+    sample_rate: object
+
+    def __call__(self, **values: object) -> object: ...
+
+
+def load_sound_effect_corpus(path: str | Path) -> SoundEffectCorpus:
     path = Path(path).expanduser().resolve()
     try:
         payload = path.read_bytes()
@@ -45,8 +68,8 @@ def load_sound_effect_corpus(path):
         or not document["samples"]
     ):
         raise SoundEffectBenchmarkError("Sound-effect corpus is invalid")
-    samples = []
-    seen_ids = set()
+    samples: list[SoundEffectSample] = []
+    seen_ids: set[str] = set()
     for index, item in enumerate(document["samples"]):
         sample = _validate_sample(item, index)
         if sample["id"].casefold() in seen_ids:
@@ -61,7 +84,7 @@ def load_sound_effect_corpus(path):
     }
 
 
-def _validate_sample(item, index):
+def _validate_sample(item: object, index: int) -> SoundEffectSample:
     if not isinstance(item, dict):
         raise SoundEffectBenchmarkError(f"Sound-effect sample {index} is invalid")
     sample_id = item.get("id")
@@ -98,19 +121,19 @@ def _validate_sample(item, index):
 
 
 def benchmark_sound_effects(
-    corpus_path,
-    output_directory,
+    corpus_path: str | Path,
+    output_directory: str | Path,
     *,
-    model=DEFAULT_MODEL,
-    model_revision=DEFAULT_MODEL_REVISION,
-    seeds=(0, 1, 2),
-    num_inference_steps=100,
-    cfg_scale=4.0,
-    sigma_shift=5.0,
-    torch_module=None,
-    pipeline_factory=None,
-    clock=monotonic,
-):
+    model: str = DEFAULT_MODEL,
+    model_revision: str = DEFAULT_MODEL_REVISION,
+    seeds: Sequence[int] = (0, 1, 2),
+    num_inference_steps: int = 100,
+    cfg_scale: float = 4.0,
+    sigma_shift: float = 5.0,
+    torch_module: object | None = None,
+    pipeline_factory: Callable[..., SoundEffectPipeline] | None = None,
+    clock: Callable[[], float] = monotonic,
+) -> dict[str, object]:
     corpus = load_sound_effect_corpus(corpus_path)
     seeds = _validate_controls(seeds, num_inference_steps, cfg_scale, sigma_shift)
     if re.fullmatch(r"[0-9a-f]{40,64}", model_revision) is None:
@@ -142,7 +165,7 @@ def benchmark_sound_effects(
         pipeline = pipeline_factory(
             model,
             revision=model_revision,
-            torch_dtype=torch_module.bfloat16,
+            torch_dtype=getattr(torch_module, "bfloat16"),
             device="cuda",
         )
     except Exception as error:
@@ -160,7 +183,7 @@ def benchmark_sound_effects(
         root = Path(staging) / output_directory.name
         audio_directory = root / "audio"
         audio_directory.mkdir(parents=True)
-        results = []
+        results: list[dict[str, object]] = []
         for sample in corpus["samples"]:
             for seed in seeds:
                 results.append(
@@ -206,7 +229,9 @@ def benchmark_sound_effects(
     return report
 
 
-def _validate_controls(seeds, steps, cfg_scale, sigma_shift):
+def _validate_controls(
+    seeds: Sequence[int], steps: int, cfg_scale: float, sigma_shift: float
+) -> tuple[int, ...]:
     seeds = tuple(seeds)
     if not seeds or any(
         isinstance(seed, bool) or not isinstance(seed, int) for seed in seeds
@@ -224,18 +249,18 @@ def _validate_controls(seeds, steps, cfg_scale, sigma_shift):
 
 
 def _render_sample(
-    pipeline,
-    sample,
-    seed,
-    audio_directory,
-    sample_rate,
-    steps,
-    cfg_scale,
-    sigma_shift,
-    torch_module,
-    clock,
-):
-    cuda = torch_module.cuda
+    pipeline: SoundEffectPipeline,
+    sample: SoundEffectSample,
+    seed: int,
+    audio_directory: Path,
+    sample_rate: int,
+    steps: int,
+    cfg_scale: float,
+    sigma_shift: float,
+    torch_module: object,
+    clock: Callable[[], float],
+) -> dict[str, object]:
+    cuda = getattr(torch_module, "cuda")
     if callable(getattr(cuda, "reset_peak_memory_stats", None)):
         cuda.reset_peak_memory_stats()
     started = clock()
@@ -287,7 +312,7 @@ def _render_sample(
     }
 
 
-def _mono_pcm(value):
+def _mono_pcm(value: object) -> NDArray[np.float32]:
     if hasattr(value, "detach"):
         value = value.detach().float().cpu().numpy()
     pcm = np.asarray(value, dtype=np.float32)
@@ -300,7 +325,9 @@ def _mono_pcm(value):
     return np.ascontiguousarray(pcm, dtype=np.float32)
 
 
-def _write_pcm16_mono(path, pcm, sample_rate):
+def _write_pcm16_mono(
+    path: Path, pcm: NDArray[np.float32], sample_rate: int
+) -> None:
     encoded = np.rint(np.clip(pcm, -1, 1) * 32767).astype("<i2").tobytes()
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
@@ -309,7 +336,7 @@ def _write_pcm16_mono(path, pcm, sample_rate):
         output.writeframes(encoded)
 
 
-def create_parser():
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Benchmark MOSS-SoundEffect v2 on an exact CUDA corpus"
     )
@@ -324,7 +351,7 @@ def create_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = create_parser().parse_args(argv)
     try:
         benchmark_sound_effects(
