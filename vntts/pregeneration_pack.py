@@ -5,20 +5,25 @@ from __future__ import annotations
 import copy
 import os
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from time import perf_counter, process_time
+from typing import Protocol
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.game_pack import GamePackError, write_game_pack
 from vntts_artifacts.generated_audio import (
+    GeneratedAudioDocument,
     GeneratedAudioManifestError,
     load_generated_audio_document,
     write_generated_audio_manifest,
 )
 from vntts_artifacts.story_index import (
+    StoryIndexDocument,
     StoryIndexError,
+    StoryIndexRecord,
     load_story_index_document,
     write_story_index_document,
 )
@@ -27,6 +32,7 @@ from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueueError,
 )
 from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
     VoiceManifestError,
     load_voice_manifest,
     normalize_character_name,
@@ -53,10 +59,12 @@ from vntts.chapter_voice_preload import (
 from vntts.document_identity import is_lowercase_sha256
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
-from vntts.pregeneration_generation import (
+from vntts.pregeneration_contract import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
     OfflineGenerationResult,
+)
+from vntts.pregeneration_generation import (
     _generation_output,
 )
 from vntts.pregeneration_queue import (
@@ -64,14 +72,25 @@ from vntts.pregeneration_queue import (
     project_source_audio_semantics,
 )
 from vntts.pregeneration_setup import (
+    GameContent,
     PregenerationJob,
+    PregenerationJobStore,
     load_verified_story_index_document,
 )
 from vntts.source_audio_semantics import (
+    SourceAudioSemanticEvidence,
     canonical_document_sha256,
     load_source_audio_semantic_evidence,
 )
 from vntts.support import record_background_operation
+
+JsonObject = dict[str, object]
+JsonRecords = list[JsonObject]
+GenerationState = JsonObject
+
+
+class Cancellation(Protocol):
+    def is_set(self) -> bool: ...
 
 
 class OfflinePackError(OfflineGenerationError):
@@ -116,8 +135,13 @@ class StoryAudioCoverage:
 
 
 def inspect_story_audio(
-    content, selection_id, job_store, *, manifest=None, imported_pack=None
-):
+    content: GameContent,
+    selection_id: str,
+    job_store: PregenerationJobStore,
+    *,
+    manifest: str | Path | None = None,
+    imported_pack: GamePackImport | None = None,
+) -> StoryAudioCoverage:
     """Verify one story against one saved pack; never combine incompatible packs."""
     selection = next(
         value for value in content.selections if value.selection_id == selection_id
@@ -133,7 +157,7 @@ def inspect_story_audio(
     explicit_pack = manifest is not None or imported_pack is not None
     if imported_pack is not None:
         manifest = imported_pack.pack.manifest_path
-    elif explicit_pack:
+    elif manifest is not None:
         manifest = Path(manifest).expanduser().resolve()
     else:
         manifests = [
@@ -148,13 +172,13 @@ def inspect_story_audio(
             default=None,
         )
     library = None
-    pack_records = {}
-    pack_story = None
+    pack_records: dict[str, StoryIndexRecord] = {}
+    pack_story: StoryIndexDocument | None = None
     source_audio_line_ids = _validated_source_audio_line_ids(
         content.story_index,
         source,
     )
-    pack_source_audio_line_ids = frozenset()
+    pack_source_audio_line_ids: frozenset[str] = frozenset()
     if manifest is not None:
         imported_pack = imported_pack or import_game_pack(manifest)
         pack_story = load_story_index_document(imported_pack.story_index)
@@ -187,9 +211,12 @@ def inspect_story_audio(
             )
         # Published source semantics can distinguish speech from a game sound cue.
         effective = saved or record
-        completion_contract = (
-            pack_story if saved is not None else source
-        ).metadata.get("source_audio_completion")
+        completion_document = (
+            pack_story if saved is not None and pack_story is not None else source
+        )
+        completion_contract = completion_document.metadata.get(
+            "source_audio_completion"
+        )
         semantic_authorized = record.line_id in (
             pack_source_audio_line_ids if saved is not None else source_audio_line_ids
         )
@@ -224,14 +251,20 @@ def inspect_story_audio(
         else:
             route = "missing"
         counts[route] += 1
-    return StoryAudioCoverage(selection.title, manifest, **counts)
+    manifest_path = Path(manifest) if manifest is not None else None
+    return StoryAudioCoverage(selection.title, manifest_path, **counts)
 
 
 class OfflinePackPublisher:
-    def __init__(self, *, base_pack=None):
+    def __init__(self, *, base_pack: str | Path | None = None) -> None:
         self.base_pack = Path(base_pack).expanduser().resolve() if base_pack else None
 
-    def inspect_changes(self, job, generation_input, cancel_event=None):
+    def inspect_changes(
+        self,
+        job: PregenerationJob,
+        generation_input: PregenerationInput,
+        cancel_event: Cancellation | None = None,
+    ) -> OfflinePreparationChanges:
         """Read-only forecast using the same validated base and resume state as publication."""
         _raise_if_cancelled(cancel_event)
         story = load_story_index_document(generation_input.story_index)
@@ -245,7 +278,8 @@ class OfflinePackPublisher:
             if state_path.exists()
             else {"items": {}}
         )
-        results = tuple(state["items"].values())
+        state_items = _state_items(state)
+        results = tuple(state_items.values())
         saved = {
             result["line_id"]: result["file_sha256"]
             for result in results
@@ -255,7 +289,7 @@ class OfflinePackPublisher:
         live = sum(result.get("status") == "live_fallback" for result in results)
         omitted = set(generation_input.audio_event_omission_queue_ids) | {
             queue_id
-            for queue_id, result in state["items"].items()
+            for queue_id, result in state_items.items()
             if result.get("status") in {"omitted", "not_reproducible"}
         }
         selected = {record.line_id for record in story.records}
@@ -304,11 +338,11 @@ class OfflinePackPublisher:
 
     def publish(
         self,
-        job,
-        generation_input,
-        generation_result,
-        cancel_event=None,
-    ):
+        job: PregenerationJob,
+        generation_input: PregenerationInput,
+        generation_result: OfflineGenerationResult,
+        cancel_event: Cancellation | None = None,
+    ) -> OfflinePackResult:
         _validate_inputs(job, generation_input, generation_result)
         _raise_if_cancelled(cancel_event)
         phase_started, cpu_started = perf_counter(), process_time()
@@ -438,7 +472,14 @@ class OfflinePackPublisher:
                     cpu_started,
                     files_examined=len(generated_records),
                     bytes_examined=sum(
-                        _file_size(generated_copy.parent / record["audio"])
+                        _file_size(
+                            generated_copy.parent
+                            / Path(
+                                *_safe_relative(
+                                    record.get("audio"), "Generated WAV"
+                                ).parts
+                            )
+                        )
                         for record in generated_records
                     ),
                 )
@@ -476,12 +517,21 @@ class OfflinePackPublisher:
                     },
                 }
                 if semantic_copy is not None:
+                    if semantic_document is None:
+                        raise OfflinePackError(
+                            "Source-audio semantic evidence is missing"
+                        )
+                    semantic_entries = semantic_document.get("entries")
+                    if not isinstance(semantic_entries, list):
+                        raise OfflinePackError(
+                            "Source-audio semantic evidence entries are invalid"
+                        )
                     pack_metadata["vntts.authoring"] = {
                         "source_audio_semantic_evidence": {
                             "path": "story/source-audio-semantic-evidence.json",
                             "sha256": sha256_file(semantic_copy),
                             "evidence_id": semantic_document["evidence_id"],
-                            "entry_count": len(semantic_document["entries"]),
+                            "entry_count": len(semantic_entries),
                         }
                     }
                 pack_manifest = staging / "game-pack.json"
@@ -527,13 +577,13 @@ class OfflinePackPublisher:
             ) from error
 
 
-def load_saved_pack(manifest):
+def load_saved_pack(manifest: str | Path) -> OfflinePackResult:
     """Load one self-service pack only after its published identity validates."""
     try:
         imported = import_game_pack(manifest)
         extension = imported.pack.extensions.get("vntts.self-service")
         identity = extension.get("identity") if isinstance(extension, dict) else None
-        if not is_lowercase_sha256(identity):
+        if not isinstance(identity, str) or not is_lowercase_sha256(identity):
             raise OfflinePackError("Saved offline pack identity is invalid")
         return _load_existing(
             imported.pack.manifest_path.parent, identity, imported=imported
@@ -545,15 +595,15 @@ def load_saved_pack(manifest):
 
 
 def _ensure_pack_disk_space(
-    destination_parent,
-    base,
-    story,
-    state,
-    generation_result,
-    generation_input,
-    voice_document,
-    voices,
-):
+    destination_parent: Path,
+    base: GamePackImport | None,
+    story: StoryIndexDocument,
+    state: GenerationState,
+    generation_result: OfflineGenerationResult,
+    generation_input: PregenerationInput,
+    voice_document: JsonObject,
+    voices: tuple[VoiceManifestEntry, ...],
+) -> None:
     try:
         required = _pack_staging_bytes(
             base,
@@ -579,15 +629,15 @@ def _ensure_pack_disk_space(
 
 
 def _pack_staging_bytes(
-    base,
-    story,
-    state,
-    generation_result,
-    generation_input,
-    voice_document,
-    voices,
-):
-    copies = {}
+    base: GamePackImport | None,
+    story: StoryIndexDocument,
+    state: GenerationState,
+    generation_result: OfflineGenerationResult,
+    generation_input: PregenerationInput,
+    voice_document: JsonObject,
+    voices: tuple[VoiceManifestEntry, ...],
+) -> int:
+    copies: dict[str, Path] = {}
     for record in approved_manifest_entries(state, generation_result.output):
         relative = _safe_relative(record["audio"], "Generated WAV")
         copies[f"audio/{record['audio_sha256']}.wav"] = generation_result.output / Path(
@@ -626,14 +676,21 @@ def _pack_staging_bytes(
             ).records:
                 if record.line_id not in current_line_ids:
                     copies[f"audio/{record.audio_sha256}.wav"] = record.audio
-    return (
+    return int(
         1_048_576
         + sum(path.stat().st_size for path in copies.values())
         + sum(path.stat().st_size for path in dict.fromkeys(metadata))
     )
 
 
-def _add_voice_reference_copies(copies, source_manifest, document, voices, *, portable):
+def _add_voice_reference_copies(
+    copies: dict[str, Path],
+    source_manifest: Path,
+    document: JsonObject,
+    voices: tuple[VoiceManifestEntry, ...],
+    *,
+    portable: bool,
+) -> None:
     raw_voices = document.get("voices")
     if not isinstance(raw_voices, list) or len(raw_voices) != len(voices):
         raise OfflinePackError("Offline voice manifest changed")
@@ -649,18 +706,29 @@ def _add_voice_reference_copies(copies, source_manifest, document, voices, *, po
             copies[target] = source
 
 
-def _megabytes(value):
+def _megabytes(value: int) -> int:
     return max(1, (value + 999_999) // 1_000_000)
 
 
-def _existing_parent(path):
+def _existing_parent(path: str | Path) -> Path:
     path = Path(path)
     while not path.exists():
         path = path.parent
     return path
 
 
-def _load_terminal_generation(job, generation_input, generation_result, state_sha256):
+def _load_terminal_generation(
+    job: PregenerationJob,
+    generation_input: PregenerationInput,
+    generation_result: OfflineGenerationResult,
+    state_sha256: str,
+) -> tuple[
+    GenerationState,
+    VoiceGenerationQueue,
+    JsonObject,
+    tuple[VoiceManifestEntry, ...],
+    JsonRecords,
+]:
     try:
         state = load_generation_state(
             generation_result.state,
@@ -677,10 +745,16 @@ def _load_terminal_generation(job, generation_input, generation_result, state_sh
             state_sha256,
             queue,
         )
+        omission_queue_ids: set[str] = set()
+        for value in omissions:
+            queue_id = value.get("queue_id")
+            if not isinstance(queue_id, str):
+                raise OfflinePackError("Offline omission queue identity is invalid")
+            omission_queue_ids.add(queue_id)
         _require_terminal_generation(
             state,
             queue,
-            omission_queue_ids={value["queue_id"] for value in omissions},
+            omission_queue_ids=omission_queue_ids,
         )
         return state, queue, voice_document, voices, omissions
     except (
@@ -696,7 +770,9 @@ def _load_terminal_generation(job, generation_input, generation_result, state_sh
         raise OfflinePackError(f"Unable to inspect prepared audio: {error}") from error
 
 
-def _validate_inputs(job, generation_input, generation_result):
+def _validate_inputs(
+    job: object, generation_input: object, generation_result: object
+) -> None:
     if not isinstance(job, PregenerationJob):
         raise OfflinePackError("Offline preparation job is invalid")
     if not isinstance(generation_input, PregenerationInput):
@@ -710,18 +786,24 @@ def _validate_inputs(job, generation_input, generation_result):
         raise OfflinePackError("Offline pack output identity changed")
 
 
-def _require_terminal_generation(state, queue, *, omission_queue_ids=()):
+def _require_terminal_generation(
+    state: GenerationState,
+    queue: VoiceGenerationQueue,
+    *,
+    omission_queue_ids: Iterable[str] = (),
+) -> None:
     if state.get("active") is not None:
         raise OfflinePackError("Offline generation is still active")
     expected = {item.queue_id for item in queue.items if item.action == "generate"}
-    actual = set(state.get("items", {}))
+    items = _state_items(state)
+    actual = set(items)
     omission_queue_ids = set(omission_queue_ids)
     if actual != expected - omission_queue_ids:
         raise OfflinePackError("Offline generation does not cover the selected queue")
     for queue_id in sorted(expected - omission_queue_ids):
-        item = state["items"][queue_id]
-        status = item.get("status") if isinstance(item, dict) else None
-        review = item.get("review_status") if isinstance(item, dict) else None
+        item = items[queue_id]
+        status = item.get("status")
+        review = item.get("review_status")
         if (status, review) not in {
             ("approved", "approved"),
             ("live_fallback", "live_fallback"),
@@ -731,7 +813,25 @@ def _require_terminal_generation(state, queue, *, omission_queue_ids=()):
             )
 
 
-def _identity(generation_input, state_sha256, base_pack_identity=None):
+def _state_items(state: JsonObject) -> dict[str, JsonObject]:
+    raw_items = state.get("items")
+    if not isinstance(raw_items, dict) or any(
+        not isinstance(queue_id, str) or not isinstance(item, dict)
+        for queue_id, item in raw_items.items()
+    ):
+        raise OfflinePackError("Offline generation state items are malformed")
+    return {
+        queue_id: item
+        for queue_id, item in raw_items.items()
+        if isinstance(queue_id, str) and isinstance(item, dict)
+    }
+
+
+def _identity(
+    generation_input: PregenerationInput,
+    state_sha256: str,
+    base_pack_identity: str | None = None,
+) -> str:
     payload = {
         "schema_version": 1,
         "generation_input_identity": generation_input.identity,
@@ -747,10 +847,14 @@ def _identity(generation_input, state_sha256, base_pack_identity=None):
     }
     if base_pack_identity is not None:
         payload["base_pack_identity"] = base_pack_identity
-    return canonical_document_sha256(payload)
+    return str(canonical_document_sha256(payload))
 
 
-def _load_incremental_base(path, job, selected_story):
+def _load_incremental_base(
+    path: Path | None,
+    job: PregenerationJob,
+    selected_story: StoryIndexDocument,
+) -> tuple[GamePackImport | None, StoryIndexDocument | None]:
     if path is None or not path.is_file():
         return None, None
     try:
@@ -791,11 +895,13 @@ def _load_incremental_base(path, job, selected_story):
 
 
 def _write_cumulative_story(
-    base,
-    source_story,
-    generation_input,
-    story_copy,
-):
+    base: GamePackImport,
+    source_story: StoryIndexDocument,
+    generation_input: PregenerationInput,
+    story_copy: Path,
+) -> tuple[
+    StoryIndexDocument, Path | None, SourceAudioSemanticEvidence | None
+]:
     base_story = load_story_index_document(base.story_index)
     current_story = load_story_index_document(generation_input.story_index)
     selected_ids = {
@@ -826,12 +932,12 @@ def _write_cumulative_story(
 
 
 def _write_cumulative_voices(
-    base,
-    current_manifest,
-    current_document,
-    current_voices,
-    target_manifest,
-):
+    base: GamePackImport,
+    current_manifest: Path,
+    current_document: JsonObject,
+    current_voices: tuple[VoiceManifestEntry, ...],
+    target_manifest: Path,
+) -> None:
     base_document, base_voices = load_voice_manifest(
         base.voice_manifest,
         allow_legacy=False,
@@ -848,31 +954,40 @@ def _write_cumulative_voices(
         current_document,
         current_voices,
     ):
-        names = {
-            normalize_character_name(value)
-            for value in (candidate["character"], *candidate.get("aliases", ()))
-        }
+        names = {normalize_character_name(value) for value in _voice_names(candidate)}
         merged = [
             existing
             for existing in merged
             if names.isdisjoint(
                 normalize_character_name(value)
-                for value in (
-                    existing["character"],
-                    *existing.get("aliases", ()),
-                )
+                for value in _voice_names(existing)
             )
         ]
         merged.append(candidate)
-    merged.sort(key=lambda value: value["character"].casefold())
+    merged.sort(key=lambda value: _voice_names(value)[0].casefold())
     write_voice_manifest(target_manifest, {"version": 2, "voices": merged})
 
 
-def _portable_voice_entries(source_manifest, target_manifest, document, voices):
+def _voice_names(entry: JsonObject) -> tuple[str, ...]:
+    character = entry.get("character")
+    aliases = entry.get("aliases", [])
+    if not isinstance(character, str) or not isinstance(aliases, list) or any(
+        not isinstance(value, str) for value in aliases
+    ):
+        raise OfflinePackError("Offline voice identity is malformed")
+    return character, *aliases
+
+
+def _portable_voice_entries(
+    source_manifest: Path,
+    target_manifest: Path,
+    document: JsonObject,
+    voices: tuple[VoiceManifestEntry, ...],
+) -> JsonRecords:
     raw_voices = document.get("voices")
     if not isinstance(raw_voices, list) or len(raw_voices) != len(voices):
         raise OfflinePackError("Offline voice manifest changed")
-    result = []
+    result: JsonRecords = []
     for raw, voice in zip(raw_voices, voices, strict=True):
         if tuple(raw.get("references") or ()) != voice.references:
             raise OfflinePackError("Offline voice references changed")
@@ -891,17 +1006,17 @@ def _portable_voice_entries(source_manifest, target_manifest, document, voices):
 
 
 def _write_cumulative_routes(
-    base,
-    current_story,
-    state,
-    generation_result,
-    generated_copy,
-    current_omissions,
-):
+    base: GamePackImport | None,
+    current_story: StoryIndexDocument,
+    state: GenerationState,
+    generation_result: OfflineGenerationResult,
+    generated_copy: Path,
+    current_omissions: JsonRecords,
+) -> tuple[JsonRecords, JsonRecords, JsonRecords]:
     current_line_ids = {record.line_id for record in current_story.records}
-    records = []
-    live_fallbacks = []
-    omissions = []
+    records: JsonRecords = []
+    live_fallbacks: JsonRecords = []
+    omissions: JsonRecords = []
     if base is not None:
         if base.generated_audio_manifest is None:
             raise OfflinePackError("Active self-service pack has no audio routes")
@@ -951,19 +1066,30 @@ def _write_cumulative_routes(
     return records, live_fallbacks, omissions
 
 
-def _portable_generated_record(record, source, generated_copy, *, reuse=False):
+def _portable_generated_record(
+    record: JsonObject,
+    source: Path,
+    generated_copy: Path,
+    *,
+    reuse: bool = False,
+) -> JsonObject:
     candidate = copy.deepcopy(record)
     portable = f"audio/{candidate['audio_sha256']}.wav"
     destination = generated_copy.parent / portable
     if reuse:
-        _link_verified_file(source, destination, candidate["audio_sha256"])
+        digest = candidate.get("audio_sha256")
+        if not isinstance(digest, str):
+            raise OfflinePackError("Generated audio digest is invalid")
+        _link_verified_file(source, destination, digest)
     else:
         _copy_file(source, destination)
     candidate["audio"] = portable
     return candidate
 
 
-def _document_records(document, field, label):
+def _document_records(
+    document: GeneratedAudioDocument, field: str, label: str
+) -> JsonRecords:
     extension = document.producer_metadata.get(field)
     if extension is None:
         return []
@@ -973,7 +1099,12 @@ def _document_records(document, field, label):
     return copy.deepcopy(entries)
 
 
-def _self_service_omission_records(job, generation_input, state_sha256, queue):
+def _self_service_omission_records(
+    job: PregenerationJob,
+    generation_input: PregenerationInput,
+    state_sha256: str,
+    queue: VoiceGenerationQueue,
+) -> JsonRecords:
     queue_by_id = {item.queue_id: item for item in queue.items}
     queue_ids = tuple(sorted(generation_input.audio_event_omission_queue_ids))
     batch_id = canonical_document_sha256(
@@ -992,7 +1123,7 @@ def _self_service_omission_records(job, generation_input, state_sha256, queue):
         "base_state_sha256": state_sha256,
         "queue_sha256": generation_input.queue_sha256,
     }
-    records = []
+    records: JsonRecords = []
     for queue_id in queue_ids:
         item = queue_by_id.get(queue_id)
         plan = None if item is None else audio_event_plan_for_record(item)
@@ -1033,10 +1164,10 @@ def _self_service_omission_records(job, generation_input, state_sha256, queue):
     return records
 
 
-def _live_fallback_records(state):
-    records = []
-    for item in state["items"].values():
-        decision = item.get("live_fallback") if isinstance(item, dict) else None
+def _live_fallback_records(state: GenerationState) -> JsonRecords:
+    records: JsonRecords = []
+    for item in _state_items(state).values():
+        decision = item.get("live_fallback")
         if not isinstance(decision, dict):
             continue
         records.append(
@@ -1048,7 +1179,12 @@ def _live_fallback_records(state):
     return sorted(records, key=lambda value: (value["line_id"], value["text_sha256"]))
 
 
-def _copy_voice_references(source_manifest, target_manifest, document, voices):
+def _copy_voice_references(
+    source_manifest: Path,
+    target_manifest: Path,
+    document: JsonObject,
+    voices: tuple[VoiceManifestEntry, ...],
+) -> None:
     raw_voices = document.get("voices")
     if not isinstance(raw_voices, list) or len(raw_voices) != len(voices):
         raise OfflinePackError("Offline voice manifest changed")
@@ -1063,7 +1199,9 @@ def _copy_voice_references(source_manifest, target_manifest, document, voices):
             )
 
 
-def _copy_semantic_evidence(generation_input, staging, story_copy):
+def _copy_semantic_evidence(
+    generation_input: PregenerationInput, staging: Path, story_copy: Path
+) -> tuple[Path | None, SourceAudioSemanticEvidence | None]:
     source = generation_input.source_audio_semantic_evidence
     if source is None:
         return None, None
@@ -1072,7 +1210,7 @@ def _copy_semantic_evidence(generation_input, staging, story_copy):
     return destination, load_source_audio_semantic_evidence(destination, story_copy)
 
 
-def _copy_file(source, destination):
+def _copy_file(source: str | Path, destination: Path) -> None:
     source = Path(source).resolve()
     if not source.is_file() or source.is_symlink():
         raise OfflinePackError(f"Offline pack source is unsafe: {source}")
@@ -1083,7 +1221,9 @@ def _copy_file(source, destination):
         raise OfflinePackError(f"Offline pack source changed: {source}")
 
 
-def _link_verified_file(source, destination, expected_sha256):
+def _link_verified_file(
+    source: str | Path, destination: Path, expected_sha256: str
+) -> None:
     source = Path(source)
     if not source.is_file() or source.is_symlink():
         raise OfflinePackError(f"Offline pack source is unsafe: {source}")
@@ -1102,7 +1242,7 @@ def _link_verified_file(source, destination, expected_sha256):
         raise OfflinePackError(f"Offline pack source changed: {source}")
 
 
-def _safe_relative(value, label):
+def _safe_relative(value: object, label: str) -> PurePosixPath:
     if not isinstance(value, str) or not value.strip() or "\\" in value:
         raise OfflinePackError(f"{label} path is invalid")
     relative = PurePosixPath(value)
@@ -1113,7 +1253,12 @@ def _safe_relative(value, label):
     return relative
 
 
-def _load_existing(destination, identity, *, imported=None):
+def _load_existing(
+    destination: Path,
+    identity: str,
+    *,
+    imported: GamePackImport | None = None,
+) -> OfflinePackResult:
     imported = imported or import_game_pack(destination / "game-pack.json")
     extension = imported.pack.extensions.get("vntts.self-service")
     if not isinstance(extension, dict) or extension.get("identity") != identity:
@@ -1144,19 +1289,21 @@ def _load_existing(destination, identity, *, imported=None):
     )
 
 
-def _raise_if_cancelled(cancel_event):
+def _raise_if_cancelled(cancel_event: Cancellation | None) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise OfflineGenerationCancelled("Offline pack publication was cancelled")
 
 
-def _file_size(path):
+def _file_size(path: str | Path) -> int:
     try:
         return Path(path).stat().st_size
     except OSError:
         return 0
 
 
-def _record_publication_phase(name, started, cpu_started, **details):
+def _record_publication_phase(
+    name: str, started: float, cpu_started: float, **details: object
+) -> None:
     record_background_operation(
         f"pregeneration-publication-{name}",
         (perf_counter() - started) * 1000,

@@ -275,6 +275,8 @@ files = [
     "vntts/profiles.py",
     "vntts/profiles_ui.py",
     "vntts/pregeneration_audition_ui.py",
+    "vntts/pregeneration_contract.py",
+    "vntts/pregeneration_pack.py",
     "vntts/qt_audio.py",
     "vntts/readiness_ui.py",
     "vntts/reference_quality.py",
