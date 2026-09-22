@@ -6,7 +6,9 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol, TypeAlias, TypedDict, TypeGuard
 from uuid import uuid4
 
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -19,9 +21,36 @@ from vntts.services.tts_engine import TTSConfigurationError
 
 OWNER_SCHEMA = "vntts.managed-runtime-generation-v1"
 _RUNTIME_RECORD_READ_LIMIT = 64 * 1024
+PathInput: TypeAlias = str | os.PathLike[str]
+ProgressCallback: TypeAlias = Callable[[str], None]
 
 
-def read_record(path):
+class _OwnerDocument(TypedDict):
+    schema: str
+    backend: str
+    recipe: str
+    generation: str
+
+
+class _RuntimeUseDocument(TypedDict):
+    parent_pid: int
+    children: list[int]
+    launching: bool
+
+
+class _ClaimedProcess(Protocol):
+    pid: int
+
+    def poll(self) -> int | None: ...
+
+
+def _is_claimed_process(value: object) -> TypeGuard[_ClaimedProcess]:
+    return isinstance(getattr(value, "pid", None), int) and callable(
+        getattr(value, "poll", None)
+    )
+
+
+def read_record(path: PathInput) -> dict[str, object]:
     path = Path(path)
     if path.is_symlink() or path.is_junction():
         return {}
@@ -30,13 +59,15 @@ def read_record(path):
             payload = source.read(_RUNTIME_RECORD_READ_LIMIT + 1)
         if len(payload) > _RUNTIME_RECORD_READ_LIMIT:
             return {}
-        value = json.loads(payload)
-        return value if isinstance(value, dict) else {}
+        value: object = json.loads(payload)
+        if not isinstance(value, dict):
+            return {}
+        return {key: item for key, item in value.items() if isinstance(key, str)}
     except OSError, ValueError:
         return {}
 
 
-def owned_generation(backend, runtime):
+def owned_generation(backend: str, runtime: PathInput) -> Path | None:
     """Recognise exact owned directories, never aliases into user/bundled data."""
     if backend not in RUNTIME_ENVIRONMENT_VARIABLES:
         return None
@@ -68,12 +99,13 @@ def owned_generation(backend, runtime):
     ):
         if path.is_symlink() or path.is_junction():
             return None
-    if read_record(candidate / "owner.json") != {
+    owner: _OwnerDocument = {
         "schema": OWNER_SCHEMA,
         "backend": backend,
         "recipe": recipe,
         "generation": generation,
-    }:
+    }
+    if read_record(candidate / "owner.json") != owner:
         return None
     return candidate
 
@@ -81,30 +113,36 @@ def owned_generation(backend, runtime):
 class RuntimeUse:
     """Keep a backend and every launched child visible even after a parent crash."""
 
-    def __init__(self, generation):
+    def __init__(self, generation: Path) -> None:
         self.path = generation / "users" / f"{uuid4().hex}.json"
         if self.path.parent.is_symlink() or self.path.parent.is_junction():
             raise TTSConfigurationError("Speech runtime usage directory is an alias.")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.document = {"parent_pid": os.getpid(), "children": [], "launching": False}
-        self.processes = []
+        self.document: _RuntimeUseDocument = {
+            "parent_pid": os.getpid(),
+            "children": [],
+            "launching": False,
+        }
+        self.processes: list[_ClaimedProcess] = []
         self._save()
 
-    def _save(self):
+    def _save(self) -> None:
         atomic_write_json(self.path, self.document)
 
-    def begin_launch(self):
+    def begin_launch(self) -> None:
         self.document["launching"] = True
         self._save()
 
-    def launched(self, process):
+    def launched(self, process: object | None) -> None:
         if process is not None:
+            if not _is_claimed_process(process):
+                raise TTSConfigurationError("Speech runtime process is malformed.")
             self.processes.append(process)
             self.document["children"].append(process.pid)
         self.document["launching"] = False
         self._save()
 
-    def close(self):
+    def close(self) -> None:
         # Never release a child whose shutdown could not be confirmed.
         try:
             uncertain = self.document["launching"] or any(
@@ -120,7 +158,7 @@ class RuntimeUse:
             pass  # A stale claim is reclaimed only once both processes are dead.
 
 
-def claim_runtime(backend, runtime):
+def claim_runtime(backend: str, runtime: PathInput) -> RuntimeUse | None:
     generation = owned_generation(backend, runtime)
     if generation is None:
         return None
@@ -141,7 +179,7 @@ def claim_runtime(backend, runtime):
         ) from error
 
 
-def _in_use(generation):
+def _in_use(generation: Path) -> bool:
     users = generation / "users"
     if users.is_symlink() or users.is_junction():
         return True
@@ -164,7 +202,7 @@ def _in_use(generation):
     return False
 
 
-def remove_inactive_generation(backend, generation):
+def remove_inactive_generation(backend: str, generation: Path) -> bool:
     """Caller holds this recipe's installation guard."""
     if owned_generation(backend, generation / "environment") != generation or _in_use(
         generation
@@ -174,7 +212,12 @@ def remove_inactive_generation(backend, generation):
     return True
 
 
-def cleanup_managed_runtimes(backend, keep, *, progress=None):
+def cleanup_managed_runtimes(
+    backend: str,
+    keep: PathInput,
+    *,
+    progress: ProgressCallback | None = None,
+) -> None:
     """Remove only recognised inactive copies after a good replacement exists."""
     use = claim_runtime(backend, keep)
     if use is None:
@@ -185,7 +228,12 @@ def cleanup_managed_runtimes(backend, keep, *, progress=None):
         use.close()
 
 
-def _cleanup_managed_runtimes(backend, keep, *, progress=None):
+def _cleanup_managed_runtimes(
+    backend: str,
+    keep: PathInput,
+    *,
+    progress: ProgressCallback | None = None,
+) -> None:
     progress = progress or (lambda _message: None)
     keep_generation = owned_generation(backend, keep)
     if keep_generation is None:

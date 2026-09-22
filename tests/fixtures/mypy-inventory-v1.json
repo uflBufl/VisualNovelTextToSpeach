@@ -26,7 +26,6 @@
     "vntts/pregeneration_activation.py": 5,
     "vntts/pregeneration_recovery.py": 7,
     "vntts/pregeneration_ui.py": 119,
-    "vntts/runtime_ownership.py": 12,
     "vntts/services/tts_engine.py": 19,
     "vntts/speech_presentation.py": 10,
     "vntts/tts_benchmark.py": 15
