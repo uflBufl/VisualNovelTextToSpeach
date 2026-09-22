@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from PIL import Image
 
+from tests.symlink_support import symlink_or_skip
 from vntts.diagnostics import DiagnosticSnapshot
 from vntts.settings import AppSettings
 from vntts.support import (
@@ -1001,6 +1002,23 @@ class SupportBundleBuilderTest(unittest.TestCase):
         self.assertNotIn("unexpected", report["job"])
         self.assertNotIn("secret", json.dumps(report))
         self.assertNotIn(str(Path.home()), json.dumps(report))
+
+    def test_pregeneration_support_does_not_follow_state_symlinks(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            outside = root / "outside-state.json"
+            outside.write_text('{"items": {}}', encoding="utf-8")
+            alias = root / "generation-state.json"
+            symlink_or_skip(alias, outside)
+
+            report = PregenerationSupportState().record(
+                "prepare",
+                "failed",
+                state_path=alias,
+            )
+
+        self.assertFalse(report["generation_state"]["available"])
+        self.assertIn("unsafe", report["generation_state"]["reason"])
 
     def test_active_pack_ignores_non_object_story_index_records(self):
         with TemporaryDirectory() as temporary_directory:

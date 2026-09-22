@@ -1229,14 +1229,21 @@ def _pregeneration_state_summary(path: str | Path | None) -> SupportDocument:
     if path is None:
         return {"available": False}
     path = Path(path)
+    if path.is_symlink():
+        return {"available": False, "reason": "state path is unsafe"}
+    limit = 32 * 1024 * 1024
     try:
-        if path.stat().st_size > 32 * 1024 * 1024:
-            return {"available": False, "reason": "state exceeds support read limit"}
-        payload = path.read_bytes()
-        document = json.loads(payload)
+        with path.open("rb") as source:
+            payload = source.read(limit + 1)
     except FileNotFoundError:
         return {"available": False, "reason": "state is not present"}
-    except OSError, UnicodeError, json.JSONDecodeError:
+    except OSError:
+        return {"available": False, "reason": "state could not be read"}
+    if len(payload) > limit:
+        return {"available": False, "reason": "state exceeds support read limit"}
+    try:
+        document = json.loads(payload)
+    except UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "state could not be read"}
     items = document.get("items") if isinstance(document, dict) else None
     if not isinstance(items, dict):
