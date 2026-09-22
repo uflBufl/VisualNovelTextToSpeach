@@ -403,9 +403,28 @@ def validate_audio_event_omission_workspace(
     directory: str | Path, workspace: Mapping[str, object]
 ) -> None:
     """Validate the self-contained exact omission authority."""
-    batch = workspace.get("audio_event_omission")
+    batch = _validated_omission_batch(workspace)
     if batch is None:
         return
+    root = Path(directory)
+    _validate_omission_authority_files(root, batch)
+    queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
+        root,
+        workspace,
+        "audio-event omission workspace",
+        error_type=AuthoringWorkbenchError,
+    )
+    if sha256_file(root / "queue.jsonl") != batch["queue_sha256"]:
+        raise AuthoringWorkbenchError("Audio-event omission queue changed")
+    _validate_omission_items(queue, state, batch)
+
+
+def _validated_omission_batch(
+    workspace: Mapping[str, object],
+) -> dict[str, object] | None:
+    batch = workspace.get("audio_event_omission")
+    if batch is None:
+        return None
     fields = {
         "schema",
         "schema_version",
@@ -438,7 +457,10 @@ def validate_audio_event_omission_workspace(
         "queue_sha256",
     ):
         require_workspace_sha256(batch.get(field), f"Audio-event omission {field}")
-    root = Path(directory)
+    return batch
+
+
+def _validate_omission_authority_files(root: Path, batch: Mapping[str, object]) -> None:
     for path_field, hash_field, label in (
         ("base_workspace_path", "base_workspace_sha256", "base workspace"),
         ("base_state_path", "base_state_sha256", "base state"),
@@ -453,14 +475,13 @@ def validate_audio_event_omission_workspace(
             raise AuthoringWorkbenchError(
                 f"Audio-event omission {label} authority changed"
             )
-    queue, state, _payload, _state_sha256 = load_stable_workspace_generation_state(
-        root,
-        workspace,
-        "audio-event omission workspace",
-        error_type=AuthoringWorkbenchError,
-    )
-    if sha256_file(root / "queue.jsonl") != batch["queue_sha256"]:
-        raise AuthoringWorkbenchError("Audio-event omission queue changed")
+
+
+def _validate_omission_items(
+    queue: VoiceGenerationQueue,
+    state: dict[str, object],
+    batch: Mapping[str, object],
+) -> None:
     state_items = _generation_state_items(state)
     queue_by_id = {item.queue_id: item for item in queue.items}
     items = batch.get("items")
