@@ -177,24 +177,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/offline_fallback_authority.py",
-      "scope": "_load_authority",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/offline_fallback_authority.py",
-      "scope": "load_offline_fallback_authorities",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/offline_fallback_authority.py",
-      "scope": "validate_offline_fallback_authority_records",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/pending_resolution.py",
       "scope": "_validated_plan_document",
       "count": 1
@@ -909,18 +891,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/offline_fallback_authority.py",
-      "scope": "_load_authority",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/offline_fallback_authority.py",
-      "scope": "validate_offline_fallback_authority_records",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/queue_builder.py",
       "scope": "plan_generation_queue",
       "count": 1
@@ -1505,12 +1475,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/missing_voice_reuse_review_ui.py",
       "scope": "MissingVoiceReuseReviewDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/offline_fallback_authority.py",
-      "scope": "_load_authority",
       "count": 1
     },
     {
