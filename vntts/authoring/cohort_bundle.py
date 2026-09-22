@@ -9,7 +9,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NotRequired, TypeAlias, TypedDict, TypeIs
+from typing import Any, NotRequired, TypeAlias, TypedDict, TypeIs
 
 from vntts_artifacts.atomic_io import atomic_write_json
 
@@ -344,6 +344,13 @@ class _ReconciledOutcome(TypedDict):
     clean_samples_per_bucket: int
 
 
+class _ReconciledSuccessors(TypedDict):
+    remaining_items: list[_PlanItem]
+    expected_by_id: dict[str, tuple[str, str]]
+    clean_samples_per_bucket: int
+    used_terminal: bool
+
+
 @dataclass(frozen=True)
 class CohortReviewBundle:
     """One exact multi-workspace review inventory."""
@@ -427,6 +434,25 @@ class CohortReviewRecoveredAssessment:
     queue_id: str
     assessment: str
     defect_reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _SampleSourcePaths:
+    workspace: Path
+    configuration_path: Path
+    configuration_sha256: str
+    queue_path: Path
+    output: Path
+    state_path: Path
+
+
+@dataclass(frozen=True)
+class _LoadedSampleSource:
+    paths: _SampleSourcePaths
+    queue_sha256: str
+    state_sha256: str
+    queue_records: dict[str, dict[str, object]]
+    state_items: dict[str, Any]
 
 
 def build_cohort_review_bundle(
@@ -747,6 +773,28 @@ def load_cohort_review_observations(
     document = _load_document(path, "cohort review observations")
     root = _validated_bundle_document(original)
     active = _validated_bundle_document(current)
+    observations, version, current_identity_matches = _validated_observations_document(
+        document, root, active
+    )
+    root_allowed = _bundle_sample_audio_by_key(root)
+    allowed = _bundle_sample_audio_by_key(active)
+    entries = observations.get("observations")
+    if not isinstance(entries, list):
+        raise CohortReviewError("Cohort review observations list is invalid")
+    return _recovered_observations(
+        entries,
+        version,
+        allowed,
+        root_allowed,
+        current_identity_matches,
+    )
+
+
+def _validated_observations_document(
+    document: object,
+    root: _BundleDocument,
+    active: _BundleDocument,
+) -> tuple[dict[str, object], int, bool]:
     if not isinstance(document, dict):
         raise CohortReviewError("Cohort review observations must be an object")
     body = {key: value for key, value in document.items() if key != "observations_id"}
@@ -762,62 +810,31 @@ def load_cohort_review_observations(
         document.get("current_bundle_id"), "Cohort observations current bundle ID"
     )
     current_identity_matches = observed_bundle_id == active["bundle_id"]
-    root_allowed = {
+    return document, document["schema_version"], current_identity_matches
+
+
+def _bundle_sample_audio_by_key(bundle: _BundleDocument) -> dict[AssessmentKey, str]:
+    return {
         (cohort["workspace_id"], cohort["cohort_id"], sample["queue_id"]): sample[
             "audio_sha256"
         ]
-        for cohort in root["cohorts"]
+        for cohort in bundle["cohorts"]
         for sample in cohort["samples"]
     }
-    allowed = {
-        (cohort["workspace_id"], cohort["cohort_id"], sample["queue_id"]): sample[
-            "audio_sha256"
-        ]
-        for cohort in active["cohorts"]
-        for sample in cohort["samples"]
-    }
-    entries = document.get("observations")
-    if not isinstance(entries, list):
-        raise CohortReviewError("Cohort review observations list is invalid")
-    recovered = []
-    seen = set()
-    version = document["schema_version"]
+
+
+def _recovered_observations(
+    entries: list[object],
+    version: int,
+    allowed: Mapping[AssessmentKey, str],
+    root_allowed: Mapping[AssessmentKey, str],
+    current_identity_matches: bool,
+) -> tuple[CohortReviewRecoveredAssessment, ...]:
+    recovered: list[CohortReviewRecoveredAssessment] = []
+    seen: set[AssessmentKey] = set()
     for entry in entries:
-        if not isinstance(entry, dict):
-            raise CohortReviewError("Cohort review observation must be an object")
-        if set(entry) != {
-            "workspace_id",
-            "cohort_id",
-            "queue_id",
-            "audio_sha256",
-            "assessment",
-            *({"defect_reasons"} if version == 2 else set()),
-        }:
-            raise CohortReviewError("Cohort review observation authority is invalid")
-        key = (
-            _required_text(
-                entry.get("workspace_id"), "Cohort observation workspace ID"
-            ),
-            _required_sha256(entry.get("cohort_id"), "Cohort observation cohort ID"),
-            _required_text(entry.get("queue_id"), "Cohort observation queue ID"),
-        )
-        audio_sha256 = _required_sha256(
-            entry.get("audio_sha256"), "Cohort observation audio sha256"
-        )
-        if key in seen or entry.get("assessment") not in {"heard", "bad"}:
-            raise CohortReviewError("Cohort review observation authority is invalid")
-        reasons = entry.get("defect_reasons", [])
-        if (
-            not isinstance(reasons, list)
-            or reasons != sorted(set(reasons))
-            or any(reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons)
-            or (entry["assessment"] == "bad" and version == 2 and not reasons)
-            or (entry["assessment"] != "bad" and reasons)
-        ):
-            raise CohortReviewError(
-                "Cohort review observation defect reasons are invalid"
-            )
-        seen.add(key)
+        observation = _validated_observation_entry(entry, version, seen)
+        key, audio_sha256, assessment, reasons = observation
         if key not in allowed:
             if current_identity_matches or root_allowed.get(key) != audio_sha256:
                 raise CohortReviewError(
@@ -831,11 +848,49 @@ def load_cohort_review_observations(
                 workspace_id=key[0],
                 cohort_id=key[1],
                 queue_id=key[2],
-                assessment=entry["assessment"],
-                defect_reasons=tuple(reasons),
+                assessment=assessment,
+                defect_reasons=reasons,
             )
         )
     return tuple(recovered)
+
+
+def _validated_observation_entry(
+    entry: object, version: int, seen: set[AssessmentKey]
+) -> tuple[AssessmentKey, str, str, tuple[str, ...]]:
+    if not isinstance(entry, dict):
+        raise CohortReviewError("Cohort review observation must be an object")
+    if set(entry) != {
+        "workspace_id",
+        "cohort_id",
+        "queue_id",
+        "audio_sha256",
+        "assessment",
+        *({"defect_reasons"} if version == 2 else set()),
+    }:
+        raise CohortReviewError("Cohort review observation authority is invalid")
+    key = (
+        _required_text(entry.get("workspace_id"), "Cohort observation workspace ID"),
+        _required_sha256(entry.get("cohort_id"), "Cohort observation cohort ID"),
+        _required_text(entry.get("queue_id"), "Cohort observation queue ID"),
+    )
+    audio_sha256 = _required_sha256(
+        entry.get("audio_sha256"), "Cohort observation audio sha256"
+    )
+    assessment = entry.get("assessment")
+    if key in seen or assessment not in {"heard", "bad"}:
+        raise CohortReviewError("Cohort review observation authority is invalid")
+    reasons = entry.get("defect_reasons", [])
+    if (
+        not isinstance(reasons, list)
+        or reasons != sorted(set(reasons))
+        or any(reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons)
+        or (assessment == "bad" and version == 2 and not reasons)
+        or (assessment != "bad" and reasons)
+    ):
+        raise CohortReviewError("Cohort review observation defect reasons are invalid")
+    seen.add(key)
+    return key, audio_sha256, assessment, tuple(reasons)
 
 
 def write_cohort_review_observations(
@@ -1198,11 +1253,38 @@ def _reconciled_cohort_outcome(
     decisions: Sequence[_DecisionDocument],
 ) -> _ReconciledOutcome:
     target = cohort["items"]
-    remaining: list[_PlanItem] = list(target)
+    successors = _reconciled_successors(cohort, decisions)
+    observed = _observed_cohort_outcomes(target, current)
+    remaining_ids = {value["queue_id"] for value in successors["remaining_items"]}
+    expected_by_id = {
+        **successors["expected_by_id"],
+        **{queue_id: ("generated", "pending_review") for queue_id in remaining_ids},
+    }
+    if not successors["used_terminal"] and set(observed.values()) != {
+        ("generated", "pending_review")
+    }:
+        raise CohortReviewError("Cohort changed without exact terminal evidence")
+    if any(
+        observed[queue_id] != expected for queue_id, expected in expected_by_id.items()
+    ):
+        raise CohortReviewError("Cohort terminal state is mixed or inconsistent")
+    return {
+        "terminal": not successors["remaining_items"],
+        "remaining_items": successors["remaining_items"],
+        "clean_samples_per_bucket": successors["clean_samples_per_bucket"],
+    }
+
+
+def _reconciled_successors(
+    cohort: _PlanCohort, decisions: Sequence[_DecisionDocument]
+) -> _ReconciledSuccessors:
+    remaining: list[_PlanItem] = list(cohort["items"])
     expected_by_id: dict[str, tuple[str, str]] = {}
     clean_samples = 1
     used_terminal = False
-    seen_target_identities = set()
+    seen_target_identities: set[tuple[tuple[object, object, object, object], ...]] = (
+        set()
+    )
     while remaining:
         target_identity = _cohort_target_identity(remaining)
         if target_identity in seen_target_identities:
@@ -1214,59 +1296,92 @@ def _reconciled_cohort_outcome(
             if decision["cohort_id"] == cohort["cohort_id"]
             and _cohort_target_identity(decision["target_items"]) == target_identity
         ]
-        expansions = [value for value in matching if value["decision"] == "expand"]
-        clean_samples = max(
-            [
-                clean_samples,
-                *[
-                    value["next_clean_samples_per_bucket"]
-                    for value in expansions
-                    if value["next_clean_samples_per_bucket"] is not None
-                ],
-            ]
-        )
-        terminal = [value for value in matching if value["decision"] != "expand"]
-        terminal_projections: list[tuple[tuple[str, str], ...]] = []
-        for value in terminal:
-            item_statuses = value.get("item_review_statuses")
-            if isinstance(item_statuses, list):
-                projection = tuple(
-                    (item["queue_id"], item["review_status"]) for item in item_statuses
-                )
-            else:
-                review_status = value.get("projection_review_status")
-                if not isinstance(review_status, str):
-                    raise CohortReviewError(
-                        "Terminal cohort decision review status is invalid"
-                    )
-                projection = tuple(
-                    (item["queue_id"], review_status) for item in value["target_items"]
-                )
-            terminal_projections.append(projection)
-        if len(set(terminal_projections)) > 1:
-            raise CohortReviewError("Cohort review evidence has conflicting decisions")
-        if not terminal_projections:
+        clean_samples = _expanded_clean_sample_count(clean_samples, matching)
+        statuses = _terminal_cohort_statuses(matching)
+        if statuses is None:
             break
         used_terminal = True
-        statuses = dict(terminal_projections[0])
         remaining_ids = {value["queue_id"] for value in remaining}
         if set(statuses) != remaining_ids:
             raise CohortReviewError("Cohort terminal projection is incomplete")
-        next_remaining: list[_PlanItem] = []
-        for item in remaining:
-            queue_id = item["queue_id"]
-            review_status = statuses[queue_id]
-            if review_status == "pending_review":
-                next_remaining.append(item)
-                continue
-            expected_by_id[queue_id] = (
-                ("approved", "approved")
-                if review_status == "approved"
-                else ("generated", "rejected")
-            )
-        remaining = next_remaining
-    observed = []
-    observed_by_id = {}
+        remaining = _remaining_after_terminal_statuses(
+            remaining, statuses, expected_by_id
+        )
+    return {
+        "remaining_items": remaining,
+        "expected_by_id": expected_by_id,
+        "clean_samples_per_bucket": clean_samples,
+        "used_terminal": used_terminal,
+    }
+
+
+def _expanded_clean_sample_count(
+    current: int, decisions: Sequence[_DecisionDocument]
+) -> int:
+    return max(
+        [
+            current,
+            *(
+                value["next_clean_samples_per_bucket"]
+                for value in decisions
+                if value["decision"] == "expand"
+                and value["next_clean_samples_per_bucket"] is not None
+            ),
+        ]
+    )
+
+
+def _terminal_cohort_statuses(
+    decisions: Sequence[_DecisionDocument],
+) -> dict[str, str] | None:
+    projections = tuple(
+        _terminal_cohort_projection(value)
+        for value in decisions
+        if value["decision"] != "expand"
+    )
+    if len(set(projections)) > 1:
+        raise CohortReviewError("Cohort review evidence has conflicting decisions")
+    return dict(projections[0]) if projections else None
+
+
+def _terminal_cohort_projection(
+    decision: _DecisionDocument,
+) -> tuple[tuple[str, str], ...]:
+    item_statuses = decision.get("item_review_statuses")
+    if isinstance(item_statuses, list):
+        return tuple(
+            (item["queue_id"], item["review_status"]) for item in item_statuses
+        )
+    review_status = decision.get("projection_review_status")
+    if not isinstance(review_status, str):
+        raise CohortReviewError("Terminal cohort decision review status is invalid")
+    return tuple((item["queue_id"], review_status) for item in decision["target_items"])
+
+
+def _remaining_after_terminal_statuses(
+    remaining: Sequence[_PlanItem],
+    statuses: Mapping[str, str],
+    expected_by_id: dict[str, tuple[str, str]],
+) -> list[_PlanItem]:
+    next_remaining: list[_PlanItem] = []
+    for item in remaining:
+        queue_id = item["queue_id"]
+        review_status = statuses[queue_id]
+        if review_status == "pending_review":
+            next_remaining.append(item)
+            continue
+        expected_by_id[queue_id] = (
+            ("approved", "approved")
+            if review_status == "approved"
+            else ("generated", "rejected")
+        )
+    return next_remaining
+
+
+def _observed_cohort_outcomes(
+    target: Sequence[_PlanItem], current: _CurrentSourceSnapshot
+) -> dict[str, tuple[object, object]]:
+    observed: dict[str, tuple[object, object]] = {}
     for item in target:
         queue_id = item["queue_id"]
         queue_item = current["queue"].get(queue_id)
@@ -1293,24 +1408,8 @@ def _reconciled_cohort_outcome(
             raise CohortReviewError(f"Bundle cohort WAV changed: {queue_id}")
         current["artifacts"].append((audio, item["audio_sha256"], queue_id))
         outcome = (result.get("status"), result.get("review_status"))
-        observed.append(outcome)
-        observed_by_id[queue_id] = outcome
-    remaining_ids = {value["queue_id"] for value in remaining}
-    expected_by_id.update(
-        {queue_id: ("generated", "pending_review") for queue_id in remaining_ids}
-    )
-    if not used_terminal and set(observed) != {("generated", "pending_review")}:
-        raise CohortReviewError("Cohort changed without exact terminal evidence")
-    if any(
-        observed_by_id[queue_id] != expected
-        for queue_id, expected in expected_by_id.items()
-    ):
-        raise CohortReviewError("Cohort terminal state is mixed or inconsistent")
-    return {
-        "terminal": not remaining,
-        "remaining_items": remaining,
-        "clean_samples_per_bucket": clean_samples,
-    }
+        observed[queue_id] = outcome
+    return observed
 
 
 def _assert_current_source_snapshot(current: _CurrentSourceSnapshot) -> None:
@@ -1495,16 +1594,48 @@ def _validated_progress_document(
 def _load_source_sample_records(
     source: _SourceDocument, source_cohorts: Sequence[_BundleCohort]
 ) -> tuple[Path, dict[str, ReviewItem]]:
+    loaded = _load_sample_source(source)
+    sample_by_id = _source_samples_by_id(source_cohorts)
+    review_items: dict[str, ReviewItem] = {}
+    for queue_id, (cohort, sample) in sample_by_id.items():
+        review_items[queue_id] = _review_item_from_sample(
+            loaded, queue_id, cohort, sample
+        )
+    _assert_sample_source_unchanged(loaded)
+    return loaded.paths.workspace, review_items
+
+
+def _load_sample_source(source: _SourceDocument) -> _LoadedSampleSource:
+    paths = _sample_source_paths(source)
+    queue_payload = _read_bytes(paths.queue_path, "bundle queue")
+    state_payload = _read_bytes(paths.state_path, "bundle state")
+    queue_sha256 = hashlib.sha256(queue_payload).hexdigest()
+    state_sha256 = hashlib.sha256(state_payload).hexdigest()
+    if queue_sha256 != source["plan"]["queue_sha256"]:
+        raise CohortReviewError("Bundle source queue changed")
+    if state_sha256 != source["plan"]["state_sha256"]:
+        raise CohortReviewError("Bundle source state changed")
+    state = _decode_json(state_payload, "bundle state")
+    if not isinstance(state, dict) or not isinstance(state.get("items"), dict):
+        raise CohortReviewError("Bundle source state items are invalid")
+    if state.get("queue_sha256") != queue_sha256:
+        raise CohortReviewError("Bundle source state queue identity changed")
+    return _LoadedSampleSource(
+        paths=paths,
+        queue_sha256=queue_sha256,
+        state_sha256=state_sha256,
+        queue_records=_decode_queue_records(queue_payload),
+        state_items=state["items"],
+    )
+
+
+def _sample_source_paths(source: _SourceDocument) -> _SampleSourcePaths:
     workspace = Path(source["workspace"])
     configuration_path = workspace / "workspace.json"
     if configuration_path.is_symlink():
         raise CohortReviewError("Bundle workspace configuration cannot be a symlink")
-    configuration_payload = _read_bytes(
-        configuration_path, "bundle workspace configuration"
-    )
-    configuration = _decode_json(
-        configuration_payload, "bundle workspace configuration"
-    )
+    payload = _read_bytes(configuration_path, "bundle workspace configuration")
+    configuration = _decode_json(payload, "bundle workspace configuration")
     if (
         not isinstance(configuration, dict)
         or configuration.get("workspace_id") != source["workspace_id"]
@@ -1523,20 +1654,19 @@ def _load_source_sample_records(
     state_path = output / "generation-state.json"
     if queue_path.is_symlink() or state_path.is_symlink():
         raise CohortReviewError("Bundle queue and state must not be symlinks")
-    queue_payload = _read_bytes(queue_path, "bundle queue")
-    state_payload = _read_bytes(state_path, "bundle state")
-    queue_sha256 = hashlib.sha256(queue_payload).hexdigest()
-    state_sha256 = hashlib.sha256(state_payload).hexdigest()
-    if queue_sha256 != source["plan"]["queue_sha256"]:
-        raise CohortReviewError("Bundle source queue changed")
-    if state_sha256 != source["plan"]["state_sha256"]:
-        raise CohortReviewError("Bundle source state changed")
-    state = _decode_json(state_payload, "bundle state")
-    if not isinstance(state, dict) or not isinstance(state.get("items"), dict):
-        raise CohortReviewError("Bundle source state items are invalid")
-    if state.get("queue_sha256") != queue_sha256:
-        raise CohortReviewError("Bundle source state queue identity changed")
-    queue_records = _decode_queue_records(queue_payload)
+    return _SampleSourcePaths(
+        workspace=workspace,
+        configuration_path=configuration_path,
+        configuration_sha256=hashlib.sha256(payload).hexdigest(),
+        queue_path=queue_path,
+        output=output,
+        state_path=state_path,
+    )
+
+
+def _source_samples_by_id(
+    source_cohorts: Sequence[_BundleCohort],
+) -> dict[str, tuple[_BundleCohort, _BundleSample]]:
     sample_by_id = {
         sample["queue_id"]: (cohort, sample)
         for cohort in source_cohorts
@@ -1544,94 +1674,118 @@ def _load_source_sample_records(
     }
     if len(sample_by_id) != sum(len(cohort["samples"]) for cohort in source_cohorts):
         raise CohortReviewError("Bundle sample queue IDs are duplicated")
-    review_items = {}
-    for queue_id, (cohort, sample) in sample_by_id.items():
-        queue_item = queue_records.get(queue_id)
-        result = state["items"].get(queue_id)
-        if not isinstance(queue_item, dict) or not isinstance(result, dict):
-            raise CohortReviewError(f"Bundle sample disappeared: {queue_id}")
-        text = queue_item.get("text")
-        if (
-            not isinstance(text, str)
-            or hashlib.sha256(text.encode("utf-8")).hexdigest() != sample["text_sha256"]
-            or result.get("status") != "generated"
-            or result.get("review_status") != "pending_review"
-            or result.get("file_sha256") != sample["audio_sha256"]
-        ):
-            raise CohortReviewError(f"Bundle sample authority changed: {queue_id}")
-        audio = _contained_source_path(
-            output, result.get("path"), f"bundle sample {queue_id} WAV"
-        )
-        if not audio.is_file():
-            raise CohortReviewError(f"Bundle sample WAV is missing: {queue_id}")
-        quality = result.get("quality")
-        quality = quality if isinstance(quality, dict) else {}
-        duration = quality.get("duration_seconds")
-        duration = (
-            float(duration)
-            if isinstance(duration, (int, float)) and duration > 0
+    return sample_by_id
+
+
+def _review_item_from_sample(
+    loaded: _LoadedSampleSource,
+    queue_id: str,
+    cohort: _BundleCohort,
+    sample: _BundleSample,
+) -> ReviewItem:
+    queue_item = loaded.queue_records.get(queue_id)
+    result = loaded.state_items.get(queue_id)
+    if not isinstance(queue_item, dict) or not isinstance(result, dict):
+        raise CohortReviewError(f"Bundle sample disappeared: {queue_id}")
+    text = queue_item.get("text")
+    if (
+        not isinstance(text, str)
+        or hashlib.sha256(text.encode("utf-8")).hexdigest() != sample["text_sha256"]
+        or result.get("status") != "generated"
+        or result.get("review_status") != "pending_review"
+        or result.get("file_sha256") != sample["audio_sha256"]
+    ):
+        raise CohortReviewError(f"Bundle sample authority changed: {queue_id}")
+    audio = _contained_source_path(
+        loaded.paths.output, result.get("path"), f"bundle sample {queue_id} WAV"
+    )
+    if not audio.is_file():
+        raise CohortReviewError(f"Bundle sample WAV is missing: {queue_id}")
+    return _bound_sample_review_item(
+        loaded, queue_id, cohort, sample, queue_item, result, text, audio
+    )
+
+
+def _bound_sample_review_item(
+    loaded: _LoadedSampleSource,
+    queue_id: str,
+    cohort: _BundleCohort,
+    sample: _BundleSample,
+    queue_item: dict[str, object],
+    result: dict[str, Any],
+    text: str,
+    audio: Path,
+) -> ReviewItem:
+    quality = result.get("quality")
+    quality = quality if isinstance(quality, dict) else {}
+    duration = quality.get("duration_seconds")
+    duration = (
+        float(duration) if isinstance(duration, (int, float)) and duration > 0 else None
+    )
+    peak = quality.get("peak")
+    peak = float(peak) if isinstance(peak, (int, float)) else None
+    words = len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
+    baseline_wpm = sample.get("pace_baseline_wpm")
+    pace_ratio = sample.get("pace_ratio")
+    return ReviewItem(
+        queue_id=queue_id,
+        line_id=str(queue_item.get("line_id") or sample["line_id"]),
+        speaker=str(queue_item.get("speaker") or "unknown"),
+        voice_character=str(cohort["identity"]["voice_character"]),
+        text=text,
+        status="generated",
+        review_status="pending_review",
+        attempts=_attempt_count(result),
+        seed=result.get("seed"),
+        last_error=result.get("last_error"),
+        audio=audio,
+        authority=ReviewAuthority(
+            queue_sha256=loaded.queue_sha256,
+            state_sha256=loaded.state_sha256,
+            item_sha256=canonical_document_sha256(result),
+            audio_sha256=sample["audio_sha256"],
+        ),
+        state=loaded.paths.state_path,
+        queue=loaded.paths.queue_path,
+        duration_seconds=duration,
+        words_per_minute=(
+            sample.get("words_per_minute")
+            if isinstance(sample.get("words_per_minute"), (int, float))
             else None
-        )
-        peak = quality.get("peak")
-        peak = float(peak) if isinstance(peak, (int, float)) else None
-        words = len(re.findall(r"[\w’'-]+", text, flags=re.UNICODE))
-        baseline_wpm = sample.get("pace_baseline_wpm")
-        pace_ratio = sample.get("pace_ratio")
-        review_items[queue_id] = ReviewItem(
-            queue_id=queue_id,
-            line_id=str(queue_item.get("line_id") or sample["line_id"]),
-            speaker=str(queue_item.get("speaker") or "unknown"),
-            voice_character=str(cohort["identity"]["voice_character"]),
-            text=text,
-            status="generated",
-            review_status="pending_review",
-            attempts=int(result.get("attempts") or 0),
-            seed=result.get("seed"),
-            last_error=result.get("last_error"),
-            audio=audio,
-            authority=ReviewAuthority(
-                queue_sha256=queue_sha256,
-                state_sha256=state_sha256,
-                item_sha256=canonical_document_sha256(result),
-                audio_sha256=sample["audio_sha256"],
-            ),
-            state=state_path,
-            queue=queue_path,
-            duration_seconds=duration,
-            words_per_minute=(
-                sample.get("words_per_minute")
-                if isinstance(sample.get("words_per_minute"), (int, float))
-                else None
-                if duration is None
-                else float(words * 60 / duration)
-            ),
-            peak=peak,
-            technical_flags=tuple(sample["technical_flags"]),
-            pace_baseline_wpm=(
-                float(baseline_wpm) if isinstance(baseline_wpm, (int, float)) else None
-            ),
-            pace_ratio=(
-                float(pace_ratio) if isinstance(pace_ratio, (int, float)) else None
-            ),
-            pace_baseline_scope=(
-                sample.get("pace_baseline_scope")
-                if isinstance(sample.get("pace_baseline_scope"), str)
-                else None
-            ),
-            pace_advisories=tuple(sample.get("pace_advisories") or ()),
-        )
+            if duration is None
+            else float(words * 60 / duration)
+        ),
+        peak=peak,
+        technical_flags=tuple(sample["technical_flags"]),
+        pace_baseline_wpm=(
+            float(baseline_wpm) if isinstance(baseline_wpm, (int, float)) else None
+        ),
+        pace_ratio=float(pace_ratio) if isinstance(pace_ratio, (int, float)) else None,
+        pace_baseline_scope=(
+            sample.get("pace_baseline_scope")
+            if isinstance(sample.get("pace_baseline_scope"), str)
+            else None
+        ),
+        pace_advisories=tuple(sample.get("pace_advisories") or ()),
+    )
+
+
+def _attempt_count(result: Mapping[str, Any]) -> int:
+    return int(result.get("attempts") or 0)
+
+
+def _assert_sample_source_unchanged(loaded: _LoadedSampleSource) -> None:
     for path, expected, label in (
         (
-            configuration_path,
-            hashlib.sha256(configuration_payload).hexdigest(),
+            loaded.paths.configuration_path,
+            loaded.paths.configuration_sha256,
             "workspace configuration",
         ),
-        (queue_path, queue_sha256, "queue"),
-        (state_path, state_sha256, "state"),
+        (loaded.paths.queue_path, loaded.queue_sha256, "queue"),
+        (loaded.paths.state_path, loaded.state_sha256, "state"),
     ):
         if hashlib.sha256(_read_bytes(path, f"bundle {label}")).hexdigest() != expected:
             raise CohortReviewError(f"Bundle {label} changed while loading samples")
-    return workspace, review_items
 
 
 def _contained_source_path(root: PathLike, relative: object, label: str) -> Path:
@@ -1778,6 +1932,39 @@ def _validated_bundle_document(bundle: CohortReviewBundle | object) -> _BundleDo
     document = bundle.document if isinstance(bundle, CohortReviewBundle) else bundle
     if not isinstance(document, dict):
         raise CohortReviewError("Cohort review bundle must be an object")
+    _validate_bundle_document_header(document)
+    _validated_bundle_policy(document.get("policy"))
+    source_values = document.get("sources")
+    cohort_values = document.get("cohorts")
+    if not isinstance(source_values, list) or not isinstance(cohort_values, list):
+        raise CohortReviewError("Cohort review bundle inventories must be lists")
+    sources, expected_cohorts = _validated_bundle_sources(source_values)
+    _validate_distinct_bundle_sources(sources)
+    _validate_bundle_counts(document, sources, cohort_values)
+    actual = _validated_bundle_cohorts(cohort_values)
+    rebuilt = _flatten_validated_sources(expected_cohorts)
+    if actual != rebuilt:
+        raise CohortReviewError("Cohort review bundle cohort inventory changed")
+    body = {key: value for key, value in document.items() if key != "bundle_id"}
+    if document.get("bundle_id") != canonical_document_sha256(body):
+        raise CohortReviewError("Cohort review bundle identity changed")
+    return {
+        "schema": document["schema"],
+        "schema_version": document["schema_version"],
+        "policy": document["policy"],
+        "workspace_count": document["workspace_count"],
+        "cohort_count": document["cohort_count"],
+        "pending_item_count": document["pending_item_count"],
+        "sample_item_count": document["sample_item_count"],
+        "blocked_item_count": document["blocked_item_count"],
+        "blocked_source_occurrence_count": document["blocked_source_occurrence_count"],
+        "sources": document["sources"],
+        "cohorts": document["cohorts"],
+        "bundle_id": document["bundle_id"],
+    }
+
+
+def _validate_bundle_document_header(document: dict[str, object]) -> None:
     if set(document) != {
         "schema",
         "schema_version",
@@ -1797,7 +1984,9 @@ def _validated_bundle_document(bundle: CohortReviewBundle | object) -> _BundleDo
         raise CohortReviewError("Unsupported cohort review bundle schema")
     if document.get("schema_version") != COHORT_REVIEW_BUNDLE_VERSION:
         raise CohortReviewError("Unsupported cohort review bundle version")
-    policy = document.get("policy")
+
+
+def _validated_bundle_policy(policy: object) -> None:
     if not isinstance(policy, dict):
         raise CohortReviewError("Cohort review bundle policy must be an object")
     if set(policy) != {
@@ -1812,40 +2001,58 @@ def _validated_bundle_document(bundle: CohortReviewBundle | object) -> _BundleDo
         raise CohortReviewError("Cohort review bundle projection policy is invalid")
     if policy.get("sample_policy") != "retained by each exact source plan":
         raise CohortReviewError("Cohort review bundle sample policy is invalid")
-    sources = document.get("sources")
-    cohorts = document.get("cohorts")
-    if not isinstance(sources, list) or not isinstance(cohorts, list):
-        raise CohortReviewError("Cohort review bundle inventories must be lists")
-    paths = []
-    workspace_ids = []
-    expected_cohorts = []
-    for source in sources:
-        if not isinstance(source, dict):
-            raise CohortReviewError("Cohort review bundle source must be an object")
-        if set(source) != {"workspace", "workspace_id", "plan"}:
-            raise CohortReviewError("Cohort review bundle source fields are invalid")
-        path = source.get("workspace")
-        if not isinstance(path, str) or not path:
-            raise CohortReviewError("Cohort review bundle workspace path is invalid")
-        canonical = str(Path(path).resolve())
-        if canonical != path:
-            raise CohortReviewError("Cohort review bundle workspace must be canonical")
-        plan = _validated_plan_document(source.get("plan"))
-        if source.get("workspace_id") != plan["workspace_id"]:
-            raise CohortReviewError("Cohort review bundle source identity changed")
-        paths.append(path)
-        workspace_ids.append(plan["workspace_id"])
-        for cohort in plan["cohorts"]:
-            expected_cohorts.append(
-                (
-                    path,
-                    plan["workspace_id"],
-                    plan["plan_id"],
-                    cohort,
-                )
-            )
+
+
+def _validated_bundle_sources(
+    values: Sequence[object],
+) -> tuple[list[_SourceDocument], list[tuple[str, str, str, _PlanCohort]]]:
+    sources: list[_SourceDocument] = []
+    expected_cohorts: list[tuple[str, str, str, _PlanCohort]] = []
+    for value in values:
+        source, source_cohorts = _validated_bundle_source(value)
+        sources.append(source)
+        expected_cohorts.extend(source_cohorts)
+    return sources, expected_cohorts
+
+
+def _validated_bundle_source(
+    value: object,
+) -> tuple[_SourceDocument, list[tuple[str, str, str, _PlanCohort]]]:
+    if not isinstance(value, dict):
+        raise CohortReviewError("Cohort review bundle source must be an object")
+    if set(value) != {"workspace", "workspace_id", "plan"}:
+        raise CohortReviewError("Cohort review bundle source fields are invalid")
+    path = value.get("workspace")
+    if not isinstance(path, str) or not path:
+        raise CohortReviewError("Cohort review bundle workspace path is invalid")
+    if str(Path(path).resolve()) != path:
+        raise CohortReviewError("Cohort review bundle workspace must be canonical")
+    plan = _validated_plan_document(value.get("plan"))
+    if value.get("workspace_id") != plan["workspace_id"]:
+        raise CohortReviewError("Cohort review bundle source identity changed")
+    source: _SourceDocument = {
+        "workspace": path,
+        "workspace_id": plan["workspace_id"],
+        "plan": plan,
+    }
+    return source, [
+        (path, plan["workspace_id"], plan["plan_id"], cohort)
+        for cohort in plan["cohorts"]
+    ]
+
+
+def _validate_distinct_bundle_sources(sources: Sequence[_SourceDocument]) -> None:
+    paths = [source["workspace"] for source in sources]
+    workspace_ids = [source["workspace_id"] for source in sources]
     if len(paths) != len(set(paths)) or len(workspace_ids) != len(set(workspace_ids)):
         raise CohortReviewError("Cohort review bundle sources must be distinct")
+
+
+def _validate_bundle_counts(
+    document: Mapping[str, object],
+    sources: Sequence[_SourceDocument],
+    cohorts: Sequence[object],
+) -> None:
     if document.get("workspace_count") != len(sources):
         raise CohortReviewError("Cohort review bundle workspace count is invalid")
     if document.get("cohort_count") != len(cohorts):
@@ -1873,33 +2080,14 @@ def _validated_bundle_document(bundle: CohortReviewBundle | object) -> _BundleDo
             "Cohort review bundle blocked source-occurrence count is invalid"
         )
 
-    actual = []
-    for entry in cohorts:
+
+def _validated_bundle_cohorts(values: Sequence[object]) -> list[dict[str, object]]:
+    actual: list[dict[str, object]] = []
+    for entry in values:
         if not isinstance(entry, dict):
             raise CohortReviewError("Cohort review bundle cohort must be an object")
         actual.append(entry)
-    rebuilt = _flatten_validated_sources(expected_cohorts)
-    if actual != rebuilt:
-        raise CohortReviewError("Cohort review bundle cohort inventory changed")
-    body = {key: value for key, value in document.items() if key != "bundle_id"}
-    bundle_id = canonical_document_sha256(body)
-    if document.get("bundle_id") != bundle_id:
-        raise CohortReviewError("Cohort review bundle identity changed")
-    validated: _BundleDocument = {
-        "schema": document["schema"],
-        "schema_version": document["schema_version"],
-        "policy": document["policy"],
-        "workspace_count": document["workspace_count"],
-        "cohort_count": document["cohort_count"],
-        "pending_item_count": document["pending_item_count"],
-        "sample_item_count": document["sample_item_count"],
-        "blocked_item_count": document["blocked_item_count"],
-        "blocked_source_occurrence_count": document["blocked_source_occurrence_count"],
-        "sources": document["sources"],
-        "cohorts": document["cohorts"],
-        "bundle_id": document["bundle_id"],
-    }
-    return validated
+    return actual
 
 
 def _flatten_validated_sources(
