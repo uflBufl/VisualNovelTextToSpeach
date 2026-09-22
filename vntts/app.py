@@ -3452,7 +3452,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         preparation.apply_narrator_settings(candidate, voice_changed=True)
         if dialog.select_affected_after_save is not True:
             return False
-        preparation.select_voice_affected_stories(dialog._impact_results)
+        impact_results = dialog._impact_results
+        assert impact_results is not None
+        preparation.select_voice_affected_stories(impact_results)
         return True
 
     def _narrator_finished(self, result):
