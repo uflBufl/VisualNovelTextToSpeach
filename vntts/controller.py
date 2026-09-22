@@ -3198,37 +3198,12 @@ class AppController:
         self, chunk: SpeechChunk, dialogue_route: object
     ) -> tuple[LiveTTSRoute | None, str | None]:
         mode = self.settings.effective_speaker_announcement_mode
-        announcement_speaker: str | None
         if mode == "off" or chunk.ordinal not in {None, 1}:
             return None, None
         visible_speaker = str(chunk.character or "Narrator").strip() or "Narrator"
-        if mode == "narrator-fallback-roles":
-            if isinstance(dialogue_route, GeneratedAudioRoute):
-                announcement_speaker = dialogue_route.prepared.narrator_fallback_role
-            elif isinstance(dialogue_route, LiveFallbackRoute):
-                announcement_speaker = (
-                    "Unknown"
-                    if is_unattributed_speaker(visible_speaker)
-                    else dialogue_route.decision.requested_voice_character
-                )
-            elif isinstance(dialogue_route, (LiveTTSRoute, PreparedPlayback)):
-                announcement_speaker = (
-                    "Unknown"
-                    if is_unattributed_speaker(visible_speaker)
-                    else visible_speaker
-                    if not is_narrator(visible_speaker)
-                    and self.voice_router is not None
-                    and self.voice_router.registry.resolve(visible_speaker) is None
-                    else None
-                )
-            else:
-                announcement_speaker = None
-        else:
-            announcement_speaker = (
-                "Unknown"
-                if is_unattributed_speaker(visible_speaker)
-                else visible_speaker
-            )
+        announcement_speaker = self._speaker_announcement_candidate(
+            mode, visible_speaker, dialogue_route
+        )
         speaker_key = normalize_character_name(
             announcement_speaker or visible_speaker
         ) or ("unknown" if is_unattributed_speaker(visible_speaker) else "narrator")
@@ -3285,6 +3260,33 @@ class AppController:
                 prepared.cache_source,
             ),
             announcement_speaker,
+        )
+
+    def _speaker_announcement_candidate(
+        self, mode: str, visible_speaker: str, dialogue_route: object
+    ) -> str | None:
+        if mode == "narrator-fallback-roles":
+            if isinstance(dialogue_route, GeneratedAudioRoute):
+                return dialogue_route.prepared.narrator_fallback_role
+            if isinstance(dialogue_route, LiveFallbackRoute):
+                return (
+                    "Unknown"
+                    if is_unattributed_speaker(visible_speaker)
+                    else dialogue_route.decision.requested_voice_character
+                )
+            if isinstance(dialogue_route, (LiveTTSRoute, PreparedPlayback)):
+                return (
+                    "Unknown"
+                    if is_unattributed_speaker(visible_speaker)
+                    else visible_speaker
+                    if not is_narrator(visible_speaker)
+                    and self.voice_router is not None
+                    and self.voice_router.registry.resolve(visible_speaker) is None
+                    else None
+                )
+            return None
+        return (
+            "Unknown" if is_unattributed_speaker(visible_speaker) else visible_speaker
         )
 
     def _play_speaker_announcement(
