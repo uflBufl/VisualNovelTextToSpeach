@@ -14,6 +14,7 @@ from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.text_utils import slugify
 
+from vntts.authoring.advisory_lock import exclusive_advisory_lock
 from vntts.settings import get_local_data_directory
 from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
@@ -367,57 +368,60 @@ class VoicePackManager:
         references = self._validate_reference_files(reference_files)
         pack_path = self.storage_root / slugify(pack, fallback="asset")
         self._check_pack_path(pack_path)
-        manifest_path: Path = pack_path / "manifest.json"
-        manifest = (
-            read_json(manifest_path, None)
-            if manifest_path.exists()
-            else {"version": 2, "voices": []}
-        )
-        if not isinstance(manifest, dict) or manifest.get("version") != 2:
-            raise VoiceManifestError("Existing voice manifest is invalid")
-        voices = manifest.get("voices")
-        if not isinstance(voices, list) or not all(
-            isinstance(item, dict) for item in voices
-        ):
-            raise VoiceManifestError("Existing voice manifest is invalid")
-        references_path = pack_path / "references"
-        references_path.mkdir(parents=True, exist_ok=True)
+        lock_path = pack_path.with_name(f".{pack_path.name}.import.lock")
+        with exclusive_advisory_lock(lock_path, blocking=True):
+            self._check_pack_path(pack_path)
+            manifest_path: Path = pack_path / "manifest.json"
+            manifest = (
+                read_json(manifest_path, None)
+                if manifest_path.exists()
+                else {"version": 2, "voices": []}
+            )
+            if not isinstance(manifest, dict) or manifest.get("version") != 2:
+                raise VoiceManifestError("Existing voice manifest is invalid")
+            voices = manifest.get("voices")
+            if not isinstance(voices, list) or not all(
+                isinstance(item, dict) for item in voices
+            ):
+                raise VoiceManifestError("Existing voice manifest is invalid")
+            references_path = pack_path / "references"
+            references_path.mkdir(parents=True, exist_ok=True)
 
-        copied = []
-        try:
-            for source in references:
-                filename = (
-                    f"{slugify(character, fallback='asset')}-{uuid4().hex[:10]}"
-                    f"{source.suffix.casefold()}"
-                )
-                output = references_path / filename
-                shutil.copy2(source, output)
-                copied.append(output)
-        except Exception:
-            for output in copied:
-                output.unlink(missing_ok=True)
-            raise
+            copied = []
+            try:
+                for source in references:
+                    filename = (
+                        f"{slugify(character, fallback='asset')}-{uuid4().hex[:10]}"
+                        f"{source.suffix.casefold()}"
+                    )
+                    output = references_path / filename
+                    shutil.copy2(source, output)
+                    copied.append(output)
+            except Exception:
+                for output in copied:
+                    output.unlink(missing_ok=True)
+                raise
 
-        voice = {
-            "character": character,
-            "speaker": f"local-{slugify(character, fallback='asset')}-v2",
-            "aliases": [alias.strip() for alias in aliases if alias.strip()],
-            "references": [f"references/{path.name}" for path in copied],
-        }
-        voices = [
-            item
-            for item in voices
-            if str(item.get("character", "")).casefold() != character.casefold()
-        ]
-        voices.append(voice)
-        voices.sort(key=lambda item: item["character"].casefold())
-        atomic_write_json(
-            manifest_path,
-            {"version": 2, "voices": voices},
-        )
-        CharacterVoiceRegistry.from_file(manifest_path)
-        self._write_voice_checksums(pack_path, manifest_path)
-        return manifest_path
+            voice = {
+                "character": character,
+                "speaker": f"local-{slugify(character, fallback='asset')}-v2",
+                "aliases": [alias.strip() for alias in aliases if alias.strip()],
+                "references": [f"references/{path.name}" for path in copied],
+            }
+            voices = [
+                item
+                for item in voices
+                if str(item.get("character", "")).casefold() != character.casefold()
+            ]
+            voices.append(voice)
+            voices.sort(key=lambda item: item["character"].casefold())
+            atomic_write_json(
+                manifest_path,
+                {"version": 2, "voices": voices},
+            )
+            CharacterVoiceRegistry.from_file(manifest_path)
+            self._write_voice_checksums(pack_path, manifest_path)
+            return manifest_path
 
     def import_pack(
         self,
@@ -430,40 +434,43 @@ class VoicePackManager:
         pack_name = pack_name or source_path.parent.name
         pack_path = self.storage_root / slugify(pack_name, fallback="asset")
         self._check_pack_path(pack_path)
-        references_path = pack_path / "references"
-        references_path.mkdir(parents=True, exist_ok=True)
+        lock_path = pack_path.with_name(f".{pack_path.name}.import.lock")
+        with exclusive_advisory_lock(lock_path, blocking=True):
+            self._check_pack_path(pack_path)
+            references_path = pack_path / "references"
+            references_path.mkdir(parents=True, exist_ok=True)
 
-        unique_voices = {
-            id(voice): voice for voice in registry.voices.values()
-        }.values()
-        entries = []
-        for voice in unique_voices:
-            copied_references = []
-            for reference in voice.references:
-                if not reference.is_file():
-                    raise VoiceManifestError(
-                        f"Voice reference does not exist: {reference}"
+            unique_voices = {
+                id(voice): voice for voice in registry.voices.values()
+            }.values()
+            entries = []
+            for voice in unique_voices:
+                copied_references = []
+                for reference in voice.references:
+                    if not reference.is_file():
+                        raise VoiceManifestError(
+                            f"Voice reference does not exist: {reference}"
+                        )
+                    output = references_path / (
+                        f"{slugify(voice.character, fallback='asset')}-{uuid4().hex[:10]}"
+                        f"{reference.suffix.casefold()}"
                     )
-                output = references_path / (
-                    f"{slugify(voice.character, fallback='asset')}-{uuid4().hex[:10]}"
-                    f"{reference.suffix.casefold()}"
+                    shutil.copy2(reference, output)
+                    copied_references.append(f"references/{output.name}")
+                entries.append(
+                    {
+                        "character": voice.character,
+                        "speaker": voice.speaker,
+                        "aliases": list(voice.aliases),
+                        "references": copied_references,
+                    }
                 )
-                shutil.copy2(reference, output)
-                copied_references.append(f"references/{output.name}")
-            entries.append(
-                {
-                    "character": voice.character,
-                    "speaker": voice.speaker,
-                    "aliases": list(voice.aliases),
-                    "references": copied_references,
-                }
-            )
-        entries.sort(key=lambda item: str(item["character"]).casefold())
-        output_manifest: Path = pack_path / "manifest.json"
-        atomic_write_json(output_manifest, {"version": 2, "voices": entries})
-        CharacterVoiceRegistry.from_file(output_manifest)
-        self._write_voice_checksums(pack_path, output_manifest)
-        return output_manifest
+            entries.sort(key=lambda item: str(item["character"]).casefold())
+            output_manifest: Path = pack_path / "manifest.json"
+            atomic_write_json(output_manifest, {"version": 2, "voices": entries})
+            CharacterVoiceRegistry.from_file(output_manifest)
+            self._write_voice_checksums(pack_path, output_manifest)
+            return output_manifest
 
     def validate(self, manifest_path: str | os.PathLike[str]) -> Path:
         manifest_path = Path(manifest_path).expanduser().resolve()

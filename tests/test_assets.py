@@ -1,11 +1,13 @@
 import json
 import os
+import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event
+from threading import Event, Thread
 from unittest.mock import patch
 
+import vntts.assets as assets
 from tests.symlink_support import symlink_or_skip
 from vntts.assets import (
     ModelAsset,
@@ -347,6 +349,11 @@ class ModelAssetManagerTest(unittest.TestCase):
 
 
 class VoicePackManagerTest(unittest.TestCase):
+    def assert_threads_finished(self, *threads):
+        for thread in threads:
+            thread.join(2)
+            self.assertFalse(thread.is_alive())
+
     def test_import_voice_preserves_invalid_existing_manifest(self):
         for payload in (b"{", b'{"version":3,"voices":[]}'):
             with self.subTest(payload=payload), TemporaryDirectory() as directory:
@@ -435,6 +442,93 @@ class VoicePackManagerTest(unittest.TestCase):
             self.assertTrue(reference.is_file())
             self.assertTrue(imported_voice.reference.is_file())
             self.assertNotEqual(imported_voice.reference, reference)
+
+    def test_import_voice_waits_for_import_pack_and_keeps_both_voices(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source_pack = root / "source"
+            source_pack.mkdir()
+            source_reference = source_pack / "source.wav"
+            source_reference.write_bytes(b"source voice")
+            source_manifest = source_pack / "manifest.json"
+            source_manifest.write_text(
+                json.dumps(
+                    {
+                        "voices": [
+                            {
+                                "character": "Source",
+                                "speaker": "source-v2",
+                                "reference": source_reference.name,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            local_reference = root / "marcus.wav"
+            local_reference.write_bytes(b"local voice")
+            manager = VoicePackManager(root / "managed")
+            target_manifest = (root / "managed" / "custom" / "manifest.json").resolve()
+            target_manifest.parent.mkdir(parents=True)
+            target_manifest.write_text(
+                json.dumps({"version": 2, "voices": []}), encoding="utf-8"
+            )
+            pack_copy_started = Event()
+            release_pack_copy = Event()
+            voice_import_started = Event()
+            voice_manifest_read = Event()
+            errors = []
+            original_copy2 = shutil.copy2
+            original_read_json = assets.read_json
+
+            def blocking_copy2(source, destination, *args, **kwargs):
+                if Path(source).resolve() == source_reference.resolve():
+                    pack_copy_started.set()
+                    self.assertTrue(release_pack_copy.wait(2))
+                return original_copy2(source, destination, *args, **kwargs)
+
+            def observing_read_json(path, default):
+                if Path(path).resolve() == target_manifest:
+                    voice_manifest_read.set()
+                return original_read_json(path, default)
+
+            def run(operation):
+                try:
+                    operation()
+                except BaseException as error:
+                    errors.append(error)
+
+            with (
+                patch("vntts.assets.shutil.copy2", side_effect=blocking_copy2),
+                patch("vntts.assets.read_json", side_effect=observing_read_json),
+            ):
+                pack_import = Thread(
+                    target=lambda: run(
+                        lambda: manager.import_pack(source_manifest, pack_name="custom")
+                    )
+                )
+                pack_import.start()
+                self.assertTrue(pack_copy_started.wait(2))
+
+                def import_voice():
+                    voice_import_started.set()
+                    manager.import_voice("Marcus", [local_reference])
+
+                voice_import = Thread(target=lambda: run(import_voice))
+                voice_import.start()
+                self.assertTrue(voice_import_started.wait(2))
+                self.assertFalse(voice_manifest_read.wait(0.2))
+
+                release_pack_copy.set()
+                self.assert_threads_finished(pack_import, voice_import)
+
+            self.assertEqual(errors, [])
+            registry = CharacterVoiceRegistry.from_file(target_manifest)
+            self.assertEqual(
+                {voice.character for voice in registry.voices.values()},
+                {"Marcus", "Source"},
+            )
+            self.assertEqual(manager.validate(target_manifest), target_manifest)
 
     def test_validation_detects_modified_voice_manifest(self):
         with TemporaryDirectory() as temporary_directory:
