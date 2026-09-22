@@ -9,11 +9,15 @@ import re
 import secrets
 import tempfile
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import monotonic
+from types import EllipsisType
+from typing import Protocol, TypeAlias
 
 import numpy as np
+from numpy.typing import NDArray
 from vntts_artifacts.atomic_io import atomic_output_path
 from vntts_artifacts.audio import probe_pcm16_mono_wav, write_pcm16_wav
 from vntts_artifacts.file_integrity import sha256_file
@@ -21,19 +25,25 @@ from vntts_artifacts.voice_manifest import VoiceManifestError
 
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.generation_lease import BulkGenerationError
-from vntts.authoring.generation_manifest import inspect_generated_wav
+from vntts.authoring.generation_manifest import AudioQuality, inspect_generated_wav
 from vntts.authoring.speech_quality import (
     MAX_INTERNAL_SILENCE_SECONDS,
     MAX_LEADING_SILENCE_SECONDS,
     MAX_SILENCE_RATIO,
     MAX_TRAILING_SILENCE_SECONDS,
+    SpeechQuality,
     SpeechSilenceValidationError,
     inspect_generated_speech,
 )
 from vntts.pregeneration_voices import VoiceCandidate, VoiceGroup, VoicePlan
 from vntts.reference_quality import analyze_reference
 from vntts.speech_backend_runtime import shutdown_speech_backend
-from vntts.synthesis import SynthesisCachePolicy, SynthesisCompletion, SynthesisRequest
+from vntts.synthesis import (
+    SynthesisCachePolicy,
+    SynthesisCompletion,
+    SynthesisRequest,
+    SynthesisResult,
+)
 from vntts.tts_benchmark import create_backend
 from vntts.voices import CharacterVoiceRegistry
 
@@ -48,6 +58,39 @@ class VoiceAuditionCancelled(VoiceAuditionError):
 
 class VoiceAuditionIncomplete(VoiceAuditionError):
     """The provider stopped without producing a complete audition."""
+
+
+class _Cancellation(Protocol):
+    def is_set(self) -> bool: ...
+
+
+class _CollectedRender(Protocol):
+    def collect(self) -> SynthesisResult: ...
+
+
+class _PreviewBackend(Protocol):
+    registry: CharacterVoiceRegistry
+
+    def render(self, request: SynthesisRequest) -> _CollectedRender: ...
+
+
+class _BackendFactory(Protocol):
+    def __call__(
+        self,
+        name: str,
+        registry: CharacterVoiceRegistry,
+        cache_root: Path,
+        *,
+        model_name: str | None = None,
+        startup_cancellation: _Cancellation | None = None,
+        startup_progress: Callable[[str], object] | None = None,
+        allow_gated_model_access: bool = False,
+    ) -> _PreviewBackend: ...
+
+
+NativePreviewContext: TypeAlias = dict[str, object]
+BackendConfig: TypeAlias = tuple[str, str | None, str, bool]
+ProgressReporter: TypeAlias = Callable[[str], object]
 
 
 @dataclass(frozen=True)
@@ -70,7 +113,12 @@ class VoiceAuditionPreview:
 class VoiceAuditionPreviewService:
     """Render at most one persistent preview for each exact candidate input."""
 
-    def __init__(self, root=None, *, backend_factory=create_backend):
+    def __init__(
+        self,
+        root: str | Path | None = None,
+        *,
+        backend_factory: _BackendFactory = create_backend,
+    ) -> None:
         self.root = (
             Path(
                 root or get_local_data_directory() / "pregeneration" / "voice-auditions"
@@ -78,36 +126,36 @@ class VoiceAuditionPreviewService:
             .expanduser()
             .resolve()
         )
-        self.backend_factory = backend_factory
-        self._backend = None
-        self._backend_config = None
+        self.backend_factory: _BackendFactory = backend_factory
+        self._backend: _PreviewBackend | None = None
+        self._backend_config: BackendConfig | None = None
         self._cancel = threading.Event()
         self._lock = threading.Lock()
         self._closed = False
-        self._failed_preview_attempts = {}
+        self._failed_preview_attempts: dict[str, int] = {}
         self._preview_salt = secrets.token_bytes(32)
 
     @property
-    def backend(self):
+    def backend(self) -> _PreviewBackend | None:
         """The currently loaded preview engine, for read-only UI status."""
         return self._backend
 
     def generate(
         self,
-        plan,
-        group,
-        candidate_source_id,
+        plan: VoicePlan,
+        group: VoiceGroup,
+        candidate_source_id: str,
         *,
-        text=None,
-        cancel_event=None,
-        progress=None,
-    ):
+        text: str | None = None,
+        cancel_event: _Cancellation | None = None,
+        progress: ProgressReporter | None = None,
+    ) -> VoiceAuditionPreview:
         """Generate or reuse the group's one representative candidate phrase."""
         with self._lock:
             if self._closed:
                 raise VoiceAuditionError("Voice audition service is closed")
             self._cancel.clear()
-            notify = progress or (lambda _message: None)
+            notify: ProgressReporter = progress or (lambda _message: None)
             cancellation = _CombinedCancellation(self._cancel, cancel_event)
             _raise_if_cancelled(cancellation)
             candidate = _validate_request(plan, group, candidate_source_id)
@@ -122,7 +170,11 @@ class VoiceAuditionPreviewService:
             else:
                 context_token = None
             started = monotonic()
-            seed = None
+            seed: int | None = None
+            outcome: str
+            reason: str
+            stage: str
+            cache_source: str | None
             outcome, reason, stage, cache_source = (
                 "backend_failed",
                 "backend-failed",
@@ -183,22 +235,29 @@ class VoiceAuditionPreviewService:
                     notify(
                         "Starting the preview model. First use also loads its weights..."
                     )
-                    self._backend = shutdown_speech_backend(self._backend)
+                    shutdown_speech_backend(self._backend)
+                    self._backend = None
                     self._backend_config = None
                     try:
-                        self._backend = self.backend_factory(
-                            plan.synthesis_backend,
-                            registry,
-                            self.root / "synthesis-cache",
-                            model_name=plan.synthesis_model,
-                            startup_cancellation=cancellation,
-                            **(
-                                {"startup_progress": progress}
-                                if progress is not None
-                                else {}
-                            ),
-                            allow_gated_model_access=plan.pocket_voice_cloning,
-                        )
+                        if progress is None:
+                            self._backend = self.backend_factory(
+                                plan.synthesis_backend,
+                                registry,
+                                self.root / "synthesis-cache",
+                                model_name=plan.synthesis_model,
+                                startup_cancellation=cancellation,
+                                allow_gated_model_access=plan.pocket_voice_cloning,
+                            )
+                        else:
+                            self._backend = self.backend_factory(
+                                plan.synthesis_backend,
+                                registry,
+                                self.root / "synthesis-cache",
+                                model_name=plan.synthesis_model,
+                                startup_cancellation=cancellation,
+                                startup_progress=progress,
+                                allow_gated_model_access=plan.pocket_voice_cloning,
+                            )
                     except Exception as error:
                         if cancellation.is_set():
                             raise VoiceAuditionCancelled(
@@ -209,6 +268,8 @@ class VoiceAuditionPreviewService:
                         ) from error
                     self._backend_config = backend_config
                 else:
+                    if self._backend is None:
+                        raise VoiceAuditionError("Voice preview backend is unavailable")
                     self._backend.registry = registry
 
                 attempt = self._failed_preview_attempts.get(identity, 0)
@@ -232,6 +293,8 @@ class VoiceAuditionPreviewService:
                         if attempt
                         else "Generating preview audio with the loaded model..."
                     )
+                    if self._backend is None:
+                        raise VoiceAuditionError("Voice preview backend is unavailable")
                     result = self._backend.render(request).collect()
                 except Exception as error:
                     if cancellation.is_set():
@@ -332,10 +395,10 @@ class VoiceAuditionPreviewService:
                     if context_token is not None:
                         native_speech_context.reset(context_token)
 
-    def cancel(self):
+    def cancel(self) -> None:
         self._cancel.set()
 
-    def _record_failed_preview_attempt(self, plan, identity):
+    def _record_failed_preview_attempt(self, plan: VoicePlan, identity: str) -> None:
         if plan.synthesis_backend == "moss-tts":
             # ponytail: keep 256 current dialog candidates; widen only if that UI grows.
             if (
@@ -349,7 +412,9 @@ class VoiceAuditionPreviewService:
                 self._failed_preview_attempts.get(identity, 0) + 1
             )
 
-    def _native_preview_context(self, plan, identity):
+    def _native_preview_context(
+        self, plan: VoicePlan, identity: str
+    ) -> NativePreviewContext | None:
         if not _native_moss_preview(plan):
             return None
         logical_key = hashlib.sha256(
@@ -359,16 +424,16 @@ class VoiceAuditionPreviewService:
 
     @staticmethod
     def _record_native_preview_outcome(
-        plan,
-        context,
+        plan: VoicePlan,
+        context: NativePreviewContext | None,
         *,
-        seed,
-        outcome,
-        reason,
-        stage,
-        cache_source,
-        elapsed_ms,
-    ):
+        seed: int | None,
+        outcome: str,
+        reason: str,
+        stage: str,
+        cache_source: str | None,
+        elapsed_ms: int,
+    ) -> None:
         if context is None:
             return
         from vntts.support import record_native_speech
@@ -385,7 +450,9 @@ class VoiceAuditionPreviewService:
             elapsed_ms=elapsed_ms,
         )
 
-    def reference_audio(self, plan, group, candidate_source_id):
+    def reference_audio(
+        self, plan: VoicePlan, group: VoiceGroup, candidate_source_id: str
+    ) -> Path | None:
         """Return one checksum-verified, playable original reference when present."""
         candidate = _validate_request(plan, group, candidate_source_id)
         registry = _load_candidate_registry(plan, candidate)
@@ -397,31 +464,36 @@ class VoiceAuditionPreviewService:
             if sha256_file(reference) != candidate.reference_sha256s[0]:
                 raise VoiceAuditionError("Original voice anchor changed after planning")
             probe_pcm16_mono_wav(reference)
-            return reference
+            return Path(reference)
         except (OSError, ValueError, VoiceManifestError) as error:
             raise VoiceAuditionError(
                 f"Original voice anchor is not playable: {error}"
             ) from error
 
-    def close(self):
+    def close(self) -> None:
         self.cancel()
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            self._backend = shutdown_speech_backend(self._backend)
+            shutdown_speech_backend(self._backend)
+            self._backend = None
             self._backend_config = None
 
 
 class _CombinedCancellation:
-    def __init__(self, *events):
-        self.events = tuple(event for event in events if event is not None)
+    def __init__(self, *events: _Cancellation | None) -> None:
+        self.events: tuple[_Cancellation, ...] = tuple(
+            event for event in events if event is not None
+        )
 
-    def is_set(self):
+    def is_set(self) -> bool:
         return any(event.is_set() for event in self.events)
 
 
-def _validate_request(plan, group, candidate_source_id):
+def _validate_request(
+    plan: VoicePlan, group: VoiceGroup, candidate_source_id: str
+) -> VoiceCandidate:
     if not isinstance(plan, VoicePlan) or not isinstance(group, VoiceGroup):
         raise VoiceAuditionError("Voice audition inputs are invalid")
     if group not in plan.groups:
@@ -446,7 +518,7 @@ def _validate_request(plan, group, candidate_source_id):
     return candidates[0]
 
 
-def _preview_text(group, text):
+def _preview_text(group: VoiceGroup, text: str | None) -> str:
     selected = group.sample_text if text is None else text
     if (
         not isinstance(selected, str)
@@ -457,7 +529,9 @@ def _preview_text(group, text):
     return selected
 
 
-def _load_candidate_registry(plan, candidate):
+def _load_candidate_registry(
+    plan: VoicePlan, candidate: VoiceCandidate
+) -> CharacterVoiceRegistry:
     manifest = (
         Path(plan.voice_manifest).expanduser().resolve()
         if plan.voice_manifest
@@ -508,7 +582,9 @@ def _load_candidate_registry(plan, candidate):
     return CharacterVoiceRegistry((voice,))
 
 
-def _preview_identity(plan, group, candidate, text):
+def _preview_identity(
+    plan: VoicePlan, group: VoiceGroup, candidate: VoiceCandidate, text: str
+) -> str:
     document = {
         "group_id": group.group_id,
         "decision_context_sha256": group.decision_context_sha256,
@@ -538,15 +614,15 @@ def _preview_identity(plan, group, candidate, text):
     return hashlib.sha256(payload).hexdigest()
 
 
-def _native_moss_preview(plan):
+def _native_moss_preview(plan: VoicePlan) -> bool:
     if plan.synthesis_backend != "moss-tts":
         return False
     from vntts.moss_cpp_backend import moss_cpp_requested
 
-    return moss_cpp_requested(plan.synthesis_model)
+    return bool(moss_cpp_requested(plan.synthesis_model))
 
 
-def _preview_seed(plan, failed_attempts):
+def _preview_seed(plan: VoicePlan, failed_attempts: int) -> int | None:
     if plan.synthesis_backend == "pocket-tts":
         return None
     if plan.synthesis_backend != "moss-tts" or failed_attempts == 0:
@@ -555,11 +631,13 @@ def _preview_seed(plan, failed_attempts):
     return failed_attempts + (1 if _native_moss_preview(plan) else 0)
 
 
-def _preview_manifest_path(target):
+def _preview_manifest_path(target: Path) -> Path:
     return target.with_suffix(".json")
 
 
-def _write_preview_manifest(target, identity, seed, audio_sha256):
+def _write_preview_manifest(
+    target: Path, identity: str, seed: int | None, audio_sha256: str
+) -> None:
     manifest = _preview_manifest_path(target)
     with atomic_output_path(manifest) as staging:
         staging.write_text(
@@ -576,7 +654,9 @@ def _write_preview_manifest(target, identity, seed, audio_sha256):
         )
 
 
-def _cached_preview_seed(target, identity, plan):
+def _cached_preview_seed(
+    target: Path, identity: str, plan: VoicePlan
+) -> int | None:
     manifest = _preview_manifest_path(target)
     if not manifest.exists():
         # Existing successful previews predate the sidecar and were all seed zero.
@@ -614,7 +694,9 @@ def _cached_preview_seed(target, identity, plan):
     return seed
 
 
-def _preflight_candidate_references(registry, candidate):
+def _preflight_candidate_references(
+    registry: CharacterVoiceRegistry, candidate: VoiceCandidate
+) -> None:
     voice = registry.resolve_source(candidate.source_id)
     if voice is None:
         return
@@ -636,8 +718,8 @@ def _preflight_candidate_references(registry, candidate):
             )
 
 
-def _inspect_preview(path, text):
-    audio_quality = None
+def _inspect_preview(path: Path, text: str) -> AudioQuality:
+    audio_quality: AudioQuality | None = None
     try:
         audio_quality = inspect_generated_wav(path)
         speech_quality = inspect_generated_speech(path, text=text)
@@ -661,7 +743,12 @@ def _inspect_preview(path, text):
     return audio_quality
 
 
-def _record_preview_quality(outcome, reason, audio_quality, speech_quality=None):
+def _record_preview_quality(
+    outcome: str,
+    reason: str,
+    audio_quality: AudioQuality | None,
+    speech_quality: SpeechQuality | None = None,
+) -> None:
     from vntts.support import native_speech_context, record_native_speech
 
     if native_speech_context.get() is None:
@@ -684,8 +771,16 @@ def _record_preview_quality(outcome, reason, audio_quality, speech_quality=None)
 
 
 def _cached_preview(
-    target, identity, plan, group, candidate, text, *, reused=True, seed=Ellipsis
-):
+    target: Path,
+    identity: str,
+    plan: VoicePlan,
+    group: VoiceGroup,
+    candidate: VoiceCandidate,
+    text: str,
+    *,
+    reused: bool = True,
+    seed: int | None | EllipsisType = Ellipsis,
+) -> VoiceAuditionPreview:
     if target.is_symlink():
         raise VoiceAuditionError("Cached voice preview must not be a symbolic link")
     try:
@@ -726,8 +821,8 @@ def _cached_preview(
     )
 
 
-def _mono_pcm(value):
-    samples = np.asarray(value, dtype=np.float32)
+def _mono_pcm(value: object) -> NDArray[np.float32]:
+    samples: NDArray[np.float32] = np.asarray(value, dtype=np.float32)
     if samples.ndim == 2 and samples.shape[1] in {1, 2}:
         samples = (
             samples[:, 0]
@@ -739,7 +834,7 @@ def _mono_pcm(value):
     return samples
 
 
-def _staging_path(target):
+def _staging_path(target: Path) -> Path:
     descriptor, name = tempfile.mkstemp(
         prefix=f".{target.stem}-",
         suffix=".wav",
@@ -749,7 +844,7 @@ def _staging_path(target):
     return Path(name)
 
 
-def _raise_if_cancelled(cancellation):
+def _raise_if_cancelled(cancellation: _Cancellation) -> None:
     if cancellation.is_set():
         raise VoiceAuditionCancelled("Voice audition generation was cancelled")
 

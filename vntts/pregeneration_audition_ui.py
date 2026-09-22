@@ -32,7 +32,8 @@ from vntts.voices import default_voice_choice_id
 
 
 class _PreviewAudio(Protocol):
-    path: Path
+    @property
+    def path(self) -> Path: ...
 
 
 CandidateEntry: TypeAlias = tuple[VoiceCandidate, str, bool]
