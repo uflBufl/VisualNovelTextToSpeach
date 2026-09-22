@@ -268,14 +268,19 @@ class Reverse1999GameImporter:
 
     def prepare_voice_candidates(self, job, cancel_event=None, *, progress=None):
         """Prepare only candidate references needed by the selected stories."""
-        if job.provider_id != self.provider_id:
+        if job.game != self.display_name:
             return None
         roles = _candidate_roles(
             job, self.output_root / "reverse1999" / "narrator-index.jsonl"
         )
         if not roles:
             return None
-        return self.prepare_voice_roles(roles, cancel_event, progress=progress)
+        return self.prepare_voice_roles(
+            roles,
+            cancel_event,
+            progress=progress,
+            target_story_index=job.story_index,
+        )
 
     def narrator_characters(self, cancel_event=None, installation_root=None):
         """List voiced characters without decoding the whole audio catalog."""
@@ -366,6 +371,7 @@ class Reverse1999GameImporter:
         progress=None,
         narrator=False,
         narrator_line_id=None,
+        target_story_index=None,
     ):
         """Reuse the extractor's checksum-bound, per-role reference cache."""
         if not roles:
@@ -405,6 +411,8 @@ class Reverse1999GameImporter:
             str(self.output_root),
             "--prepare-voice-candidates-only",
         ]
+        if target_story_index is not None:
+            arguments.extend(("--target-story-index", str(target_story_index)))
         if narrator:
             arguments.append("--narrator")
         if narrator_line_id is not None:

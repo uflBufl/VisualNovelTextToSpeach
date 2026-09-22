@@ -592,7 +592,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             root = Path(temporary_directory)
             content = inspect_story_index(
                 write_content(root / "content"),
-                provider_id="reverse1999",
+                provider_id="selected-story-index",
             )
             job = PregenerationJobStore(root / "jobs").create_or_resume(
                 content,
@@ -623,6 +623,10 @@ class Reverse1999GameImporterTest(unittest.TestCase):
         arguments = popen.call_args.args[0]
         self.assertEqual(result, manifest.resolve())
         self.assertIn("--prepare-voice-candidates-only", arguments)
+        self.assertEqual(
+            arguments[arguments.index("--target-story-index") + 1],
+            str(job.story_index),
+        )
         self.assertTrue(
             popen.call_args.kwargs["env"]["PATH"].startswith(str(root / "tools"))
         )
@@ -676,7 +680,12 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                     self.assertEqual(
                         importer.prepare_voice_candidates(job), root / "manifest.json"
                     )
-                    prepare.assert_called_once_with(("Rhiannon",), None, progress=None)
+                    prepare.assert_called_once_with(
+                        ("Rhiannon",),
+                        None,
+                        progress=None,
+                        target_story_index=job.story_index,
+                    )
 
                     catalog.write_text("broken catalog", encoding="utf-8")
                     with self.assertRaises(GameContentImportError):
