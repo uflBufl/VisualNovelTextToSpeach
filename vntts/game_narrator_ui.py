@@ -1318,7 +1318,7 @@ class GameNarratorDialog(QDialog):
             "Finding installed game voices. First import may take a few minutes...",
             self.importer.narrator_characters,
             self.cancellation,
-            self._installation_root,
+            installation_root,
         )
 
     def _show_known_installation(self) -> None:

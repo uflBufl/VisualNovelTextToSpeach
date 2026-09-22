@@ -13,7 +13,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from functools import partial
+from functools import lru_cache, partial
 from os import PathLike
 from pathlib import Path
 from typing import Protocol, TypeAlias
@@ -374,6 +374,32 @@ class Reverse1999GameImporter:
             or self._bank_index_is_stale(bank_index)
         ):
             self.import_installed(cancel_event, installation_root)
+        result = self._cached_narrator_characters(
+            story_index,
+            narrator_banks,
+            self._file_stamp(story_index),
+            self._file_stamp(narrator_banks),
+        )
+        self._record(
+            "narrator-result",
+            characters=len(result),
+            outcome="complete" if result else "empty",
+        )
+        return result
+
+    @staticmethod
+    def _file_stamp(path: Path) -> tuple[int, int, int, int]:
+        stat = path.stat()
+        return stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino
+
+    @staticmethod
+    @lru_cache(maxsize=4)
+    def _cached_narrator_characters(
+        story_index: Path,
+        narrator_banks: Path,
+        _index_stamp: tuple[int, int, int, int],
+        _banks_stamp: tuple[int, int, int, int],
+    ) -> tuple[str, ...]:
         characters = {
             normalize_character_name(name): name
             for name in json.loads(narrator_banks.read_text(encoding="utf-8"))
@@ -385,13 +411,7 @@ class Reverse1999GameImporter:
             )
             if record.source_audio_status == "available" and not is_narrator(character):
                 characters.setdefault(normalize_character_name(character), character)
-        result = tuple(sorted(characters.values(), key=str.casefold))
-        self._record(
-            "narrator-result",
-            characters=len(result),
-            outcome="complete" if result else "empty",
-        )
-        return result
+        return tuple(sorted(characters.values(), key=str.casefold))
 
     @staticmethod
     def _bank_index_is_stale(path: Path) -> bool:
