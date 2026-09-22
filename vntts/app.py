@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from multiprocessing import freeze_support
 from pathlib import Path
@@ -89,6 +89,7 @@ from vntts.hotkeys import (
     macos_hotkey_limitation,
     validate_hotkey_assignments,
 )
+from vntts.live import LiveDialogReader
 from vntts.macos import (
     configure_macos_launch_at_login,
     get_macos_permission_status,
@@ -108,7 +109,7 @@ from vntts.pregeneration_activation import (
 from vntts.pregeneration_audition import VoiceAuditionPreviewService
 from vntts.pregeneration_generation import OfflineGenerationWorker
 from vntts.pregeneration_pack import OfflinePackResult
-from vntts.pregeneration_setup import GameContent
+from vntts.pregeneration_setup import GameContent, PregenerationJob
 from vntts.pregeneration_ui import OfflineAudioPreparationDialog
 from vntts.pregeneration_voices import VoicePlan
 from vntts.profiles import GameProfileStore
@@ -1532,6 +1533,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     signals: AppSignals
     dashboard: ControlDashboard
     menu: QMenu
+    profile_store: GameProfileStore
+    correction_store: OCRCorrectionStore
+    pregeneration_dialog: OfflineAudioPreparationDialog | None
+    readiness_dialog: ReadinessDialog | None
 
     def __init__(
         self,
@@ -1650,7 +1655,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     ) -> None:
         self.live_stop_runner = LatestTaskRunner(self)
         self.live_stop_runner.finished.connect(self._live_stop_finished)
-        self._live_stop_continuation = None
+        self._live_stop_continuation: Callable[[], object] | None = None
         self._live_stop_generation: int | None = None
         self.profile_restart_runner = LatestTaskRunner(self)
         self.profile_restart_runner.finished.connect(self._profile_restart_finished)
@@ -1673,11 +1678,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.support_export_runner = LatestTaskRunner(self)
         self.support_export_runner.finished.connect(self._support_export_finished)
-        self._pregeneration_activation_generation = None
-        self._pregeneration_activation_cancellation = None
+        self._pregeneration_activation_generation: int | None = None
+        self._pregeneration_activation_cancellation: Event | None = None
         self._pregeneration_activation_restore_runtime = Event()
-        self._pregeneration_activation_status = None
-        self._pending_profile_name = self._profile_restart_generation = None
+        self._pregeneration_activation_status: str | None = None
+        self._pending_profile_name: str | None = None
+        self._profile_restart_generation: int | None = None
 
     def _initialize_session_state(
         self,
@@ -1705,7 +1711,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._narrator_preparation = None
         self._narrator_return_to_stories = False
         self._resume_live_after_narrator = False
-        self._preparation_activation_settings = None
+        self._preparation_activation_settings: AppSettings | None = None
         self.unknown_speaker_prompt = self.unknown_speaker_choose_button = None
         self.unknown_speaker_continue_button = self.unknown_speaker_cancel_button = None
         self.pending_unknown_speaker = None
@@ -2937,7 +2943,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             recovery="full-controls",
         )
 
-    def open_pregeneration(self, *, show=True):
+    def open_pregeneration(
+        self, *, show: bool = True
+    ) -> OfflineAudioPreparationDialog | None:
         if self._shutting_down or self._quit_requested:
             return None
         if (
@@ -2960,25 +2968,26 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return None
-        retained_runtime = (
-            {
-                "audition_service": VoiceAuditionPreviewService(
+        if self.settings.speech_backend == "moss-tts":
+            dialog = OfflineAudioPreparationDialog(
+                self.settings,
+                audition_service=VoiceAuditionPreviewService(
                     backend_factory=self.moss_runtime.benchmark_backend
                 ),
-                "generator": OfflineGenerationWorker(
+                generator=OfflineGenerationWorker(
                     backend_factory=self.moss_runtime.benchmark_backend
                 ),
-            }
-            if self.settings.speech_backend == "moss-tts"
-            else {}
-        )
-        dialog = OfflineAudioPreparationDialog(
-            self.settings,
-            **retained_runtime,
-            game_narrator_chooser=self._open_preparation_narrator,
-            automatic_activation=True,
-            parent=self.dashboard,
-        )
+                game_narrator_chooser=self._open_preparation_narrator,
+                automatic_activation=True,
+                parent=self.dashboard,
+            )
+        else:
+            dialog = OfflineAudioPreparationDialog(
+                self.settings,
+                game_narrator_chooser=self._open_preparation_narrator,
+                automatic_activation=True,
+                parent=self.dashboard,
+            )
         self.pregeneration_dialog = dialog
         dialog.finished.connect(self._pregeneration_finished)
         dialog.readingRequested.connect(self._read_prepared_story)
@@ -2990,7 +2999,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.dashboard.embed_preparation(dialog, show=show)
         return dialog
 
-    def _read_prepared_story(self):
+    def _read_prepared_story(self) -> None:
         if self._controller_ready and self._preparation_runtime_settings() is None:
             self.dashboard.show_reading()
             if not self.controller.is_live_running:
@@ -2998,10 +3007,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self.prepare_reading(start_live=True)
 
-    def _remember_preparation_context(self):
+    def _remember_preparation_context(self) -> None:
         self._preparation_activation_settings = self.settings
 
-    def _activate_ready_preparation(self):
+    def _activate_ready_preparation(self) -> None:
         dialog = self.pregeneration_dialog
         if dialog is None or self._shutting_down or self._quit_requested:
             return
@@ -3026,15 +3035,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             dialog.accept()
 
-    def _preparation_activity_changed(self, _active):
+    def _preparation_activity_changed(self, _active: bool) -> None:
         if self._shutting_down:
             return
         self._apply_controller_action_state()
 
-    def _pregeneration_finished(self, result):
+    def _pregeneration_finished(self, result: int) -> PregenerationJob | None:
         dialog = self.pregeneration_dialog
         if dialog is None:
-            return
+            return None
         used_runtime_progress = self._preparation_playback_active()
         self.pregeneration_dialog = None
         self._preparation_activation_settings = None
@@ -3043,7 +3052,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._apply_controller_action_state()
         if self._quit_requested:
             self.application.quit()
-            return
+            return None
         if result != QDialog.DialogCode.Accepted:
             if used_runtime_progress:
                 self._start_configuration_apply(
@@ -3088,7 +3097,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         return job
 
-    def _reload_game_narrator(self, profile_synced, saved_assignment=None):
+    def _reload_game_narrator(
+        self,
+        profile_synced: bool,
+        saved_assignment: str | None = None,
+    ) -> None:
         suffix = "" if profile_synced else " Active profile could not be updated."
         saved = (
             f"Voice saved for {saved_assignment}."
@@ -3103,8 +3116,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
 
     def _start_pregeneration_activation(
-        self, pack_result, success_status, generation_settings=None
-    ):
+        self,
+        pack_result: OfflinePackResult,
+        success_status: str,
+        generation_settings: AppSettings | None = None,
+    ) -> None:
         generation = self._begin_controller_lifecycle()
         cancellation = Event()
         self._pregeneration_activation_generation = generation
@@ -3122,7 +3138,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             generation_settings=generation_settings,
         )
 
-    def _pregeneration_activation_finished(self, result, error):
+    def _pregeneration_activation_finished(
+        self,
+        result: object,
+        error: Exception | None,
+    ) -> None:
         generation = self._pregeneration_activation_generation
         self._pregeneration_activation_generation = None
         self._pregeneration_activation_cancellation = None
@@ -3182,7 +3202,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
         self._save_main_section("reading")
 
-    def open_readiness(self):
+    def open_readiness(self) -> None:
         if self.readiness_dialog is None:
             self.readiness_dialog = ReadinessDialog(
                 self.settings,
@@ -3201,7 +3221,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.readiness_dialog.raise_()
         self.readiness_dialog.activateWindow()
 
-    def open_profiles(self):
+    def open_profiles(self) -> None:
         if self._controller_busy or self._shutting_down:
             self.set_status("Controller reconfiguration is already in progress")
             return
@@ -3229,7 +3249,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.sequence_resync_action.setVisible(sequence_controls_visible)
         self.sequence_expected_action.setVisible(sequence_controls_visible)
-        profile = self.profile_store.get(self.settings.active_profile_id)
+        profile_id = self.settings.active_profile_id
+        profile = self.profile_store.get(profile_id) if profile_id else None
         self._pending_profile_name = profile.name if profile is not None else None
         generation = self._begin_controller_lifecycle()
         self._profile_restart_generation = generation
@@ -3243,7 +3264,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             generation,
         )
 
-    def _restart_controller_for_profile(self, settings, generation):
+    def _restart_controller_for_profile(
+        self, settings: AppSettings, generation: int
+    ) -> bool:
         self.controller.shutdown()
         if not self._lifecycle_is_current(generation):
             return False
@@ -3260,7 +3283,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return False
         return ready
 
-    def _profile_restart_finished(self, ready, error):
+    def _profile_restart_finished(self, ready: object, error: Exception | None) -> None:
         generation = self._profile_restart_generation
         self._profile_restart_generation = None
         if not self._lifecycle_is_current(generation):
@@ -3272,6 +3295,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.set_ready(False)
             self.set_status(f"Profile restart failed: {error}")
             return
+        ready = ready is True
         self.set_ready(ready)
         if not ready:
             self.set_status("Unable to load the selected profile")
@@ -3279,7 +3303,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.hotkeys_requested.emit()
         self.set_status(f"Profile {profile_name!r} selected")
 
-    def _stop_live_then(self, continuation, status):
+    def _stop_live_then(
+        self,
+        continuation: Callable[[], object],
+        status: str,
+    ) -> bool:
         if self._shutting_down:
             return False
         if self.live_stop_runner.active:
@@ -3303,11 +3331,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         return True
 
     @staticmethod
-    def _wait_for_live_reader(reader):
+    def _wait_for_live_reader(reader: LiveDialogReader) -> bool:
         reader.wait(timeout_seconds=5.0)
         return True
 
-    def _live_stop_finished(self, _result, error):
+    def _live_stop_finished(self, _result: object, error: Exception | None) -> None:
         generation = self._live_stop_generation
         self._live_stop_generation = None
         continuation = self._live_stop_continuation
@@ -3321,8 +3349,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if continuation is not None:
             QTimer.singleShot(0, continuation)
 
-    def open_corrections(self):
-        profile = self.profile_store.get(self.settings.active_profile_id)
+    def open_corrections(self) -> None:
+        profile_id = self.settings.active_profile_id
+        profile = self.profile_store.get(profile_id) if profile_id else None
         dialog = OCRCorrectionsDialog(
             self.settings.active_profile_id,
             profile.name if profile is not None else None,
@@ -3333,8 +3362,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.controller.refresh_corrections()
         self.set_status("OCR corrections saved")
 
-    def open_ocr_review(self):
-        profile = self.profile_store.get(self.settings.active_profile_id)
+    def open_ocr_review(self) -> None:
+        profile_id = self.settings.active_profile_id
+        profile = self.profile_store.get(profile_id) if profile_id else None
         dialog = OCRReviewDialog(
             self.settings.ocr_diagnostics_directory,
             self.correction_store,
