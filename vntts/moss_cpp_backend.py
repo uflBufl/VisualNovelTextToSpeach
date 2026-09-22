@@ -68,55 +68,54 @@ ProgressCallback: TypeAlias = Callable[[str], object]
 
 
 if sys.platform == "win32":
+    from ctypes import wintypes
+
+    class _BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("per_process_time", ctypes.c_longlong),
+            ("per_job_time", ctypes.c_longlong),
+            ("limit_flags", wintypes.DWORD),
+            ("minimum_working_set", ctypes.c_size_t),
+            ("maximum_working_set", ctypes.c_size_t),
+            ("active_process_limit", wintypes.DWORD),
+            ("affinity", ctypes.c_size_t),
+            ("priority_class", wintypes.DWORD),
+            ("scheduling_class", wintypes.DWORD),
+        ]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [
+            ("read_operations", ctypes.c_ulonglong),
+            ("write_operations", ctypes.c_ulonglong),
+            ("other_operations", ctypes.c_ulonglong),
+            ("read_bytes", ctypes.c_ulonglong),
+            ("write_bytes", ctypes.c_ulonglong),
+            ("other_bytes", ctypes.c_ulonglong),
+        ]
+
+    class _ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("basic", _BasicLimits),
+            ("io", _IoCounters),
+            ("process_memory_limit", ctypes.c_size_t),
+            ("job_memory_limit", ctypes.c_size_t),
+            ("peak_process_memory", ctypes.c_size_t),
+            ("peak_job_memory", ctypes.c_size_t),
+        ]
+
+    class _ThreadEntry(ctypes.Structure):
+        _fields_ = [
+            ("size", wintypes.DWORD),
+            ("usage", wintypes.DWORD),
+            ("thread_id", wintypes.DWORD),
+            ("owner_process_id", wintypes.DWORD),
+            ("base_priority", wintypes.LONG),
+            ("priority_delta", wintypes.LONG),
+            ("flags", wintypes.DWORD),
+        ]
 
     class _WindowsKillOnCloseJob:
         def __init__(self, process: subprocess.Popen[bytes]) -> None:
-            from ctypes import wintypes
-
-            class BasicLimits(ctypes.Structure):
-                _fields_ = [
-                    ("per_process_time", ctypes.c_longlong),
-                    ("per_job_time", ctypes.c_longlong),
-                    ("limit_flags", wintypes.DWORD),
-                    ("minimum_working_set", ctypes.c_size_t),
-                    ("maximum_working_set", ctypes.c_size_t),
-                    ("active_process_limit", wintypes.DWORD),
-                    ("affinity", ctypes.c_size_t),
-                    ("priority_class", wintypes.DWORD),
-                    ("scheduling_class", wintypes.DWORD),
-                ]
-
-            class IoCounters(ctypes.Structure):
-                _fields_ = [
-                    ("read_operations", ctypes.c_ulonglong),
-                    ("write_operations", ctypes.c_ulonglong),
-                    ("other_operations", ctypes.c_ulonglong),
-                    ("read_bytes", ctypes.c_ulonglong),
-                    ("write_bytes", ctypes.c_ulonglong),
-                    ("other_bytes", ctypes.c_ulonglong),
-                ]
-
-            class ExtendedLimits(ctypes.Structure):
-                _fields_ = [
-                    ("basic", BasicLimits),
-                    ("io", IoCounters),
-                    ("process_memory_limit", ctypes.c_size_t),
-                    ("job_memory_limit", ctypes.c_size_t),
-                    ("peak_process_memory", ctypes.c_size_t),
-                    ("peak_job_memory", ctypes.c_size_t),
-                ]
-
-            class ThreadEntry(ctypes.Structure):
-                _fields_ = [
-                    ("size", wintypes.DWORD),
-                    ("usage", wintypes.DWORD),
-                    ("thread_id", wintypes.DWORD),
-                    ("owner_process_id", wintypes.DWORD),
-                    ("base_priority", wintypes.LONG),
-                    ("priority_delta", wintypes.LONG),
-                    ("flags", wintypes.DWORD),
-                ]
-
             kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
             kernel32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -145,12 +144,12 @@ if sys.platform == "win32":
             kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
             kernel32.Thread32First.argtypes = [
                 wintypes.HANDLE,
-                ctypes.POINTER(ThreadEntry),
+                ctypes.POINTER(_ThreadEntry),
             ]
             kernel32.Thread32First.restype = wintypes.BOOL
             kernel32.Thread32Next.argtypes = [
                 wintypes.HANDLE,
-                ctypes.POINTER(ThreadEntry),
+                ctypes.POINTER(_ThreadEntry),
             ]
             kernel32.Thread32Next.restype = wintypes.BOOL
             kernel32.OpenThread.argtypes = [
@@ -168,50 +167,58 @@ if sys.platform == "win32":
                 raise ctypes.WinError(ctypes.get_last_error())
             self._kernel32 = kernel32
             self._handle = handle
-            limits = ExtendedLimits()
+            limits = _ExtendedLimits()
             limits.basic.limit_flags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             try:
                 if not kernel32.SetInformationJobObject(
                     handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
                 ):
                     raise ctypes.WinError(ctypes.get_last_error())
-                process_handle = kernel32.OpenProcess(
-                    _PROCESS_ASSIGN_JOB, False, process.pid
-                )
-                if not process_handle:
-                    raise ctypes.WinError(ctypes.get_last_error())
-                try:
-                    if not kernel32.AssignProcessToJobObject(handle, process_handle):
-                        raise ctypes.WinError(ctypes.get_last_error())
-                finally:
-                    kernel32.CloseHandle(process_handle)
-                snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
-                if snapshot == wintypes.HANDLE(-1).value:
-                    raise ctypes.WinError(ctypes.get_last_error())
-                try:
-                    entry = ThreadEntry(size=ctypes.sizeof(ThreadEntry))
-                    found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
-                    while found and entry.owner_process_id != process.pid:
-                        found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
-                    if not found:
-                        raise RuntimeError(
-                            "Unable to find the suspended MOSS process thread"
-                        )
-                    thread = kernel32.OpenThread(
-                        _THREAD_SUSPEND_RESUME, False, entry.thread_id
-                    )
-                    if not thread:
-                        raise ctypes.WinError(ctypes.get_last_error())
-                    try:
-                        if kernel32.ResumeThread(thread) == 0xFFFFFFFF:
-                            raise ctypes.WinError(ctypes.get_last_error())
-                    finally:
-                        kernel32.CloseHandle(thread)
-                finally:
-                    kernel32.CloseHandle(snapshot)
+                self._assign_process(process)
+                self._resume_process_thread(process)
             except BaseException:
                 self.close()
                 raise
+
+        def _assign_process(self, process: subprocess.Popen[bytes]) -> None:
+            process_handle = self._kernel32.OpenProcess(
+                _PROCESS_ASSIGN_JOB, False, process.pid
+            )
+            if not process_handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                if not self._kernel32.AssignProcessToJobObject(
+                    self._handle, process_handle
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            finally:
+                self._kernel32.CloseHandle(process_handle)
+
+        def _resume_process_thread(self, process: subprocess.Popen[bytes]) -> None:
+            snapshot = self._kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+            if snapshot == wintypes.HANDLE(-1).value:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                entry = _ThreadEntry(size=ctypes.sizeof(_ThreadEntry))
+                found = self._kernel32.Thread32First(snapshot, ctypes.byref(entry))
+                while found and entry.owner_process_id != process.pid:
+                    found = self._kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+                if not found:
+                    raise RuntimeError(
+                        "Unable to find the suspended MOSS process thread"
+                    )
+                thread = self._kernel32.OpenThread(
+                    _THREAD_SUSPEND_RESUME, False, entry.thread_id
+                )
+                if not thread:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                try:
+                    if self._kernel32.ResumeThread(thread) == 0xFFFFFFFF:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                finally:
+                    self._kernel32.CloseHandle(thread)
+            finally:
+                self._kernel32.CloseHandle(snapshot)
 
         def close(self) -> None:
             if self._handle is not None:
@@ -311,6 +318,13 @@ MossCppStartupOptions: TypeAlias = tuple[
     float,
     bool,
 ]
+
+
+def _positive_timeouts(startup: float, request: float) -> tuple[float, float]:
+    values = startup, request
+    if not all(math.isfinite(value) and value > 0 for value in values):
+        raise TTSConfigurationError("MOSS C++ timeouts must be positive and finite")
+    return values
 
 
 def _cancelled(cancellation: Cancellation | None) -> bool:
@@ -842,16 +856,9 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         self._fallback_category: str | None = None
         self._fallback_used = False
         self._effective_controls: NativeControls | None = None
-        self.startup_timeout = float(startup_timeout)
-        self.request_timeout = float(request_timeout)
-        if not all(
-            math.isfinite(v) and v > 0
-            for v in (
-                self.startup_timeout,
-                self.request_timeout,
-            )
-        ):
-            raise TTSConfigurationError("MOSS C++ timeouts must be positive and finite")
+        self.startup_timeout, self.request_timeout = _positive_timeouts(
+            startup_timeout, request_timeout
+        )
         self.server_lock = Lock()
         self.server: subprocess.Popen[bytes] | None = None
         self.server_job: _WindowsKillOnCloseJob | None = None
