@@ -23,6 +23,7 @@ from vntts.authoring.advisory_lock import (
 )
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    AuthoritySnapshot,
     assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
@@ -53,6 +54,7 @@ from vntts.authoring.workbench import (
     list_review_items,
     prepare_review_audio,
 )
+from vntts.authoring.workbench_contracts import ReviewItem
 
 TERMINAL_CONFLICT_REVIEW_SCHEMA = "vntts.authoring-terminal-conflict-review"
 TERMINAL_CONFLICT_REVIEW_VERSION = 1
@@ -142,11 +144,57 @@ class TerminalConflictReviewProgress(TypedDict):
     carry_forward: NotRequired[dict[str, object]]
 
 
+class _ProgressLease(TypedDict):
+    schema: str
+    schema_version: int
+    pid: int
+    hostname: str
+    process_started_at: str | None
+    lease_id: str
+    started_at: str
+
+
+class _StoredProgressLease(TypedDict):
+    schema: str
+    schema_version: int
+    pid: int
+    hostname: str
+    lease_id: str
+    process_started_at: NotRequired[object]
+
+
+@dataclass(frozen=True)
+class _ReviewPublicationInput:
+    snapshot: AuthoritySnapshot
+    report: JsonDocument
+    conflicts: list[JsonDocument]
+    workspace_records: dict[str, JsonDocument]
+    workspace_paths: dict[str, Path]
+
+
 def _is_review_document(value: object) -> TypeGuard[TerminalConflictReviewDocument]:
     return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
 def _is_progress_document(value: object) -> TypeGuard[TerminalConflictReviewProgress]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _is_progress_decision(value: object) -> TypeGuard[TerminalConflictReviewDecision]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _is_review_case(value: object) -> TypeGuard[TerminalConflictReviewCase]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _is_review_candidate(value: object) -> TypeGuard[TerminalConflictReviewCandidate]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _is_source_authority(
+    value: object,
+) -> TypeGuard[TerminalConflictReviewSourceAuthority]:
     return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
@@ -221,12 +269,7 @@ class TerminalConflictReview:
         }
 
 
-def publish_terminal_conflict_review(
-    reconciliation_path: str | Path, output_directory: str | Path
-) -> TerminalConflictReview:
-    """Publish exact distinct WAV choices for every current terminal conflict."""
-    reconciliation_path = Path(reconciliation_path).expanduser().resolve()
-    output = Path(output_directory).expanduser().resolve()
+def _review_publication_input(reconciliation_path: Path) -> _ReviewPublicationInput:
     try:
         report_snapshot = capture_authority_file(
             reconciliation_path, "authoring reconciliation"
@@ -250,8 +293,7 @@ def publish_terminal_conflict_review(
         )
     workspaces = _objects(report.get("workspaces"), "reconciliation workspaces")
     workspace_records = {
-        _text(value.get("workspace_id"), "Workspace ID"): value
-        for value in workspaces
+        _text(value.get("workspace_id"), "Workspace ID"): value for value in workspaces
     }
     workspace_paths = {
         workspace_id: Path(_text(value.get("workspace"), "Workspace path")).resolve()
@@ -259,241 +301,296 @@ def publish_terminal_conflict_review(
     }
     if len(workspace_records) != len(workspaces):
         raise TerminalConflictReviewError("Reconciliation workspaces are duplicated")
+    return _ReviewPublicationInput(
+        report_snapshot, report, conflicts, workspace_records, workspace_paths
+    )
+
+
+def _conflict_workspace_queue_ids(
+    conflicts: list[JsonDocument],
+) -> dict[str, set[str]]:
+    workspace_queue_ids: dict[str, set[str]] = {}
+    for conflict in conflicts:
+        queue_id = _text(conflict.get("queue_id"), "Conflict queue ID")
+        for occurrence in _objects(
+            conflict.get("occurrences"), "terminal conflict occurrences"
+        ):
+            workspace_queue_ids.setdefault(
+                _text(occurrence.get("workspace_id"), "Conflict workspace ID"),
+                set(),
+            ).add(queue_id)
+    return workspace_queue_ids
+
+
+def _review_rows_for_conflicts(
+    inputs: _ReviewPublicationInput,
+) -> dict[tuple[str, str], ReviewItem]:
+    review_rows: dict[tuple[str, str], ReviewItem] = {}
+    for workspace_id, queue_ids in sorted(
+        _conflict_workspace_queue_ids(inputs.conflicts).items()
+    ):
+        workspace = inputs.workspace_paths.get(workspace_id)
+        if workspace is None:
+            raise TerminalConflictReviewError(
+                f"Conflict references an unknown workspace: {workspace_id}"
+            )
+        try:
+            rows = list_review_items(workspace, tuple(sorted(queue_ids)))
+        except AuthoringWorkbenchError as error:
+            raise TerminalConflictReviewError(str(error)) from error
+        indexed = {row.queue_id: row for row in rows}
+        if set(indexed) != queue_ids:
+            raise TerminalConflictReviewError(
+                f"Conflict outcomes are unavailable: {workspace_id}"
+            )
+        review_rows.update(
+            ((workspace_id, queue_id), row) for queue_id, row in indexed.items()
+        )
+    return review_rows
+
+
+def _review_candidate_drafts(
+    queue_id: str,
+    occurrences: list[JsonDocument],
+    inputs: _ReviewPublicationInput,
+    review_rows: dict[tuple[str, str], ReviewItem],
+) -> tuple[
+    dict[tuple[str, str], _TerminalConflictCandidateDraft],
+    tuple[str, str, str, str] | None,
+]:
+    candidates: dict[tuple[str, str], _TerminalConflictCandidateDraft] = {}
+    shared: tuple[str, str, str, str] | None = None
+    for occurrence in occurrences:
+        workspace_id = _text(occurrence.get("workspace_id"), "Conflict workspace ID")
+        authority_name = _text(occurrence.get("authority"), "Conflict authority")
+        if inputs.workspace_paths.get(workspace_id) is None:
+            raise TerminalConflictReviewError(
+                f"Conflict references an unknown workspace: {workspace_id}"
+            )
+        row = review_rows[(workspace_id, queue_id)]
+        expected_review = {"approved": "approved", "rejected": "rejected"}.get(
+            authority_name
+        )
+        if (
+            expected_review is None
+            or row.review_status != expected_review
+            or row.line_id != occurrence["line_id"]
+            or hashlib.sha256(row.text.encode("utf-8")).hexdigest()
+            != occurrence["text_sha256"]
+            or row.authority is None
+            or row.state is None
+            or row.queue is None
+        ):
+            raise TerminalConflictReviewError(
+                f"Conflict authority changed: {workspace_id}/{queue_id}"
+            )
+        workspace_record = inputs.workspace_records[workspace_id]
+        if (
+            row.authority.state_sha256 != workspace_record["state_sha256"]
+            or row.authority.queue_sha256 != workspace_record["queue_sha256"]
+        ):
+            raise TerminalConflictReviewError(
+                f"Conflict source changed after reconciliation: {workspace_id}"
+            )
+        try:
+            audio = prepare_review_audio(row)
+        except AuthoringWorkbenchError as error:
+            raise TerminalConflictReviewError(str(error)) from error
+        digest = hashlib.sha256(audio).hexdigest()
+        if digest != row.authority.audio_sha256:
+            raise TerminalConflictReviewError(
+                f"Conflict WAV changed: {workspace_id}/{queue_id}"
+            )
+        candidate = candidates.setdefault(
+            (authority_name, digest),
+            {
+                "authority": authority_name,
+                "audio_sha256": digest,
+                "audio_bytes": audio,
+                "workspace_ids": [],
+                "source_authorities": [],
+            },
+        )
+        candidate["workspace_ids"].append(workspace_id)
+        candidate["source_authorities"].append(
+            {
+                "workspace_id": workspace_id,
+                "state": str(row.state.resolve()),
+                "queue": str(row.queue.resolve()),
+                "review_authority": {
+                    "queue_sha256": row.authority.queue_sha256,
+                    "state_sha256": row.authority.state_sha256,
+                    "item_sha256": row.authority.item_sha256,
+                    "audio_sha256": row.authority.audio_sha256,
+                },
+            }
+        )
+        row_shared = (row.line_id, row.speaker, row.voice_character, row.text)
+        if shared is None:
+            shared = row_shared
+        elif shared != row_shared:
+            raise TerminalConflictReviewError(
+                f"Conflict display identity changed: {queue_id}"
+            )
+    return candidates, shared
+
+
+def _stable_review_candidates(
+    candidates: dict[tuple[str, str], _TerminalConflictCandidateDraft],
+    queue_id: str,
+    position: int,
+    staging: Path,
+) -> list[TerminalConflictReviewCandidate]:
+    if len(candidates) != 2:
+        raise TerminalConflictReviewError(
+            f"Terminal conflict review requires exactly two distinct WAVs: {queue_id}"
+        )
+    stable_candidates: list[TerminalConflictReviewCandidate] = []
+    for candidate_position, ((_authority, digest), candidate) in enumerate(
+        sorted(candidates.items()), start=1
+    ):
+        candidate_id = canonical_document_sha256(
+            {
+                "queue_id": queue_id,
+                "authority": candidate["authority"],
+                "audio_sha256": digest,
+            }
+        )
+        relative = (
+            Path("audio") / f"{position:02d}" / f"candidate-{candidate_position}.wav"
+        )
+        destination = staging / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        audio_bytes = candidate.pop("audio_bytes", None)
+        if audio_bytes is None:
+            raise TerminalConflictReviewError(
+                f"Conflict WAV changed while copied: {queue_id}"
+            )
+        destination.write_bytes(audio_bytes)
+        if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+            raise TerminalConflictReviewError(
+                f"Conflict WAV changed while copied: {queue_id}"
+            )
+        try:
+            info = probe_pcm16_mono_wav(destination)
+        except Pcm16MonoWavError as error:
+            raise TerminalConflictReviewError(str(error)) from error
+        stable_candidates.append(
+            {
+                "candidate_id": candidate_id,
+                "audio": relative.as_posix(),
+                "authority": candidate["authority"],
+                "audio_sha256": candidate["audio_sha256"],
+                "sample_rate": info.sample_rate,
+                "sample_count": info.sample_count,
+                "workspace_ids": sorted(candidate["workspace_ids"]),
+                "source_authorities": sorted(
+                    candidate["source_authorities"],
+                    key=lambda value: value["workspace_id"],
+                ),
+            }
+        )
+    return stable_candidates
+
+
+def _review_case(
+    conflict: JsonDocument,
+    position: int,
+    inputs: _ReviewPublicationInput,
+    review_rows: dict[tuple[str, str], ReviewItem],
+    staging: Path,
+) -> JsonDocument:
+    queue_id = _text(conflict.get("queue_id"), "Conflict queue ID")
+    occurrences = _objects(conflict.get("occurrences"), "terminal conflict occurrences")
+    if len({value["queue_record_sha256"] for value in occurrences}) != 1:
+        raise TerminalConflictReviewError(
+            f"Conflict changes queue content and cannot be audio-reviewed: {queue_id}"
+        )
+    if len({value["text_sha256"] for value in occurrences}) != 1:
+        raise TerminalConflictReviewError(
+            f"Conflict changes text and cannot be audio-reviewed: {queue_id}"
+        )
+    candidates, shared = _review_candidate_drafts(
+        queue_id, occurrences, inputs, review_rows
+    )
+    stable_candidates = _stable_review_candidates(
+        candidates, queue_id, position, staging
+    )
+    if shared is None:
+        raise TerminalConflictReviewError(
+            f"Conflict display identity changed: {queue_id}"
+        )
+    line_id, speaker, voice_character, text = shared
+    candidate_ids = [value["candidate_id"] for value in stable_candidates]
+    queue_record_sha256 = occurrences[0]["queue_record_sha256"]
+    text_sha256 = occurrences[0]["text_sha256"]
+    return {
+        "case_id": canonical_document_sha256(
+            {
+                "queue_id": queue_id,
+                "queue_record_sha256": queue_record_sha256,
+                "text_sha256": text_sha256,
+                "candidate_ids": candidate_ids,
+            }
+        ),
+        "queue_id": queue_id,
+        "line_id": line_id,
+        "queue_record_sha256": queue_record_sha256,
+        "text_sha256": text_sha256,
+        "speaker": speaker,
+        "voice_character": voice_character,
+        "text": text,
+        "candidates": stable_candidates,
+    }
+
+
+def _review_document(
+    inputs: _ReviewPublicationInput,
+    review_rows: dict[tuple[str, str], ReviewItem],
+    staging: Path,
+) -> tuple[JsonDocument, int]:
+    cases = [
+        _review_case(conflict, position, inputs, review_rows, staging)
+        for position, conflict in enumerate(inputs.conflicts, start=1)
+    ]
+    candidate_total = len(cases) * 2
+    body: JsonDocument = {
+        "schema": TERMINAL_CONFLICT_REVIEW_SCHEMA,
+        "schema_version": TERMINAL_CONFLICT_REVIEW_VERSION,
+        "source_reconciliation": str(inputs.snapshot.path),
+        "source_reconciliation_sha256": inputs.snapshot.sha256,
+        "source_report_id": inputs.report["report_id"],
+        "policy": {
+            "candidate_order": "stable opaque digest order",
+            "decision_scope": "one explicit winner or neither per exact queue ID",
+            "workspace_mutation": "forbidden",
+        },
+        "case_count": len(cases),
+        "candidate_count": candidate_total,
+        "cases": cases,
+    }
+    review_id = canonical_document_sha256(body)
+    return {**body, "review_id": review_id}, candidate_total
+
+
+def publish_terminal_conflict_review(
+    reconciliation_path: str | Path, output_directory: str | Path
+) -> TerminalConflictReview:
+    """Publish exact distinct WAV choices for every current terminal conflict."""
+    inputs = _review_publication_input(Path(reconciliation_path).expanduser().resolve())
+    output = Path(output_directory).expanduser().resolve()
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output_exists = output.exists() or output.is_symlink()
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
-        workspace_queue_ids: dict[str, set[str]] = {}
-        for conflict in conflicts:
-            queue_id = _text(conflict.get("queue_id"), "Conflict queue ID")
-            for occurrence in _objects(
-                conflict.get("occurrences"), "terminal conflict occurrences"
-            ):
-                workspace_queue_ids.setdefault(
-                    _text(occurrence.get("workspace_id"), "Conflict workspace ID"),
-                    set(),
-                ).add(
-                    queue_id
-                )
-        review_rows = {}
-        for workspace_id, queue_ids in sorted(workspace_queue_ids.items()):
-            workspace = workspace_paths.get(workspace_id)
-            if workspace is None:
-                raise TerminalConflictReviewError(
-                    f"Conflict references an unknown workspace: {workspace_id}"
-                )
-            try:
-                rows = list_review_items(workspace, tuple(sorted(queue_ids)))
-            except AuthoringWorkbenchError as error:
-                raise TerminalConflictReviewError(str(error)) from error
-            indexed = {row.queue_id: row for row in rows}
-            if set(indexed) != queue_ids:
-                raise TerminalConflictReviewError(
-                    f"Conflict outcomes are unavailable: {workspace_id}"
-                )
-            for queue_id, row in indexed.items():
-                review_rows[(workspace_id, queue_id)] = row
-
-        cases = []
-        candidate_total = 0
-        for position, conflict in enumerate(conflicts, start=1):
-            queue_id = _text(conflict.get("queue_id"), "Conflict queue ID")
-            occurrences = _objects(
-                conflict.get("occurrences"), "terminal conflict occurrences"
-            )
-            if len({value["queue_record_sha256"] for value in occurrences}) != 1:
-                raise TerminalConflictReviewError(
-                    f"Conflict changes queue content and cannot be audio-reviewed: {queue_id}"
-                )
-            if len({value["text_sha256"] for value in occurrences}) != 1:
-                raise TerminalConflictReviewError(
-                    f"Conflict changes text and cannot be audio-reviewed: {queue_id}"
-                )
-            candidates: dict[tuple[str, str], _TerminalConflictCandidateDraft] = {}
-            shared: tuple[str, str, str, str] | None = None
-            for occurrence in occurrences:
-                workspace_id = _text(
-                    occurrence.get("workspace_id"), "Conflict workspace ID"
-                )
-                authority_name = _text(
-                    occurrence.get("authority"), "Conflict authority"
-                )
-                workspace = workspace_paths.get(workspace_id)
-                if workspace is None:
-                    raise TerminalConflictReviewError(
-                        f"Conflict references an unknown workspace: {workspace_id}"
-                    )
-                row = review_rows[(workspace_id, queue_id)]
-                expected_review = {
-                    "approved": "approved",
-                    "rejected": "rejected",
-                }.get(authority_name)
-                if (
-                    expected_review is None
-                    or row.review_status != expected_review
-                    or row.line_id != occurrence["line_id"]
-                    or hashlib.sha256(row.text.encode("utf-8")).hexdigest()
-                    != occurrence["text_sha256"]
-                    or row.authority is None
-                    or row.state is None
-                    or row.queue is None
-                ):
-                    raise TerminalConflictReviewError(
-                        f"Conflict authority changed: {workspace_id}/{queue_id}"
-                    )
-                workspace_record = workspace_records[workspace_id]
-                if (
-                    row.authority.state_sha256 != workspace_record["state_sha256"]
-                    or row.authority.queue_sha256 != workspace_record["queue_sha256"]
-                ):
-                    raise TerminalConflictReviewError(
-                        f"Conflict source changed after reconciliation: {workspace_id}"
-                    )
-                try:
-                    audio = prepare_review_audio(row)
-                except AuthoringWorkbenchError as error:
-                    raise TerminalConflictReviewError(str(error)) from error
-                digest = hashlib.sha256(audio).hexdigest()
-                if digest != row.authority.audio_sha256:
-                    raise TerminalConflictReviewError(
-                        f"Conflict WAV changed: {workspace_id}/{queue_id}"
-                    )
-                identity = (authority_name, digest)
-                candidate = candidates.setdefault(
-                    identity,
-                    {
-                        "authority": authority_name,
-                        "audio_sha256": digest,
-                        "audio_bytes": audio,
-                        "workspace_ids": [],
-                        "source_authorities": [],
-                    },
-                )
-                candidate["workspace_ids"].append(workspace_id)
-                candidate["source_authorities"].append(
-                    {
-                        "workspace_id": workspace_id,
-                        "state": str(row.state.resolve()),
-                        "queue": str(row.queue.resolve()),
-                        "review_authority": {
-                            "queue_sha256": row.authority.queue_sha256,
-                            "state_sha256": row.authority.state_sha256,
-                            "item_sha256": row.authority.item_sha256,
-                            "audio_sha256": row.authority.audio_sha256,
-                        },
-                    }
-                )
-                row_shared = (row.line_id, row.speaker, row.voice_character, row.text)
-                if shared is None:
-                    shared = row_shared
-                elif shared != row_shared:
-                    raise TerminalConflictReviewError(
-                        f"Conflict display identity changed: {queue_id}"
-                    )
-            if len(candidates) != 2:
-                raise TerminalConflictReviewError(
-                    "Terminal conflict review requires exactly two distinct WAVs: "
-                    f"{queue_id}"
-                )
-            if shared is None:
-                raise TerminalConflictReviewError(
-                    f"Conflict display identity changed: {queue_id}"
-                )
-            line_id, speaker, voice_character, text = shared
-            stable_candidates = []
-            for candidate_position, ((_authority, digest), candidate) in enumerate(
-                sorted(candidates.items()), start=1
-            ):
-                candidate_id = canonical_document_sha256(
-                    {
-                        "queue_id": queue_id,
-                        "authority": candidate["authority"],
-                        "audio_sha256": digest,
-                    }
-                )
-                relative = (
-                    Path("audio")
-                    / f"{position:02d}"
-                    / f"candidate-{candidate_position}.wav"
-                )
-                destination = staging / relative
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                audio_bytes = candidate.pop("audio_bytes", None)
-                if audio_bytes is None:
-                    raise TerminalConflictReviewError(
-                        f"Conflict WAV changed while copied: {queue_id}"
-                    )
-                destination.write_bytes(audio_bytes)
-                if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
-                    raise TerminalConflictReviewError(
-                        f"Conflict WAV changed while copied: {queue_id}"
-                    )
-                try:
-                    info = probe_pcm16_mono_wav(destination)
-                except Pcm16MonoWavError as error:
-                    raise TerminalConflictReviewError(str(error)) from error
-                stable_candidates.append(
-                    {
-                        "candidate_id": candidate_id,
-                        "audio": relative.as_posix(),
-                        **candidate,
-                        "sample_rate": info.sample_rate,
-                        "sample_count": info.sample_count,
-                        "workspace_ids": sorted(candidate["workspace_ids"]),
-                        "source_authorities": sorted(
-                            candidate["source_authorities"],
-                            key=lambda value: value["workspace_id"],
-                        ),
-                    }
-                )
-            candidate_total += len(stable_candidates)
-            cases.append(
-                {
-                    "case_id": canonical_document_sha256(
-                        {
-                            "queue_id": queue_id,
-                            "queue_record_sha256": occurrences[0][
-                                "queue_record_sha256"
-                            ],
-                            "text_sha256": occurrences[0]["text_sha256"],
-                            "candidate_ids": [
-                                value["candidate_id"] for value in stable_candidates
-                            ],
-                        }
-                    ),
-                    "queue_id": queue_id,
-                    "line_id": line_id,
-                    "queue_record_sha256": occurrences[0]["queue_record_sha256"],
-                    "text_sha256": occurrences[0]["text_sha256"],
-                    "speaker": speaker,
-                    "voice_character": voice_character,
-                    "text": text,
-                    "candidates": stable_candidates,
-                }
-            )
-        body = {
-            "schema": TERMINAL_CONFLICT_REVIEW_SCHEMA,
-            "schema_version": TERMINAL_CONFLICT_REVIEW_VERSION,
-            "source_reconciliation": str(report_snapshot.path),
-            "source_reconciliation_sha256": report_snapshot.sha256,
-            "source_report_id": report["report_id"],
-            "policy": {
-                "candidate_order": "stable opaque digest order",
-                "decision_scope": "one explicit winner or neither per exact queue ID",
-                "workspace_mutation": "forbidden",
-            },
-            "case_count": len(cases),
-            "candidate_count": candidate_total,
-            "cases": cases,
-        }
-        review_id = canonical_document_sha256(body)
-        document = {**body, "review_id": review_id}
+        review_rows = _review_rows_for_conflicts(inputs)
+        document, candidate_total = _review_document(inputs, review_rows, staging)
         atomic_write_json(staging / "review.json", document, sort_keys=True)
         load_terminal_conflict_review(staging)
-        assert_authority_snapshot(report_snapshot, "authoring reconciliation")
-        _assert_source_authorities(
-            validate_terminal_conflict_review_document(document, staging)
-        )
+        assert_authority_snapshot(inputs.snapshot, "authoring reconciliation")
+        review = validate_terminal_conflict_review_document(document, staging)
+        _assert_source_authorities(review)
+        review_id = review["review_id"]
         if output_exists:
             existing = load_terminal_conflict_review(output)
             if existing.review_id != review_id:
@@ -508,7 +605,7 @@ def publish_terminal_conflict_review(
                 f"Unable to publish terminal conflict review: {error}"
             ) from error
     return TerminalConflictReview(
-        output, review_id, len(cases), candidate_total, 0, True
+        output, review_id, review["case_count"], candidate_total, 0, True
     )
 
 
@@ -584,10 +681,7 @@ def load_terminal_conflict_candidate_audio(
     return payload
 
 
-def validate_terminal_conflict_review_document(
-    document: object, directory: str | Path
-) -> TerminalConflictReviewDocument:
-    value = copy.deepcopy(document)
+def _review_document_header(value: object) -> TerminalConflictReviewDocument:
     if (
         not _is_review_document(value)
         or value.get("schema") != TERMINAL_CONFLICT_REVIEW_SCHEMA
@@ -630,167 +724,189 @@ def validate_terminal_conflict_review_document(
         raise TerminalConflictReviewError("Terminal conflict review cases are empty")
     if value["case_count"] != len(cases):
         raise TerminalConflictReviewError("Terminal conflict case count changed")
+    return value
+
+
+def _candidate_identity(
+    candidate: object,
+    queue_id: str,
+    identities: set[tuple[str, str]],
+) -> tuple[str, str]:
+    if not _is_review_candidate(candidate) or set(candidate) != {
+        "candidate_id",
+        "authority",
+        "audio",
+        "audio_sha256",
+        "sample_rate",
+        "sample_count",
+        "source_authorities",
+        "workspace_ids",
+    }:
+        raise TerminalConflictReviewError("Terminal conflict candidate is malformed")
+    candidate_id = _sha256(candidate["candidate_id"], "Terminal conflict candidate ID")
+    authority = candidate["authority"]
+    if authority not in {"approved", "rejected"}:
+        raise TerminalConflictReviewError(
+            "Terminal conflict candidate authority is invalid"
+        )
+    digest = _sha256(candidate["audio_sha256"], "Terminal conflict candidate WAV hash")
+    expected_id = canonical_document_sha256(
+        {"queue_id": queue_id, "authority": authority, "audio_sha256": digest}
+    )
+    if candidate_id != expected_id or (authority, digest) in identities:
+        raise TerminalConflictReviewError(
+            "Terminal conflict candidate identity changed"
+        )
+    identities.add((authority, digest))
+    return candidate_id, digest
+
+
+def _validate_candidate_audio(candidate: object, root: Path, digest: str) -> None:
+    if not _is_review_candidate(candidate):
+        raise TerminalConflictReviewError("Terminal conflict candidate is malformed")
+    audio = _contained_file(root, candidate["audio"], "candidate WAV")
+    payload = audio.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != digest:
+        raise TerminalConflictReviewError("Terminal conflict WAV changed")
+    try:
+        info = probe_pcm16_mono_wav(audio)
+    except Pcm16MonoWavError as error:
+        raise TerminalConflictReviewError(str(error)) from error
+    if (
+        candidate["sample_rate"] != info.sample_rate
+        or candidate["sample_count"] != info.sample_count
+    ):
+        raise TerminalConflictReviewError("Terminal conflict WAV metadata changed")
+
+
+def _validate_source_authority(source: object) -> None:
+    if not _is_source_authority(source) or set(source) != {
+        "workspace_id",
+        "state",
+        "queue",
+        "review_authority",
+    }:
+        raise TerminalConflictReviewError(
+            "Terminal conflict source authority is malformed"
+        )
+    _text(source["workspace_id"], "Terminal conflict source workspace")
+    state_path = Path(_text(source["state"], "Terminal conflict source state"))
+    queue_path = Path(_text(source["queue"], "Terminal conflict source queue"))
+    if not state_path.is_absolute() or not queue_path.is_absolute():
+        raise TerminalConflictReviewError(
+            "Terminal conflict source paths must be absolute"
+        )
+    review_authority = source["review_authority"]
+    if not isinstance(review_authority, dict) or set(review_authority) != {
+        "queue_sha256",
+        "state_sha256",
+        "item_sha256",
+        "audio_sha256",
+    }:
+        raise TerminalConflictReviewError(
+            "Terminal conflict review authority is malformed"
+        )
+    for key, authority_digest in review_authority.items():
+        _sha256(authority_digest, f"Terminal conflict review authority {key}")
+
+
+def _validate_candidate_sources(candidate: object) -> None:
+    if not _is_review_candidate(candidate):
+        raise TerminalConflictReviewError("Terminal conflict candidate is malformed")
+    workspace_ids: object = candidate["workspace_ids"]
+    if (
+        not isinstance(workspace_ids, list)
+        or not workspace_ids
+        or workspace_ids != sorted(set(workspace_ids))
+        or any(not isinstance(item, str) or not item for item in workspace_ids)
+    ):
+        raise TerminalConflictReviewError(
+            "Terminal conflict candidate workspaces changed"
+        )
+    source_authorities: object = candidate["source_authorities"]
+    if (
+        not isinstance(source_authorities, list)
+        or len(source_authorities) != len(workspace_ids)
+        or any(not isinstance(item, dict) for item in source_authorities)
+        or [item.get("workspace_id") for item in source_authorities] != workspace_ids
+    ):
+        raise TerminalConflictReviewError(
+            "Terminal conflict source authorities changed"
+        )
+    for source in source_authorities:
+        _validate_source_authority(source)
+
+
+def _validate_review_case(
+    case: object,
+    root: Path,
+    seen_cases: set[str],
+    seen_queue_ids: set[str],
+) -> int:
+    if not _is_review_case(case) or set(case) != {
+        "case_id",
+        "queue_id",
+        "line_id",
+        "queue_record_sha256",
+        "text_sha256",
+        "speaker",
+        "voice_character",
+        "text",
+        "candidates",
+    }:
+        raise TerminalConflictReviewError("Terminal conflict case is malformed")
+    case_id = _sha256(case["case_id"], "Terminal conflict case ID")
+    queue_id = _text(case["queue_id"], "Terminal conflict queue ID")
+    if case_id in seen_cases or queue_id in seen_queue_ids:
+        raise TerminalConflictReviewError("Terminal conflict case is duplicated")
+    seen_cases.add(case_id)
+    seen_queue_ids.add(queue_id)
+    _text(case["line_id"], "Terminal conflict line ID")
+    queue_record_sha256 = _sha256(
+        case["queue_record_sha256"], "Terminal conflict queue-record hash"
+    )
+    text_sha256 = _sha256(case["text_sha256"], "Terminal conflict text hash")
+    text = _text(case["text"], "Terminal conflict text")
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != text_sha256:
+        raise TerminalConflictReviewError("Terminal conflict text changed")
+    _text(case["speaker"], "Terminal conflict speaker")
+    _text(case["voice_character"], "Terminal conflict voice character")
+    candidates: object = case["candidates"]
+    if not isinstance(candidates, list) or len(candidates) != 2:
+        raise TerminalConflictReviewError(
+            "Terminal conflict requires exactly two candidates"
+        )
+    candidate_ids: list[str] = []
+    identities: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        candidate_id, digest = _candidate_identity(candidate, queue_id, identities)
+        candidate_ids.append(candidate_id)
+        _validate_candidate_audio(candidate, root, digest)
+        _validate_candidate_sources(candidate)
+    expected_case_id = canonical_document_sha256(
+        {
+            "queue_id": queue_id,
+            "queue_record_sha256": queue_record_sha256,
+            "text_sha256": text_sha256,
+            "candidate_ids": candidate_ids,
+        }
+    )
+    if case_id != expected_case_id:
+        raise TerminalConflictReviewError("Terminal conflict case identity changed")
+    return len(candidates)
+
+
+def validate_terminal_conflict_review_document(
+    document: object, directory: str | Path
+) -> TerminalConflictReviewDocument:
+    value = _review_document_header(copy.deepcopy(document))
     root = Path(directory).resolve()
-    seen_cases = set()
-    seen_queue_ids = set()
+    cases = value["cases"]
+    seen_cases: set[str] = set()
+    seen_queue_ids: set[str] = set()
     candidate_count = 0
     for case in cases:
-        if not isinstance(case, dict) or set(case) != {
-            "case_id",
-            "queue_id",
-            "line_id",
-            "queue_record_sha256",
-            "text_sha256",
-            "speaker",
-            "voice_character",
-            "text",
-            "candidates",
-        }:
-            raise TerminalConflictReviewError("Terminal conflict case is malformed")
-        case_id = _sha256(case["case_id"], "Terminal conflict case ID")
-        queue_id = _text(case["queue_id"], "Terminal conflict queue ID")
-        if case_id in seen_cases or queue_id in seen_queue_ids:
-            raise TerminalConflictReviewError("Terminal conflict case is duplicated")
-        seen_cases.add(case_id)
-        seen_queue_ids.add(queue_id)
-        _text(case["line_id"], "Terminal conflict line ID")
-        queue_record_sha256 = _sha256(
-            case["queue_record_sha256"], "Terminal conflict queue-record hash"
-        )
-        text_sha256 = _sha256(case["text_sha256"], "Terminal conflict text hash")
-        text = _text(case["text"], "Terminal conflict text")
-        if hashlib.sha256(text.encode("utf-8")).hexdigest() != text_sha256:
-            raise TerminalConflictReviewError("Terminal conflict text changed")
-        _text(case["speaker"], "Terminal conflict speaker")
-        _text(case["voice_character"], "Terminal conflict voice character")
-        candidates = case["candidates"]
-        if not isinstance(candidates, list) or len(candidates) != 2:
-            raise TerminalConflictReviewError(
-                "Terminal conflict requires exactly two candidates"
-            )
-        candidate_ids = []
-        identities = set()
-        for candidate in candidates:
-            if not isinstance(candidate, dict) or set(candidate) != {
-                "candidate_id",
-                "authority",
-                "audio",
-                "audio_sha256",
-                "sample_rate",
-                "sample_count",
-                "source_authorities",
-                "workspace_ids",
-            }:
-                raise TerminalConflictReviewError(
-                    "Terminal conflict candidate is malformed"
-                )
-            candidate_id = _sha256(
-                candidate["candidate_id"], "Terminal conflict candidate ID"
-            )
-            authority = candidate["authority"]
-            if authority not in {"approved", "rejected"}:
-                raise TerminalConflictReviewError(
-                    "Terminal conflict candidate authority is invalid"
-                )
-            digest = _sha256(
-                candidate["audio_sha256"], "Terminal conflict candidate WAV hash"
-            )
-            expected_id = canonical_document_sha256(
-                {
-                    "queue_id": queue_id,
-                    "authority": authority,
-                    "audio_sha256": digest,
-                }
-            )
-            if candidate_id != expected_id or (authority, digest) in identities:
-                raise TerminalConflictReviewError(
-                    "Terminal conflict candidate identity changed"
-                )
-            identities.add((authority, digest))
-            candidate_ids.append(candidate_id)
-            audio = _contained_file(root, candidate["audio"], "candidate WAV")
-            payload = audio.read_bytes()
-            if hashlib.sha256(payload).hexdigest() != digest:
-                raise TerminalConflictReviewError("Terminal conflict WAV changed")
-            try:
-                info = probe_pcm16_mono_wav(audio)
-            except Pcm16MonoWavError as error:
-                raise TerminalConflictReviewError(str(error)) from error
-            if (
-                candidate["sample_rate"] != info.sample_rate
-                or candidate["sample_count"] != info.sample_count
-            ):
-                raise TerminalConflictReviewError(
-                    "Terminal conflict WAV metadata changed"
-                )
-            workspace_ids = candidate["workspace_ids"]
-            if (
-                not isinstance(workspace_ids, list)
-                or not workspace_ids
-                or workspace_ids != sorted(set(workspace_ids))
-                or any(not isinstance(item, str) or not item for item in workspace_ids)
-            ):
-                raise TerminalConflictReviewError(
-                    "Terminal conflict candidate workspaces changed"
-                )
-            source_authorities = candidate["source_authorities"]
-            if (
-                not isinstance(source_authorities, list)
-                or len(source_authorities) != len(workspace_ids)
-                or any(not isinstance(item, dict) for item in source_authorities)
-                or [item.get("workspace_id") for item in source_authorities]
-                != workspace_ids
-            ):
-                raise TerminalConflictReviewError(
-                    "Terminal conflict source authorities changed"
-                )
-            for source in source_authorities:
-                if not isinstance(source, dict) or set(source) != {
-                    "workspace_id",
-                    "state",
-                    "queue",
-                    "review_authority",
-                }:
-                    raise TerminalConflictReviewError(
-                        "Terminal conflict source authority is malformed"
-                    )
-                _text(source["workspace_id"], "Terminal conflict source workspace")
-                state_path = Path(
-                    _text(source["state"], "Terminal conflict source state")
-                )
-                queue_path = Path(
-                    _text(source["queue"], "Terminal conflict source queue")
-                )
-                if not state_path.is_absolute() or not queue_path.is_absolute():
-                    raise TerminalConflictReviewError(
-                        "Terminal conflict source paths must be absolute"
-                    )
-                review_authority = source["review_authority"]
-                if not isinstance(review_authority, dict) or set(review_authority) != {
-                    "queue_sha256",
-                    "state_sha256",
-                    "item_sha256",
-                    "audio_sha256",
-                }:
-                    raise TerminalConflictReviewError(
-                        "Terminal conflict review authority is malformed"
-                    )
-                for key, authority_digest in review_authority.items():
-                    _sha256(
-                        authority_digest,
-                        f"Terminal conflict review authority {key}",
-                    )
-        expected_case_id = canonical_document_sha256(
-            {
-                "queue_id": queue_id,
-                "queue_record_sha256": queue_record_sha256,
-                "text_sha256": text_sha256,
-                "candidate_ids": candidate_ids,
-            }
-        )
-        if case_id != expected_case_id:
-            raise TerminalConflictReviewError("Terminal conflict case identity changed")
-        candidate_count += len(candidates)
+        candidate_count += _validate_review_case(case, root, seen_cases, seen_queue_ids)
     if value["candidate_count"] != candidate_count:
         raise TerminalConflictReviewError("Terminal conflict candidate count changed")
     return value
@@ -1160,7 +1276,9 @@ def assert_terminal_conflict_review_source_authorities(
     _assert_source_authorities(review)
 
 
-def _assert_source_authorities(review: TerminalConflictReviewDocument) -> None:
+def _source_reconciliation(
+    review: TerminalConflictReviewDocument,
+) -> tuple[AuthoritySnapshot, JsonDocument, dict[str, JsonDocument]]:
     try:
         report_snapshot = capture_authority_file(
             review["source_reconciliation"], "source reconciliation"
@@ -1179,51 +1297,62 @@ def _assert_source_authorities(review: TerminalConflictReviewDocument) -> None:
         _text(value.get("workspace_id"), "Workspace ID"): value
         for value in _objects(report.get("workspaces"), "reconciliation workspaces")
     }
+    return report_snapshot, report, workspace_records
+
+
+def _assert_candidate_source_authority(
+    case: TerminalConflictReviewCase,
+    candidate: TerminalConflictReviewCandidate,
+    source: TerminalConflictReviewSourceAuthority,
+    workspace_records: dict[str, JsonDocument],
+) -> None:
+    workspace_id = source["workspace_id"]
+    workspace_record = workspace_records.get(workspace_id)
+    if workspace_record is None:
+        raise TerminalConflictReviewError(
+            "Terminal conflict workspace disappeared from reconciliation"
+        )
+    workspace = Path(
+        _text(workspace_record.get("workspace"), "Workspace path")
+    ).resolve()
+    expected_state = (workspace / "generated-audio" / "generation-state.json").resolve()
+    expected_queue = (workspace / "queue.jsonl").resolve()
+    state_path = Path(source["state"])
+    queue_path = Path(source["queue"])
+    if state_path != expected_state or queue_path != expected_queue:
+        raise TerminalConflictReviewError(
+            f"Terminal conflict source paths changed: {workspace_id}"
+        )
+    try:
+        authority = ReviewAuthority(**source["review_authority"])
+        if (
+            authority.state_sha256 != workspace_record["state_sha256"]
+            or authority.queue_sha256 != workspace_record["queue_sha256"]
+        ):
+            raise TerminalConflictReviewError(
+                f"Terminal conflict reconciliation authority changed: {workspace_id}"
+            )
+        payload = load_review_audio_bytes(
+            state_path, queue_path, case["queue_id"], authority
+        )
+    except (BulkGenerationError, TypeError) as error:
+        raise TerminalConflictReviewError(
+            f"Terminal conflict authority changed: {workspace_id}"
+        ) from error
+    if hashlib.sha256(payload).hexdigest() != candidate["audio_sha256"]:
+        raise TerminalConflictReviewError(
+            f"Terminal conflict authority changed: {workspace_id}"
+        )
+
+
+def _assert_source_authorities(review: TerminalConflictReviewDocument) -> None:
+    report_snapshot, _report, workspace_records = _source_reconciliation(review)
     for case in review["cases"]:
         for candidate in case["candidates"]:
             for source in candidate["source_authorities"]:
-                workspace_id = source["workspace_id"]
-                workspace_record = workspace_records.get(workspace_id)
-                if workspace_record is None:
-                    raise TerminalConflictReviewError(
-                        "Terminal conflict workspace disappeared from reconciliation"
-                    )
-                workspace = Path(
-                    _text(workspace_record.get("workspace"), "Workspace path")
-                ).resolve()
-                expected_state = (
-                    workspace / "generated-audio" / "generation-state.json"
-                ).resolve()
-                expected_queue = (workspace / "queue.jsonl").resolve()
-                state_path = Path(source["state"])
-                queue_path = Path(source["queue"])
-                if state_path != expected_state or queue_path != expected_queue:
-                    raise TerminalConflictReviewError(
-                        f"Terminal conflict source paths changed: {workspace_id}"
-                    )
-                try:
-                    authority = ReviewAuthority(**source["review_authority"])
-                    if (
-                        authority.state_sha256 != workspace_record["state_sha256"]
-                        or authority.queue_sha256 != workspace_record["queue_sha256"]
-                    ):
-                        raise TerminalConflictReviewError(
-                            f"Terminal conflict reconciliation authority changed: {workspace_id}"
-                        )
-                    payload = load_review_audio_bytes(
-                        state_path,
-                        queue_path,
-                        case["queue_id"],
-                        authority,
-                    )
-                except (BulkGenerationError, TypeError) as error:
-                    raise TerminalConflictReviewError(
-                        f"Terminal conflict authority changed: {workspace_id}"
-                    ) from error
-                if hashlib.sha256(payload).hexdigest() != candidate["audio_sha256"]:
-                    raise TerminalConflictReviewError(
-                        f"Terminal conflict authority changed: {workspace_id}"
-                    )
+                _assert_candidate_source_authority(
+                    case, candidate, source, workspace_records
+                )
     assert_authority_snapshot(report_snapshot, "source reconciliation")
 
 
@@ -1233,9 +1362,9 @@ def _objects(value: object, label: str) -> list[JsonDocument]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _validate_progress(
+def _progress_document(
     progress: object, review: TerminalConflictReviewDocument
-) -> TerminalConflictReviewProgress:
+) -> tuple[TerminalConflictReviewProgress, int]:
     value = copy.deepcopy(progress)
     version = value.get("schema_version") if isinstance(value, dict) else None
     required = {"schema", "schema_version", "review_id", "updated_at", "decisions"}
@@ -1250,13 +1379,19 @@ def _validate_progress(
     ):
         raise TerminalConflictReviewError("Terminal conflict progress is invalid")
     _aware_timestamp(value["updated_at"], "Terminal conflict progress timestamp")
+    return value, version
+
+
+def _validate_progress_decisions(
+    value: TerminalConflictReviewProgress, review: TerminalConflictReviewDocument
+) -> set[str]:
     cases = {item["case_id"]: item for item in review["cases"]}
-    decisions = value["decisions"]
+    decisions: object = value["decisions"]
     if not isinstance(decisions, list):
         raise TerminalConflictReviewError("Terminal conflict decisions are invalid")
-    seen = set()
+    seen: set[str] = set()
     for decision in decisions:
-        if not isinstance(decision, dict) or set(decision) != {
+        if not _is_progress_decision(decision) or set(decision) != {
             "case_id",
             "decision",
             "reviewed_at",
@@ -1277,38 +1412,53 @@ def _validate_progress(
         )
     if decisions != sorted(decisions, key=lambda item: item["case_id"]):
         raise TerminalConflictReviewError("Terminal conflict decisions are not sorted")
-    if version == TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION:
-        carry = value["carry_forward"]
-        if not isinstance(carry, dict) or set(carry) != {
-            "source_review",
-            "source_review_sha256",
-            "source_progress",
-            "source_progress_sha256",
-            "source_review_id",
-            "case_ids",
-        }:
+    return seen
+
+
+def _validate_progress_carry(
+    value: TerminalConflictReviewProgress, version: int, seen: set[str]
+) -> None:
+    if version != TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION:
+        return
+    carry: object = value["carry_forward"]
+    if not isinstance(carry, dict) or set(carry) != {
+        "source_review",
+        "source_review_sha256",
+        "source_progress",
+        "source_progress_sha256",
+        "source_review_id",
+        "case_ids",
+    }:
+        raise TerminalConflictReviewError(
+            "Terminal conflict carry-forward ledger is malformed"
+        )
+    for field in ("source_review", "source_progress"):
+        path = carry.get(field)
+        if not isinstance(path, str) or not Path(path).is_absolute():
             raise TerminalConflictReviewError(
-                "Terminal conflict carry-forward ledger is malformed"
+                "Terminal conflict carry-forward path is invalid"
             )
-        for field in ("source_review", "source_progress"):
-            path = carry.get(field)
-            if not isinstance(path, str) or not Path(path).is_absolute():
-                raise TerminalConflictReviewError(
-                    "Terminal conflict carry-forward path is invalid"
-                )
-        for field in ("source_review_sha256", "source_progress_sha256"):
-            _sha256(carry.get(field), f"Terminal conflict carry-forward {field}")
-        _sha256(carry.get("source_review_id"), "Terminal conflict source review ID")
-        case_ids = carry.get("case_ids")
-        if (
-            not isinstance(case_ids, list)
-            or not case_ids
-            or case_ids != sorted(set(case_ids))
-            or not set(case_ids).issubset(seen)
-        ):
-            raise TerminalConflictReviewError(
-                "Terminal conflict carried case identities are invalid"
-            )
+    for field in ("source_review_sha256", "source_progress_sha256"):
+        _sha256(carry.get(field), f"Terminal conflict carry-forward {field}")
+    _sha256(carry.get("source_review_id"), "Terminal conflict source review ID")
+    case_ids = carry.get("case_ids")
+    if (
+        not isinstance(case_ids, list)
+        or not case_ids
+        or case_ids != sorted(set(case_ids))
+        or not set(case_ids).issubset(seen)
+    ):
+        raise TerminalConflictReviewError(
+            "Terminal conflict carried case identities are invalid"
+        )
+
+
+def _validate_progress(
+    progress: object, review: TerminalConflictReviewDocument
+) -> TerminalConflictReviewProgress:
+    value, version = _progress_document(progress, review)
+    seen = _validate_progress_decisions(value, review)
+    _validate_progress_carry(value, version, seen)
     return value
 
 
@@ -1409,11 +1559,8 @@ def _review_directory(directory: str | Path) -> Path:
     return resolved
 
 
-@contextmanager
-def _progress_lock(directory: Path) -> Iterator[None]:
-    path = directory / ".progress.lock"
-    guard_path = directory / ".progress.lock.guard"
-    lease = {
+def _new_progress_lease() -> _ProgressLease:
+    return {
         "schema": PROGRESS_LEASE_SCHEMA,
         "schema_version": PROGRESS_LEASE_VERSION,
         "pid": os.getpid(),
@@ -1422,66 +1569,100 @@ def _progress_lock(directory: Path) -> Iterator[None]:
         "lease_id": uuid.uuid4().hex,
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _is_stored_progress_lease(value: object) -> TypeGuard[_StoredProgressLease]:
+    return (
+        isinstance(value, dict)
+        and value.get("schema") == PROGRESS_LEASE_SCHEMA
+        and value.get("schema_version") == PROGRESS_LEASE_VERSION
+        and isinstance(value.get("pid"), int)
+        and value["pid"] > 0
+        and isinstance(value.get("hostname"), str)
+        and bool(value["hostname"])
+        and isinstance(value.get("lease_id"), str)
+        and bool(value["lease_id"])
+    )
+
+
+def _stored_progress_lease(path: Path) -> tuple[bytes, _StoredProgressLease]:
+    try:
+        payload = path.read_bytes()
+        existing = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise TerminalConflictReviewError(
+            "Unrecognized terminal conflict progress lock blocks review"
+        ) from error
+    if not _is_stored_progress_lease(existing):
+        raise TerminalConflictReviewError(
+            "Unrecognized terminal conflict progress lock blocks review"
+        )
+    return payload, existing
+
+
+def _stored_lease_is_live(existing: _StoredProgressLease) -> bool:
+    if existing["hostname"] != socket.gethostname():
+        raise TerminalConflictReviewError(
+            "Another terminal conflict decision is being saved"
+        )
+    if not process_is_alive(existing["pid"]):
+        return False
+    recorded_start = existing.get("process_started_at")
+    actual_start = process_started_at(existing["pid"])
+    if recorded_start is None or actual_start is None:
+        raise TerminalConflictReviewError(
+            "Another terminal conflict decision is being saved"
+        )
+    return recorded_start == actual_start
+
+
+def _recover_stale_progress_lock(directory: Path, path: Path) -> None:
+    existing_payload, existing = _stored_progress_lease(path)
+    if _stored_lease_is_live(existing):
+        raise TerminalConflictReviewError(
+            "Another terminal conflict decision is being saved"
+        )
+    interrupted = directory / (".progress.lock.interrupted-" + uuid.uuid4().hex)
+    if path.read_bytes() != existing_payload:
+        raise TerminalConflictReviewError(
+            "Terminal conflict progress lock changed during recovery"
+        )
+    try:
+        path.rename(interrupted)
+    except OSError as error:
+        raise TerminalConflictReviewError(
+            "Unable to recover an interrupted terminal conflict save"
+        ) from error
+
+
+def _create_progress_lock(path: Path) -> int:
+    try:
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as error:
+        raise TerminalConflictReviewError(
+            "Another terminal conflict decision is being saved"
+        ) from error
+
+
+def _remove_progress_lock(path: Path, guard_path: Path, lease: _ProgressLease) -> None:
+    try:
+        with exclusive_advisory_lock(guard_path, blocking=True):
+            if json.loads(path.read_text(encoding="utf-8")) == lease:
+                path.unlink()
+    except OSError, json.JSONDecodeError, AdvisoryLockBusyError:
+        return
+
+
+@contextmanager
+def _progress_lock(directory: Path) -> Iterator[None]:
+    path = directory / ".progress.lock"
+    guard_path = directory / ".progress.lock.guard"
+    lease = _new_progress_lease()
     try:
         with exclusive_advisory_lock(guard_path):
             if path.exists():
-                try:
-                    existing_payload = path.read_bytes()
-                    existing = json.loads(existing_payload.decode("utf-8"))
-                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-                    raise TerminalConflictReviewError(
-                        "Unrecognized terminal conflict progress lock blocks review"
-                    ) from error
-                if (
-                    not isinstance(existing, dict)
-                    or existing.get("schema") != PROGRESS_LEASE_SCHEMA
-                    or existing.get("schema_version") != PROGRESS_LEASE_VERSION
-                    or not isinstance(existing.get("pid"), int)
-                    or existing["pid"] <= 0
-                    or not isinstance(existing.get("hostname"), str)
-                    or not existing["hostname"]
-                    or not isinstance(existing.get("lease_id"), str)
-                    or not existing["lease_id"]
-                ):
-                    raise TerminalConflictReviewError(
-                        "Unrecognized terminal conflict progress lock blocks review"
-                    )
-                if existing["hostname"] != socket.gethostname():
-                    raise TerminalConflictReviewError(
-                        "Another terminal conflict decision is being saved"
-                    )
-                live = process_is_alive(existing["pid"])
-                if live:
-                    recorded_start = existing.get("process_started_at")
-                    actual_start = process_started_at(existing["pid"])
-                    if recorded_start is None or actual_start is None:
-                        raise TerminalConflictReviewError(
-                            "Another terminal conflict decision is being saved"
-                        )
-                    live = recorded_start == actual_start
-                if live:
-                    raise TerminalConflictReviewError(
-                        "Another terminal conflict decision is being saved"
-                    )
-                interrupted = directory / (
-                    ".progress.lock.interrupted-" + uuid.uuid4().hex
-                )
-                if path.read_bytes() != existing_payload:
-                    raise TerminalConflictReviewError(
-                        "Terminal conflict progress lock changed during recovery"
-                    )
-                try:
-                    path.rename(interrupted)
-                except OSError as error:
-                    raise TerminalConflictReviewError(
-                        "Unable to recover an interrupted terminal conflict save"
-                    ) from error
-            try:
-                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError as error:
-                raise TerminalConflictReviewError(
-                    "Another terminal conflict decision is being saved"
-                ) from error
+                _recover_stale_progress_lock(directory, path)
+            descriptor = _create_progress_lock(path)
     except AdvisoryLockBusyError as error:
         raise TerminalConflictReviewError(
             "Another terminal conflict decision is being saved"
@@ -1494,16 +1675,7 @@ def _progress_lock(directory: Path) -> Iterator[None]:
             os.fsync(stream.fileno())
         yield
     finally:
-        try:
-            with exclusive_advisory_lock(guard_path, blocking=True):
-                if json.loads(path.read_text(encoding="utf-8")) == lease:
-                    path.unlink()
-        except (
-            OSError,
-            json.JSONDecodeError,
-            AdvisoryLockBusyError,
-        ):
-            pass
+        _remove_progress_lock(path, guard_path, lease)
 
 
 __all__ = [
