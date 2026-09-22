@@ -154,24 +154,6 @@ class GameNarratorTest(unittest.TestCase):
                         )
                     previews.generate.assert_not_called()
                     previews.reference_audio.assert_not_called()
-                    dialog._operation = "audio"
-                    dialog._playback_requested = True
-                    dialog.player.errorOccurred.emit(
-                        player.Error.ResourceError, "Test device failure"
-                    )
-                    self.assertEqual(
-                        dialog.status.text(),
-                        "Original reference playback failed: Test device failure",
-                    )
-                    dialog._operation = "preview"
-                    dialog._playback_requested = True
-                    dialog.player.errorOccurred.emit(
-                        player.Error.ResourceError, "Preview device failure"
-                    )
-                    self.assertEqual(
-                        dialog.status.text(),
-                        "Preview playback failed: Preview device failure",
-                    )
                     dialog.references.setCurrentIndex(1)
                     self.assertEqual(dialog.reference_details.text(), "")
                 finally:
@@ -179,6 +161,50 @@ class GameNarratorTest(unittest.TestCase):
                     while pool.tasks:
                         self.run_task(pool)
                     pcm.close()
+
+    def test_original_and_preview_report_device_failures(self):
+        with TemporaryDirectory() as directory:
+            manifest = self.narrator_manifest(Path(directory))
+            pool = ManualThreadPool()
+            pcm = PersistentPcmPlayer(FakeAudioModule())
+            player = QtPcmPlayer(player_factory=lambda: pcm)
+            dialog = GameNarratorDialog(
+                AppSettings(speech_backend="moss-tts"),
+                importer=self.narrator_importer(manifest),
+                preview_service=Mock(),
+                thread_pool=pool,
+                player=player,
+            )
+            try:
+                self.application.processEvents()
+                self.run_task(pool)
+                self.run_task(pool)
+                dialog.original_button.click()
+                while pool.tasks:
+                    self.run_task(pool)
+                for operation, message, expected in (
+                    (
+                        "audio",
+                        "Test device failure",
+                        "Original reference playback failed: Test device failure",
+                    ),
+                    (
+                        "preview",
+                        "Preview device failure",
+                        "Preview playback failed: Preview device failure",
+                    ),
+                ):
+                    dialog._operation = operation
+                    dialog._playback_requested = True
+                    dialog.player.errorOccurred.emit(
+                        player.Error.ResourceError, message
+                    )
+                    self.assertEqual(dialog.status.text(), expected)
+            finally:
+                dialog.reject()
+                while pool.tasks:
+                    self.run_task(pool)
+                pcm.close()
 
     def test_voice_impact_loads_stories_only_on_request_and_selects_without_generating(
         self,
@@ -971,11 +997,6 @@ class GameNarratorTest(unittest.TestCase):
                 "/Games/Reverse 1999/StreamingAssets/Windows",
             )
             self.assertTrue(dialog.save_button.isDefault())
-            self.assertFalse(dialog.role.isEditable())
-            selected_role = dialog.role.currentText()
-            dialog.role.setCurrentText("Invented role")
-            self.assertEqual(dialog.role.currentText(), selected_role)
-            self.assertEqual(dialog.role.findText("Invented role"), -1)
             growth = QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
             self.assertEqual(dialog.form.fieldGrowthPolicy(), growth)
             self.assertEqual(dialog.game_controls.layout().fieldGrowthPolicy(), growth)
@@ -1013,19 +1034,6 @@ class GameNarratorTest(unittest.TestCase):
             self.application.processEvents()
             self.assertEqual(dialog.scroll.geometry().top(), scroll_top)
             dialog.stop_button.hide()
-            dialog.source.setFocus()
-            self.assertTrue(dialog.focusNextChild())
-            self.assertIs(self.application.focusWidget(), dialog.presets)
-            dialog.catalog_choice.addItem("Imported voice", "character:imported")
-            dialog.source.setCurrentIndex(dialog.source.findData("catalog"))
-            self.application.processEvents()
-            dialog.source.setFocus()
-            self.assertTrue(dialog.focusNextChild())
-            self.assertIs(self.application.focusWidget(), dialog.catalog_choice)
-            self.assertTrue(dialog.focusNextChild())
-            self.assertIs(
-                self.application.focusWidget(), dialog.catalog_original_button
-            )
             dialog.source.setCurrentIndex(dialog.source.findData("game"))
             self.application.processEvents()
             self.assertTrue(dialog.folder_button.isVisible())
@@ -1062,6 +1070,43 @@ class GameNarratorTest(unittest.TestCase):
                     self.assertEqual(button.width(), button.sizeHint().width())
             self.assertGreaterEqual(
                 dialog.cancel_button.width(), dialog.cancel_button.sizeHint().width()
+            )
+        finally:
+            dialog.reject()
+            while pool.tasks:
+                self.run_task(pool)
+
+    def test_voice_picker_keyboard_navigation_follows_selected_source(self):
+        pool = ManualThreadPool()
+        dialog = GameNarratorDialog(
+            AppSettings(),
+            importer=Mock(),
+            preview_service=Mock(),
+            thread_pool=pool,
+            player=Mock(),
+        )
+        try:
+            self.assertFalse(dialog.role.isEditable())
+            selected_role = dialog.role.currentText()
+            dialog.role.setCurrentText("Invented role")
+            self.assertEqual(dialog.role.currentText(), selected_role)
+            self.assertEqual(dialog.role.findText("Invented role"), -1)
+            dialog.source.setCurrentIndex(dialog.source.findData("preset"))
+            dialog.show()
+            self.application.processEvents()
+            self.assertTrue(dialog.text.tabChangesFocus())
+            dialog.source.setFocus()
+            self.assertTrue(dialog.focusNextChild())
+            self.assertIs(self.application.focusWidget(), dialog.presets)
+            dialog.catalog_choice.addItem("Imported voice", "character:imported")
+            dialog.source.setCurrentIndex(dialog.source.findData("catalog"))
+            self.application.processEvents()
+            dialog.source.setFocus()
+            self.assertTrue(dialog.focusNextChild())
+            self.assertIs(self.application.focusWidget(), dialog.catalog_choice)
+            self.assertTrue(dialog.focusNextChild())
+            self.assertIs(
+                self.application.focusWidget(), dialog.catalog_original_button
             )
         finally:
             dialog.reject()
