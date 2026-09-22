@@ -218,6 +218,57 @@ class GameAudioDecoderTest(unittest.TestCase):
             with self.assertRaisesRegex(decoder.DecoderSetupError, "offline"):
                 decoder.ensure_game_decoder(storage_root=self.root)
 
+    def test_cached_manifest_alias_is_not_trusted(self):
+        folder = self.root / "r2117-linux"
+        folder.mkdir()
+        executable = folder / "vgmstream-cli"
+        executable.write_bytes(b"decoder")
+        outside = self.root / "outside-verification.json"
+        outside.write_text(
+            json.dumps(
+                {"vgmstream-cli": hashlib.sha256(b"decoder").hexdigest()}
+            ),
+            encoding="utf-8",
+        )
+        symlink_or_skip(folder / "verified.json", outside)
+
+        with (
+            patch.object(decoder, "find_game_decoder", return_value=None),
+            patch.object(decoder, "get_bundle_root", return_value=None),
+            patch.object(decoder.sys, "platform", "linux"),
+            patch.object(decoder.platform, "machine", return_value="x86_64"),
+            patch.object(decoder, "_download", side_effect=OSError("offline")),
+            patch.object(decoder, "probe_game_decoder") as probe,
+            self.assertRaisesRegex(decoder.DecoderSetupError, "offline"),
+        ):
+            decoder.ensure_game_decoder(storage_root=self.root)
+        probe.assert_not_called()
+
+    def test_oversized_cached_manifest_is_not_trusted(self):
+        folder = self.root / "r2117-linux"
+        folder.mkdir()
+        executable = folder / "vgmstream-cli"
+        executable.write_bytes(b"decoder")
+        (folder / "verified.json").write_text(
+            " " * (64 * 1024)
+            + json.dumps(
+                {"vgmstream-cli": hashlib.sha256(b"decoder").hexdigest()}
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(decoder, "find_game_decoder", return_value=None),
+            patch.object(decoder, "get_bundle_root", return_value=None),
+            patch.object(decoder.sys, "platform", "linux"),
+            patch.object(decoder.platform, "machine", return_value="x86_64"),
+            patch.object(decoder, "_download", side_effect=OSError("offline")),
+            patch.object(decoder, "probe_game_decoder") as probe,
+            self.assertRaisesRegex(decoder.DecoderSetupError, "offline"),
+        ):
+            decoder.ensure_game_decoder(storage_root=self.root)
+        probe.assert_not_called()
+
     def test_cached_manifest_rejects_symlinked_decoder(self):
         folder = self.root / "r2117-linux"
         folder.mkdir()

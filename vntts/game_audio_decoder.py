@@ -35,6 +35,7 @@ ARCHIVES = {
 }
 SOURCE_URL = f"https://codeload.github.com/vgmstream/vgmstream/zip/refs/tags/{VERSION}"
 SOURCE_SHA256 = "1b9245a61a6d123f56ad853d9e0098c62447fa9ada58a6c116b195ff6ccb1219"
+_VERIFICATION_RECORD_READ_LIMIT = 64 * 1024
 
 
 class DecoderSetupError(RuntimeError):
@@ -246,9 +247,17 @@ def ensure_game_decoder(
                 "vgmstream-cli.exe" if sys.platform == "win32" else "vgmstream-cli"
             )
             manifest = destination / "verified.json"
-            if manifest.is_file():
+            if (
+                manifest.is_file()
+                and not manifest.is_symlink()
+                and not manifest.is_junction()
+            ):
                 try:
-                    files = json.loads(manifest.read_text(encoding="utf-8"))
+                    with manifest.open("rb") as source:
+                        payload = source.read(_VERIFICATION_RECORD_READ_LIMIT + 1)
+                    if len(payload) > _VERIFICATION_RECORD_READ_LIMIT:
+                        raise ValueError("verification record is too large")
+                    files = json.loads(payload)
                     if (
                         isinstance(files, dict)
                         and executable.name in files
