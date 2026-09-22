@@ -1386,23 +1386,37 @@ class GameNarratorTest(unittest.TestCase):
             ):
                 self.assertEqual(importer.narrator_characters(), ("Centurion",))
                 self.assertEqual(importer.narrator_characters(), ("Centurion",))
+                cache = root / "reverse1999" / "narrator-characters.json"
+                self.assertTrue(cache.is_file())
+                Reverse1999GameImporter._cached_narrator_characters.cache_clear()
                 self.assertEqual(
                     Reverse1999GameImporter(output_root=root).narrator_characters(),
                     ("Centurion",),
                 )
                 self.assertEqual(importing.call_count, 1)
                 parse_index.assert_called_once()
+                cache.write_text("{")
+                Reverse1999GameImporter._cached_narrator_characters.cache_clear()
+                self.assertEqual(importer.narrator_characters(), ("Centurion",))
+                self.assertEqual(parse_index.call_count, 2)
                 (root / "reverse1999" / "narrator-banks.json").write_text(
                     '{"Centurion": "hero3032_mainstory.bnk", "Rhiannon": "other.bnk"}'
                 )
                 self.assertEqual(
                     importer.narrator_characters(), ("Centurion", "Rhiannon")
                 )
-                self.assertEqual(parse_index.call_count, 2)
+                self.assertEqual(parse_index.call_count, 3)
+                story = root / "reverse1999" / "story-index.jsonl"
+                (root / "reverse1999" / "narrator-index.jsonl").write_text(
+                    story.read_text()
+                )
+                self.assertEqual(
+                    importer.narrator_characters(), ("Centurion", "Rhiannon")
+                )
+                self.assertEqual(parse_index.call_count, 4)
                 importer.narrator_characters(installation_root=root / "game")
                 self.assertEqual(importing.call_count, 2)
                 self.assertEqual(importing.call_args.args[1], root / "game")
-                self.assertEqual(parse_index.call_count, 3)
 
     def test_preparation_character_picker_preselects_target_role(self):
         with TemporaryDirectory() as directory:

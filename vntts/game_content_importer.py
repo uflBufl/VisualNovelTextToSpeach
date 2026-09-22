@@ -377,8 +377,8 @@ class Reverse1999GameImporter:
         result = self._cached_narrator_characters(
             story_index,
             narrator_banks,
-            self._file_stamp(story_index),
-            self._file_stamp(narrator_banks),
+            sha256_file(story_index),
+            sha256_file(narrator_banks),
         )
         self._record(
             "narrator-result",
@@ -388,18 +388,27 @@ class Reverse1999GameImporter:
         return result
 
     @staticmethod
-    def _file_stamp(path: Path) -> tuple[int, int, int, int]:
-        stat = path.stat()
-        return stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino
-
-    @staticmethod
     @lru_cache(maxsize=4)
     def _cached_narrator_characters(
         story_index: Path,
         narrator_banks: Path,
-        _index_stamp: tuple[int, int, int, int],
-        _banks_stamp: tuple[int, int, int, int],
+        index_sha256: str,
+        banks_sha256: str,
     ) -> tuple[str, ...]:
+        cache = story_index.parent / "narrator-characters.json"
+        try:
+            saved = json.loads(cache.read_text(encoding="utf-8"))
+            names = saved["characters"]
+            if (
+                saved["version"] == 1
+                and saved["story_index_sha256"] == index_sha256
+                and saved["narrator_banks_sha256"] == banks_sha256
+                and isinstance(names, list)
+                and all(isinstance(name, str) and name.strip() for name in names)
+            ):
+                return tuple(names)
+        except OSError, ValueError, KeyError, TypeError:
+            pass
         characters = {
             normalize_character_name(name): name
             for name in json.loads(narrator_banks.read_text(encoding="utf-8"))
@@ -411,7 +420,20 @@ class Reverse1999GameImporter:
             )
             if record.source_audio_status == "available" and not is_narrator(character):
                 characters.setdefault(normalize_character_name(character), character)
-        return tuple(sorted(characters.values(), key=str.casefold))
+        result = tuple(sorted(characters.values(), key=str.casefold))
+        try:
+            atomic_write_json(
+                cache,
+                {
+                    "version": 1,
+                    "story_index_sha256": index_sha256,
+                    "narrator_banks_sha256": banks_sha256,
+                    "characters": result,
+                },
+            )
+        except OSError:
+            pass
+        return result
 
     @staticmethod
     def _bank_index_is_stale(path: Path) -> bool:
