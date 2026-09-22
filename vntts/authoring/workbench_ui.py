@@ -717,7 +717,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.previous_pending = QPushButton("Previous pending")
         self.next_pending = QPushButton("Next pending")
         self.approve = QPushButton("Approve")
-        self.reject = QPushButton("Reject")
+        self.reject_button = QPushButton("Reject")
         self.review_play = QPushButton("Replay")
         self.review_stop = QPushButton("Stop selected audio")
         self.reload_authority = QPushButton("Reload workspace")
@@ -744,7 +744,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Keyboard shortcut: Ctrl+Enter or Ctrl+Return",
             ),
             (
-                self.reject,
+                self.reject_button,
                 "Reject selected audio",
                 "Keep but unpublish this generated line. Keyboard shortcut: "
                 "Ctrl+Backspace",
@@ -805,14 +805,14 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_play,
             self.review_stop,
             self.approve,
-            self.reject,
+            self.reject_button,
         )
         for widget in review_buttons:
             widget.setMinimumWidth(widget.sizeHint().width())
         for column, widget in enumerate(review_buttons[:4]):
             review_actions.addWidget(widget, 0, column)
         review_actions.addWidget(self.approve, 1, 0)
-        review_actions.addWidget(self.reject, 1, 1)
+        review_actions.addWidget(self.reject_button, 1, 1)
         generation_actions = QHBoxLayout()
         for widget in (
             self.retry_failed,
@@ -933,7 +933,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.specialist_review.clicked.connect(self.open_specialist_reviewer)
         self.reload_authority.clicked.connect(self.refresh)
         self.approve.clicked.connect(lambda: self.review_selected("approved"))
-        self.reject.clicked.connect(lambda: self.review_selected("rejected"))
+        self.reject_button.clicked.connect(lambda: self.review_selected("rejected"))
         self.previous_pending.clicked.connect(lambda: self._move_pending(-1))
         self.next_pending.clicked.connect(lambda: self._move_pending(1))
         self.retry_failed.clicked.connect(self.start_failed_retry)
@@ -1112,7 +1112,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.generate,
             self.retry_failed,
             self.approve,
-            self.reject,
+            self.reject_button,
             self.review_play,
             self.review_stop,
             self.open_output,
@@ -2083,7 +2083,7 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         heard = self._review_evidence.allows(selected)
         self.approve.setEnabled(enabled and heard)
-        self.reject.setEnabled(enabled and heard)
+        self.reject_button.setEnabled(enabled and heard)
         self.review_play.setEnabled(enabled and selected.audio is not None)
         self.review_stop.setEnabled(self._preview_active)
         navigation_enabled = (
@@ -2127,7 +2127,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 "Ready: exact WAV and state will be revalidated when the action starts"
             )
         self.approve.setToolTip(reason)
-        self.reject.setToolTip(reason)
+        self.reject_button.setToolTip(reason)
         self.review_play.setToolTip("" if self.review_play.isEnabled() else reason)
         self.review_stop.setToolTip(
             "" if self._preview_active else "No audio preview is currently playing"
@@ -2667,7 +2667,7 @@ class AuthoringWorkbenchDialog(QDialog):
             (
                 "Ctrl+Backspace",
                 lambda: self._trigger_if_enabled(
-                    self.reject, lambda: self.review_selected("rejected")
+                    self.reject_button, lambda: self.review_selected("rejected")
                 ),
             ),
         )
@@ -2693,7 +2693,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.review_play,
             self.review_stop,
             self.approve,
-            self.reject,
+            self.reject_button,
             self.specialist_section.header,
             self.specialist_review,
             self.outcome_details.header,

@@ -341,7 +341,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.reload_authority.text(), "Reload workspace")
             self.assertEqual(dialog.reset_layout.text(), "Reset layout")
             self.assertEqual(dialog.approve.text(), "Approve")
-            self.assertEqual(dialog.reject.text(), "Reject")
+            self.assertEqual(dialog.reject_button.text(), "Reject")
             self.assertEqual(dialog.review_play.text(), "Replay")
             for label, control in zip(
                 dialog.review_filter_labels,
@@ -370,7 +370,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             for control in (
                 dialog.review_table,
                 dialog.approve,
-                dialog.reject,
+                dialog.reject_button,
                 dialog.specialist_section,
             ):
                 bottom = control.mapTo(review_panel, QPoint(0, control.height())).y()
@@ -380,6 +380,18 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.show_technical_columns.setChecked(True)
             self.assertFalse(dialog.review_table.isColumnHidden(6))
             self.assertFalse(dialog.review_table.isColumnHidden(8))
+
+    def test_escape_rejects_dialog(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = self.create_workspace(root)
+            dialog = AuthoringWorkbenchDialog(workspace, settings=self.settings(root))
+            dialog.show()
+
+            QTest.keyClick(dialog, Qt.Key.Key_Escape)
+            self.application.processEvents()
+
+            self.assertEqual(dialog.result(), dialog.DialogCode.Rejected)
 
     def test_legacy_narrator_filter_migrates_to_single_speaker_scope(self):
         with TemporaryDirectory() as directory:
@@ -836,10 +848,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             self.assertEqual(dialog.review_play.text(), "Replay")
             self.assertEqual(dialog.approve.text(), "Approve")
-            self.assertEqual(dialog.reject.text(), "Reject")
+            self.assertEqual(dialog.reject_button.text(), "Reject")
             self.assertIn("Ctrl+R", dialog.review_play.accessibleDescription())
             self.assertIn("Ctrl+Enter", dialog.approve.accessibleDescription())
-            self.assertIn("Ctrl+Backspace", dialog.reject.accessibleDescription())
+            self.assertIn("Ctrl+Backspace", dialog.reject_button.accessibleDescription())
             modifiers = (
                 Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
             )
@@ -857,7 +869,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             dialog.play_selected_outcome.assert_called_once_with()
             dialog.review_selected = Mock()
             dialog.approve.setEnabled(True)
-            dialog.reject.setEnabled(True)
+            dialog.reject_button.setEnabled(True)
             QTest.keyClick(
                 dialog.review_table,
                 Qt.Key.Key_Enter,
@@ -1064,7 +1076,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertLess(call_elapsed, 0.1)
             self.assertTrue(dialog._review_save_active)
             self.assertFalse(dialog.approve.isEnabled())
-            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
             self.assertIn("Saving review", dialog.review_action_reason.text())
             close_event = QCloseEvent()
             dialog.closeEvent(close_event)
@@ -1391,7 +1403,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.application.processEvents()
             self.assertEqual(dialog._selected_review_item().review_status, "approved")
             self.mark_selected_review_heard(dialog)
-            dialog.reject.click()
+            dialog.reject_button.click()
             self.wait_for(lambda: not dialog._review_save_active)
             self.application.processEvents()
 
@@ -1419,7 +1431,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.mark_selected_review_heard(dialog)
             review_workspace_item(workspace, queue_id, "approved")
 
-            dialog.reject.click()
+            dialog.reject_button.click()
             self.wait_for(lambda: not dialog._review_save_active)
             state = json.loads(
                 (workspace / "generated-audio/generation-state.json").read_text(
@@ -1451,7 +1463,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIn("Unable to save review", dialog.status.text())
             self.assertEqual(dialog.review_table.rowCount(), 0)
             self.assertFalse(dialog.approve.isEnabled())
-            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
             self.assertFalse(dialog.review_play.isEnabled())
 
     def test_review_actions_follow_selection_and_fail_closed_on_integrity_error(self):
@@ -1464,10 +1476,10 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertFalse(dialog.approve.isEnabled())
-            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
             self.mark_selected_review_heard(dialog)
             self.assertTrue(dialog.approve.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.reject_button.isEnabled())
 
             (workspace / "queue.jsonl").write_bytes(b"tampered")
             dialog.refresh()
@@ -1475,7 +1487,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertIsNone(dialog.summary)
             for action in (
                 dialog.approve,
-                dialog.reject,
+                dialog.reject_button,
                 dialog.generate,
                 dialog.retry_failed,
                 dialog.open_output,
@@ -1505,7 +1517,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertEqual(dialog.review_table.rowCount(), 0)
             for action in (
                 dialog.approve,
-                dialog.reject,
+                dialog.reject_button,
                 dialog.review_play,
                 dialog.generate,
                 dialog.retry_failed,
@@ -1628,7 +1640,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.assertFalse(dialog.retry_failed.isEnabled())
             self.assertIn("Another process", dialog.retry_failed.toolTip())
             self.assertFalse(dialog.approve.isEnabled())
-            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
 
     def test_idle_poll_skips_full_refresh_until_authority_changes(self):
         with TemporaryDirectory() as directory:
@@ -1713,7 +1725,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             )
             self.assertIsNone(dialog.summary)
             self.assertFalse(dialog.approve.isEnabled())
-            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
             self.assertFalse(dialog.review_play.isEnabled())
 
     def test_review_playback_restores_actions_and_keeps_navigation_fixed(self):
@@ -1742,7 +1754,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog.review_play,
                 dialog.review_stop,
                 dialog.approve,
-                dialog.reject,
+                dialog.reject_button,
             )
             self.assertEqual(
                 [dialog.review_actions_layout.indexOf(control) for control in controls],
@@ -1770,7 +1782,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.application.processEvents()
 
             self.assertFalse(dialog.approve.isEnabled())
-            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
             self.assertTrue(dialog.review_stop.isEnabled())
             self.assertEqual(
                 tuple(control.geometry().x() for control in controls), initial_positions
@@ -1778,7 +1790,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
 
             dialog._media_status_changed(QMediaPlayer.MediaStatus.EndOfMedia)
             self.assertTrue(dialog.approve.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.reject_button.isEnabled())
             self.assertFalse(dialog.review_stop.isEnabled())
             self.assertIsNone(dialog._review_playback_buffer)
             self.assertEqual(
@@ -1789,13 +1801,13 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
             self.wait_for(lambda: not dialog._playback_prepare_active)
             dialog.stop_preview()
             self.assertTrue(dialog.approve.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.reject_button.isEnabled())
 
             dialog.play_selected_outcome()
             self.wait_for(lambda: not dialog._playback_prepare_active)
             dialog._media_error(None, "simulated playback failure")
             self.assertTrue(dialog.approve.isEnabled())
-            self.assertTrue(dialog.reject.isEnabled())
+            self.assertTrue(dialog.reject_button.isEnabled())
             self.assertIsNone(dialog._review_playback_buffer)
 
             dialog.play_selected_outcome()
@@ -1806,7 +1818,7 @@ class AuthoringWorkbenchUiTest(unittest.TestCase):
                 dialog._selected_review_item().queue_id, "second-pending-review"
             )
             self.assertFalse(dialog.approve.isEnabled())
-            self.assertFalse(dialog.reject.isEnabled())
+            self.assertFalse(dialog.reject_button.isEnabled())
             self.assertIsNone(dialog._review_playback_buffer)
             self.assertEqual(
                 tuple(control.geometry().x() for control in controls), initial_positions
