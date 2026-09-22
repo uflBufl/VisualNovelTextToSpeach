@@ -4253,9 +4253,9 @@ def main(argv=None):
 
         return reverse1999_bootstrap_main(qt_arguments)
     if arguments.offline_generation_worker:
-        from vntts.authoring.cli import main as authoring_main
+        from vntts.authoring.cli_generation import main as generation_main
 
-        return authoring_main(qt_arguments)
+        return generation_main(qt_arguments)
     if arguments.package_self_test:
         return run_package_self_test(arguments.package_self_test_report).exit_code
     if arguments.release_smoke_test_image or arguments.release_smoke_test_window_title:

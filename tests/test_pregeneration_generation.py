@@ -564,6 +564,12 @@ class OfflineGenerationWorkerTest(unittest.TestCase):
 
         self.assertEqual(command, (sys.executable, "--offline-generation-worker"))
 
+    def test_source_app_uses_generation_only_worker(self):
+        self.assertEqual(
+            OfflineGenerationWorker().command(),
+            (sys.executable, "-m", "vntts.authoring.cli_generation"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

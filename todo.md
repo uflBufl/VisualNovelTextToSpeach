@@ -14,10 +14,6 @@ Execution labels:
 
 ## Active - Simplify the player preparation architecture
 
-- [ ] Remove obsolete legacy import, compatibility exports and multi-workspace
-      reconciliation from the shipped player path after the new preparation
-      contract works. Keep only authoring tools that have a current use case.
-      Gate: player startup, generation and pack import need no expert workflow.
 - [ ] Give one session owner responsibility for start, stop and settings/pack
       replacement; move orchestration out of `TrayApplication` and keep the UI as
       a caller. Gate: stale or cancelled background work cannot mutate a newer

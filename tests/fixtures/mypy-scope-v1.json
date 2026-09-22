@@ -189,7 +189,6 @@
     "vntts/package_self_test.py",
     "vntts/path_safety.py",
     "vntts/playback.py",
-    "vntts/pregeneration_acceptance.py",
     "vntts/pregeneration_activation.py",
     "vntts/pregeneration_audition.py",
     "vntts/pregeneration_audition_ui.py",
