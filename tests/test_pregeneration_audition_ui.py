@@ -74,6 +74,12 @@ def with_second_group(plan, group):
     return replace(plan, groups=(*plan.groups, second)), second
 
 
+def generated_preview(root: Path):
+    path = root / "preview.wav"
+    path.write_bytes(clean_wav_bytes())
+    return Mock(path=path)
+
+
 class VoiceAuditionPanelTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -140,7 +146,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             decisions = VoiceDecisionStore(root / "decisions.json")
             preview_service = Mock()
-            preview_service.reference_audio.return_value = root / "reference.wav"
+            reference = root / "reference.wav"
+            reference.write_bytes(clean_wav_bytes())
+            preview_service.reference_audio.return_value = reference
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
                 decisions,
@@ -245,7 +253,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertEqual(len(group.candidates), 1)
             decisions = Mock()
             previews = Mock()
-            previews.generate.return_value = Mock(path=root / "preview.wav")
+            previews.generate.return_value = generated_preview(root)
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
                 decisions, preview_service=previews, thread_pool=pool, player=Mock()
@@ -388,7 +396,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, group = with_second_candidate(plan, group)
             decisions = Mock()
             service = Mock()
-            service.generate.return_value = Mock(path=root / "preview.wav")
+            service.generate.return_value = generated_preview(root)
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
                 decisions, preview_service=service, thread_pool=pool, player=Mock()
@@ -413,7 +421,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, group, _manifest = ambiguous_fixture(root)
             plan, group = with_second_candidate(plan, group)
             preview_service = Mock()
-            preview_service.generate.return_value = Mock(path=root / "preview.wav")
+            preview_service.generate.return_value = generated_preview(root)
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
                 VoiceDecisionStore(root / "decisions.json"),
@@ -457,7 +465,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             plan, second = with_second_group(plan, group)
             decisions = Mock()
             previews = Mock()
-            previews.generate.return_value = Mock(path=root / "preview.wav")
+            previews.generate.return_value = generated_preview(root)
             previews.backend.runtime_status = "GPU: RTX 2070 SUPER <8 GB>"
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
@@ -498,7 +506,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             def generate(_plan, _group, source_id, **options):
                 if options.get("text") == group.alternate_sample_text:
                     raise RuntimeError("alternate preview failed")
-                return Mock(path=root / "preview.wav")
+                return generated_preview(root)
 
             previews.generate.side_effect = generate
             decisions = Mock()
@@ -539,7 +547,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             previews = Mock()
             previews.generate.side_effect = [
                 RuntimeError("narrator preview failed"),
-                Mock(path=root / "preview.wav"),
+                generated_preview(root),
             ]
             decisions = Mock()
             pool = ManualThreadPool()
@@ -574,7 +582,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             decisions = Mock()
             decisions.remember_many.side_effect = OSError("disk unavailable")
             preview_service = Mock()
-            preview_service.generate.return_value = Mock(path=root / "preview.wav")
+            preview_service.generate.return_value = generated_preview(root)
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
                 decisions,
@@ -608,7 +616,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             service = Mock()
             service.generate.side_effect = [
                 RuntimeError("preview failed"),
-                Mock(path=root / "preview.wav"),
+                generated_preview(root),
             ]
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
@@ -753,7 +761,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             service = Mock()
             service.generate.side_effect = (
                 RuntimeError("preview failed"),
-                Mock(path=root / "preview.wav"),
+                generated_preview(root),
             )
             panel = VoiceAuditionPanel(
                 decisions, preview_service=service, thread_pool=pool, player=Mock()
@@ -799,7 +807,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             decisions = VoiceDecisionStore(root / "decisions.json")
             preview_service = Mock()
-            preview_service.generate.return_value = Mock(path=root / "preview.wav")
+            preview_service.generate.return_value = generated_preview(root)
             pool = ManualThreadPool()
             panel = VoiceAuditionPanel(
                 decisions,
@@ -909,6 +917,20 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
     def setUpClass(cls):
         cls.application = QApplication.instance() or QApplication([])
 
+    def setUp(self):
+        self._voice_library_directory = TemporaryDirectory()
+        self._voice_library_patch = patch(
+            "vntts.pregeneration_ui.application_voice_library",
+            return_value=VoiceLibrary(
+                Path(self._voice_library_directory.name) / "library"
+            ),
+        )
+        self._voice_library_patch.start()
+
+    def tearDown(self):
+        self._voice_library_patch.stop()
+        self._voice_library_directory.cleanup()
+
     def test_voice_confirmation_can_return_to_story_selection(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -974,7 +996,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 root / "decisions.json", voice_library=library
             )
             preview_service = Mock()
-            preview_service.generate.return_value = Mock(path=root / "preview.wav")
+            preview_service.generate.return_value = generated_preview(root)
             input_store = Mock()
             input_store.materialize.return_value = Mock(ready_items=1)
             pool = ManualThreadPool()
