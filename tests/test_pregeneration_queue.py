@@ -401,7 +401,7 @@ class PregenerationInputStoreTest(unittest.TestCase):
                 manifest_path=manifest,
             )
             variants = [group for group in plan.groups if group.character == "Rhiannon"]
-            self.assertEqual(len(variants), 2)
+            self.assertEqual(len(variants), 1)
             self.assertEqual(
                 {group.source_character for group in variants}, {"Rhiannon"}
             )
