@@ -65,7 +65,7 @@ from vntts.speech_presentation import (
 from vntts.tts_benchmark import create_backend
 from vntts.ui_text import copy_text_button, make_text_copyable
 from vntts.voice_default_impact import StoryVoiceImpact, inspect_voice_default_impact
-from vntts.voice_library import VoiceLibrary
+from vntts.voice_library import VoiceBinding, VoiceLibrary
 from vntts.voices import (
     CharacterVoiceRegistry,
     application_voice_library,
@@ -297,6 +297,16 @@ class GameNarratorDialog(QDialog):
         )
         game_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form.addRow(self.game_controls)
+        self._build_game_terms_controls(settings)
+        self._build_game_installation_controls(game_form)
+        self._build_game_character_controls(game_form)
+        self._build_game_reference_selection_controls(game_form)
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        form.addRow(separator)
+
+    def _build_game_terms_controls(self, settings: AppSettings) -> None:
+        form = self.form
         self.terms = QLabel(
             "Game voice cloning with Pocket requires accepting the "
             '<a href="https://huggingface.co/kyutai/pocket-tts">model terms</a> '
@@ -312,6 +322,8 @@ class GameNarratorDialog(QDialog):
         self.consent.setVisible(pocket)
         form.addRow(self.terms)
         form.addRow(self.consent)
+
+    def _build_game_installation_controls(self, game_form: QFormLayout) -> None:
         self.game_installation = QLineEdit("Automatically detected")
         self.game_installation.setReadOnly(True)
         self.game_installation.setAccessibleName("Selected game installation")
@@ -325,10 +337,14 @@ class GameNarratorDialog(QDialog):
         installation.addWidget(self.folder_button)
         installation.addWidget(self.discover_button)
         game_form.addRow("Game installation", installation)
+
+    def _build_game_character_controls(self, game_form: QFormLayout) -> None:
         self.characters = QComboBox()
         self.characters.setAccessibleName("Game character")
         self.characters.currentIndexChanged.connect(self._character_changed)
         game_form.addRow("Character voice", self.characters)
+
+    def _build_game_reference_selection_controls(self, game_form: QFormLayout) -> None:
         self.references = QComboBox()
         self.references.setAccessibleName("Original game reference")
         self.references.currentIndexChanged.connect(self._reference_changed)
@@ -345,9 +361,6 @@ class GameNarratorDialog(QDialog):
         self.reference_text.setTextFormat(Qt.TextFormat.PlainText)
         self.reference_text.setAccessibleName("Original reference transcript")
         game_form.addRow("Original transcript", self.reference_text)
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        form.addRow(separator)
 
     def _build_preview_controls(self) -> None:
         form = self.form
@@ -688,13 +701,24 @@ class GameNarratorDialog(QDialog):
             self.role.setCurrentText("Narrator")
             return
         narrator = normalize_character_name(role) == "narrator"
-        settings = self.settings_value
+        saved_binding, selected = self._saved_role_voice(role, narrator)
+        self.role_summary.setText(
+            self._role_summary_text(role, narrator, selected, saved_binding)
+        )
+        self._show_role_context(role)
+        self._select_role_source(narrator, selected)
+        self._source_changed()
+        self._settings_choice_changed()
+
+    def _saved_role_voice(
+        self, role: str, narrator: bool
+    ) -> tuple[VoiceBinding | None, str | None]:
         saved_binding = self.voice_library.binding(role)
         saved_evidence = (
             saved_binding.provenance.get("evidence")
             if saved_binding is not None
             else pregeneration_narrator_source_id(
-                settings, voice_library=self.voice_library
+                self.settings_value, voice_library=self.voice_library
             )
             if narrator
             else None
@@ -716,53 +740,79 @@ class GameNarratorDialog(QDialog):
         )
         if selected is None and narrator:
             selected = pregeneration_narrator_source_id(
-                settings, voice_library=self.voice_library
+                self.settings_value, voice_library=self.voice_library
             )
-        self.role_summary.setText(
-            "Not assigned - waiting for your choice"
-            if self._recovery_role == normalize_character_name(role)
+        return saved_binding, selected
+
+    def _role_summary_text(
+        self,
+        role: str,
+        narrator: bool,
+        selected: str | None,
+        saved_binding: VoiceBinding | None,
+    ) -> str:
+        if (
+            self._recovery_role == normalize_character_name(role)
             and saved_binding is None
-            else self._source_label(selected)
+        ):
+            return "Not assigned - waiting for your choice"
+        summary = self._source_label(selected)
+        return (
+            summary
             if narrator
-            else f"{self._source_label(selected)}\n"
-            "Original and prepared recordings keep priority."
+            else f"{summary}\nOriginal and prepared recordings keep priority."
         )
+
+    def _show_role_context(self, role: str) -> None:
         self.portrait.clear()
         self.portrait.hide()
-        if self._voice_context is not None:
-            group = next(
-                (
-                    group
-                    for group in self._voice_context.groups
-                    if normalize_character_name(group.character)
-                    == normalize_character_name(role)
-                ),
-                None,
-            )
-            if group is not None:
-                self.role_summary.setText(
-                    self.role_summary.text()
-                    + f"\nPlanned: {self._source_label(group.source_id)}\nLines: {len(group.line_ids)}"
+        self._show_role_plan(role)
+        self._show_story_titles()
+
+    def _show_role_plan(self, role: str) -> None:
+        if self._voice_context is None:
+            return
+        group = next(
+            (
+                group
+                for group in self._voice_context.groups
+                if normalize_character_name(group.character)
+                == normalize_character_name(role)
+            ),
+            None,
+        )
+        if group is None:
+            return
+        self.role_summary.setText(
+            self.role_summary.text()
+            + f"\nPlanned: {self._source_label(group.source_id)}\nLines: {len(group.line_ids)}"
+        )
+        self._show_verified_portrait(group.portrait_image, group.portrait_image_sha256)
+
+    def _show_verified_portrait(
+        self, portrait_image: str | None, portrait_image_sha256: str | None
+    ) -> None:
+        if not portrait_image or not portrait_image_sha256:
+            return
+        try:
+            if sha256_file(portrait_image) != portrait_image_sha256:
+                return
+            pixmap = QPixmap(portrait_image)
+            if pixmap.isNull():
+                return
+            self.portrait.setPixmap(
+                pixmap.scaled(
+                    96,
+                    96,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
                 )
-                if group.portrait_image and group.portrait_image_sha256:
-                    try:
-                        if (
-                            sha256_file(group.portrait_image)
-                            == group.portrait_image_sha256
-                        ):
-                            pixmap = QPixmap(group.portrait_image)
-                            if not pixmap.isNull():
-                                self.portrait.setPixmap(
-                                    pixmap.scaled(
-                                        96,
-                                        96,
-                                        Qt.AspectRatioMode.KeepAspectRatio,
-                                        Qt.TransformationMode.SmoothTransformation,
-                                    )
-                                )
-                                self.portrait.show()
-                    except OSError:
-                        pass
+            )
+            self.portrait.show()
+        except OSError:
+            return
+
+    def _show_story_titles(self) -> None:
         if self._story_titles:
             self.role_summary.setText(
                 self.role_summary.text()
@@ -775,6 +825,8 @@ class GameNarratorDialog(QDialog):
                 )
             )
         self.role_summary.setToolTip("\n".join(self._story_titles))
+
+    def _select_role_source(self, narrator: bool, selected: str | None) -> None:
         self.source.model().item(self.source.findData("automatic")).setEnabled(
             not narrator
         )
@@ -798,8 +850,6 @@ class GameNarratorDialog(QDialog):
             mode = "catalog"
         with QSignalBlocker(self.source):
             self.source.setCurrentIndex(self.source.findData(mode))
-        self._source_changed()
-        self._settings_choice_changed()
 
     def _source_label(self, source_id: str | None) -> str:
         if source_id is None:
