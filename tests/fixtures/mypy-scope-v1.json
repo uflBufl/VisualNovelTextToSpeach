@@ -87,6 +87,7 @@
     "vntts/authoring/review_context_ui.py",
     "vntts/authoring/reviewed_rejection_fallback.py",
     "vntts/authoring/reviewed_waveform_publication.py",
+    "vntts/authoring/robustness_asr.py",
     "vntts/authoring/robustness_corpus.py",
     "vntts/authoring/silence_comparison.py",
     "vntts/authoring/silence_evidence.py",
