@@ -75,6 +75,49 @@ class OCRReviewStoreTest(unittest.TestCase):
 
             self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
 
+    def test_skips_images_outside_review_directory(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            directory = root / "review"
+            directory.mkdir()
+            outside = root / "outside.png"
+            outside.write_bytes(b"image")
+            for index, image in enumerate(("../outside.png", str(outside))):
+                (directory / f"uncertain-outside-{index}.json").write_text(
+                    json.dumps({"image": image}),
+                    encoding="utf-8",
+                )
+
+            self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
+
+    def test_skips_invalid_numeric_metadata(self):
+        cases = (
+            ("confidence", True),
+            ("confidence", "NaN"),
+            ("minimum_confidence", "Infinity"),
+            ("attempts", True),
+            ("attempts", 1.5),
+            ("attempts", -1),
+        )
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            image = directory / "sample.png"
+            image.write_bytes(b"image")
+            for index, (field, value) in enumerate(cases):
+                payload = {
+                    "image": image.name,
+                    "confidence": 40,
+                    "minimum_confidence": 60,
+                    "attempts": 1,
+                    field: value,
+                }
+                (directory / f"uncertain-invalid-number-{index}.json").write_text(
+                    json.dumps(payload),
+                    encoding="utf-8",
+                )
+
+            self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
+
     def test_future_metadata_schema_is_not_offered_for_review(self):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

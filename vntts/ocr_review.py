@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isfinite
 from pathlib import Path
 
 from vntts.versioned_json import (
@@ -13,15 +14,26 @@ OCR_REVIEW_SCHEMA_VERSION = 1
 
 
 def _float_field(value: object) -> float:
-    if isinstance(value, (str, int, float)):
-        return float(value)
-    raise TypeError("OCR review number must be numeric")
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise TypeError("OCR review number must be numeric")
+    result = float(value)
+    if not isfinite(result):
+        raise ValueError("OCR review number must be finite")
+    return result
 
 
 def _int_field(value: object) -> int:
-    if isinstance(value, (str, int, float)):
-        return int(value)
-    raise TypeError("OCR review count must be numeric")
+    if isinstance(value, bool):
+        raise TypeError("OCR review count must be an integer")
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, str):
+        result = int(value)
+    else:
+        raise TypeError("OCR review count must be an integer")
+    if result < 0:
+        raise ValueError("OCR review count must not be negative")
+    return result
 
 
 @dataclass(frozen=True)
@@ -109,7 +121,10 @@ class OCRReviewStore:
         image = payload["image"]
         if not isinstance(image, str):
             raise TypeError("OCR review image must be a path string")
-        image_path = metadata_path.parent / image
+        image_name = Path(image)
+        if image_name.is_absolute() or image_name.name != image:
+            raise ValueError("OCR review image must be in the review directory")
+        image_path = metadata_path.parent / image_name
         if not image_path.is_file():
             return None
         return OCRReviewSample(
