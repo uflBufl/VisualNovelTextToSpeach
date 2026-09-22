@@ -565,7 +565,13 @@ def benchmark_backend(
         published = []
         try:
             for sample, staged, destination in publications:
-                os.replace(staged, destination)
+                try:
+                    os.link(staged, destination)
+                except FileExistsError as error:
+                    raise FileExistsError(
+                        f"Benchmark WAV already exists; refusing to overwrite: {destination}"
+                    ) from error
+                staged.unlink()
                 published.append(destination)
                 sample["audio"] = str(destination)
         except Exception:

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import unittest
 import wave
 from contextlib import redirect_stderr
@@ -413,6 +414,36 @@ class TTSBenchmarkTest(unittest.TestCase):
             self.assertEqual(list(output.glob("*.wav")), [])
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
             self.assertEqual(backend.stop_calls, 1)
+
+    def test_concurrent_wav_publication_does_not_overwrite(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        backend = FakeRenderingBackend()
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            original_link = os.link
+
+            def publish_first(source, destination):
+                Path(destination).write_bytes(b"published elsewhere")
+                return original_link(source, destination)
+
+            with (
+                patch("vntts.tts_benchmark.os.link", side_effect=publish_first),
+                self.assertRaisesRegex(FileExistsError, "refusing to overwrite"),
+            ):
+                benchmark_backend(
+                    "fake",
+                    registry,
+                    ["Kamuta"],
+                    "A line.",
+                    output,
+                    backend_factory=lambda _name, _registry, _cache: backend,
+                )
+
+            wavs = list(output.glob("*.wav"))
+            self.assertEqual(len(wavs), 1)
+            self.assertEqual(wavs[0].read_bytes(), b"published elsewhere")
 
     def test_uses_typed_render_sample_rate_for_published_wav(self):
         registry = CharacterVoiceRegistry(
