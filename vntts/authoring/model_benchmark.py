@@ -81,6 +81,16 @@ class _ComparisonVoiceContext:
     narrator_character: str | None
 
 
+@dataclass(frozen=True)
+class _FailureCorpusCapture:
+    queue_path: Path
+    state_path: Path
+    queue_sha256: str
+    state_sha256: str
+    state: JsonDocument
+    queue_by_id: dict[str, JsonDocument]
+
+
 def _is_json_document(value: object) -> TypeGuard[JsonDocument]:
     return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
@@ -182,9 +192,44 @@ def build_failure_comparison_corpus(
     name: str | None = None,
     manifest_path: str | Path | None = None,
     narrator_character: str | None = None,
-    state_loader: Callable[[str | Path, str | Path], JsonDocument] = load_generation_state,
+    state_loader: Callable[
+        [str | Path, str | Path], JsonDocument
+    ] = load_generation_state,
 ) -> JsonDocument:
     """Bind failures, Pocket recoveries and MOSS controls into one exact corpus."""
+    capture = _capture_failure_corpus_inputs(queue_path, state_path, state_loader)
+    failed, recovered, controls = _comparison_state_groups(
+        capture.state, capture.queue_by_id
+    )
+    if not failed:
+        raise ModelBenchmarkError(
+            "Generation state has no unresolved MOSS failures for comparison"
+        )
+    voice_context = _failure_corpus_voice_context(manifest_path, narrator_character)
+    selected = _selected_comparison_state_items(
+        failed,
+        recovered,
+        controls,
+        capture.queue_by_id,
+        pocket_sample_size,
+        control_sample_size,
+    )
+    samples = _failure_comparison_samples(selected, capture.queue_by_id, voice_context)
+    document = _failure_comparison_document(
+        capture, name, voice_context, failed, samples
+    )
+    _verify_failure_corpus_sources(capture, voice_context)
+    output_path = Path(output_path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(output_path, document, sort_keys=True)
+    return document
+
+
+def _capture_failure_corpus_inputs(
+    queue_path: str | Path,
+    state_path: str | Path,
+    state_loader: Callable[[str | Path, str | Path], JsonDocument],
+) -> _FailureCorpusCapture:
     queue_path = Path(queue_path).expanduser().resolve()
     state_path = Path(state_path).expanduser().resolve()
     try:
@@ -203,15 +248,32 @@ def build_failure_comparison_corpus(
         raise ModelBenchmarkError(
             "Validated generation state does not match its captured bytes"
         )
-    queue_by_id: dict[str, JsonDocument] = {
-        item.queue_id: _json_document(item.document, "Generation queue item")
-        for item in queue.items
-    }
-    voice_context = (
+    return _FailureCorpusCapture(
+        queue_path,
+        state_path,
+        queue_sha256,
+        state_sha256,
+        state,
+        {
+            item.queue_id: _json_document(item.document, "Generation queue item")
+            for item in queue.items
+        },
+    )
+
+
+def _failure_corpus_voice_context(
+    manifest_path: str | Path | None, narrator_character: str | None
+) -> _ComparisonVoiceContext | None:
+    return (
         _comparison_voice_context(manifest_path, narrator_character)
         if manifest_path is not None
         else None
     )
+
+
+def _comparison_state_groups(
+    state: JsonDocument, queue_by_id: Mapping[str, JsonDocument]
+) -> tuple[list[StateItem], list[StateItem], list[StateItem]]:
     failed: list[StateItem] = []
     recovered: list[StateItem] = []
     controls: list[StateItem] = []
@@ -234,11 +296,18 @@ def build_failure_comparison_corpus(
             recovered.append((queue_id, result))
         elif provider == "moss-tts" and status in {"generated", "approved"}:
             controls.append((queue_id, result))
-    if not failed:
-        raise ModelBenchmarkError(
-            "Generation state has no unresolved MOSS failures for comparison"
-        )
-    selected = [
+    return failed, recovered, controls
+
+
+def _selected_comparison_state_items(
+    failed: list[StateItem],
+    recovered: Iterable[StateItem],
+    controls: Iterable[StateItem],
+    queue_by_id: Mapping[str, JsonDocument],
+    pocket_sample_size: int,
+    control_sample_size: int,
+) -> list[tuple[str, JsonDocument, str]]:
+    return [
         *(item + ("unresolved_moss_failure",) for item in sorted(failed)),
         *(
             item + ("moss_to_pocket_recovery",)
@@ -253,7 +322,14 @@ def build_failure_comparison_corpus(
             )
         ),
     ]
-    samples = []
+
+
+def _failure_comparison_samples(
+    selected: Iterable[tuple[str, JsonDocument, str]],
+    queue_by_id: Mapping[str, JsonDocument],
+    voice_context: _ComparisonVoiceContext | None,
+) -> list[JsonDocument]:
+    samples: list[JsonDocument] = []
     for queue_id, result, group in selected:
         item = queue_by_id[queue_id]
         binding = result.get("source_reference_binding")
@@ -305,14 +381,26 @@ def build_failure_comparison_corpus(
                 ).hexdigest(),
             }
         )
+    return samples
+
+
+def _failure_comparison_document(
+    capture: _FailureCorpusCapture,
+    name: str | None,
+    voice_context: _ComparisonVoiceContext | None,
+    failed: list[StateItem],
+    samples: list[JsonDocument],
+) -> JsonDocument:
+    queue_path = capture.queue_path
+    state_path = capture.state_path
     document: JsonDocument = {
         "schema": CORPUS_SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "name": name or f"{queue_path.stem}-failure-comparison",
         "source_queue": str(queue_path),
-        "source_queue_sha256": queue_sha256,
+        "source_queue_sha256": capture.queue_sha256,
         "source_state": str(state_path),
-        "source_state_sha256": state_sha256,
+        "source_state_sha256": capture.state_sha256,
         **(
             {
                 "source_voice_manifest": str(voice_context.path),
@@ -334,9 +422,15 @@ def build_failure_comparison_corpus(
         },
         "samples": samples,
     }
+    return document
+
+
+def _verify_failure_corpus_sources(
+    capture: _FailureCorpusCapture, voice_context: _ComparisonVoiceContext | None
+) -> None:
     if (
-        sha256_file(queue_path) != queue_sha256
-        or sha256_file(state_path) != state_sha256
+        sha256_file(capture.queue_path) != capture.queue_sha256
+        or sha256_file(capture.state_path) != capture.state_sha256
         or (
             voice_context is not None
             and sha256_file(voice_context.path) != voice_context.sha256
@@ -346,10 +440,6 @@ def build_failure_comparison_corpus(
             "Queue, generation state or voice manifest changed while the corpus "
             "was built"
         )
-    output_path = Path(output_path).expanduser().resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(output_path, document, sort_keys=True)
-    return document
 
 
 def _comparison_voice_context(
@@ -366,6 +456,20 @@ def _comparison_voice_context(
         ) from error
     if not isinstance(document, dict):
         raise ModelBenchmarkError("Comparison voice manifest must be an object")
+    narrator_character = _comparison_narrator_character(registry, narrator_character)
+    queue_overrides = _comparison_queue_overrides(document, registry)
+    return _ComparisonVoiceContext(
+        path=manifest_path,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        registry=registry,
+        queue_overrides=queue_overrides,
+        narrator_character=narrator_character,
+    )
+
+
+def _comparison_narrator_character(
+    registry: CharacterVoiceRegistry, narrator_character: str | None
+) -> str | None:
     narrator_character = (
         str(narrator_character).strip() if narrator_character is not None else None
     )
@@ -373,7 +477,12 @@ def _comparison_voice_context(
         raise ModelBenchmarkError(
             f"Comparison narrator voice is not in the manifest: {narrator_character!r}"
         )
-    queue_overrides: dict[str, str] = {}
+    return narrator_character
+
+
+def _comparison_queue_overrides(
+    document: Mapping[str, object], registry: CharacterVoiceRegistry
+) -> dict[str, str]:
     bindings = document.get("vntts.authoring.source_reference_bindings")
     selected_variants = (
         bindings.get("selected_variants") if isinstance(bindings, dict) else ()
@@ -384,40 +493,48 @@ def _comparison_voice_context(
         raise ModelBenchmarkError(
             "Comparison voice manifest source reference bindings are invalid"
         )
+    queue_overrides: dict[str, str] = {}
     for variant in selected_variants:
-        if not isinstance(variant, dict):
+        voice_character, queue_ids = _comparison_selected_variant(variant, registry)
+        _add_comparison_queue_overrides(queue_overrides, queue_ids, voice_character)
+    return queue_overrides
+
+
+def _comparison_selected_variant(
+    variant: object, registry: CharacterVoiceRegistry
+) -> tuple[str, list[object]]:
+    if not isinstance(variant, dict):
+        raise ModelBenchmarkError(
+            "Comparison voice manifest selected variant is invalid"
+        )
+    voice_character = variant.get("voice_character")
+    queue_ids = variant.get("queue_ids")
+    if (
+        not isinstance(voice_character, str)
+        or not voice_character.strip()
+        or not isinstance(queue_ids, list)
+        or registry.resolve(voice_character) is None
+    ):
+        raise ModelBenchmarkError(
+            "Comparison voice manifest selected variant cannot be resolved"
+        )
+    return voice_character, queue_ids
+
+
+def _add_comparison_queue_overrides(
+    queue_overrides: dict[str, str], queue_ids: Iterable[object], voice_character: str
+) -> None:
+    for queue_id in queue_ids:
+        if not isinstance(queue_id, str) or not queue_id.strip():
             raise ModelBenchmarkError(
-                "Comparison voice manifest selected variant is invalid"
+                "Comparison voice manifest selected queue ID is invalid"
             )
-        voice_character = variant.get("voice_character")
-        queue_ids = variant.get("queue_ids")
-        if (
-            not isinstance(voice_character, str)
-            or not voice_character.strip()
-            or not isinstance(queue_ids, list)
-            or registry.resolve(voice_character) is None
-        ):
+        existing = queue_overrides.get(queue_id)
+        if existing is not None and existing != voice_character:
             raise ModelBenchmarkError(
-                "Comparison voice manifest selected variant cannot be resolved"
+                f"Comparison queue ID has conflicting voice bindings: {queue_id}"
             )
-        for queue_id in queue_ids:
-            if not isinstance(queue_id, str) or not queue_id.strip():
-                raise ModelBenchmarkError(
-                    "Comparison voice manifest selected queue ID is invalid"
-                )
-            existing = queue_overrides.get(queue_id)
-            if existing is not None and existing != voice_character:
-                raise ModelBenchmarkError(
-                    f"Comparison queue ID has conflicting voice bindings: {queue_id}"
-                )
-            queue_overrides[queue_id] = voice_character
-    return _ComparisonVoiceContext(
-        path=manifest_path,
-        sha256=hashlib.sha256(payload).hexdigest(),
-        registry=registry,
-        queue_overrides=queue_overrides,
-        narrator_character=narrator_character,
-    )
+        queue_overrides[queue_id] = voice_character
 
 
 def _resolve_comparison_voice(
@@ -748,46 +865,8 @@ def benchmark_model_variants(
     corpus = load_benchmark_corpus(corpus_path)
     samples = _documents(corpus.get("samples"), "Benchmark samples")
     variants = tuple(variants)
-    if not variants:
-        raise ModelBenchmarkError("At least one model variant is required")
-    model_ids = [variant.model_id for variant in variants]
-    if len(model_ids) != len(set(model_ids)):
-        raise ModelBenchmarkError("Model variant IDs must be unique")
-    safe_model_ids = [_safe_name(model_id) for model_id in model_ids]
-    if len(safe_model_ids) != len({value.casefold() for value in safe_model_ids}):
-        raise ModelBenchmarkError("Model variant IDs collide as output directory names")
-    for variant in variants:
-        if variant.backend == "coqui-xtts" and not variant.terms_accepted:
-            raise ModelBenchmarkError(
-                "XTTS v2 requires explicit CPML acceptance in the "
-                "model-variant document"
-            )
-        if variant.backend in {"moss-tts", "moss-tts-delay", "coqui-xtts"}:
-            unresolved = sorted(
-                {
-                    variant.voice
-                    or _required_text(sample.get("character"), "sample character")
-                    for sample in samples
-                    if registry.resolve(
-                        variant.voice
-                        or _required_text(sample.get("character"), "sample character")
-                    )
-                    is None
-                },
-                key=str.casefold,
-            )
-            if unresolved:
-                raise ModelBenchmarkError(
-                    "Model comparison has unresolved manifest voices: "
-                    + ", ".join(unresolved)
-                )
-    output_directory = Path(output_directory).expanduser().resolve()
-    if output_directory.exists() and (
-        not output_directory.is_dir() or any(output_directory.iterdir())
-    ):
-        raise ModelBenchmarkError(
-            f"Benchmark output already exists; refusing to overwrite: {output_directory}"
-        )
+    safe_model_ids = _validated_benchmark_variants(variants, samples, registry)
+    output_directory = _benchmark_output_directory(output_directory)
     output_directory.parent.mkdir(parents=True, exist_ok=True)
     with (
         TemporaryDirectory() as cache,
@@ -798,126 +877,268 @@ def benchmark_model_variants(
         cache_root = Path(cache).resolve()
         staging_root = Path(temporary_output).resolve() / output_directory.name
         staging_root.mkdir(parents=True)
-        published_corpus = staging_root / "benchmark-corpus.json"
-        atomic_write_json(published_corpus, corpus, sort_keys=True)
-        requires_voice_controls = any(
-            variant.backend in {"moss-tts", "moss-tts-delay", "coqui-xtts"}
-            for variant in variants
+        aggregate = _write_benchmark_staging(
+            corpus,
+            samples,
+            variants,
+            safe_model_ids,
+            registry,
+            cache_root,
+            staging_root,
+            output_directory,
+            seed,
+            backend_factory,
         )
-        if requires_voice_controls:
-            used_characters = {
+        _publish_benchmark_staging(staging_root, output_directory)
+    return aggregate
+
+
+def _validated_benchmark_variants(
+    variants: tuple[ModelVariant, ...],
+    samples: Sequence[JsonDocument],
+    registry: CharacterVoiceRegistry,
+) -> list[str]:
+    if not variants:
+        raise ModelBenchmarkError("At least one model variant is required")
+    model_ids = [variant.model_id for variant in variants]
+    if len(model_ids) != len(set(model_ids)):
+        raise ModelBenchmarkError("Model variant IDs must be unique")
+    safe_model_ids = [_safe_name(model_id) for model_id in model_ids]
+    if len(safe_model_ids) != len({value.casefold() for value in safe_model_ids}):
+        raise ModelBenchmarkError("Model variant IDs collide as output directory names")
+    for variant in variants:
+        _validate_benchmark_variant(variant, samples, registry)
+    return safe_model_ids
+
+
+def _validate_benchmark_variant(
+    variant: ModelVariant,
+    samples: Sequence[JsonDocument],
+    registry: CharacterVoiceRegistry,
+) -> None:
+    if variant.backend == "coqui-xtts" and not variant.terms_accepted:
+        raise ModelBenchmarkError(
+            "XTTS v2 requires explicit CPML acceptance in the model-variant document"
+        )
+    if variant.backend not in {"moss-tts", "moss-tts-delay", "coqui-xtts"}:
+        return
+    unresolved = sorted(
+        {
+            variant.voice or _required_text(sample.get("character"), "sample character")
+            for sample in samples
+            if registry.resolve(
                 variant.voice
                 or _required_text(sample.get("character"), "sample character")
-                for variant in variants
-                if variant.backend in {"moss-tts", "moss-tts-delay", "coqui-xtts"}
-                for sample in samples
-            }
-            snapshot_registry, voice_controls = _snapshot_voice_registry(
-                registry,
-                used_characters,
-                staging_root / "voice-controls",
-                output_directory / "voice-controls",
             )
-        else:
-            snapshot_registry = registry
-            voice_controls = []
-        voice_controls_sha256 = canonical_document_sha256(voice_controls)
-        voice_controls_content_sha256 = canonical_document_sha256(
-            [
-                {
-                    key: control[key]
-                    for key in (
-                        "character",
-                        "speaker",
-                        "reference_index",
-                        "sha256",
-                        "size",
-                    )
-                }
-                for control in voice_controls
-            ]
+            is None
+        },
+        key=str.casefold,
+    )
+    if unresolved:
+        raise ModelBenchmarkError(
+            "Model comparison has unresolved manifest voices: " + ", ".join(unresolved)
         )
-        reports = []
-        model_summaries = []
-        for variant, safe_model_id in zip(variants, safe_model_ids, strict=True):
-            cache_directory = _contained_child(cache_root, safe_model_id, "model cache")
-            model_output = _contained_child(staging_root, safe_model_id, "model output")
-            reported_model_output = _contained_child(
-                output_directory, safe_model_id, "reported model output"
-            )
-            try:
-                backend = backend_factory(
-                    variant.backend,
-                    snapshot_registry,
-                    cache_directory,
-                    model_name=variant.model,
-                    **(
-                        {"model_revision": variant.model_revision}
-                        if variant.model_revision is not None
-                        else {}
-                    ),
-                    **(
-                        {"terms_accepted": True}
-                        if variant.backend == "coqui-xtts"
-                        else {}
-                    ),
-                    **(
-                        {"require_cuda": True}
-                        if variant.backend == "moss-tts-delay" and variant.require_cuda
-                        else {}
-                    ),
-                )
-            except (TypeError, ValueError) as error:
-                raise ModelBenchmarkError(str(error)) from error
-            try:
-                report = benchmark_renderer(
-                    variant,
-                    backend,
-                    samples,
-                    model_output,
-                    seed=seed,
-                    reported_output_directory=reported_model_output,
-                    voice_controls_sha256=voice_controls_sha256,
-                    voice_controls_content_sha256=voice_controls_content_sha256,
-                )
-                reports.append(str(reported_model_output / "report.json"))
-                model_summaries.append(
-                    {
-                        "model_id": variant.model_id,
-                        "backend": variant.backend,
-                        "model": variant.model or variant.backend,
-                        "summary": report["summary"],
-                    }
-                )
-            finally:
-                stop = getattr(backend, "stop", None)
-                if callable(stop):
-                    stop()
-        aggregate = {
-            "schema": BENCHMARK_SCHEMA,
-            "schema_version": SCHEMA_VERSION,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "corpus": str(output_directory / "benchmark-corpus.json"),
-            "corpus_sha256": sha256_file(published_corpus),
-            "voice_controls": voice_controls,
-            "voice_controls_sha256": voice_controls_sha256,
-            "voice_controls_content_sha256": voice_controls_content_sha256,
-            "sample_count": len(samples),
-            "manual_review_required": True,
-            "comparison_ready": len(variants) >= 2,
-            "models": model_summaries,
-            "reports": reports,
-        }
-        atomic_write_json(staging_root / "benchmark.json", aggregate, sort_keys=True)
-        try:
-            if output_directory.exists():
-                output_directory.rmdir()
-            os.rename(staging_root, output_directory)
-        except OSError as error:
-            raise ModelBenchmarkError(
-                f"Unable to publish benchmark output {output_directory}: {error}"
-            ) from error
+
+
+def _benchmark_output_directory(output_directory: str | Path) -> Path:
+    output_directory = Path(output_directory).expanduser().resolve()
+    if output_directory.exists() and (
+        not output_directory.is_dir() or any(output_directory.iterdir())
+    ):
+        raise ModelBenchmarkError(
+            f"Benchmark output already exists; refusing to overwrite: {output_directory}"
+        )
+    return output_directory
+
+
+def _write_benchmark_staging(
+    corpus: JsonDocument,
+    samples: Sequence[JsonDocument],
+    variants: tuple[ModelVariant, ...],
+    safe_model_ids: Sequence[str],
+    registry: CharacterVoiceRegistry,
+    cache_root: Path,
+    staging_root: Path,
+    output_directory: Path,
+    seed: int,
+    backend_factory: Callable[..., object],
+) -> JsonDocument:
+    published_corpus = staging_root / "benchmark-corpus.json"
+    atomic_write_json(published_corpus, corpus, sort_keys=True)
+    snapshot_registry, voice_controls = _benchmark_voice_controls(
+        variants, samples, registry, staging_root, output_directory
+    )
+    voice_controls_sha256 = canonical_document_sha256(voice_controls)
+    voice_controls_content_sha256 = canonical_document_sha256(
+        [_voice_control_content(control) for control in voice_controls]
+    )
+    reports, model_summaries = _render_benchmark_variants(
+        variants,
+        safe_model_ids,
+        snapshot_registry,
+        samples,
+        cache_root,
+        staging_root,
+        output_directory,
+        seed,
+        backend_factory,
+        voice_controls_sha256,
+        voice_controls_content_sha256,
+    )
+    aggregate: JsonDocument = {
+        "schema": BENCHMARK_SCHEMA,
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "corpus": str(output_directory / "benchmark-corpus.json"),
+        "corpus_sha256": sha256_file(published_corpus),
+        "voice_controls": voice_controls,
+        "voice_controls_sha256": voice_controls_sha256,
+        "voice_controls_content_sha256": voice_controls_content_sha256,
+        "sample_count": len(samples),
+        "manual_review_required": True,
+        "comparison_ready": len(variants) >= 2,
+        "models": model_summaries,
+        "reports": reports,
+    }
+    atomic_write_json(staging_root / "benchmark.json", aggregate, sort_keys=True)
     return aggregate
+
+
+def _benchmark_voice_controls(
+    variants: Sequence[ModelVariant],
+    samples: Sequence[JsonDocument],
+    registry: CharacterVoiceRegistry,
+    staging_root: Path,
+    output_directory: Path,
+) -> tuple[CharacterVoiceRegistry, list[JsonDocument]]:
+    voice_variants = tuple(
+        variant
+        for variant in variants
+        if variant.backend in {"moss-tts", "moss-tts-delay", "coqui-xtts"}
+    )
+    if not voice_variants:
+        return registry, []
+    used_characters = {
+        variant.voice or _required_text(sample.get("character"), "sample character")
+        for variant in voice_variants
+        for sample in samples
+    }
+    return _snapshot_voice_registry(
+        registry,
+        used_characters,
+        staging_root / "voice-controls",
+        output_directory / "voice-controls",
+    )
+
+
+def _voice_control_content(control: JsonDocument) -> JsonDocument:
+    return {
+        key: control[key]
+        for key in ("character", "speaker", "reference_index", "sha256", "size")
+    }
+
+
+def _render_benchmark_variants(
+    variants: Sequence[ModelVariant],
+    safe_model_ids: Sequence[str],
+    registry: CharacterVoiceRegistry,
+    samples: Sequence[JsonDocument],
+    cache_root: Path,
+    staging_root: Path,
+    output_directory: Path,
+    seed: int,
+    backend_factory: Callable[..., object],
+    voice_controls_sha256: str,
+    voice_controls_content_sha256: str,
+) -> tuple[list[str], list[JsonDocument]]:
+    reports: list[str] = []
+    model_summaries: list[JsonDocument] = []
+    for variant, safe_model_id in zip(variants, safe_model_ids, strict=True):
+        reported_model_output = _contained_child(
+            output_directory, safe_model_id, "reported model output"
+        )
+        report = _render_benchmark_variant(
+            variant,
+            registry,
+            samples,
+            _contained_child(cache_root, safe_model_id, "model cache"),
+            _contained_child(staging_root, safe_model_id, "model output"),
+            reported_model_output,
+            seed,
+            backend_factory,
+            voice_controls_sha256,
+            voice_controls_content_sha256,
+        )
+        reports.append(str(reported_model_output / "report.json"))
+        model_summaries.append(
+            {
+                "model_id": variant.model_id,
+                "backend": variant.backend,
+                "model": variant.model or variant.backend,
+                "summary": report["summary"],
+            }
+        )
+    return reports, model_summaries
+
+
+def _render_benchmark_variant(
+    variant: ModelVariant,
+    registry: CharacterVoiceRegistry,
+    samples: Sequence[JsonDocument],
+    cache_directory: Path,
+    model_output: Path,
+    reported_model_output: Path,
+    seed: int,
+    backend_factory: Callable[..., object],
+    voice_controls_sha256: str,
+    voice_controls_content_sha256: str,
+) -> JsonDocument:
+    try:
+        backend = backend_factory(
+            variant.backend,
+            registry,
+            cache_directory,
+            model_name=variant.model,
+            **(
+                {"model_revision": variant.model_revision}
+                if variant.model_revision is not None
+                else {}
+            ),
+            **({"terms_accepted": True} if variant.backend == "coqui-xtts" else {}),
+            **(
+                {"require_cuda": True}
+                if variant.backend == "moss-tts-delay" and variant.require_cuda
+                else {}
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise ModelBenchmarkError(str(error)) from error
+    try:
+        return benchmark_renderer(
+            variant,
+            backend,
+            samples,
+            model_output,
+            seed=seed,
+            reported_output_directory=reported_model_output,
+            voice_controls_sha256=voice_controls_sha256,
+            voice_controls_content_sha256=voice_controls_content_sha256,
+        )
+    finally:
+        stop = getattr(backend, "stop", None)
+        if callable(stop):
+            stop()
+
+
+def _publish_benchmark_staging(staging_root: Path, output_directory: Path) -> None:
+    try:
+        if output_directory.exists():
+            output_directory.rmdir()
+        os.rename(staging_root, output_directory)
+    except OSError as error:
+        raise ModelBenchmarkError(
+            f"Unable to publish benchmark output {output_directory}: {error}"
+        ) from error
 
 
 def _snapshot_voice_registry(
@@ -1003,66 +1224,103 @@ def load_model_variants(path: str | Path) -> list[ModelVariant]:
         ) from error
     if not isinstance(document, list) or not document:
         raise ModelBenchmarkError("Model variants must be a non-empty list")
-    variants = []
-    for index, item in enumerate(document):
-        if not isinstance(item, dict) or not all(
-            isinstance(item.get(field), str) and item[field].strip()
-            for field in ("model_id", "backend")
-        ):
-            raise ModelBenchmarkError(f"Model variant {index} is invalid")
-        voice = item.get("voice")
-        if "voice" in item and (not isinstance(voice, str) or not voice.strip()):
-            raise ModelBenchmarkError(
-                f"Model variant {index} voice must be non-empty text"
-            )
-        model = item.get("model")
-        if "model" in item and (not isinstance(model, str) or not model.strip()):
-            raise ModelBenchmarkError(
-                f"Model variant {index} model must be non-empty text"
-            )
-        model_revision = item.get("model_revision")
-        if "model_revision" in item and (
-            not isinstance(model_revision, str)
-            or re.fullmatch(r"[0-9a-f]{40,64}", model_revision) is None
-        ):
-            raise ModelBenchmarkError(
-                f"Model variant {index} model_revision must be an exact commit"
-            )
-        if model_revision is not None and item["backend"] != "moss-tts-delay":
-            raise ModelBenchmarkError(
-                f"Model variant {index} model_revision applies only to moss-tts-delay"
-            )
-        terms_accepted = item.get("terms_accepted", False)
-        if not isinstance(terms_accepted, bool):
-            raise ModelBenchmarkError(
-                f"Model variant {index} terms_accepted must be true or false"
-            )
-        if terms_accepted and item["backend"] != "coqui-xtts":
-            raise ModelBenchmarkError(
-                f"Model variant {index} terms_accepted applies only to coqui-xtts"
-            )
-        require_cuda = item.get("require_cuda", False)
-        if not isinstance(require_cuda, bool):
-            raise ModelBenchmarkError(
-                f"Model variant {index} require_cuda must be true or false"
-            )
-        if require_cuda and item["backend"] != "moss-tts-delay":
-            raise ModelBenchmarkError(
-                f"Model variant {index} require_cuda applies only to moss-tts-delay"
-            )
-        variants.append(
-            ModelVariant(
-                model_id=item["model_id"],
-                backend=item["backend"],
-                model=model.strip() if isinstance(model, str) else None,
-                model_revision=model_revision,
-                generation_profile=str(item.get("generation_profile") or "stable"),
-                voice=voice.strip() if isinstance(voice, str) else None,
-                terms_accepted=terms_accepted,
-                require_cuda=require_cuda,
-            )
+    return [_model_variant(item, index) for index, item in enumerate(document)]
+
+
+def _model_variant(value: object, index: int) -> ModelVariant:
+    item, model_id, backend = _model_variant_fields(value, index)
+    voice = _model_variant_optional_text(item, "voice", index)
+    model = _model_variant_optional_text(item, "model", index)
+    model_revision = _model_variant_revision(item, index)
+    _validate_model_revision_backend(backend, model_revision, index)
+    terms_accepted = _model_variant_flag(item, "terms_accepted", index)
+    _validate_model_terms_backend(backend, terms_accepted, index)
+    require_cuda = _model_variant_flag(item, "require_cuda", index)
+    _validate_model_cuda_backend(backend, require_cuda, index)
+    return ModelVariant(
+        model_id=model_id,
+        backend=backend,
+        model=model,
+        model_revision=model_revision,
+        generation_profile=str(item.get("generation_profile") or "stable"),
+        voice=voice,
+        terms_accepted=terms_accepted,
+        require_cuda=require_cuda,
+    )
+
+
+def _model_variant_fields(
+    value: object, index: int
+) -> tuple[dict[str, object], str, str]:
+    if not isinstance(value, dict):
+        raise ModelBenchmarkError(f"Model variant {index} is invalid")
+    model_id = value.get("model_id")
+    backend = value.get("backend")
+    if (
+        not isinstance(model_id, str)
+        or not model_id.strip()
+        or not isinstance(backend, str)
+        or not backend.strip()
+    ):
+        raise ModelBenchmarkError(f"Model variant {index} is invalid")
+    return value, model_id, backend
+
+
+def _model_variant_optional_text(
+    item: Mapping[str, object], field: str, index: int
+) -> str | None:
+    value = item.get(field)
+    if field in item and (not isinstance(value, str) or not value.strip()):
+        raise ModelBenchmarkError(
+            f"Model variant {index} {field} must be non-empty text"
         )
-    return variants
+    return value.strip() if isinstance(value, str) else None
+
+
+def _model_variant_revision(item: Mapping[str, object], index: int) -> str | None:
+    revision = item.get("model_revision")
+    if "model_revision" in item and (
+        not isinstance(revision, str)
+        or re.fullmatch(r"[0-9a-f]{40,64}", revision) is None
+    ):
+        raise ModelBenchmarkError(
+            f"Model variant {index} model_revision must be an exact commit"
+        )
+    return revision if isinstance(revision, str) else None
+
+
+def _model_variant_flag(item: Mapping[str, object], field: str, index: int) -> bool:
+    value = item.get(field, False)
+    if not isinstance(value, bool):
+        raise ModelBenchmarkError(
+            f"Model variant {index} {field} must be true or false"
+        )
+    return value
+
+
+def _validate_model_revision_backend(
+    backend: str, model_revision: str | None, index: int
+) -> None:
+    if model_revision is not None and backend != "moss-tts-delay":
+        raise ModelBenchmarkError(
+            f"Model variant {index} model_revision applies only to moss-tts-delay"
+        )
+
+
+def _validate_model_terms_backend(
+    backend: str, terms_accepted: bool, index: int
+) -> None:
+    if terms_accepted and backend != "coqui-xtts":
+        raise ModelBenchmarkError(
+            f"Model variant {index} terms_accepted applies only to coqui-xtts"
+        )
+
+
+def _validate_model_cuda_backend(backend: str, require_cuda: bool, index: int) -> None:
+    if require_cuda and backend != "moss-tts-delay":
+        raise ModelBenchmarkError(
+            f"Model variant {index} require_cuda applies only to moss-tts-delay"
+        )
 
 
 def _safe_name(value: object) -> str:
