@@ -18,7 +18,7 @@ from vntts.synthesis import (
     SynthesisRequest,
     SynthesisResult,
 )
-from vntts.tts_benchmark import create_backend
+from vntts.tts_benchmark import BenchmarkBackend, create_backend
 from vntts.voices import CharacterVoiceRegistry
 
 BackendOptions: TypeAlias = dict[str, object]
@@ -258,7 +258,7 @@ class RetainedMossRuntime:
         registry: CharacterVoiceRegistry,
         cache_root: str | Path,
         **options: object,
-    ) -> object:
+    ) -> BenchmarkBackend | _MossBackendLease:
         if name != "moss-tts" or not moss_cpp_requested(options.get("model_name")):
             return create_backend(name, registry, cache_root, **options)
         return self.backend_for(registry, **options)
