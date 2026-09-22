@@ -9,7 +9,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NotRequired, TypeAlias, TypedDict
+from typing import NotRequired, TypeAlias, TypedDict, TypeIs
 
 from vntts_artifacts.atomic_io import atomic_write_json
 
@@ -19,16 +19,21 @@ from vntts.authoring.cohort_review import (
     COHORT_REVIEW_DEFECT_REASONS,
     DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
     CohortReviewError,
+    CohortReviewProjection,
     _load_document,
     _required_sha256,
     _required_text,
     _validate_decision_against_plan,
-    _validated_decision_document,
-    _validated_plan_document,
     _write_document_no_replace,
     build_cohort_review_decision,
     build_cohort_review_plan,
     execute_cohort_review_decision,
+)
+from vntts.authoring.cohort_review import (
+    _validated_decision_document as _validate_decision_document,
+)
+from vntts.authoring.cohort_review import (
+    _validated_plan_document as _validate_plan_document,
 )
 from vntts.authoring.workbench import ReviewItem
 
@@ -155,17 +160,182 @@ class _CurrentSourceSnapshot(TypedDict):
     artifacts: list[tuple[Path, str, str]]
 
 
+class _DecisionItem(TypedDict):
+    queue_id: str
+    line_id: str
+    text_sha256: str
+    audio_sha256: str
+    technical_flags: list[str]
+
+
 class _DecisionDocument(TypedDict, total=False):
     decision_id: str
     plan_id: str
     decision: str
     cohort_id: str
     next_clean_samples_per_bucket: int | None
-    target_items: list[_PlanItem]
-    projection_review_status: str
+    target_items: list[_DecisionItem]
+    projection_review_status: str | None
     item_review_statuses: list[dict[str, str]]
     sample_assessments: list[dict[str, object]]
     reviewed_samples: list[dict[str, object]]
+
+
+def _is_text_list(value: object) -> TypeIs[list[str]]:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _is_object_list(value: object) -> TypeIs[list[dict[str, object]]]:
+    return isinstance(value, list) and all(
+        isinstance(item, dict) and all(isinstance(key, str) for key in item)
+        for item in value
+    )
+
+
+def _is_plan_item(value: object) -> TypeIs[_PlanItem]:
+    if not isinstance(value, dict):
+        return False
+    strings = ("queue_id", "line_id", "text_sha256", "audio_sha256", "length_bucket")
+    optional_numbers = (
+        "words_per_minute",
+        "pace_baseline_wpm",
+        "pace_ratio",
+    )
+    return (
+        all(isinstance(value.get(field), str) for field in strings)
+        and _is_text_list(value.get("technical_flags"))
+        and ("sampled" not in value or isinstance(value.get("sampled"), bool))
+        and all(
+            field not in value
+            or value.get(field) is None
+            or isinstance(value.get(field), (int, float))
+            for field in optional_numbers
+        )
+        and (
+            "pace_baseline_scope" not in value
+            or value.get("pace_baseline_scope") is None
+            or isinstance(value.get("pace_baseline_scope"), str)
+        )
+        and (
+            "pace_advisories" not in value
+            or _is_text_list(value.get("pace_advisories"))
+        )
+    )
+
+
+def _is_decision_item(value: object) -> TypeIs[_DecisionItem]:
+    return (
+        isinstance(value, dict)
+        and all(
+            isinstance(value.get(field), str)
+            for field in ("queue_id", "line_id", "text_sha256", "audio_sha256")
+        )
+        and _is_text_list(value.get("technical_flags"))
+    )
+
+
+def _is_plan_cohort(value: object) -> TypeIs[_PlanCohort]:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("cohort_id"), str)
+        and isinstance(value.get("identity"), dict)
+        and all(
+            isinstance(value.get(field), int)
+            for field in ("item_count", "attention_count")
+        )
+        and _is_text_list(value.get("sample_queue_ids"))
+        and isinstance(value.get("items"), list)
+        and all(_is_plan_item(item) for item in value["items"])
+    )
+
+
+def _is_plan_policy(value: object) -> TypeIs[_PlanPolicy]:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("clean_samples_per_bucket"), int)
+        and (
+            "selected_queue_ids" not in value
+            or _is_text_list(value.get("selected_queue_ids"))
+        )
+    )
+
+
+def _is_plan_document(value: object) -> TypeIs[_PlanDocument]:
+    if not isinstance(value, dict):
+        return False
+    strings = (
+        "plan_id",
+        "workspace_id",
+        "workspace_config_fingerprint",
+        "queue_sha256",
+        "state_sha256",
+        "schema",
+    )
+    counts = (
+        "schema_version",
+        "cohort_count",
+        "pending_item_count",
+        "sample_item_count",
+        "blocked_item_count",
+    )
+    return (
+        all(isinstance(value.get(field), str) for field in strings)
+        and all(isinstance(value.get(field), int) for field in counts)
+        and _is_plan_policy(value.get("policy"))
+        and isinstance(value.get("blocked_items"), list)
+        and all(_is_plan_item(item) for item in value["blocked_items"])
+        and isinstance(value.get("cohorts"), list)
+        and all(_is_plan_cohort(cohort) for cohort in value["cohorts"])
+    )
+
+
+def _validated_plan_document(value: object) -> _PlanDocument:
+    document = _validate_plan_document(value)
+    if not _is_plan_document(document):
+        raise CohortReviewError("Cohort review plan has invalid typed fields")
+    return document
+
+
+def _is_decision_document(value: object) -> TypeIs[_DecisionDocument]:
+    if not isinstance(value, dict):
+        return False
+    text_fields = ("decision_id", "plan_id", "decision", "cohort_id")
+    return (
+        all(
+            field not in value or isinstance(value.get(field), str)
+            for field in text_fields
+        )
+        and (
+            "next_clean_samples_per_bucket" not in value
+            or value.get("next_clean_samples_per_bucket") is None
+            or isinstance(value.get("next_clean_samples_per_bucket"), int)
+        )
+        and (
+            "target_items" not in value
+            or isinstance(value.get("target_items"), list)
+            and all(_is_decision_item(item) for item in value["target_items"])
+        )
+        and all(
+            field not in value or _is_object_list(value.get(field))
+            for field in (
+                "item_review_statuses",
+                "sample_assessments",
+                "reviewed_samples",
+            )
+        )
+        and (
+            "projection_review_status" not in value
+            or value.get("projection_review_status") is None
+            or isinstance(value.get("projection_review_status"), str)
+        )
+    )
+
+
+def _validated_decision_document(value: object) -> _DecisionDocument:
+    document = _validate_decision_document(value)
+    if not _is_decision_document(document):
+        raise CohortReviewError("Cohort review decision has invalid typed fields")
+    return document
 
 
 class _ReconciledOutcome(TypedDict):
@@ -288,12 +458,12 @@ def build_cohort_review_bundle(
             clean_samples_per_bucket=clean_samples_per_bucket,
             queue_ids=selections.get(path),
         )
-        source_plans.append((path, plan.document))
+        source_plans.append((path, _validated_plan_document(plan.document)))
     return _assemble_bundle(source_plans)
 
 
 def _assemble_bundle(
-    source_plans: Sequence[tuple[PathLike, _PlanDocument]]
+    source_plans: Sequence[tuple[PathLike, _PlanDocument]],
 ) -> CohortReviewBundle:
     sources: list[_SourceDocument] = []
     flattened: list[_BundleCohort] = []
@@ -399,7 +569,9 @@ def write_cohort_review_bundle(
 ) -> Path:
     """Publish a validated bundle without replacing an existing file."""
     document = _validated_bundle_document(bundle)
-    return Path(_write_document_no_replace(output_path, document, "cohort review bundle"))
+    return Path(
+        _write_document_no_replace(output_path, document, "cohort review bundle")
+    )
 
 
 def load_cohort_review_bundle(path: PathLike) -> CohortReviewBundle:
@@ -439,7 +611,7 @@ def cohort_review_observations_path(publication: PathLike) -> Path:
 
 
 def reconcile_cohort_review_bundle(
-    bundle: CohortReviewBundle | PathLike
+    bundle: CohortReviewBundle | PathLike,
 ) -> CohortReviewBundle:
     """Project exact terminal cohort evidence onto an immutable publication."""
     original = (
@@ -457,7 +629,7 @@ def reconcile_cohort_review_bundle(
 
 
 def _reconcile_cohort_source(
-    source: _SourceDocument
+    source: _SourceDocument,
 ) -> tuple[Path, _PlanDocument] | None:
     workspace = Path(source["workspace"])
     current = _current_source_snapshot(source)
@@ -562,7 +734,9 @@ def load_resumable_cohort_review_session(
 
 
 def load_cohort_review_observations(
-    publication: PathLike, original: CohortReviewBundle | object, current: CohortReviewBundle | object
+    publication: PathLike,
+    original: CohortReviewBundle | object,
+    current: CohortReviewBundle | object,
 ) -> tuple[CohortReviewRecoveredAssessment, ...]:
     """Load exact listening observations without treating them as decisions."""
     path = cohort_review_observations_path(publication)
@@ -743,7 +917,9 @@ def write_cohort_review_observations(
 
 
 def write_cohort_review_progress(
-    publication: PathLike, original: CohortReviewBundle | object, current: CohortReviewBundle | object
+    publication: PathLike,
+    original: CohortReviewBundle | object,
+    current: CohortReviewBundle | object,
 ) -> Path:
     """Atomically checkpoint one source-verified successor bundle."""
     path = Path(publication).expanduser().resolve()
@@ -780,20 +956,24 @@ def write_cohort_review_progress(
     return progress
 
 
-def refresh_cohort_review_bundle(bundle: CohortReviewBundle | object) -> CohortReviewBundle:
+def refresh_cohort_review_bundle(
+    bundle: CohortReviewBundle | object,
+) -> CohortReviewBundle:
     """Rebuild every source plan and require the bundle to remain exact."""
     document = _validated_bundle_document(bundle)
     current = _assemble_bundle(
         [
             (
                 source["workspace"],
-                build_cohort_review_plan(
-                    source["workspace"],
-                    clean_samples_per_bucket=source["plan"]["policy"][
-                        "clean_samples_per_bucket"
-                    ],
-                    queue_ids=source["plan"]["policy"].get("selected_queue_ids"),
-                ).document,
+                _validated_plan_document(
+                    build_cohort_review_plan(
+                        source["workspace"],
+                        clean_samples_per_bucket=source["plan"]["policy"][
+                            "clean_samples_per_bucket"
+                        ],
+                        queue_ids=source["plan"]["policy"].get("selected_queue_ids"),
+                    ).document
+                ),
             )
             for source in document["sources"]
         ]
@@ -976,12 +1156,19 @@ def _recovered_expansion_assessments(
                     queue_id = value.get("queue_id")
                     assessment = value.get("assessment")
                     reasons = value.get("defect_reasons", ())
-                    if isinstance(queue_id, str) and isinstance(assessment, str) and isinstance(reasons, (list, tuple)) and all(isinstance(reason, str) for reason in reasons):
+                    if (
+                        isinstance(queue_id, str)
+                        and isinstance(assessment, str)
+                        and isinstance(reasons, (list, tuple))
+                        and all(isinstance(reason, str) for reason in reasons)
+                    ):
                         assessed[queue_id] = (assessment, tuple(reasons))
                 for sample in decision["reviewed_samples"]:
                     queue_id = sample.get("queue_id")
                     if not isinstance(queue_id, str):
-                        raise CohortReviewError("Expanded cohort sample queue ID is invalid")
+                        raise CohortReviewError(
+                            "Expanded cohort sample queue ID is invalid"
+                        )
                     assessment, reasons = assessed.get(queue_id, ("heard", ()))
                     is_bad = assessment == "bad"
                     key = (source["workspace_id"], cohort["cohort_id"], queue_id)
@@ -1047,9 +1234,13 @@ def _reconciled_cohort_outcome(
                     (item["queue_id"], item["review_status"]) for item in item_statuses
                 )
             else:
+                review_status = value.get("projection_review_status")
+                if not isinstance(review_status, str):
+                    raise CohortReviewError(
+                        "Terminal cohort decision review status is invalid"
+                    )
                 projection = tuple(
-                    (item["queue_id"], value["projection_review_status"])
-                    for item in value["target_items"]
+                    (item["queue_id"], review_status) for item in value["target_items"]
                 )
             terminal_projections.append(projection)
         if len(set(terminal_projections)) > 1:
@@ -1149,7 +1340,7 @@ def _assert_current_source_snapshot(current: _CurrentSourceSnapshot) -> None:
 
 
 def _cohort_target_identity(
-    items: Sequence[_PlanItem],
+    items: Sequence[_PlanItem | _DecisionItem],
 ) -> tuple[tuple[object, object, object, object], ...]:
     return tuple(
         sorted(
@@ -1417,14 +1608,10 @@ def _load_source_sample_records(
             peak=peak,
             technical_flags=tuple(sample["technical_flags"]),
             pace_baseline_wpm=(
-                float(baseline_wpm)
-                if isinstance(baseline_wpm, (int, float))
-                else None
+                float(baseline_wpm) if isinstance(baseline_wpm, (int, float)) else None
             ),
             pace_ratio=(
-                float(pace_ratio)
-                if isinstance(pace_ratio, (int, float))
-                else None
+                float(pace_ratio) if isinstance(pace_ratio, (int, float)) else None
             ),
             pace_baseline_scope=(
                 sample.get("pace_baseline_scope")
@@ -1505,7 +1692,7 @@ def execute_cohort_bundle_decision(
     decision: str,
     *,
     reviewed_queue_ids: Sequence[str],
-    sample_assessments: object = None,
+    sample_assessments: Mapping[str, object] | None = None,
     next_clean_samples_per_bucket: int | None = None,
 ) -> CohortBundleProjection:
     """Record and project one exact source-local decision from a bundle."""
@@ -1547,8 +1734,7 @@ def execute_cohort_bundle_decision(
     projection = execute_cohort_review_decision(
         source["workspace"], source_plan, cohort_decision
     )
-    expanded = not hasattr(projection, "queue_ids")
-    if not expanded:
+    if isinstance(projection, CohortReviewProjection):
         next_sources: list[tuple[PathLike, _PlanDocument]] = []
         for value in document["sources"]:
             if value["workspace_id"] != workspace_id:
@@ -1574,7 +1760,7 @@ def execute_cohort_bundle_decision(
         next_sources.append(
             (
                 value["workspace"],
-                projection.document,
+                _validated_plan_document(projection.document),
             )
         )
     next_bundle = _assemble_bundle(next_sources)
@@ -1582,8 +1768,8 @@ def execute_cohort_bundle_decision(
         bundle_id=current.bundle_id,
         workspace_id=workspace_id,
         cohort_id=cohort_id,
-        queue_ids=() if expanded else projection.queue_ids,
-        review_status=None if expanded else projection.review_status,
+        queue_ids=(),
+        review_status=None,
         next_bundle=next_bundle,
     )
 
@@ -1708,9 +1894,7 @@ def _validated_bundle_document(bundle: CohortReviewBundle | object) -> _BundleDo
         "pending_item_count": document["pending_item_count"],
         "sample_item_count": document["sample_item_count"],
         "blocked_item_count": document["blocked_item_count"],
-        "blocked_source_occurrence_count": document[
-            "blocked_source_occurrence_count"
-        ],
+        "blocked_source_occurrence_count": document["blocked_source_occurrence_count"],
         "sources": document["sources"],
         "cohorts": document["cohorts"],
         "bundle_id": document["bundle_id"],

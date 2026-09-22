@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 
 from vntts.authoring.authority import (
     canonical_document_sha256,
@@ -54,6 +56,8 @@ DEFAULT_CLEAN_SAMPLES_PER_BUCKET = 1
 MAX_CLEAN_SAMPLES_PER_BUCKET = 5
 WORD_PATTERN = re.compile(r"[\w’'-]+", flags=re.UNICODE)
 
+JsonObject: TypeAlias = dict[str, object]
+
 
 class CohortReviewError(RuntimeError):
     """A generated cohort cannot be represented by one safe review plan."""
@@ -64,9 +68,9 @@ class CohortReviewPlan:
     """One immutable planning document plus its canonical identity."""
 
     plan_id: str
-    document: dict
+    document: JsonObject
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return dict(self.document)
 
 
@@ -75,9 +79,9 @@ class CohortReviewDecision:
     """One immutable human decision over one exact cohort plan."""
 
     decision_id: str
-    document: dict
+    document: JsonObject
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return dict(self.document)
 
 
@@ -90,7 +94,7 @@ class CohortReviewProjection:
     review_status: str | None
     item_review_statuses: tuple[tuple[str, str], ...] = ()
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return {
             "decision_id": self.decision_id,
             "queue_ids": list(self.queue_ids),
@@ -103,11 +107,11 @@ class CohortReviewProjection:
 
 
 def build_cohort_review_plan(
-    workspace_directory,
+    workspace_directory: str | Path,
     *,
-    clean_samples_per_bucket=DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
-    queue_ids=None,
-):
+    clean_samples_per_bucket: int = DEFAULT_CLEAN_SAMPLES_PER_BUCKET,
+    queue_ids: Iterable[str] | None = None,
+) -> CohortReviewPlan:
     """Build a read-only exact-WAV review plan for current pending outcomes."""
     if (
         not isinstance(clean_samples_per_bucket, int)
@@ -156,9 +160,9 @@ def build_cohort_review_plan(
             "Generation state changed while cohort review was being planned"
         )
 
-    cohorts = {}
-    blocked = []
-    observed_selected = set()
+    cohorts: dict[str, JsonObject] = {}
+    blocked: list[JsonObject] = []
+    observed_selected: set[str] = set()
     for item in projected:
         if item.status != "generated" or item.review_status != "pending_review":
             continue
@@ -222,12 +226,22 @@ def build_cohort_review_plan(
                 "items": [],
             },
         )
-        cohort["items"].append(record)
+        items = cohort.get("items")
+        if not isinstance(items, list):
+            raise CohortReviewError("Cohort items must be a list")
+        items.append(record)
 
-    planned = []
+    planned: list[JsonObject] = []
     for cohort_id in sorted(cohorts):
         cohort = cohorts[cohort_id]
-        records = sorted(cohort["items"], key=lambda value: value["queue_id"])
+        items = cohort.get("items")
+        if not isinstance(items, list) or not all(
+            isinstance(value, dict) for value in items
+        ):
+            raise CohortReviewError("Cohort items must be a list of objects")
+        records = sorted(
+            items, key=lambda value: _required_text(value.get("queue_id"), "Queue ID")
+        )
         attention = [value for value in records if value["technical_flags"]]
         clean = [value for value in records if not value["technical_flags"]]
         sampled = {value["queue_id"] for value in attention}
@@ -292,10 +306,17 @@ def build_cohort_review_plan(
         ),
         "state_sha256": state_sha256,
         "cohort_count": len(planned),
-        "pending_item_count": sum(value["item_count"] for value in planned),
-        "sample_item_count": sum(len(value["sample_queue_ids"]) for value in planned),
+        "pending_item_count": sum(
+            _required_integer(value.get("item_count"), "Item count")
+            for value in planned
+        ),
+        "sample_item_count": sum(
+            len(_string_list(value.get("sample_queue_ids"))) for value in planned
+        ),
         "blocked_item_count": len(blocked),
-        "blocked_items": sorted(blocked, key=lambda value: value["queue_id"]),
+        "blocked_items": sorted(
+            blocked, key=lambda value: _required_text(value.get("queue_id"), "Queue ID")
+        ),
         "cohorts": planned,
     }
     plan_id = canonical_document_sha256(body)
@@ -303,13 +324,15 @@ def build_cohort_review_plan(
     return CohortReviewPlan(plan_id, document)
 
 
-def write_cohort_review_plan(plan, output_path):
+def write_cohort_review_plan(
+    plan: CohortReviewPlan | Mapping[str, object], output_path: str | Path
+) -> Path:
     """Publish one validated plan without replacing an existing document."""
     document = _validated_plan_document(plan)
     return _write_document_no_replace(output_path, document, "cohort review plan")
 
 
-def load_cohort_review_plan(path):
+def load_cohort_review_plan(path: str | Path) -> CohortReviewPlan:
     """Load and validate one exact cohort plan document."""
     return CohortReviewPlan(
         *_plan_identity_and_document(_load_document(path, "cohort review plan"))
@@ -317,14 +340,14 @@ def load_cohort_review_plan(path):
 
 
 def build_cohort_review_decision(
-    plan,
-    cohort_id,
-    decision,
+    plan: CohortReviewPlan | Mapping[str, object],
+    cohort_id: str,
+    decision: str,
     *,
-    reviewed_queue_ids,
-    sample_assessments=None,
-    next_clean_samples_per_bucket=None,
-):
+    reviewed_queue_ids: Sequence[str],
+    sample_assessments: Mapping[str, object] | None = None,
+    next_clean_samples_per_bucket: int | None = None,
+) -> CohortReviewDecision:
     """Bind a human decision to exact sampled and projected WAV identities."""
     document = _validated_plan_document(plan)
     cohort_id = _required_sha256(cohort_id, "Cohort ID")
@@ -332,8 +355,9 @@ def build_cohort_review_decision(
         raise CohortReviewError(
             "Cohort decision must be accepted, rejected, split, or expand"
         )
+    cohorts = _object_list(document.get("cohorts"))
     cohort = next(
-        (value for value in document["cohorts"] if value.get("cohort_id") == cohort_id),
+        (value for value in cohorts if value.get("cohort_id") == cohort_id),
         None,
     )
     if cohort is None:
@@ -368,7 +392,10 @@ def build_cohort_review_decision(
         raise CohortReviewError(
             "An accepted cohort cannot contain a sample marked as bad"
         )
-    current_samples = document["policy"]["clean_samples_per_bucket"]
+    policy = _object(document.get("policy"))
+    current_samples = _required_integer(
+        policy.get("clean_samples_per_bucket"), "Sample count"
+    )
     if decision == "expand":
         if (
             not isinstance(next_clean_samples_per_bucket, int)
@@ -436,7 +463,7 @@ def build_cohort_review_decision(
         "cohort_id": cohort_id,
         "decision": decision,
         "plan_policy": {
-            "schema_version": document["policy"].get("schema_version"),
+            "schema_version": policy.get("schema_version"),
             "clean_samples_per_bucket": current_samples,
         },
         "sample_queue_ids": list(sampled),
@@ -459,26 +486,32 @@ def build_cohort_review_decision(
     return CohortReviewDecision(decision_id, {**body, "decision_id": decision_id})
 
 
-def write_cohort_review_decision(decision, output_path):
+def write_cohort_review_decision(
+    decision: CohortReviewDecision | Mapping[str, object], output_path: str | Path
+) -> Path:
     """Publish one validated decision without replacing prior review evidence."""
     if isinstance(decision, CohortReviewDecision):
         document = decision.document
-    elif isinstance(decision, dict):
-        document = decision
+    elif isinstance(decision, Mapping):
+        document = dict(decision)
     else:
         raise CohortReviewError("Cohort review decision must be a document")
     _validated_decision_document(document)
     return _write_document_no_replace(output_path, document, "cohort review decision")
 
 
-def load_cohort_review_decision(path):
+def load_cohort_review_decision(path: str | Path) -> CohortReviewDecision:
     """Load and validate one immutable cohort decision document."""
     document = _load_document(path, "cohort review decision")
     _validated_decision_document(document)
-    return CohortReviewDecision(document["decision_id"], document)
+    return CohortReviewDecision(
+        _required_text(document.get("decision_id"), "Decision ID"), document
+    )
 
 
-def _load_bound_review_workspace(workspace_directory, plan_document):
+def _load_bound_review_workspace(
+    workspace_directory: str | Path, plan_document: JsonObject
+) -> tuple[Path, JsonObject, Path, Path, JsonObject]:
     """Load only controls bound by one exact cohort plan.
 
     Pregeneration input/reference validation is intentionally absent here: it
@@ -598,13 +631,17 @@ def _load_bound_review_workspace(workspace_directory, plan_document):
     return directory, workspace, queue_path, state_path, state
 
 
-def apply_cohort_review_decision(workspace_directory, plan, decision):
+def apply_cohort_review_decision(
+    workspace_directory: str | Path,
+    plan: CohortReviewPlan | Mapping[str, object],
+    decision: CohortReviewDecision | Mapping[str, object],
+) -> CohortReviewProjection:
     """Project one exact terminal cohort decision in one state transaction."""
     plan_document = _validated_plan_document(plan)
     if isinstance(decision, CohortReviewDecision):
         decision_document = decision.document
-    elif isinstance(decision, dict):
-        decision_document = decision
+    elif isinstance(decision, Mapping):
+        decision_document = dict(decision)
     else:
         raise CohortReviewError("Cohort review decision must be a document")
     _validated_decision_document(decision_document)
@@ -617,16 +654,20 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
         _load_bound_review_workspace(workspace_directory, plan_document)
     )
     authorities = {}
-    for target in decision_document["target_items"]:
+    for target in _object_list(decision_document.get("target_items")):
         queue_id = target["queue_id"]
-        item = state.get("items", {}).get(queue_id)
+        item = _object(state.get("items")).get(_required_text(queue_id, "Queue ID"))
         if not isinstance(item, dict):
             raise CohortReviewError(f"Cohort review item disappeared: {queue_id}")
         authorities[queue_id] = ReviewAuthority(
-            queue_sha256=plan_document["queue_sha256"],
-            state_sha256=plan_document["state_sha256"],
+            queue_sha256=_required_sha256(
+                plan_document.get("queue_sha256"), "Queue SHA-256"
+            ),
+            state_sha256=_required_sha256(
+                plan_document.get("state_sha256"), "State SHA-256"
+            ),
             item_sha256=canonical_document_sha256(item),
-            audio_sha256=target["audio_sha256"],
+            audio_sha256=_required_sha256(target.get("audio_sha256"), "Audio SHA-256"),
         )
     provenance = {
         "schema": COHORT_REVIEW_PROVENANCE_SCHEMA,
@@ -641,7 +682,9 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
         "sample_assessments": decision_document.get("sample_assessments", []),
         "item_review_statuses": decision_document.get("item_review_statuses", []),
     }
-    item_review_statuses = decision_document.get("item_review_statuses", [])
+    item_review_statuses = _object_list(
+        decision_document.get("item_review_statuses", [])
+    )
     item_decisions = {
         value["queue_id"]: value["review_status"] for value in item_review_statuses
     }
@@ -659,20 +702,24 @@ def apply_cohort_review_decision(workspace_directory, plan, decision):
     except BulkGenerationError as error:
         raise CohortReviewError(str(error)) from error
     return CohortReviewProjection(
-        decision_document["decision_id"],
+        _required_text(decision_document.get("decision_id"), "Decision ID"),
         tuple(commit.queue_id for commit in commits),
-        projection_status,
+        projection_status if isinstance(projection_status, str) else None,
         tuple((commit.queue_id, commit.review_status) for commit in commits),
     )
 
 
-def execute_cohort_review_decision(workspace_directory, plan, decision):
+def execute_cohort_review_decision(
+    workspace_directory: str | Path,
+    plan: CohortReviewPlan | Mapping[str, object],
+    decision: CohortReviewDecision | Mapping[str, object],
+) -> CohortReviewPlan | CohortReviewProjection:
     """Persist exact evidence, then expand or project one cohort decision."""
     plan_document = _validated_plan_document(plan)
     if isinstance(decision, CohortReviewDecision):
         decision_document = decision.document
-    elif isinstance(decision, dict):
-        decision_document = decision
+    elif isinstance(decision, Mapping):
+        decision_document = dict(decision)
     else:
         raise CohortReviewError("Cohort review decision must be a document")
     _validated_decision_document(decision_document)
@@ -702,65 +749,84 @@ def execute_cohort_review_decision(workspace_directory, plan, decision):
     if decision_document["decision"] == "expand":
         return build_cohort_review_plan(
             workspace,
-            clean_samples_per_bucket=decision_document["next_clean_samples_per_bucket"],
-            queue_ids=plan_document["policy"].get("selected_queue_ids"),
+            clean_samples_per_bucket=_required_integer(
+                decision_document.get("next_clean_samples_per_bucket"), "Sample count"
+            ),
+            queue_ids=_selected_queue_ids(
+                _object(plan_document.get("policy")).get("selected_queue_ids")
+            ),
         )
     return apply_cohort_review_decision(
         workspace,
-        CohortReviewPlan(plan_document["plan_id"], plan_document),
-        CohortReviewDecision(decision_document["decision_id"], decision_document),
+        CohortReviewPlan(
+            _required_text(plan_document.get("plan_id"), "Plan ID"), plan_document
+        ),
+        CohortReviewDecision(
+            _required_text(decision_document.get("decision_id"), "Decision ID"),
+            decision_document,
+        ),
     )
 
 
-def _validate_decision_against_plan(plan_document, decision_document):
+def _validate_decision_against_plan(
+    plan_document: Mapping[str, object], decision_document: Mapping[str, object]
+) -> JsonObject:
     """Validate every immutable decision identity against one exact plan."""
     if decision_document["plan_id"] != plan_document["plan_id"]:
         raise CohortReviewError("Cohort review decision belongs to a different plan")
     cohort = next(
         (
             value
-            for value in plan_document["cohorts"]
+            for value in _object_list(plan_document.get("cohorts"))
             if value["cohort_id"] == decision_document["cohort_id"]
         ),
         None,
     )
     if cohort is None:
         raise CohortReviewError("Cohort decision target is absent from its plan")
-    expected_targets = [_decision_item(value) for value in cohort["items"]]
+    expected_targets = [
+        _decision_item(value) for value in _object_list(cohort.get("items"))
+    ]
     if decision_document["target_items"] != expected_targets:
         raise CohortReviewError(
             "Cohort decision target identities do not match its plan"
         )
     if decision_document["sample_queue_ids"] != cohort["sample_queue_ids"]:
         raise CohortReviewError("Cohort decision sample does not match its plan")
+    plan_policy = _object(plan_document.get("policy"))
     expected_policy = {
-        "schema_version": plan_document["policy"]["schema_version"],
-        "clean_samples_per_bucket": plan_document["policy"]["clean_samples_per_bucket"],
+        "schema_version": plan_policy.get("schema_version"),
+        "clean_samples_per_bucket": plan_policy.get("clean_samples_per_bucket"),
     }
     if decision_document["plan_policy"] != expected_policy:
         raise CohortReviewError("Cohort decision policy does not match its plan")
-    target_by_id = {value["queue_id"]: value for value in expected_targets}
+    target_by_id = {
+        _required_text(value.get("queue_id"), "Queue ID"): value
+        for value in expected_targets
+    }
     expected_reviewed = [
-        target_by_id[value["queue_id"]]
-        for value in decision_document["reviewed_samples"]
+        target_by_id[_required_text(value.get("queue_id"), "Queue ID")]
+        for value in _object_list(decision_document.get("reviewed_samples"))
     ]
     if decision_document["reviewed_samples"] != expected_reviewed:
         raise CohortReviewError("Cohort reviewed evidence does not match its plan")
     return cohort
 
 
-def _validated_plan_document(plan):
+def _validated_plan_document(
+    plan: CohortReviewPlan | object,
+) -> JsonObject:
     if isinstance(plan, CohortReviewPlan):
         document = plan.document
-    elif isinstance(plan, dict):
-        document = plan
+    elif isinstance(plan, Mapping):
+        document = dict(plan)
     else:
         raise CohortReviewError("Cohort review plan must be a document")
     _plan_identity_and_document(document)
     return document
 
 
-def _plan_identity_and_document(document):
+def _plan_identity_and_document(document: object) -> tuple[str, JsonObject]:
     if not isinstance(document, dict):
         raise CohortReviewError("Cohort review plan must be an object")
     if document.get("schema") != COHORT_REVIEW_PLAN_SCHEMA:
@@ -820,14 +886,14 @@ def _plan_identity_and_document(document):
     return plan_id, document
 
 
-def _selected_queue_ids(queue_ids):
+def _selected_queue_ids(queue_ids: object) -> tuple[str, ...] | None:
     if queue_ids is None:
         return None
     if not isinstance(queue_ids, (list, tuple)) or not queue_ids:
         raise CohortReviewError(
             "Selected cohort review queue IDs must be a non-empty list"
         )
-    normalized = []
+    normalized: list[str] = []
     for queue_id in queue_ids:
         queue_id = _required_text(queue_id, "Selected cohort review queue ID")
         if queue_id in normalized:
@@ -838,7 +904,7 @@ def _selected_queue_ids(queue_ids):
     return tuple(sorted(normalized))
 
 
-def _decision_item(item):
+def _decision_item(item: object) -> JsonObject:
     if not isinstance(item, dict):
         raise CohortReviewError("Cohort decision item must be an object")
     flags = item.get("technical_flags")
@@ -859,7 +925,10 @@ def _decision_item(item):
     }
 
 
-def _normalize_sample_assessments(reviewed_queue_ids, sample_assessments):
+def _normalize_sample_assessments(
+    reviewed_queue_ids: Sequence[str],
+    sample_assessments: Mapping[str, object] | None,
+) -> list[JsonObject]:
     reviewed = list(reviewed_queue_ids)
     if sample_assessments is None:
         return [
@@ -872,7 +941,7 @@ def _normalize_sample_assessments(reviewed_queue_ids, sample_assessments):
         raise CohortReviewError(
             "Sample assessments must cover exactly the reviewed queue IDs"
         )
-    normalized = []
+    normalized: list[JsonObject] = []
     for queue_id in reviewed:
         value = sample_assessments.get(queue_id)
         if isinstance(value, str):
@@ -891,10 +960,14 @@ def _normalize_sample_assessments(reviewed_queue_ids, sample_assessments):
         if assessment not in {"acceptable", "bad"}:
             raise CohortReviewError("Sample assessment must be acceptable or bad")
         if not isinstance(reasons, (list, tuple, set, frozenset)) or any(
-            reason not in COHORT_REVIEW_DEFECT_REASONS for reason in reasons
+            not isinstance(reason, str) or reason not in COHORT_REVIEW_DEFECT_REASONS
+            for reason in reasons
         ):
             raise CohortReviewError("Sample defect reasons are unsupported")
-        reasons = sorted(set(reasons))
+        normalized_reasons: list[str] = sorted(
+            {reason for reason in reasons if isinstance(reason, str)}
+        )
+        reasons = normalized_reasons
         if assessment == "bad" and not reasons:
             raise CohortReviewError("A bad sample requires at least one defect reason")
         if assessment != "bad" and reasons:
@@ -909,7 +982,7 @@ def _normalize_sample_assessments(reviewed_queue_ids, sample_assessments):
     return normalized
 
 
-def _validated_decision_document(document):
+def _validated_decision_document(document: object) -> JsonObject:
     if not isinstance(document, dict):
         raise CohortReviewError("Cohort review decision must be an object")
     if document.get("schema") != COHORT_REVIEW_DECISION_SCHEMA:
@@ -1107,24 +1180,31 @@ def _validated_decision_document(document):
     return document
 
 
-def _load_document(path, label):
+def _load_document(path: str | Path, label: str) -> JsonObject:
     path = Path(path).expanduser().resolve()
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict):
+            raise CohortReviewError(f"{label.title()} must be an object")
+        return document
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CohortReviewError(f"Unable to read {label} {path}: {error}") from error
 
 
-def _write_document_no_replace(output_path, document, label):
-    return write_json_document_no_replace(
-        output_path,
-        document,
-        label,
-        error_type=CohortReviewError,
+def _write_document_no_replace(
+    output_path: str | Path, document: Mapping[str, object], label: str
+) -> Path:
+    return Path(
+        write_json_document_no_replace(
+            output_path,
+            document,
+            label,
+            error_type=CohortReviewError,
+        )
     )
 
 
-def _write_or_validate_document(path, document, label):
+def _write_or_validate_document(path: Path, document: JsonObject, label: str) -> Path:
     if path.is_symlink():
         raise CohortReviewError(f"{label.title()} output cannot be a symlink: {path}")
     if path.exists():
@@ -1144,7 +1224,7 @@ def _write_or_validate_document(path, document, label):
         raise
 
 
-def _cohort_identity(workspace, result):
+def _cohort_identity(workspace: JsonObject, result: JsonObject) -> JsonObject:
     binding = result.get("source_reference_binding")
     if binding is not None:
         if not isinstance(binding, dict):
@@ -1202,7 +1282,7 @@ def _cohort_identity(workspace, result):
     }
 
 
-def _length_bucket(word_count):
+def _length_bucket(word_count: int) -> str:
     if word_count <= 6:
         return "short"
     if word_count <= 15:
@@ -1210,26 +1290,44 @@ def _length_bucket(word_count):
     return "long"
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise CohortReviewError(f"{label} must be non-empty text")
     return value
 
 
-def _required_sha256(value, label):
+def _required_sha256(value: object, label: str) -> str:
     value = _required_text(value, label)
     if not is_lowercase_sha256(value):
         raise CohortReviewError(f"{label} must be a lowercase SHA-256 digest")
     return value
 
 
-def _required_integer(value, label):
+def _required_integer(value: object, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise CohortReviewError(f"{label} must be an integer")
     return value
 
 
-def _required_bool(value, label):
+def _required_bool(value: object, label: str) -> bool:
     if not isinstance(value, bool):
         raise CohortReviewError(f"{label} must be a boolean")
+    return value
+
+
+def _object(value: object) -> JsonObject:
+    if not isinstance(value, dict):
+        raise CohortReviewError("Expected an object")
+    return value
+
+
+def _object_list(value: object) -> list[JsonObject]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise CohortReviewError("Expected a list of objects")
+    return value
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise CohortReviewError("Expected a list of strings")
     return value
