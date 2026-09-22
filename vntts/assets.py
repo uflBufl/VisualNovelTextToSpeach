@@ -304,12 +304,22 @@ class VoicePackManager:
             .resolve(strict=False)
         )
 
+    @staticmethod
+    def _check_pack_path(pack_path):
+        references_path = pack_path / "references"
+        if any(
+            path.is_symlink() or path.is_junction()
+            for path in (pack_path, references_path)
+        ):
+            raise VoiceManifestError("Managed voice pack directory must not be an alias")
+
     def import_voice(self, character, reference_files, *, aliases=(), pack="custom"):
         character = (character or "").strip()
         if not character:
             raise VoiceManifestError("Character name is required")
         references = self._validate_reference_files(reference_files)
         pack_path = self.storage_root / slugify(pack, fallback="asset")
+        self._check_pack_path(pack_path)
         references_path = pack_path / "references"
         references_path.mkdir(parents=True, exist_ok=True)
         manifest_path = pack_path / "manifest.json"
@@ -359,6 +369,7 @@ class VoicePackManager:
         registry = CharacterVoiceRegistry.from_file(source_manifest)
         pack_name = pack_name or source_manifest.parent.name
         pack_path = self.storage_root / slugify(pack_name, fallback="asset")
+        self._check_pack_path(pack_path)
         references_path = pack_path / "references"
         references_path.mkdir(parents=True, exist_ok=True)
 

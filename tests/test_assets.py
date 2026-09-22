@@ -14,7 +14,7 @@ from vntts.assets import (
     ModelIntegrityError,
     VoicePackManager,
 )
-from vntts.voices import CharacterVoiceRegistry
+from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 
 class MemoryResponse:
@@ -294,6 +294,27 @@ class ModelAssetManagerTest(unittest.TestCase):
 
 
 class VoicePackManagerTest(unittest.TestCase):
+    def test_import_voice_rejects_aliased_managed_pack(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "marcus.wav"
+            source.write_bytes(b"local voice data")
+            managed = root / "managed"
+            managed.mkdir()
+            outside = root / "outside-pack"
+            outside.mkdir()
+            symlink_or_skip(
+                managed / "custom",
+                outside,
+                target_is_directory=True,
+            )
+            manager = VoicePackManager(managed)
+
+            with self.assertRaisesRegex(VoiceManifestError, "alias"):
+                manager.import_voice("Marcus", [source])
+
+            self.assertEqual(list(outside.iterdir()), [])
+
     def test_import_voice_copies_local_references_and_builds_manifest(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
