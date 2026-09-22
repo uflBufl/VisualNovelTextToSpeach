@@ -511,33 +511,40 @@ class GameNarratorTest(unittest.TestCase):
 
             self.assert_saved_candidate_reopens(importer)
 
-            character_pool = ManualThreadPool()
-            character_dialog = GameNarratorDialog(
-                AppSettings(speech_backend="moss-tts"),
-                importer=importer,
-                preview_service=Mock(),
-                thread_pool=character_pool,
-                player=Mock(),
+            self.assert_game_candidates_in_character_role(
+                importer, preserved_source, replacement_source
             )
-            try:
-                character_dialog.set_voice_context(roles=("Mrs. Owen",))
-                character_dialog.role.setCurrentText("Mrs. Owen")
-                self.choose_game_source(character_dialog)
-                self.application.processEvents()
-                while character_pool.tasks:
-                    self.run_task(character_pool)
-                self.assertEqual(
-                    tuple(
-                        character_dialog.references.itemData(index)
-                        for index in range(character_dialog.references.count())
-                    ),
-                    (preserved_source, replacement_source),
-                )
-                importer.narrator_references.assert_not_called()
-            finally:
-                character_dialog.reject()
-                while character_pool.tasks:
-                    self.run_task(character_pool)
+
+    def assert_game_candidates_in_character_role(
+        self, importer, preserved_source, replacement_source
+    ):
+        character_pool = ManualThreadPool()
+        character_dialog = GameNarratorDialog(
+            AppSettings(speech_backend="moss-tts"),
+            importer=importer,
+            preview_service=Mock(),
+            thread_pool=character_pool,
+            player=Mock(),
+        )
+        try:
+            character_dialog.set_voice_context(roles=("Mrs. Owen",))
+            character_dialog.role.setCurrentText("Mrs. Owen")
+            self.choose_game_source(character_dialog)
+            self.application.processEvents()
+            while character_pool.tasks:
+                self.run_task(character_pool)
+            self.assertEqual(
+                tuple(
+                    character_dialog.references.itemData(index)
+                    for index in range(character_dialog.references.count())
+                ),
+                (preserved_source, replacement_source),
+            )
+            importer.narrator_references.assert_not_called()
+        finally:
+            character_dialog.reject()
+            while character_pool.tasks:
+                self.run_task(character_pool)
 
     def test_story_context_uses_its_candidate_inventory_not_a_fresh_import(self):
         with TemporaryDirectory() as directory:
