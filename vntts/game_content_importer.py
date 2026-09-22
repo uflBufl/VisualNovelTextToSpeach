@@ -26,6 +26,7 @@ from vntts.chapter_voice_preload import (
     _validated_source_audio_line_ids,
 )
 from vntts.game_audio_decoder import ensure_game_decoder
+from vntts.path_safety import contained_regular_file
 from vntts.pregeneration_setup import PregenerationSetupError, inspect_story_index
 from vntts.subprocess_utils import last_output_line, terminate_process
 from vntts.voices import is_narrator, synthesis_character_for_line
@@ -422,18 +423,24 @@ class Reverse1999GameImporter:
         stdout, _stderr = self._run(arguments, cancel_event, environment=environment)
         try:
             result = json.loads(last_output_line(stdout) or "")
-            manifest = Path(result["voice_manifest"]).expanduser().resolve()
-            root = (self.output_root / "reverse1999" / "voice-candidates").resolve()
-            manifest.relative_to(root)
+            selected = Path(result["voice_manifest"]).expanduser().absolute()
+            root = (self.output_root / "reverse1999" / "voice-candidates").absolute()
+            relative = selected.relative_to(root)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
             raise GameContentImportError(
                 "Reverse: 1999 voice preparation returned an invalid result"
             ) from error
-        if manifest.is_symlink() or not manifest.is_file():
+        try:
+            return contained_regular_file(
+                root,
+                relative.as_posix(),
+                "voice candidate manifest",
+                error_type=GameContentImportError,
+            )
+        except GameContentImportError as error:
             raise GameContentImportError(
                 "Reverse: 1999 voice preparation produced no usable manifest"
-            )
-        return manifest
+            ) from error
 
     def _decode_narrator(self, arguments, *, capture_output, text, cancel_event):
         stdout, stderr = self._run(arguments, cancel_event)

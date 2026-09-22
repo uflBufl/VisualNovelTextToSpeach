@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 from vntts_artifacts import write_story_index_document
 
+from tests.symlink_support import symlink_or_skip
 from tests.test_pregeneration_setup import write_story_index
 from tests.test_pregeneration_voices import write_content
 from vntts.game_content_importer import (
@@ -636,6 +637,37 @@ class Reverse1999GameImporterTest(unittest.TestCase):
             if value == "--voice-candidate-role"
         ]
         self.assertEqual(roles, ["Rhiannon"])
+
+    def test_voice_candidate_manifest_must_not_be_a_symlink(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            candidate_root = root / "imports/reverse1999/voice-candidates/id"
+            candidate_root.mkdir(parents=True)
+            actual = candidate_root / "actual.json"
+            actual.write_text("{}", encoding="utf-8")
+            alias = candidate_root / "manifest.json"
+            symlink_or_skip(alias, actual)
+            importer = Reverse1999GameImporter(
+                command=("r1999-bootstrap",),
+                output_root=root / "imports",
+            )
+
+            with (
+                patch(
+                    "vntts.game_content_importer.ensure_game_decoder",
+                    return_value=root / "vgmstream-cli",
+                ),
+                patch.object(
+                    importer,
+                    "_run",
+                    return_value=(
+                        json.dumps({"voice_manifest": str(alias)}),
+                        "",
+                    ),
+                ),
+                self.assertRaisesRegex(GameContentImportError, "usable manifest"),
+            ):
+                importer.prepare_voice_roles(("Rhiannon",))
 
     def test_prepares_selected_role_from_playable_or_other_story_catalog(self):
         for source_line in ("playable-voice:1:2:0", "other-story:rhiannon:1"):
