@@ -628,12 +628,6 @@
     {
       "code": "C901",
       "path": "vntts/speech_backend.py",
-      "scope": "MossTTSVoiceRouterBackend._play_rendered_stream",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/speech_backend.py",
       "scope": "MossTTSVoiceRouterBackend._render_chunks",
       "count": 1
     },
@@ -1559,12 +1553,6 @@
       "code": "PLR0915",
       "path": "vntts/speech_backend.py",
       "scope": "MossTTSVoiceRouterBackend.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/speech_backend.py",
-      "scope": "MossTTSVoiceRouterBackend._play_rendered_stream",
       "count": 1
     },
     {

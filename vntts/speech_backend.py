@@ -2233,59 +2233,20 @@ class MossTTSVoiceRouterBackend:
             "first_audio_ms": None,
         }
         audio_output = self._resolve_audio_output()
-
-        def enqueue(value: SynthesisChunk | object) -> bool:
-            while not self.playback_stop.is_set():
-                try:
-                    chunk_queue.put(value, timeout=0.1)
-                    return True
-                except Full:
-                    continue
-            return False
-
-        def consume() -> None:
-            try:
-                with audio_output.OutputStream(
-                    samplerate=self.sample_rate,
-                    channels=first_chunk.pcm.shape[1],
-                    dtype="float32",
-                    latency=self.playback_latency,
-                ) as stream:
-                    with self.active_stream_lock:
-                        self.active_stream = stream
-                    wrote_audio = False
-                    while not self._cancelled(playback_guard):
-                        try:
-                            item = chunk_queue.get(timeout=0.1)
-                        except Empty:
-                            continue
-                        if item is playback_finished:
-                            playback_result["completed"] = wrote_audio
-                            return
-                        if not isinstance(item, SynthesisChunk):
-                            continue
-                        if not wrote_audio:
-                            playback_result["first_audio_ms"] = (
-                                self.clock() - started
-                            ) * 1000
-                        playback_result["underflowed"] = (
-                            bool(self._write_stream_chunk(stream, item.pcm))
-                            or playback_result["underflowed"]
-                        )
-                        wrote_audio = True
-            except Exception as error:
-                playback_result["error"] = error
-                self.playback_stop.set()
-            finally:
-                with self.active_stream_lock:
-                    self.active_stream = None
-                    self.playback_active = False
-
-        enqueue(first_chunk)
+        self._enqueue_stream_chunk(chunk_queue, first_chunk)
         context = copy_context()
         consumer = Thread(
             target=context.run,
-            args=(consume,),
+            args=(
+                self._consume_rendered_chunks,
+                audio_output,
+                first_chunk,
+                chunk_queue,
+                playback_finished,
+                playback_result,
+                playback_guard,
+                started,
+            ),
             name="vntts-moss-playback",
             daemon=True,
         )
@@ -2293,7 +2254,7 @@ class MossTTSVoiceRouterBackend:
         render_exhausted = False
         try:
             for chunk in rendered:
-                if not enqueue(chunk):
+                if not self._enqueue_stream_chunk(chunk_queue, chunk):
                     break
             else:
                 render_exhausted = True
@@ -2301,7 +2262,7 @@ class MossTTSVoiceRouterBackend:
             if not render_exhausted:
                 rendered.close()
             if not self.playback_stop.is_set():
-                enqueue(playback_finished)
+                self._enqueue_stream_chunk(chunk_queue, playback_finished)
             consumer.join(timeout=self.playback_consumer_join_timeout)
             if consumer.is_alive():
                 self.playback_stop.set()
@@ -2318,6 +2279,64 @@ class MossTTSVoiceRouterBackend:
             bool(playback_result["underflowed"]),
             playback_result["first_audio_ms"],
         )
+
+    def _enqueue_stream_chunk(
+        self, chunk_queue: Queue[object], value: SynthesisChunk | object
+    ) -> bool:
+        while not self.playback_stop.is_set():
+            try:
+                chunk_queue.put(value, timeout=0.1)
+                return True
+            except Full:
+                continue
+        return False
+
+    def _consume_rendered_chunks(
+        self,
+        audio_output: AudioOutput,
+        first_chunk: SynthesisChunk,
+        chunk_queue: Queue[object],
+        playback_finished: object,
+        playback_result: _StreamingPlaybackResult,
+        playback_guard: PlaybackGuard,
+        started: float,
+    ) -> None:
+        try:
+            with audio_output.OutputStream(
+                samplerate=self.sample_rate,
+                channels=first_chunk.pcm.shape[1],
+                dtype="float32",
+                latency=self.playback_latency,
+            ) as stream:
+                with self.active_stream_lock:
+                    self.active_stream = stream
+                wrote_audio = False
+                while not self._cancelled(playback_guard):
+                    try:
+                        item = chunk_queue.get(timeout=0.1)
+                    except Empty:
+                        continue
+                    if item is playback_finished:
+                        playback_result["completed"] = wrote_audio
+                        return
+                    if not isinstance(item, SynthesisChunk):
+                        continue
+                    if not wrote_audio:
+                        playback_result["first_audio_ms"] = (
+                            self.clock() - started
+                        ) * 1000
+                    playback_result["underflowed"] = (
+                        bool(self._write_stream_chunk(stream, item.pcm))
+                        or playback_result["underflowed"]
+                    )
+                    wrote_audio = True
+        except Exception as error:
+            playback_result["error"] = error
+            self.playback_stop.set()
+        finally:
+            with self.active_stream_lock:
+                self.active_stream = None
+                self.playback_active = False
 
     def _resolve_audio_output(self) -> AudioOutput:
         self.audio_output = resolve_audio_output(self.audio_output)
