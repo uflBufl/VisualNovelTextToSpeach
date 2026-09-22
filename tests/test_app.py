@@ -1626,7 +1626,10 @@ class TrayApplicationTest(unittest.TestCase):
             root = Path(temporary_directory)
             narrator = root / "narrator.wav"
             narrator.touch()
-            dialog = SettingsDialog(AppSettings(screenshot_directory=str(root)))
+            dialog = SettingsDialog(
+                AppSettings(screenshot_directory=str(root)),
+                voice_library=VoiceLibrary(root / "voices"),
+            )
             dialog.screenshot_directory.clear()
             dialog.capture_mode.setCurrentIndex(dialog.capture_mode.findData("window"))
             dialog.game_window.setCurrentText("")
@@ -2046,7 +2049,12 @@ class TrayApplicationTest(unittest.TestCase):
 
     def test_settings_narrator_picker_stages_voice_and_preserves_other_edits(self):
         original = AppSettings(speech_backend="moss-tts")
-        dialog = SettingsDialog(original)
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        dialog = SettingsDialog(
+            original,
+            voice_library=VoiceLibrary(Path(directory.name) / "voices"),
+        )
         dialog.output_volume.setValue(37)
         dialog.section_navigation.setCurrentIndex(2)
         self.assertTrue(dialog.narrator_reference.isHidden())
@@ -2119,7 +2127,12 @@ class TrayApplicationTest(unittest.TestCase):
             delete_dialog(dialog)
 
     def test_settings_missing_moss_voice_targets_picker_and_file_is_optional(self):
-        dialog = SettingsDialog(AppSettings(speech_backend="moss-tts"))
+        empty_directory = TemporaryDirectory()
+        self.addCleanup(empty_directory.cleanup)
+        dialog = SettingsDialog(
+            AppSettings(speech_backend="moss-tts"),
+            voice_library=VoiceLibrary(Path(empty_directory.name) / "voices"),
+        )
         self.assertTrue(
             any(
                 widget is dialog.choose_narrator_button
