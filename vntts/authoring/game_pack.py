@@ -74,6 +74,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_sha256,
 )
 from vntts.source_audio_semantics import (
+    SourceAudioSemanticEvidence,
     SourceAudioSemanticEvidenceError,
     load_source_audio_semantic_evidence,
 )
@@ -182,7 +183,7 @@ class _StagedControls:
     voice_sha256: str
     live_sequence_copy: Path | None
     semantic_evidence_copy: Path | None
-    semantic_evidence_document: JsonDocument | None
+    semantic_evidence_document: SourceAudioSemanticEvidence | None
     semantic_evidence_sha256: str | None
     failure_reference_document: JsonDocument | None
 
@@ -477,7 +478,7 @@ def _stage_semantic_evidence(
     story_copy: Path,
     story: _Story,
     inventory: Inventory,
-) -> tuple[Path | None, JsonDocument | None, str | None]:
+) -> tuple[Path | None, SourceAudioSemanticEvidence | None, str | None]:
     if source is None:
         if isinstance(story.metadata.get("source_audio_semantics"), dict):
             raise FinalGamePackError(
