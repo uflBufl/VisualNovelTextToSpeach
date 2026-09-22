@@ -221,6 +221,7 @@ files = [
     "vntts/authoring/terminal_conflict_successor.py",
     "vntts/authoring/terminal_conflict_workspace.py",
     "vntts/authoring/voice_quality_gate.py",
+    "vntts/authoring/voice_repair_comparison.py",
     "vntts/authoring/workbench.py",
     "vntts/authoring/workbench_contracts.py",
     "vntts/authoring/workspace_config.py",

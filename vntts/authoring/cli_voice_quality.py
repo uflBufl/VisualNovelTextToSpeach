@@ -141,14 +141,14 @@ def handle(arguments: argparse.Namespace) -> int:
         _print_document(plan)
         return 0
     if arguments.command == "voice-repair-candidate-workspace":
-        result = prepare_voice_repair_candidate_workspace(
+        workspace_result = prepare_voice_repair_candidate_workspace(
             load_voice_repair_comparison_plan(arguments.plan),
             arguments.candidate_id,
             arguments.import_directory,
             arguments.inputs_root,
             arguments.workspaces_root,
         )
-        _print_document(result)
+        _print_document(workspace_result)
         return 0
     if arguments.command == "voice-repair-candidate-command":
         command = build_voice_repair_candidate_command(

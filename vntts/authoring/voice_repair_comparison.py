@@ -7,12 +7,16 @@ import hashlib
 import json
 import re
 import tempfile
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
+from vntts_artifacts.voice_generation_queue import VoiceGenerationQueueItem
 from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
     VoiceManifestError,
     load_voice_manifest,
     normalize_character_name,
@@ -43,10 +47,15 @@ from vntts.authoring.workbench import (
     load_workspace_authority,
     safe_workspace_relative_path,
 )
+from vntts.authoring.workbench_contracts import ReviewItem
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 from vntts.document_identity import is_lowercase_sha256
 from vntts.speech_backend import get_moss_tts_generation_profile
+
+JsonObject: TypeAlias = dict[str, object]
+JsonList: TypeAlias = list[object]
+PathDigest = tuple[Path, str]
 
 VOICE_REPAIR_COMPARISON_SCHEMA = "vntts.authoring-voice-repair-comparison-plan"
 VOICE_REPAIR_COMPARISON_VERSION = 1
@@ -63,9 +72,9 @@ class VoiceRepairComparisonError(RuntimeError):
 @dataclass(frozen=True)
 class VoiceRepairComparisonPlan:
     plan_id: str
-    document: dict
+    document: JsonObject
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return copy.deepcopy(self.document)
 
 
@@ -79,7 +88,7 @@ class VoiceRepairCandidateWorkspace:
     workspace_created: bool
     comparison_sample_queue_ids: tuple[str, ...]
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return {
             "plan_id": self.plan_id,
             "candidate_id": self.candidate_id,
@@ -92,12 +101,12 @@ class VoiceRepairCandidateWorkspace:
 
 
 def build_voice_repair_comparison_plan(
-    workspace_directory,
-    character,
+    workspace_directory: str | Path,
+    character: object,
     *,
-    generation_profiles=("stable", "natural"),
-    token_level_duration_control=False,
-):
+    generation_profiles: Iterable[object] = ("stable", "natural"),
+    token_level_duration_control: bool = False,
+) -> VoiceRepairComparisonPlan:
     """Plan a bounded comparison without rendering or changing review state."""
     character = _required_text(character, "Comparison character")
     if token_level_duration_control is not False:
@@ -156,7 +165,7 @@ def build_voice_repair_comparison_plan(
         raise VoiceRepairComparisonError(
             f"Comparison character is absent from the queue: {character!r}"
         )
-    state_items = state["items"]
+    state_items = _required_object(state.get("items"), "Generation state items")
     review_by_id = {
         item.queue_id: item
         for item in list_review_items(
@@ -169,15 +178,20 @@ def build_voice_repair_comparison_plan(
     voice_by_name = {
         normalize_character_name(voice.character): voice for voice in voices
     }
-    selected_variants = {
-        item.queue_id: _selected_variant(
+    selected_variants: dict[str, str | None] = {}
+    for item in selected:
+        raw_result = state_items.get(item.queue_id)
+        result = (
+            None
+            if raw_result is None
+            else _required_object(raw_result, "Generation state item")
+        )
+        selected_variants[item.queue_id] = _selected_variant(
             item.queue_id,
             item.voice_character,
-            state_items.get(item.queue_id),
+            result,
             overrides,
         )
-        for item in selected
-    }
     selected_variants = {
         queue_id: (
             variant if normalize_character_name(variant) in voice_by_name else None
@@ -191,11 +205,16 @@ def build_voice_repair_comparison_plan(
     variants, reference_sources = _variant_controls(
         directory, manifest_path, voice_by_name, variant_names
     )
-    approved = []
-    targets = []
+    approved: list[JsonObject] = []
+    targets: list[JsonObject] = []
     audio_sources = []
     for item in selected:
-        result = state_items.get(item.queue_id)
+        raw_result = state_items.get(item.queue_id)
+        result = (
+            None
+            if raw_result is None
+            else _required_object(raw_result, "Generation state item")
+        )
         variant = selected_variants[item.queue_id]
         record, audio_source = _item_record(
             directory, item, result, variant, review_by_id
@@ -210,8 +229,8 @@ def build_voice_repair_comparison_plan(
         else:
             _require_unresolved_result(item.queue_id, result)
             targets.append(record)
-    approved.sort(key=lambda value: value["queue_id"])
-    targets.sort(key=lambda value: value["queue_id"])
+    approved.sort(key=lambda value: _required_text(value.get("queue_id"), "Queue ID"))
+    targets.sort(key=lambda value: _required_text(value.get("queue_id"), "Queue ID"))
     if not targets:
         raise VoiceRepairComparisonError(
             f"Comparison character has no unresolved items: {character!r}"
@@ -300,37 +319,46 @@ def build_voice_repair_comparison_plan(
     return plan
 
 
-def write_voice_repair_comparison_plan(plan, output_path):
+def write_voice_repair_comparison_plan(
+    plan: VoiceRepairComparisonPlan, output_path: str | Path
+) -> Path:
     document = _validate_plan(plan)
     try:
-        return _write_document_no_replace(
-            output_path, document, "voice repair comparison plan"
+        return Path(
+            _write_document_no_replace(
+                output_path, document, "voice repair comparison plan"
+            )
         )
     except CohortReviewError as error:
         raise VoiceRepairComparisonError(str(error)) from error
 
 
-def load_voice_repair_comparison_plan(path):
+def load_voice_repair_comparison_plan(path: str | Path) -> VoiceRepairComparisonPlan:
     try:
         document = _load_document(path, "voice repair comparison plan")
     except CohortReviewError as error:
         raise VoiceRepairComparisonError(str(error)) from error
     document = _validate_plan(document)
-    return VoiceRepairComparisonPlan(document["plan_id"], document)
+    return VoiceRepairComparisonPlan(
+        _required_text(document.get("plan_id"), "Comparison plan ID"), document
+    )
 
 
 def prepare_voice_repair_candidate_workspace(
-    plan,
-    candidate_id,
-    import_directory,
-    input_root,
-    workspaces_root,
-):
+    plan: VoiceRepairComparisonPlan,
+    candidate_id: object,
+    import_directory: str | Path,
+    input_root: str | Path,
+    workspaces_root: str | Path,
+) -> VoiceRepairCandidateWorkspace:
     """Publish one exact candidate input and create its isolated workspace."""
     document = _validate_plan(plan)
     candidate = _candidate(document, candidate_id)
     _require_fresh_plan(document)
-    source_directory = Path(document["source"]["workspace"]).resolve()
+    source = _required_object(document.get("source"), "Comparison source")
+    source_directory = Path(
+        _required_text(source.get("workspace"), "Comparison source workspace")
+    ).resolve()
     input_directory, input_created = _publish_candidate_input(
         document, candidate, source_directory, input_root
     )
@@ -339,41 +367,53 @@ def prepare_voice_repair_candidate_workspace(
         source_directory, source_workspace, _workspace_sha256 = (
             load_workspace_authority(source_directory)
         )
+        run_config = _required_object(
+            source_workspace.get("run_config"), "Source run configuration"
+        )
         created = create_resume_workspace(
             import_directory,
             workspaces_root,
             story_index=source_directory / "inputs/story-index.jsonl",
             voice_manifest=input_directory / "manifest.json",
-            narrator_character=source_workspace["narrator_character"],
-            backend=candidate["provider"],
-            model=candidate["model"],
-            generation_profile=candidate["generation_profile"],
-            missing_voice_policy=source_workspace["run_config"].get(
-                "missing_voice_policy"
+            narrator_character=_optional_text(
+                source_workspace.get("narrator_character"), "Narrator character"
+            ),
+            backend=_optional_text(candidate.get("provider"), "Comparison provider"),
+            model=_optional_text(candidate.get("model"), "Comparison model"),
+            generation_profile=_optional_text(
+                candidate.get("generation_profile"), "Generation profile"
+            ),
+            missing_voice_policy=_optional_object(
+                run_config.get("missing_voice_policy"), "Missing-voice policy"
             ),
             failure_repair_policy=None,
         )
     except AuthoringWorkbenchError as error:
         raise VoiceRepairComparisonError(str(error)) from error
     return VoiceRepairCandidateWorkspace(
-        document["plan_id"],
-        candidate["candidate_id"],
+        _required_text(document.get("plan_id"), "Comparison plan ID"),
+        _required_text(candidate.get("candidate_id"), "Comparison candidate ID"),
         input_directory,
         created.directory,
         input_created,
         created.created,
-        tuple(document["comparison_sample_queue_ids"]),
+        tuple(
+            _required_text(item, "Comparison sample ID")
+            for item in _required_list(
+                document.get("comparison_sample_queue_ids"), "Comparison samples"
+            )
+        ),
     )
 
 
 def build_voice_repair_candidate_command(
-    plan,
-    candidate_id,
-    workspace_directory,
+    plan: VoiceRepairComparisonPlan,
+    candidate_id: object,
+    workspace_directory: str | Path,
     *,
-    retries=0,
-    seed=0,
-):
+    retries: int = 0,
+    seed: int = 0,
+) -> list[str]:
     """Return one exact-ID child command after independently rebinding controls."""
     document = _validate_plan(plan)
     candidate = _candidate(document, candidate_id)
@@ -386,9 +426,11 @@ def build_voice_repair_candidate_command(
         raise VoiceRepairComparisonError(str(error)) from error
     run_config = workspace.get("run_config")
     expected_run = {
-        "backend": candidate["provider"],
-        "model": candidate["model"],
-        "generation_profile": candidate["generation_profile"],
+        "backend": _required_text(candidate.get("provider"), "Comparison provider"),
+        "model": _required_text(candidate.get("model"), "Comparison model"),
+        "generation_profile": _required_text(
+            candidate.get("generation_profile"), "Generation profile"
+        ),
     }
     if not isinstance(run_config, dict) or any(
         run_config.get(key) != value for key, value in expected_run.items()
@@ -407,19 +449,27 @@ def build_voice_repair_candidate_command(
         raise VoiceRepairComparisonError(
             "Candidate workspace manifest is not bound to the requested plan"
         )
-    model_path = Path(candidate["model"]).expanduser()
-    model_control = candidate["model_control"]
+    model = _required_text(candidate.get("model"), "Comparison model")
+    model_path = Path(model).expanduser()
+    model_control = _required_object(
+        candidate.get("model_control"), "Comparison model control"
+    )
     observed_model_sha256 = (
         sha256_control_path(model_path)
         if model_control["kind"] == "path"
-        else canonical_document_sha256({"model": candidate["model"]})
+        else canonical_document_sha256({"model": model})
     )
     if observed_model_sha256 != model_control["sha256"]:
         raise VoiceRepairComparisonError("Candidate model changed after planning")
     try:
         command = generation_command(
             directory,
-            queue_ids=tuple(document["comparison_sample_queue_ids"]),
+            queue_ids=tuple(
+                _required_text(item, "Comparison sample ID")
+                for item in _required_list(
+                    document.get("comparison_sample_queue_ids"), "Comparison samples"
+                )
+            ),
             retries=retries,
             seed=seed,
         )
@@ -430,16 +480,21 @@ def build_voice_repair_candidate_command(
         for index, value in enumerate(command[:-1])
         if value == "--queue-id"
     )
-    if observed_ids != tuple(document["comparison_sample_queue_ids"]):
+    if observed_ids != tuple(
+        _required_text(item, "Comparison sample ID")
+        for item in _required_list(
+            document.get("comparison_sample_queue_ids"), "Comparison samples"
+        )
+    ):
         raise VoiceRepairComparisonError("Candidate child scope differs from the plan")
-    return command
+    return list(command)
 
 
-def _candidate(document, candidate_id):
+def _candidate(document: JsonObject, candidate_id: object) -> JsonObject:
     candidate_id = _required_sha256(candidate_id, "Comparison candidate ID")
     matches = [
         value
-        for value in document["candidates"]
+        for value in _object_list(document.get("candidates"), "Comparison candidates")
         if value["candidate_id"] == candidate_id
     ]
     if len(matches) != 1:
@@ -447,38 +502,65 @@ def _candidate(document, candidate_id):
     return matches[0]
 
 
-def _require_fresh_plan(document):
-    profiles = tuple(value["generation_profile"] for value in document["candidates"])
+def _require_fresh_plan(document: JsonObject) -> None:
+    source = _required_object(document.get("source"), "Comparison source")
+    profiles = tuple(
+        _required_text(value.get("generation_profile"), "Generation profile")
+        for value in _object_list(document.get("candidates"), "Comparison candidates")
+    )
     fresh = build_voice_repair_comparison_plan(
-        document["source"]["workspace"],
-        document["character"],
+        _required_text(source.get("workspace"), "Comparison source workspace"),
+        _required_text(document.get("character"), "Comparison character"),
         generation_profiles=profiles,
         token_level_duration_control=False,
     )
-    if fresh.plan_id != document["plan_id"]:
+    if fresh.plan_id != _required_text(document.get("plan_id"), "Comparison plan ID"):
         raise VoiceRepairComparisonError(
             "Voice repair comparison source changed after planning"
         )
 
 
-def _candidate_manifest_binding(document, candidate):
+def _candidate_manifest_binding(
+    document: JsonObject, candidate: JsonObject
+) -> JsonObject:
+    source = _required_object(document.get("source"), "Comparison source")
     return {
         "schema": "vntts.authoring-voice-repair-candidate",
         "schema_version": 1,
-        "plan_id": document["plan_id"],
-        "candidate_id": candidate["candidate_id"],
-        "character": document["character"],
-        "source_voice_manifest_sha256": document["source"]["voice_manifest_sha256"],
-        "generation_profile": candidate["generation_profile"],
+        "plan_id": _required_text(document.get("plan_id"), "Comparison plan ID"),
+        "candidate_id": _required_text(
+            candidate.get("candidate_id"), "Comparison candidate ID"
+        ),
+        "character": _required_text(document.get("character"), "Comparison character"),
+        "source_voice_manifest_sha256": _required_sha256(
+            source.get("voice_manifest_sha256"),
+            "Comparison source voice manifest SHA-256",
+        ),
+        "generation_profile": _required_text(
+            candidate.get("generation_profile"), "Generation profile"
+        ),
         "token_level_duration_control": False,
-        "comparison_sample_queue_ids": list(document["comparison_sample_queue_ids"]),
+        "comparison_sample_queue_ids": list(
+            _required_list(
+                document.get("comparison_sample_queue_ids"), "Comparison samples"
+            )
+        ),
     }
 
 
-def _publish_candidate_input(document, candidate, source_directory, input_root):
+def _publish_candidate_input(
+    document: JsonObject,
+    candidate: JsonObject,
+    source_directory: Path,
+    input_root: str | Path,
+) -> tuple[Path, bool]:
     root = Path(input_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    name = f"voice-repair-{document['plan_id'][:24]}-{candidate['candidate_id'][:16]}"
+    plan_id = _required_text(document.get("plan_id"), "Comparison plan ID")
+    candidate_key = _required_text(
+        candidate.get("candidate_id"), "Comparison candidate ID"
+    )
+    name = f"voice-repair-{plan_id[:24]}-{candidate_key[:16]}"
     raw_destination = root / name
     if raw_destination.is_symlink():
         raise VoiceRepairComparisonError(
@@ -493,9 +575,11 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
     with staged_directory(root, prefix=".voice-repair-staging-") as staging:
         source_manifest = source_directory / "inputs/voice/manifest.json"
         source_payload = _read(source_manifest, "source voice manifest")
-        if (
-            hashlib.sha256(source_payload).hexdigest()
-            != document["source"]["voice_manifest_sha256"]
+        if hashlib.sha256(source_payload).hexdigest() != _required_sha256(
+            _required_object(document.get("source"), "Comparison source").get(
+                "voice_manifest_sha256"
+            ),
+            "Comparison source voice manifest SHA-256",
         ):
             raise VoiceRepairComparisonError(
                 "Source voice manifest changed after planning"
@@ -554,9 +638,16 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
         body = {
             "schema": VOICE_REPAIR_CANDIDATE_BUNDLE_SCHEMA,
             "schema_version": VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION,
-            "plan_id": document["plan_id"],
-            "candidate_id": candidate["candidate_id"],
-            "source_voice_manifest_sha256": document["source"]["voice_manifest_sha256"],
+            "plan_id": _required_text(document.get("plan_id"), "Comparison plan ID"),
+            "candidate_id": _required_text(
+                candidate.get("candidate_id"), "Comparison candidate ID"
+            ),
+            "source_voice_manifest_sha256": _required_sha256(
+                _required_object(document.get("source"), "Comparison source").get(
+                    "voice_manifest_sha256"
+                ),
+                "Comparison source voice manifest SHA-256",
+            ),
             "inventory": inventory,
         }
         bundle_id = canonical_document_sha256(body)
@@ -577,7 +668,9 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
     return destination, True
 
 
-def _validate_candidate_input(directory, document, candidate):
+def _validate_candidate_input(
+    directory: str | Path, document: JsonObject, candidate: JsonObject
+) -> None:
     directory = Path(directory)
     if directory.is_symlink():
         raise VoiceRepairComparisonError(
@@ -597,10 +690,17 @@ def _validate_candidate_input(directory, document, candidate):
         not isinstance(bundle, dict)
         or bundle.get("schema") != VOICE_REPAIR_CANDIDATE_BUNDLE_SCHEMA
         or bundle.get("schema_version") != VOICE_REPAIR_CANDIDATE_BUNDLE_VERSION
-        or bundle.get("plan_id") != document["plan_id"]
-        or bundle.get("candidate_id") != candidate["candidate_id"]
+        or bundle.get("plan_id")
+        != _required_text(document.get("plan_id"), "Comparison plan ID")
+        or bundle.get("candidate_id")
+        != _required_text(candidate.get("candidate_id"), "Comparison candidate ID")
         or bundle.get("source_voice_manifest_sha256")
-        != document["source"]["voice_manifest_sha256"]
+        != _required_sha256(
+            _required_object(document.get("source"), "Comparison source").get(
+                "voice_manifest_sha256"
+            ),
+            "Comparison source voice manifest SHA-256",
+        )
     ):
         raise VoiceRepairComparisonError("Voice repair candidate input conflicts")
     claimed = _required_sha256(bundle.get("bundle_id"), "Candidate bundle ID")
@@ -659,7 +759,7 @@ def _validate_candidate_input(directory, document, candidate):
         raise VoiceRepairComparisonError("Candidate manifest binding changed")
 
 
-def _regular_contained_file(root, relative, label):
+def _regular_contained_file(root: str | Path, relative: str | Path, label: str) -> Path:
     root = Path(root).resolve()
     current = root
     for part in Path(relative).parts:
@@ -669,10 +769,15 @@ def _regular_contained_file(root, relative, label):
     path = contained_workspace_path(root, Path(relative), label)
     if not path.is_file():
         raise VoiceRepairComparisonError(f"{label} is missing or is not a file")
-    return path
+    return Path(path)
 
 
-def _selected_variant(queue_id, queue_voice_character, result, overrides):
+def _selected_variant(
+    queue_id: str,
+    queue_voice_character: str | None,
+    result: JsonObject | None,
+    overrides: dict[str, str],
+) -> str:
     variant = overrides.get(queue_id, queue_voice_character)
     observed = result.get("voice_character") if isinstance(result, dict) else None
     if variant is None:
@@ -686,7 +791,12 @@ def _selected_variant(queue_id, queue_voice_character, result, overrides):
     return variant
 
 
-def _variant_controls(directory, manifest_path, voice_by_name, variant_names):
+def _variant_controls(
+    directory: Path,
+    manifest_path: Path,
+    voice_by_name: dict[str, VoiceManifestEntry],
+    variant_names: list[str],
+) -> tuple[JsonList, list[PathDigest]]:
     variants = []
     sources = []
     root = manifest_path.parent.resolve()
@@ -719,10 +829,16 @@ def _variant_controls(directory, manifest_path, voice_by_name, variant_names):
                 "ordered_references": references,
             }
         )
-    return variants, sources
+    return list(variants), list(sources)
 
 
-def _item_record(directory, item, result, variant, review_by_id):
+def _item_record(
+    directory: Path,
+    item: VoiceGenerationQueueItem,
+    result: JsonObject | None,
+    variant: str | None,
+    review_by_id: dict[str, ReviewItem],
+) -> tuple[JsonObject, PathDigest | None]:
     review = review_by_id.get(item.queue_id)
     word_count = len(re.findall(r"[\w’'-]+", item.text, flags=re.UNICODE))
     bucket = "short" if word_count <= 6 else "medium" if word_count <= 14 else "long"
@@ -772,7 +888,7 @@ def _item_record(directory, item, result, variant, review_by_id):
     }, audio_source
 
 
-def _require_unresolved_result(queue_id, result):
+def _require_unresolved_result(queue_id: str, result: JsonObject | None) -> None:
     if result is None:
         return
     combination = (result.get("status"), result.get("review_status"))
@@ -786,11 +902,11 @@ def _require_unresolved_result(queue_id, result):
         )
 
 
-def _comparison_samples(targets):
+def _comparison_samples(targets: Sequence[JsonObject]) -> list[str]:
     selected = []
     for variant in sorted(
         {
-            value["voice_character"]
+            _required_text(value.get("voice_character"), "Comparison item voice")
             for value in targets
             if value["voice_binding_status"] == "bound"
         }
@@ -799,8 +915,8 @@ def _comparison_samples(targets):
             candidates = [
                 value
                 for value in targets
-                if value["voice_character"] == variant
-                and value["length_bucket"] == bucket
+                if value.get("voice_character") == variant
+                and value.get("length_bucket") == bucket
             ]
             if not candidates:
                 continue
@@ -808,18 +924,22 @@ def _comparison_samples(targets):
                 candidates,
                 key=lambda value: canonical_document_sha256(
                     {
-                        "queue_id": value["queue_id"],
-                        "text_sha256": value["text_sha256"],
+                        "queue_id": value.get("queue_id"),
+                        "text_sha256": value.get("text_sha256"),
                         "voice_character": variant,
                         "length_bucket": bucket,
                     }
                 ),
             )
-            selected.append(choice["queue_id"])
+            selected.append(
+                _required_text(choice.get("queue_id"), "Comparison queue ID")
+            )
     return selected
 
 
-def _validated_profiles(provider, generation_profiles):
+def _validated_profiles(
+    provider: str, generation_profiles: Iterable[object]
+) -> list[str]:
     if not isinstance(generation_profiles, (list, tuple)) or not generation_profiles:
         raise VoiceRepairComparisonError("Comparison profiles must be non-empty")
     profiles = []
@@ -838,7 +958,7 @@ def _validated_profiles(provider, generation_profiles):
     return profiles
 
 
-def _validate_plan(plan):
+def _validate_plan(plan: VoiceRepairComparisonPlan | JsonObject) -> JsonObject:
     document = plan.document if isinstance(plan, VoiceRepairComparisonPlan) else plan
     if (
         not isinstance(document, dict)
@@ -876,11 +996,13 @@ def _validate_plan(plan):
         "voice_manifest_sha256",
     ):
         _required_sha256(source.get(field), f"Comparison source {field}")
-    approved = document.get("approved")
-    targets = document.get("targets")
-    variants = document.get("variants")
-    candidates = document.get("candidates")
-    samples = document.get("comparison_sample_queue_ids")
+    approved = _object_list(document.get("approved"), "Comparison approved")
+    targets = _object_list(document.get("targets"), "Comparison targets")
+    variants = _object_list(document.get("variants"), "Comparison variants")
+    candidates = _object_list(document.get("candidates"), "Comparison candidates")
+    samples = _required_list(
+        document.get("comparison_sample_queue_ids"), "Comparison samples"
+    )
     for label, value in (
         ("approved", approved),
         ("targets", targets),
@@ -923,8 +1045,14 @@ def _validate_plan(plan):
         raise VoiceRepairComparisonError("Comparison control counts are inconsistent")
     if document.get("comparison_sample_count") != len(samples):
         raise VoiceRepairComparisonError("Comparison sample count is inconsistent")
-    approved_ids = [value.get("queue_id") for value in approved]
-    target_ids = [value.get("queue_id") for value in targets]
+    approved_ids = [
+        _required_text(value.get("queue_id"), "Comparison queue ID")
+        for value in approved
+    ]
+    target_ids = [
+        _required_text(value.get("queue_id"), "Comparison queue ID")
+        for value in targets
+    ]
     if approved_ids != sorted(set(approved_ids)) or target_ids != sorted(
         set(target_ids)
     ):
@@ -936,12 +1064,15 @@ def _validate_plan(plan):
         for value in approved
     ):
         raise VoiceRepairComparisonError("Comparison approval ledger is unsafe")
-    for value in approved:
-        _validate_item_record(value, approved=True)
-    for value in targets:
-        _validate_item_record(value, approved=False)
+    for item_record in approved:
+        _validate_item_record(item_record, approved=True)
+    for item_record in targets:
+        _validate_item_record(item_record, approved=False)
     _validate_variants(variants)
-    variant_names = {value["voice_character"] for value in variants}
+    variant_names = {
+        _required_text(value.get("voice_character"), "Comparison variant character")
+        for value in variants
+    }
     if any(
         value["voice_binding_status"] == "bound"
         and value["voice_character"] not in variant_names
@@ -952,7 +1083,7 @@ def _validate_plan(plan):
         raise VoiceRepairComparisonError("Comparison samples are not deterministic")
     seen_profiles = set()
     for candidate in candidates:
-        if not isinstance(candidate, dict) or set(candidate) != {
+        if set(candidate) != {
             "candidate_id",
             "provider",
             "model",
@@ -1001,7 +1132,7 @@ def _validate_plan(plan):
     return copy.deepcopy(document)
 
 
-def _validate_item_record(value, *, approved):
+def _validate_item_record(value: object, *, approved: bool) -> None:
     fields = {
         "queue_id",
         "line_id",
@@ -1080,7 +1211,7 @@ def _validate_item_record(value, *, approved):
         raise VoiceRepairComparisonError("Comparison unresolved item state is unsafe")
 
 
-def _validate_variants(variants):
+def _validate_variants(variants: Sequence[JsonObject]) -> None:
     seen = set()
     for variant in variants:
         if not isinstance(variant, dict) or set(variant) != {
@@ -1116,15 +1247,15 @@ def _validate_variants(variants):
 
 
 def _rehash_sources(
-    directory,
-    workspace_sha256,
-    queue_sha256,
-    state_sha256,
-    manifest_sha256,
-    reference_sources,
-    model_path,
-    model_sha256,
-):
+    directory: Path,
+    workspace_sha256: str,
+    queue_sha256: str,
+    state_sha256: str,
+    manifest_sha256: str,
+    reference_sources: tuple[PathDigest, ...],
+    model_path: Path | None,
+    model_sha256: str,
+) -> None:
     paths = (
         (directory / "workspace.json", workspace_sha256, "workspace"),
         (directory / "queue.jsonl", queue_sha256, "queue"),
@@ -1147,7 +1278,7 @@ def _rehash_sources(
         )
 
 
-def _read(path, label):
+def _read(path: str | Path, label: str) -> bytes:
     path = Path(path)
     if path.is_symlink():
         raise VoiceRepairComparisonError(f"Comparison {label} must not be a symlink")
@@ -1159,16 +1290,45 @@ def _read(path, label):
         ) from error
 
 
-def _required_text(value, label):
+def _required_object(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict):
+        raise VoiceRepairComparisonError(f"{label} is malformed")
+    return value
+
+
+def _optional_object(value: object, label: str) -> JsonObject | None:
+    return None if value is None else _required_object(value, label)
+
+
+def _required_list(value: object, label: str) -> JsonList:
+    if not isinstance(value, list):
+        raise VoiceRepairComparisonError(f"{label} is malformed")
+    return value
+
+
+def _object_list(value: object, label: str) -> list[JsonObject]:
+    values = _required_list(value, label)
+    if any(not isinstance(item, dict) for item in values):
+        raise VoiceRepairComparisonError(f"{label} is malformed")
+    return [item for item in values if isinstance(item, dict)]
+
+
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise VoiceRepairComparisonError(f"{label} must be non-empty text")
     return value.strip()
 
 
-def _required_sha256(value, label):
+def _required_sha256(value: object, label: str) -> str:
     if not is_lowercase_sha256(value):
         raise VoiceRepairComparisonError(f"{label} must be lowercase SHA-256")
+    if not isinstance(value, str):
+        raise VoiceRepairComparisonError(f"{label} must be lowercase SHA-256")
     return value
+
+
+def _optional_text(value: object, label: str) -> str | None:
+    return None if value is None else _required_text(value, label)
 
 
 __all__ = [
