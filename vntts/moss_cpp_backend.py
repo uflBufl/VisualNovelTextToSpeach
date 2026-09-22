@@ -56,6 +56,7 @@ _CREATE_SUSPENDED = 0x00000004
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _TH32CS_SNAPTHREAD = 0x00000004
 _THREAD_SUSPEND_RESUME = 0x0002
+_PROCESS_ASSIGN_JOB = 0x0101
 
 
 class _CancellationSignal(Protocol):
@@ -66,136 +67,197 @@ Cancellation: TypeAlias = Callable[[], bool] | _CancellationSignal
 ProgressCallback: TypeAlias = Callable[[str], object]
 
 
-class _WindowsKillOnCloseJob:
-    def __init__(self, process: subprocess.Popen[bytes]) -> None:
-        from ctypes import wintypes
+if sys.platform == "win32":
 
-        class BasicLimits(ctypes.Structure):
-            _fields_ = [
-                ("per_process_time", ctypes.c_longlong),
-                ("per_job_time", ctypes.c_longlong),
-                ("limit_flags", wintypes.DWORD),
-                ("minimum_working_set", ctypes.c_size_t),
-                ("maximum_working_set", ctypes.c_size_t),
-                ("active_process_limit", wintypes.DWORD),
-                ("affinity", ctypes.c_size_t),
-                ("priority_class", wintypes.DWORD),
-                ("scheduling_class", wintypes.DWORD),
+    class _WindowsKillOnCloseJob:
+        def __init__(self, process: subprocess.Popen[bytes]) -> None:
+            from ctypes import wintypes
+
+            class BasicLimits(ctypes.Structure):
+                _fields_ = [
+                    ("per_process_time", ctypes.c_longlong),
+                    ("per_job_time", ctypes.c_longlong),
+                    ("limit_flags", wintypes.DWORD),
+                    ("minimum_working_set", ctypes.c_size_t),
+                    ("maximum_working_set", ctypes.c_size_t),
+                    ("active_process_limit", wintypes.DWORD),
+                    ("affinity", ctypes.c_size_t),
+                    ("priority_class", wintypes.DWORD),
+                    ("scheduling_class", wintypes.DWORD),
+                ]
+
+            class IoCounters(ctypes.Structure):
+                _fields_ = [
+                    ("read_operations", ctypes.c_ulonglong),
+                    ("write_operations", ctypes.c_ulonglong),
+                    ("other_operations", ctypes.c_ulonglong),
+                    ("read_bytes", ctypes.c_ulonglong),
+                    ("write_bytes", ctypes.c_ulonglong),
+                    ("other_bytes", ctypes.c_ulonglong),
+                ]
+
+            class ExtendedLimits(ctypes.Structure):
+                _fields_ = [
+                    ("basic", BasicLimits),
+                    ("io", IoCounters),
+                    ("process_memory_limit", ctypes.c_size_t),
+                    ("job_memory_limit", ctypes.c_size_t),
+                    ("peak_process_memory", ctypes.c_size_t),
+                    ("peak_job_memory", ctypes.c_size_t),
+                ]
+
+            class ThreadEntry(ctypes.Structure):
+                _fields_ = [
+                    ("size", wintypes.DWORD),
+                    ("usage", wintypes.DWORD),
+                    ("thread_id", wintypes.DWORD),
+                    ("owner_process_id", wintypes.DWORD),
+                    ("base_priority", wintypes.LONG),
+                    ("priority_delta", wintypes.LONG),
+                    ("flags", wintypes.DWORD),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+            kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+            kernel32.SetInformationJobObject.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_int,
+                wintypes.LPVOID,
+                wintypes.DWORD,
             ]
-
-        class IoCounters(ctypes.Structure):
-            _fields_ = [
-                ("read_operations", ctypes.c_ulonglong),
-                ("write_operations", ctypes.c_ulonglong),
-                ("other_operations", ctypes.c_ulonglong),
-                ("read_bytes", ctypes.c_ulonglong),
-                ("write_bytes", ctypes.c_ulonglong),
-                ("other_bytes", ctypes.c_ulonglong),
+            kernel32.SetInformationJobObject.restype = wintypes.BOOL
+            kernel32.AssignProcessToJobObject.argtypes = [
+                wintypes.HANDLE,
+                wintypes.HANDLE,
             ]
-
-        class ExtendedLimits(ctypes.Structure):
-            _fields_ = [
-                ("basic", BasicLimits),
-                ("io", IoCounters),
-                ("process_memory_limit", ctypes.c_size_t),
-                ("job_memory_limit", ctypes.c_size_t),
-                ("peak_process_memory", ctypes.c_size_t),
-                ("peak_job_memory", ctypes.c_size_t),
+            kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
             ]
-
-        class ThreadEntry(ctypes.Structure):
-            _fields_ = [
-                ("size", wintypes.DWORD),
-                ("usage", wintypes.DWORD),
-                ("thread_id", wintypes.DWORD),
-                ("owner_process_id", wintypes.DWORD),
-                ("base_priority", wintypes.LONG),
-                ("priority_delta", wintypes.LONG),
-                ("flags", wintypes.DWORD),
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.CreateToolhelp32Snapshot.argtypes = [
+                wintypes.DWORD,
+                wintypes.DWORD,
             ]
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
-        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-        kernel32.SetInformationJobObject.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_int,
-            wintypes.LPVOID,
-            wintypes.DWORD,
-        ]
-        kernel32.SetInformationJobObject.restype = wintypes.BOOL
-        kernel32.AssignProcessToJobObject.argtypes = [
-            wintypes.HANDLE,
-            wintypes.HANDLE,
-        ]
-        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
-        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-        kernel32.Thread32First.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry)]
-        kernel32.Thread32First.restype = wintypes.BOOL
-        kernel32.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(ThreadEntry)]
-        kernel32.Thread32Next.restype = wintypes.BOOL
-        kernel32.OpenThread.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenThread.restype = wintypes.HANDLE
-        kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
-        kernel32.ResumeThread.restype = wintypes.DWORD
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        handle = kernel32.CreateJobObjectW(None, None)
-        if not handle:
-            raise ctypes.WinError(ctypes.get_last_error())
-        self._kernel32 = kernel32
-        self._handle = handle
-        limits = ExtendedLimits()
-        limits.basic.limit_flags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        try:
-            if not kernel32.SetInformationJobObject(
-                handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
-            ):
+            kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+            kernel32.Thread32First.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(ThreadEntry),
+            ]
+            kernel32.Thread32First.restype = wintypes.BOOL
+            kernel32.Thread32Next.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(ThreadEntry),
+            ]
+            kernel32.Thread32Next.restype = wintypes.BOOL
+            kernel32.OpenThread.argtypes = [
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
+            ]
+            kernel32.OpenThread.restype = wintypes.HANDLE
+            kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+            kernel32.ResumeThread.restype = wintypes.DWORD
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            handle = kernel32.CreateJobObjectW(None, None)
+            if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())
-            if not kernel32.AssignProcessToJobObject(
-                handle, wintypes.HANDLE(process._handle)
-            ):
-                raise ctypes.WinError(ctypes.get_last_error())
-            snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
-            if snapshot == wintypes.HANDLE(-1).value:
-                raise ctypes.WinError(ctypes.get_last_error())
+            self._kernel32 = kernel32
+            self._handle = handle
+            limits = ExtendedLimits()
+            limits.basic.limit_flags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             try:
-                entry = ThreadEntry(size=ctypes.sizeof(ThreadEntry))
-                found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
-                while found and entry.owner_process_id != process.pid:
-                    found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
-                if not found:
-                    raise RuntimeError(
-                        "Unable to find the suspended MOSS process thread"
-                    )
-                thread = kernel32.OpenThread(
-                    _THREAD_SUSPEND_RESUME, False, entry.thread_id
+                if not kernel32.SetInformationJobObject(
+                    handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                process_handle = kernel32.OpenProcess(
+                    _PROCESS_ASSIGN_JOB, False, process.pid
                 )
-                if not thread:
+                if not process_handle:
                     raise ctypes.WinError(ctypes.get_last_error())
                 try:
-                    if kernel32.ResumeThread(thread) == 0xFFFFFFFF:
+                    if not kernel32.AssignProcessToJobObject(handle, process_handle):
                         raise ctypes.WinError(ctypes.get_last_error())
                 finally:
-                    kernel32.CloseHandle(thread)
-            finally:
-                kernel32.CloseHandle(snapshot)
-        except BaseException:
-            self.close()
-            raise
+                    kernel32.CloseHandle(process_handle)
+                snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+                if snapshot == wintypes.HANDLE(-1).value:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                try:
+                    entry = ThreadEntry(size=ctypes.sizeof(ThreadEntry))
+                    found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+                    while found and entry.owner_process_id != process.pid:
+                        found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+                    if not found:
+                        raise RuntimeError(
+                            "Unable to find the suspended MOSS process thread"
+                        )
+                    thread = kernel32.OpenThread(
+                        _THREAD_SUSPEND_RESUME, False, entry.thread_id
+                    )
+                    if not thread:
+                        raise ctypes.WinError(ctypes.get_last_error())
+                    try:
+                        if kernel32.ResumeThread(thread) == 0xFFFFFFFF:
+                            raise ctypes.WinError(ctypes.get_last_error())
+                    finally:
+                        kernel32.CloseHandle(thread)
+                finally:
+                    kernel32.CloseHandle(snapshot)
+            except BaseException:
+                self.close()
+                raise
 
-    def close(self) -> None:
-        if self._handle is not None:
-            self._kernel32.CloseHandle(self._handle)
-            self._handle = None
+        def close(self) -> None:
+            if self._handle is not None:
+                self._kernel32.CloseHandle(self._handle)
+                self._handle = None
 
 
-def _launch_owned_process(command, **options):
+else:
+
+    class _WindowsKillOnCloseJob:
+        def __init__(self, process: subprocess.Popen[bytes]) -> None:
+            raise RuntimeError("Windows Job Objects require Windows")
+
+        def close(self) -> None:
+            pass
+
+
+def _launch_owned_process(
+    command: list[str],
+    *,
+    stdin: BinaryIO | int | None,
+    stdout: BinaryIO | int | None,
+    stderr: BinaryIO | int | None,
+    cwd: str | Path | None,
+    creationflags: int,
+) -> tuple[subprocess.Popen[bytes], _WindowsKillOnCloseJob | None]:
     if sys.platform != "win32":
-        return subprocess.Popen(command, **options), None
-    options["creationflags"] = int(options.get("creationflags", 0)) | _CREATE_SUSPENDED
-    process = subprocess.Popen(command, **options)
+        return (
+            subprocess.Popen(
+                command,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                cwd=cwd,
+                creationflags=creationflags,
+            ),
+            None,
+        )
+    process = subprocess.Popen(
+        command,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        cwd=cwd,
+        creationflags=creationflags | _CREATE_SUSPENDED,
+    )
     try:
         return process, _WindowsKillOnCloseJob(process)
     except BaseException:
