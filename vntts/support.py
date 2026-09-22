@@ -1546,6 +1546,8 @@ def _active_pack_identity(path: str, _modified_ns: int, size: int) -> SupportDoc
         document = json.loads(Path(path).read_text(encoding="utf-8"))
     except OSError, UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "pack manifest could not be read"}
+    if not isinstance(document, dict):
+        return {"available": False, "reason": "pack manifest is invalid"}
     extension = document.get("vntts.self-service")
     extension = extension if isinstance(extension, dict) else {}
     components = document.get("components")

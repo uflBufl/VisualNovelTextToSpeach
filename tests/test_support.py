@@ -1020,6 +1020,16 @@ class SupportBundleBuilderTest(unittest.TestCase):
 
         self.assertEqual(active["active_story_ids"], ["story-one"])
 
+    def test_non_object_active_pack_is_reported_as_unavailable(self):
+        with TemporaryDirectory() as temporary_directory:
+            pack = Path(temporary_directory) / "game-pack.json"
+            pack.write_text("[]", encoding="utf-8")
+
+            active = collect_active_content_identity(AppSettings(game_pack=str(pack)))
+
+        self.assertFalse(active["available"])
+        self.assertIn("invalid", active["reason"])
+
     def test_ocr_metrics_report_resolved_pending_and_invalid_counts(self):
         with TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
