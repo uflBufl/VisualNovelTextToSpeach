@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias, TypedDict, TypeIs
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import (
@@ -36,6 +38,33 @@ from vntts.document_identity import is_lowercase_sha256
 VOICE_QUALITY_GATE_SCHEMA = "vntts.authoring-voice-quality-gate"
 VOICE_QUALITY_GATE_VERSION = 1
 
+JsonObject: TypeAlias = dict[str, object]
+
+
+class _PlanDocument(TypedDict):
+    workspace_id: str
+    plan_id: str
+    cohorts: list[JsonObject]
+
+
+class _DecisionDocument(TypedDict):
+    decision_id: str
+    cohort_id: str
+    decision: str
+    sample_queue_ids: list[str]
+    reviewed_samples: list[JsonObject]
+    sample_assessments: list[JsonObject]
+    target_items: list[JsonObject]
+
+
+class _GateDocument(TypedDict):
+    schema: str
+    schema_version: int
+    gate_id: str
+    reuse_policy: JsonObject
+    identity: JsonObject
+    source_review: JsonObject
+
 
 class VoiceQualityGateError(RuntimeError):
     """A reusable voice-quality decision is incomplete or no longer matches."""
@@ -44,9 +73,9 @@ class VoiceQualityGateError(RuntimeError):
 @dataclass(frozen=True)
 class VoiceQualityGate:
     gate_id: str
-    document: dict
+    document: _GateDocument
 
-    def to_dict(self):
+    def to_dict(self) -> _GateDocument:
         return copy.deepcopy(self.document)
 
 
@@ -58,7 +87,7 @@ class VoiceQualityCompatibility:
     differences: tuple[str, ...]
     story_sample_required: bool
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return {
             "gate_id": self.gate_id,
             "queue_id": self.queue_id,
@@ -78,7 +107,7 @@ class VoiceQualityCohortCompatibility:
     differences: tuple[str, ...]
     story_sample_required: bool
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return {
             "gate_id": self.gate_id,
             "workspace_id": self.workspace_id,
@@ -90,7 +119,9 @@ class VoiceQualityCohortCompatibility:
         }
 
 
-def build_voice_quality_gate(workspace_directory, plan, decision):
+def build_voice_quality_gate(
+    workspace_directory: str | Path, plan: object, decision: object
+) -> VoiceQualityGate:
     """Build one reusable control gate from an accepted exact cohort review."""
     plan_document = _plan_document(plan)
     decision_document = _decision_document(decision)
@@ -115,16 +146,17 @@ def build_voice_quality_gate(workspace_directory, plan, decision):
         raise VoiceQualityGateError(str(error)) from error
     if workspace.get("workspace_id") != plan_document["workspace_id"]:
         raise VoiceQualityGateError("Cohort review belongs to another workspace")
-    identity = _reusable_identity(directory, workspace, cohort["identity"])
-    source = {
+    cohort_identity = _object(cohort.get("identity"), "Cohort identity")
+    identity = _reusable_identity(directory, workspace, cohort_identity)
+    source: JsonObject = {
         "workspace_id": plan_document["workspace_id"],
         "plan_id": plan_document["plan_id"],
         "decision_id": decision_document["decision_id"],
         "cohort_id": cohort["cohort_id"],
-        "source_synthesis_provenance_sha256": cohort["identity"][
+        "source_synthesis_provenance_sha256": cohort_identity.get(
             "synthesis_provenance_sha256"
-        ],
-        "source_seed": cohort["identity"]["seed"],
+        ),
+        "source_seed": cohort_identity.get("seed"),
         "sample_queue_ids": list(decision_document["sample_queue_ids"]),
         "reviewed_samples": copy.deepcopy(decision_document["reviewed_samples"]),
         "sample_assessments": copy.deepcopy(
@@ -132,7 +164,7 @@ def build_voice_quality_gate(workspace_directory, plan, decision):
         ),
         "target_items": copy.deepcopy(decision_document["target_items"]),
     }
-    body = {
+    body: JsonObject = {
         "schema": VOICE_QUALITY_GATE_SCHEMA,
         "schema_version": VOICE_QUALITY_GATE_VERSION,
         "reuse_policy": {
@@ -147,45 +179,66 @@ def build_voice_quality_gate(workspace_directory, plan, decision):
         "source_review": source,
     }
     gate_id = canonical_document_sha256(body)
-    return VoiceQualityGate(gate_id, {**body, "gate_id": gate_id})
+    document: _GateDocument = {
+        "schema": VOICE_QUALITY_GATE_SCHEMA,
+        "schema_version": VOICE_QUALITY_GATE_VERSION,
+        "gate_id": gate_id,
+        "reuse_policy": _object(body["reuse_policy"], "Reuse policy"),
+        "identity": identity,
+        "source_review": source,
+    }
+    return VoiceQualityGate(gate_id, document)
 
 
-def write_voice_quality_gate(gate, output_path):
+def write_voice_quality_gate(
+    gate: VoiceQualityGate | Mapping[str, object], output_path: str | Path
+) -> Path:
     """Publish a validated gate without replacing existing evidence."""
     document = _validated_gate_document(gate)
     try:
-        return _write_document_no_replace(output_path, document, "voice-quality gate")
+        return Path(
+            _write_document_no_replace(output_path, document, "voice-quality gate")
+        )
     except CohortReviewError as error:
         raise VoiceQualityGateError(str(error)) from error
 
 
-def load_voice_quality_gate(path):
+def load_voice_quality_gate(path: str | Path) -> VoiceQualityGate:
     """Load and validate one standalone reusable gate."""
     try:
-        document = _load_document(path, "voice-quality gate")
+        raw_document = _load_document(path, "voice-quality gate")
     except CohortReviewError as error:
         raise VoiceQualityGateError(str(error)) from error
-    document = _validated_gate_document(document)
+    document = _validated_gate_document(raw_document)
     return VoiceQualityGate(document["gate_id"], document)
 
 
-def inspect_voice_quality_gate(gate, workspace_directory, queue_id):
+def inspect_voice_quality_gate(
+    gate: VoiceQualityGate | Mapping[str, object],
+    workspace_directory: str | Path,
+    queue_id: str,
+) -> VoiceQualityCompatibility:
     """Compare one later pending item without projecting a review decision."""
     document = _validated_gate_document(gate)
     try:
         plan = build_cohort_review_plan(workspace_directory, queue_ids=[queue_id])
     except CohortReviewError as error:
         raise VoiceQualityGateError(str(error)) from error
-    if len(plan.document["cohorts"]) != 1:
+    plan_document = _plan_document(plan)
+    if len(plan_document["cohorts"]) != 1:
         raise VoiceQualityGateError("Selected item has no reusable review cohort")
-    cohort = plan.document["cohorts"][0]
+    cohort = plan_document["cohorts"][0]
     try:
         directory, workspace, _workspace_sha256 = load_workspace_authority(
             workspace_directory
         )
     except AuthoringWorkbenchError as error:
         raise VoiceQualityGateError(str(error)) from error
-    current = _reusable_identity(directory, workspace, cohort["identity"])
+    current = _reusable_identity(
+        directory,
+        workspace,
+        _object(cohort.get("identity"), "Cohort identity"),
+    )
     expected = document["identity"]
     differences = tuple(
         key
@@ -201,7 +254,11 @@ def inspect_voice_quality_gate(gate, workspace_directory, queue_id):
     )
 
 
-def inspect_voice_quality_cohort(gate, workspace_directory, cohort_identity):
+def inspect_voice_quality_cohort(
+    gate: VoiceQualityGate | Mapping[str, object],
+    workspace_directory: str | Path,
+    cohort_identity: Mapping[str, object],
+) -> VoiceQualityCohortCompatibility:
     """Compare one already validated cohort identity without rescanning its WAVs."""
     document = _validated_gate_document(gate)
     if not isinstance(cohort_identity, dict):
@@ -233,7 +290,11 @@ def inspect_voice_quality_cohort(gate, workspace_directory, cohort_identity):
     )
 
 
-def _reusable_identity(directory, workspace, cohort_identity):
+def _reusable_identity(
+    directory: Path,
+    workspace: Mapping[str, object],
+    cohort_identity: Mapping[str, object],
+) -> JsonObject:
     run_config = workspace.get("run_config")
     if not isinstance(run_config, dict):
         raise VoiceQualityGateError("Workspace run configuration is malformed")
@@ -350,7 +411,9 @@ def _reusable_identity(directory, workspace, cohort_identity):
     }
 
 
-def _manifest_voice_character(workspace, voice_character):
+def _manifest_voice_character(
+    workspace: Mapping[str, object], voice_character: str
+) -> str:
     if normalize_character_name(voice_character) != "narrator":
         return voice_character
     return _required_text(
@@ -358,11 +421,66 @@ def _manifest_voice_character(workspace, voice_character):
     )
 
 
-def _validated_gate_document(gate):
+def _object(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise VoiceQualityGateError(f"{label} must be an object")
+    return {key: item for key, item in value.items() if isinstance(key, str)}
+
+
+def _is_object_list(value: object) -> TypeIs[list[JsonObject]]:
+    return isinstance(value, list) and all(
+        isinstance(item, dict) and all(isinstance(key, str) for key in item)
+        for item in value
+    )
+
+
+def _is_text_list(value: object) -> TypeIs[list[str]]:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _is_gate_document(value: object) -> TypeIs[_GateDocument]:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema"), str)
+        and isinstance(value.get("schema_version"), int)
+        and isinstance(value.get("gate_id"), str)
+        and isinstance(value.get("reuse_policy"), dict)
+        and isinstance(value.get("identity"), dict)
+        and isinstance(value.get("source_review"), dict)
+    )
+
+
+def _is_plan_document(value: object) -> TypeIs[_PlanDocument]:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("workspace_id"), str)
+        and isinstance(value.get("plan_id"), str)
+        and _is_object_list(value.get("cohorts"))
+    )
+
+
+def _is_decision_document(value: object) -> TypeIs[_DecisionDocument]:
+    return (
+        isinstance(value, dict)
+        and all(
+            isinstance(value.get(field), str)
+            for field in ("decision_id", "cohort_id", "decision")
+        )
+        and _is_text_list(value.get("sample_queue_ids"))
+        and _is_object_list(value.get("reviewed_samples"))
+        and _is_object_list(value.get("sample_assessments"))
+        and _is_object_list(value.get("target_items"))
+    )
+
+
+def _validated_gate_document(
+    gate: VoiceQualityGate | Mapping[str, object],
+) -> _GateDocument:
+    document: object
     if isinstance(gate, VoiceQualityGate):
         document = gate.document
-    elif isinstance(gate, dict):
-        document = gate
+    elif isinstance(gate, Mapping):
+        document = dict(gate)
     else:
         raise VoiceQualityGateError("Voice-quality gate must be a document")
     if (
@@ -440,19 +558,24 @@ def _validated_gate_document(gate):
         for value in assessments
     ):
         raise VoiceQualityGateError("Voice-quality source assessments are unsafe")
+    if not _is_gate_document(document):
+        raise VoiceQualityGateError("Voice-quality gate fields are malformed")
     return copy.deepcopy(document)
 
 
-def _plan_document(plan):
+def _plan_document(plan: object) -> _PlanDocument:
     try:
         if isinstance(plan, (str, Path)):
             plan = load_cohort_review_plan(plan)
-        return _validated_plan_document(plan)
+        document = _validated_plan_document(plan)
+        if not _is_plan_document(document):
+            raise CohortReviewError("Cohort review plan fields are malformed")
+        return document
     except CohortReviewError as error:
         raise VoiceQualityGateError(str(error)) from error
 
 
-def _decision_document(decision):
+def _decision_document(decision: object) -> _DecisionDocument:
     try:
         if isinstance(decision, (str, Path)):
             decision = load_cohort_review_decision(decision)
@@ -462,25 +585,27 @@ def _decision_document(decision):
             document = decision
         else:
             raise CohortReviewError("Cohort review decision must be a document")
-        _validated_decision_document(document)
+        document = _validated_decision_document(document)
+        if not _is_decision_document(document):
+            raise CohortReviewError("Cohort review decision fields are malformed")
         return copy.deepcopy(document)
     except CohortReviewError as error:
         raise VoiceQualityGateError(str(error)) from error
 
 
-def _required_text(value, label):
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise VoiceQualityGateError(f"{label} must be non-empty text")
     return value
 
 
-def _required_sha256(value, label):
-    if not is_lowercase_sha256(value):
+def _required_sha256(value: object, label: str) -> str:
+    if not isinstance(value, str) or not is_lowercase_sha256(value):
         raise VoiceQualityGateError(f"{label} must be lowercase SHA-256")
     return value
 
 
-def _required_bool(value, label):
+def _required_bool(value: object, label: str) -> bool:
     if not isinstance(value, bool):
         raise VoiceQualityGateError(f"{label} must be boolean")
     return value

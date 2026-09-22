@@ -29,7 +29,6 @@
     "vntts/authoring/speaker_identity.py": 20,
     "vntts/authoring/speaker_identity_model.py": 9,
     "vntts/authoring/speech_quality.py": 8,
-    "vntts/authoring/voice_quality_gate.py": 16,
     "vntts/authoring/voice_repair_comparison.py": 26,
     "vntts/authoring/workbench_ui.py": 112,
     "vntts/auto_advance.py": 4,
