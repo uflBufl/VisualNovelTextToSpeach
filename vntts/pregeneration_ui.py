@@ -120,6 +120,11 @@ from vntts.voices import (
 )
 
 StoryAudioKey: TypeAlias = tuple[str | None, str, str | None]
+StoryAudioCheck: TypeAlias = tuple[
+    StoryAudioCoverage | None,
+    StoryAudioCoverage | None,
+    Exception | str | None,
+]
 
 
 class OfflineAudioPreparationDialog(QDialog):
@@ -281,14 +286,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self._unsaved_story_selections: dict[
             str, tuple[GameContent, tuple[str, ...]]
         ] = {}
-        self._story_audio_checks: dict[
-            StoryAudioKey,
-            tuple[
-                StoryAudioCoverage | None,
-                StoryAudioCoverage | None,
-                Exception | str | None,
-            ],
-        ] = {}
+        self._story_audio_checks: dict[StoryAudioKey, StoryAudioCheck] = {}
         self._story_playback_speakers: dict[StoryAudioKey, tuple[str, ...]] = {}
         self._checking_story: StoryAudioKey | None = None
         self._story_job_statuses: dict[str, str] = {}
@@ -636,6 +634,15 @@ class OfflineAudioPreparationDialog(QDialog):
         self.change_summary = QLabel()
         self.change_summary.setWordWrap(True)
         self.change_summary.setAccessibleName("Changes before generation")
+        self._build_narrator_confirmation_controls(game_narrator_chooser)
+        self._build_voice_route_confirmation_controls()
+        self.voice_confirmation_status = QLabel()
+        self.voice_confirmation_status.setWordWrap(True)
+        self._layout_voice_confirmation()
+
+    def _build_narrator_confirmation_controls(
+        self, game_narrator_chooser: Callable[..., AppSettings | None] | None
+    ) -> None:
         self.narrator_choice = QComboBox()
         self.narrator_choice.setAccessibleName("Narrator voice for offline generation")
         self.narrator_choice.currentIndexChanged.connect(self._narrator_choice_changed)
@@ -651,6 +658,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.narrator_controls = QWidget()
         self.narrator_controls.setLayout(narrator_choice_row)
         self.narrator_controls.setVisible(game_narrator_chooser is None)
+
+    def _build_voice_route_confirmation_controls(self) -> None:
         self.voice_routes = QListWidget()
         self.voice_routes.setIconSize(QSize(64, 64))
         self.voice_routes.setAccessibleName("Planned character voice routes")
@@ -688,9 +697,6 @@ class OfflineAudioPreparationDialog(QDialog):
         self.show_all_voice_routes.toggled.connect(
             lambda: self._render_voice_routes(self._voice_plan)
         )
-        self.voice_confirmation_status = QLabel()
-        self.voice_confirmation_status.setWordWrap(True)
-        self._layout_voice_confirmation()
 
     def _layout_voice_confirmation(self) -> None:
         confirmation_layout = QVBoxLayout(self.voice_confirmation)
@@ -2216,50 +2222,12 @@ class OfflineAudioPreparationDialog(QDialog):
                 selection_id = item.data(Qt.ItemDataRole.UserRole)
                 selection = selections[selection_id]
                 saved_status = self._story_job_statuses.get(selection_id)
-                status = "in_progress" if saved_status else "not_started"
-                detail = (
-                    "checking saved audio"
-                    if saved_status == "ready"
-                    else "saved progress; continue to finish"
-                    if saved_status
-                    else f"{selection.generation_lines} lines need speech"
-                )
                 checked = self._story_audio_checks.get(
                     self._story_audio_key(selection_id)
                 )
-                if checked is not None:
-                    coverage, active, error = checked
-                    if error is not None:
-                        status, detail = "attention", str(error)
-                    else:
-                        if active is not None and not active.missing:
-                            coverage = active
-                        assert coverage is not None
-                        status = "in_progress" if coverage.missing else "ready"
-                        if coverage.missing and not (
-                            coverage.generated or coverage.original or saved_status
-                        ):
-                            status = "not_started"
-                        detail = ", ".join(
-                            f"{count} {label}"
-                            for label, count in (
-                                ("recordings", coverage.generated),
-                                ("original", coverage.original),
-                                ("live speech", coverage.live),
-                                ("missing", coverage.missing),
-                            )
-                            if count
-                        )
-                        if coverage is active:
-                            detail += "; active in Reading"
-                            warning = self._reading_override_reason(
-                                selection_id, coverage
-                            )
-                            if warning:
-                                status = "attention"
-                                detail += "; " + warning
-                        elif coverage.manifest:
-                            detail += "; not active in Reading"
+                status, detail, coverage = self._saved_story_status(
+                    selection_id, selection, saved_status, checked
+                )
                 if (
                     self._job is not None
                     and self._job.story_index_sha256 == content.story_index_sha256
@@ -2287,6 +2255,53 @@ class OfflineAudioPreparationDialog(QDialog):
                 )
                 item.setData(Qt.ItemDataRole.UserRole + 2, status)
         self._filter_stories()
+
+    def _saved_story_status(
+        self,
+        selection_id: str,
+        selection: StorySelection,
+        saved_status: str | None,
+        checked: StoryAudioCheck | None,
+    ) -> tuple[str, str, StoryAudioCoverage | None]:
+        status = "in_progress" if saved_status else "not_started"
+        detail = (
+            "checking saved audio"
+            if saved_status == "ready"
+            else "saved progress; continue to finish"
+            if saved_status
+            else f"{selection.generation_lines} lines need speech"
+        )
+        if checked is None:
+            return status, detail, None
+        coverage, active, error = checked
+        if error is not None:
+            return "attention", str(error), coverage
+        if active is not None and not active.missing:
+            coverage = active
+        assert coverage is not None
+        status = "in_progress" if coverage.missing else "ready"
+        if coverage.missing and not (
+            coverage.generated or coverage.original or saved_status
+        ):
+            status = "not_started"
+        detail = ", ".join(
+            f"{count} {label}"
+            for label, count in (
+                ("recordings", coverage.generated),
+                ("original", coverage.original),
+                ("live speech", coverage.live),
+                ("missing", coverage.missing),
+            )
+            if count
+        )
+        if coverage is active:
+            detail += "; active in Reading"
+            warning = self._reading_override_reason(selection_id, coverage)
+            if warning:
+                return "attention", detail + "; " + warning, coverage
+        elif coverage.manifest:
+            detail += "; not active in Reading"
+        return status, detail, coverage
 
     def _can_start_reading(self) -> bool:
         if self.change_voices.isChecked():
@@ -2461,14 +2476,7 @@ class OfflineAudioPreparationDialog(QDialog):
         content = self.current_content()
         selected = self.selected_story_ids()
         if content is not None:
-            if set(selected) != self._story_selection_drafts.get(
-                content.story_index_sha256
-            ):
-                self._unsaved_story_selections[content.story_index_sha256] = (
-                    content,
-                    selected,
-                )
-            self._story_selection_drafts[content.story_index_sha256] = set(selected)
+            self._remember_story_selection(content, selected)
         self._filter_stories()
         self._queue_story_checks()
         can_read = self._can_start_reading()
@@ -2488,33 +2496,72 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         if self._pack_result is None and not self._awaiting_voice_confirmation:
             self.continue_button.setText(
-                "Checking saved audio..."
-                if checking
-                else "Start reading"
-                if can_read
-                else "Use prepared audio"
-                if saved_manifest is not None
-                else "Continue preparation"
-                if any(
-                    self.stories.item(row).checkState() == Qt.CheckState.Checked
-                    and self.stories.item(row).data(Qt.ItemDataRole.UserRole + 2)
-                    != "not_started"
-                    for row in range(self.stories.count())
-                )
-                else (
-                    "Choose a story"
-                    if not selected
-                    else "Prepare selected story"
-                    if len(selected) == 1
-                    else f"Prepare {len(selected)} stories"
+                self._selection_action_label(
+                    selected, checking, can_read, saved_manifest
                 )
             )
+        if self._show_selection_blocker(
+            content, selected, checking, can_read, saved_manifest
+        ):
+            return
+        assert content is not None
+        self._show_selection_summary(content, selected, can_read, saved_manifest)
+        self.continue_button.setEnabled(True)
+
+    def _remember_story_selection(
+        self, content: GameContent, selected: tuple[str, ...]
+    ) -> None:
+        if set(selected) != self._story_selection_drafts.get(
+            content.story_index_sha256
+        ):
+            self._unsaved_story_selections[content.story_index_sha256] = (
+                content,
+                selected,
+            )
+        self._story_selection_drafts[content.story_index_sha256] = set(selected)
+
+    def _selection_action_label(
+        self,
+        selected: tuple[str, ...],
+        checking: bool,
+        can_read: bool,
+        saved_manifest: Path | None,
+    ) -> str:
+        if checking:
+            return "Checking saved audio..."
+        if can_read:
+            return "Start reading"
+        if saved_manifest is not None:
+            return "Use prepared audio"
+        if any(
+            self.stories.item(row).checkState() == Qt.CheckState.Checked
+            and self.stories.item(row).data(Qt.ItemDataRole.UserRole + 2)
+            != "not_started"
+            for row in range(self.stories.count())
+        ):
+            return "Continue preparation"
+        if not selected:
+            return "Choose a story"
+        return (
+            "Prepare selected story"
+            if len(selected) == 1
+            else f"Prepare {len(selected)} stories"
+        )
+
+    def _show_selection_blocker(
+        self,
+        content: GameContent | None,
+        selected: tuple[str, ...],
+        checking: bool,
+        can_read: bool,
+        saved_manifest: Path | None,
+    ) -> bool:
         if checking:
             self.summary.setText(
                 "Checking saved recordings for the selected stories. No audio will be generated."
             )
             self.continue_button.setEnabled(False)
-            return
+            return True
         if (
             not can_read
             and saved_manifest is None
@@ -2535,7 +2582,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 ),
             )
             self.continue_button.setEnabled(False)
-            return
+            return True
         if content is None:
             set_labeled_text(
                 self.story_context,
@@ -2547,7 +2594,7 @@ class OfflineAudioPreparationDialog(QDialog):
                 (("Preparation", "Choose or import game content to continue."),),
             )
             self.continue_button.setEnabled(False)
-            return
+            return True
         if not selected:
             set_labeled_text(self.story_context, (("Stories", "No stories selected."),))
             self.story_context.setToolTip("")
@@ -2556,7 +2603,16 @@ class OfflineAudioPreparationDialog(QDialog):
                 (("Preparation", "Select at least one story or chapter."),),
             )
             self.continue_button.setEnabled(False)
-            return
+            return True
+        return False
+
+    def _show_selection_summary(
+        self,
+        content: GameContent,
+        selected: tuple[str, ...],
+        can_read: bool,
+        saved_manifest: Path | None,
+    ) -> None:
         estimate = estimate_preparation(content, selected)
         titles = [
             item.title for item in content.selections if item.selection_id in selected
@@ -2650,7 +2706,6 @@ class OfflineAudioPreparationDialog(QDialog):
             )
         set_labeled_text(self.summary, summary_rows)
         self.prepare_again.setToolTip("Prepare again: " + ", ".join(titles))
-        self.continue_button.setEnabled(True)
 
     def select_voice_affected_stories(
         self, results: Iterable[StoryVoiceImpact]
@@ -2828,6 +2883,30 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _voice_plan_finished(self, plan: object, error: Exception | None) -> None:
         self.planning_voices = False
+        error = self._voice_plan_completion_error(plan, error)
+        if self._show_voice_plan_error(error):
+            return
+        assert _is_voice_plan_result(plan)
+        self._voice_plan = plan
+        self.replanning_voice_decisions = False
+        if (
+            plan.synthesis_backend != "pocket-tts"
+            and any(group.route == "narrator" for group in plan.groups)
+            and self.voice_library.binding("Narrator") is None
+        ):
+            self._changes_rows = ()
+            self._show_voice_confirmation(plan)
+            self.voice_confirmation_status.setText(
+                "Choose a narrator in Voices before generation."
+                if self.game_narrator_chooser is not None
+                else "Choose a narrator before generation."
+            )
+            return
+        self._start_generation_input(plan)
+
+    def _voice_plan_completion_error(
+        self, plan: object, error: Exception | None
+    ) -> Exception | None:
         if error is None and not _is_voice_plan_result(plan):
             error = TypeError("Voice matching returned an invalid voice plan")
         if error is not None or self._close_after_voice_cancel:
@@ -2844,50 +2923,32 @@ class OfflineAudioPreparationDialog(QDialog):
                 with QSignalBlocker(self.change_voices):
                     self.change_voices.setChecked(False)
         self._pending_voice_rematch = False
+        return error
+
+    def _show_voice_plan_error(self, error: Exception | None) -> bool:
         if self._close_after_voice_cancel:
             self.reject()
-            return
-        if error is not None:
-            self.cancel_button.setText("Cancel")
-            self.cancel_button.setEnabled(True)
-            self._set_import_controls(True)
-            self.selection_panel.setVisible(True)
-            self._preparation_paused("Voice matching paused", error)
-            self.progress_cancel_consequence.setText(
-                "Change the selection or choose Continue to retry."
-            )
-            if isinstance(error, PregenerationVoiceCancelled):
-                if self._close_after_voice_cancel:
-                    self.reject()
-                else:
-                    self.resume_status.setText("Voice matching cancelled.")
-                return
-            self._set_resume_error("Unable to match character voices", error)
-            if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
-                self, error
-            ):
-                self.importer.allow_decoder_homebrew = True
-                self._save_selection()
-            return
-        assert _is_voice_plan_result(plan)
-        self._voice_plan = plan
-        self.replanning_voice_decisions = False
-        if (
-            isinstance(plan.synthesis_backend, str)
-            and plan.synthesis_backend != "pocket-tts"
-            and isinstance(plan.groups, (tuple, list))
-            and any(group.route == "narrator" for group in plan.groups)
-            and self.voice_library.binding("Narrator") is None
+            return True
+        if error is None:
+            return False
+        self.cancel_button.setText("Cancel")
+        self.cancel_button.setEnabled(True)
+        self._set_import_controls(True)
+        self.selection_panel.setVisible(True)
+        self._preparation_paused("Voice matching paused", error)
+        self.progress_cancel_consequence.setText(
+            "Change the selection or choose Continue to retry."
+        )
+        if isinstance(error, PregenerationVoiceCancelled):
+            self.resume_status.setText("Voice matching cancelled.")
+            return True
+        self._set_resume_error("Unable to match character voices", error)
+        if isinstance(error, DecoderSetupRequired) and confirm_decoder_setup(
+            self, error
         ):
-            self._changes_rows = ()
-            self._show_voice_confirmation(plan)
-            self.voice_confirmation_status.setText(
-                "Choose a narrator in Voices before generation."
-                if self.game_narrator_chooser is not None
-                else "Choose a narrator before generation."
-            )
-            return
-        self._start_generation_input(plan)
+            self.importer.allow_decoder_homebrew = True
+            self._save_selection()
+        return True
 
     def _restore_provisional_bindings(self) -> Exception | None:
         snapshot = self._provisional_binding_snapshot
