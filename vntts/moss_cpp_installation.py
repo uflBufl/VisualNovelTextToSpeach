@@ -323,7 +323,7 @@ def _check_runtime(
     try:
         _run([str(paths[0]), "--help"], cancellation=cancellation, timeout=30)
     except TTSConfigurationError as error:
-        error = _repair_runtime_probe(
+        repair_error = _repair_runtime_probe(
             root,
             paths,
             report,
@@ -332,11 +332,11 @@ def _check_runtime(
             explicit_server=explicit_server,
             allow_download=allow_download,
         )
-        if error is not None:
+        if repair_error is not None:
             raise TTSConfigurationError(
                 "MOSS native runtime check failed. "
-                f"Model downloads have not started. {error}"
-            ) from error
+                f"Model downloads have not started. {repair_error}"
+            ) from repair_error
 
 
 def ensure_moss_cpp(
