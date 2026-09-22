@@ -95,9 +95,7 @@ class _ExperimentalCompositeAuthority(TypedDict):
 
 class _ExperimentalCompositeVoiceInput(TypedDict):
     source_manifest: Path
-    source_document: object
-    source_voices: object
-    source_overrides: object
+    source_voices: Iterable[VoiceManifestEntry]
     authority: _ExperimentalCompositeAuthority
     composite_directory: Path
     quality_review: Path
@@ -179,8 +177,7 @@ def publish_experimental_composite_voice_input(
         "voice_character": voice_character,
         "speaker": speaker,
         "reference": (
-            f"experimental-composites/{composite['reference_sha256']}"
-            "/reference.wav"
+            f"experimental-composites/{composite['reference_sha256']}/reference.wav"
         ),
         **composite,
         "quality_decision": "needs_sample",
@@ -199,9 +196,7 @@ def publish_experimental_composite_voice_input(
     }
     expected: _ExperimentalCompositeVoiceInput = {
         "source_manifest": source_manifest,
-        "source_document": source_document,
         "source_voices": source_voices,
-        "source_overrides": source_overrides,
         "authority": authority,
         "composite_directory": composite_directory,
         "quality_review": quality_review,
@@ -212,38 +207,7 @@ def publish_experimental_composite_voice_input(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(output.parent, prefix=".experimental-composite-") as staging:
-        inventory: list[dict[str, str]] = []
-        _copy_manifest_references(
-            source_manifest.parent, source_voices, staging, inventory
-        )
-        reference_relative = Path(authority["voices"][0]["reference"])
-        _copy_file(
-            composite_directory / composite["composite_path"],
-            staging / reference_relative,
-            composite["reference_sha256"],
-            inventory,
-            staging,
-        )
-        _copy_file(
-            composite_directory / "composite.json",
-            staging / "authority/composite.json",
-            composite["composite_ledger_sha256"],
-            inventory,
-            staging,
-        )
-        _copy_file(
-            composite_directory / "evaluation.json",
-            staging / "authority/evaluation.json",
-            composite["composite_evaluation_sha256"],
-            inventory,
-            staging,
-        )
-        _copy_tree(
-            quality_review.parent,
-            staging / "authority/quality-review",
-            inventory,
-            staging,
-        )
+        inventory, reference_relative = _copy_experimental_artifacts(staging, expected)
 
         successor = copy.deepcopy(source_document)
         successor["voices"] = [
@@ -273,6 +237,46 @@ def publish_experimental_composite_voice_input(
         _validate_experimental_composite_voice_input(staging, expected)
         rename_directory_no_replace(staging, output)
     return _result(output, bundle, authority, created=True)
+
+
+def _copy_experimental_artifacts(
+    staging: Path, expected: _ExperimentalCompositeVoiceInput
+) -> tuple[list[dict[str, str]], Path]:
+    inventory: list[dict[str, str]] = []
+    _copy_manifest_references(
+        expected["source_manifest"].parent,
+        expected["source_voices"],
+        staging,
+        inventory,
+    )
+    voice = expected["authority"]["voices"][0]
+    reference_relative = Path(voice["reference"])
+    composite_directory = expected["composite_directory"]
+    for source, destination, digest in (
+        (
+            composite_directory / voice["composite_path"],
+            staging / reference_relative,
+            voice["reference_sha256"],
+        ),
+        (
+            composite_directory / "composite.json",
+            staging / "authority/composite.json",
+            voice["composite_ledger_sha256"],
+        ),
+        (
+            composite_directory / "evaluation.json",
+            staging / "authority/evaluation.json",
+            voice["composite_evaluation_sha256"],
+        ),
+    ):
+        _copy_file(source, destination, digest, inventory, staging)
+    _copy_tree(
+        expected["quality_review"].parent,
+        staging / "authority/quality-review",
+        inventory,
+        staging,
+    )
+    return inventory, reference_relative
 
 
 def _load_composite_authority(
@@ -322,7 +326,21 @@ def _load_composite_authority(
         or sha256_file(reference) != reference_sha256
     ):
         raise ExperimentalCompositeVoiceError("Composite WAV changed")
-    clips = ledger.get("clips")
+    _validate_composite_clips(composite_directory, ledger.get("clips"))
+    _exact_quality_card(review, ledger, reference_sha256)
+    return {
+        "character": ledger["character"],
+        "portrait": ledger["portrait"],
+        "source_bank": ledger["source_bank"],
+        "reference_sha256": reference_sha256,
+        "composite_path": relative.as_posix(),
+        "composite_ledger_sha256": ledger_sha256,
+        "composite_evaluation_sha256": evaluation_sha256,
+        "quality_review_sha256": sha256_file(quality_review),
+    }
+
+
+def _validate_composite_clips(composite_directory: Path, clips: object) -> None:
     if not isinstance(clips, list) or len(clips) < 2:
         raise ExperimentalCompositeVoiceError("Composite clip inventory is invalid")
     for clip in clips:
@@ -344,6 +362,11 @@ def _load_composite_authority(
             or sha256_file(clip_path) != digest
         ):
             raise ExperimentalCompositeVoiceError("Composite clip changed")
+
+
+def _exact_quality_card(
+    review: Mapping[str, object], ledger: Mapping[str, object], reference_sha256: str
+) -> None:
     variant_id = f"exact-bank-composite:{reference_sha256}"
     variants = review.get("variants")
     if not isinstance(variants, list):
@@ -373,16 +396,6 @@ def _load_composite_authority(
         raise ExperimentalCompositeVoiceError(
             "Quality review card differs from the composite ledger"
         )
-    return {
-        "character": ledger["character"],
-        "portrait": ledger["portrait"],
-        "source_bank": ledger["source_bank"],
-        "reference_sha256": reference_sha256,
-        "composite_path": relative.as_posix(),
-        "composite_ledger_sha256": ledger_sha256,
-        "composite_evaluation_sha256": evaluation_sha256,
-        "quality_review_sha256": sha256_file(quality_review),
-    }
 
 
 def _validate_experimental_composite_voice_input(
@@ -410,7 +423,12 @@ def _validate_experimental_composite_voice_input(
         raise ExperimentalCompositeVoiceError(
             "Experimental composite input identity is invalid"
         )
-    inventory = bundle.get("inventory")
+    _validate_bundle_inventory(directory, bundle.get("inventory"))
+    _validate_bundle_manifest(directory, expected["authority"])
+    return bundle
+
+
+def _validate_bundle_inventory(directory: Path, inventory: object) -> None:
     if not isinstance(inventory, list) or not inventory:
         raise ExperimentalCompositeVoiceError(
             "Experimental composite inventory is empty"
@@ -452,6 +470,11 @@ def _validate_experimental_composite_voice_input(
         raise ExperimentalCompositeVoiceError(
             "Experimental composite inventory is incomplete"
         )
+
+
+def _validate_bundle_manifest(
+    directory: Path, authority: _ExperimentalCompositeAuthority
+) -> None:
     manifest_path = directory / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -465,13 +488,13 @@ def _validate_experimental_composite_voice_input(
         SourceReferenceBindingError,
     ) as error:
         raise ExperimentalCompositeVoiceError(str(error)) from error
-    if manifest.get(EXPERIMENTAL_COMPOSITE_VOICE_FIELD) != expected["authority"]:
+    if manifest.get(EXPERIMENTAL_COMPOSITE_VOICE_FIELD) != authority:
         raise ExperimentalCompositeVoiceError(
             "Experimental composite manifest authority changed"
         )
     if (
         queue_voice_overrides_sha256(overrides)
-        != expected["authority"]["source_queue_voice_overrides_sha256"]
+        != authority["source_queue_voice_overrides_sha256"]
     ):
         raise ExperimentalCompositeVoiceError(
             "Experimental composite input changed queue routing"
@@ -479,13 +502,13 @@ def _validate_experimental_composite_voice_input(
     experimental = [
         voice
         for voice in voices
-        if voice.character == expected["authority"]["voices"][0]["voice_character"]
+        if voice.character == authority["voices"][0]["voice_character"]
     ]
     if len(experimental) != 1:
         raise ExperimentalCompositeVoiceError(
             "Experimental composite voice is absent or ambiguous"
         )
-    control = expected["authority"]["voices"][0]
+    control = authority["voices"][0]
     if (
         experimental[0].speaker != control["speaker"]
         or list(experimental[0].references) != [control["reference"]]
@@ -494,7 +517,6 @@ def _validate_experimental_composite_voice_input(
         raise ExperimentalCompositeVoiceError(
             "Experimental composite voice reference changed"
         )
-    return bundle
 
 
 def _copy_manifest_references(

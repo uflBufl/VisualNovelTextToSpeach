@@ -207,6 +207,27 @@ class AuthoringExperimentalCompositeVoiceTest(unittest.TestCase):
                         root / "tampered",
                     )
 
+    def test_rejects_changed_composite_clip(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest, composite, review_path, review = self.create_fixture(root)
+            (composite / "clips/1.wav").write_bytes(b"changed")
+            with patch(
+                "vntts.authoring.experimental_composite_voice."
+                "load_source_reference_quality_review",
+                return_value=review,
+            ):
+                with self.assertRaisesRegex(
+                    ExperimentalCompositeVoiceError, "Composite clip changed"
+                ):
+                    publish_experimental_composite_voice_input(
+                        manifest,
+                        composite,
+                        review_path,
+                        "Experimental Hotelier exact-bank composite",
+                        root / "output",
+                    )
+
     def test_existing_output_tampering_and_different_source_fail_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
