@@ -65,12 +65,13 @@ Planned implementation order after approval:
 
 ## P0 - Validate the non-blocking Voice plan
 
-- [ ] **Validate Mrs. Owen on fresh Windows state:** multiple portrait expressions
-      now count as one safe bank owner. The exact Windows settings shape
-      (`voice_manifest` plus `Narrator: character:narrator`) now invokes candidate
-      preparation and merges its inventory while retaining the configured narrator
-      and saved voices. Gate: inspection exposes accepted media `562400954` for
-      playback, preview and saving.
+- [ ] **Validate Mrs. Owen on fresh Windows state:** after updating the extractor,
+      open her voice from both Voices and Stories. Both must expose the same
+      checksum-bound 3.17-second media `562400954` and 1.95-second media
+      `599773947`, without duplicate quoted role labels. Play the original,
+      generate a preview, save the 3.17-second candidate, reopen, and prepare a
+      story. Gate: the saved choice remains selected and offline generation uses
+      that exact reference; no automatic choice silently replaces it.
 - [ ] **Validate the Windows preview startup repair:** Python 3.14 `Popen` does not
       retain a `_thread` handle, so the suspended owned MOSS process failed before
       model loading. The launcher now finds and resumes the process thread through
