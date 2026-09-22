@@ -193,6 +193,34 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
                     root / "composite",
                 )
 
+    def test_preserves_non_object_json_boundary_errors(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = self.make_report(root)
+            report.write_text("[]", encoding="utf-8")
+
+            with self.assertRaisesRegex(ReferenceCompositeError, "complete exact-bank"):
+                publish_exact_bank_reference_composite(
+                    report,
+                    "Hotelier",
+                    "505401.png",
+                    "hotelier.bnk",
+                    root / "composite",
+                )
+            report = self.make_report(root)
+            composite = publish_exact_bank_reference_composite(
+                report,
+                "Hotelier",
+                "505401.png",
+                "hotelier.bnk",
+                root / "composite",
+            )
+            (composite.directory / "composite.json").write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(ReferenceCompositeError, "identity is invalid"):
+                publish_composite_quality_review(
+                    composite.directory, root / "missing-state.json", root / "quality"
+                )
+
     def test_publishes_composite_quality_card_without_binding_authority(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -224,6 +252,18 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
             self.assertEqual(card["media_ids"], [10, 20])
             self.assertEqual(len(card["generated_samples"]), 3)
             self.assertIn("not a source-reference plan", session["authority"])
+
+            with self.assertRaisesRegex(ReferenceCompositeError, "output exists"):
+                publish_composite_quality_review(
+                    composite.directory, generation.state, root / "quality"
+                )
+            (composite.directory / "composite.wav").write_bytes(b"changed")
+            with self.assertRaisesRegex(
+                ReferenceCompositeError, "Composite WAV changed"
+            ):
+                publish_composite_quality_review(
+                    composite.directory, generation.state, root / "changed-quality"
+                )
 
     def test_rejects_changed_reference_and_existing_output(self):
         with TemporaryDirectory() as directory:
