@@ -4524,8 +4524,10 @@ def _capture_render_review_fallback_evidence(
             ) from error
         review = record.review
         decision = record.decision
+        decision_snapshot = record.decision_snapshot
         if (
             not isinstance(decision, dict)
+            or decision_snapshot is None
             or decision.get("decision") != "need_different"
         ):
             raise BulkGenerationError(
@@ -4548,7 +4550,7 @@ def _capture_render_review_fallback_evidence(
                 "review_id": review["review_id"],
                 "review_sha256": record.review_snapshot.sha256,
                 "review_document_sha256": _canonical_sha256(review),
-                "decision_sha256": record.decision_snapshot.sha256,
+                "decision_sha256": decision_snapshot.sha256,
                 "decision_document_sha256": _canonical_sha256(decision),
                 "comparison_sha256": review["comparison_sha256"],
                 "arm_report_sha256": review["arm_report_sha256"],
