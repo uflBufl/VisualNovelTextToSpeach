@@ -5,9 +5,12 @@ from __future__ import annotations
 import io
 import re
 import wave
+from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
+from numpy.typing import NDArray
 from vntts_artifacts.audio import Pcm16MonoWavError, read_pcm16_mono_wav
 
 from vntts.authoring.failure_repair import safe_sentence_segments
@@ -28,7 +31,12 @@ SPEECH_QUALITY_ANALYSIS_VERSION = 2
 class SpeechSilenceValidationError(BulkGenerationError):
     """Generated speech contains unsafe silence spans."""
 
-    def __init__(self, quality, failures, diagnosis=None):
+    def __init__(
+        self,
+        quality: SpeechQuality,
+        failures: Sequence[str],
+        diagnosis: SpeechPauseDiagnosis | None = None,
+    ) -> None:
         self.quality = quality
         self.failures = tuple(failures)
         self.diagnosis = diagnosis
@@ -75,7 +83,11 @@ for _compatibility_type in (
     _compatibility_type.__module__ = "vntts.authoring.bulk_generation"
 
 
-def measure_generated_speech(path, *, analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION):
+def measure_generated_speech(
+    path: str | Path,
+    *,
+    analysis_version: int = SPEECH_QUALITY_ANALYSIS_VERSION,
+) -> SpeechQuality:
     """Measure speech pauses with an explicitly versioned PCM interpretation."""
     if analysis_version not in {
         LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
@@ -100,8 +112,10 @@ def measure_generated_speech(path, *, analysis_version=SPEECH_QUALITY_ANALYSIS_V
 
 
 def measure_generated_speech_bytes(
-    content, *, analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION
-):
+    content: bytes,
+    *,
+    analysis_version: int = SPEECH_QUALITY_ANALYSIS_VERSION,
+) -> SpeechQuality:
     """Measure one already-captured PCM16 WAV payload without reopening a path."""
     if not isinstance(content, bytes):
         raise BulkGenerationError("Generated speech payload must be bytes")
@@ -113,7 +127,9 @@ def measure_generated_speech_bytes(
                 raise Pcm16MonoWavError("expected mono 16-bit PCM WAV")
             sample_rate = source.getframerate()
             sample_count = source.getnframes()
-            samples = np.frombuffer(source.readframes(sample_count), dtype="<i2")
+            samples: NDArray[np.int16] = np.frombuffer(
+                source.readframes(sample_count), dtype="<i2"
+            )
     except (EOFError, OSError, ValueError, wave.Error, Pcm16MonoWavError) as error:
         raise BulkGenerationError(
             f"Unable to analyze generated speech: {error}"
@@ -132,8 +148,12 @@ def measure_generated_speech_bytes(
 
 
 def measure_generated_speech_samples(
-    samples, *, sample_rate, duration_seconds, analysis_version
-):
+    samples: object,
+    *,
+    sample_rate: int,
+    duration_seconds: float,
+    analysis_version: int,
+) -> SpeechQuality:
     quality, _spans = analyze_generated_speech_samples(
         samples,
         sample_rate=sample_rate,
@@ -144,8 +164,12 @@ def measure_generated_speech_samples(
 
 
 def analyze_generated_speech_samples(
-    samples, *, sample_rate, duration_seconds, analysis_version
-):
+    samples: object,
+    *,
+    sample_rate: int,
+    duration_seconds: float,
+    analysis_version: int,
+) -> tuple[SpeechQuality, tuple[SpeechSilenceSpan, ...]]:
     if analysis_version not in {
         LEGACY_SPEECH_QUALITY_ANALYSIS_VERSION,
         SPEECH_QUALITY_ANALYSIS_VERSION,
@@ -153,16 +177,16 @@ def analyze_generated_speech_samples(
         raise BulkGenerationError(
             f"Unsupported speech-quality analysis version: {analysis_version!r}"
         )
-    samples = np.asarray(samples, dtype=np.float32)
+    sample_values: NDArray[np.float32] = np.asarray(samples, dtype=np.float32)
     if analysis_version == SPEECH_QUALITY_ANALYSIS_VERSION:
         # PCM16 sample values require [-1, 1] units for dBFS thresholds.
         # Version 1 remains available only to validate published legacy state.
-        samples /= 32768.0
+        sample_values /= 32768.0
     frame_samples = max(1, round(sample_rate * SILENCE_FRAME_MS / 1000))
     frame_rms = np.asarray(
         [
-            np.sqrt(np.mean(samples[start : start + frame_samples] ** 2))
-            for start in range(0, len(samples), frame_samples)
+            np.sqrt(np.mean(sample_values[start : start + frame_samples] ** 2))
+            for start in range(0, len(sample_values), frame_samples)
         ]
     )
     silent = frame_rms <= 10 ** (SILENCE_DBFS / 20.0)
@@ -229,7 +253,11 @@ def analyze_generated_speech_samples(
     return quality, tuple(spans)
 
 
-def speech_pause_diagnosis(text, quality, spans):
+def speech_pause_diagnosis(
+    text: str,
+    quality: SpeechQuality,
+    spans: Sequence[SpeechSilenceSpan],
+) -> SpeechPauseDiagnosis:
     features = text_failure_features(text)
     sentence_boundary_count = features["sentence_boundary_count"]
     internal_exceeded = (
@@ -256,8 +284,11 @@ def speech_pause_diagnosis(text, quality, spans):
 
 
 def inspect_generated_speech(
-    path, *, analysis_version=SPEECH_QUALITY_ANALYSIS_VERSION, text=""
-):
+    path: str | Path,
+    *,
+    analysis_version: int = SPEECH_QUALITY_ANALYSIS_VERSION,
+    text: str = "",
+) -> SpeechQuality:
     """Reject long silence spans that pass basic peak/duration validation."""
     try:
         samples, info = read_pcm16_mono_wav(path)
@@ -291,7 +322,7 @@ def inspect_generated_speech(
     return quality
 
 
-def text_failure_features(text):
+def text_failure_features(text: object) -> dict[str, int]:
     value = str(text or "")
     return {
         "character_count": len(value),
