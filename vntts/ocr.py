@@ -1,9 +1,11 @@
 import json
 import os
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
+from typing import Protocol
 from uuid import uuid4
 
 import pytesseract
@@ -18,21 +20,38 @@ from vntts.versioned_json import write_versioned_json
 default_dialog_region_file = Path("~/.config/vntts/dialog-region.json").expanduser()
 default_minimum_ocr_confidence = 60.0
 
+OcrData = Mapping[str, Sequence[object]]
 
-def configure_tesseract_process_environment():
+
+class VoiceRegistry(Protocol):
+    def resolve_closest_character(self, text: str) -> str | None: ...
+
+
+OcrTextRecognizer = Callable[..., str]
+OcrDataRecognizer = Callable[..., OcrData]
+
+
+def configure_tesseract_process_environment() -> None:
     """Limit Tesseract without globally throttling PyTorch or other runtimes."""
     current = pytesseract_runtime.subprocess_args
     if getattr(current, "_vntts_limited_omp", False):
         return
 
-    def subprocess_args(include_stdout=True):
-        arguments = current(include_stdout=include_stdout)
-        environment = dict(arguments.get("env") or os.environ)
+    def subprocess_args(include_stdout: bool = True) -> dict[str, object]:
+        arguments: dict[str, object] = current(include_stdout=include_stdout)
+        environment = os.environ.copy()
+        current_environment = arguments.get("env")
+        if isinstance(current_environment, Mapping):
+            environment.update(
+                (key, value)
+                for key, value in current_environment.items()
+                if isinstance(key, str) and isinstance(value, str)
+            )
         environment["OMP_THREAD_LIMIT"] = "1"
         arguments["env"] = environment
         return arguments
 
-    subprocess_args._vntts_limited_omp = True
+    setattr(subprocess_args, "_vntts_limited_omp", True)
     pytesseract_runtime.subprocess_args = subprocess_args
 
 
@@ -46,7 +65,7 @@ class DialogRegion:
     width: float
     height: float
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         values = (self.left, self.top, self.width, self.height)
         if not all(isinstance(value, (int, float)) for value in values):
             raise ValueError("Dialog region values must be numbers")
@@ -55,7 +74,7 @@ class DialogRegion:
         if self.left + self.width > 1 or self.top + self.height > 1:
             raise ValueError("Dialog region must fit inside the screen")
 
-    def crop(self, image):
+    def crop(self, image: Image.Image) -> Image.Image:
         image_width, image_height = image.size
         return image.crop(
             (
@@ -66,7 +85,7 @@ class DialogRegion:
             )
         )
 
-    def capture_box(self, monitor):
+    def capture_box(self, monitor: Mapping[str, int]) -> dict[str, int]:
         monitor_left = monitor.get("left", 0)
         monitor_top = monitor.get("top", 0)
         monitor_width = monitor["width"]
@@ -78,7 +97,7 @@ class DialogRegion:
             "height": max(1, round(self.height * monitor_height)),
         }
 
-    def to_json(self):
+    def to_json(self) -> dict[str, float]:
         return {
             "left": self.left,
             "top": self.top,
@@ -115,7 +134,7 @@ class OCRResult:
     attempts: int
     corrections: tuple[str, ...] = ()
 
-    def is_confident(self, minimum=default_minimum_ocr_confidence):
+    def is_confident(self, minimum: float = default_minimum_ocr_confidence) -> bool:
         return bool(self.text.strip()) and self.confidence >= minimum
 
 
@@ -127,12 +146,14 @@ default_ocr_profiles = (
 
 
 class UncertainFrameRecorder:
-    def __init__(self, directory):
+    def __init__(self, directory: str | Path) -> None:
         self.directory = Path(directory).expanduser()
         self.lock = Lock()
-        self.last_fingerprint = None
+        self.last_fingerprint: tuple[str, str, float, str] | None = None
 
-    def record(self, image, result, minimum_confidence):
+    def record(
+        self, image: Image.Image, result: OCRResult, minimum_confidence: float
+    ) -> Path | None:
         fingerprint = (
             result.character,
             " ".join(result.text.split()),
@@ -166,12 +187,12 @@ class UncertainFrameRecorder:
             self.last_fingerprint = fingerprint
             return image_path
 
-    def reset(self):
+    def reset(self) -> None:
         with self.lock:
             self.last_fingerprint = None
 
 
-def parse_dialog_region(value):
+def parse_dialog_region(value: str) -> DialogRegion:
     try:
         values = [float(part.strip()) for part in value.split(",")]
     except (AttributeError, ValueError) as error:
@@ -185,7 +206,7 @@ def parse_dialog_region(value):
     return DialogRegion(*values)
 
 
-def get_dialog_region_file():
+def get_dialog_region_file() -> Path:
     configured_path = os.environ.get("VNTTS_DIALOG_REGION_FILE")
     return (
         Path(configured_path).expanduser()
@@ -194,7 +215,7 @@ def get_dialog_region_file():
     )
 
 
-def load_dialog_region(path):
+def load_dialog_region(path: str | Path) -> DialogRegion:
     path = Path(path).expanduser()
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -208,12 +229,12 @@ def load_dialog_region(path):
         raise ValueError(f"Unable to load dialog region {path}: {error}") from error
 
 
-def save_dialog_region(region, path):
+def save_dialog_region(region: DialogRegion, path: str | Path) -> None:
     path = Path(path).expanduser()
     atomic_write_json(path, region.to_json())
 
 
-def get_dialog_region():
+def get_dialog_region() -> DialogRegion:
     configured_region = os.environ.get("VNTTS_DIALOG_REGION")
     if configured_region:
         try:
@@ -230,7 +251,9 @@ def get_dialog_region():
     return default_dialog_region
 
 
-def preprocess_dialog_image(image, profile=None):
+def preprocess_dialog_image(
+    image: Image.Image, profile: OCRPreprocessingProfile | None = None
+) -> Image.Image:
     profile = profile or default_ocr_profiles[0]
     image = ImageOps.grayscale(image)
     image = ImageOps.autocontrast(image, cutoff=1)
@@ -246,12 +269,12 @@ def preprocess_dialog_image(image, profile=None):
 
 
 def recognize_dialog_image(
-    image,
-    voice_registry=None,
-    recognize_text=None,
-    recognize_data=None,
-    language="eng",
-):
+    image: Image.Image,
+    voice_registry: VoiceRegistry | None = None,
+    recognize_text: OcrTextRecognizer | None = None,
+    recognize_data: OcrDataRecognizer | None = None,
+    language: str = "eng",
+) -> tuple[str, str]:
     result = recognize_dialog_image_result(
         image,
         voice_registry,
@@ -263,15 +286,15 @@ def recognize_dialog_image(
 
 
 def recognize_dialog_image_result(
-    image,
-    voice_registry=None,
-    recognize_text=None,
-    recognize_data=None,
+    image: Image.Image,
+    voice_registry: VoiceRegistry | None = None,
+    recognize_text: OcrTextRecognizer | None = None,
+    recognize_data: OcrDataRecognizer | None = None,
     *,
-    minimum_confidence=default_minimum_ocr_confidence,
-    profiles=default_ocr_profiles,
-    language="eng",
-):
+    minimum_confidence: float = default_minimum_ocr_confidence,
+    profiles: Sequence[OCRPreprocessingProfile] = default_ocr_profiles,
+    language: str = "eng",
+) -> OCRResult:
     if recognize_text is None:
         recognize_text = pytesseract.image_to_string
     if recognize_data is None:
@@ -300,14 +323,14 @@ def recognize_dialog_image_result(
 
 
 def _recognize_preprocessed_dialog(
-    image,
-    voice_registry,
-    recognize_text,
-    recognize_data,
-    profile_name,
-    attempt,
-    language,
-):
+    image: Image.Image,
+    voice_registry: VoiceRegistry | None,
+    recognize_text: OcrTextRecognizer,
+    recognize_data: OcrDataRecognizer,
+    profile_name: str,
+    attempt: int,
+    language: str,
+) -> OCRResult:
     data = recognize_data(
         image,
         config="--psm 6",
@@ -377,7 +400,11 @@ def _recognize_preprocessed_dialog(
     )
 
 
-def recognize_speaker(image, voice_registry, recognize_data):
+def recognize_speaker(
+    image: Image.Image,
+    voice_registry: VoiceRegistry | None,
+    recognize_data: OcrDataRecognizer,
+) -> tuple[str, OCRLine] | None:
     data = recognize_data(
         image,
         config="--psm 6",
@@ -392,12 +419,12 @@ def recognize_speaker(image, voice_registry, recognize_data):
 
 
 def recognize_speaker_from_data(
-    data,
-    voice_registry=None,
+    data: OcrData,
+    voice_registry: VoiceRegistry | None = None,
     *,
-    image_width=None,
-    image_height=None,
-):
+    image_width: int | None = None,
+    image_height: int | None = None,
+) -> tuple[str, OCRLine] | None:
     if not _has_ocr_geometry(data):
         return None
     lines = extract_ocr_lines(data)[:6]
@@ -451,11 +478,11 @@ def recognize_speaker_from_data(
     return speaker_line.text.strip(), speaker_line
 
 
-def _has_dialog_below(speaker_line, lines):
+def _has_dialog_below(speaker_line: OCRLine, lines: Sequence[OCRLine]) -> bool:
     return any(line.top > speaker_line.bottom and len(line.text) >= 3 for line in lines)
 
 
-def _has_ocr_geometry(data):
+def _has_ocr_geometry(data: OcrData) -> bool:
     return {
         "block_num",
         "par_num",
@@ -467,16 +494,21 @@ def _has_ocr_geometry(data):
     }.issubset(data)
 
 
-def calculate_ocr_confidence(data):
+def calculate_ocr_confidence(data: OcrData) -> float:
     weighted_confidence = 0.0
     total_weight = 0
     confidences = data.get("conf", [])
-    for position, text in enumerate(data.get("text", [])):
-        text = text.strip()
+    for position, raw_text in enumerate(data.get("text", [])):
+        if not isinstance(raw_text, str):
+            continue
+        text = raw_text.strip()
         if not text or position >= len(confidences):
             continue
+        raw_confidence = confidences[position]
+        if not isinstance(raw_confidence, (str, int, float)):
+            continue
         try:
-            confidence = float(confidences[position])
+            confidence = float(raw_confidence)
         except TypeError, ValueError:
             continue
         if confidence < 0:
@@ -487,7 +519,7 @@ def calculate_ocr_confidence(data):
     return weighted_confidence / total_weight if total_weight else 0.0
 
 
-def _result_rank(result):
+def _result_rank(result: OCRResult) -> tuple[bool, float, int]:
     return (
         not _orphaned_nameplate_result(result),
         result.confidence,
@@ -495,7 +527,7 @@ def _result_rank(result):
     )
 
 
-def _orphaned_nameplate_result(result):
+def _orphaned_nameplate_result(result: OCRResult) -> bool:
     """Return whether preprocessing found a decorated name but no dialogue."""
     character = str(result.character or "").strip()
     compact_character = "".join(value for value in character if value.isalnum())
@@ -516,24 +548,45 @@ def _orphaned_nameplate_result(result):
     return removed_noise and is_probable_character_name(candidate)
 
 
-def extract_ocr_lines(data):
-    grouped_words = {}
-    for position, text in enumerate(data.get("text", [])):
-        text = text.strip()
+def extract_ocr_lines(data: OcrData) -> list[OCRLine]:
+    grouped_words: dict[
+        tuple[object, object, object], list[tuple[str, int, int, int, int]]
+    ] = {}
+    for position, raw_text in enumerate(data.get("text", [])):
+        if not isinstance(raw_text, str):
+            continue
+        text = raw_text.strip()
         if not text:
             continue
+        try:
+            left = data["left"][position]
+            top = data["top"][position]
+            width = data["width"][position]
+            height = data["height"][position]
+            block = data["block_num"][position]
+            paragraph = data["par_num"][position]
+            line = data["line_num"][position]
+        except IndexError:
+            continue
+        if not (
+            isinstance(left, int)
+            and isinstance(top, int)
+            and isinstance(width, int)
+            and isinstance(height, int)
+        ):
+            continue
         key = (
-            data["block_num"][position],
-            data["par_num"][position],
-            data["line_num"][position],
+            block,
+            paragraph,
+            line,
         )
         grouped_words.setdefault(key, []).append(
             (
                 text,
-                data["left"][position],
-                data["top"][position],
-                data["width"][position],
-                data["height"][position],
+                left,
+                top,
+                width,
+                height,
             )
         )
 
@@ -555,7 +608,7 @@ def extract_ocr_lines(data):
     return sorted(lines, key=lambda line: (line.top, line.left))
 
 
-def crop_dialog_text(image, speaker_line):
+def crop_dialog_text(image: Image.Image, speaker_line: OCRLine) -> Image.Image:
     horizontal_margin = round(image.width * 0.02)
     vertical_margin = round(image.height * 0.03)
     return image.crop(
@@ -568,7 +621,7 @@ def crop_dialog_text(image, speaker_line):
     )
 
 
-def clean_dialog_lines(text):
+def clean_dialog_lines(text: str) -> list[str]:
     lines = []
     for line in (text or "").splitlines():
         line = _strip_trailing_ocr_glyphs(line.strip())
@@ -582,21 +635,28 @@ def clean_dialog_lines(text):
     return lines
 
 
-def _is_silent_ellipsis(text):
+def _is_silent_ellipsis(text: str) -> bool:
     return "".join(str(text).split()) in {"...", "…"}
 
 
-def clean_dialog_lines_from_data(data, fallback_lines):
+def clean_dialog_lines_from_data(
+    data: OcrData, fallback_lines: Sequence[str]
+) -> list[str]:
     """Remove low-confidence background words appended after a full sentence."""
     fallback_lines = list(fallback_lines)
-    words = []
+    words: list[tuple[str, float]] = []
     confidences = data.get("conf", [])
-    for position, text in enumerate(data.get("text", [])):
-        text = text.strip()
+    for position, raw_text in enumerate(data.get("text", [])):
+        if not isinstance(raw_text, str):
+            continue
+        text = raw_text.strip()
         if not text or position >= len(confidences):
             continue
+        raw_confidence = confidences[position]
+        if not isinstance(raw_confidence, (str, int, float)):
+            continue
         try:
-            confidence = float(confidences[position])
+            confidence = float(raw_confidence)
         except TypeError, ValueError:
             continue
         if confidence < 0:
@@ -623,12 +683,12 @@ def clean_dialog_lines_from_data(data, fallback_lines):
     return cleaned or fallback_lines
 
 
-def _is_suspicious_trailing_word(word, confidence):
+def _is_suspicious_trailing_word(word: str, confidence: float) -> bool:
     alphanumeric_characters = sum(character.isalnum() for character in word)
     return confidence < 45 or (alphanumeric_characters <= 3 and confidence < 65)
 
 
-def _strip_trailing_ocr_glyphs(line):
+def _strip_trailing_ocr_glyphs(line: str) -> str:
     tokens = line.split()
     while tokens:
         token = tokens[-1]
@@ -640,7 +700,9 @@ def _strip_trailing_ocr_glyphs(line):
     return " ".join(tokens)
 
 
-def parse_recognized_dialog(text, voice_registry=None):
+def parse_recognized_dialog(
+    text: str, voice_registry: VoiceRegistry | None = None
+) -> tuple[str, str]:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if voice_registry is not None:
         for position, line in enumerate(lines[:6]):
@@ -658,4 +720,5 @@ def parse_recognized_dialog(text, voice_registry=None):
         if dialog_lines:
             return lines[0], " ".join(dialog_lines)
 
-    return parse_dialog(text)
+    character, dialog = parse_dialog(text)
+    return character, dialog

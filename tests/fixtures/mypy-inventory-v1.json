@@ -45,7 +45,6 @@
     "vntts/game_audio_decoder.py": 9,
     "vntts/game_content_importer.py": 17,
     "vntts/macos.py": 9,
-    "vntts/ocr.py": 34,
     "vntts/ocr_backend.py": 6,
     "vntts/ocr_benchmark.py": 8,
     "vntts/pregeneration_acceptance.py": 3,

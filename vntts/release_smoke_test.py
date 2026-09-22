@@ -26,9 +26,14 @@ SmokeReport: TypeAlias = dict[str, object]
 
 
 class _Recognition(Protocol):
-    character: str
-    text: str
-    confidence: float
+    @property
+    def character(self) -> str: ...
+
+    @property
+    def text(self) -> str: ...
+
+    @property
+    def confidence(self) -> float: ...
 
     def is_confident(self, minimum: float) -> bool: ...
 
@@ -129,19 +134,26 @@ def run_release_smoke_test(
             }
         )
 
-        recognizer: _Recognizer = (
-            recognize_dialog_image_result if recognize is None else recognize
-        )
         voice_registry = None
         if expected_speaker:
             voice_registry = CharacterVoiceRegistry(
                 [CharacterVoice(expected_speaker, "release-smoke-test")]
             )
-        result = recognizer(
-            image,
-            voice_registry,
-            minimum_confidence=minimum_confidence,
-        )
+
+        def recognize_frame(frame: Image.Image) -> _Recognition:
+            if recognize is not None:
+                return recognize(
+                    frame,
+                    voice_registry,
+                    minimum_confidence=minimum_confidence,
+                )
+            return recognize_dialog_image_result(
+                frame,
+                voice_registry,
+                minimum_confidence=minimum_confidence,
+            )
+
+        result = recognize_frame(image)
         recognized_text = result.text
         recognized_speaker = result.character
         confidence = result.confidence
@@ -198,11 +210,7 @@ def run_release_smoke_test(
                     save_screenshot=False,
                     capture_target=WindowCaptureTarget(window_title),
                 )
-                advanced = recognizer(
-                    image,
-                    voice_registry,
-                    minimum_confidence=minimum_confidence,
-                )
+                advanced = recognize_frame(image)
                 speaker_matches = (
                     not expected_speaker
                     or advanced.character.casefold() == expected_speaker.casefold()
