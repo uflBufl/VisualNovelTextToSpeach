@@ -82,6 +82,7 @@ from vntts.dialog_capture import format_runtime_error
 from vntts.durable_settings import DurableSettingsMixin
 from vntts.game_narrator_ui import GameNarratorDialog
 from vntts.game_pack import GamePackError, apply_game_pack
+from vntts.generated_audio import AudioRouteTrace
 from vntts.history_ui import DialogueHistoryDialog
 from vntts.hotkey_ui import HotkeyRecorder
 from vntts.hotkeys import (
@@ -1537,18 +1538,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     correction_store: OCRCorrectionStore
     pregeneration_dialog: OfflineAudioPreparationDialog | None
     readiness_dialog: ReadinessDialog | None
+    support_dialog: SupportCenterDialog | None
 
     def __init__(
         self,
-        application,
-        settings=None,
-        controller_factory=AppController,
-        profile_store=None,
-        correction_store=None,
-        pregeneration_activator=None,
-        moss_runtime=None,
-        pocket_runtime=None,
-    ):
+        application: QApplication,
+        settings: AppSettings | None = None,
+        controller_factory: Callable[..., AppController] = AppController,
+        profile_store: GameProfileStore | None = None,
+        correction_store: OCRCorrectionStore | None = None,
+        pregeneration_activator: OfflinePackActivator | None = None,
+        moss_runtime: RetainedMossRuntime | None = None,
+        pocket_runtime: RetainedWorkerRuntime | None = None,
+    ) -> None:
         super().__init__()
         self._initialize_runtime(
             application,
@@ -1569,12 +1571,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _initialize_runtime(
         self,
-        application,
-        settings,
-        controller_factory,
-        moss_runtime,
-        pocket_runtime,
-    ):
+        application: QApplication,
+        settings: AppSettings | None,
+        controller_factory: Callable[..., AppController],
+        moss_runtime: RetainedMossRuntime | None,
+        pocket_runtime: RetainedWorkerRuntime | None,
+    ) -> None:
         self.application = application
         uses_saved_settings = settings is None
         self.previous_session = (
@@ -1584,7 +1586,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         if uses_saved_settings:
             configure_performance_log(get_local_data_directory() / "performance.log")
-        self._startup_game_pack_errors = []
+        self._startup_game_pack_errors: list[GamePackError] = []
         settings_started = perf_counter()
         self.settings = settings or load_app_settings(
             on_game_pack_error=self._startup_game_pack_errors.append
@@ -1596,7 +1598,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "complete",
             )
         self.signals = AppSignals()
-        self.last_controller_error = None
+        self.last_controller_error: str | None = None
         self.support_log = RuntimeSupportLog(
             path=(
                 get_local_data_directory() / "runtime.log"
@@ -1728,7 +1730,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_voice_preflight_action_prompt: QMessageBox | None = None
         self.pending_live_voice_preflight_speakers: tuple[str, ...] = ()
         self.restore_compact_after_calibration = False
-        self._notification_recovery = None
+        self._notification_recovery: str | None = None
         self._background_notification_shown = False
         self.dashboard = ControlDashboard(self.settings)
         self.compact_controller = CompactController()
@@ -3844,7 +3846,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             self.open_voice_previews()
 
-    def open_support_center(self):
+    def open_support_center(self) -> None:
         if self.support_dialog is None:
             self.support_dialog = SupportCenterDialog(self.support_log, self.dashboard)
             self.support_dialog.diagnostics_requested.connect(
@@ -3858,7 +3860,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.support_dialog.raise_()
         self.support_dialog.activateWindow()
 
-    def open_support_diagnostics(self):
+    def open_support_diagnostics(self) -> None:
         try:
             self.open_diagnostics()
         except Exception as error:
@@ -3872,7 +3874,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "diagnostics", True, "Live diagnostics opened in a separate window."
             )
 
-    def open_support_settings_folder(self):
+    def open_support_settings_folder(self) -> None:
         try:
             path = self.open_settings_folder()
         except Exception as error:
@@ -3888,7 +3890,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 "settings-folder", True, f"Settings folder opened: {path}"
             )
 
-    def open_history(self):
+    def open_history(self) -> None:
         # Region capture has no focus probe. A modal over the calibrated region
         # makes OCR append the history list repeatedly. Stop
         # capture for the modal session, then restore the previous live state.
@@ -3901,7 +3903,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self._open_history_dialog(False)
 
-    def _open_history_dialog(self, resume_live):
+    def _open_history_dialog(self, resume_live: bool) -> None:
         if self._shutting_down:
             return
         dialog = DialogueHistoryDialog(
@@ -3919,7 +3921,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ):
                 self.toggle_live()
 
-    def export_support_bundle(self):
+    def export_support_bundle(self) -> None:
         path, _selected_filter = QFileDialog.getSaveFileName(
             None,
             "Export support bundle",
@@ -3937,27 +3939,28 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         diagnostic = self.controller.get_latest_diagnostic()
         self.support_export_runner.start(self._build_support_bundle, path, diagnostic)
 
-    def _build_support_bundle(self, path, diagnostic):
+    def _build_support_bundle(
+        self, path: str, diagnostic: DiagnosticSnapshot | None
+    ) -> str:
         return str(
             SupportBundleBuilder(
                 self.settings,
                 self.support_log,
                 diagnostic=diagnostic,
                 generation_timelines=self.generation_timelines,
-                previous_session=self.previous_session,
+                previous_session=dict(self.previous_session),
                 audio_lifecycle=self.audio_lifecycle,
                 voice_library=self.controller.voice_library,
             ).build(path)
         )
 
-    def _support_export_finished(self, output, error):
+    def _support_export_finished(self, output: object, error: Exception | None) -> None:
         if self._shutting_down:
             return
-        self.support_export_finished(
-            error is None, output if error is None else str(error)
-        )
+        message = output if error is None and isinstance(output, str) else str(error)
+        self.support_export_finished(error is None and isinstance(output, str), message)
 
-    def support_export_finished(self, successful, message):
+    def support_export_finished(self, successful: bool, message: str) -> None:
         if self.support_dialog is not None:
             self.support_dialog.set_export_result(successful, message)
         if successful:
@@ -3965,17 +3968,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             self.show_error(f"Support bundle export failed: {message}")
 
-    def open_macos_permissions(self):
+    def open_macos_permissions(self) -> None:
         MacOSPermissionsDialog().exec()
 
-    def open_settings_folder(self):
+    def open_settings_folder(self) -> Path:
         path = get_settings_path().parent
         path.mkdir(parents=True, exist_ok=True)
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
             raise OSError("the operating system refused the folder-open request")
         return path
 
-    def set_status(self, message):
+    def set_status(self, message: str | None) -> None:
+        message = message or ""
         self.support_log.add("status", message)
         bounded = self._bounded_menu_text(message)
         self.status_action.setText(bounded)
@@ -3993,14 +3997,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         )
 
-    def record_audio_route(self, trace):
+    def record_audio_route(self, trace: AudioRouteTrace) -> None:
         self.support_log.add(
             "audio-route",
             trace.message(),
             **trace.support_fields(),
         )
 
-    def set_dialog(self, character, text):
+    def set_dialog(self, character: str, text: str) -> None:
         if not text:
             self.dialog_action.setText("No dialogue detected")
             self.dialog_action.setToolTip("")
@@ -4015,13 +4019,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._apply_runtime_control_state(self._runtime_control_state())
 
     @staticmethod
-    def _bounded_menu_text(message, *, limit=96):
+    def _bounded_menu_text(message: object, *, limit: int = 96) -> str:
         text = " ".join(str(message).split())
         if len(text) <= limit:
             return text
         return f"{text[: limit - 3].rstrip()}..."
 
-    def _show_tray_notification(self, title, message, icon, *, recovery):
+    def _show_tray_notification(
+        self,
+        title: str,
+        message: str,
+        icon: QSystemTrayIcon.MessageIcon,
+        *,
+        recovery: str,
+    ) -> None:
         self._notification_recovery = recovery
         self.tray.showMessage(
             self._bounded_menu_text(title, limit=64),
@@ -4029,7 +4040,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             icon,
         )
 
-    def _activate_notification_recovery(self):
+    def _activate_notification_recovery(self) -> None:
         recovery = self._notification_recovery
         self._notification_recovery = None
         if recovery == "full-controls":
@@ -4037,7 +4048,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         elif recovery == "support":
             self.open_support_center()
 
-    def _controller_configuration_actions(self):
+    def _controller_configuration_actions(self) -> tuple[QAction, ...]:
         return (
             self.pregeneration_action,
             self.calibrate_action,
@@ -4053,7 +4064,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.history_action,
         )
 
-    def _runtime_control_state(self, *, enabled=None, unavailable_reason=None):
+    def _runtime_control_state(
+        self,
+        *,
+        enabled: bool | None = None,
+        unavailable_reason: str | None = None,
+    ) -> RuntimeControlState:
         if enabled is None:
             enabled = (
                 self._controller_ready
@@ -4100,7 +4116,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ),
         )
 
-    def _apply_runtime_control_state(self, state):
+    def _apply_runtime_control_state(self, state: RuntimeControlState) -> None:
         if self.pregeneration_dialog is not None:
             self.pregeneration_dialog.setEnabled(
                 not (
@@ -4144,7 +4160,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             for button in self.dashboard.loading_blocked_buttons:
                 button.setEnabled(False)
 
-    def _apply_controller_action_state(self):
+    def _apply_controller_action_state(self) -> None:
         enabled = (
             self._controller_ready
             and not self._controller_busy
@@ -4190,7 +4206,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             }:
                 self.set_sequence_status(sequence_status)
 
-    def _set_modal_launchers_enabled(self, enabled):
+    def _set_modal_launchers_enabled(self, enabled: bool) -> None:
         available = (
             bool(enabled)
             and not self._controller_busy
@@ -4201,7 +4217,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.speaker_mapping_action.setEnabled(available)
         self.history_action.setEnabled(available)
 
-    def _begin_controller_lifecycle(self):
+    def _begin_controller_lifecycle(self) -> int:
         self._live_scope_generation = None
         self.live_scope_runner.cancel()
         self.diagnostics_refresh_runner.cancel()
@@ -4210,24 +4226,24 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._apply_controller_action_state()
         return self._lifecycle_generation
 
-    def _finish_controller_lifecycle(self):
+    def _finish_controller_lifecycle(self) -> None:
         self._controller_busy = False
         self._apply_controller_action_state()
 
-    def _lifecycle_is_current(self, generation):
+    def _lifecycle_is_current(self, generation: int | None) -> bool:
         return (
             isinstance(generation, int)
             and generation == self._lifecycle_generation
             and not self._shutting_down
         )
 
-    def set_ready(self, ready):
+    def set_ready(self, ready: bool) -> None:
         self._controller_ready = bool(ready)
         self._apply_controller_action_state()
         if not ready:
             self.set_status("Unable to start")
 
-    def set_live(self, running):
+    def set_live(self, running: bool) -> None:
         self._reported_live = bool(running)
         self.live_action.setText("Stop reading" if running else "Start reading")
         self.dashboard.set_live(running)
@@ -4241,14 +4257,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         ):
             QTimer.singleShot(0, self._activate_ready_preparation)
 
-    def set_speech_paused(self, paused):
+    def set_speech_paused(self, paused: bool) -> None:
         self._reported_speech_paused = bool(paused)
         self.pause_action.setText("Resume speech" if paused else "Pause speech")
         self.dashboard.set_paused(paused)
         self.compact_controller.set_paused(paused)
         self._apply_runtime_control_state(self._runtime_control_state())
 
-    def show_error(self, message):
+    def show_error(self, message: str) -> None:
         self.support_log.add("error", message)
         self.set_status(message)
         self._show_tray_notification(
@@ -4258,12 +4274,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             recovery="support",
         )
 
-    def report_controller_error(self, error):
+    def report_controller_error(self, error: Exception) -> None:
         message = format_runtime_error(error)
         self.last_controller_error = message
         self.signals.error_reported.emit(message)
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         if self._shutting_down:
             return
         self.speech_runtime_timer.stop()
@@ -4335,7 +4351,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.moss_runtime.shutdown()
         self.pocket_runtime.shutdown()
 
-    def request_quit(self):
+    def request_quit(self) -> None:
         self._quit_requested = True
         # Embedded dialogs can be hidden by navigation or dashboard.close().
         # close() may not emit finished then; reject() runs their cancellation
