@@ -1,5 +1,7 @@
 import ctypes
 import sys
+from collections.abc import Callable
+from typing import Protocol, runtime_checkable
 
 from pynput import keyboard
 
@@ -23,7 +25,36 @@ windows_virtual_keys = {
 }
 
 
-def send_windows_key(keycode, *, user32=None):
+class KeyboardController(Protocol):
+    def press(self, key: object) -> object: ...
+
+    def release(self, key: object) -> object: ...
+
+
+@runtime_checkable
+class WindowsInput(Protocol):
+    def SendInput(self, count: int, inputs: object, size: int) -> int: ...
+
+
+class QuartzInput(Protocol):
+    kCGHIDEventTap: object
+
+    def CGEventCreateKeyboardEvent(
+        self, source: object | None, keycode: int, pressed: bool
+    ) -> object | None: ...
+
+    def CGEventPost(self, tap: object, event: object) -> object: ...
+
+
+def _windows_input() -> WindowsInput:
+    libraries = getattr(ctypes, "windll", None)
+    user32 = getattr(libraries, "user32", None)
+    if not isinstance(user32, WindowsInput):
+        raise OSError("Windows user32 input API is unavailable")
+    return user32
+
+
+def send_windows_key(keycode: int, *, user32: WindowsInput | None = None) -> bool:
     class KeyboardInput(ctypes.Structure):
         _fields_ = (
             ("virtual_key", ctypes.c_ushort),
@@ -70,7 +101,7 @@ def send_windows_key(keycode, *, user32=None):
             InputValue(keyboard=KeyboardInput(keycode, 0, key_up, 0, 0)),
         ),
     )
-    user32 = user32 or ctypes.windll.user32
+    user32 = user32 or _windows_input()
     sent = user32.SendInput(len(events), ctypes.byref(events), ctypes.sizeof(Input))
     if sent != len(events):
         user32.SendInput(1, ctypes.byref(events[1]), ctypes.sizeof(Input))
@@ -83,14 +114,14 @@ class DialogueAdvancer:
 
     def __init__(
         self,
-        key="space",
+        key: str = "space",
         *,
-        controller_factory=keyboard.Controller,
-        platform=None,
-        quartz_module=None,
-        accessibility_probe=None,
-        windows_sender=None,
-    ):
+        controller_factory: Callable[[], KeyboardController] = keyboard.Controller,
+        platform: str | None = None,
+        quartz_module: QuartzInput | None = None,
+        accessibility_probe: Callable[[], object] | None = None,
+        windows_sender: Callable[[int], bool] | None = None,
+    ) -> None:
         if key not in advance_keys:
             choices = ", ".join(sorted(advance_keys))
             raise ValueError(f"Unknown auto-advance key {key!r}; choose {choices}")
@@ -101,7 +132,7 @@ class DialogueAdvancer:
         self.accessibility_probe = accessibility_probe
         self.windows_sender = windows_sender or send_windows_key
 
-    def advance(self):
+    def advance(self) -> bool:
         if self.platform == "darwin":
             return self._advance_macos()
         if self.platform == "win32":
@@ -111,7 +142,7 @@ class DialogueAdvancer:
         controller.release(advance_keys[self.key])
         return True
 
-    def _advance_macos(self):
+    def _advance_macos(self) -> bool:
         # pynput asks Text Input Services for the current keyboard layout.
         # macOS asserts when that API is reached from live mode's timer thread.
         # Quartz posts virtual-key events directly and is safe from this worker.
