@@ -15,6 +15,7 @@ from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from tests.symlink_support import symlink_or_skip  # noqa: E402
 from vntts.ocr import OCRResult, UncertainFrameRecorder  # noqa: E402
 from vntts.ocr_corrections import OCRCorrectionStore  # noqa: E402
 from vntts.ocr_review import (  # noqa: E402
@@ -87,6 +88,30 @@ class OCRReviewStoreTest(unittest.TestCase):
                     json.dumps({"image": image}),
                     encoding="utf-8",
                 )
+
+            self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
+
+    def test_skips_symlinked_metadata_and_images(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            directory = root / "review"
+            directory.mkdir()
+            outside_image = root / "outside.png"
+            outside_image.write_bytes(b"image")
+            symlink_or_skip(directory / "linked.png", outside_image)
+            (directory / "uncertain-linked-image.json").write_text(
+                json.dumps({"image": "linked.png"}), encoding="utf-8"
+            )
+
+            inside_image = directory / "inside.png"
+            inside_image.write_bytes(b"image")
+            outside_metadata = root / "outside.json"
+            outside_metadata.write_text(
+                json.dumps({"image": inside_image.name}), encoding="utf-8"
+            )
+            symlink_or_skip(
+                directory / "uncertain-linked-metadata.json", outside_metadata
+            )
 
             self.assertEqual(OCRReviewStore(directory).pending_samples(), [])
 

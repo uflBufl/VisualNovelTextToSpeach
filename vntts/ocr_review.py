@@ -93,6 +93,9 @@ class OCRReviewStore:
         )
 
     def _load_sample(self, metadata_path: Path) -> OCRReviewSample | None:
+        if metadata_path.is_symlink():
+            return None
+
         def decode(payload: dict[str, object]) -> OCRReviewSample | None:
             return self._sample_from_payload(metadata_path, payload)
 
@@ -125,7 +128,7 @@ class OCRReviewStore:
         if image_name.is_absolute() or image_name.name != image:
             raise ValueError("OCR review image must be in the review directory")
         image_path = metadata_path.parent / image_name
-        if not image_path.is_file():
+        if image_path.is_symlink() or not image_path.is_file():
             return None
         return OCRReviewSample(
             metadata_path=metadata_path,
