@@ -113,53 +113,18 @@ class PregenerationInputStore:
         *,
         cancellation: _Cancellation | None = None,
     ) -> PregenerationInput:
-        if not isinstance(plan, VoicePlan) or plan.job_id != job.job_id:
-            raise PregenerationQueueError(
-                "Voice plan does not belong to this preparation"
-            )
-        if plan.story_index_sha256 != job.story_index_sha256:
-            raise PregenerationQueueError("Voice plan dialogue identity changed")
-        _raise_if_cancelled(cancellation)
-        phase_started, cpu_started = perf_counter(), process_time()
-        story = _load_story(job)
-        registry = _load_source_registry(plan)
-        _record_input_phase(
-            "load",
-            phase_started,
-            cpu_started,
-            files_examined=1 + (1 if plan.voice_manifest else 0),
-            bytes_examined=_file_size(job.story_index)
-            + _file_size(plan.voice_manifest),
-        )
+        _validate_plan_for_job(job, plan)
+        story, registry = self._load_materialize_sources(job, plan, cancellation)
         phase_started, cpu_started = perf_counter(), process_time()
         selected = _selected_records(story, job.selected_line_ids)
         effective = _effective_voice_routes(plan, registry)
-        identity = _digest(
-            {
-                "generation_input_schema_version": generation_input_schema_version,
-                "job_id": job.job_id,
-                "story_index_sha256": job.story_index_sha256,
-                "selected_line_ids": list(job.selected_line_ids),
-                "groups": [
-                    {
-                        "group_id": group.group_id,
-                        "control_sha256": group.control_sha256,
-                        "route": group.route,
-                        "source_id": group.source_id,
-                    }
-                    for group in plan.groups
-                ],
-            }
-        )
+        identity = _generation_input_identity(job, plan)
         _record_input_phase("identity", phase_started, cpu_started)
         destination = self.job_store.path_for(job.job_id).parent / (
             f"generation-input-{identity[:16]}"
         )
         if destination.is_dir():
-            phase_started, cpu_started = perf_counter(), process_time()
-            result = _load_existing(destination, identity)
-            _record_input_phase("reuse", phase_started, cpu_started, cache_state="disk")
-            return result
+            return self._reused_input(destination, identity)
         root = destination.parent
         root.mkdir(parents=True, exist_ok=True)
         try:
@@ -300,6 +265,40 @@ class PregenerationInputStore:
                 f"Unable to prepare offline generation inputs: {error}"
             ) from error
 
+    def _load_materialize_sources(
+        self,
+        job: PregenerationJob,
+        plan: VoicePlan,
+        cancellation: _Cancellation | None,
+    ) -> tuple[StoryIndexDocument, CharacterVoiceRegistry]:
+        _raise_if_cancelled(cancellation)
+        phase_started, cpu_started = perf_counter(), process_time()
+        story = _load_story(job)
+        registry = _load_source_registry(plan)
+        _record_input_phase(
+            "load",
+            phase_started,
+            cpu_started,
+            files_examined=1 + (1 if plan.voice_manifest else 0),
+            bytes_examined=_file_size(job.story_index)
+            + _file_size(plan.voice_manifest),
+        )
+        return story, registry
+
+    @staticmethod
+    def _reused_input(destination: Path, identity: str) -> PregenerationInput:
+        phase_started, cpu_started = perf_counter(), process_time()
+        result = _load_existing(destination, identity)
+        _record_input_phase("reuse", phase_started, cpu_started, cache_state="disk")
+        return result
+
+
+def _validate_plan_for_job(job: PregenerationJob, plan: VoicePlan) -> None:
+    if not isinstance(plan, VoicePlan) or plan.job_id != job.job_id:
+        raise PregenerationQueueError("Voice plan does not belong to this preparation")
+    if plan.story_index_sha256 != job.story_index_sha256:
+        raise PregenerationQueueError("Voice plan dialogue identity changed")
+
 
 def _load_story(job: PregenerationJob) -> StoryIndexDocument:
     path = Path(job.story_index).expanduser().resolve()
@@ -354,6 +353,26 @@ def _selected_records(
     return records
 
 
+def _generation_input_identity(job: PregenerationJob, plan: VoicePlan) -> str:
+    return _digest(
+        {
+            "generation_input_schema_version": generation_input_schema_version,
+            "job_id": job.job_id,
+            "story_index_sha256": job.story_index_sha256,
+            "selected_line_ids": list(job.selected_line_ids),
+            "groups": [
+                {
+                    "group_id": group.group_id,
+                    "control_sha256": group.control_sha256,
+                    "route": group.route,
+                    "source_id": group.source_id,
+                }
+                for group in plan.groups
+            ],
+        }
+    )
+
+
 def _effective_voice_routes(
     plan: VoicePlan, registry: CharacterVoiceRegistry
 ) -> EffectiveVoiceRoutes:
@@ -361,68 +380,72 @@ def _effective_voice_routes(
     narrator_roles: dict[str, str] = {}
     for group in plan.groups:
         target = "Narrator" if group.route == "narrator" else group.character
-        voice: CharacterVoice | None
         if group.route == "narrator" and group.character != "Narrator":
             key = normalize_character_name(group.character)
             previous = narrator_roles.get(key)
             if previous is None or len(group.character) < len(previous):
                 narrator_roles[key] = group.character
-        if not group.source_character:
-            if group.route == "narrator" and plan.synthesis_backend == "pocket-tts":
-                voice = None
-                observed: tuple[str, ...] = ()
-                embedded = "alba"
-            elif group.route == "narrator":
-                raise PregenerationQueueError(
-                    "Choose a narrator voice before generating offline audio"
-                )
-            else:
-                raise PregenerationQueueError(
-                    f"Choose a voice for {group.character} before generating offline audio"
-                )
-        else:
-            source_id = (
-                group.narrator_candidate.source_id
-                if group.route == "narrator" and group.narrator_candidate is not None
-                else group.source_id
-            )
-            try:
-                voice = registry.resolve_source(source_id)
-            except VoiceManifestError as error:
-                raise PregenerationQueueError(
-                    f"The selected voice for {group.character} is no longer available"
-                ) from error
-            embedded = None
-            if voice is None or not voice.references:
-                embedded = _pocket_embedded_voice(group, plan)
-                if embedded is None:
-                    raise PregenerationQueueError(
-                        f"The selected voice for {group.character} has no usable reference"
-                    )
-                observed = ()
-            else:
-                observed = tuple(
-                    hashlib.sha256(read_voice_reference_bytes(voice, path)).hexdigest()
-                    for path in voice.references
-                )
-                if observed != group.reference_sha256s:
-                    raise PregenerationQueueError(
-                        f"The selected voice reference changed for {group.character}"
-                    )
-        if embedded is not None:
-            speaker = embedded
-        elif isinstance(voice, CharacterVoice):
-            speaker = voice.speaker
-        else:
-            raise PregenerationQueueError("Resolved voice route has no speaker")
-        choice = (voice, observed, speaker)
-        selections.append((group, target, choice))
+        selections.append((group, target, _voice_choice(group, plan, registry)))
 
-    routes: dict[str, VoiceChoice] = {}
-    line_voice_characters: dict[str, str] = {}
+    routes, line_voice_characters = _collect_effective_routes(selections)
+    return {
+        "routes": routes,
+        "narrator_roles": tuple(sorted(narrator_roles.values(), key=str.casefold)),
+        "line_voice_characters": line_voice_characters,
+    }
+
+
+def _voice_choice(
+    group: VoiceGroup, plan: VoicePlan, registry: CharacterVoiceRegistry
+) -> VoiceChoice:
+    if not group.source_character:
+        if group.route == "narrator" and plan.synthesis_backend == "pocket-tts":
+            return (None, (), "alba")
+        if group.route == "narrator":
+            raise PregenerationQueueError(
+                "Choose a narrator voice before generating offline audio"
+            )
+        raise PregenerationQueueError(
+            f"Choose a voice for {group.character} before generating offline audio"
+        )
+    source_id = (
+        group.narrator_candidate.source_id
+        if group.route == "narrator" and group.narrator_candidate is not None
+        else group.source_id
+    )
+    try:
+        voice = registry.resolve_source(source_id)
+    except VoiceManifestError as error:
+        raise PregenerationQueueError(
+            f"The selected voice for {group.character} is no longer available"
+        ) from error
+    if voice is None or not voice.references:
+        embedded = _pocket_embedded_voice(group, plan)
+        if embedded is None:
+            raise PregenerationQueueError(
+                f"The selected voice for {group.character} has no usable reference"
+            )
+        return (voice, (), embedded)
+    observed = tuple(
+        hashlib.sha256(read_voice_reference_bytes(voice, path)).hexdigest()
+        for path in voice.references
+    )
+    if observed != group.reference_sha256s:
+        raise PregenerationQueueError(
+            f"The selected voice reference changed for {group.character}"
+        )
+    return (voice, observed, voice.speaker)
+
+
+def _collect_effective_routes(
+    selections: Sequence[tuple[VoiceGroup, str, VoiceChoice]],
+) -> tuple[dict[str, VoiceChoice], dict[str, str]]:
     choices_by_target: dict[str, list[tuple[VoiceGroup, VoiceChoice]]] = {}
     for group, target, choice in selections:
         choices_by_target.setdefault(target, []).append((group, choice))
+
+    routes: dict[str, VoiceChoice] = {}
+    line_voice_characters: dict[str, str] = {}
     for target, values in choices_by_target.items():
         distinct = {(choice[2], choice[1]) for _group, choice in values}
         if target == "Narrator" and len(distinct) > 1:
@@ -439,11 +462,7 @@ def _effective_voice_routes(
                 line_voice_characters.update(
                     {line_id: effective_target for line_id in group.line_ids}
                 )
-    return {
-        "routes": routes,
-        "narrator_roles": tuple(sorted(narrator_roles.values(), key=str.casefold)),
-        "line_voice_characters": line_voice_characters,
-    }
+    return routes, line_voice_characters
 
 
 def _routed_story_records(
@@ -515,7 +534,9 @@ def _pocket_embedded_voice(group: VoiceGroup, plan: VoicePlan) -> str | None:
     )
 
 
-def _audio_event_routes(queue: VoiceGenerationQueue) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _audio_event_routes(
+    queue: VoiceGenerationQueue,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     projections: list[str] = []
     omissions: list[str] = []
     for item in queue.items:

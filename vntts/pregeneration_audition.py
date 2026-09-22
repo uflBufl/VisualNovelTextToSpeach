@@ -110,6 +110,15 @@ class VoiceAuditionPreview:
     reused: bool
 
 
+@dataclass
+class _PreviewTelemetry:
+    seed: int | None = None
+    outcome: str = "backend_failed"
+    reason: str = "backend-failed"
+    stage: str = "reference-preflight"
+    cache_source: str | None = None
+
+
 class VoiceAuditionPreviewService:
     """Render at most one persistent preview for each exact candidate input."""
 
@@ -170,230 +179,280 @@ class VoiceAuditionPreviewService:
             else:
                 context_token = None
             started = monotonic()
-            seed: int | None = None
-            outcome: str
-            reason: str
-            stage: str
-            cache_source: str | None
-            outcome, reason, stage, cache_source = (
-                "backend_failed",
-                "backend-failed",
-                "reference-preflight",
-                None,
-            )
+            telemetry = _PreviewTelemetry()
             try:
                 try:
-                    _raise_if_cancelled(cancellation)
-                    registry = _load_candidate_registry(plan, candidate)
-                    _preflight_candidate_references(registry, candidate)
-                    _raise_if_cancelled(cancellation)
+                    registry = _preflight_preview(plan, candidate, cancellation)
                 except VoiceAuditionCancelled:
                     raise
                 except VoiceAuditionError:
-                    outcome, reason = (
+                    telemetry.outcome, telemetry.reason = (
                         "reference_preflight_failed",
                         "reference-preflight-failed",
                     )
                     raise
                 if target.exists():
-                    notify("Checking the saved preview...")
-                    stage = "cache"
                     try:
-                        seed = _cached_preview_seed(target, identity, plan)
-                        preview = _cached_preview(
+                        preview, telemetry.seed = _cached_preview_for_request(
                             target,
                             identity,
                             plan,
                             group,
                             candidate,
                             preview_text,
-                            seed=seed,
+                            notify,
                         )
                     except VoiceAuditionError:
-                        outcome, reason = (
+                        telemetry.outcome, telemetry.reason = (
                             "cache_validation_failed",
                             "cache-validation-failed",
                         )
                         raise
-                    outcome, reason, stage, cache_source = (
+                    (
+                        telemetry.outcome,
+                        telemetry.reason,
+                        telemetry.stage,
+                        telemetry.cache_source,
+                    ) = (
                         "success",
                         "accepted",
                         "cache",
                         "preview-file",
                     )
                     return preview
-
-                self.root.mkdir(parents=True, exist_ok=True)
-                backend_config = (
-                    plan.synthesis_backend,
-                    plan.synthesis_model,
-                    plan.synthesis_profile,
-                    plan.pocket_voice_cloning,
-                )
-                if self._backend is None or self._backend_config != backend_config:
-                    stage = "startup"
-                    notify(
-                        "Starting the preview model. First use also loads its weights..."
-                    )
-                    shutdown_speech_backend(self._backend)
-                    self._backend = None
-                    self._backend_config = None
-                    try:
-                        if progress is None:
-                            self._backend = self.backend_factory(
-                                plan.synthesis_backend,
-                                registry,
-                                self.root / "synthesis-cache",
-                                model_name=plan.synthesis_model,
-                                startup_cancellation=cancellation,
-                                allow_gated_model_access=plan.pocket_voice_cloning,
-                            )
-                        else:
-                            self._backend = self.backend_factory(
-                                plan.synthesis_backend,
-                                registry,
-                                self.root / "synthesis-cache",
-                                model_name=plan.synthesis_model,
-                                startup_cancellation=cancellation,
-                                startup_progress=progress,
-                                allow_gated_model_access=plan.pocket_voice_cloning,
-                            )
-                    except Exception as error:
-                        if cancellation.is_set():
-                            raise VoiceAuditionCancelled(
-                                "Voice audition generation was cancelled"
-                            ) from error
-                        raise VoiceAuditionError(
-                            f"Unable to start the voice preview model: {error}"
-                        ) from error
-                    self._backend_config = backend_config
-                else:
-                    if self._backend is None:
-                        raise VoiceAuditionError("Voice preview backend is unavailable")
-                    self._backend.registry = registry
-
-                attempt = self._failed_preview_attempts.get(identity, 0)
-                seed = _preview_seed(plan, attempt)
-                request = SynthesisRequest(
-                    voice=candidate.source_character,
-                    text=preview_text,
-                    seed=seed,
-                    generation_profile=plan.synthesis_profile,
-                    cancellation=cancellation,
-                    cache_policy=(
-                        SynthesisCachePolicy.REFRESH
-                        if attempt and plan.synthesis_backend == "moss-tts"
-                        else SynthesisCachePolicy.USE
-                    ),
-                )
-                stage = "render"
-                try:
-                    notify(
-                        f"Trying a new sample (attempt {attempt + 1}) with the loaded model..."
-                        if attempt
-                        else "Generating preview audio with the loaded model..."
-                    )
-                    if self._backend is None:
-                        raise VoiceAuditionError("Voice preview backend is unavailable")
-                    result = self._backend.render(request).collect()
-                except Exception as error:
-                    if cancellation.is_set():
-                        raise VoiceAuditionCancelled(
-                            "Voice audition generation was cancelled"
-                        ) from error
-                    raise VoiceAuditionError(
-                        f"Unable to generate the voice preview: {error}"
-                    ) from error
-                if (
-                    cancellation.is_set()
-                    or result.completion is SynthesisCompletion.CANCELLED
-                ):
-                    raise VoiceAuditionCancelled(
-                        "Voice audition generation was cancelled"
-                    )
-                if result.completion is not SynthesisCompletion.COMPLETE:
-                    self._record_failed_preview_attempt(plan, identity)
-                    outcome, reason = "limited", "generation-limit"
-                    raise VoiceAuditionIncomplete(
-                        "The voice preview did not complete within its generation limits"
-                    )
-                if (
-                    result.diagnostics.backend != plan.synthesis_backend
-                    or result.diagnostics.generation_profile != plan.synthesis_profile
-                    or result.diagnostics.seed != seed
-                ):
-                    raise VoiceAuditionError(
-                        "Voice preview diagnostics differ from the planned controls"
-                    )
-                samples = _mono_pcm(result.pcm)
-                sample_rate = int(result.sample_rate)
-                if not len(samples) or sample_rate < 1:
-                    raise VoiceAuditionError(
-                        "Voice preview generation produced no audio"
-                    )
-
-                staging = _staging_path(target)
-                try:
-                    write_pcm16_wav(staging, samples, sample_rate)
-                    stage = "quality"
-                    notify("Checking generated audio for silence and other failures...")
-                    try:
-                        _inspect_preview(staging, preview_text)
-                    except VoiceAuditionError as error:
-                        if cancellation.is_set():
-                            raise VoiceAuditionCancelled(
-                                "Voice audition generation was cancelled"
-                            ) from error
-                        self._record_failed_preview_attempt(plan, identity)
-                        outcome, reason = "quality_failed", "quality-rejected"
-                        raise
-                    _load_candidate_registry(plan, candidate)
-                    _raise_if_cancelled(cancellation)
-                    stage = "publish"
-                    audio_sha256 = sha256_file(staging)
-                    try:
-                        _write_preview_manifest(target, identity, seed, audio_sha256)
-                        os.replace(staging, target)
-                    except Exception:
-                        target.unlink(missing_ok=True)
-                        _preview_manifest_path(target).unlink(missing_ok=True)
-                        raise
-                finally:
-                    staging.unlink(missing_ok=True)
-                preview = _cached_preview(
-                    target,
-                    identity,
+                preview = self._generate_new_preview(
                     plan,
                     group,
                     candidate,
                     preview_text,
-                    reused=False,
-                    seed=seed,
+                    target,
+                    identity,
+                    registry,
+                    cancellation,
+                    progress,
+                    notify,
+                    telemetry,
                 )
-                outcome, reason, cache_source = (
+                telemetry.outcome, telemetry.reason, telemetry.cache_source = (
                     "success",
                     "accepted",
-                    result.diagnostics.cache_source,
+                    telemetry.cache_source,
                 )
                 return preview
             except VoiceAuditionCancelled:
-                outcome, reason = "cancelled", "cancelled"
+                telemetry.outcome, telemetry.reason = "cancelled", "cancelled"
                 raise
             finally:
                 try:
                     self._record_native_preview_outcome(
                         plan,
                         native_context,
-                        seed=seed,
-                        outcome=outcome,
-                        reason=reason,
-                        stage=stage,
-                        cache_source=cache_source,
+                        seed=telemetry.seed,
+                        outcome=telemetry.outcome,
+                        reason=telemetry.reason,
+                        stage=telemetry.stage,
+                        cache_source=telemetry.cache_source,
                         elapsed_ms=round((monotonic() - started) * 1000),
                     )
                 finally:
                     if context_token is not None:
                         native_speech_context.reset(context_token)
+
+    def _generate_new_preview(
+        self,
+        plan: VoicePlan,
+        group: VoiceGroup,
+        candidate: VoiceCandidate,
+        preview_text: str,
+        target: Path,
+        identity: str,
+        registry: CharacterVoiceRegistry,
+        cancellation: _Cancellation,
+        progress: ProgressReporter | None,
+        notify: ProgressReporter,
+        telemetry: _PreviewTelemetry,
+    ) -> VoiceAuditionPreview:
+        self.root.mkdir(parents=True, exist_ok=True)
+        telemetry.stage = "startup"
+        self._ensure_preview_backend(plan, registry, cancellation, progress, notify)
+        telemetry.stage = "render"
+        attempt = self._failed_preview_attempts.get(identity, 0)
+        telemetry.seed = _preview_seed(plan, attempt)
+        result = self._render_preview(
+            plan, candidate, preview_text, telemetry.seed, attempt, cancellation, notify
+        )
+        if result.completion is not SynthesisCompletion.COMPLETE:
+            self._record_failed_preview_attempt(plan, identity)
+            telemetry.outcome, telemetry.reason = "limited", "generation-limit"
+            raise VoiceAuditionIncomplete(
+                "The voice preview did not complete within its generation limits"
+            )
+        _validate_preview_result(result, plan, telemetry.seed)
+        telemetry.stage = "quality"
+        self._publish_preview(
+            plan,
+            candidate,
+            preview_text,
+            target,
+            identity,
+            result,
+            cancellation,
+            telemetry,
+            notify,
+        )
+        return _cached_preview(
+            target,
+            identity,
+            plan,
+            group,
+            candidate,
+            preview_text,
+            reused=False,
+            seed=telemetry.seed,
+        )
+
+    def _ensure_preview_backend(
+        self,
+        plan: VoicePlan,
+        registry: CharacterVoiceRegistry,
+        cancellation: _Cancellation,
+        progress: ProgressReporter | None,
+        notify: ProgressReporter,
+    ) -> None:
+        config = (
+            plan.synthesis_backend,
+            plan.synthesis_model,
+            plan.synthesis_profile,
+            plan.pocket_voice_cloning,
+        )
+        if self._backend is not None and self._backend_config == config:
+            self._backend.registry = registry
+            return
+        notify("Starting the preview model. First use also loads its weights...")
+        shutdown_speech_backend(self._backend)
+        self._backend = None
+        self._backend_config = None
+        try:
+            if progress is None:
+                self._backend = self.backend_factory(
+                    plan.synthesis_backend,
+                    registry,
+                    self.root / "synthesis-cache",
+                    model_name=plan.synthesis_model,
+                    startup_cancellation=cancellation,
+                    allow_gated_model_access=plan.pocket_voice_cloning,
+                )
+            else:
+                self._backend = self.backend_factory(
+                    plan.synthesis_backend,
+                    registry,
+                    self.root / "synthesis-cache",
+                    model_name=plan.synthesis_model,
+                    startup_cancellation=cancellation,
+                    startup_progress=progress,
+                    allow_gated_model_access=plan.pocket_voice_cloning,
+                )
+        except Exception as error:
+            if cancellation.is_set():
+                raise VoiceAuditionCancelled(
+                    "Voice audition generation was cancelled"
+                ) from error
+            raise VoiceAuditionError(
+                f"Unable to start the voice preview model: {error}"
+            ) from error
+        self._backend_config = config
+
+    def _render_preview(
+        self,
+        plan: VoicePlan,
+        candidate: VoiceCandidate,
+        preview_text: str,
+        seed: int | None,
+        attempt: int,
+        cancellation: _Cancellation,
+        notify: ProgressReporter,
+    ) -> SynthesisResult:
+        request = SynthesisRequest(
+            voice=candidate.source_character,
+            text=preview_text,
+            seed=seed,
+            generation_profile=plan.synthesis_profile,
+            cancellation=cancellation,
+            cache_policy=(
+                SynthesisCachePolicy.REFRESH
+                if attempt and plan.synthesis_backend == "moss-tts"
+                else SynthesisCachePolicy.USE
+            ),
+        )
+        notify(
+            f"Trying a new sample (attempt {attempt + 1}) with the loaded model..."
+            if attempt
+            else "Generating preview audio with the loaded model..."
+        )
+        try:
+            if self._backend is None:
+                raise VoiceAuditionError("Voice preview backend is unavailable")
+            result = self._backend.render(request).collect()
+        except Exception as error:
+            if cancellation.is_set():
+                raise VoiceAuditionCancelled(
+                    "Voice audition generation was cancelled"
+                ) from error
+            raise VoiceAuditionError(
+                f"Unable to generate the voice preview: {error}"
+            ) from error
+        if cancellation.is_set() or result.completion is SynthesisCompletion.CANCELLED:
+            raise VoiceAuditionCancelled("Voice audition generation was cancelled")
+        return result
+
+    def _publish_preview(
+        self,
+        plan: VoicePlan,
+        candidate: VoiceCandidate,
+        preview_text: str,
+        target: Path,
+        identity: str,
+        result: SynthesisResult,
+        cancellation: _Cancellation,
+        telemetry: _PreviewTelemetry,
+        notify: ProgressReporter,
+    ) -> None:
+        samples = _mono_pcm(result.pcm)
+        sample_rate = int(result.sample_rate)
+        if not len(samples) or sample_rate < 1:
+            raise VoiceAuditionError("Voice preview generation produced no audio")
+        staging = _staging_path(target)
+        try:
+            write_pcm16_wav(staging, samples, sample_rate)
+            notify("Checking generated audio for silence and other failures...")
+            try:
+                _inspect_preview(staging, preview_text)
+            except VoiceAuditionError as error:
+                if cancellation.is_set():
+                    raise VoiceAuditionCancelled(
+                        "Voice audition generation was cancelled"
+                    ) from error
+                self._record_failed_preview_attempt(plan, identity)
+                telemetry.outcome, telemetry.reason = (
+                    "quality_failed",
+                    "quality-rejected",
+                )
+                raise
+            _load_candidate_registry(plan, candidate)
+            _raise_if_cancelled(cancellation)
+            telemetry.stage = "publish"
+            try:
+                _write_preview_manifest(
+                    target, identity, telemetry.seed, sha256_file(staging)
+                )
+                os.replace(staging, target)
+            except Exception:
+                target.unlink(missing_ok=True)
+                _preview_manifest_path(target).unlink(missing_ok=True)
+                raise
+            telemetry.cache_source = result.diagnostics.cache_source
+        finally:
+            staging.unlink(missing_ok=True)
 
     def cancel(self) -> None:
         self._cancel.set()
@@ -479,6 +538,50 @@ class VoiceAuditionPreviewService:
             shutdown_speech_backend(self._backend)
             self._backend = None
             self._backend_config = None
+
+
+def _preflight_preview(
+    plan: VoicePlan,
+    candidate: VoiceCandidate,
+    cancellation: _Cancellation,
+) -> CharacterVoiceRegistry:
+    _raise_if_cancelled(cancellation)
+    registry = _load_candidate_registry(plan, candidate)
+    _preflight_candidate_references(registry, candidate)
+    _raise_if_cancelled(cancellation)
+    return registry
+
+
+def _cached_preview_for_request(
+    target: Path,
+    identity: str,
+    plan: VoicePlan,
+    group: VoiceGroup,
+    candidate: VoiceCandidate,
+    preview_text: str,
+    notify: ProgressReporter,
+) -> tuple[VoiceAuditionPreview, int | None]:
+    notify("Checking the saved preview...")
+    seed = _cached_preview_seed(target, identity, plan)
+    return (
+        _cached_preview(
+            target, identity, plan, group, candidate, preview_text, seed=seed
+        ),
+        seed,
+    )
+
+
+def _validate_preview_result(
+    result: SynthesisResult, plan: VoicePlan, seed: int | None
+) -> None:
+    if (
+        result.diagnostics.backend != plan.synthesis_backend
+        or result.diagnostics.generation_profile != plan.synthesis_profile
+        or result.diagnostics.seed != seed
+    ):
+        raise VoiceAuditionError(
+            "Voice preview diagnostics differ from the planned controls"
+        )
 
 
 class _CombinedCancellation:
@@ -654,9 +757,7 @@ def _write_preview_manifest(
         )
 
 
-def _cached_preview_seed(
-    target: Path, identity: str, plan: VoicePlan
-) -> int | None:
+def _cached_preview_seed(target: Path, identity: str, plan: VoicePlan) -> int | None:
     manifest = _preview_manifest_path(target)
     if not manifest.exists():
         # Existing successful previews predate the sidecar and were all seed zero.

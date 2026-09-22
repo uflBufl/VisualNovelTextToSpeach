@@ -134,6 +134,16 @@ class StoryAudioCoverage:
     missing: int = 0
 
 
+@dataclass(frozen=True)
+class _StoryAudioPack:
+    manifest: Path | None
+    explicit: bool
+    story: StoryIndexDocument | None
+    records: dict[str, StoryIndexRecord]
+    source_audio_line_ids: frozenset[str]
+    library: GeneratedAudioLibrary | None
+
+
 def inspect_story_audio(
     content: GameContent,
     selection_id: str,
@@ -154,44 +164,17 @@ def inspect_story_audio(
         raise OfflinePackError(
             "Story content changed. Refresh the story list and retry."
         ) from error
-    explicit_pack = manifest is not None or imported_pack is not None
-    if imported_pack is not None:
-        manifest = imported_pack.pack.manifest_path
-    elif manifest is not None:
-        manifest = Path(manifest).expanduser().resolve()
-    else:
-        manifests = [
-            path
-            for job in job_store.jobs_for_content(content)
-            if selection_id in job.selected_story_ids
-            for path in job_store.published_packs(job)
-        ]
-        manifest = max(
-            manifests,
-            key=lambda path: (path.stat().st_mtime_ns, str(path)),
-            default=None,
-        )
-    library = None
-    pack_records: dict[str, StoryIndexRecord] = {}
-    pack_story: StoryIndexDocument | None = None
     source_audio_line_ids = _validated_source_audio_line_ids(
         content.story_index,
         source,
     )
-    pack_source_audio_line_ids: frozenset[str] = frozenset()
-    if manifest is not None:
-        imported_pack = imported_pack or import_game_pack(manifest)
-        pack_story = load_story_index_document(imported_pack.story_index)
-        pack_source_audio_line_ids = _validated_source_audio_line_ids(
-            imported_pack.story_index,
-            pack_story,
-        )
-        pack_records = {record.line_id: record for record in pack_story.records}
-        if imported_pack.generated_audio_manifest is not None:
-            library = GeneratedAudioLibrary(
-                load_generated_audio_document(imported_pack.generated_audio_manifest),
-                cache_size=1,
-            )
+    pack = _story_audio_pack(
+        content,
+        selection_id,
+        job_store,
+        manifest=manifest,
+        imported_pack=imported_pack,
+    )
     counts = dict(
         original=0,
         generated=0,
@@ -204,55 +187,103 @@ def inspect_story_audio(
     for record in source.records:
         if record.line_id not in line_ids:
             continue
-        saved = pack_records.get(record.line_id)
+        saved = pack.records.get(record.line_id)
         if saved is not None and saved.text_sha256 != record.text_sha256:
             raise OfflinePackError(
                 "Saved story text differs from the selected content. Prepare this story again."
             )
-        # Published source semantics can distinguish speech from a game sound cue.
-        effective = saved or record
-        completion_document = (
-            pack_story if saved is not None and pack_story is not None else source
-        )
-        completion_contract = completion_document.metadata.get(
-            "source_audio_completion"
-        )
-        semantic_authorized = record.line_id in (
-            pack_source_audio_line_ids if saved is not None else source_audio_line_ids
-        )
-        if explicit_pack and saved is None:
-            route = "missing"
-        elif library and library.find_audio_event_omission(
-            record.line_id, record.text_sha256
-        ):
-            route = "omitted"
-        elif not effective.speakable:
-            route = "non_spoken"
-        elif (
-            library
-            and library.index.find(
-                record.line_id, record.text_sha256, verify_file=False
-            )
-            is not None
-        ):
-            if library.find(record.line_id, record.text_sha256) is None:
-                raise OfflinePackError(
-                    f"Saved audio is missing or damaged for {record.line_id}. Prepare this story again."
-                )
-            route = "generated"
-        elif library and library.find_live_fallback(record.line_id, record.text_sha256):
-            route = "live"
-        elif _source_audio_covers_full_line(
-            effective.document,
-            completion_contract=completion_contract,
-            semantic_authorized=semantic_authorized,
-        ):
-            route = "original"
-        else:
-            route = "missing"
+        route = _story_audio_route(record, saved, source, source_audio_line_ids, pack)
         counts[route] += 1
-    manifest_path = Path(manifest) if manifest is not None else None
-    return StoryAudioCoverage(selection.title, manifest_path, **counts)
+    return StoryAudioCoverage(selection.title, pack.manifest, **counts)
+
+
+def _story_audio_pack(
+    content: GameContent,
+    selection_id: str,
+    job_store: PregenerationJobStore,
+    *,
+    manifest: str | Path | None,
+    imported_pack: GamePackImport | None,
+) -> _StoryAudioPack:
+    explicit = manifest is not None or imported_pack is not None
+    if imported_pack is not None:
+        manifest_path = imported_pack.pack.manifest_path
+    elif manifest is not None:
+        manifest_path = Path(manifest).expanduser().resolve()
+    else:
+        manifests = [
+            path
+            for job in job_store.jobs_for_content(content)
+            if selection_id in job.selected_story_ids
+            for path in job_store.published_packs(job)
+        ]
+        manifest_path = max(
+            manifests,
+            key=lambda path: (path.stat().st_mtime_ns, str(path)),
+            default=None,
+        )
+    if manifest_path is None:
+        return _StoryAudioPack(None, explicit, None, {}, frozenset(), None)
+    imported = imported_pack or import_game_pack(manifest_path)
+    story = load_story_index_document(imported.story_index)
+    library = (
+        GeneratedAudioLibrary(
+            load_generated_audio_document(imported.generated_audio_manifest),
+            cache_size=1,
+        )
+        if imported.generated_audio_manifest is not None
+        else None
+    )
+    return _StoryAudioPack(
+        manifest_path,
+        explicit,
+        story,
+        {record.line_id: record for record in story.records},
+        _validated_source_audio_line_ids(imported.story_index, story),
+        library,
+    )
+
+
+def _story_audio_route(
+    record: StoryIndexRecord,
+    saved: StoryIndexRecord | None,
+    source: StoryIndexDocument,
+    source_audio_line_ids: frozenset[str],
+    pack: _StoryAudioPack,
+) -> str:
+    if pack.explicit and saved is None:
+        return "missing"
+    library = pack.library
+    if library and library.find_audio_event_omission(
+        record.line_id, record.text_sha256
+    ):
+        return "omitted"
+    effective = saved or record
+    if not effective.speakable:
+        return "non_spoken"
+    if library and library.index.find(
+        record.line_id, record.text_sha256, verify_file=False
+    ):
+        if library.find(record.line_id, record.text_sha256) is None:
+            raise OfflinePackError(
+                f"Saved audio is missing or damaged for {record.line_id}. Prepare this story again."
+            )
+        return "generated"
+    if library and library.find_live_fallback(record.line_id, record.text_sha256):
+        return "live"
+    completion_document = (
+        pack.story if saved is not None and pack.story is not None else source
+    )
+    authorized = record.line_id in (
+        pack.source_audio_line_ids if saved is not None else source_audio_line_ids
+    )
+    if _source_audio_covers_full_line(
+        effective.document,
+        completion_contract=completion_document.metadata.get("source_audio_completion"),
+        semantic_authorized=authorized,
+    ):
+        return "original"
+    return "missing"
 
 
 class OfflinePackPublisher:
@@ -899,9 +930,7 @@ def _write_cumulative_story(
     source_story: StoryIndexDocument,
     generation_input: PregenerationInput,
     story_copy: Path,
-) -> tuple[
-    StoryIndexDocument, Path | None, SourceAudioSemanticEvidence | None
-]:
+) -> tuple[StoryIndexDocument, Path | None, SourceAudioSemanticEvidence | None]:
     base_story = load_story_index_document(base.story_index)
     current_story = load_story_index_document(generation_input.story_index)
     selected_ids = {
@@ -959,8 +988,7 @@ def _write_cumulative_voices(
             existing
             for existing in merged
             if names.isdisjoint(
-                normalize_character_name(value)
-                for value in _voice_names(existing)
+                normalize_character_name(value) for value in _voice_names(existing)
             )
         ]
         merged.append(candidate)
@@ -971,8 +999,10 @@ def _write_cumulative_voices(
 def _voice_names(entry: JsonObject) -> tuple[str, ...]:
     character = entry.get("character")
     aliases = entry.get("aliases", [])
-    if not isinstance(character, str) or not isinstance(aliases, list) or any(
-        not isinstance(value, str) for value in aliases
+    if (
+        not isinstance(character, str)
+        or not isinstance(aliases, list)
+        or any(not isinstance(value, str) for value in aliases)
     ):
         raise OfflinePackError("Offline voice identity is malformed")
     return character, *aliases

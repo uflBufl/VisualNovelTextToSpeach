@@ -305,79 +305,9 @@ class VoiceDecisionStore:
             raise PregenerationVoiceError("At least one voice choice is required")
         decisions = self._load()
         decided_at = self.clock().astimezone(timezone.utc).isoformat()
-        observed_groups: set[str] = set()
-        validated_selections: list[tuple[VoiceGroup, str]] = []
-        for group, source_id in selections:
-            if group.group_id in observed_groups:
-                raise PregenerationVoiceError(
-                    "A voice group was selected more than once"
-                )
-            observed_groups.add(group.group_id)
-            source_id = _required_text(source_id, "voice source")
-            allowed_sources = {
-                default_voice_choice_id,
-                *(candidate.source_id for candidate in group.candidates),
-                *(candidate.source_id for candidate in group.candidate_inventory),
-            }
-            if group.narrator_candidate is not None:
-                allowed_sources.add(group.narrator_candidate.source_id)
-            if group.source_id:
-                allowed_sources.add(group.source_id)
-            if source_id not in allowed_sources:
-                raise PregenerationVoiceError(
-                    "The selected voice is not part of this voice plan"
-                )
-            validated_selections.append((group, source_id))
-        library_selections: list[VoiceSelection] = []
+        validated_selections = _validated_decision_selections(selections)
+        library_selections = self._library_selections(validated_selections, decided_at)
         for group, source_id in validated_selections:
-            if self.voice_library is not None:
-                selected = next(
-                    (
-                        candidate
-                        for candidate in (
-                            *group.candidates,
-                            *group.candidate_inventory,
-                        )
-                        if candidate.source_id == source_id
-                    ),
-                    None,
-                )
-                evidence: JsonObject = {
-                    "decision_context_sha256": group.decision_context_sha256
-                }
-                if selected is not None:
-                    evidence.update(
-                        {
-                            "source_id": selected.source_id,
-                            "source_character": selected.source_character,
-                            "speaker": selected.source_speaker,
-                        }
-                    )
-                library_selections.append(
-                    VoiceSelection(
-                        role=group.character,
-                        route=(
-                            "narrator"
-                            if source_id == default_voice_choice_id
-                            else "voice"
-                        ),
-                        source_sha256s=(
-                            selected.reference_sha256s
-                            if selected is not None and selected.reference_sha256s
-                            else ()
-                        ),
-                        source_id=(
-                            None
-                            if source_id == default_voice_choice_id
-                            or (selected is not None and selected.reference_sha256s)
-                            else source_id
-                        ),
-                        method="manual",
-                        evidence=evidence,
-                        algorithm="voice-audition-v1",
-                        timestamp=decided_at,
-                    )
-                )
             decisions[_decision_key(group.group_id, group.decision_context_sha256)] = {
                 "group_id": group.group_id,
                 "decision_context_sha256": group.decision_context_sha256,
@@ -406,6 +336,18 @@ class VoiceDecisionStore:
                         f"{rollback_error}"
                     )
             raise
+
+    def _library_selections(
+        self,
+        selections: Sequence[tuple[VoiceGroup, str]],
+        decided_at: str,
+    ) -> list[VoiceSelection]:
+        if self.voice_library is None:
+            return []
+        return [
+            _voice_library_selection(group, source_id, decided_at)
+            for group, source_id in selections
+        ]
 
     def _load(self) -> dict[str, JsonObject]:
         if not self.path.is_file():
@@ -440,6 +382,84 @@ class VoiceDecisionStore:
             raise PregenerationVoiceError(
                 f"Unable to read saved voice decisions: {error}"
             ) from error
+
+
+def _validated_decision_selections(
+    selections: Sequence[tuple[VoiceGroup, str]],
+) -> list[tuple[VoiceGroup, str]]:
+    observed_groups: set[str] = set()
+    validated: list[tuple[VoiceGroup, str]] = []
+    for group, source_id in selections:
+        if group.group_id in observed_groups:
+            raise PregenerationVoiceError("A voice group was selected more than once")
+        observed_groups.add(group.group_id)
+        source_id = _required_text(source_id, "voice source")
+        if source_id not in _allowed_voice_sources(group):
+            raise PregenerationVoiceError(
+                "The selected voice is not part of this voice plan"
+            )
+        validated.append((group, source_id))
+    return validated
+
+
+def _allowed_voice_sources(group: VoiceGroup) -> set[str]:
+    sources = {
+        default_voice_choice_id,
+        *(candidate.source_id for candidate in group.candidates),
+        *(candidate.source_id for candidate in group.candidate_inventory),
+    }
+    if group.narrator_candidate is not None:
+        sources.add(group.narrator_candidate.source_id)
+    if group.source_id:
+        sources.add(group.source_id)
+    return sources
+
+
+def _voice_library_selection(
+    group: VoiceGroup, source_id: str, decided_at: str
+) -> VoiceSelection:
+    selected = next(
+        (
+            candidate
+            for candidate in (*group.candidates, *group.candidate_inventory)
+            if candidate.source_id == source_id
+        ),
+        None,
+    )
+    evidence: JsonObject = {"decision_context_sha256": group.decision_context_sha256}
+    if selected is not None:
+        evidence.update(
+            {
+                "source_id": selected.source_id,
+                "source_character": selected.source_character,
+                "speaker": selected.source_speaker,
+            }
+        )
+    references = selected.reference_sha256s if selected is not None else ()
+    return VoiceSelection(
+        role=group.character,
+        route="narrator" if source_id == default_voice_choice_id else "voice",
+        source_sha256s=references,
+        source_id=None
+        if source_id == default_voice_choice_id or references
+        else source_id,
+        method="manual",
+        evidence=evidence,
+        algorithm="voice-audition-v1",
+        timestamp=decided_at,
+    )
+
+
+def _has_authoritative_source_audio(
+    record: StoryIndexRecord,
+    completion_contract: str | None,
+    authorized_line_ids: frozenset[str],
+) -> bool:
+    return record.line_id in authorized_line_ids and _source_audio_covers_full_line(
+        record.document,
+        completion_contract=completion_contract,
+        semantic_authorized=True,
+    )
 
 
 class VoicePlanStore:
@@ -526,42 +546,14 @@ class VoicePlanStore:
         phase_started, cpu_started = perf_counter(), process_time()
         manifest_path = _selected_manifest(settings, manifest_path)
         registry, manifest_sha256, manifest_document = _load_registry(manifest_path)
-        if self.voice_library is not None:
-            if ignore_decisions:
-                reset_roles = {
-                    normalize_character_name(
-                        synthesis_character_for_line(
-                            record.speaker, record.voice_character
-                        )
-                    )
-                    for record in records.values()
-                    if record.speakable
-                    and not (
-                        record.line_id in authoritative_source_lines
-                        and _source_audio_covers_full_line(
-                            record.document,
-                            completion_contract=source_completion,
-                            semantic_authorized=True,
-                        )
-                    )
-                }
-                for binding in self.voice_library.bindings():
-                    if (
-                        not is_narrator(binding.role)
-                        and normalize_character_name(binding.role) in reset_roles
-                    ):
-                        self.voice_library.clear(
-                            binding.role, variant_key=binding.variant_key
-                        )
-            for binding in self.voice_library.bindings():
-                if (
-                    binding.route == "narrator"
-                    and binding.provenance.get("method") == "automatic"
-                ):
-                    self.voice_library.clear(
-                        binding.role, variant_key=binding.variant_key
-                    )
-            registry = registry_with_voice_library(registry, self.voice_library)
+        registry = self._prepared_voice_library(
+            registry,
+            records.values(),
+            settings,
+            source_completion,
+            authoritative_source_lines,
+            ignore_decisions,
+        )
         queue_bindings = _manifest_queue_bindings(manifest_document, registry)
         candidate_variants = _manifest_candidate_variants(
             manifest_document,
@@ -672,6 +664,9 @@ class VoicePlanStore:
             synthesis_controls_sha256=controls_sha256,
             groups=tuple(groups),
         )
+        return self._persist_plan(job, plan)
+
+    def _persist_plan(self, job: PregenerationJob, plan: VoicePlan) -> VoicePlan:
         phase_started, cpu_started = perf_counter(), process_time()
         path = self.path_for(job)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -684,6 +679,44 @@ class VoicePlanStore:
             bytes_examined=_file_size(path),
         )
         return plan
+
+    def _prepared_voice_library(
+        self,
+        registry: CharacterVoiceRegistry,
+        records: Iterable[StoryIndexRecord],
+        settings: AppSettings,
+        source_completion: str | None,
+        authoritative_source_lines: frozenset[str],
+        ignore_decisions: bool,
+    ) -> CharacterVoiceRegistry:
+        if self.voice_library is None:
+            return registry
+        if ignore_decisions:
+            reset_roles = {
+                normalize_character_name(
+                    synthesis_character_for_line(record.speaker, record.voice_character)
+                )
+                for record in records
+                if record.speakable
+                and not _has_authoritative_source_audio(
+                    record, source_completion, authoritative_source_lines
+                )
+            }
+            for binding in self.voice_library.bindings():
+                if (
+                    not is_narrator(binding.role)
+                    and normalize_character_name(binding.role) in reset_roles
+                ):
+                    self.voice_library.clear(
+                        binding.role, variant_key=binding.variant_key
+                    )
+        for binding in self.voice_library.bindings():
+            if (
+                binding.route == "narrator"
+                and binding.provenance.get("method") == "automatic"
+            ):
+                self.voice_library.clear(binding.role, variant_key=binding.variant_key)
+        return registry_with_voice_library(registry, self.voice_library)
 
     def path_for(self, job: PregenerationJob) -> Path:
         return Path(self.job_store.path_for(job.job_id)).parent / "voice-plan.json"
