@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,12 +86,14 @@ def publish_failed_prompt_hypothesis_selection(
         session_path.with_name(".blind-key.json")
     )
     planned_by_id = {
-        candidate["candidate_id"]: candidate for candidate in document["candidates"]
+        _record_text(candidate, "candidate_id", "Prompt candidate ID"): candidate
+        for candidate in document["candidates"]
     }
     cohort_by_id = {cohort["cohort_id"]: cohort for cohort in bundle["cohorts"]}
     targets_by_cohort: dict[str, list[dict[str, object]]] = {}
     for target in document["targets"]:
-        targets_by_cohort.setdefault(target["cohort_id"], []).append(target)
+        cohort_id = _record_text(target, "cohort_id", "Prompt cohort ID")
+        targets_by_cohort.setdefault(cohort_id, []).append(target)
     decisions = []
     for record in sorted(session["decisions"], key=_cohort_id):
         cohort_id = _cohort_id(record)
@@ -204,7 +207,7 @@ def _load_private_candidates(path: Path) -> dict[object, object]:
 
 def _selected_candidate(
     private_by_label: dict[object, object],
-    planned_by_id: dict[object, object],
+    planned_by_id: Mapping[str, object],
     decision: object,
 ) -> JsonObject:
     private = private_by_label.get(decision)
@@ -212,7 +215,10 @@ def _selected_candidate(
         raise FailedPromptHypothesisError(
             "Prompt candidate identity differs from the immutable plan"
         )
-    candidate = planned_by_id.get(private.get("candidate_id"))
+    candidate_id = private.get("candidate_id")
+    candidate = (
+        planned_by_id.get(candidate_id) if isinstance(candidate_id, str) else None
+    )
     if (
         not isinstance(candidate, dict)
         or private.get("voice_character") != candidate.get("voice_character")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import shutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -109,16 +110,20 @@ def publish_missing_voice_reuse_binding(
         raise MissingVoiceReuseBindingError(str(error)) from error
     candidate_by_label = {value["label"]: value for value in key.get("candidates", [])}
     planned_candidate_by_id = {
-        value["candidate_id"]: value for value in document["candidates"]
+        _text_field(value, "candidate_id", "Missing-voice candidate ID"): value
+        for value in document["candidates"]
     }
     target_by_cohort: dict[str, list[str]] = {}
     for target in document["targets"]:
-        target_by_cohort.setdefault(target["cohort_id"], []).append(target["queue_id"])
+        cohort_id = _text_field(target, "cohort_id", "Missing-voice cohort ID")
+        target_by_cohort.setdefault(cohort_id, []).append(
+            _text_field(target, "queue_id", "Missing-voice queue ID")
+        )
 
     review_cohort_by_id = {value["cohort_id"]: value for value in bundle["cohorts"]}
     decisions = []
-    selected_by_id = {}
-    overrides = {}
+    selected_by_id: dict[str, JsonObject] = {}
+    overrides: dict[str, str] = {}
     for record in sorted(session["decisions"], key=lambda value: value["cohort_id"]):
         cohort_id = record["cohort_id"]
         queue_ids = sorted(target_by_cohort.get(cohort_id, ()))
@@ -149,7 +154,9 @@ def publish_missing_voice_reuse_binding(
             raise MissingVoiceReuseBindingError(
                 "Review decision does not resolve through the blind key"
             )
-        candidate = planned_candidate_by_id.get(private.get("candidate_id"))
+        candidate = planned_candidate_by_id.get(
+            _text_field(private, "candidate_id", "Missing-voice candidate ID")
+        )
         if (
             candidate is None
             or private.get("voice_character") != candidate["voice_character"]
@@ -158,28 +165,39 @@ def publish_missing_voice_reuse_binding(
             raise MissingVoiceReuseBindingError(
                 "Review candidate identity differs from the immutable plan"
             )
-        selected_by_id[candidate["candidate_id"]] = candidate
+        candidate_id = _text_field(
+            candidate, "candidate_id", "Missing-voice candidate ID"
+        )
+        voice_character = _text_field(
+            candidate, "voice_character", "Missing-voice candidate voice"
+        )
+        selected_by_id[candidate_id] = candidate
         decisions.append(
             {
                 "cohort_id": cohort_id,
                 "decision": "candidate",
-                "candidate_id": candidate["candidate_id"],
-                "voice_character": candidate["voice_character"],
+                "candidate_id": candidate_id,
+                "voice_character": voice_character,
                 "review_decision_origin": record.get("decision_origin", "human_review"),
                 "queue_ids": queue_ids,
             }
         )
-        overrides.update(
-            {queue_id: candidate["voice_character"] for queue_id in queue_ids}
-        )
+        overrides.update({queue_id: voice_character for queue_id in queue_ids})
 
     selected_candidates = [
         {
             "candidate_id": candidate_id,
-            "voice_character": selected_by_id[candidate_id]["voice_character"],
+            "voice_character": _text_field(
+                selected_by_id[candidate_id],
+                "voice_character",
+                "Missing-voice candidate voice",
+            ),
             "reference_sha256s": [
-                reference["sha256"]
-                for reference in selected_by_id[candidate_id]["ordered_references"]
+                _text_field(reference, "sha256", "Missing-voice reference checksum")
+                for reference in _object_list(
+                    selected_by_id[candidate_id].get("ordered_references"),
+                    "Missing-voice candidate references",
+                )
             ],
         }
         for candidate_id in sorted(selected_by_id)
@@ -234,7 +252,10 @@ def publish_missing_voice_reuse_binding(
         ),
     }
     if document.get("target_mode", "missing") == "failed":
-        target_by_id = {target["queue_id"]: target for target in document["targets"]}
+        target_by_id = {
+            _text_field(target, "queue_id", "Missing-voice queue ID"): target
+            for target in document["targets"]
+        }
         binding.update(
             {
                 "target_mode": "failed",
@@ -271,18 +292,18 @@ def publish_missing_voice_reuse_binding(
                     if key_name in seen:
                         continue
                     seen.add(key_name)
-                    source = contained_workspace_path(
+                    source_path = contained_workspace_path(
                         source_root, relative, "Missing-voice binding reference"
                     )
-                    if source.is_symlink() or not source.is_file():
+                    if source_path.is_symlink() or not source_path.is_file():
                         raise MissingVoiceReuseBindingError(
                             f"Missing-voice binding reference is unsafe: {value!r}"
                         )
-                    target = staging / relative
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(source, target)
-                    digest = sha256_file(source)
-                    if sha256_file(target) != digest:
+                    target_path = staging / relative
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source_path, target_path)
+                    digest = sha256_file(source_path)
+                    if sha256_file(target_path) != digest:
                         raise MissingVoiceReuseBindingError(
                             "Missing-voice binding reference changed while copied"
                         )
@@ -335,7 +356,7 @@ def publish_missing_voice_reuse_binding(
 
 def _validate_binding_bundle(
     directory: str | Path,
-    plan: JsonObject,
+    plan: Mapping[str, object],
     expected_binding: JsonObject,
 ) -> None:
     directory = Path(directory).resolve()
@@ -470,6 +491,13 @@ def _object_field(document: JsonObject, field: str, label: str) -> JsonObject:
 
 def _object_list(value: object, label: str) -> list[JsonObject]:
     if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise MissingVoiceReuseBindingError(f"{label} is invalid")
+    return value
+
+
+def _text_field(document: Mapping[str, object], field: str, label: str) -> str:
+    value = document.get(field)
+    if not isinstance(value, str) or not value:
         raise MissingVoiceReuseBindingError(f"{label} is invalid")
     return value
 

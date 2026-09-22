@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import secrets
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,7 +56,7 @@ class MissingVoiceAuthority(TypedDict):
     decision_sha256: str
     bundle: JsonObject
     bundle_sha256: str
-    plan: JsonObject
+    plan: Mapping[str, object]
     snapshots: tuple[tuple[Path, str], ...]
 
 
@@ -429,7 +430,7 @@ def _load_authority(directory: Path) -> MissingVoiceAuthority:
 
 
 def _validated_targets(
-    plan: dict[str, object],
+    plan: Mapping[str, object],
     binding: dict[str, object],
     character: str,
     queue_by_id: dict[str, VoiceGenerationQueueItem],
@@ -632,7 +633,7 @@ def _required_text(value: object, label: str) -> str:
     return value.strip()
 
 
-def _object_field(document: JsonObject, field: str, label: str) -> JsonObject:
+def _object_field(document: Mapping[str, object], field: str, label: str) -> JsonObject:
     value = document.get(field)
     if not isinstance(value, dict):
         raise MissingVoiceLiveFallbackError(f"{label} is invalid")
@@ -645,7 +646,7 @@ def _object_list(value: object, label: str) -> list[JsonObject]:
     return value
 
 
-def _text_field(document: JsonObject, field: str, label: str) -> str:
+def _text_field(document: Mapping[str, object], field: str, label: str) -> str:
     return _required_text(document.get(field), label)
 
 

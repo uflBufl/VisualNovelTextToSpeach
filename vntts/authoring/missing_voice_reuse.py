@@ -7,13 +7,16 @@ import hashlib
 import json
 import re
 import shutil
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NotRequired, TypeAlias, TypedDict, TypeIs
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.story_index import StoryIndexError, load_story_index_document
 from vntts_artifacts.voice_manifest import (
+    VoiceManifestEntry,
     VoiceManifestError,
     load_voice_manifest,
     normalize_character_name,
@@ -59,6 +62,40 @@ from vntts.authoring.workbench import (
 from vntts.authoring.workspace_inspection import generation_failure_category
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
 
+JsonObject: TypeAlias = dict[str, object]
+JsonObjects: TypeAlias = list[JsonObject]
+
+
+class _SourceDocument(TypedDict):
+    workspace: str
+    workspace_id: str
+    workspace_sha256: str
+    queue_sha256: str
+    state_sha256: str
+    voice_manifest_sha256: str
+    story_index_sha256: str
+
+
+class _PlanDocument(TypedDict):
+    schema: str
+    schema_version: int
+    plan_id: str
+    character: str
+    source: _SourceDocument
+    policy: JsonObject
+    cohorts: JsonObjects
+    cohort_count: int
+    target_count: int
+    targets: JsonObjects
+    candidate_count: int
+    candidates: JsonObjects
+    comparison_sample_count: int
+    comparison_samples: JsonObjects
+    comparison_sample_queue_ids: list[str]
+    target_mode: NotRequired[str]
+    candidate_mode: NotRequired[str]
+
+
 MISSING_VOICE_REUSE_PLAN_SCHEMA = "vntts.authoring-missing-voice-reuse-plan"
 MISSING_VOICE_REUSE_PLAN_VERSION = 1
 MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_SCHEMA = (
@@ -75,9 +112,9 @@ class MissingVoiceReuseError(RuntimeError):
 @dataclass(frozen=True)
 class MissingVoiceReusePlan:
     plan_id: str
-    document: dict
+    document: _PlanDocument
 
-    def to_dict(self):
+    def to_dict(self) -> _PlanDocument:
         return copy.deepcopy(self.document)
 
 
@@ -91,7 +128,7 @@ class MissingVoiceReuseCandidateWorkspace:
     workspace_created: bool
     comparison_sample_queue_ids: tuple[str, ...]
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return {
             "plan_id": self.plan_id,
             "candidate_id": self.candidate_id,
@@ -104,14 +141,14 @@ class MissingVoiceReuseCandidateWorkspace:
 
 
 def build_missing_voice_reuse_plan(
-    workspace_directory,
-    character,
+    workspace_directory: str | Path,
+    character: str,
     *,
-    cohorts,
-    candidate_voice_characters,
-    failed_queue_ids=None,
-    inline_pause_ms=None,
-):
+    cohorts: Mapping[str, Collection[str]],
+    candidate_voice_characters: list[str] | tuple[str, ...],
+    failed_queue_ids: list[str] | tuple[str, ...] | None = None,
+    inline_pause_ms: int | None = None,
+) -> MissingVoiceReusePlan:
     """Plan a small representative comparison without binding or rendering lines.
 
     ``failed_queue_ids`` switches the plan from missing-voice discovery to an
@@ -192,7 +229,7 @@ def build_missing_voice_reuse_plan(
         story_by_line_id[record.line_id] = record
 
     wanted = normalize_character_name(character)
-    state_items = state["items"]
+    state_items = _object(state.get("items"), "generation state items")
     targets = []
     for item in queue.items:
         if wanted not in {
@@ -202,7 +239,8 @@ def build_missing_voice_reuse_plan(
             continue
         if not is_spoken_queue_item(item):
             continue
-        result = state_items.get(item.queue_id)
+        raw_result = state_items.get(item.queue_id)
+        result = None if raw_result is None else _object(raw_result, "state item")
         effective_voice = overrides.get(item.queue_id, item.voice_character)
         if target_mode == "missing":
             if normalize_character_name(effective_voice) in voice_by_name:
@@ -255,6 +293,10 @@ def build_missing_voice_reuse_plan(
             ),
         }
         if target_mode == "failed":
+            if result is None:
+                raise MissingVoiceReuseError(
+                    f"Failed-voice target has no generation state: {item.queue_id}"
+                )
             target.update(
                 {
                     "source_voice_character": effective_voice,
@@ -283,8 +325,10 @@ def build_missing_voice_reuse_plan(
                 "Failed-voice queue IDs are absent from the exact character scope: "
                 + ", ".join(missing_ids)
             )
-    observed_cohorts = {target["cohort_id"] for target in targets}
-    declared_cohorts = {rule["cohort_id"] for rule in cohort_rules}
+    observed_cohorts = {_string(target["cohort_id"], "cohort ID") for target in targets}
+    declared_cohorts = {
+        _string(rule["cohort_id"], "cohort ID") for rule in cohort_rules
+    }
     unused = sorted(declared_cohorts - observed_cohorts)
     if unused:
         raise MissingVoiceReuseError(
@@ -295,9 +339,9 @@ def build_missing_voice_reuse_plan(
         candidates = _inline_pause_candidates(
             candidates, samples, targets, inline_pause_ms
         )
-    source = {
+    source: _SourceDocument = {
         "workspace": str(directory),
-        "workspace_id": workspace["workspace_id"],
+        "workspace_id": _string(workspace.get("workspace_id"), "workspace ID"),
         "workspace_sha256": workspace_sha256,
         "queue_sha256": queue_sha256,
         "state_sha256": state_sha256,
@@ -325,7 +369,7 @@ def build_missing_voice_reuse_plan(
                 "failed_source_is_non_playable_control": True,
             }
         )
-    body = {
+    body: JsonObject = {
         "schema": MISSING_VOICE_REUSE_PLAN_SCHEMA,
         "schema_version": MISSING_VOICE_REUSE_PLAN_VERSION,
         "character": character,
@@ -346,8 +390,8 @@ def build_missing_voice_reuse_plan(
     if inline_pause_ms is not None:
         body["candidate_mode"] = INLINE_PAUSE_MARKER
     plan_id = canonical_document_sha256(body)
-    plan = MissingVoiceReusePlan(plan_id, {**body, "plan_id": plan_id})
-    _validate_plan(plan)
+    document = _validate_plan({**body, "plan_id": plan_id})
+    plan = MissingVoiceReusePlan(plan_id, document)
     _assert_sources_unchanged(
         directory,
         workspace_sha256,
@@ -360,7 +404,9 @@ def build_missing_voice_reuse_plan(
     return plan
 
 
-def write_missing_voice_reuse_plan(plan, output_path):
+def write_missing_voice_reuse_plan(
+    plan: MissingVoiceReusePlan | JsonObject, output_path: str | Path
+) -> Path:
     document = _validate_plan(plan)
     try:
         return _write_document_no_replace(
@@ -370,26 +416,28 @@ def write_missing_voice_reuse_plan(plan, output_path):
         raise MissingVoiceReuseError(str(error)) from error
 
 
-def load_missing_voice_reuse_plan(path):
+def load_missing_voice_reuse_plan(path: str | Path) -> MissingVoiceReusePlan:
     try:
         document = _load_document(path, "missing-voice reuse plan")
     except CohortReviewError as error:
         raise MissingVoiceReuseError(str(error)) from error
-    document = _validate_plan(document)
-    return MissingVoiceReusePlan(document["plan_id"], document)
+    validated = _validate_plan(_object(document, "Missing-voice reuse plan"))
+    return MissingVoiceReusePlan(_string(validated["plan_id"], "plan_id"), validated)
 
 
 def prepare_missing_voice_reuse_candidate_workspace(
-    plan,
-    candidate_id,
-    import_directory,
-    input_root,
-    workspaces_root,
-):
+    plan: MissingVoiceReusePlan | JsonObject,
+    candidate_id: str,
+    import_directory: str | Path,
+    input_root: str | Path,
+    workspaces_root: str | Path,
+) -> MissingVoiceReuseCandidateWorkspace:
     """Create one isolated sample-only workspace for an exact reuse candidate."""
     document = _validate_plan(plan)
     candidate = _candidate(document, candidate_id)
-    source_directory = Path(document["source"]["workspace"]).resolve()
+    source = _object(document["source"], "plan source")
+    sample_ids = _strings(document["comparison_sample_queue_ids"], "sample queue IDs")
+    source_directory = Path(_string(source["workspace"], "source workspace")).resolve()
     input_directory, input_created = _publish_candidate_input(
         document, candidate, source_directory, input_root
     )
@@ -416,11 +464,17 @@ def prepare_missing_voice_reuse_candidate_workspace(
             workspaces_root,
             story_index=source_directory / "inputs/story-index.jsonl",
             voice_manifest=input_directory / "manifest.json",
-            narrator_character=source_workspace["narrator_character"],
-            backend=run_config["backend"],
-            model=run_config["model"],
-            generation_profile=run_config["generation_profile"],
-            missing_voice_policy=run_config.get("missing_voice_policy"),
+            narrator_character=_optional_string(
+                source_workspace.get("narrator_character"), "narrator character"
+            ),
+            backend=_optional_string(run_config.get("backend"), "backend"),
+            model=_optional_string(run_config.get("model"), "model"),
+            generation_profile=_optional_string(
+                run_config.get("generation_profile"), "generation profile"
+            ),
+            missing_voice_policy=_optional_object(
+                run_config.get("missing_voice_policy"), "missing-voice policy"
+            ),
             failure_repair_policy=_candidate_failure_repair_policy(document),
         )
         created = target
@@ -434,29 +488,33 @@ def prepare_missing_voice_reuse_candidate_workspace(
             carry_failed_controls(
                 source_directory,
                 target.directory,
-                tuple(document["comparison_sample_queue_ids"]),
+                tuple(
+                    _strings(
+                        document["comparison_sample_queue_ids"], "sample queue IDs"
+                    )
+                ),
             )
     except (AuthoringWorkbenchError, FailedControlCarryError) as error:
         raise MissingVoiceReuseError(str(error)) from error
     return MissingVoiceReuseCandidateWorkspace(
-        document["plan_id"],
-        candidate["candidate_id"],
+        _string(document["plan_id"], "plan_id"),
+        _string(candidate["candidate_id"], "candidate_id"),
         input_directory,
         created.directory,
         input_created,
         created.created,
-        tuple(document["comparison_sample_queue_ids"]),
+        tuple(sample_ids),
     )
 
 
 def build_missing_voice_reuse_candidate_command(
-    plan,
-    candidate_id,
-    workspace_directory,
+    plan: MissingVoiceReusePlan | JsonObject,
+    candidate_id: str,
+    workspace_directory: str | Path,
     *,
-    retries=0,
-    seed=0,
-):
+    retries: int = 0,
+    seed: int = 0,
+) -> list[str]:
     """Return one exact sample-only generation command for a candidate workspace."""
     document = _validate_plan(plan)
     candidate = _candidate(document, candidate_id)
@@ -467,15 +525,19 @@ def build_missing_voice_reuse_candidate_command(
         )
     except AuthoringWorkbenchError as error:
         raise MissingVoiceReuseError(str(error)) from error
-    source_workspace = Path(document["source"]["workspace"])
+    source_info = _object(document["source"], "plan source")
+    sample_ids = _strings(document["comparison_sample_queue_ids"], "sample queue IDs")
+    source_workspace = Path(_string(source_info["workspace"], "source workspace"))
     try:
-        _source_directory, source, _source_sha256 = load_workspace_authority(
+        _source_directory, source_document, _source_sha256 = load_workspace_authority(
             source_workspace
         )
     except AuthoringWorkbenchError as error:
         raise MissingVoiceReuseError(str(error)) from error
+    workspace_run = _object(workspace.get("run_config"), "candidate run config")
+    source_run = _object(source_document.get("run_config"), "source run config")
     for key in ("backend", "model", "generation_profile"):
-        if workspace.get("run_config", {}).get(key) != source["run_config"].get(key):
+        if workspace_run.get(key) != source_run.get(key):
             raise MissingVoiceReuseError(
                 "Missing-voice candidate run configuration differs from its source"
             )
@@ -493,7 +555,7 @@ def build_missing_voice_reuse_candidate_command(
     try:
         command = generation_command(
             directory,
-            queue_ids=tuple(document["comparison_sample_queue_ids"]),
+            queue_ids=tuple(sample_ids),
             retries=retries,
             seed=seed,
         )
@@ -504,7 +566,9 @@ def build_missing_voice_reuse_candidate_command(
         for index, value in enumerate(command[:-1])
         if value == "--queue-id"
     )
-    if observed_ids != tuple(document["comparison_sample_queue_ids"]):
+    if observed_ids != tuple(
+        _strings(document["comparison_sample_queue_ids"], "sample queue IDs")
+    ):
         raise MissingVoiceReuseError(
             "Missing-voice candidate generation scope differs from the plan"
         )
@@ -512,14 +576,15 @@ def build_missing_voice_reuse_candidate_command(
         raise MissingVoiceReuseError(
             "Missing-voice candidate command must not regenerate existing audio"
         )
-    return command
+    return [str(value) for value in command]
 
 
-def _candidate(document, candidate_id):
+def _candidate(document: Mapping[str, object], candidate_id: str) -> JsonObject:
+    candidates = _objects(document["candidates"], "plan candidates")
     matches = [
         candidate
-        for candidate in document["candidates"]
-        if candidate["candidate_id"] == candidate_id
+        for candidate in candidates
+        if candidate.get("candidate_id") == candidate_id
     ]
     if len(matches) != 1:
         raise MissingVoiceReuseError(
@@ -528,22 +593,38 @@ def _candidate(document, candidate_id):
     return matches[0]
 
 
-def _require_fresh_plan(document):
-    cohorts = {rule["label"]: tuple(rule["portraits"]) for rule in document["cohorts"]}
+def _require_fresh_plan(document: Mapping[str, object]) -> None:
+    rules = _objects(document["cohorts"], "plan cohorts")
+    cohorts = {
+        _string(rule["label"], "cohort label"): tuple(
+            _strings(rule["portraits"], "cohort portraits")
+        )
+        for rule in rules
+    }
+    candidates = _objects(document["candidates"], "plan candidates")
+    targets = _objects(document["targets"], "plan targets")
     fresh = build_missing_voice_reuse_plan(
-        document["source"]["workspace"],
-        document["character"],
+        _string(
+            _object(document["source"], "plan source")["workspace"], "source workspace"
+        ),
+        _string(document["character"], "character"),
         cohorts=cohorts,
         candidate_voice_characters=tuple(
-            candidate["voice_character"] for candidate in document["candidates"]
+            _string(candidate["voice_character"], "candidate voice")
+            for candidate in candidates
         ),
         failed_queue_ids=(
-            tuple(target["queue_id"] for target in document["targets"])
+            tuple(_string(target["queue_id"], "queue ID") for target in targets)
             if document.get("target_mode", "missing") == "failed"
             else None
         ),
         inline_pause_ms=(
-            document["candidates"][0]["render_hypothesis"]["pause_ms"]
+            _int(
+                _object(candidates[0]["render_hypothesis"], "render hypothesis")[
+                    "pause_ms"
+                ],
+                "pause_ms",
+            )
             if document.get("candidate_mode") == INLINE_PAUSE_MARKER
             else None
         ),
@@ -554,25 +635,29 @@ def _require_fresh_plan(document):
         )
 
 
-def _candidate_binding(document, candidate):
-    overrides = {
-        queue_id: candidate["voice_character"]
-        for queue_id in document["comparison_sample_queue_ids"]
-    }
+def _candidate_binding(
+    document: Mapping[str, object], candidate: JsonObject
+) -> JsonObject:
+    source = _object(document["source"], "plan source")
+    sample_ids = _strings(document["comparison_sample_queue_ids"], "sample queue IDs")
+    rules = _objects(document["cohorts"], "plan cohorts")
+    voice_character = _string(candidate["voice_character"], "candidate voice")
+    overrides = {queue_id: voice_character for queue_id in sample_ids}
     binding = {
         "schema": MISSING_VOICE_REUSE_BINDING_SCHEMA,
         "schema_version": MISSING_VOICE_REUSE_BINDING_VERSION,
         "mode": "comparison_sample_only",
         "plan_id": document["plan_id"],
         "candidate_id": candidate["candidate_id"],
-        "source_voice_manifest_sha256": document["source"]["voice_manifest_sha256"],
-        "source_workspace_id": document["source"]["workspace_id"],
-        "source_workspace_sha256": document["source"]["workspace_sha256"],
+        "source_voice_manifest_sha256": source["voice_manifest_sha256"],
+        "source_workspace_id": source["workspace_id"],
+        "source_workspace_sha256": source["workspace_sha256"],
         "candidate_voice_character": candidate["voice_character"],
         "candidate_reference_sha256s": [
-            reference["sha256"] for reference in candidate["ordered_references"]
+            reference["sha256"]
+            for reference in _objects(candidate["ordered_references"], "references")
         ],
-        "cohort_ids": sorted(rule["cohort_id"] for rule in document["cohorts"]),
+        "cohort_ids": sorted(_string(rule["cohort_id"], "cohort ID") for rule in rules),
         "queue_voice_overrides": overrides,
         "queue_voice_overrides_sha256": queue_voice_overrides_sha256(overrides),
         "authority": (
@@ -585,23 +670,32 @@ def _candidate_binding(document, candidate):
             candidate["render_hypothesis"]
         )
     if document.get("target_mode", "missing") == "failed":
-        target_by_id = {target["queue_id"]: target for target in document["targets"]}
+        target_by_id = {
+            _string(target["queue_id"], "queue ID"): target
+            for target in _objects(document["targets"], "plan targets")
+        }
         binding.update(
             {
                 "target_mode": "failed",
                 "source_failed_state_item_sha256s": {
                     queue_id: target_by_id[queue_id]["source_state_item_sha256"]
-                    for queue_id in document["comparison_sample_queue_ids"]
+                    for queue_id in sample_ids
                 },
             }
         )
     return binding
 
 
-def _publish_candidate_input(document, candidate, source_directory, input_root):
+def _publish_candidate_input(
+    document: Mapping[str, object],
+    candidate: JsonObject,
+    source_directory: Path,
+    input_root: str | Path,
+) -> tuple[Path, bool]:
     root = Path(input_root).expanduser().resolve()
+    source_info = _object(document["source"], "plan source")
     root.mkdir(parents=True, exist_ok=True)
-    name = f"missing-voice-reuse-{document['plan_id'][:24]}-{candidate['candidate_id'][:16]}"
+    name = f"missing-voice-reuse-{_string(document['plan_id'], 'plan_id')[:24]}-{_string(candidate['candidate_id'], 'candidate_id')[:16]}"
     destination = contained_workspace_path(
         root, Path(name), "Missing-voice candidate input"
     )
@@ -615,15 +709,16 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
     with staged_directory(root, prefix=".missing-voice-reuse-staging-") as staging:
         source_manifest = source_directory / "inputs/voice/manifest.json"
         source_payload = source_manifest.read_bytes()
-        if (
-            hashlib.sha256(source_payload).hexdigest()
-            != document["source"]["voice_manifest_sha256"]
+        if hashlib.sha256(source_payload).hexdigest() != _string(
+            source_info["voice_manifest_sha256"], "voice manifest hash"
         ):
             raise MissingVoiceReuseError(
                 "Missing-voice source manifest changed after planning"
             )
         try:
-            manifest = json.loads(source_payload.decode("utf-8"))
+            manifest = _object(
+                json.loads(source_payload.decode("utf-8")), "source voice manifest"
+            )
             _metadata, voices = load_voice_manifest(source_manifest, allow_legacy=False)
         except (
             UnicodeDecodeError,
@@ -677,7 +772,7 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
             "schema_version": MISSING_VOICE_REUSE_CANDIDATE_BUNDLE_VERSION,
             "plan_id": document["plan_id"],
             "candidate_id": candidate["candidate_id"],
-            "source_voice_manifest_sha256": document["source"]["voice_manifest_sha256"],
+            "source_voice_manifest_sha256": source_info["voice_manifest_sha256"],
             "inventory": inventory,
         }
         atomic_write_json(
@@ -690,7 +785,7 @@ def _publish_candidate_input(document, candidate, source_directory, input_root):
     return destination, True
 
 
-def _replaceable_predecessor_reuse_binding(manifest):
+def _replaceable_predecessor_reuse_binding(manifest: JsonObject) -> bool:
     """Allow a comparison layer over an exact, zero-override negative decision."""
     predecessor = manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD)
     if predecessor is None:
@@ -720,7 +815,11 @@ def _replaceable_predecessor_reuse_binding(manifest):
     )
 
 
-def _validate_candidate_input(directory, document, candidate):
+def _validate_candidate_input(
+    directory: str | Path,
+    document: Mapping[str, object],
+    candidate: JsonObject,
+) -> None:
     directory = Path(directory).resolve()
     bundle_path = directory / "bundle.json"
     try:
@@ -790,15 +889,19 @@ def _validate_candidate_input(directory, document, candidate):
     binding = _candidate_binding(document, candidate)
     if manifest.get(MISSING_VOICE_REUSE_BINDING_FIELD) != binding:
         raise MissingVoiceReuseError("Missing-voice candidate manifest binding changed")
-    expected = binding["queue_voice_overrides"]
+    expected = _object(binding["queue_voice_overrides"], "queue voice overrides")
     if any(overrides.get(queue_id) != voice for queue_id, voice in expected.items()):
         raise MissingVoiceReuseError("Missing-voice candidate overrides changed")
 
 
-def parse_cohort_arguments(values):
+def parse_cohort_arguments(values: object) -> dict[str, tuple[str, ...]]:
     """Parse repeated LABEL=PORTRAIT[,PORTRAIT] CLI arguments."""
     cohorts = {}
-    for value in values or ():
+    if values is None:
+        values = ()
+    if not isinstance(values, (list, tuple)):
+        raise MissingVoiceReuseError("Missing-voice cohorts must be a text array")
+    for value in values:
         if not isinstance(value, str) or "=" not in value:
             raise MissingVoiceReuseError(
                 "Missing-voice cohort must use LABEL=PORTRAIT[,PORTRAIT]"
@@ -822,12 +925,12 @@ def parse_cohort_arguments(values):
     return cohorts
 
 
-def _cohort_rules(cohorts):
+def _cohort_rules(cohorts: object) -> JsonObjects:
     if not isinstance(cohorts, dict) or not cohorts:
         raise MissingVoiceReuseError("Missing-voice cohorts must be a non-empty map")
-    seen_portraits = set()
-    rules = []
-    for label, values in sorted(cohorts.items()):
+    seen_portraits: set[str] = set()
+    rules: JsonObjects = []
+    for label, values in sorted(cohorts.items(), key=lambda item: str(item[0])):
         label = _text(label, "Missing-voice cohort label")
         if not isinstance(values, (list, tuple, set)) or not values:
             raise MissingVoiceReuseError(
@@ -842,12 +945,12 @@ def _cohort_rules(cohorts):
                 "Missing-voice cohorts overlap portraits: " + ", ".join(sorted(overlap))
             )
         seen_portraits.update(portraits)
-        identity = {"label": label, "portraits": portraits}
+        identity: JsonObject = {"label": label, "portraits": portraits}
         rules.append({**identity, "cohort_id": canonical_document_sha256(identity)})
     return rules
 
 
-def _candidate_names(values, *, minimum=2):
+def _candidate_names(values: object, *, minimum: int = 2) -> list[str]:
     if not isinstance(values, (list, tuple)) or len(values) < minimum:
         if minimum == 2:
             raise MissingVoiceReuseError(
@@ -863,7 +966,12 @@ def _candidate_names(values, *, minimum=2):
     return names
 
 
-def _inline_pause_candidates(candidates, samples, targets, pause_ms):
+def _inline_pause_candidates(
+    candidates: JsonObjects,
+    samples: JsonObjects,
+    targets: JsonObjects,
+    pause_ms: object,
+) -> JsonObjects:
     if len(samples) != 1:
         raise MissingVoiceReuseError(
             "Inline-pause hypothesis requires exactly one comparison sample"
@@ -917,17 +1025,22 @@ def _inline_pause_candidates(candidates, samples, targets, pause_ms):
     return enriched
 
 
-def _candidate_failure_repair_policy(document):
+def _candidate_failure_repair_policy(
+    document: Mapping[str, object],
+) -> FailureRepairPolicy | None:
     if document.get("candidate_mode") != INLINE_PAUSE_MARKER:
         return None
-    hypothesis = document["candidates"][0]["render_hypothesis"]
+    candidates = _objects(document["candidates"], "plan candidates")
+    hypothesis = _object(candidates[0]["render_hypothesis"], "render hypothesis")
     return FailureRepairPolicy(
-        inline_pause_queue_ids=tuple(document["comparison_sample_queue_ids"]),
-        inline_pause_ms=hypothesis["pause_ms"],
+        inline_pause_queue_ids=tuple(
+            _strings(document["comparison_sample_queue_ids"], "sample queue IDs")
+        ),
+        inline_pause_ms=_int(hypothesis["pause_ms"], "pause_ms"),
     )
 
 
-def _failed_queue_ids(values):
+def _failed_queue_ids(values: object) -> set[str]:
     if values is None:
         return set()
     if not isinstance(values, (list, tuple)) or not values:
@@ -938,7 +1051,12 @@ def _failed_queue_ids(values):
     return set(queue_ids)
 
 
-def _candidate_controls(manifest_path, voice_by_name, names, retired_names):
+def _candidate_controls(
+    manifest_path: Path,
+    voice_by_name: dict[str, VoiceManifestEntry],
+    names: list[str],
+    retired_names: set[str],
+) -> JsonObjects:
     root = manifest_path.parent.resolve()
     candidates = []
     for name in names:
@@ -981,9 +1099,11 @@ def _candidate_controls(manifest_path, voice_by_name, names, retired_names):
     return candidates
 
 
-def _cohort_for_portrait(rules, portrait, queue_id):
+def _cohort_for_portrait(rules: JsonObjects, portrait: str, queue_id: str) -> str:
     matches = [
-        rule["cohort_id"] for rule in rules if portrait in set(rule["portraits"])
+        _string(rule["cohort_id"], "cohort ID")
+        for rule in rules
+        if portrait in set(_strings(rule["portraits"], "cohort portraits"))
     ]
     if len(matches) != 1:
         raise MissingVoiceReuseError(
@@ -992,9 +1112,11 @@ def _cohort_for_portrait(rules, portrait, queue_id):
     return matches[0]
 
 
-def _comparison_samples(targets):
+def _comparison_samples(targets: JsonObjects) -> JsonObjects:
     samples = []
-    for cohort_id in sorted({value["cohort_id"] for value in targets}):
+    for cohort_id in sorted(
+        {_string(value["cohort_id"], "cohort ID") for value in targets}
+    ):
         for bucket in LENGTH_BUCKETS:
             candidates = [
                 value
@@ -1024,10 +1146,60 @@ def _comparison_samples(targets):
     return samples
 
 
-def _validate_plan(plan):
+def _is_source_document(value: object) -> TypeIs[_SourceDocument]:
+    return isinstance(value, dict) and all(
+        isinstance(value.get(field), str)
+        for field in (
+            "workspace",
+            "workspace_id",
+            "workspace_sha256",
+            "queue_sha256",
+            "state_sha256",
+            "voice_manifest_sha256",
+            "story_index_sha256",
+        )
+    )
+
+
+def _is_plan_document(value: object) -> TypeIs[_PlanDocument]:
+    if not isinstance(value, dict):
+        return False
+    return (
+        isinstance(value.get("schema"), str)
+        and isinstance(value.get("schema_version"), int)
+        and isinstance(value.get("plan_id"), str)
+        and isinstance(value.get("character"), str)
+        and _is_source_document(value.get("source"))
+        and isinstance(value.get("policy"), dict)
+        and all(
+            isinstance(value.get(field), int)
+            for field in (
+                "cohort_count",
+                "target_count",
+                "candidate_count",
+                "comparison_sample_count",
+            )
+        )
+        and all(
+            isinstance(value.get(field), list)
+            and all(isinstance(item, dict) for item in value[field])
+            for field in ("cohorts", "targets", "candidates", "comparison_samples")
+        )
+        and isinstance(value.get("comparison_sample_queue_ids"), list)
+        and all(isinstance(item, str) for item in value["comparison_sample_queue_ids"])
+        and ("target_mode" not in value or isinstance(value.get("target_mode"), str))
+        and (
+            "candidate_mode" not in value
+            or isinstance(value.get("candidate_mode"), str)
+        )
+    )
+
+
+def _validate_plan(
+    plan: MissingVoiceReusePlan | JsonObject,
+) -> _PlanDocument:
     document = plan.document if isinstance(plan, MissingVoiceReusePlan) else plan
-    if not isinstance(document, dict):
-        raise MissingVoiceReuseError("Missing-voice reuse plan must be an object")
+    document = _object(document, "Missing-voice reuse plan")
     if (
         document.get("schema") != MISSING_VOICE_REUSE_PLAN_SCHEMA
         or document.get("schema_version") != MISSING_VOICE_REUSE_PLAN_VERSION
@@ -1038,20 +1210,19 @@ def _validate_plan(plan):
         {key: value for key, value in document.items() if key != "plan_id"}
     ):
         raise MissingVoiceReuseError("Missing-voice reuse plan identity is invalid")
-    targets = document.get("targets")
-    samples = document.get("comparison_samples")
-    candidates = document.get("candidates")
-    cohorts = document.get("cohorts")
-    if not all(
-        isinstance(value, list) and value
-        for value in (targets, samples, candidates, cohorts)
-    ):
+    targets = _objects(document.get("targets"), "plan targets")
+    samples = _objects(document.get("comparison_samples"), "plan samples")
+    candidates = _objects(document.get("candidates"), "plan candidates")
+    cohorts = _objects(document.get("cohorts"), "plan cohorts")
+    if not all((targets, samples, candidates, cohorts)):
         raise MissingVoiceReuseError("Missing-voice reuse plan is incomplete")
-    queue_ids = [value.get("queue_id") for value in targets]
+    queue_ids = [_string(value.get("queue_id"), "queue ID") for value in targets]
     if queue_ids != sorted(set(queue_ids)):
         raise MissingVoiceReuseError("Missing-voice targets are not canonical")
     target_ids = set(queue_ids)
-    sample_ids = [value.get("queue_id") for value in samples]
+    sample_ids = [
+        _string(value.get("queue_id"), "sample queue ID") for value in samples
+    ]
     if len(sample_ids) != len(set(sample_ids)) or not set(sample_ids).issubset(
         target_ids
     ):
@@ -1062,7 +1233,9 @@ def _validate_plan(plan):
         raise MissingVoiceReuseError("Missing-voice reuse counts are inconsistent")
     if document.get("comparison_sample_queue_ids") != sample_ids:
         raise MissingVoiceReuseError("Missing-voice sample order changed")
-    candidate_ids = [value.get("candidate_id") for value in candidates]
+    candidate_ids = [
+        _string(value.get("candidate_id"), "candidate ID") for value in candidates
+    ]
     target_mode = document.get("target_mode", "missing")
     if target_mode not in {"missing", "failed"}:
         raise MissingVoiceReuseError("Missing-voice target mode is invalid")
@@ -1083,51 +1256,71 @@ def _validate_plan(plan):
                 "Missing-voice candidate hypothesis mode is absent"
             )
     elif candidate_mode == INLINE_PAUSE_MARKER and target_mode == "failed":
-        target_by_id = {target["queue_id"]: target for target in targets}
+        target_by_id = {
+            _string(target["queue_id"], "queue ID"): target for target in targets
+        }
         for candidate in candidates:
-            hypothesis = candidate.get("render_hypothesis")
-            prompts = (
-                hypothesis.get("prompts") if isinstance(hypothesis, dict) else None
+            hypothesis_value = candidate.get("render_hypothesis")
+            hypothesis = (
+                _object(hypothesis_value, "render hypothesis")
+                if hypothesis_value is not None
+                else None
             )
+            prompts = hypothesis.get("prompts") if hypothesis is not None else None
             if (
-                not isinstance(hypothesis, dict)
+                hypothesis is None
                 or hypothesis.get("strategy") != INLINE_PAUSE_MARKER
                 or not isinstance(hypothesis.get("pause_ms"), int)
                 or isinstance(hypothesis.get("pause_ms"), bool)
-                or not 50 <= hypothesis["pause_ms"] <= 1000
+                or not 50 <= _int(hypothesis["pause_ms"], "pause_ms") <= 1000
                 or not isinstance(prompts, list)
-                or [prompt.get("queue_id") for prompt in prompts] != sample_ids
+                or [
+                    _string(
+                        _object(prompt, "inline-pause prompt").get("queue_id"),
+                        "queue ID",
+                    )
+                    for prompt in prompts
+                ]
+                != sample_ids
             ):
                 raise MissingVoiceReuseError(
                     "Missing-voice inline-pause hypothesis is invalid"
                 )
-            for prompt in prompts:
-                target = target_by_id[prompt["queue_id"]]
+            for prompt_value in prompts:
+                prompt = _object(prompt_value, "inline-pause prompt")
+                prompt_queue_id = _string(prompt.get("queue_id"), "queue ID")
+                target = target_by_id[prompt_queue_id]
                 if (
                     prompt.get("source_text_sha256") != target["text_sha256"]
                     or not isinstance(prompt.get("derived_prompt_sha256"), str)
-                    or len(prompt["derived_prompt_sha256"]) != 64
+                    or len(
+                        _string(prompt["derived_prompt_sha256"], "derived prompt hash")
+                    )
+                    != 64
                     or not isinstance(prompt.get("marker_count"), int)
                     or isinstance(prompt.get("marker_count"), bool)
-                    or prompt["marker_count"] < 1
+                    or _int(prompt["marker_count"], "marker count") < 1
                 ):
                     raise MissingVoiceReuseError(
                         "Missing-voice inline-pause prompt identity is invalid"
                     )
     else:
         raise MissingVoiceReuseError("Missing-voice candidate mode is invalid")
-    return copy.deepcopy(document)
+    validated = _object(copy.deepcopy(document), "Missing-voice reuse plan")
+    if not _is_plan_document(validated):
+        raise MissingVoiceReuseError("Missing-voice reuse plan fields are malformed")
+    return validated
 
 
 def _assert_sources_unchanged(
-    directory,
-    workspace_sha256,
-    queue_sha256,
-    state_sha256,
-    manifest_sha256,
-    story_sha256,
-    candidates,
-):
+    directory: Path,
+    workspace_sha256: str,
+    queue_sha256: str,
+    state_sha256: str,
+    manifest_sha256: str,
+    story_sha256: str,
+    candidates: JsonObjects,
+) -> None:
     checks = (
         (directory / "workspace.json", workspace_sha256, "workspace"),
         (directory / "queue.jsonl", queue_sha256, "queue"),
@@ -1146,15 +1339,55 @@ def _assert_sources_unchanged(
             )
     root = directory / "inputs/voice"
     for candidate in candidates:
-        for reference in candidate["ordered_references"]:
-            path = root / reference["path"]
-            if not path.is_file() or sha256_file(path) != reference["sha256"]:
+        for reference in _objects(candidate["ordered_references"], "references"):
+            path = root / _string(reference["path"], "reference path")
+            if not path.is_file() or sha256_file(path) != _string(
+                reference["sha256"], "reference hash"
+            ):
                 raise MissingVoiceReuseError(
                     "Missing-voice reuse reference changed while planning"
                 )
 
 
-def _text(value, label):
+def _object(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise MissingVoiceReuseError(f"{label} must be a JSON object")
+    return {key: item for key, item in value.items()}
+
+
+def _optional_object(value: object, label: str) -> JsonObject | None:
+    return None if value is None else _object(value, label)
+
+
+def _objects(value: object, label: str) -> JsonObjects:
+    if not isinstance(value, list):
+        raise MissingVoiceReuseError(f"{label} must be a JSON array")
+    return [_object(item, label) for item in value]
+
+
+def _string(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise MissingVoiceReuseError(f"{label} must be text")
+    return value
+
+
+def _optional_string(value: object, label: str) -> str | None:
+    return None if value is None else _string(value, label)
+
+
+def _strings(value: object, label: str) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        raise MissingVoiceReuseError(f"{label} must be a text array")
+    return [_string(item, label) for item in value]
+
+
+def _int(value: object, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise MissingVoiceReuseError(f"{label} must be an integer")
+    return value
+
+
+def _text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise MissingVoiceReuseError(f"{label} must be non-empty text")
     return value.strip()

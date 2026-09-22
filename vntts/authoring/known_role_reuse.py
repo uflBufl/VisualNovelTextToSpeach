@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import shutil
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypedDict
@@ -662,7 +663,7 @@ def _required_text(value: object, label: str) -> str:
     return value.strip()
 
 
-def _object_field(document: JsonObject, field: str, label: str) -> JsonObject:
+def _object_field(document: Mapping[str, object], field: str, label: str) -> JsonObject:
     value = document.get(field)
     if not isinstance(value, dict):
         raise KnownRoleReuseError(f"{label} is invalid")
@@ -675,7 +676,7 @@ def _object_list(value: object, label: str) -> list[JsonObject]:
     return value
 
 
-def _text_field(document: JsonObject, field: str, label: str) -> str:
+def _text_field(document: Mapping[str, object], field: str, label: str) -> str:
     return _required_text(document.get(field), label)
 
 
