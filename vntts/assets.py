@@ -1,9 +1,11 @@
 import json
 import os
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
+from typing import Any, Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -44,12 +46,18 @@ class ModelAsset:
     expected_hash: str | None = None
 
     @property
-    def directory_name(self):
+    def directory_name(self) -> str:
         return self.name.replace("/", "--")
 
 
 class ModelAssetManager:
-    def __init__(self, storage_root=None, *, opener=None, catalog_loader=None):
+    def __init__(
+        self,
+        storage_root: str | os.PathLike[str] | None = None,
+        *,
+        opener: Callable[..., Any] | None = None,
+        catalog_loader: Callable[[str], ModelAsset] | None = None,
+    ) -> None:
         self.storage_root = (
             Path(storage_root or get_local_data_directory() / "models")
             .expanduser()
@@ -59,36 +67,43 @@ class ModelAssetManager:
         self.catalog_loader = catalog_loader or load_coqui_model_asset
 
     @property
-    def coqui_cache_root(self):
+    def coqui_cache_root(self) -> Path:
         return self.storage_root / "tts"
 
-    def configure_environment(self):
+    def configure_environment(self) -> Path:
         os.environ["TTS_HOME"] = str(self.storage_root)
         return self.storage_root
 
-    def configure_huggingface_environment(self):
+    def configure_huggingface_environment(self) -> Path:
         cache_root = self.storage_root / "huggingface"
         os.environ["HF_HOME"] = str(cache_root)
         return cache_root
 
-    def model_path(self, model_name):
+    def model_path(self, model_name: str) -> Path:
         return self.coqui_cache_root / model_name.replace("/", "--")
 
-    def _check_model_path(self, model_path):
+    def _check_model_path(self, model_path: Path) -> None:
         if any(
             path.is_symlink() or path.is_junction()
             for path in (self.coqui_cache_root, model_path)
         ):
             raise ModelIntegrityError("Managed model directory must not be an alias")
 
-    def is_ready(self, model_name):
+    @staticmethod
+    def _check_model_file(path: Path, filename: str) -> None:
+        if path.is_symlink() or path.is_junction():
+            raise ModelIntegrityError(
+                f"Managed model file must not be an alias: {filename}"
+            )
+
+    def is_ready(self, model_name: str) -> bool:
         try:
             self.validate(model_name)
         except AssetError:
             return False
         return True
 
-    def validate(self, model_name, *, asset=None):
+    def validate(self, model_name: str, *, asset: ModelAsset | None = None) -> Path:
         asset = asset or self.catalog_loader(model_name)
         model_path = self.model_path(model_name)
         self._check_model_path(model_path)
@@ -103,7 +118,7 @@ class ModelAssetManager:
                 payload = source.read(_ASSET_MANIFEST_READ_LIMIT + 1)
             if len(payload) > _ASSET_MANIFEST_READ_LIMIT:
                 raise ValueError("checksum manifest is too large")
-            manifest = json.loads(payload)
+            manifest: Any = json.loads(payload)
         except (OSError, ValueError) as error:
             raise ModelIntegrityError(
                 f"Unable to read model checksum manifest: {error}"
@@ -127,6 +142,7 @@ class ModelAssetManager:
                     f"Model checksum metadata is malformed: {filename}"
                 )
             path = model_path / filename
+            self._check_model_file(path, filename)
             if not path.is_file():
                 raise ModelIntegrityError(f"Model file is missing: {filename}")
             if path.stat().st_size != metadata.get("size"):
@@ -139,12 +155,12 @@ class ModelAssetManager:
 
     def download(
         self,
-        model_name,
+        model_name: str,
         *,
-        progress=None,
-        cancel_event=None,
-        asset=None,
-    ):
+        progress: Callable[[int | None, str], object] | None = None,
+        cancel_event: Event | None = None,
+        asset: ModelAsset | None = None,
+    ) -> Path:
         progress = progress or (lambda _percent, _message: None)
         cancel_event = cancel_event or Event()
         asset = asset or self.catalog_loader(model_name)
@@ -165,6 +181,7 @@ class ModelAssetManager:
             if not filename:
                 raise AssetError(f"Model URL has no filename: {url}")
             output = model_path / filename
+            self._check_model_file(output, filename)
             expected_length = lengths[url]
             if output.is_file() and (
                 expected_length is None or output.stat().st_size == expected_length
@@ -191,7 +208,7 @@ class ModelAssetManager:
         progress(100, "Model download completed and checksums passed")
         return model_path
 
-    def is_ready_with_asset(self, model_name, asset):
+    def is_ready_with_asset(self, model_name: str, asset: ModelAsset) -> bool:
         try:
             self.validate(model_name, asset=asset)
         except AssetError:
@@ -200,14 +217,15 @@ class ModelAssetManager:
 
     def _download_file(
         self,
-        url,
-        output,
-        downloaded_before,
-        total_bytes,
-        progress,
-        cancel_event,
-    ):
+        url: str,
+        output: Path,
+        downloaded_before: int,
+        total_bytes: int,
+        progress: Callable[[int | None, str], object],
+        cancel_event: Event,
+    ) -> int:
         partial = output.with_suffix(f"{output.suffix}.part")
+        self._check_model_file(partial, partial.name)
         existing_bytes = partial.stat().st_size if partial.is_file() else 0
         headers = {"User-Agent": "VisualNovelTextToSpeech/0.1"}
         if existing_bytes:
@@ -239,7 +257,7 @@ class ModelAssetManager:
         partial.replace(output)
         return downloaded_before + output.stat().st_size
 
-    def _content_length(self, url):
+    def _content_length(self, url: str) -> int | None:
         request = Request(
             url,
             method="HEAD",
@@ -249,25 +267,28 @@ class ModelAssetManager:
             with self.opener(request, timeout=30) as response:
                 value = response.headers.get("Content-Length")
                 return int(value) if value else None
-        except Exception:
+        except (OSError, ValueError):
             return None
 
     @staticmethod
-    def _check_cancelled(cancel_event):
+    def _check_cancelled(cancel_event: Event) -> None:
         if cancel_event.is_set():
             raise ModelDownloadCancelled("Model download cancelled")
 
-    def _adopt_existing_model(self, model_path, asset):
+    def _adopt_existing_model(self, model_path: Path, asset: ModelAsset) -> None:
         required_files = [Path(urlparse(url).path).name for url in asset.urls]
-        if not model_path.is_dir() or not all(
-            (model_path / filename).is_file() for filename in required_files
-        ):
+        if not model_path.is_dir():
             raise ModelIntegrityError("Model is not downloaded")
+        for filename in required_files:
+            path = model_path / filename
+            self._check_model_file(path, filename)
+            if not path.is_file():
+                raise ModelIntegrityError("Model is not downloaded")
         self._validate_upstream_hash(model_path, asset)
         self._write_checksum_manifest(model_path, asset)
 
     @staticmethod
-    def _validate_upstream_hash(model_path, asset):
+    def _validate_upstream_hash(model_path: Path, asset: ModelAsset) -> None:
         if not asset.expected_hash:
             return
         hash_file = model_path / "hash.md5"
@@ -278,7 +299,7 @@ class ModelAssetManager:
             raise ModelIntegrityError("Model publisher checksum does not match")
 
     @staticmethod
-    def _write_checksum_manifest(model_path, asset):
+    def _write_checksum_manifest(model_path: Path, asset: ModelAsset) -> None:
         files = {}
         for url in asset.urls:
             filename = Path(urlparse(url).path).name
@@ -287,6 +308,7 @@ class ModelAssetManager:
                 raise ModelIntegrityError(
                     f"Downloaded model file is missing: {filename}"
                 )
+            ModelAssetManager._check_model_file(path, filename)
             files[filename] = {
                 "size": path.stat().st_size,
                 "sha256": sha256_file(path),
@@ -298,7 +320,7 @@ class ModelAssetManager:
 
 
 class VoicePackManager:
-    def __init__(self, storage_root=None):
+    def __init__(self, storage_root: str | os.PathLike[str] | None = None) -> None:
         self.storage_root = (
             Path(storage_root or get_local_data_directory() / "voice-packs")
             .expanduser()
@@ -306,7 +328,7 @@ class VoicePackManager:
         )
 
     @staticmethod
-    def _check_pack_path(pack_path):
+    def _check_pack_path(pack_path: Path) -> None:
         references_path = pack_path / "references"
         if any(
             path.is_symlink() or path.is_junction()
@@ -314,14 +336,21 @@ class VoicePackManager:
         ):
             raise VoiceManifestError("Managed voice pack directory must not be an alias")
 
-    def import_voice(self, character, reference_files, *, aliases=(), pack="custom"):
+    def import_voice(
+        self,
+        character: str,
+        reference_files: Sequence[str | os.PathLike[str]],
+        *,
+        aliases: tuple[str, ...] = (),
+        pack: str = "custom",
+    ) -> Path:
         character = (character or "").strip()
         if not character:
             raise VoiceManifestError("Character name is required")
         references = self._validate_reference_files(reference_files)
         pack_path = self.storage_root / slugify(pack, fallback="asset")
         self._check_pack_path(pack_path)
-        manifest_path = pack_path / "manifest.json"
+        manifest_path: Path = pack_path / "manifest.json"
         manifest = (
             read_json(manifest_path, None)
             if manifest_path.exists()
@@ -373,10 +402,15 @@ class VoicePackManager:
         self._write_voice_checksums(pack_path, manifest_path)
         return manifest_path
 
-    def import_pack(self, source_manifest, *, pack_name=None):
-        source_manifest = Path(source_manifest).expanduser().resolve()
-        registry = CharacterVoiceRegistry.from_file(source_manifest)
-        pack_name = pack_name or source_manifest.parent.name
+    def import_pack(
+        self,
+        source_manifest: str | os.PathLike[str],
+        *,
+        pack_name: str | None = None,
+    ) -> Path:
+        source_path = Path(source_manifest).expanduser().resolve()
+        registry = CharacterVoiceRegistry.from_file(source_path)
+        pack_name = pack_name or source_path.parent.name
         pack_path = self.storage_root / slugify(pack_name, fallback="asset")
         self._check_pack_path(pack_path)
         references_path = pack_path / "references"
@@ -407,14 +441,14 @@ class VoicePackManager:
                     "references": copied_references,
                 }
             )
-        entries.sort(key=lambda item: item["character"].casefold())
-        output_manifest = pack_path / "manifest.json"
+        entries.sort(key=lambda item: str(item["character"]).casefold())
+        output_manifest: Path = pack_path / "manifest.json"
         atomic_write_json(output_manifest, {"version": 2, "voices": entries})
         CharacterVoiceRegistry.from_file(output_manifest)
         self._write_voice_checksums(pack_path, output_manifest)
         return output_manifest
 
-    def validate(self, manifest_path):
+    def validate(self, manifest_path: str | os.PathLike[str]) -> Path:
         manifest_path = Path(manifest_path).expanduser().resolve()
         registry = CharacterVoiceRegistry.from_file(manifest_path)
         checksum_path = manifest_path.parent / asset_manifest_name
@@ -450,7 +484,9 @@ class VoicePackManager:
         return manifest_path
 
     @staticmethod
-    def _validate_reference_files(reference_files):
+    def _validate_reference_files(
+        reference_files: Sequence[str | os.PathLike[str]],
+    ) -> list[Path]:
         references = [Path(path).expanduser().resolve() for path in reference_files]
         if not references:
             raise VoiceManifestError("Select at least one voice reference")
@@ -464,7 +500,7 @@ class VoicePackManager:
         return references
 
     @staticmethod
-    def _write_voice_checksums(pack_path, manifest_path):
+    def _write_voice_checksums(pack_path: Path, manifest_path: Path) -> None:
         registry = CharacterVoiceRegistry.from_file(manifest_path)
         voices = {id(voice): voice for voice in registry.voices.values()}.values()
         files = {
@@ -482,7 +518,7 @@ class VoicePackManager:
         )
 
 
-def load_coqui_model_asset(model_name):
+def load_coqui_model_asset(model_name: str) -> ModelAsset:
     from TTS.utils.manage import ModelManager
 
     try:
@@ -504,7 +540,7 @@ def load_coqui_model_asset(model_name):
     )
 
 
-def read_json(path, default):
+def read_json(path: str | os.PathLike[str], default: Any) -> Any:
     path = Path(path)
     if path.is_symlink() or path.is_junction():
         return default

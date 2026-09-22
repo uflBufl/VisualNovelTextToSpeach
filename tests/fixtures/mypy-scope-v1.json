@@ -127,6 +127,7 @@
     "vntts/authoring/workspace_outcome_merge.py",
     "vntts/authoring/workspace_state.py",
     "vntts/authoring/workspace_voice_runtime.py",
+    "vntts/assets.py",
     "vntts/auto_advance.py",
     "vntts/auto_advance_policy.py",
     "vntts/chapter_voice_preload.py",

@@ -292,6 +292,59 @@ class ModelAssetManagerTest(unittest.TestCase):
             with self.assertRaisesRegex(ModelIntegrityError, "directory"):
                 manager.download(asset.name, asset=asset)
 
+    def test_model_download_rejects_aliased_model_file(self):
+        asset = self.create_asset()
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory)
+            model_path = manager.model_path(asset.name)
+            model_path.mkdir(parents=True)
+            outside = Path(temporary_directory) / "outside-model.pth"
+            outside.write_bytes(b"model-weights")
+            symlink_or_skip(model_path / "model.pth", outside)
+            (model_path / "hash.md5").write_text(
+                "publisher-hash\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ModelIntegrityError, "file must not be an alias"):
+                manager.download(asset.name, asset=asset)
+
+    def test_model_download_rejects_aliased_partial_file(self):
+        asset = self.create_asset()
+        opener = MemoryOpener(
+            {
+                asset.urls[0]: b"model-weights",
+                asset.urls[1]: b"publisher-hash\n",
+            }
+        )
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory, opener=opener)
+            model_path = manager.model_path(asset.name)
+            model_path.mkdir(parents=True)
+            outside = Path(temporary_directory) / "outside-partial"
+            outside.write_bytes(b"external")
+            symlink_or_skip(model_path / "model.pth.part", outside)
+
+            with self.assertRaisesRegex(ModelIntegrityError, "file must not be an alias"):
+                manager.download(asset.name, asset=asset)
+
+            self.assertEqual(outside.read_bytes(), b"external")
+
+    def test_content_length_only_hides_expected_probe_failures(self):
+        manager = ModelAssetManager(
+            opener=lambda _request, timeout: MemoryResponse(
+                b"", headers={"Content-Length": "invalid"}
+            )
+        )
+        self.assertIsNone(manager._content_length("https://models.invalid/model"))
+
+        def fail(_request, timeout):
+            raise RuntimeError("programming error")
+
+        manager = ModelAssetManager(opener=fail)
+        with self.assertRaisesRegex(RuntimeError, "programming error"):
+            manager._content_length("https://models.invalid/model")
+
 
 class VoicePackManagerTest(unittest.TestCase):
     def test_import_voice_preserves_invalid_existing_manifest(self):

@@ -263,6 +263,7 @@ files = [
     "vntts/controller.py",
     "vntts/controller_components.py",
     "vntts/cuda_probe.py",
+    "vntts/assets.py",
     "vntts/asset_ui.py",
     "vntts/async_ui.py",
     "vntts/calibration.py",
