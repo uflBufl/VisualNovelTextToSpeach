@@ -17,6 +17,7 @@ from vntts.voices import CharacterVoiceRegistry, VoiceManifestError
 
 asset_manifest_name = "vntts-asset.json"
 supported_audio_extensions = {".flac", ".m4a", ".mp3", ".ogg", ".wav"}
+_ASSET_MANIFEST_READ_LIMIT = 64 * 1024
 
 
 class AssetError(RuntimeError):
@@ -87,8 +88,14 @@ class ModelAssetManager:
             self._adopt_existing_model(model_path, asset)
 
         try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
+            if manifest_path.is_symlink() or manifest_path.is_junction():
+                raise ValueError("checksum manifest is an alias")
+            with manifest_path.open("rb") as source:
+                payload = source.read(_ASSET_MANIFEST_READ_LIMIT + 1)
+            if len(payload) > _ASSET_MANIFEST_READ_LIMIT:
+                raise ValueError("checksum manifest is too large")
+            manifest = json.loads(payload)
+        except (OSError, ValueError) as error:
             raise ModelIntegrityError(
                 f"Unable to read model checksum manifest: {error}"
             ) from error

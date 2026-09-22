@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from unittest.mock import patch
 
+from tests.symlink_support import symlink_or_skip
 from vntts.assets import (
     ModelAsset,
     ModelAssetManager,
@@ -232,6 +233,46 @@ class ModelAssetManagerTest(unittest.TestCase):
                         ModelIntegrityError, "malformed|version"
                     ):
                         manager.validate(asset.name, asset=asset)
+
+    def test_model_validation_rejects_aliased_checksum_manifest(self):
+        asset = self.create_asset()
+        opener = MemoryOpener(
+            {
+                asset.urls[0]: b"model-weights",
+                asset.urls[1]: b"publisher-hash\n",
+            }
+        )
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory, opener=opener)
+            model_path = manager.download(asset.name, asset=asset)
+            manifest_path = model_path / "vntts-asset.json"
+            outside = Path(temporary_directory) / "outside-manifest.json"
+            outside.write_bytes(manifest_path.read_bytes())
+            manifest_path.unlink()
+            symlink_or_skip(manifest_path, outside)
+
+            with self.assertRaisesRegex(ModelIntegrityError, "manifest"):
+                manager.validate(asset.name, asset=asset)
+
+    def test_model_validation_rejects_oversized_checksum_manifest(self):
+        asset = self.create_asset()
+        opener = MemoryOpener(
+            {
+                asset.urls[0]: b"model-weights",
+                asset.urls[1]: b"publisher-hash\n",
+            }
+        )
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory, opener=opener)
+            model_path = manager.download(asset.name, asset=asset)
+            manifest_path = model_path / "vntts-asset.json"
+            manifest_path.write_text(
+                " " * (64 * 1024) + manifest_path.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ModelIntegrityError, "manifest"):
+                manager.validate(asset.name, asset=asset)
 
 
 class VoicePackManagerTest(unittest.TestCase):
