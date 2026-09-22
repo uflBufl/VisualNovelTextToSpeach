@@ -76,6 +76,7 @@
     "vntts/authoring/queue_builder.py",
     "vntts/authoring/queue_extension.py",
     "vntts/authoring/reference_composite.py",
+    "vntts/authoring/reference_render_comparison.py",
     "vntts/authoring/reference_selection.py",
     "vntts/authoring/reconciliation.py",
     "vntts/authoring/reconciliation_cli.py",

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol, TypeAlias, TypedDict
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -25,6 +28,7 @@ from vntts.authoring.failure_reference_preview import (
     FailureReferencePreviewService,
 )
 from vntts.authoring.listening import (
+    ListeningSession,
     ModelListeningError,
     aggregate_listening_report,
     create_listening_session_from_reports,
@@ -32,15 +36,48 @@ from vntts.authoring.listening import (
 )
 from vntts.authoring.publication import rename_directory_no_replace, staged_directory
 from vntts.document_identity import canonical_document_sha256, is_lowercase_sha256
+from vntts.synthesis import SynthesisChunkStream, SynthesisRequest
+from vntts.voices import CharacterVoiceRegistry
 
 REFERENCE_RENDER_INPUT_SCHEMA = "vntts.authoring-reference-render-input"
 REFERENCE_RENDER_INPUT_VERSION = 1
 REFERENCE_RENDER_SCHEMA = "vntts.authoring-reference-render-comparison"
 REFERENCE_RENDER_VERSION = 1
+JsonDocument: TypeAlias = dict[str, object]
+
+
+class _PreviewBackend(Protocol):
+    registry: CharacterVoiceRegistry
+
+    def render(self, request: SynthesisRequest) -> SynthesisChunkStream: ...
+
+
+class _PreviewBackendFactory(Protocol):
+    def __call__(
+        self,
+        name: str,
+        registry: CharacterVoiceRegistry,
+        cache_root: Path,
+        *,
+        model_name: str | None = None,
+        startup_cancellation: threading.Event | None = None,
+    ) -> _PreviewBackend: ...
 
 
 class ReferenceRenderComparisonError(RuntimeError):
     """An alternative-reference comparison is malformed or unsafe."""
+
+
+class _ReferenceRenderSample(TypedDict):
+    queue_id: str
+    case_group_id: str
+    candidate_group_id: str
+    candidate_id: str
+
+
+class _ReferenceRenderArm(TypedDict):
+    arm_id: str
+    samples: list[_ReferenceRenderSample]
 
 
 @dataclass(frozen=True)
@@ -49,7 +86,7 @@ class ReferenceRenderPlan:
     sha256: str
     audit_directory: Path
     audit_id: str
-    arms: tuple[dict, ...]
+    arms: tuple[_ReferenceRenderArm, ...]
     queue_ids: tuple[str, ...]
 
 
@@ -74,7 +111,7 @@ class ReferenceRenderSelection:
     decision_set_id: str
     created: bool
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "audit_directory": str(self.audit_directory),
             "audit_id": self.audit_id,
@@ -88,7 +125,7 @@ class ReferenceRenderSelection:
         }
 
 
-def load_reference_render_plan(path):
+def load_reference_render_plan(path: str | Path) -> ReferenceRenderPlan:
     """Load a checksum-bound operator plan for exact cases and reference arms."""
     source = Path(path).expanduser()
     if source.is_symlink():
@@ -124,16 +161,19 @@ def load_reference_render_plan(path):
     if document["audit_id"] != audit.audit_id:
         raise ReferenceRenderComparisonError("Reference render audit identity changed")
     audit_document = _read_audit_document(audit_directory)
-    groups = {value["group_id"]: value for value in audit_document["groups"]}
+    groups = {
+        _required_text(value.get("group_id"), "audit group ID"): value
+        for value in _documents(audit_document.get("groups"), "audit groups")
+    }
     arms = document["arms"]
     if not isinstance(arms, list) or len(arms) < 2:
         raise ReferenceRenderComparisonError(
             "Reference render plan requires at least two arms"
         )
-    parsed_arms = []
+    parsed_arms: list[_ReferenceRenderArm] = []
     arm_ids = set()
     expected_queue_ids = None
-    selections_by_queue_id = {}
+    selections_by_queue_id: dict[str, set[tuple[str, str]]] = {}
     for arm_index, arm in enumerate(arms, start=1):
         if not isinstance(arm, dict) or set(arm) != {"arm_id", "samples"}:
             raise ReferenceRenderComparisonError(
@@ -148,7 +188,7 @@ def load_reference_render_plan(path):
             raise ReferenceRenderComparisonError(
                 f"Reference render arm {arm_id} has no samples"
             )
-        parsed_samples = []
+        parsed_samples: list[_ReferenceRenderSample] = []
         queue_ids = []
         for sample_index, sample in enumerate(samples, start=1):
             if not isinstance(sample, dict) or set(sample) != {
@@ -173,13 +213,17 @@ def load_reference_render_plan(path):
                     f"Reference render group is absent for {queue_id}"
                 )
             if queue_id not in {
-                value["queue_id"] for value in case_group.get("cases", [])
+                _required_text(value.get("queue_id"), "queue ID")
+                for value in _documents(case_group.get("cases"), "audit cases")
             }:
                 raise ReferenceRenderComparisonError(
                     f"Reference render case is absent for {queue_id}"
                 )
             if candidate_id not in {
-                value["candidate_id"] for value in candidate_group.get("candidates", [])
+                _required_text(value.get("candidate_id"), "candidate ID")
+                for value in _documents(
+                    candidate_group.get("candidates"), "audit candidates"
+                )
             }:
                 raise ReferenceRenderComparisonError(
                     f"Reference render candidate is absent for {queue_id}"
@@ -230,8 +274,11 @@ def load_reference_render_plan(path):
 
 
 def publish_reference_render_comparison(
-    plan, output_directory, *, backend_factory=None
-):
+    plan: object,
+    output_directory: str | Path,
+    *,
+    backend_factory: _PreviewBackendFactory | None = None,
+) -> ReferenceRenderComparison:
     """Render exact alternative references without changing generation state."""
     if not isinstance(plan, ReferenceRenderPlan):
         raise ReferenceRenderComparisonError(
@@ -244,11 +291,18 @@ def publish_reference_render_comparison(
         )
     output.parent.mkdir(parents=True, exist_ok=True)
     audit_document = _read_audit_document(plan.audit_directory)
-    groups = {value["group_id"]: value for value in audit_document["groups"]}
+    audit_groups = _documents(audit_document.get("groups"), "audit groups")
+    groups = {
+        _required_text(value.get("group_id"), "audit group ID"): value
+        for value in audit_groups
+    }
     cases = {
-        (group["group_id"], case["queue_id"]): case
-        for group in audit_document["groups"]
-        for case in group["cases"]
+        (
+            _required_text(group.get("group_id"), "audit group ID"),
+            _required_text(case.get("queue_id"), "queue ID"),
+        ): case
+        for group in audit_groups
+        for case in _documents(group.get("cases"), "audit cases")
     }
     service_options = {}
     if backend_factory is not None:
@@ -276,8 +330,10 @@ def publish_reference_render_comparison(
                     candidate_group = groups[sample["candidate_group_id"]]
                     candidate = next(
                         value
-                        for value in candidate_group["candidates"]
-                        if value["candidate_id"] == sample["candidate_id"]
+                        for value in _documents(
+                            candidate_group.get("candidates"), "audit candidates"
+                        )
+                        if value.get("candidate_id") == sample["candidate_id"]
                     )
                     control_key = (
                         sample["candidate_group_id"],
@@ -319,7 +375,7 @@ def publish_reference_render_comparison(
                         preview = service.generate(
                             sample["case_group_id"],
                             sample["candidate_id"],
-                            case["text"],
+                            _required_text(case.get("text"), "case text"),
                             candidate_group_id=sample["candidate_group_id"],
                         )
                     except FailureReferencePreviewCancelled:
@@ -423,15 +479,22 @@ def publish_reference_render_comparison(
 
 
 def create_reference_render_listening(
-    comparison_directory, output_directory, *, seed=0, arm_ids=None
-):
+    comparison_directory: str | Path,
+    output_directory: str | Path,
+    *,
+    seed: int = 0,
+    arm_ids: Iterable[object] | None = None,
+) -> Path:
     """Create a blind session for one exact complete pair of comparison arms."""
     supplied = Path(comparison_directory).expanduser()
     if supplied.is_symlink():
         raise ReferenceRenderComparisonError("Reference render comparison is a symlink")
     root = supplied.resolve()
     document = _load_comparison_document(root)
-    arms_by_id = {value["arm_id"]: value for value in document["arms"]}
+    arms_by_id = {
+        _safe_id(value.get("arm_id"), "arm ID"): value
+        for value in _documents(document.get("arms"), "comparison arms")
+    }
     selected_arm_ids = (
         tuple(arms_by_id)
         if arm_ids is None
@@ -446,11 +509,16 @@ def create_reference_render_listening(
         raise ReferenceRenderComparisonError(
             "Reference render listening arm is absent: " + ", ".join(unknown)
         )
-    sample_ids = set(document["queue_ids"])
+    sample_ids = {
+        _required_text(value, "queue ID")
+        for value in _values(document.get("queue_ids"), "comparison queue IDs")
+    }
     for arm_id in selected_arm_ids:
         sample_ids &= {
-            value["id"]
-            for value in arms_by_id[arm_id]["renders"]
+            _required_text(value.get("id"), "render ID")
+            for value in _documents(
+                arms_by_id[arm_id].get("renders"), "comparison renders"
+            )
             if value.get("outcome") == "complete"
         }
     if not sample_ids:
@@ -469,7 +537,9 @@ def create_reference_render_listening(
         raise ReferenceRenderComparisonError(str(error)) from error
 
 
-def load_reference_render_comparison_document(directory):
+def load_reference_render_comparison_document(
+    directory: str | Path,
+) -> JsonDocument:
     """Load and validate every immutable artifact in one render comparison."""
     supplied = Path(directory).expanduser()
     if supplied.is_symlink():
@@ -478,11 +548,11 @@ def load_reference_render_comparison_document(directory):
 
 
 def import_reference_render_preference(
-    audit_directory,
-    comparison_directory,
-    listening_session,
-    queue_id,
-):
+    audit_directory: str | Path,
+    comparison_directory: str | Path,
+    listening_session: str | Path,
+    queue_id: object,
+) -> ReferenceRenderSelection:
     """Bind one completed blind preference to one fresh exact failure audit."""
     queue_id = _required_text(queue_id, "queue ID")
     audit_argument = Path(audit_directory).expanduser()
@@ -522,9 +592,18 @@ def import_reference_render_preference(
     fresh_document, fresh_key = _load_audit_documents(audit_root)
     source_document, source_key = _load_audit_documents(source_audit_root)
     fresh_group = _one_group_for_queue(fresh_document, queue_id, "fresh audit")
-    source_groups = {value["group_id"]: value for value in source_document["groups"]}
-    source_private_groups = {value["group_id"]: value for value in source_key["groups"]}
-    fresh_private_groups = {value["group_id"]: value for value in fresh_key["groups"]}
+    source_groups = {
+        _required_text(value.get("group_id"), "audit group ID"): value
+        for value in _documents(source_document.get("groups"), "audit groups")
+    }
+    source_private_groups = {
+        _required_text(value.get("group_id"), "audit group ID"): value
+        for value in _documents(source_key.get("groups"), "audit groups")
+    }
+    fresh_private_groups = {
+        _required_text(value.get("group_id"), "audit group ID"): value
+        for value in _documents(fresh_key.get("groups"), "audit groups")
+    }
 
     trial, assignment, selected_side, selected_arm_id = _selected_listening_trial(
         comparison_root,
@@ -534,7 +613,11 @@ def import_reference_render_preference(
         queue_id,
     )
     selected_arm = next(
-        (value for value in comparison["arms"] if value["arm_id"] == selected_arm_id),
+        (
+            value
+            for value in _documents(comparison.get("arms"), "comparison arms")
+            if value.get("arm_id") == selected_arm_id
+        ),
         None,
     )
     if selected_arm is None:
@@ -544,7 +627,7 @@ def import_reference_render_preference(
     selected_render = next(
         (
             value
-            for value in selected_arm["renders"]
+            for value in _documents(selected_arm.get("renders"), "comparison renders")
             if value.get("id") == queue_id and value.get("outcome") == "complete"
         ),
         None,
@@ -557,8 +640,14 @@ def import_reference_render_preference(
         selected_render.get("audio_sha256"), "selected render hash"
     )
     if (
-        trial["audio_sha256"][selected_side] != render_sha256
-        or assignment[selected_side].get("audio_sha256") != render_sha256
+        _document(trial.get("audio_sha256"), "trial audio hashes").get(
+            selected_side
+        )
+        != render_sha256
+        or _document(assignment.get(selected_side), "trial assignment").get(
+            "audio_sha256"
+        )
+        != render_sha256
     ):
         raise ReferenceRenderComparisonError(
             "Blind preference audio no longer matches the selected render"
@@ -568,7 +657,10 @@ def import_reference_render_preference(
         selected_render.get("audio"),
     )
     assignment_source = Path(
-        _required_text(assignment[selected_side].get("source"), "assignment source")
+        _required_text(
+            _document(assignment.get(selected_side), "trial assignment").get("source"),
+            "assignment source",
+        )
     ).expanduser()
     if assignment_source.is_symlink() or assignment_source.resolve() != selected_audio:
         raise ReferenceRenderComparisonError(
@@ -590,16 +682,18 @@ def import_reference_render_preference(
     source_candidate = next(
         (
             value
-            for value in source_group["candidates"]
-            if value["candidate_id"] == source_candidate_id
+            for value in _documents(source_group.get("candidates"), "audit candidates")
+            if value.get("candidate_id") == source_candidate_id
         ),
         None,
     )
     source_private_candidate = next(
         (
             value
-            for value in source_private_group["candidates"]
-            if value["candidate_id"] == source_candidate_id
+            for value in _documents(
+                source_private_group.get("candidates"), "audit candidates"
+            )
+            if value.get("candidate_id") == source_candidate_id
         ),
         None,
     )
@@ -616,10 +710,12 @@ def import_reference_render_preference(
             "Selected reference no longer matches its source audit"
         )
 
-    fresh_private_group = fresh_private_groups[fresh_group["group_id"]]
+    fresh_private_group = fresh_private_groups[
+        _required_text(fresh_group.get("group_id"), "audit group ID")
+    ]
     fresh_candidates = [
         value
-        for value in fresh_group["candidates"]
+        for value in _documents(fresh_group.get("candidates"), "audit candidates")
         if value.get("sha256") == selected_reference_sha256
     ]
     if len(fresh_candidates) != 1:
@@ -630,8 +726,10 @@ def import_reference_render_preference(
     fresh_private_candidate = next(
         (
             value
-            for value in fresh_private_group["candidates"]
-            if value["candidate_id"] == fresh_candidate["candidate_id"]
+            for value in _documents(
+                fresh_private_group.get("candidates"), "audit candidates"
+            )
+            if value.get("candidate_id") == fresh_candidate.get("candidate_id")
         ),
         None,
     )
@@ -648,7 +746,9 @@ def import_reference_render_preference(
             "Selected reference identity changed in the fresh audit"
         )
     fresh_case = next(
-        value for value in fresh_group["cases"] if value["queue_id"] == queue_id
+        value
+        for value in _documents(fresh_group.get("cases"), "audit cases")
+        if value.get("queue_id") == queue_id
     )
     if (
         fresh_case.get("line_id") != selected_render.get("line_id")
@@ -688,12 +788,14 @@ def import_reference_render_preference(
         "queue_id": queue_id,
         "text_sha256": selected_render["text_sha256"],
     }
-    current = load_failure_reference_decisions(audit_root)
+    current = _document(
+        load_failure_reference_decisions(audit_root), "reference decisions"
+    )
     existing = next(
         (
             value
-            for value in current["decisions"]
-            if value["group_id"] == fresh_group["group_id"]
+            for value in _documents(current.get("decisions"), "reference decisions")
+            if value.get("group_id") == fresh_group.get("group_id")
         ),
         None,
     )
@@ -708,20 +810,20 @@ def import_reference_render_preference(
         return ReferenceRenderSelection(
             audit_root,
             fresh_audit.audit_id,
-            fresh_group["group_id"],
-            fresh_candidate["candidate_id"],
+            _required_text(fresh_group.get("group_id"), "audit group ID"),
+            _required_text(fresh_candidate.get("candidate_id"), "candidate ID"),
             queue_id,
             selected_arm_id,
             selected_reference_sha256,
-            current["decision_set_id"],
+            _required_text(current.get("decision_set_id"), "decision set ID"),
             False,
         )
     _assert_reference_selection_snapshots(snapshots)
     try:
         decisions = record_failure_reference_decision(
             audit_root,
-            fresh_group["group_id"],
-            fresh_candidate["candidate_id"],
+            _required_text(fresh_group.get("group_id"), "audit group ID"),
+            _required_text(fresh_candidate.get("candidate_id"), "candidate ID"),
             selection_authority=selection_authority,
         )
     except FailureReferenceAuditError as error:
@@ -729,17 +831,17 @@ def import_reference_render_preference(
     return ReferenceRenderSelection(
         audit_root,
         fresh_audit.audit_id,
-        fresh_group["group_id"],
-        fresh_candidate["candidate_id"],
+        _required_text(fresh_group.get("group_id"), "audit group ID"),
+        _required_text(fresh_candidate.get("candidate_id"), "candidate ID"),
         queue_id,
         selected_arm_id,
         selected_reference_sha256,
-        decisions["decision_set_id"],
+        _required_text(decisions.get("decision_set_id"), "decision set ID"),
         True,
     )
 
 
-def _load_comparison_document(root):
+def _load_comparison_document(root: Path) -> JsonDocument:
     path = _contained_file(root, "comparison.json")
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -842,21 +944,22 @@ def _load_comparison_document(root):
 
 
 def _selected_listening_trial(
-    comparison_root,
-    comparison,
-    session_path,
-    session,
-    queue_id,
-):
-    if session.get("completed_count") != session.get("trial_count"):
+    comparison_root: Path,
+    comparison: JsonDocument,
+    session_path: Path,
+    session: ListeningSession,
+    queue_id: str,
+) -> tuple[JsonDocument, JsonDocument, str, str]:
+    session_document = _document(session, "listening session")
+    if session_document.get("completed_count") != session_document.get("trial_count"):
         raise ReferenceRenderComparisonError(
             "Reference render listening session is incomplete"
         )
     matching_trials = [
         trial
-        for trial in session["trials"]
+        for trial in _documents(session_document.get("trials"), "listening trials")
         if trial.get("queue_id")
-        == f"corpus:{queue_id}:{trial.get('text_sha256', '')[:16]}"
+        == f"corpus:{queue_id}:{_required_text(trial.get('text_sha256'), 'trial text hash')[:16]}"
     ]
     if len(matching_trials) != 1:
         raise ReferenceRenderComparisonError(
@@ -875,24 +978,27 @@ def _selected_listening_trial(
     key_path = session_path.with_name(".blind-key.json")
     report_path = session_path.with_name("report.json")
     try:
-        key = json.loads(key_path.read_text(encoding="utf-8"))
-        report = json.loads(report_path.read_text(encoding="utf-8"))
+        key = _document(json.loads(key_path.read_text(encoding="utf-8")), "listening key")
+        report = _document(json.loads(report_path.read_text(encoding="utf-8")), "listening report")
     except (OSError, json.JSONDecodeError) as error:
         raise ReferenceRenderComparisonError(str(error)) from error
     assignments = [
         value
-        for value in key.get("assignments", [])
-        if isinstance(value, dict) and value.get("trial_id") == trial["trial_id"]
+        for value in _documents(key.get("assignments"), "listening assignments")
+        if value.get("trial_id") == trial.get("trial_id")
     ]
     if len(assignments) != 1:
         raise ReferenceRenderComparisonError(
             "Reference render listening assignment is absent or ambiguous"
         )
-    arms_by_id = {value["arm_id"]: value for value in comparison["arms"]}
+    arms_by_id = {
+        _safe_id(value.get("arm_id"), "arm ID"): value
+        for value in _documents(comparison.get("arms"), "comparison arms")
+    }
     model_records = [
-        value for value in key.get("models", []) if isinstance(value, dict)
+        value for value in _documents(key.get("models"), "listening models")
     ]
-    selected_arm_ids = [value.get("model_id") for value in model_records]
+    selected_arm_ids = [_safe_id(value.get("model_id"), "listening model ID") for value in model_records]
     if (
         len(selected_arm_ids) != 2
         or len(set(selected_arm_ids)) != 2
@@ -903,16 +1009,13 @@ def _selected_listening_trial(
         )
     expected_reports = {
         str(
-            _contained_file(comparison_root, arms_by_id[arm_id]["report"])
+            _contained_file(comparison_root, arms_by_id[arm_id].get("report"))
         ): _required_sha256(arms_by_id[arm_id].get("report_sha256"), "report hash")
         for arm_id in selected_arm_ids
     }
-    actual_reports = {}
-    for source in key.get("sources", []):
-        if not isinstance(source, dict):
-            raise ReferenceRenderComparisonError(
-                "Reference render listening source inventory is malformed"
-            )
+    actual_reports: dict[str, str] = {}
+    sources = _documents(key.get("sources"), "listening sources")
+    for source in sources:
         path = Path(_required_text(source.get("path"), "listening source")).expanduser()
         if path.is_symlink():
             raise ReferenceRenderComparisonError(
@@ -922,7 +1025,7 @@ def _selected_listening_trial(
             source.get("sha256"), "listening source hash"
         )
     if (
-        len(actual_reports) != len(key.get("sources", []))
+        len(actual_reports) != len(sources)
         or actual_reports != expected_reports
     ):
         raise ReferenceRenderComparisonError(
@@ -932,7 +1035,9 @@ def _selected_listening_trial(
     if any(
         not any(
             render.get("id") == queue_id and render.get("outcome") == "complete"
-            for render in arms_by_id[arm_id]["renders"]
+            for render in _documents(
+                arms_by_id[arm_id].get("renders"), "comparison renders"
+            )
         )
         for arm_id in actual_models
     ):
@@ -957,20 +1062,26 @@ def _selected_listening_trial(
     return trial, assignment, selected_side, selected_arm_id
 
 
-def _load_audit_documents(directory):
+def _load_audit_documents(directory: Path) -> tuple[JsonDocument, JsonDocument]:
     try:
         document = json.loads((directory / "audit.json").read_text(encoding="utf-8"))
         key = json.loads((directory / ".blind-key.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ReferenceRenderComparisonError(str(error)) from error
-    return document, key
+    return _document(document, "audit document"), _document(key, "audit key")
 
 
-def _one_group_for_queue(document, queue_id, label):
+def _one_group_for_queue(
+    document: JsonDocument, queue_id: str, label: str
+) -> JsonDocument:
     groups = [
         group
-        for group in document["groups"]
-        if queue_id in {case["queue_id"] for case in group["cases"]}
+        for group in _documents(document.get("groups"), "audit groups")
+        if queue_id
+        in {
+            _required_text(case.get("queue_id"), "queue ID")
+            for case in _documents(group.get("cases"), "audit cases")
+        }
     ]
     if len(groups) != 1 or groups[0].get("case_count") != 1:
         raise ReferenceRenderComparisonError(
@@ -980,11 +1091,11 @@ def _one_group_for_queue(document, queue_id, label):
 
 
 def _reference_selection_snapshots(
-    comparison_root,
-    session_path,
-    report_path,
-    source_audit_path,
-):
+    comparison_root: Path,
+    session_path: Path,
+    report_path: Path,
+    source_audit_path: Path,
+) -> dict[Path, str]:
     paths = (
         comparison_root / "comparison.json",
         session_path,
@@ -1002,7 +1113,7 @@ def _reference_selection_snapshots(
     return snapshots
 
 
-def _assert_reference_selection_snapshots(snapshots):
+def _assert_reference_selection_snapshots(snapshots: Mapping[Path, str]) -> None:
     for path, digest in snapshots.items():
         if path.is_symlink() or not path.is_file() or sha256_file(path) != digest:
             raise ReferenceRenderComparisonError(
@@ -1010,7 +1121,7 @@ def _assert_reference_selection_snapshots(snapshots):
             )
 
 
-def _assert_plan_and_audit_unchanged(plan):
+def _assert_plan_and_audit_unchanged(plan: ReferenceRenderPlan) -> None:
     if sha256_file(plan.path) != plan.sha256:
         raise ReferenceRenderComparisonError(
             "Reference render plan changed during publication"
@@ -1025,14 +1136,17 @@ def _assert_plan_and_audit_unchanged(plan):
         )
 
 
-def _read_audit_document(directory):
+def _read_audit_document(directory: str | Path) -> JsonDocument:
     try:
-        return json.loads((Path(directory) / "audit.json").read_text(encoding="utf-8"))
+        return _document(
+            json.loads((Path(directory) / "audit.json").read_text(encoding="utf-8")),
+            "audit document",
+        )
     except (OSError, json.JSONDecodeError) as error:
         raise ReferenceRenderComparisonError(str(error)) from error
 
 
-def _planned_directory(root, value):
+def _planned_directory(root: Path, value: object) -> Path:
     text = _required_text(value, "audit path")
     path = Path(text).expanduser()
     if not path.is_absolute():
@@ -1045,7 +1159,7 @@ def _planned_directory(root, value):
     return path
 
 
-def _contained_file(root, value):
+def _contained_file(root: str | Path, value: object) -> Path:
     root = Path(root).resolve()
     text = _required_text(value, "artifact path")
     relative = Path(text)
@@ -1070,7 +1184,7 @@ def _contained_file(root, value):
     return path
 
 
-def _safe_id(value, label):
+def _safe_id(value: object, label: str) -> str:
     text = _required_text(value, label)
     if text in {".", ".."} or any(
         character not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for character in text
@@ -1081,7 +1195,7 @@ def _safe_id(value, label):
     return text
 
 
-def _source_reference_family(group):
+def _source_reference_family(group: JsonDocument) -> str:
     value = _required_text(
         group.get("synthesis_voice_character"), "synthesis voice character"
     )
@@ -1100,7 +1214,25 @@ def _source_reference_family(group):
     return character
 
 
-def _required_text(value, label):
+def _document(value: object, label: str) -> JsonDocument:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise ReferenceRenderComparisonError(f"Reference render {label} is malformed")
+    return {key: item for key, item in value.items()}
+
+
+def _documents(value: object, label: str) -> list[JsonDocument]:
+    if not isinstance(value, list):
+        raise ReferenceRenderComparisonError(f"Reference render {label} is malformed")
+    return [_document(item, label) for item in value]
+
+
+def _values(value: object, label: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ReferenceRenderComparisonError(f"Reference render {label} is malformed")
+    return value
+
+
+def _required_text(value: object, label: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise ReferenceRenderComparisonError(
             f"Reference render {label} must be non-empty text"
@@ -1108,7 +1240,7 @@ def _required_text(value, label):
     return value
 
 
-def _required_sha256(value, label):
+def _required_sha256(value: object, label: str) -> str:
     text = _required_text(value, label)
     if not is_lowercase_sha256(text):
         raise ReferenceRenderComparisonError(

@@ -134,15 +134,15 @@ def handle(arguments: argparse.Namespace) -> int:
         return 0
     elif arguments.command == "failure-reference-render-comparison":
         plan = load_reference_render_plan(arguments.plan)
-        result = publish_reference_render_comparison(plan, arguments.output)
+        comparison = publish_reference_render_comparison(plan, arguments.output)
         print(
             json.dumps(
                 {
-                    "directory": str(result.directory),
-                    "comparison_id": result.comparison_id,
-                    "arm_count": result.arm_count,
-                    "sample_count": result.sample_count,
-                    "complete_pair_count": result.complete_pair_count,
+                    "directory": str(comparison.directory),
+                    "comparison_id": comparison.comparison_id,
+                    "arm_count": comparison.arm_count,
+                    "sample_count": comparison.sample_count,
+                    "complete_pair_count": comparison.complete_pair_count,
                 },
                 indent=2,
                 sort_keys=True,
@@ -168,12 +168,14 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     elif arguments.command == "failure-reference-import-listening":
-        result = import_reference_render_preference(
+        reference_selection = import_reference_render_preference(
             arguments.audit,
             arguments.comparison,
             arguments.session,
             arguments.queue_id,
         )
+        print(json.dumps(reference_selection.to_dict(), indent=2, sort_keys=True))
+        return 0
     else:
         raise ValueError(f"Unsupported render-review command: {arguments.command!r}")
     print(json.dumps(result.to_dict(), indent=2, sort_keys=True))

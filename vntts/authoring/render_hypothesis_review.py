@@ -561,13 +561,17 @@ def import_accepted_render_hypothesis(
             "Accepted render hypothesis authority changed"
         )
     arm = next(
-        (value for value in comparison["arms"] if value.get("arm_id") == review.arm_id),
+        (
+            value
+            for value in _documents(comparison.get("arms"))
+            if value.get("arm_id") == review.arm_id
+        ),
         None,
     )
     selected_render = next(
         (
             value
-            for value in (arm or {}).get("renders", [])
+            for value in _documents((arm or {}).get("renders"))
             if value.get("id") == queue_id and value.get("outcome") == "complete"
         ),
         None,
