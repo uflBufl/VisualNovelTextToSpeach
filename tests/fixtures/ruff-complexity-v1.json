@@ -507,72 +507,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_resolution.py",
-      "scope": "assert_terminal_conflict_resolution_source_authorities",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_resolution.py",
-      "scope": "publish_terminal_conflict_resolution",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_resolution.py",
-      "scope": "validate_terminal_conflict_resolution_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "_assert_source_authorities",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "_progress_lock",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "_validate_progress",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "publish_terminal_conflict_review",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "validate_terminal_conflict_review_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_successor.py",
-      "scope": "_validate_resolution_projection",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_successor.py",
-      "scope": "publish_terminal_conflict_successor",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/terminal_conflict_successor.py",
-      "scope": "validate_terminal_conflict_successor_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "merge_terminal_conflict_resolution",
       "count": 1
@@ -1497,60 +1431,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/terminal_conflict_resolution.py",
-      "scope": "publish_terminal_conflict_resolution",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/terminal_conflict_resolution.py",
-      "scope": "validate_terminal_conflict_resolution_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "_progress_lock",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "_validate_progress",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "publish_terminal_conflict_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "validate_terminal_conflict_review_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/terminal_conflict_successor.py",
-      "scope": "_validate_resolution_projection",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/terminal_conflict_successor.py",
-      "scope": "publish_terminal_conflict_successor",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/terminal_conflict_successor.py",
-      "scope": "validate_terminal_conflict_successor_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "merge_terminal_conflict_resolution",
       "count": 1
@@ -2229,44 +2109,8 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/terminal_conflict_resolution.py",
-      "scope": "publish_terminal_conflict_resolution",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/terminal_conflict_resolution.py",
-      "scope": "validate_terminal_conflict_resolution_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "_progress_lock",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "publish_terminal_conflict_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/terminal_conflict_review.py",
-      "scope": "validate_terminal_conflict_review_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/terminal_conflict_review_ui.py",
       "scope": "TerminalConflictReviewDialog.__init__",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/terminal_conflict_successor.py",
-      "scope": "publish_terminal_conflict_successor",
       "count": 1
     },
     {
