@@ -3366,12 +3366,6 @@
       "path": "vntts/tts_benchmark.py",
       "scope": "_benchmark_backend_staged",
       "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/voice_preview_ui.py",
-      "scope": "VoicePreviewDialog.__init__",
-      "count": 1
     }
   ]
 }

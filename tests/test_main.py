@@ -1689,11 +1689,13 @@ class MainTest(unittest.TestCase):
         controller.voice_router = Mock(registry=CharacterVoiceRegistry())
 
         choices = controller.available_voice_choices()
+        self.assertIsNone(controller.voice_assignment_for("Selone"))
         updated = controller.assign_voice("Selone", "preset:alba")
 
         self.assertIn("preset:alba", [choice.id for choice in choices])
         self.assertIs(updated, controller.settings)
         self.assertEqual(voice_library.binding("Selone").source_id, "preset:alba")
+        self.assertEqual(controller.voice_assignment_for("Selone"), "preset:alba")
         self.assertEqual(
             controller.voice_router.registry.resolve("Selone").speaker,
             "alba",
@@ -1726,6 +1728,7 @@ class MainTest(unittest.TestCase):
         self.assertTrue(forced.force_live_narrator)
         self.assertFalse(generated_first.force_live_narrator)
         self.assertIsNone(voice_library.binding("Narrator"))
+        self.assertIsNone(controller.voice_assignment_for("Narrator"))
         self.assertFalse(restored.force_live_narrator)
         self.assertNotIn("narrator", controller.voice_router.registry.assignments)
 
@@ -4280,6 +4283,49 @@ class MainTest(unittest.TestCase):
         self.assertTrue(controller.toggle_live())
         self.assertEqual(controller.live_reader.toggle.call_count, 3)
         self.assertFalse(controller._offer_unknown_speaker_mapping("Selone", "Line"))
+
+    def test_paused_narrator_choice_survives_the_resumed_live_start(self):
+        preloader = ChapterVoicePreloader.from_document(
+            {
+                "dialogue": [
+                    {
+                        "chapter": "1",
+                        "sequence": 1,
+                        "speaker_name": "Selone",
+                        "text": "Line",
+                    }
+                ]
+            }
+        )
+        preloader.recommend("Selone", "Line")
+        controller = AppController(
+            AppSettings(audio_source_policy="prefer-generated"),
+            tts_factory=Mock(),
+            chapter_voice_preloader=preloader,
+        )
+        controller.voice_router = Mock()
+        controller.voice_router.registry.assignments = {}
+        controller.voice_router.registry.resolve.return_value = None
+        controller.speech_backend = SimpleNamespace()
+        controller.live_reader = Mock(is_running=False)
+
+        def start_live():
+            controller.live_reader.is_running = True
+            return True
+
+        controller.live_reader.toggle.side_effect = start_live
+
+        self.assertTrue(controller.allow_narrator_fallback("Selone"))
+        self.assertEqual(
+            controller.next_live_narrator_fallback_names,
+            {"selone": "Selone"},
+        )
+        self.assertTrue(controller.toggle_live())
+        self.assertIn("selone", controller.narrator_fallback_speakers)
+        self.assertEqual(controller.next_live_narrator_fallback_names, {})
+        controller.unknown_speaker_handler = Mock()
+        controller._offer_unknown_speaker_mapping("Selone", "Line")
+        controller.unknown_speaker_handler.assert_not_called()
 
     def test_explicit_speaker_corpus_preflights_without_story_index(self):
         with TemporaryDirectory() as temporary_directory:

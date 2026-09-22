@@ -267,6 +267,11 @@ class Reverse1999GameImporter:
             )
             return None
 
+    def selected_installation_root(self):
+        """Return the resource root currently reused for automatic imports."""
+        roots = self._previous_installation()
+        return roots[0] if roots is not None else None
+
     def prepare_voice_candidates(self, job, cancel_event=None, *, progress=None):
         """Prepare only candidate references needed by the selected stories."""
         if job.game != self.display_name:

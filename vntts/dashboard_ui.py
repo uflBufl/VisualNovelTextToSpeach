@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -244,6 +245,9 @@ class ControlDashboard(QMainWindow):
         self.details_toggle.setAccessibleDescription(
             "Show or hide voice, audio source, OCR, latency and configuration details"
         )
+        self.details_toggle.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.details_toggle.toggled.connect(self._set_details_expanded)
 
     def _build_action_buttons(self) -> QHBoxLayout:
@@ -358,7 +362,7 @@ class ControlDashboard(QMainWindow):
         self.setup_primary_button.clicked.connect(self.readiness_requested.emit)
         setup_primary.addWidget(self.setup_primary_button, 1)
         self.loading_blocked_buttons.append(self.setup_primary_button)
-        self.setup_more_button = QPushButton("More setup options")
+        self.setup_more_button = QPushButton("Settings and more")
         self.setup_more_button.setCheckable(True)
         self.setup_more_button.setAccessibleDescription(
             "Show or hide calibration, voice, support and settings shortcuts"
@@ -442,8 +446,12 @@ class ControlDashboard(QMainWindow):
         layout.addWidget(speech_group)
         self.details_layout.addWidget(self.reading_policy)
         detail_actions = QHBoxLayout()
+        detail_actions.addStretch(1)
         detail_actions.addWidget(self.details_toggle)
         self.copy_details_button = copy_text_button("Copy details", self._copy_details)
+        self.copy_details_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         detail_actions.addWidget(self.copy_details_button)
         layout.addLayout(detail_actions)
         layout.addWidget(self.details_content)
@@ -663,7 +671,7 @@ class ControlDashboard(QMainWindow):
         self.setup_more_button.blockSignals(True)
         self.setup_more_button.setChecked(expanded)
         self.setup_more_button.setText(
-            "Fewer setup options" if expanded else "More setup options"
+            "Hide settings and more" if expanded else "Settings and more"
         )
         self.setup_more_button.blockSignals(False)
         self.setup_secondary_content.setVisible(expanded)
@@ -1260,7 +1268,11 @@ def configure_floating_window(window: QWidget, *, platform: str | None = None) -
             behavior |= AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
             native_window.setCollectionBehavior_(behavior)
             native_window.setLevel_(AppKit.NSFloatingWindowLevel)
-            native_window.setSharingType_(AppKit.NSWindowSharingNone)
+            native_window.setSharingType_(
+                AppKit.NSWindowSharingReadOnly
+                if os.environ.get("VNTTS_ALLOW_SCREEN_CAPTURE") == "1"
+                else AppKit.NSWindowSharingNone
+            )
             return True
         if platform == "win32":
             if sys.platform != "win32":

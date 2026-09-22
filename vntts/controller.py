@@ -635,7 +635,7 @@ class AppController:
     def available_voice_choices(self) -> list[VoiceChoice]:
         return self.voice_assignments.available_choices()
 
-    def voice_assignment_for(self, character: str) -> str:
+    def voice_assignment_for(self, character: str) -> str | None:
         return self.voice_assignments.assignment_for(character)
 
     def preview_voice_choice(self, source_id: str, text: str) -> object:

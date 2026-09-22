@@ -336,6 +336,7 @@ class Reverse1999GameImporterTest(unittest.TestCase):
                 self.assertEqual(
                     restarted._previous_installation(), (resources, configs, audio)
                 )
+                self.assertEqual(restarted.selected_installation_root(), resources)
                 # Removed game sources and malformed settings must allow fresh discovery.
                 bundle.unlink()
                 (configs / "datacfg_1.dat").unlink()

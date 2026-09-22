@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStyle,
     QSystemTrayIcon,
@@ -133,7 +134,7 @@ from vntts.settings import (
     load_app_settings,
 )
 from vntts.speech_backend import default_moss_tts_model
-from vntts.speech_presentation import engine_model_label, speech_runtime_label
+from vntts.speech_presentation import speech_runtime_label
 from vntts.speech_worker import RetainedWorkerRuntime
 from vntts.support import (
     GenerationTimelineLog,
@@ -151,8 +152,11 @@ from vntts.support import (
 from vntts.support_ui import SupportCenterDialog
 from vntts.ui_text import make_text_copyable
 from vntts.voice_library import VoiceLibrary
-from vntts.voice_preview_ui import VoicePreviewDialog
-from vntts.voices import application_voice_library, find_default_voice_manifest
+from vntts.voices import (
+    application_voice_library,
+    find_default_voice_manifest,
+    normalize_character_name,
+)
 from vntts.window_capture import (
     WindowCaptureError,
     WindowGeometry,
@@ -224,6 +228,38 @@ class AppSignals(QObject):
     diagnostics_failed = Signal(str)
     hotkeys_requested = Signal()
     unknown_speaker = Signal(str)
+
+
+def build_unknown_speaker_prompt(
+    speaker: str,
+) -> tuple[QMessageBox, QPushButton, QPushButton, QPushButton]:
+    """Build the shared unknown-speaker recovery prompt."""
+    prompt = QMessageBox()
+    prompt.setWindowModality(Qt.WindowModality.NonModal)
+    prompt.setWindowFlag(Qt.WindowType.Tool, True)
+    prompt.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+    if sys.platform == "darwin":
+        prompt.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+    prompt.setIcon(QMessageBox.Icon.Warning)
+    prompt.setWindowTitle("Character voice not mapped")
+    prompt.setText(f"Choose a voice for {speaker}?")
+    prompt.setInformativeText(
+        "You can assign a distinct voice now, or use the narrator only for "
+        "this speaker during the current live session."
+    )
+    choose = prompt.addButton("Choose voice...", QMessageBox.ButtonRole.ActionRole)
+    continue_button = prompt.addButton(
+        f"Use narrator for {speaker} this session",
+        QMessageBox.ButtonRole.AcceptRole,
+    )
+    cancel_button = prompt.addButton(
+        "Cancel and pause live reading",
+        QMessageBox.ButtonRole.RejectRole,
+    )
+    prompt.setDefaultButton(choose)
+    prompt.setEscapeButton(cancel_button)
+    prompt.setProperty("vntts_unknown_speaker", speaker)
+    return prompt, choose, continue_button, cancel_button
 
 
 class SettingsDialog(QDialog):
@@ -646,9 +682,12 @@ class SettingsDialog(QDialog):
         self.choose_narrator_button.setAccessibleDescription(
             "Listen to game or built-in voices and save a narrator"
         )
+        self.choose_narrator_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
         self.choose_narrator_button.clicked.connect(self.choose_narrator)
         speech_form.addRow("Narrator voice", self.narrator_voice)
-        speech_form.addRow(self.choose_narrator_button)
+        speech_form.addRow("", self.choose_narrator_button)
         self.advanced_narrator = QCheckBox("Advanced: audio file")
         speech_form.addRow(self.advanced_narrator)
         speech_form.addRow("Audio source policy", self.audio_source_policy)
@@ -1608,6 +1647,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.unknown_speaker_prompt = self.unknown_speaker_choose_button = None
         self.unknown_speaker_continue_button = self.unknown_speaker_cancel_button = None
         self.pending_unknown_speaker = None
+        self._queued_unknown_speakers = []
         self.unknown_speaker_mapping_in_progress = None
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
@@ -2482,9 +2522,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         speakers = self.pending_live_voice_preflight_speakers
         if not speakers:
             return
-        self.pending_unknown_speaker = speakers[0]
-        self.open_speaker_mapping()
-        self._start_live_with_preflight()
+        self.resume_live_after_unknown_mapping = True
+        self._open_pending_speaker_mapping(speakers[0])
 
     def _live_voice_preflight_finished(self, _result):
         prompt = self.sender()
@@ -2970,12 +3009,17 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         return job
 
-    def _reload_game_narrator(self, profile_synced):
+    def _reload_game_narrator(self, profile_synced, saved_assignment=None):
         suffix = "" if profile_synced else " Active profile could not be updated."
+        saved = (
+            f"Voice saved for {saved_assignment}."
+            if saved_assignment
+            else "Voices saved."
+        )
         self._start_configuration_apply(
             self.settings,
             progress_status="Applying your selected voices...",
-            success_status=f"Voices saved. Prepared recordings are unchanged.{suffix}",
+            success_status=f"{saved} Prepared recordings are unchanged.{suffix}",
             restart=self._controller_ready,
         )
 
@@ -3222,12 +3266,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         dialog.exec()
         self.set_status("OCR review closed")
 
-    def open_voice_previews(self, *, character=None):
+    def open_voice_previews(self, *, character=None, resume_live=None, recovery=False):
         if self._controller_busy or self._shutting_down:
             return
         if self.narrator_dialog is not None:
             if character is not None:
-                self.narrator_dialog.role.setCurrentText(character)
+                self.narrator_dialog.select_role(character)
+                if recovery:
+                    self.narrator_dialog.set_recovery_context(
+                        character, resume_live=bool(resume_live)
+                    )
+            if resume_live is not None:
+                self._resume_live_after_narrator = bool(
+                    self._resume_live_after_narrator or resume_live
+                )
             self.show_dashboard()
             self.dashboard.show_voices()
             return
@@ -3239,16 +3291,28 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.dashboard.show_stories()
                 return
             self._refresh_preparation_settings()
-        resume_live = bool(self.controller.is_live_running)
-        if resume_live:
+        should_resume_live = (
+            bool(self.controller.is_live_running)
+            if resume_live is None
+            else bool(resume_live)
+        )
+        if self.controller.is_live_running:
             self._stop_live_then(
-                lambda: self._open_narrator_picker(True, character=character),
+                lambda: self._open_narrator_picker(
+                    should_resume_live,
+                    character=character,
+                    recovery=recovery,
+                ),
                 "Stopping live capture before voice preview...",
             )
             return
-        self._open_narrator_picker(False, character=character)
+        self._open_narrator_picker(
+            should_resume_live,
+            character=character,
+            recovery=recovery,
+        )
 
-    def _open_narrator_picker(self, resume_live, *, character=None):
+    def _open_narrator_picker(self, resume_live, *, character=None, recovery=False):
         if self._shutting_down or self._quit_requested:
             return
         self.emergency_stop()
@@ -3274,6 +3338,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 ]
                 dialog.set_voice_context(
                     plan if isinstance(plan, VoicePlan) else None,
+                    character=character,
                     roles=tuple(
                         {speaker for item in selected for speaker in item.speakers}
                     ),
@@ -3285,9 +3350,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     ),
                 )
             elif isinstance(plan, VoicePlan):
-                dialog.set_voice_context(plan)
-        if character is not None:
-            dialog.role.setCurrentText(character)
+                dialog.set_voice_context(plan, character=character)
+            elif character is not None:
+                dialog.set_voice_context(character=character)
+        elif character is not None:
+            dialog.set_voice_context(character=character)
+        if recovery and character is not None:
+            dialog.set_recovery_context(character, resume_live=bool(resume_live))
         self.narrator_dialog = dialog
         dialog.impactContextRequested.connect(self._load_voice_impact_context)
         self._resume_live_after_narrator = resume_live
@@ -3343,10 +3412,43 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             finish()
 
+    def _save_narrator_candidate(self, dialog):
+        candidate = dialog.result_settings.updated(
+            last_main_section=self.settings.last_main_section
+        )
+        try:
+            candidate.save()
+        except OSError as error:
+            try:
+                dialog.restore_initial_voice_bindings()
+            except (OSError, ValueError) as rollback_error:
+                self.show_error(
+                    f"Unable to save voices: {error}. Restoring the previous "
+                    f"voice selection also failed: {rollback_error}."
+                )
+            else:
+                self.show_error(
+                    f"Unable to save voices: {error}. Previous settings and "
+                    "voices are unchanged."
+                )
+            return None
+        self.settings = candidate
+        self.dashboard.set_configuration(candidate)
+        return candidate
+
     def _narrator_finished(self, result):
         dialog = self.narrator_dialog
         if dialog is None:
             return
+        saved_assignment = (
+            dialog.saved_assignment_summary()
+            if result == QDialog.DialogCode.Accepted
+            else None
+        )
+        if not isinstance(saved_assignment, str) or not saved_assignment:
+            saved_assignment = None
+        mapping_speaker = self.unknown_speaker_mapping_in_progress
+        mapping_resolved = False
         self.narrator_dialog = None
         preparation = self._narrator_preparation
         self._narrator_preparation = None
@@ -3364,18 +3466,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         try:
             if result == QDialog.DialogCode.Accepted:
-                candidate = dialog.result_settings.updated(
-                    last_main_section=self.settings.last_main_section
-                )
-                try:
-                    candidate.save()
-                except OSError as error:
-                    self.show_error(
-                        f"Unable to save voices: {error}. Previous settings are unchanged."
-                    )
+                candidate = self._save_narrator_candidate(dialog)
+                if candidate is None:
                     return
-                self.settings = candidate
-                self.dashboard.set_configuration(candidate)
+                mapping_resolved = bool(
+                    mapping_speaker
+                    and dialog.voice_library.binding(mapping_speaker) is not None
+                )
                 profile_synced = self._sync_active_profile(candidate)
                 if preparation is self.pregeneration_dialog and preparation is not None:
                     preparation.apply_narrator_settings(candidate, voice_changed=True)
@@ -3384,12 +3481,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                             dialog._impact_results
                         )
                         return_to_stories = True
-                self._reload_game_narrator(profile_synced)
+                if saved_assignment is None:
+                    self._reload_game_narrator(profile_synced)
+                else:
+                    self._reload_game_narrator(profile_synced, saved_assignment)
             else:
                 self.set_status(
                     "Voice selection cancelled. Your saved voices are unchanged."
                 )
         finally:
+            resume_live = self._finish_unknown_speaker_mapping(
+                mapping_speaker,
+                resolved=mapping_resolved,
+                resume_live=resume_live,
+            )
             if (
                 return_to_stories
                 and preparation is self.pregeneration_dialog
@@ -3404,7 +3509,55 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ):
                 self.toggle_live()
 
+    def _finish_unknown_speaker_mapping(
+        self,
+        speaker,
+        *,
+        resolved,
+        resume_live,
+    ):
+        if not speaker:
+            return resume_live
+        self.unknown_speaker_mapping_in_progress = None
+        if not resolved:
+            self.pending_unknown_speaker = speaker
+            QTimer.singleShot(
+                0, lambda current=speaker: self._show_unknown_speaker_prompt(current)
+            )
+            return False
+        if self._queued_unknown_speakers:
+            next_speaker = self._queued_unknown_speakers.pop(0)
+            self.pending_unknown_speaker = next_speaker
+            self.speaker_mapping_action.setText(f"Manage voice for {next_speaker}...")
+            QTimer.singleShot(
+                0,
+                lambda current=next_speaker: self._show_unknown_speaker_prompt(current),
+            )
+            return False
+        self.pending_unknown_speaker = None
+        self.resume_live_after_unknown_mapping = False
+        self.speaker_mapping_action.setText("Manage character voices...")
+        return resume_live
+
     def offer_speaker_mapping(self, speaker):
+        active_speaker = (
+            self.unknown_speaker_mapping_in_progress or self.pending_unknown_speaker
+        )
+        if active_speaker and normalize_character_name(
+            active_speaker
+        ) == normalize_character_name(speaker):
+            return
+        if active_speaker:
+            queued = {
+                normalize_character_name(candidate)
+                for candidate in self._queued_unknown_speakers
+            }
+            if normalize_character_name(speaker) not in queued:
+                self._queued_unknown_speakers.append(speaker)
+            self.set_status(
+                f"Voice needed for {speaker}; choose it after {active_speaker}."
+            )
+            return
         self.pending_unknown_speaker = speaker
         self.speaker_mapping_action.setText(f"Manage voice for {speaker}...")
         if self.controller.is_live_running:
@@ -3430,31 +3583,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         # Qt then exposes and dims the whole dashboard behind it, which looks
         # like a large empty window. Keep this prompt as a small independent
         # tool window instead.
-        prompt = QMessageBox()
-        prompt.setWindowModality(Qt.WindowModality.NonModal)
-        prompt.setWindowFlag(Qt.WindowType.Tool, True)
-        prompt.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        if sys.platform == "darwin":
-            prompt.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
-        prompt.setIcon(QMessageBox.Icon.Warning)
-        prompt.setWindowTitle("Character voice not mapped")
-        prompt.setText(f"Choose a voice for {speaker}?")
-        prompt.setInformativeText(
-            "You can assign a distinct voice now, or use the narrator only for "
-            "this speaker during the current live session."
+        prompt, choose, continue_button, cancel_button = build_unknown_speaker_prompt(
+            speaker
         )
-        choose = prompt.addButton("Choose voice...", QMessageBox.ButtonRole.ActionRole)
-        continue_button = prompt.addButton(
-            f"Use narrator for {speaker} this session",
-            QMessageBox.ButtonRole.AcceptRole,
-        )
-        cancel_button = prompt.addButton(
-            "Cancel and pause live reading",
-            QMessageBox.ButtonRole.RejectRole,
-        )
-        prompt.setDefaultButton(cancel_button)
-        prompt.setEscapeButton(cancel_button)
-        prompt.setProperty("vntts_unknown_speaker", speaker)
         self.unknown_speaker_prompt = prompt
         self.unknown_speaker_choose_button = choose
         self.unknown_speaker_continue_button = continue_button
@@ -3522,6 +3653,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
     def _continue_unknown_with_narrator(self, speaker):
         self.controller.allow_narrator_fallback(speaker)
+        if self._queued_unknown_speakers:
+            next_speaker = self._queued_unknown_speakers.pop(0)
+            self.pending_unknown_speaker = next_speaker
+            self.speaker_mapping_action.setText(f"Manage voice for {next_speaker}...")
+            self._show_unknown_speaker_prompt(next_speaker)
+            return
+        self.pending_unknown_speaker = None
+        self.speaker_mapping_action.setText("Manage character voices...")
         if (
             self.resume_live_after_unknown_mapping
             and not self.controller.is_live_running
@@ -3543,52 +3682,18 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             return
         self.pending_unknown_speaker = speaker
-        assigned = self.open_speaker_mapping()
-        self.unknown_speaker_mapping_in_progress = None
-        if not assigned:
-            self.pending_unknown_speaker = speaker
-            self._show_unknown_speaker_prompt(speaker)
-            return
-        if self.resume_live_after_unknown_mapping:
-            self.toggle_live()
-        self.resume_live_after_unknown_mapping = False
+        self.unknown_speaker_mapping_in_progress = speaker
+        self.open_voice_previews(
+            character=speaker,
+            resume_live=self.resume_live_after_unknown_mapping,
+            recovery=True,
+        )
 
     def open_speaker_mapping(self):
-        contextual_character = self.pending_unknown_speaker
-        if not contextual_character:
+        if self.pending_unknown_speaker:
+            self._open_pending_speaker_mapping(self.pending_unknown_speaker)
+        else:
             self.open_voice_previews()
-            return False
-        initial_character = contextual_character or "Narrator"
-        dialog = VoicePreviewDialog(
-            self.controller.available_voice_characters(),
-            self.controller.available_voice_choices(),
-            self.controller.preview_voice_choice,
-            self.assign_voice,
-            self.controller.voice_assignment_for,
-            self.clear_voice_assignment,
-            force_live_handler=self.set_force_live_narrator,
-            current_force_live_handler=lambda: self.settings.force_live_narrator,
-            preview_stop_handler=self.controller.stop_voice_preview,
-            initial_character=initial_character,
-            fixed_character=contextual_character,
-            engine_description=engine_model_label(
-                self.settings.speech_backend,
-                self.settings.tts_model,
-                pocket_cloning=self.settings.pocket_gated_model_accepted,
-                compact=True,
-            ),
-            engine_details=engine_model_label(
-                self.settings.speech_backend,
-                self.settings.tts_model,
-                pocket_cloning=self.settings.pocket_gated_model_accepted,
-            ),
-            runtime_status_handler=self._speech_runtime_label,
-        )
-        result = dialog.exec()
-        assigned = bool(contextual_character and result == QDialog.DialogCode.Accepted)
-        self.pending_unknown_speaker = None
-        self.speaker_mapping_action.setText("Manage character voices...")
-        return assigned
 
     def open_support_center(self):
         if self.support_dialog is None:
@@ -4042,6 +4147,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.onboarding_cancel_event.set()
         self._apply_controller_action_state()
         self.resume_live_after_unknown_mapping = False
+        self._queued_unknown_speakers.clear()
         self.live_voice_preflight_action_prompt = None
         if self.live_voice_preflight_prompt is not None:
             self.live_voice_preflight_prompt.setProperty(

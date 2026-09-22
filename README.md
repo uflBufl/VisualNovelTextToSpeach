@@ -110,6 +110,17 @@ uv sync --no-dev
 uv run vntts-app
 ```
 
+The compact controls and non-modal reading warnings are excluded from screen
+capture by default so VNTTS cannot OCR its own interface. To make those floating
+windows visible to AppShot during a test run, launch from source with:
+
+```sh
+VNTTS_ALLOW_SCREEN_CAPTURE=1 uv run vntts-app
+```
+
+The main window is not excluded from screen capture and does not require this
+flag.
+
 Every shipped console entry point, including the Qt workbench, calibration and
 reference-audit launchers, handles `-h/--help` before creating a Qt application,
 opening screen capture or touching native services. Help is therefore safe in
@@ -782,6 +793,18 @@ uv run ruff format --check .
 uv run ruff check .
 uv run python scripts/run_ci_unittests.py discover -s tests
 ```
+
+Render the interface map and deterministic Qt states before cross-window UI
+work or visual review:
+
+```sh
+uv run python scripts/render_ui_catalog.py
+```
+
+The generated catalog is written to the stable local project directory
+`.codex/ui-catalog/index.html`, which is ignored by Git. Use
+`--surface voice-editor` to render one surface together with its mapped
+neighbours and produce a focused, implementation-free Astra review packet.
 
 Run an interactive example:
 

@@ -83,7 +83,7 @@ Planned implementation order after approval:
       generation can start without reviewing them; the Voice plan lists all roles
       in useful order; `Inspect selected voice` plays the original and the exact
       production preview; `Another phrase`, `Use selected reference`, `Use narrator`,
-      `Keep automatic choice`, and `Choose another character's voice...` are clear;
+      `Keep automatic choice`, and `Change selected voice...` are clear;
       and an explicit choice survives reopening while an untouched recommendation
       remains automatic.
 

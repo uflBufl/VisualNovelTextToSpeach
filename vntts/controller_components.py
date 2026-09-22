@@ -798,7 +798,6 @@ class LiveSessionComponent:
                     "identify the story chapter"
                 )
             return False
-        controller.next_live_narrator_fallback_names.clear()
         return True
 
     def toggle_speech_pause(self) -> bool:
@@ -935,18 +934,10 @@ class VoiceAssignmentComponent:
             unique_choices.append(choice)
         return unique_choices
 
-    def assignment_for(self, character: str) -> str:
+    def assignment_for(self, character: str) -> str | None:
         controller = self.controller
         binding = controller.voice_library.binding(character)
-        if binding is not None:
-            return str(voice_binding_source_id(binding))
-        voice_router = controller.voice_router
-        if voice_router is None:
-            return str(default_voice_choice_id)
-        voice = voice_router.registry.resolve(character)
-        if voice is None:
-            return str(default_voice_choice_id)
-        return f"character:{normalize_character_name(voice.character)}"
+        return str(voice_binding_source_id(binding)) if binding is not None else None
 
     def preview_choice(self, source_id: str, text: str) -> object:
         controller = self.controller
@@ -1102,6 +1093,8 @@ class VoiceAssignmentComponent:
         controller.pending_unknown_speakers.discard(key)
         controller.narrator_fallback_speakers.add(key)
         controller.narrator_fallback_names[key] = character
+        if not controller.is_live_running:
+            controller.next_live_narrator_fallback_names[key] = character
         controller.status_handler(f"Using narrator voice for {character}")
         return True
 

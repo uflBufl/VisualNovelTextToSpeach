@@ -1,0 +1,367 @@
+{
+  "schema_version": 1,
+  "title": "Visual Novel Text to Speech interface map",
+  "contracts": {
+    "app-shell": "Keep Stories, Voices and Reading as the ordinary application navigation; setup and support remain secondary.",
+    "single-mission": "Give each surface one primary mission and one visually dominant next action.",
+    "responsive-form": "Let value controls use available width, wrap long rows and keep utility buttons content-sized.",
+    "runtime-controls": "Use the same live-reading capabilities, labels and disabled reasons in dashboard, compact controls and tray.",
+    "voice-selection": "Use one voice editor for general assignment and live recovery; recovery preselects the role without changing the workflow.",
+    "global-settings": "Keep engine, model and application-wide behavior in Settings rather than per-role editors.",
+    "playback-evidence": "Place playback beside the recording it plays and distinguish original audio from generated preview.",
+    "review-authority": "State the evidence, decision scope and consequence before an authoritative review action.",
+    "support-boundary": "Keep diagnostics and support export out of ordinary task flows unless recovery requires them."
+  },
+  "surfaces": [
+    {
+      "id": "dashboard",
+      "title": "Application dashboard",
+      "family": "Everyday playback",
+      "audience": "Player",
+      "mission": "Move between story preparation, voice choices and live reading while seeing current application state.",
+      "canonical_owner": "dashboard",
+      "related": ["compact-controller", "tray-menu", "voice-editor", "offline-preparation", "settings"],
+      "contracts": ["app-shell", "single-mission", "runtime-controls"],
+      "stories": [
+        {"id": "dashboard.stories-ready", "title": "Stories ready", "state": "Ready to prepare or open reading"},
+        {"id": "dashboard.reading-active", "title": "Reading active", "state": "Recognized dialogue with usable transport controls"},
+        {"id": "dashboard.setup-expanded", "title": "Setup navigation expanded", "state": "Settings and other secondary destinations are visible"}
+      ]
+    },
+    {
+      "id": "voice-editor",
+      "title": "Narrator and character voices",
+      "family": "Everyday playback",
+      "audience": "Player",
+      "mission": "Choose one role, compare its original reference with a generated preview and save the voice assignment.",
+      "canonical_owner": "voice-editor",
+      "related": ["dashboard", "unknown-speaker-prompt", "settings", "offline-preparation"],
+      "contracts": ["single-mission", "responsive-form", "voice-selection", "global-settings", "playback-evidence"],
+      "stories": [
+        {"id": "voice-editor.narrator", "title": "Narrator assignment", "state": "Normal entry from the Voices tab"},
+        {"id": "voice-editor.live-recovery", "title": "Unknown speaker recovery", "state": "Same editor with the missing character preselected"},
+        {"id": "voice-editor.preview-generating", "title": "Preview generation", "state": "Progress, cancellation and playback ownership are visible"},
+        {"id": "voice-editor.preview-failure", "title": "Preview generation failure", "state": "Failure explains recovery without implying that a voice was assigned"},
+        {"id": "voice-editor.long-values", "title": "Long content at compact width", "state": "Long roles, references and transcripts remain usable"},
+        {"id": "voice-editor.saved-return", "title": "Saved assignment return", "state": "The saved role and return destination are visibly confirmed"}
+      ]
+    },
+    {
+      "id": "settings",
+      "title": "Settings",
+      "family": "Setup and recovery",
+      "audience": "Player",
+      "mission": "Change application-wide capture, speech, playback and behavior settings.",
+      "canonical_owner": "settings",
+      "related": ["dashboard", "readiness", "voice-editor", "asset-manager"],
+      "contracts": ["single-mission", "responsive-form", "global-settings"],
+      "stories": [
+        {"id": "settings.speech-and-voices", "title": "Speech and voices", "state": "Global engine and voice defaults"},
+        {"id": "settings.validation-error", "title": "Invalid speech settings", "state": "Save is blocked with a focused actionable explanation"}
+      ]
+    },
+    {
+      "id": "compact-controller",
+      "title": "Compact controls",
+      "family": "Everyday playback",
+      "audience": "Player",
+      "mission": "Control live reading without covering the game.",
+      "canonical_owner": "dashboard",
+      "related": ["dashboard", "tray-menu"],
+      "contracts": ["single-mission", "runtime-controls"]
+    },
+    {
+      "id": "tray-menu",
+      "title": "Background tray menu",
+      "family": "Everyday playback",
+      "audience": "Player",
+      "mission": "Show short status, essential transport and escape actions while the application is in the background.",
+      "canonical_owner": "dashboard",
+      "related": ["dashboard", "compact-controller", "support-center"],
+      "contracts": ["single-mission", "runtime-controls", "support-boundary"]
+    },
+    {
+      "id": "unknown-speaker-prompt",
+      "title": "Unknown speaker recovery",
+      "family": "Everyday playback",
+      "audience": "Player",
+      "mission": "Pause an unresolved live line and route the user into the canonical voice editor.",
+      "canonical_owner": "voice-editor",
+      "related": ["voice-editor", "dashboard", "unmapped-speaker-notification"],
+      "contracts": ["voice-selection", "single-mission"],
+      "stories": [
+        {"id": "unknown-speaker-prompt.awaiting-choice", "title": "Speaker recovery choice", "state": "Choose a voice, use narrator for this session, or pause live reading"}
+      ]
+    },
+    {
+      "id": "live-voice-preflight",
+      "title": "Live voice preflight",
+      "family": "Everyday playback",
+      "audience": "Player",
+      "mission": "Confirm that live reading has usable voices before starting.",
+      "canonical_owner": "dashboard",
+      "related": ["dashboard", "voice-editor", "readiness"],
+      "contracts": ["single-mission", "voice-selection"]
+    },
+    {
+      "id": "onboarding",
+      "title": "First-run setup",
+      "family": "Setup and recovery",
+      "audience": "New player",
+      "mission": "Guide a first-time user from welcome through configuration, diagnostics, calibration and a complete test.",
+      "canonical_owner": "onboarding",
+      "related": ["readiness", "settings", "calibration", "asset-manager"],
+      "contracts": ["single-mission", "responsive-form", "global-settings"]
+    },
+    {
+      "id": "readiness",
+      "title": "Readiness check",
+      "family": "Setup and recovery",
+      "audience": "Player",
+      "mission": "Explain what prevents reading and offer the exact next remediation.",
+      "canonical_owner": "readiness",
+      "related": ["onboarding", "settings", "asset-manager", "macos-permissions", "diagnostics"],
+      "contracts": ["single-mission", "support-boundary"]
+    },
+    {
+      "id": "calibration",
+      "title": "Capture calibration",
+      "family": "Setup and recovery",
+      "audience": "Player",
+      "mission": "Select and verify the dialogue capture region.",
+      "canonical_owner": "calibration",
+      "related": ["onboarding", "settings", "readiness"],
+      "contracts": ["single-mission"]
+    },
+    {
+      "id": "game-profiles",
+      "title": "Game profiles",
+      "family": "Setup and recovery",
+      "audience": "Advanced player",
+      "mission": "Save, activate and remove complete game-specific configurations.",
+      "canonical_owner": "game-profiles",
+      "related": ["settings", "ocr-corrections"],
+      "contracts": ["single-mission", "global-settings"]
+    },
+    {
+      "id": "asset-manager",
+      "title": "Speech assets",
+      "family": "Setup and recovery",
+      "audience": "Player",
+      "mission": "Install only the model assets required by the active speech engine.",
+      "canonical_owner": "asset-manager",
+      "related": ["readiness", "settings", "onboarding"],
+      "contracts": ["single-mission", "global-settings"]
+    },
+    {
+      "id": "voice-import",
+      "title": "Voice import",
+      "family": "Setup and recovery",
+      "audience": "Advanced player",
+      "mission": "Add a verified external voice reference to the reusable voice library.",
+      "canonical_owner": "voice-import",
+      "related": ["voice-editor", "settings"],
+      "contracts": ["single-mission", "playback-evidence"]
+    },
+    {
+      "id": "macos-permissions",
+      "title": "macOS permissions",
+      "family": "Setup and recovery",
+      "audience": "macOS player",
+      "mission": "Show required permission state and route to the relevant system control.",
+      "canonical_owner": "readiness",
+      "related": ["readiness", "onboarding"],
+      "contracts": ["single-mission"]
+    },
+    {
+      "id": "offline-preparation",
+      "title": "Offline story preparation",
+      "family": "Content preparation",
+      "audience": "Player",
+      "mission": "Choose stories, prepare durable audio and understand progress, recovery and activation.",
+      "canonical_owner": "dashboard",
+      "related": ["dashboard", "voice-editor", "voice-audition"],
+      "contracts": ["app-shell", "single-mission", "voice-selection"]
+    },
+    {
+      "id": "voice-audition",
+      "title": "Preparation voice audition",
+      "family": "Content preparation",
+      "audience": "Player",
+      "mission": "Compare an automatic story voice choice without changing the global assignment unless requested.",
+      "canonical_owner": "offline-preparation",
+      "related": ["offline-preparation", "voice-editor"],
+      "contracts": ["playback-evidence", "voice-selection"]
+    },
+    {
+      "id": "ocr-review",
+      "title": "Uncertain OCR review",
+      "family": "Evidence and support",
+      "audience": "Advanced player",
+      "mission": "Correct one uncertain captured line and save a scoped rule only when content changed.",
+      "canonical_owner": "ocr-review",
+      "related": ["ocr-corrections", "diagnostics", "dashboard"],
+      "contracts": ["single-mission", "support-boundary"]
+    },
+    {
+      "id": "ocr-corrections",
+      "title": "OCR corrections",
+      "family": "Evidence and support",
+      "audience": "Advanced player",
+      "mission": "Inspect and edit stored OCR correction rules and their scope.",
+      "canonical_owner": "ocr-corrections",
+      "related": ["ocr-review", "game-profiles"],
+      "contracts": ["single-mission"]
+    },
+    {
+      "id": "dialogue-history",
+      "title": "Dialogue history",
+      "family": "Evidence and support",
+      "audience": "Player",
+      "mission": "Find and replay a previously spoken line.",
+      "canonical_owner": "dialogue-history",
+      "related": ["dashboard"],
+      "contracts": ["single-mission", "playback-evidence"]
+    },
+    {
+      "id": "diagnostics",
+      "title": "Live diagnostics",
+      "family": "Evidence and support",
+      "audience": "Advanced player",
+      "mission": "Inspect the latest capture and runtime evidence and take one contextual remediation action.",
+      "canonical_owner": "support-center",
+      "related": ["readiness", "support-center", "ocr-review"],
+      "contracts": ["support-boundary", "single-mission"]
+    },
+    {
+      "id": "support-center",
+      "title": "Support and logs",
+      "family": "Evidence and support",
+      "audience": "Advanced player",
+      "mission": "Collect bounded diagnostics, export a support archive and open the settings location.",
+      "canonical_owner": "support-center",
+      "related": ["diagnostics", "readiness", "tray-menu"],
+      "contracts": ["support-boundary", "single-mission"]
+    },
+    {
+      "id": "authoring-workbench",
+      "title": "Authoring workbench",
+      "family": "Authoring review",
+      "audience": "Authoring operator",
+      "mission": "Inspect generation state, run selected generation and repair individual outcomes.",
+      "canonical_owner": "authoring-workbench",
+      "related": ["cohort-review", "missing-voice-review", "failed-reference-review"],
+      "contracts": ["review-authority", "single-mission"]
+    },
+    {
+      "id": "cohort-review",
+      "title": "Cohort review",
+      "family": "Authoring review",
+      "audience": "Authoring reviewer",
+      "mission": "Hear a checksum-bound sample set and make one cohort decision.",
+      "canonical_owner": "cohort-review",
+      "related": ["authoring-workbench", "blind-listening"],
+      "contracts": ["review-authority", "playback-evidence"]
+    },
+    {
+      "id": "missing-voice-review",
+      "title": "Missing voice and failed line review",
+      "family": "Authoring review",
+      "audience": "Authoring reviewer",
+      "mission": "Choose explicit fallbacks for missing voices and exhausted generated lines.",
+      "canonical_owner": "missing-voice-review",
+      "related": ["authoring-workbench", "voice-editor"],
+      "contracts": ["review-authority", "voice-selection"]
+    },
+    {
+      "id": "failed-reference-review",
+      "title": "Failed reference audit",
+      "family": "Authoring review",
+      "audience": "Authoring reviewer",
+      "mission": "Select source audio suitable for cloning one failed speaker group.",
+      "canonical_owner": "failed-reference-review",
+      "related": ["authoring-workbench", "source-reference-review"],
+      "contracts": ["review-authority", "playback-evidence"]
+    },
+    {
+      "id": "source-reference-review",
+      "title": "Source reference quality",
+      "family": "Authoring review",
+      "audience": "Authoring reviewer",
+      "mission": "Judge original and generated evidence for one source reference.",
+      "canonical_owner": "source-reference-review",
+      "related": ["failed-reference-review", "blind-listening"],
+      "contracts": ["review-authority", "playback-evidence"]
+    },
+    {
+      "id": "blind-listening",
+      "title": "Blind A/B listening",
+      "family": "Authoring review",
+      "audience": "Authoring reviewer",
+      "mission": "Compare hidden A/B audio and record one blinded preference.",
+      "canonical_owner": "blind-listening",
+      "related": ["cohort-review", "source-reference-review", "terminal-conflict-review"],
+      "contracts": ["review-authority", "playback-evidence"]
+    },
+    {
+      "id": "terminal-conflict-review",
+      "title": "Terminal conflict review",
+      "family": "Authoring review",
+      "audience": "Authoring reviewer",
+      "mission": "Resolve two contradictory historical terminal decisions without guessing from metadata.",
+      "canonical_owner": "terminal-conflict-review",
+      "related": ["blind-listening", "authoring-workbench"],
+      "contracts": ["review-authority", "playback-evidence"]
+    },
+    {
+      "id": "source-voice-mapping",
+      "title": "Source voice mapping",
+      "family": "Source extraction",
+      "audience": "Source curator",
+      "mission": "Review extracted source clips and assign stable speaker identities.",
+      "canonical_owner": "source-voice-mapping",
+      "related": ["character-story-review", "voice-import"],
+      "contracts": ["review-authority", "playback-evidence"]
+    },
+    {
+      "id": "character-story-review",
+      "title": "Character Story reference review",
+      "family": "Source extraction",
+      "audience": "Source curator",
+      "mission": "Compare valid same-character source references and retain protected notes and decisions.",
+      "canonical_owner": "character-story-review",
+      "related": ["source-voice-mapping", "source-reference-review"],
+      "contracts": ["review-authority", "playback-evidence"]
+    },
+    {
+      "id": "background-notification",
+      "title": "Background mode notification",
+      "family": "Notifications",
+      "audience": "Player",
+      "mission": "Confirm that the application remains active after its window closes.",
+      "canonical_owner": "tray-menu",
+      "related": ["tray-menu", "dashboard"],
+      "contracts": ["runtime-controls"]
+    },
+    {
+      "id": "unmapped-speaker-notification",
+      "title": "Unmapped speaker notification",
+      "family": "Notifications",
+      "audience": "Player",
+      "mission": "Draw bounded attention to paused speaker recovery without duplicating a visible prompt.",
+      "canonical_owner": "unknown-speaker-prompt",
+      "related": ["unknown-speaker-prompt", "voice-editor"],
+      "contracts": ["voice-selection"]
+    },
+    {
+      "id": "critical-error-notification",
+      "title": "Critical error notification",
+      "family": "Notifications",
+      "audience": "Player",
+      "mission": "Report a bounded privacy-safe failure and route to the owning recovery surface.",
+      "canonical_owner": "support-center",
+      "related": ["support-center", "readiness"],
+      "contracts": ["support-boundary"]
+    }
+  ]
+}

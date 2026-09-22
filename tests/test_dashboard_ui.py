@@ -1,5 +1,8 @@
 import os
+import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -19,6 +22,7 @@ from vntts.dashboard_ui import (  # noqa: E402
     CompactController,
     ControlDashboard,
     RuntimeControlState,
+    configure_floating_window,
 )
 from vntts.diagnostics import DiagnosticSnapshot  # noqa: E402
 from vntts.settings import AppSettings  # noqa: E402
@@ -26,6 +30,36 @@ from vntts.ui_text import plain_label_text, set_labeled_text  # noqa: E402
 
 
 class ControlDashboardTest(unittest.TestCase):
+    def test_macos_floating_window_capture_requires_explicit_opt_in(self):
+        appkit = SimpleNamespace(
+            NSWindowCollectionBehaviorMoveToActiveSpace=1,
+            NSWindowCollectionBehaviorFullScreenPrimary=2,
+            NSWindowCollectionBehaviorCanJoinAllSpaces=4,
+            NSWindowCollectionBehaviorFullScreenAuxiliary=8,
+            NSFloatingWindowLevel=9,
+            NSWindowSharingNone=0,
+            NSWindowSharingReadOnly=1,
+        )
+        for value, expected in (("0", 0), ("1", 1)):
+            with self.subTest(allow_screen_capture=value):
+                native_window = Mock()
+                native_window.collectionBehavior.return_value = 3
+                native_view = Mock()
+                native_view.window.return_value = native_window
+                objc = SimpleNamespace(objc_object=Mock(return_value=native_view))
+                window = Mock()
+                window.winId.return_value = 123
+                with (
+                    patch.dict(sys.modules, {"AppKit": appkit, "objc": objc}),
+                    patch.dict(os.environ, {"VNTTS_ALLOW_SCREEN_CAPTURE": value}),
+                    patch.object(QApplication, "platformName", return_value="cocoa"),
+                ):
+                    self.assertTrue(
+                        configure_floating_window(window, platform="darwin")
+                    )
+
+                native_window.setSharingType_.assert_called_once_with(expected)
+
     def test_structured_identity_is_selectable_escaped_and_copies_plain_text(self):
         dashboard = ControlDashboard(AppSettings())
         label = dashboard.reading_defaults
@@ -379,6 +413,14 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.live_button.isVisibleTo(dashboard))
         self.assertFalse(dashboard.details_content.isVisibleTo(dashboard))
         self.assertEqual(dashboard.details_toggle.text(), "Show technical details")
+        self.assertEqual(
+            dashboard.details_toggle.sizePolicy().horizontalPolicy(),
+            QSizePolicy.Policy.Fixed,
+        )
+        self.assertEqual(
+            dashboard.copy_details_button.sizePolicy().horizontalPolicy(),
+            QSizePolicy.Policy.Fixed,
+        )
 
         dashboard.details_toggle.click()
 
@@ -398,6 +440,7 @@ class ControlDashboardTest(unittest.TestCase):
         self.assertTrue(dashboard.setup_primary_button.isVisibleTo(dashboard))
         self.assertEqual(dashboard.setup_primary_button.text(), "Check readiness")
         self.assertTrue(dashboard.setup_more_button.isVisibleTo(dashboard))
+        self.assertEqual(dashboard.setup_more_button.text(), "Settings and more")
         self.assertFalse(dashboard.setup_secondary_content.isVisibleTo(dashboard))
 
         dashboard.setup_primary_button.click()
@@ -405,7 +448,7 @@ class ControlDashboardTest(unittest.TestCase):
 
         self.assertEqual(requests, ["readiness"])
         self.assertTrue(dashboard.setup_secondary_content.isVisibleTo(dashboard))
-        self.assertEqual(dashboard.setup_more_button.text(), "Fewer setup options")
+        self.assertEqual(dashboard.setup_more_button.text(), "Hide settings and more")
         dashboard.close()
         dashboard.deleteLater()
 
