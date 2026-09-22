@@ -8,8 +8,10 @@ import json
 import os
 import random
 import shutil
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypeAlias, TypedDict
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
@@ -17,7 +19,9 @@ from vntts_artifacts.file_integrity import sha256_file
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.missing_voice_reuse import (
     MISSING_VOICE_REUSE_PLAN_SCHEMA,
+    JsonObject,
     MissingVoiceReuseError,
+    _PlanDocument,
     _validate_plan,
     load_missing_voice_reuse_plan,
 )
@@ -42,15 +46,244 @@ REVIEW_VERSION = 1
 AUTOMATIC_UNRESOLVED_ORIGIN = "automatic_no_complete_candidate"
 
 
+class ReviewSample(TypedDict, total=False):
+    queue_id: str
+    line_id: str
+    text: str
+    text_sha256: str
+    length_bucket: str
+    portrait: object
+    cohort_id: str
+
+
+class ReviewArm(TypedDict, total=False):
+    queue_id: str
+    status: str
+    attempt_count: int
+    audio: str
+    audio_sha256: str
+    quality: object
+    repair_strategy: str | None
+    failure_kind: str
+    failure_summary: str
+
+
+class ReviewCandidate(TypedDict, total=False):
+    label: str
+    candidate_id: str
+    voice_character: str
+    speaker: str
+    samples: list[ReviewArm]
+    generated_count: int
+
+
+class ReviewCohort(TypedDict, total=False):
+    cohort_id: str
+    sample_count: int
+    samples: list[ReviewSample]
+    complete_candidate_labels: list[str]
+    decision_options: list[str]
+
+
+class ReviewDecision(TypedDict, total=False):
+    cohort_id: str
+    decision: str | None
+    decided_at: str
+    decision_origin: str
+
+
+class HeardRecord(TypedDict):
+    cohort_id: str
+    queue_id: str
+    label: str
+
+
+class ReviewBundle(TypedDict, total=False):
+    schema: str
+    schema_version: int
+    bundle_id: str
+    plan: JsonObject
+    target_mode: str
+    character: str
+    decision_context: JsonObject | None
+    candidates: list[ReviewCandidate]
+    cohorts: list[ReviewCohort]
+    source_control: list[JsonObject]
+    cohort_count: int
+    candidate_count: int
+    blind_key_sha256: str
+    plan_id: str
+    seed: int
+    policy: JsonObject
+
+
+class ReviewSession(TypedDict, total=False):
+    schema: str
+    schema_version: int
+    bundle_id: str
+    bundle_sha256: str
+    created_at: str
+    updated_at: str
+    heard: list[HeardRecord]
+    decisions: list[ReviewDecision]
+
+
+class PlanCandidate(TypedDict, total=False):
+    candidate_id: str
+    voice_character: str
+    speaker: str
+    ordered_references: list[JsonObject]
+    render_hypothesis: JsonObject | None
+
+
+class PlanTarget(TypedDict, total=False):
+    queue_id: str
+    cohort_id: str
+    line_id: str
+    text: str
+    text_sha256: str
+    portrait: object
+    failure_category: str
+    source_state_item_sha256: str
+
+
+class PlanSample(TypedDict, total=False):
+    queue_id: str
+    cohort_id: str
+    line_id: str
+    text: str
+    text_sha256: str
+    length_bucket: str
+    portrait: object
+
+
+class CandidateSnapshot(TypedDict):
+    directory: Path
+    workspace: JsonObject
+    state: JsonObject
+    authority: JsonObject
+
+
+PlanDocument: TypeAlias = _PlanDocument
+
+
+def _plan_candidates(document: PlanDocument) -> list[PlanCandidate]:
+    values = document["candidates"]
+    if any(not isinstance(value, dict) for value in values):
+        raise MissingVoiceReuseReviewError("Plan candidates are malformed")
+    candidates = [value for value in values if isinstance(value, dict)]
+    if any(
+        not isinstance(value.get("candidate_id"), str)
+        or not isinstance(value.get("voice_character"), str)
+        or not isinstance(value.get("speaker"), str)
+        or not isinstance(value.get("ordered_references"), list)
+        for value in candidates
+    ):
+        raise MissingVoiceReuseReviewError("Plan candidates are malformed")
+    result: list[PlanCandidate] = []
+    for value in candidates:
+        candidate: PlanCandidate = {
+            "candidate_id": _text(value.get("candidate_id"), "Plan candidate ID"),
+            "voice_character": _text(
+                value.get("voice_character"), "Plan candidate voice"
+            ),
+            "speaker": _text(value.get("speaker"), "Plan candidate speaker"),
+            "ordered_references": _objects(
+                value.get("ordered_references"), "Plan candidate references"
+            ),
+        }
+        if isinstance(value.get("render_hypothesis"), dict):
+            candidate["render_hypothesis"] = _object(
+                value["render_hypothesis"], "Plan render hypothesis"
+            )
+        result.append(candidate)
+    return result
+
+
+def _plan_targets(document: PlanDocument) -> list[PlanTarget]:
+    values = document["targets"]
+    if any(not isinstance(value, dict) for value in values):
+        raise MissingVoiceReuseReviewError("Plan targets are malformed")
+    targets = [value for value in values if isinstance(value, dict)]
+    if any(
+        not isinstance(value.get("queue_id"), str)
+        or not isinstance(value.get("cohort_id"), str)
+        for value in targets
+    ):
+        raise MissingVoiceReuseReviewError("Plan targets are malformed")
+    result: list[PlanTarget] = []
+    for value in targets:
+        target: PlanTarget = {
+            "queue_id": _text(value.get("queue_id"), "Plan target queue ID"),
+            "cohort_id": _text(value.get("cohort_id"), "Plan target cohort ID"),
+        }
+        line_id = value.get("line_id")
+        text = value.get("text")
+        text_sha256 = value.get("text_sha256")
+        failure_category = value.get("failure_category")
+        source_state_item_sha256 = value.get("source_state_item_sha256")
+        if isinstance(line_id, str):
+            target["line_id"] = line_id
+        if isinstance(text, str):
+            target["text"] = text
+        if isinstance(text_sha256, str):
+            target["text_sha256"] = text_sha256
+        if isinstance(failure_category, str):
+            target["failure_category"] = failure_category
+        if isinstance(source_state_item_sha256, str):
+            target["source_state_item_sha256"] = source_state_item_sha256
+        if "portrait" in value:
+            target["portrait"] = value["portrait"]
+        result.append(target)
+    return result
+
+
+def _plan_samples(document: PlanDocument) -> list[PlanSample]:
+    values = document["comparison_samples"]
+    if any(not isinstance(value, dict) for value in values):
+        raise MissingVoiceReuseReviewError("Plan samples are malformed")
+    samples = [value for value in values if isinstance(value, dict)]
+    if any(
+        not isinstance(value.get("queue_id"), str)
+        or not isinstance(value.get("cohort_id"), str)
+        for value in samples
+    ):
+        raise MissingVoiceReuseReviewError("Plan samples are malformed")
+    result: list[PlanSample] = []
+    for value in samples:
+        sample: PlanSample = {
+            "queue_id": _text(value.get("queue_id"), "Plan sample queue ID"),
+            "cohort_id": _text(value.get("cohort_id"), "Plan sample cohort ID"),
+        }
+        line_id = value.get("line_id")
+        text = value.get("text")
+        text_sha256 = value.get("text_sha256")
+        length_bucket = value.get("length_bucket")
+        if isinstance(line_id, str):
+            sample["line_id"] = line_id
+        if isinstance(text, str):
+            sample["text"] = text
+        if isinstance(text_sha256, str):
+            sample["text_sha256"] = text_sha256
+        if isinstance(length_bucket, str):
+            sample["length_bucket"] = length_bucket
+        if "portrait" in value:
+            sample["portrait"] = value["portrait"]
+        result.append(sample)
+    return result
+
+
 class MissingVoiceReuseReviewError(RuntimeError):
     """Missing-voice reuse review evidence is incomplete or has changed."""
 
 
-def _utc_now():
+def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _shared_value(values, *, hidden="Hidden for this blind comparison"):
+def _shared_value(
+    values: Iterable[object], *, hidden: str = "Hidden for this blind comparison"
+) -> object:
     normalized = {value for value in values if value not in {None, ""}}
     if len(normalized) == 1:
         return next(iter(normalized))
@@ -58,19 +291,29 @@ def _shared_value(values, *, hidden="Hidden for this blind comparison"):
 
 
 def _published_decision_context(
-    document, candidates, candidate_snapshots, candidate_evidence
-):
+    document: PlanDocument,
+    candidates: list[PlanCandidate],
+    candidate_snapshots: dict[str, list[CandidateSnapshot]],
+    candidate_evidence: dict[str, dict[str, JsonObject]],
+) -> JsonObject:
     """Publish shared synthesis facts without revealing differing blind arms."""
-    run_configs = [
-        snapshot["workspace"].get("run_config", {})
-        for candidate in candidates
-        for snapshot in candidate_snapshots[candidate["candidate_id"]]
-    ]
+    run_configs: list[JsonObject] = []
+    for candidate in candidates:
+        for snapshot in candidate_snapshots[candidate["candidate_id"]]:
+            run_config = snapshot["workspace"].get("run_config")
+            run_configs.append(
+                _object(run_config, "Candidate run config")
+                if isinstance(run_config, dict)
+                else {}
+            )
     outcome_items = [
         item for evidence in candidate_evidence.values() for item in evidence.values()
     ]
     references = {
-        tuple(reference["path"] for reference in candidate["ordered_references"])
+        tuple(
+            _text(reference.get("path"), "Candidate reference path")
+            for reference in candidate["ordered_references"]
+        )
         for candidate in candidates
     }
     reference = "Hidden for this blind comparison"
@@ -79,30 +322,31 @@ def _published_decision_context(
         reference = ", ".join("/".join(Path(value).parts[-2:]) for value in paths)
         if len(paths) > 1:
             reference = f"{len(paths)}-file composite: {reference}"
-    strategies = {
-        (
-            candidate.get("render_hypothesis", {}).get("strategy")
-            if isinstance(candidate.get("render_hypothesis"), dict)
+    strategies: set[object] = set()
+    for candidate in candidates:
+        hypothesis = candidate.get("render_hypothesis")
+        strategies.add(
+            hypothesis.get("strategy")
+            if isinstance(hypothesis, dict)
             else "direct render"
         )
-        for candidate in candidates
-    }
     controls = _shared_value(strategies)
-    hypotheses = [
-        candidate.get("render_hypothesis")
-        for candidate in candidates
-        if isinstance(candidate.get("render_hypothesis"), dict)
-    ]
+    hypotheses: list[JsonObject] = []
+    for candidate in candidates:
+        hypothesis = candidate.get("render_hypothesis")
+        if isinstance(hypothesis, dict):
+            hypotheses.append(hypothesis)
     pause_values = {hypothesis.get("pause_ms") for hypothesis in hypotheses}
     if (
         len(hypotheses) == len(candidates)
         and len(pause_values) == 1
         and isinstance(hypotheses[0].get("pause_ms"), int)
     ):
-        controls += f", {hypotheses[0]['pause_ms']} ms inserted pause"
+        if isinstance(controls, str):
+            controls += f", {hypotheses[0]['pause_ms']} ms inserted pause"
     mode = document.get("target_mode", "missing")
 
-    def synthesis_value(item_field, config_field):
+    def synthesis_value(item_field: str, config_field: str) -> object:
         values = {item.get(item_field) for item in outcome_items}
         if any(value not in {None, ""} for value in values):
             return _shared_value(values)
@@ -135,7 +379,10 @@ def _published_decision_context(
             "plan_id": document["plan_id"],
             "workspace_ids": sorted(
                 {
-                    snapshot["workspace"]["workspace_id"]
+                    _text(
+                        snapshot["workspace"].get("workspace_id"),
+                        "Candidate workspace ID",
+                    )
                     for snapshots in candidate_snapshots.values()
                     for snapshot in snapshots
                 }
@@ -145,20 +392,20 @@ def _published_decision_context(
 
 
 def build_missing_voice_reuse_review(
-    plan_path,
-    evidence_workspaces,
-    output_directory,
+    plan_path: str | Path,
+    evidence_workspaces: Mapping[str, Sequence[str | Path]],
+    output_directory: str | Path,
     *,
-    seed=0,
-):
+    seed: int = 0,
+) -> Path:
     """Publish one immutable blind evidence matrix and resumable session."""
     plan_path = Path(plan_path).expanduser().resolve()
     try:
         plan = load_missing_voice_reuse_plan(plan_path)
     except MissingVoiceReuseError as error:
         raise MissingVoiceReuseReviewError(str(error)) from error
-    document = _validate_plan(plan)
-    candidates = document["candidates"]
+    document: PlanDocument = _validate_plan(plan)
+    candidates = _plan_candidates(document)
     candidate_ids = [candidate["candidate_id"] for candidate in candidates]
     if not isinstance(evidence_workspaces, dict) or set(evidence_workspaces) != set(
         candidate_ids
@@ -174,20 +421,24 @@ def build_missing_voice_reuse_review(
     labels = {
         candidate_id: _opaque_label(index) for index, candidate_id in enumerate(ordered)
     }
-    target_by_id = {target["queue_id"]: target for target in document["targets"]}
-    sample_by_id = {
-        sample["queue_id"]: {
-            **sample,
-            **{
-                key: target_by_id[sample["queue_id"]][key]
-                for key in ("line_id", "text", "text_sha256", "portrait")
-            },
+    target_by_id = {target["queue_id"]: target for target in _plan_targets(document)}
+    sample_by_id: dict[str, PlanSample] = {}
+    for sample in _plan_samples(document):
+        target = target_by_id[sample["queue_id"]]
+        combined: PlanSample = {
+            "queue_id": sample["queue_id"],
+            "cohort_id": sample["cohort_id"],
+            "length_bucket": sample["length_bucket"],
         }
-        for sample in document["comparison_samples"]
-    }
-    evidence = {}
-    candidate_snapshots = {}
-    private_candidates = []
+        for field in ("line_id", "text", "text_sha256"):
+            if isinstance(target.get(field), str):
+                combined[field] = target[field]
+        if "portrait" in target:
+            combined["portrait"] = target["portrait"]
+        sample_by_id[sample["queue_id"]] = combined
+    evidence: dict[str, dict[str, JsonObject]] = {}
+    candidate_snapshots: dict[str, list[CandidateSnapshot]] = {}
+    private_candidates: list[JsonObject] = []
     for candidate in candidates:
         candidate_id = candidate["candidate_id"]
         paths = evidence_workspaces[candidate_id]
@@ -221,39 +472,56 @@ def build_missing_voice_reuse_review(
         )
     root.parent.mkdir(parents=True, exist_ok=True)
     with staged_directory(root.parent, prefix=f".{root.name}-") as staging:
-        public_candidates = []
+        public_candidates: list[ReviewCandidate] = []
         for candidate_id in ordered:
             label = labels[candidate_id]
-            samples = []
+            samples: list[ReviewArm] = []
             for queue_id in document["comparison_sample_queue_ids"]:
                 item = evidence[candidate_id][queue_id]
-                public = {
+                status = _text(item.get("status"), "Candidate evidence status")
+                public: ReviewArm = {
                     "queue_id": queue_id,
-                    "status": item["status"],
-                    "attempt_count": item["attempt_count"],
+                    "status": status,
+                    "attempt_count": _int(
+                        item.get("attempt_count"), "Candidate attempt count"
+                    ),
                 }
-                if item["status"] == "generated":
+                if status == "generated":
                     relative = Path("audio") / label / f"{_queue_digest(queue_id)}.wav"
                     destination = staging / relative
                     destination.parent.mkdir(parents=True, exist_ok=True)
-                    _link_or_copy(Path(item["audio_path"]), destination)
-                    if sha256_file(destination) != item["audio_sha256"]:
+                    _link_or_copy(
+                        Path(_text(item.get("audio_path"), "Candidate audio path")),
+                        destination,
+                    )
+                    audio_sha256 = _text(
+                        item.get("audio_sha256"), "Candidate audio SHA-256"
+                    )
+                    if sha256_file(destination) != audio_sha256:
                         raise MissingVoiceReuseReviewError(
                             "Review audio changed while publishing"
                         )
                     public.update(
                         {
                             "audio": relative.as_posix(),
-                            "audio_sha256": item["audio_sha256"],
-                            "quality": item["quality"],
-                            "repair_strategy": item["repair_strategy"],
+                            "audio_sha256": audio_sha256,
+                            "quality": item.get("quality"),
+                            "repair_strategy": _optional_text(
+                                item.get("repair_strategy"),
+                                "Candidate repair strategy",
+                            ),
                         }
                     )
                 else:
                     public.update(
                         {
-                            "failure_kind": item["failure_kind"],
-                            "failure_summary": item["failure_summary"],
+                            "failure_kind": _text(
+                                item.get("failure_kind"), "Candidate failure kind"
+                            ),
+                            "failure_summary": _text(
+                                item.get("failure_summary"),
+                                "Candidate failure summary",
+                            ),
                         }
                     )
                 samples.append(public)
@@ -267,12 +535,13 @@ def build_missing_voice_reuse_review(
                 }
             )
 
-        cohorts = []
-        for cohort in document["cohorts"]:
+        cohorts: list[ReviewCohort] = []
+        for cohort in _objects(document["cohorts"], "Plan cohorts"):
+            cohort_id = _text(cohort.get("cohort_id"), "Plan cohort ID")
             cohort_samples = [
                 copy.deepcopy(sample)
                 for sample in sample_by_id.values()
-                if sample["cohort_id"] == cohort["cohort_id"]
+                if sample["cohort_id"] == cohort_id
             ]
             cohort_samples.sort(
                 key=lambda sample: document["comparison_sample_queue_ids"].index(
@@ -290,7 +559,7 @@ def build_missing_voice_reuse_review(
                     complete.append(public_candidate["label"])
             cohorts.append(
                 {
-                    "cohort_id": cohort["cohort_id"],
+                    "cohort_id": cohort_id,
                     "sample_count": len(cohort_samples),
                     "samples": cohort_samples,
                     "complete_candidate_labels": complete,
@@ -389,7 +658,9 @@ def build_missing_voice_reuse_review(
     return root / "session.json"
 
 
-def load_missing_voice_reuse_review(session_path):
+def load_missing_voice_reuse_review(
+    session_path: str | Path,
+) -> tuple[ReviewBundle, ReviewSession]:
     """Validate and return the immutable bundle plus mutable review session."""
     session_path = Path(session_path).expanduser().resolve()
     root = session_path.parent
@@ -420,19 +691,22 @@ def load_missing_voice_reuse_review(session_path):
     ) != sha256_file(key_path):
         raise MissingVoiceReuseReviewError("Missing-voice blind key changed")
     key = load_workspace_json(key_path, "missing-voice review key")
+    bundle_plan = _object(bundle.get("plan"), "Missing-voice review plan")
     if (
         key.get("schema") != REVIEW_KEY_SCHEMA
         or key.get("schema_version") != REVIEW_VERSION
-        or key.get("plan_id") != bundle.get("plan", {}).get("plan_id")
+        or key.get("plan_id") != bundle_plan.get("plan_id")
     ):
         raise MissingVoiceReuseReviewError("Missing-voice blind key is invalid")
-    _validate_public_matrix(root, bundle, key)
-    _derive_automatic_unresolved_decisions(session, bundle)
-    _validate_review_session(session, bundle)
-    return copy.deepcopy(bundle), copy.deepcopy(session)
+    validated_bundle = _validate_public_matrix(root, bundle, key)
+    _derive_automatic_unresolved_decisions(session, validated_bundle)
+    validated_session = _validate_review_session(session, validated_bundle)
+    return copy.deepcopy(validated_bundle), copy.deepcopy(validated_session)
 
 
-def record_missing_voice_reuse_heard(session_path, cohort_id, queue_id, label):
+def record_missing_voice_reuse_heard(
+    session_path: str | Path, cohort_id: str, queue_id: str, label: str
+) -> ReviewSession:
     """Record that one exact generated opaque arm has started playback."""
     bundle, session = load_missing_voice_reuse_review(session_path)
     cohort = _cohort(bundle, cohort_id)
@@ -441,7 +715,7 @@ def record_missing_voice_reuse_heard(session_path, cohort_id, queue_id, label):
     sample = _public_sample(bundle, label, queue_id)
     if sample["status"] != "generated":
         raise MissingVoiceReuseReviewError("A failed review arm cannot be heard")
-    record = {"cohort_id": cohort_id, "queue_id": queue_id, "label": label}
+    record: HeardRecord = {"cohort_id": cohort_id, "queue_id": queue_id, "label": label}
     if record not in session["heard"]:
         session["heard"].append(record)
         session["heard"].sort(
@@ -456,7 +730,9 @@ def record_missing_voice_reuse_heard(session_path, cohort_id, queue_id, label):
     return session
 
 
-def record_missing_voice_reuse_decision(session_path, cohort_id, decision):
+def record_missing_voice_reuse_decision(
+    session_path: str | Path, cohort_id: str, decision: str
+) -> ReviewSession:
     """Record one candidate or neither after every available arm was heard."""
     bundle, session = load_missing_voice_reuse_review(session_path)
     cohort = _cohort(bundle, cohort_id)
@@ -485,14 +761,20 @@ def record_missing_voice_reuse_decision(session_path, cohort_id, decision):
     return session
 
 
-def missing_voice_reuse_review_progress(bundle, session):
-    completed = sum(value["decision"] is not None for value in session["decisions"])
-    return completed, len(bundle["cohorts"])
+def missing_voice_reuse_review_progress(
+    bundle: Mapping[str, object], session: Mapping[str, object]
+) -> tuple[int, int]:
+    decisions = _objects(session.get("decisions"), "Review decisions")
+    cohorts = _objects(bundle.get("cohorts"), "Review cohorts")
+    completed = sum(value.get("decision") is not None for value in decisions)
+    return completed, len(cohorts)
 
 
-def parse_missing_voice_reuse_evidence(values):
+def parse_missing_voice_reuse_evidence(
+    values: Iterable[object] | None,
+) -> dict[str, tuple[Path, ...]]:
     """Parse repeated CANDIDATE_ID=WORKSPACE arguments without dropping order."""
-    evidence = {}
+    evidence: dict[str, list[Path]] = {}
     for value in values or ():
         if not isinstance(value, str) or "=" not in value:
             raise MissingVoiceReuseReviewError(
@@ -509,7 +791,9 @@ def parse_missing_voice_reuse_evidence(values):
     return {key: tuple(paths) for key, paths in evidence.items()}
 
 
-def _load_candidate_workspace(plan, candidate, workspace_directory):
+def _load_candidate_workspace(
+    plan: PlanDocument, candidate: PlanCandidate, workspace_directory: str | Path
+) -> CandidateSnapshot:
     try:
         directory, workspace, workspace_sha256 = load_workspace_authority(
             workspace_directory
@@ -524,6 +808,8 @@ def _load_candidate_workspace(plan, candidate, workspace_directory):
         )
     except AuthoringWorkbenchError as error:
         raise MissingVoiceReuseReviewError(str(error)) from error
+    workspace = _object(workspace, "Candidate workspace")
+    state = _object(state, "Candidate generation state")
     manifest_path = directory / "inputs/voice/manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -550,7 +836,9 @@ def _load_candidate_workspace(plan, candidate, workspace_directory):
         "state": state,
         "authority": {
             "path": str(directory),
-            "workspace_id": workspace["workspace_id"],
+            "workspace_id": _text(
+                workspace.get("workspace_id"), "Candidate workspace ID"
+            ),
             "workspace_sha256": workspace_sha256,
             "state_sha256": state_sha256,
             "voice_manifest_sha256": sha256_file(manifest_path),
@@ -558,12 +846,19 @@ def _load_candidate_workspace(plan, candidate, workspace_directory):
     }
 
 
-def _candidate_sample_evidence(plan, candidate, snapshots):
-    evidence = {}
+def _candidate_sample_evidence(
+    plan: PlanDocument,
+    candidate: PlanCandidate,
+    snapshots: Sequence[CandidateSnapshot],
+) -> dict[str, JsonObject]:
+    evidence: dict[str, JsonObject] = {}
     for queue_id in plan["comparison_sample_queue_ids"]:
         outcomes = []
         for snapshot in snapshots:
-            item = snapshot["state"]["items"].get(queue_id)
+            state_items = _object(
+                snapshot["state"].get("items"), "Candidate generation state items"
+            )
+            item = state_items.get(queue_id)
             if not isinstance(item, dict) or item.get("status") not in {
                 "generated",
                 "failed",
@@ -649,36 +944,43 @@ def _candidate_sample_evidence(plan, candidate, snapshots):
                 "outcomes": outcomes,
             }
         else:
-            selected = outcomes[-1] if outcomes else None
+            selected_failed = outcomes[-1] if outcomes else None
             evidence[queue_id] = {
                 "status": "failed",
                 "attempt_count": max(
                     (value["attempts"] for value in outcomes), default=0
                 ),
                 "failure_kind": (
-                    selected["failure_kind"] if selected else "no_render_outcome"
+                    selected_failed["failure_kind"]
+                    if selected_failed
+                    else "no_render_outcome"
                 ),
                 "failure_summary": (
-                    selected["failure_summary"]
-                    if selected
+                    selected_failed["failure_summary"]
+                    if selected_failed
                     else "No generated WAV was published"
                 ),
-                "provider": selected["provider"] if selected else None,
-                "model": selected["model"] if selected else None,
+                "provider": selected_failed["provider"] if selected_failed else None,
+                "model": selected_failed["model"] if selected_failed else None,
                 "generation_profile": (
-                    selected["generation_profile"] if selected else None
+                    selected_failed["generation_profile"] if selected_failed else None
                 ),
-                "seed": selected["seed"] if selected else None,
+                "seed": selected_failed["seed"] if selected_failed else None,
                 "outcomes": outcomes,
             }
     return evidence
 
 
-def _validate_render_hypothesis_outcome(candidate, queue_id, item):
+def _validate_render_hypothesis_outcome(
+    candidate: PlanCandidate, queue_id: str, item: JsonObject
+) -> None:
     hypothesis = candidate.get("render_hypothesis")
     if hypothesis is None:
         return
-    prompts = {prompt["queue_id"]: prompt for prompt in hypothesis.get("prompts", [])}
+    prompts = {
+        _text(prompt.get("queue_id"), "Render hypothesis queue ID"): prompt
+        for prompt in _objects(hypothesis.get("prompts"), "Render hypothesis prompts")
+    }
     prompt = prompts.get(queue_id)
     repair = item.get("failure_repair")
     if (
@@ -695,7 +997,13 @@ def _validate_render_hypothesis_outcome(candidate, queue_id, item):
         )
 
 
-def _validate_public_matrix(root, bundle, key):
+def _validate_public_matrix(
+    root: Path, bundle: JsonObject, key: JsonObject
+) -> ReviewBundle:
+    candidates = _objects(bundle.get("candidates"), "Review candidates")
+    cohorts = _objects(bundle.get("cohorts"), "Review cohorts")
+    private_candidates = _objects(key.get("candidates"), "Private review candidates")
+    plan = _object(bundle.get("plan"), "Review plan")
     context = bundle.get("decision_context")
     if context is not None:
         expected = {
@@ -723,7 +1031,7 @@ def _validate_public_matrix(root, bundle, key):
             or isinstance(context.get("seed"), bool)
             or not isinstance(technical, dict)
             or set(technical) != {"plan_id", "workspace_ids"}
-            or technical.get("plan_id") != bundle.get("plan", {}).get("plan_id")
+            or technical.get("plan_id") != plan.get("plan_id")
             or not isinstance(technical.get("workspace_ids"), list)
             or not technical["workspace_ids"]
             or any(
@@ -734,8 +1042,14 @@ def _validate_public_matrix(root, bundle, key):
             raise MissingVoiceReuseReviewError(
                 "Missing-voice review decision context is invalid"
             )
-    labels = [candidate.get("label") for candidate in bundle.get("candidates", [])]
-    private_labels = [candidate.get("label") for candidate in key.get("candidates", [])]
+    labels = [
+        _text(candidate.get("label"), "Review candidate label")
+        for candidate in candidates
+    ]
+    private_labels = [
+        _text(candidate.get("label"), "Private review candidate label")
+        for candidate in private_candidates
+    ]
     if (
         bundle.get("candidate_count") != len(labels)
         or not labels
@@ -744,27 +1058,31 @@ def _validate_public_matrix(root, bundle, key):
     ):
         raise MissingVoiceReuseReviewError("Missing-voice candidate labels are invalid")
     queue_ids = {
-        sample["queue_id"]
-        for cohort in bundle.get("cohorts", [])
-        for sample in cohort.get("samples", [])
+        _text(sample.get("queue_id"), "Review sample queue ID")
+        for cohort in cohorts
+        for sample in _objects(cohort.get("samples"), "Review cohort samples")
     }
     target_mode = bundle.get("target_mode", "missing")
     if target_mode == "failed":
         controls = bundle.get("source_control")
         if (
             not isinstance(controls, list)
-            or [value.get("queue_id") for value in controls]
+            or [
+                value.get("queue_id")
+                for value in _objects(controls, "Review source controls")
+            ]
             != [
-                sample["queue_id"]
-                for cohort in bundle.get("cohorts", [])
-                for sample in cohort.get("samples", [])
+                _text(sample.get("queue_id"), "Review sample queue ID")
+                for cohort in cohorts
+                for sample in _objects(cohort.get("samples"), "Review cohort samples")
             ]
             or any(
                 value.get("status") != "failed"
                 or not value.get("failure_category")
                 or not isinstance(value.get("state_item_sha256"), str)
-                or len(value["state_item_sha256"]) != 64
-                for value in controls
+                or len(_text(value.get("state_item_sha256"), "State item SHA-256"))
+                != 64
+                for value in _objects(controls, "Review source controls")
             )
         ):
             raise MissingVoiceReuseReviewError(
@@ -774,12 +1092,12 @@ def _validate_public_matrix(root, bundle, key):
         raise MissingVoiceReuseReviewError(
             "Missing-voice review target mode is invalid"
         )
-    for candidate in bundle["candidates"]:
-        samples = candidate.get("samples")
-        if (
-            not isinstance(samples, list)
-            or {sample.get("queue_id") for sample in samples} != queue_ids
-        ):
+    candidate_samples: dict[str, list[JsonObject]] = {}
+    for candidate in candidates:
+        label = _text(candidate.get("label"), "Review candidate label")
+        samples = _objects(candidate.get("samples"), "Review candidate samples")
+        candidate_samples[label] = samples
+        if {sample.get("queue_id") for sample in samples} != queue_ids:
             raise MissingVoiceReuseReviewError(
                 "Missing-voice review matrix is incomplete"
             )
@@ -799,50 +1117,82 @@ def _validate_public_matrix(root, bundle, key):
                 raise MissingVoiceReuseReviewError(
                     "Missing-voice review outcome is invalid"
                 )
-    if bundle.get("cohort_count") != len(bundle.get("cohorts", [])):
+    if bundle.get("cohort_count") != len(cohorts):
         raise MissingVoiceReuseReviewError("Missing-voice review cohort count changed")
-    for cohort in bundle["cohorts"]:
-        ids = {sample["queue_id"] for sample in cohort["samples"]}
-        complete = []
-        for candidate in bundle["candidates"]:
+    for cohort in cohorts:
+        ids = {
+            _text(sample.get("queue_id"), "Review sample queue ID")
+            for sample in _objects(cohort.get("samples"), "Review cohort samples")
+        }
+        complete: list[str] = []
+        for label, samples in candidate_samples.items():
             statuses = {
-                sample["queue_id"]: sample["status"] for sample in candidate["samples"]
+                _text(sample.get("queue_id"), "Review sample queue ID"): _text(
+                    sample.get("status"), "Review sample status"
+                )
+                for sample in samples
             }
             if all(statuses[queue_id] == "generated" for queue_id in ids):
-                complete.append(candidate["label"])
+                complete.append(label)
         if cohort.get("complete_candidate_labels") != complete or cohort.get(
             "decision_options"
         ) != [*complete, "neither"]:
             raise MissingVoiceReuseReviewError(
                 "Missing-voice review decision gate changed"
             )
+    validated: ReviewBundle = {
+        "schema": _text(bundle.get("schema"), "Review bundle schema"),
+        "schema_version": _int(
+            bundle.get("schema_version"), "Review bundle schema version"
+        ),
+        "bundle_id": _text(bundle.get("bundle_id"), "Review bundle ID"),
+        "plan": plan,
+        "character": _text(bundle.get("character"), "Review character"),
+        "decision_context": (
+            None if context is None else _object(context, "Review decision context")
+        ),
+        "seed": _int(bundle.get("seed"), "Review seed"),
+        "policy": _object(bundle.get("policy"), "Review policy"),
+        "blind_key_sha256": _text(
+            bundle.get("blind_key_sha256"), "Review blind key SHA-256"
+        ),
+        "candidate_count": _int(
+            bundle.get("candidate_count"), "Review candidate count"
+        ),
+        "candidates": [_review_candidate(value) for value in candidates],
+        "cohort_count": _int(bundle.get("cohort_count"), "Review cohort count"),
+        "cohorts": [_review_cohort(value) for value in cohorts],
+    }
+    if target_mode == "failed":
+        validated["target_mode"] = "failed"
+        validated["source_control"] = _objects(
+            bundle.get("source_control"), "Review source controls"
+        )
+    return validated
 
 
-def _validate_review_session(session, bundle):
+def _validate_review_session(
+    session: JsonObject, bundle: ReviewBundle
+) -> ReviewSession:
     cohort_ids = [cohort["cohort_id"] for cohort in bundle["cohorts"]]
-    decisions = session.get("decisions")
-    if (
-        not isinstance(decisions, list)
-        or [value.get("cohort_id") for value in decisions] != cohort_ids
-    ):
+    decisions = _objects(session.get("decisions"), "Review decisions")
+    if [value.get("cohort_id") for value in decisions] != cohort_ids:
         raise MissingVoiceReuseReviewError("Missing-voice review decisions are invalid")
-    heard = session.get("heard")
-    if not isinstance(heard, list) or len(heard) != len(
+    heard = _objects(session.get("heard"), "Review heard ledger")
+    if len(heard) != len(
         {(v.get("cohort_id"), v.get("queue_id"), v.get("label")) for v in heard}
     ):
         raise MissingVoiceReuseReviewError(
             "Missing-voice review heard ledger is invalid"
         )
     for value in heard:
-        cohort = _cohort(bundle, value.get("cohort_id"))
-        if value.get("queue_id") not in {
-            sample["queue_id"] for sample in cohort["samples"]
-        }:
+        cohort_id = _text(value.get("cohort_id"), "Heard cohort ID")
+        queue_id = _text(value.get("queue_id"), "Heard queue ID")
+        label = _text(value.get("label"), "Heard candidate label")
+        cohort = _cohort(bundle, cohort_id)
+        if queue_id not in {sample["queue_id"] for sample in cohort["samples"]}:
             raise MissingVoiceReuseReviewError("Heard sample is outside its cohort")
-        if (
-            _public_sample(bundle, value.get("label"), value["queue_id"])["status"]
-            != "generated"
-        ):
+        if _public_sample(bundle, label, queue_id)["status"] != "generated":
             raise MissingVoiceReuseReviewError("Heard ledger names a failed arm")
     for value in decisions:
         decision = value.get("decision")
@@ -852,7 +1202,8 @@ def _validate_review_session(session, bundle):
                     "Pending review decision is malformed"
                 )
             continue
-        cohort = _cohort(bundle, value["cohort_id"])
+        cohort_id = _text(value.get("cohort_id"), "Decision cohort ID")
+        cohort = _cohort(bundle, cohort_id)
         if decision not in cohort["decision_options"] or not value.get("decided_at"):
             raise MissingVoiceReuseReviewError("Completed review decision is invalid")
         if value.get("decision_origin") == AUTOMATIC_UNRESOLVED_ORIGIN:
@@ -866,15 +1217,30 @@ def _validate_review_session(session, bundle):
                 )
             continue
         observed = {
-            (record["queue_id"], record["label"])
+            (
+                _text(record.get("queue_id"), "Heard queue ID"),
+                _text(record.get("label"), "Heard candidate label"),
+            )
             for record in heard
-            if record["cohort_id"] == value["cohort_id"]
+            if record.get("cohort_id") == cohort_id
         }
         if observed != _available_heard_keys(bundle, cohort):
             raise MissingVoiceReuseReviewError("Decision lacks complete heard evidence")
+    return {
+        "schema": _text(session.get("schema"), "Review session schema"),
+        "schema_version": _int(
+            session.get("schema_version"), "Review session schema version"
+        ),
+        "bundle_id": _text(session.get("bundle_id"), "Review bundle ID"),
+        "bundle_sha256": _text(session.get("bundle_sha256"), "Review bundle SHA-256"),
+        "created_at": _text(session.get("created_at"), "Review creation time"),
+        "updated_at": _text(session.get("updated_at"), "Review update time"),
+        "heard": [_heard_record(value) for value in heard],
+        "decisions": [_review_decision(value) for value in decisions],
+    }
 
 
-def _automatic_unresolved_decision(cohort_id, decided_at):
+def _automatic_unresolved_decision(cohort_id: str, decided_at: str) -> ReviewDecision:
     return {
         "cohort_id": cohort_id,
         "decision": "neither",
@@ -883,16 +1249,14 @@ def _automatic_unresolved_decision(cohort_id, decided_at):
     }
 
 
-def _derive_automatic_unresolved_decisions(session, bundle):
+def _derive_automatic_unresolved_decisions(
+    session: JsonObject, bundle: ReviewBundle
+) -> None:
     """Project legacy pending sessions through the immutable zero-choice rule."""
     decisions = session.get("decisions")
     if not isinstance(decisions, list):
         return
-    cohorts = {
-        cohort.get("cohort_id"): cohort
-        for cohort in bundle.get("cohorts", [])
-        if isinstance(cohort, dict)
-    }
+    cohorts = {cohort["cohort_id"]: cohort for cohort in bundle["cohorts"]}
     for index, value in enumerate(decisions):
         if (
             not isinstance(value, dict)
@@ -900,14 +1264,18 @@ def _derive_automatic_unresolved_decisions(session, bundle):
             or set(value) != {"cohort_id", "decision"}
         ):
             continue
-        cohort = cohorts.get(value.get("cohort_id"))
+        cohort_id = _text(value.get("cohort_id"), "Review cohort ID")
+        cohort = cohorts.get(cohort_id)
         if isinstance(cohort, dict) and not cohort.get("complete_candidate_labels"):
             decisions[index] = _automatic_unresolved_decision(
-                value["cohort_id"], session.get("created_at")
+                cohort_id,
+                _text(session.get("created_at"), "Review creation time"),
             )
 
 
-def _available_heard_keys(bundle, cohort):
+def _available_heard_keys(
+    bundle: ReviewBundle, cohort: ReviewCohort
+) -> set[tuple[str, str]]:
     queue_ids = {sample["queue_id"] for sample in cohort["samples"]}
     return {
         (sample["queue_id"], candidate["label"])
@@ -917,7 +1285,7 @@ def _available_heard_keys(bundle, cohort):
     }
 
 
-def _public_sample(bundle, label, queue_id):
+def _public_sample(bundle: ReviewBundle, label: str, queue_id: str) -> ReviewArm:
     matches = [
         candidate
         for candidate in bundle["candidates"]
@@ -933,7 +1301,7 @@ def _public_sample(bundle, label, queue_id):
     return samples[0]
 
 
-def _cohort(bundle, cohort_id):
+def _cohort(bundle: ReviewBundle, cohort_id: str) -> ReviewCohort:
     matches = [
         cohort for cohort in bundle["cohorts"] if cohort.get("cohort_id") == cohort_id
     ]
@@ -942,23 +1310,153 @@ def _cohort(bundle, cohort_id):
     return matches[0]
 
 
-def load_workspace_json(path, label):
+def _review_arm(value: JsonObject) -> ReviewArm:
+    arm: ReviewArm = {
+        "queue_id": _text(value.get("queue_id"), "Review arm queue ID"),
+        "status": _text(value.get("status"), "Review arm status"),
+        "attempt_count": _int(value.get("attempt_count"), "Review attempt count"),
+    }
+    audio = value.get("audio")
+    if audio is not None:
+        arm["audio"] = _text(audio, "Review audio path")
+        arm["audio_sha256"] = _text(value.get("audio_sha256"), "Review audio SHA-256")
+        arm["quality"] = value.get("quality")
+        arm["repair_strategy"] = _optional_text(
+            value.get("repair_strategy"), "Review repair strategy"
+        )
+    failure_kind = value.get("failure_kind")
+    if failure_kind is not None:
+        arm["failure_kind"] = _text(failure_kind, "Review failure kind")
+        arm["failure_summary"] = _text(
+            value.get("failure_summary"), "Review failure summary"
+        )
+    return arm
+
+
+def _review_candidate(value: JsonObject) -> ReviewCandidate:
+    samples = _objects(value.get("samples"), "Review candidate samples")
+    return {
+        "label": _text(value.get("label"), "Review candidate label"),
+        "samples": [_review_arm(sample) for sample in samples],
+        "generated_count": _int(value.get("generated_count"), "Review generated count"),
+    }
+
+
+def _review_sample(value: JsonObject) -> ReviewSample:
+    sample: ReviewSample = {
+        "queue_id": _text(value.get("queue_id"), "Review sample queue ID"),
+        "cohort_id": _text(value.get("cohort_id"), "Review sample cohort ID"),
+    }
+    for field in ("line_id", "text", "text_sha256"):
+        field_value = value.get(field)
+        if isinstance(field_value, str):
+            if field == "line_id":
+                sample["line_id"] = field_value
+            elif field == "text":
+                sample["text"] = field_value
+            else:
+                sample["text_sha256"] = field_value
+    length_bucket = value.get("length_bucket")
+    if isinstance(length_bucket, str):
+        sample["length_bucket"] = length_bucket
+    if "portrait" in value:
+        sample["portrait"] = value["portrait"]
+    return sample
+
+
+def _review_cohort(value: JsonObject) -> ReviewCohort:
+    return {
+        "cohort_id": _text(value.get("cohort_id"), "Review cohort ID"),
+        "sample_count": _int(value.get("sample_count"), "Review sample count"),
+        "samples": [
+            _review_sample(sample)
+            for sample in _objects(value.get("samples"), "Review cohort samples")
+        ],
+        "complete_candidate_labels": _strings(
+            value.get("complete_candidate_labels"), "Complete candidate labels"
+        ),
+        "decision_options": _strings(
+            value.get("decision_options"), "Review decision options"
+        ),
+    }
+
+
+def _heard_record(value: JsonObject) -> HeardRecord:
+    return {
+        "cohort_id": _text(value.get("cohort_id"), "Heard cohort ID"),
+        "queue_id": _text(value.get("queue_id"), "Heard queue ID"),
+        "label": _text(value.get("label"), "Heard candidate label"),
+    }
+
+
+def _review_decision(value: JsonObject) -> ReviewDecision:
+    decision_value = value.get("decision")
+    decision: ReviewDecision = {
+        "cohort_id": _text(value.get("cohort_id"), "Decision cohort ID"),
+        "decision": (
+            None if decision_value is None else _text(decision_value, "Review decision")
+        ),
+    }
+    if value.get("decided_at") is not None:
+        decision["decided_at"] = _text(value.get("decided_at"), "Review decision time")
+    if value.get("decision_origin") is not None:
+        decision["decision_origin"] = _text(
+            value.get("decision_origin"), "Review decision origin"
+        )
+    return decision
+
+
+def _object(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise MissingVoiceReuseReviewError(f"{label} is malformed")
+    return {key: item for key, item in value.items()}
+
+
+def _objects(value: object, label: str) -> list[JsonObject]:
+    if not isinstance(value, list):
+        raise MissingVoiceReuseReviewError(f"{label} is malformed")
+    return [_object(item, label) for item in value]
+
+
+def _strings(value: object, label: str) -> list[str]:
+    if not isinstance(value, list):
+        raise MissingVoiceReuseReviewError(f"{label} is malformed")
+    return [_text(item, label) for item in value]
+
+
+def _text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise MissingVoiceReuseReviewError(f"{label} is invalid")
+    return value
+
+
+def _optional_text(value: object, label: str) -> str | None:
+    return None if value is None else _text(value, label)
+
+
+def _int(value: object, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise MissingVoiceReuseReviewError(f"{label} is invalid")
+    return value
+
+
+def load_workspace_json(path: str | Path, label: str) -> JsonObject:
     return load_json_object(path, label, error_type=MissingVoiceReuseReviewError)
 
 
-def _write_private_json(path, value):
+def _write_private_json(path: str | Path, value: JsonObject) -> None:
     atomic_write_json(path, value, sort_keys=True)
     os.chmod(path, 0o600)
 
 
-def _link_or_copy(source, destination):
+def _link_or_copy(source: Path, destination: Path) -> None:
     try:
         os.link(source, destination)
     except OSError:
         shutil.copy2(source, destination)
 
 
-def _opaque_label(index):
+def _opaque_label(index: int) -> str:
     value = index
     label = ""
     while True:
@@ -968,7 +1466,7 @@ def _opaque_label(index):
             return label
 
 
-def _queue_digest(queue_id):
+def _queue_digest(queue_id: str) -> str:
     return hashlib.sha256(queue_id.encode("utf-8")).hexdigest()[:24]
 
 

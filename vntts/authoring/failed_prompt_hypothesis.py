@@ -72,9 +72,9 @@ def publish_failed_prompt_hypothesis_selection(
         raise FailedPromptHypothesisError(
             "Selection requires an inline-pause failed-control plan"
         )
-    if bundle.get("plan", {}).get("plan_id") != document["plan_id"] or bundle[
-        "plan"
-    ].get("sha256") != sha256_file(plan_path):
+    if bundle["plan"].get("plan_id") != document["plan_id"] or bundle["plan"].get(
+        "sha256"
+    ) != sha256_file(plan_path):
         raise FailedPromptHypothesisError(
             "Prompt review belongs to a different immutable plan"
         )
@@ -94,7 +94,7 @@ def publish_failed_prompt_hypothesis_selection(
     for target in document["targets"]:
         cohort_id = _record_text(target, "cohort_id", "Prompt cohort ID")
         targets_by_cohort.setdefault(cohort_id, []).append(target)
-    decisions = []
+    decisions: list[JsonObject] = []
     for record in sorted(session["decisions"], key=_cohort_id):
         cohort_id = _cohort_id(record)
         cohort = cohort_by_id.get(cohort_id)
@@ -176,11 +176,11 @@ def publish_failed_prompt_hypothesis_selection(
     )
 
 
-def _cohort_id(record: dict[str, object]) -> str:
+def _cohort_id(record: Mapping[str, object]) -> str:
     return _record_text(record, "cohort_id", "Prompt review cohort ID")
 
 
-def _record_text(record: dict[str, object], field: str, label: str) -> str:
+def _record_text(record: Mapping[str, object], field: str, label: str) -> str:
     value = record.get(field)
     if not isinstance(value, str) or not value:
         raise FailedPromptHypothesisError(f"{label} is invalid")

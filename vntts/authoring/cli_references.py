@@ -419,17 +419,17 @@ def handle(arguments: argparse.Namespace) -> int:
         print(json.dumps({"command": list(command)}, indent=2, sort_keys=True))
         return 0
     if arguments.command == "missing-voice-reuse-review":
-        session = build_missing_voice_reuse_review(
+        session_path = build_missing_voice_reuse_review(
             arguments.plan,
             parse_missing_voice_reuse_evidence(arguments.candidate_evidence),
             arguments.output,
             seed=arguments.seed,
         )
-        bundle, progress = load_missing_voice_reuse_review(session)
+        bundle, progress = load_missing_voice_reuse_review(session_path)
         print(
             json.dumps(
                 {
-                    "session": str(session),
+                    "session": str(session_path),
                     "bundle_id": bundle["bundle_id"],
                     "candidate_count": bundle["candidate_count"],
                     "cohort_count": bundle["cohort_count"],
