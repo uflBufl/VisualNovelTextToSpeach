@@ -53,6 +53,7 @@ from vntts.pregeneration_voices import (
     VoicePlan,
     pregeneration_narrator_source_id,
     resolve_pregeneration_settings,
+    validated_player_voice_candidates,
 )
 from vntts.qt_audio import QtPcmPlayer
 from vntts.release_backends import speech_backend_options
@@ -105,6 +106,26 @@ def _is_narrator_references(
     return isinstance(value, tuple) and all(
         isinstance(item, _NarratorReference) for item in value
     )
+
+
+def _display_role_name(role: str) -> str:
+    """Use one display spelling for the role identity used by synthesis."""
+    value = role.strip()
+    if len(value) > 2 and value[0] == value[-1] == '"':
+        return value[1:-1].strip()
+    return value
+
+
+def _candidate_origin_label(variant: dict[str, object]) -> str:
+    origin = variant.get("candidate_origin")
+    if origin == "exact_bank_unrouted_media":
+        return "exact bank media"
+    if origin == "story_line_route":
+        return "story line"
+    source_voice_ids = variant.get("source_voice_ids")
+    if isinstance(source_voice_ids, list):
+        return "exact bank media" if not source_voice_ids else "story line"
+    return "prepared reference"
 
 
 class GameNarratorDialog(QDialog):
@@ -175,6 +196,8 @@ class GameNarratorDialog(QDialog):
         self.cancellation = Event()
         self.decoderProgress.connect(self._decoder_progress)
         self._prepared: dict[str, Path] = {}
+        self._candidate_source_ids: set[str] = set()
+        self._preparing_character_candidates = False
         self._character: str | None = None
         self._operation: str | None = None
         self._warming_reference: str | None = None
@@ -631,17 +654,19 @@ class GameNarratorDialog(QDialog):
             *((group.character for group in plan.groups) if plan is not None else ()),
             selected,
         }
+        display_roles: dict[str, str] = {}
+        for role in available_roles:
+            identity = normalize_character_name(role)
+            if not identity or is_narrator(role):
+                continue
+            display_roles.setdefault(identity, _display_role_name(role))
         with QSignalBlocker(self.role):
             self.role.clear()
             self.role.addItems(
                 [
                     "Narrator",
                     *sorted(
-                        (
-                            role
-                            for role in available_roles
-                            if not is_narrator(role) and normalize_character_name(role)
-                        ),
+                        display_roles.values(),
                         key=str.casefold,
                     ),
                 ]
@@ -701,6 +726,14 @@ class GameNarratorDialog(QDialog):
             self.role.setCurrentText("Narrator")
             return
         narrator = normalize_character_name(role) == "narrator"
+        stale_game_references = (
+            self.references.count() > 0
+            and self._preparing_character_candidates == narrator
+        )
+        if stale_game_references:
+            self._prepared.clear()
+            self._candidate_source_ids.clear()
+            self.references.clear()
         saved_binding, selected = self._saved_role_voice(role, narrator)
         self.role_summary.setText(
             self._role_summary_text(role, narrator, selected, saved_binding)
@@ -709,6 +742,14 @@ class GameNarratorDialog(QDialog):
         self._select_role_source(narrator, selected)
         self._source_changed()
         self._settings_choice_changed()
+        if (
+            stale_game_references
+            and self.source.currentData() == "game"
+            and self.characters.currentText()
+            and not self.runner.active
+            and not self._initializing
+        ):
+            self._prepare()
 
     def _saved_role_voice(
         self, role: str, narrator: bool
@@ -859,9 +900,14 @@ class GameNarratorDialog(QDialog):
         if source_id.startswith("preset:"):
             return source_id.partition(":")[2].replace("_", " ").title()
         index = self.catalog_choice.findData(source_id)
+        if index >= 0:
+            return self.catalog_choice.itemText(index)
+        index = self.references.findData(source_id)
+        if index >= 0:
+            return self.references.itemText(index)
         return (
-            self.catalog_choice.itemText(index)
-            if index >= 0
+            "Game voice"
+            if source_id.startswith("character:")
             else "unavailable saved voice"
         )
 
@@ -1151,7 +1197,14 @@ class GameNarratorDialog(QDialog):
             if mode == "catalog"
             else self._prepared.get(self.references.currentData())
         )
-        source_id = self.catalog_choice.currentData() if mode == "catalog" else None
+        source_id = (
+            self.catalog_choice.currentData()
+            if mode == "catalog"
+            else self.references.currentData()
+            if mode == "game"
+            and self.references.currentData() in self._candidate_source_ids
+            else None
+        )
         settings = self._settings()
         if mode == "preset":
             source_id = self.presets.currentData()
@@ -1340,6 +1393,7 @@ class GameNarratorDialog(QDialog):
     def _character_changed(self) -> None:
         self.player.stop()
         self._prepared.clear()
+        self._candidate_source_ids.clear()
         self.references.clear()
         self._game_reference_dirty = False
         self._clear_impact()
@@ -1357,13 +1411,87 @@ class GameNarratorDialog(QDialog):
             return
         self._character = self.characters.currentText()
         self._prepared.clear()
+        self._candidate_source_ids.clear()
         self.references.clear()
+        self._preparing_character_candidates = not is_narrator(self.role.currentText())
+        if self._preparing_character_candidates:
+            self._start(
+                "prepare",
+                f"Preparing voice candidates for {self._character}. Please wait...",
+                partial(
+                    self.importer.prepare_voice_roles,
+                    (self._character,),
+                    self.cancellation,
+                    progress=self.decoderProgress.emit,
+                    narrator=False,
+                ),
+            )
+            return
         self._start(
             "prepare",
             f"Listing spoken references for {self._character}. Please wait...",
             self.importer.narrator_references,
             self._character,
         )
+
+    def _show_character_candidates(self, manifest: Path | str) -> None:
+        """List the exact sources published for Stories, without re-ranking them."""
+        manifest_path = Path(manifest)
+        registry, variants = validated_player_voice_candidates(manifest_path)
+        candidate_details: list[tuple[str, dict[str, object]]] = []
+        for variant in variants:
+            if normalize_character_name(
+                str(variant.get("character", ""))
+            ) != normalize_character_name(self._character):
+                continue
+            voice_character = variant["voice_character"]
+            source_id = f"character:{normalize_character_name(voice_character)}"
+            if registry.resolve_source(source_id) is not None:
+                candidate_details.append((source_id, variant))
+        self.references.blockSignals(True)
+        self.references.clear()
+        self._candidate_source_ids.clear()
+        self._prepared.clear()
+        for index, (source_id, variant) in enumerate(candidate_details, 1):
+            duration = variant.get("duration_seconds")
+            duration_label = (
+                f"{float(duration):.3f} s"
+                if isinstance(duration, (int, float)) and not isinstance(duration, bool)
+                else "duration unavailable"
+            )
+            origin = _candidate_origin_label(variant)
+            self.references.addItem(
+                f"Candidate {index} - {duration_label} - {origin}", source_id
+            )
+            self.references.setItemData(
+                index - 1,
+                "\n".join(
+                    (
+                        f"Source: {variant.get('voice_character', source_id)}",
+                        f"Duration: {duration_label}",
+                        f"Origin: {origin}",
+                        f"Source ID: {source_id}",
+                    )
+                ),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+            self._candidate_source_ids.add(source_id)
+            self._prepared[source_id] = manifest_path
+        _binding, selected_source = self._saved_role_voice(
+            self.role.currentText(), narrator=False
+        )
+        selected_index = self.references.findData(selected_source)
+        if selected_index >= 0:
+            self.references.setCurrentIndex(selected_index)
+        self.references.blockSignals(False)
+        self.status.setText(
+            f"{len(candidate_details)} prepared voice candidates from Stories. "
+            "Short or unusable clips are omitted. "
+            "The selected original audio prepares automatically."
+            if candidate_details
+            else "No usable voice candidates found. Choose another character."
+        )
+        self._reference_changed()
 
     def _reference_changed(self) -> None:
         self._stop_audio()
@@ -1511,10 +1639,11 @@ class GameNarratorDialog(QDialog):
                     narrator_line_id=reference,
                 )
             manifest = self._prepared[reference]
-            choices = CharacterVoiceRegistry.from_file(manifest).choices()
-            if len(choices) != 1:
-                raise ValueError("Expected exactly one selected narrator reference")
-            source_id = choices[0].id
+            if reference not in self._candidate_source_ids:
+                choices = CharacterVoiceRegistry.from_file(manifest).choices()
+                if len(choices) != 1:
+                    raise ValueError("Expected exactly one selected narrator reference")
+                source_id = choices[0].id
         if self.cancellation.is_set():
             raise RuntimeError("Narrator selection cancelled")
         if operation == "warm":
@@ -1709,25 +1838,32 @@ class GameNarratorDialog(QDialog):
                 self._prepare()
                 return
         elif operation == "prepare":
-            if not _is_narrator_references(result):
-                raise TypeError("Game importer returned invalid narrator references")
-            choices = result
-            self.references.blockSignals(True)
-            self.references.clear()
-            for index, choice in enumerate(choices, 1):
-                title = choice.collection_title or f"Reference {index}"
-                self.references.addItem(title, choice.line_id)
-                self.references.setItemData(
-                    index - 1, choice.text, Qt.ItemDataRole.ToolTipRole
+            if self._preparing_character_candidates:
+                if not isinstance(result, (Path, str)):
+                    raise TypeError("Game importer returned an invalid voice manifest")
+                self._show_character_candidates(result)
+            else:
+                if not _is_narrator_references(result):
+                    raise TypeError(
+                        "Game importer returned invalid narrator references"
+                    )
+                choices = result
+                self.references.blockSignals(True)
+                self.references.clear()
+                for index, choice in enumerate(choices, 1):
+                    title = choice.collection_title or f"Reference {index}"
+                    self.references.addItem(title, choice.line_id)
+                    self.references.setItemData(
+                        index - 1, choice.text, Qt.ItemDataRole.ToolTipRole
+                    )
+                self.references.blockSignals(False)
+                self.status.setText(
+                    f"All {len(choices)} suitable references, recommended order. "
+                    "The selected original audio prepares automatically."
+                    if choices
+                    else "No usable references found. Choose another character."
                 )
-            self.references.blockSignals(False)
-            self.status.setText(
-                f"All {len(choices)} suitable references, recommended order. "
-                "The selected original audio prepares automatically."
-                if choices
-                else "No usable references found. Choose another character."
-            )
-            self._reference_changed()
+                self._reference_changed()
         elif operation in {"audio", "preview"}:
             preview_path: object | None = None
             if operation == "preview":

@@ -246,12 +246,18 @@ class VoiceAuditionPreviewServiceTest(unittest.TestCase):
                 for candidate in group.candidates
                 if candidate.source_character == "Player candidate Rhiannon 123abc"
             )
-            service = VoiceAuditionPreviewService(root / "auditions")
+            backend = FakeBackend("moss-tts")
+            service = VoiceAuditionPreviewService(
+                root / "auditions",
+                backend_factory=lambda *_args, **_kwargs: backend,
+            )
             try:
                 self.assertEqual(
                     service.reference_audio(plan, group, candidate.source_id),
                     reference.resolve(),
                 )
+                service.generate(plan, group, candidate.source_id)
+                self.assertEqual(backend.requests[0].voice, "Rhiannon")
             finally:
                 service.close()
 
