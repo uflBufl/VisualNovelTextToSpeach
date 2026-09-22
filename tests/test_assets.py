@@ -187,6 +187,28 @@ class ModelAssetManagerTest(unittest.TestCase):
             self.assertEqual(repaired, model_path)
             self.assertTrue(manager.is_ready_with_asset(asset.name, asset))
 
+    def test_model_validation_rejects_malformed_and_future_checksum_documents(self):
+        asset = self.create_asset()
+        opener = MemoryOpener(
+            {
+                asset.urls[0]: b"model-weights",
+                asset.urls[1]: b"publisher-hash\n",
+            }
+        )
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory, opener=opener)
+            model_path = manager.download(asset.name, asset=asset)
+            manifest_path = model_path / "vntts-asset.json"
+            valid = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+            for payload in ([], {**valid, "version": 2}):
+                with self.subTest(payload=payload):
+                    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        ModelIntegrityError, "malformed|version"
+                    ):
+                        manager.validate(asset.name, asset=asset)
+
 
 class VoicePackManagerTest(unittest.TestCase):
     def test_import_voice_copies_local_references_and_builds_manifest(self):
@@ -290,6 +312,26 @@ class VoicePackManagerTest(unittest.TestCase):
                     checksum_path.write_text(json.dumps(checksum), encoding="utf-8")
                     with self.assertRaisesRegex(ModelIntegrityError, "wrong files"):
                         manager.validate(manifest_path)
+
+    def test_validation_rejects_missing_or_future_voice_checksum_document(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "marcus.wav"
+            source.write_bytes(b"local voice data")
+            manager = VoicePackManager(root / "managed")
+            manifest_path = manager.import_voice("Marcus", [source])
+            checksum_path = manifest_path.parent / "vntts-asset.json"
+            checksum = json.loads(checksum_path.read_text(encoding="utf-8"))
+
+            checksum_path.unlink()
+            with self.assertRaisesRegex(ModelIntegrityError, "missing"):
+                manager.validate(manifest_path)
+            self.assertFalse(checksum_path.exists())
+
+            checksum["version"] = 2
+            checksum_path.write_text(json.dumps(checksum), encoding="utf-8")
+            with self.assertRaisesRegex(ModelIntegrityError, "version"):
+                manager.validate(manifest_path)
 
 
 if __name__ == "__main__":

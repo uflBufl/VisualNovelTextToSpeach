@@ -138,10 +138,14 @@ class ReleaseMatrixTest(unittest.TestCase):
     def test_malformed_matrix_root_and_profiles_are_rejected(self):
         with TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "matrix.json"
-            for payload in ([], {"required_profiles": ["not-an-object"]}):
+            for payload in (
+                [],
+                {"version": 1, "required_profiles": ["not-an-object"]},
+                {"version": 2, "required_profiles": [{}]},
+            ):
                 with self.subTest(payload=payload):
                     path.write_text(json.dumps(payload), encoding="utf-8")
-                    with self.assertRaisesRegex(ValueError, "root|profiles"):
+                    with self.assertRaisesRegex(ValueError, "root|profiles|version"):
                         load_release_matrix(path)
 
 

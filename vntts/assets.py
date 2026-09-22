@@ -92,6 +92,10 @@ class ModelAssetManager:
             raise ModelIntegrityError(
                 f"Unable to read model checksum manifest: {error}"
             ) from error
+        if not isinstance(manifest, dict):
+            raise ModelIntegrityError("Model checksum manifest is malformed")
+        if manifest.get("version") != 1:
+            raise ModelIntegrityError("Unsupported model checksum manifest version")
         if manifest.get("model") != model_name:
             raise ModelIntegrityError("Model checksum manifest has the wrong model")
 
@@ -375,10 +379,12 @@ class VoicePackManager:
         registry = CharacterVoiceRegistry.from_file(manifest_path)
         checksum_path = manifest_path.parent / asset_manifest_name
         if not checksum_path.is_file():
-            self._write_voice_checksums(manifest_path.parent, manifest_path)
+            raise ModelIntegrityError("Voice checksum manifest is missing")
         manifest = read_json(checksum_path, {})
         if not isinstance(manifest, dict):
             raise ModelIntegrityError("Voice checksum manifest is malformed")
+        if manifest.get("version") != 1:
+            raise ModelIntegrityError("Unsupported voice checksum manifest version")
         if manifest.get("manifest_sha256") != sha256_file(manifest_path):
             raise ModelIntegrityError("Voice manifest checksum failed")
         files = manifest.get("files")

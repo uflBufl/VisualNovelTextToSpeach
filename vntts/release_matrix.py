@@ -25,6 +25,8 @@ def load_release_matrix(path: PathInput) -> list[ReleaseDocument]:
     values = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(values, dict):
         raise ValueError("Release matrix root must be an object")
+    if values.get("version") != 1:
+        raise ValueError("Unsupported release matrix version")
     profiles: object = values.get("required_profiles")
     if not isinstance(profiles, list) or not profiles:
         raise ValueError("Release matrix must contain required_profiles")
