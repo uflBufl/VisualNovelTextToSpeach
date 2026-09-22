@@ -407,6 +407,39 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.game_narrator_button.click()
             self.assertIs(dialog.settings, selected)
 
+    def test_missing_moss_narrator_is_requested_before_input_preparation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            content = inspect_story_index(write_content(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("story",))
+            library = VoiceLibrary(root / "voice-library")
+            settings = AppSettings(speech_backend="moss-tts")
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                settings,
+                manifest_path=write_manifest(root / "voices"),
+            )
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                game_narrator_chooser=Mock(),
+                voice_library=library,
+            )
+            self.addCleanup(dialog.deleteLater)
+            dialog._job = job
+
+            with patch.object(dialog, "_start_generation_input") as start_input:
+                dialog._voice_plan_finished(plan, None)
+
+            start_input.assert_not_called()
+            self.assertTrue(dialog._awaiting_voice_confirmation)
+            self.assertFalse(dialog.continue_button.isEnabled())
+            self.assertIn(
+                "Choose a narrator in Voices", dialog.voice_confirmation_status.text()
+            )
+
     def test_character_route_opens_editor_and_saved_choice_invalidates_plan(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

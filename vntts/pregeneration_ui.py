@@ -2687,6 +2687,21 @@ class OfflineAudioPreparationDialog(QDialog):
             return
         self._voice_plan = plan
         self.replanning_voice_decisions = False
+        if (
+            isinstance(plan.synthesis_backend, str)
+            and plan.synthesis_backend != "pocket-tts"
+            and isinstance(plan.groups, (tuple, list))
+            and any(group.route == "narrator" for group in plan.groups)
+            and self.voice_library.binding("Narrator") is None
+        ):
+            self._changes_rows = ()
+            self._show_voice_confirmation(plan)
+            self.voice_confirmation_status.setText(
+                "Choose a narrator in Voices before generation."
+                if self.game_narrator_chooser is not None
+                else "Choose a narrator before generation."
+            )
+            return
         self._start_generation_input(plan)
 
     def _voice_auditions_completed(self):

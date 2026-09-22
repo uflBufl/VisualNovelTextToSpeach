@@ -792,7 +792,8 @@ class TrayApplicationTest(unittest.TestCase):
                             reload.assert_called_once_with(True)
                             if same_preparation:
                                 preparation.apply_narrator_settings.assert_called_once_with(
-                                    candidate.updated(last_main_section="reading")
+                                    candidate.updated(last_main_section="reading"),
+                                    voice_changed=True,
                                 )
                         else:
                             self.assertTrue(

@@ -931,6 +931,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                     Path(plan.voice_manifest).parent / "references" / name,
                     variant_key=variant_key,
                 )
+            library.select("Narrator", route="voice", source_id="preset:marius")
             decisions = VoiceDecisionStore(
                 root / "decisions.json", voice_library=library
             )

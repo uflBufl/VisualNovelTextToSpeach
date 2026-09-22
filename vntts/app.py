@@ -3378,7 +3378,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.dashboard.set_configuration(candidate)
                 profile_synced = self._sync_active_profile(candidate)
                 if preparation is self.pregeneration_dialog and preparation is not None:
-                    preparation.apply_narrator_settings(candidate)
+                    preparation.apply_narrator_settings(candidate, voice_changed=True)
                     if dialog.select_affected_after_save is True:
                         preparation.select_voice_affected_stories(
                             dialog._impact_results
