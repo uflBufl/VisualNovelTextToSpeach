@@ -97,6 +97,9 @@ class PregenerationInput:
     queue_items: int
     ready_items: int
     narrator_fallback_roles: tuple[str, ...]
+    story_index_sha256: str
+    voice_manifest_sha256: str
+    source_audio_semantic_evidence_sha256: str | None
     audio_event_projection_queue_ids: tuple[str, ...] = ()
     audio_event_omission_queue_ids: tuple[str, ...] = ()
     source_audio_semantic_evidence: Path | None = None
@@ -648,6 +651,19 @@ def _load_existing(directory: Path, identity: str) -> PregenerationInput:
             queue_items=_nonnegative_int(document.get("queue_items"), "queue items"),
             ready_items=_nonnegative_int(document.get("ready_items"), "ready items"),
             narrator_fallback_roles=tuple(roles),
+            story_index_sha256=_required_text(
+                document.get("story_index_sha256"), "story index SHA-256"
+            ),
+            voice_manifest_sha256=_required_text(
+                document.get("voice_manifest_sha256"), "voice manifest SHA-256"
+            ),
+            source_audio_semantic_evidence_sha256=(
+                None
+                if semantic_sha256 is None
+                else _required_text(
+                    semantic_sha256, "source audio semantic evidence SHA-256"
+                )
+            ),
             audio_event_projection_queue_ids=event_routes[
                 "audio_event_projection_queue_ids"
             ],

@@ -378,6 +378,7 @@ class OfflinePackPublisher:
         _raise_if_cancelled(cancel_event)
         phase_started, cpu_started = perf_counter(), process_time()
         try:
+            _verify_prepared_inputs(generation_input)
             story = load_story_index_document(generation_input.story_index)
             state_sha256 = sha256_file(generation_result.state)
         except (
@@ -412,6 +413,7 @@ class OfflinePackPublisher:
                 job, generation_input, generation_result, state_sha256
             )
         )
+        _verify_prepared_inputs(generation_input)
         _record_publication_phase("terminal-load", phase_started, cpu_started)
         phase_started, cpu_started = perf_counter(), process_time()
         _ensure_pack_disk_space(
@@ -435,8 +437,18 @@ class OfflinePackPublisher:
                 generated_copy = staging / "generated" / "manifest.json"
                 phase_started, cpu_started = perf_counter(), process_time()
                 if base is None:
-                    _copy_file(generation_input.story_index, story_copy)
-                    _copy_file(generation_input.voice_manifest, voice_copy)
+                    _copy_prepared_file(
+                        generation_input.story_index,
+                        story_copy,
+                        generation_input.story_index_sha256,
+                        "story index",
+                    )
+                    _copy_prepared_file(
+                        generation_input.voice_manifest,
+                        voice_copy,
+                        generation_input.voice_manifest_sha256,
+                        "voice manifest",
+                    )
                     _copy_voice_references(
                         generation_input.voice_manifest,
                         voice_copy,
@@ -460,6 +472,7 @@ class OfflinePackPublisher:
                         voices,
                         voice_copy,
                     )
+                _verify_prepared_inputs(generation_input)
                 _record_publication_phase(
                     "story-and-voices", phase_started, cpu_started
                 )
@@ -868,13 +881,9 @@ def _identity(
         "generation_input_identity": generation_input.identity,
         "queue_sha256": generation_input.queue_sha256,
         "state_sha256": state_sha256,
-        "story_index_sha256": sha256_file(generation_input.story_index),
-        "voice_manifest_sha256": sha256_file(generation_input.voice_manifest),
-        "semantic_evidence_sha256": (
-            None
-            if generation_input.source_audio_semantic_evidence is None
-            else sha256_file(generation_input.source_audio_semantic_evidence)
-        ),
+        "story_index_sha256": generation_input.story_index_sha256,
+        "voice_manifest_sha256": generation_input.voice_manifest_sha256,
+        "semantic_evidence_sha256": generation_input.source_audio_semantic_evidence_sha256,
     }
     if base_pack_identity is not None:
         payload["base_pack_identity"] = base_pack_identity
@@ -1236,8 +1245,53 @@ def _copy_semantic_evidence(
     if source is None:
         return None, None
     destination = staging / "story" / "source-audio-semantic-evidence.json"
-    _copy_file(source, destination)
+    expected = generation_input.source_audio_semantic_evidence_sha256
+    if expected is None:
+        raise OfflinePackError("Prepared source-audio semantic evidence changed")
+    _copy_prepared_file(source, destination, expected, "source-audio semantic evidence")
     return destination, load_source_audio_semantic_evidence(destination, story_copy)
+
+
+def _verify_prepared_inputs(generation_input: PregenerationInput) -> None:
+    _verify_prepared_file(
+        generation_input.story_index,
+        generation_input.story_index_sha256,
+        "story index",
+    )
+    _verify_prepared_file(
+        generation_input.voice_manifest,
+        generation_input.voice_manifest_sha256,
+        "voice manifest",
+    )
+    _verify_prepared_file(
+        generation_input.queue,
+        generation_input.queue_sha256,
+        "generation queue",
+    )
+    evidence = generation_input.source_audio_semantic_evidence
+    if evidence is not None:
+        expected = generation_input.source_audio_semantic_evidence_sha256
+        if expected is None:
+            raise OfflinePackError("Prepared source-audio semantic evidence changed")
+        _verify_prepared_file(evidence, expected, "source-audio semantic evidence")
+    elif generation_input.source_audio_semantic_evidence_sha256 is not None:
+        raise OfflinePackError("Prepared source-audio semantic evidence changed")
+
+
+def _copy_prepared_file(
+    source: Path, destination: Path, expected_sha256: str, label: str
+) -> None:
+    _copy_file(source, destination)
+    _verify_prepared_file(destination, expected_sha256, f"staged {label}")
+
+
+def _verify_prepared_file(path: Path, expected_sha256: str, label: str) -> None:
+    try:
+        actual_sha256 = sha256_file(path)
+    except OSError as error:
+        raise OfflinePackError(f"Prepared {label} is unavailable") from error
+    if actual_sha256 != expected_sha256:
+        raise OfflinePackError(f"Prepared {label} changed")
 
 
 def _copy_file(source: str | Path, destination: Path) -> None:
