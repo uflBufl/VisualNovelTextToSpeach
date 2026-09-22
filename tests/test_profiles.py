@@ -154,6 +154,21 @@ class GameProfileStoreTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "already exists"):
                 store.create("game", AppSettings())
 
+    def test_duplicate_profile_ids_fall_back_to_empty_store(self):
+        warnings = []
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "profiles.json"
+            profiles = (
+                GameProfile.from_settings("First", AppSettings(), profile_id="same"),
+                GameProfile.from_settings("Second", AppSettings(), profile_id="same"),
+            )
+            GameProfileStore(path, profiles).save()
+
+            store = GameProfileStore.load(path, warn=warnings.append)
+
+        self.assertEqual(store.profiles, [])
+        self.assertIn("profile IDs must be unique", warnings[0])
+
     def test_future_profile_schema_falls_back_to_empty_store(self):
         warnings = []
         with TemporaryDirectory() as temporary_directory:

@@ -187,7 +187,7 @@ class GameProfileStore:
             ]
             if len(store.profiles) != len(profile_documents):
                 raise ValueError("profiles must contain objects")
-            store._ensure_unique_names()
+            store._ensure_unique_profiles()
             return store
 
         def fallback() -> GameProfileStore:
@@ -290,7 +290,12 @@ class GameProfileStore:
             raise KeyError(f"Unknown game profile: {profile_id}")
         return profile
 
-    def _ensure_unique_names(self) -> None:
+    def _ensure_unique_profiles(self) -> None:
+        ids = [profile.id for profile in self.profiles]
+        if any(not profile_id.strip() for profile_id in ids):
+            raise ValueError("profile IDs must not be empty")
+        if len(ids) != len(set(ids)):
+            raise ValueError("profile IDs must be unique")
         names = [profile.name.casefold() for profile in self.profiles]
         if len(names) != len(set(names)):
             raise ValueError("profile names must be unique")
@@ -317,7 +322,11 @@ def _optional_text(value: object) -> str | None:
 
 
 def _audio_source_policy(value: object) -> str:
-    return value if value in audio_source_policies else default_audio_source_policy
+    return (
+        value
+        if isinstance(value, str) and value in audio_source_policies
+        else default_audio_source_policy
+    )
 
 
 def _dialog_region(value: object) -> DialogRegion:

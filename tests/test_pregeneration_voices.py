@@ -1272,6 +1272,30 @@ class VoicePlanStoreTest(unittest.TestCase):
                 "default",
             )
 
+    def test_decision_store_validates_batch_before_updating_voice_library(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=write_manifest(root / "voices"),
+            )
+            first, second = plan.groups[:2]
+            library = VoiceLibrary(root / "library")
+            decisions = VoiceDecisionStore(
+                root / "decisions.json",
+                voice_library=library,
+            )
+
+            with self.assertRaisesRegex(PregenerationVoiceError, "not part"):
+                decisions.remember_many(
+                    ((first, "default"), (second, "character:unrelated"))
+                )
+
+            self.assertEqual(library.bindings(), ())
+            self.assertFalse(decisions.path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

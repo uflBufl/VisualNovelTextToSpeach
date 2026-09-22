@@ -9,7 +9,12 @@ def terminate_process(process: subprocess.Popen[bytes], *, timeout: float = 5) -
         process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         process.kill()
-        process.communicate()
+        try:
+            process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # ponytail: kill is the strongest local action; leave OS cleanup
+            # rather than hanging shutdown forever.
+            pass
 
 
 def last_output_line(value: object) -> str | None:

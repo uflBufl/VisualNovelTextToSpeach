@@ -249,6 +249,7 @@ class VoiceDecisionStore:
         decisions = self._load()
         decided_at = self.clock().astimezone(timezone.utc).isoformat()
         observed_groups = set()
+        validated_selections = []
         for group, source_id in selections:
             if group.group_id in observed_groups:
                 raise PregenerationVoiceError(
@@ -269,6 +270,8 @@ class VoiceDecisionStore:
                 raise PregenerationVoiceError(
                     "The selected voice is not part of this voice plan"
                 )
+            validated_selections.append((group, source_id))
+        for group, source_id in validated_selections:
             if self.voice_library is not None:
                 if source_id == default_voice_choice_id:
                     self.voice_library.select(
