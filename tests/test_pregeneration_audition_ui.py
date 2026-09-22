@@ -708,6 +708,33 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 ((group, default_voice_choice_id),)
             )
 
+    def test_no_automatic_voice_explains_the_available_recovery_path(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            plan, group = with_second_candidate(plan, group)
+            group = replace(group, narrator_candidate=None)
+            plan = replace(plan, groups=(group,))
+            service = Mock()
+            service.generate.side_effect = RuntimeError("preview failed")
+            pool = ManualThreadPool()
+            panel = VoiceAuditionPanel(
+                Mock(), preview_service=service, thread_pool=pool, player=Mock()
+            )
+            self.addCleanup(panel.deleteLater)
+            self.addCleanup(panel.shutdown)
+
+            panel.start(plan)
+            for _candidate in group.candidates:
+                panel.a_play.click()
+                pool.tasks.pop().run()
+                self.application.processEvents()
+                panel.neither_button.click()
+            panel.auto_button.click()
+
+            self.assertIn("Retry", panel.status.text())
+            self.assertIn("Change selected voice", panel.status.text())
+
     def test_failed_bulk_choice_stays_atomic_and_successful_retry_restores_candidate(
         self,
     ):

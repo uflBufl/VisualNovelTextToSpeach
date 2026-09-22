@@ -346,8 +346,8 @@ class VoiceAuditionPanel(QGroupBox):
         source_id = self._automatic_source_id(self.current_group())
         if source_id is None:
             self.status.setText(
-                "No working automatic voice remains. Choose a different narrator or "
-                "voice in Voices, then continue preparation."
+                "No working automatic voice remains. Retry this preview, or return "
+                "to the voice plan and use Change selected voice."
             )
             return
         self._record_choice(source_id)
@@ -360,8 +360,8 @@ class VoiceAuditionPanel(QGroupBox):
             source_id = self._automatic_source_id(group)
             if source_id is None:
                 self.status.setText(
-                    "No working automatic voice remains. Choose a different narrator "
-                    "or voice in Voices, then continue preparation."
+                    "No working automatic voice remains. Retry the failed preview, "
+                    "or return to the voice plan and use Change selected voice."
                 )
                 return
             choices.append((group, source_id))
