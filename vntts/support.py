@@ -1550,16 +1550,29 @@ def correlate_active_preparation(
     return {"classification": classification, **comparisons}
 
 
+_ACTIVE_CONTENT_READ_LIMIT = 64 * 1024 * 1024
+
+
 @lru_cache(maxsize=16)
 def _active_pack_identity(path: str, _modified_ns: int, size: int) -> SupportDocument:
-    if size > 64 * 1024 * 1024:
+    if size > _ACTIVE_CONTENT_READ_LIMIT:
         return {
             "available": False,
             "reason": "pack manifest exceeds support read limit",
         }
     try:
-        document = json.loads(Path(path).read_text(encoding="utf-8"))
+        with Path(path).open("rb") as source:
+            payload = source.read(_ACTIVE_CONTENT_READ_LIMIT + 1)
     except OSError, UnicodeError, json.JSONDecodeError:
+        return {"available": False, "reason": "pack manifest could not be read"}
+    if len(payload) > _ACTIVE_CONTENT_READ_LIMIT:
+        return {
+            "available": False,
+            "reason": "pack manifest exceeds support read limit",
+        }
+    try:
+        document = json.loads(payload)
+    except UnicodeError, json.JSONDecodeError:
         return {"available": False, "reason": "pack manifest could not be read"}
     if not isinstance(document, dict):
         return {"available": False, "reason": "pack manifest is invalid"}
@@ -1601,10 +1614,14 @@ def _active_story_ids(root: Path, component: SupportDocument) -> SupportDocument
     try:
         path = (root / relative).resolve()
         path.relative_to(root)
-        if path.stat().st_size > 64 * 1024 * 1024:
+        if path.stat().st_size > _ACTIVE_CONTENT_READ_LIMIT:
+            raise ValueError("story index exceeds support read limit")
+        with path.open("rb") as source:
+            payload = source.read(_ACTIVE_CONTENT_READ_LIMIT + 1)
+        if len(payload) > _ACTIVE_CONTENT_READ_LIMIT:
             raise ValueError("story index exceeds support read limit")
         story_ids: set[str] = set()
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in payload.splitlines():
             record: object = json.loads(line)
             if not isinstance(record, dict):
                 continue

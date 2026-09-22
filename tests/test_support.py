@@ -1056,6 +1056,70 @@ class SupportBundleBuilderTest(unittest.TestCase):
 
         self.assertEqual(active["active_story_ids"], ["story-one"])
 
+    def test_active_pack_read_is_bounded_after_metadata_snapshot(self):
+        with TemporaryDirectory() as temporary_directory:
+            pack = Path(temporary_directory) / "game-pack.json"
+            pack.write_text(json.dumps({"padding": "x" * 256}), encoding="utf-8")
+            real_stat = Path.stat
+
+            def stale_stat(path, *args, **kwargs):
+                result = real_stat(path, *args, **kwargs)
+                if path == pack:
+                    return SimpleNamespace(st_mtime_ns=result.st_mtime_ns, st_size=1)
+                return result
+
+            with (
+                patch(
+                    "vntts.support._ACTIVE_CONTENT_READ_LIMIT", 128, create=True
+                ),
+                patch("vntts.support.Path.stat", autospec=True, side_effect=stale_stat),
+            ):
+                active = collect_active_content_identity(
+                    AppSettings(game_pack=str(pack))
+                )
+
+        self.assertFalse(active["available"])
+        self.assertIn("exceeds", active["reason"])
+
+    def test_active_story_index_read_is_bounded_after_size_check(self):
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            story_index = directory / "story-index.jsonl"
+            story_index.write_text(
+                json.dumps(
+                    {
+                        "record_type": "story_line",
+                        "collection_id": "story-one",
+                        "padding": "x" * 256,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pack = directory / "game-pack.json"
+            pack.write_text(
+                '{"components":{"story_index":{"path":"story-index.jsonl"}}}',
+                encoding="utf-8",
+            )
+            real_stat = Path.stat
+
+            def stale_stat(path, *args, **kwargs):
+                result = real_stat(path, *args, **kwargs)
+                if path == story_index:
+                    return SimpleNamespace(st_size=1)
+                return result
+
+            with (
+                patch(
+                    "vntts.support._ACTIVE_CONTENT_READ_LIMIT", 128, create=True
+                ),
+                patch("vntts.support.Path.stat", autospec=True, side_effect=stale_stat),
+            ):
+                active = collect_active_content_identity(
+                    AppSettings(game_pack=str(pack))
+                )
+
+        self.assertFalse(active["active_story_ids_available"])
+
     def test_non_object_active_pack_is_reported_as_unavailable(self):
         with TemporaryDirectory() as temporary_directory:
             pack = Path(temporary_directory) / "game-pack.json"
