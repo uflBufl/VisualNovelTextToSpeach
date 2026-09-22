@@ -9,6 +9,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias, TypedDict
 
 from vntts_artifacts.voice_manifest import (
     VoiceManifestError,
@@ -17,10 +18,31 @@ from vntts_artifacts.voice_manifest import (
 )
 
 from vntts.authoring.workspace_foundation import contained_regular_file
-from vntts.reference_quality import analyze_reference_bytes
+from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
 REFERENCE_SELECTION_SCHEMA_VERSION = 1
 REFERENCE_SELECTION_EXTENSION = "vntts.authoring.reference_selection"
+
+PathInput: TypeAlias = str | Path
+JsonDocument: TypeAlias = dict[str, object]
+
+
+class _ReferenceCandidate(TypedDict):
+    relative: str
+    path: Path
+    sha256: str
+    analysis: ReferenceQualityReport
+
+
+class _ManifestSnapshot(TypedDict):
+    manifest_path: Path
+    manifest_payload: bytes
+    manifest_sha256: str
+    document: JsonDocument
+    entry_index: int
+    character: str
+    candidates: list[_ReferenceCandidate]
+    report: JsonDocument
 
 
 class ReferenceSelectionError(ValueError):
@@ -35,7 +57,7 @@ class ReferenceSelectionResult:
     selected_reference_sha256: str
     source_manifest_sha256: str
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, object]:
         return {
             "output": str(self.output),
             "character": self.character,
@@ -45,18 +67,20 @@ class ReferenceSelectionResult:
         }
 
 
-def inspect_voice_reference_candidates(manifest_path, character):
+def inspect_voice_reference_candidates(
+    manifest_path: PathInput, character: str
+) -> JsonDocument:
     """Return objective metrics over one read-once manifest/reference snapshot."""
     snapshot = _capture_manifest(manifest_path, character)
     return copy.deepcopy(snapshot["report"])
 
 
 def select_voice_reference(
-    manifest_path,
-    character,
-    reference_number,
-    output_path,
-):
+    manifest_path: PathInput,
+    character: str,
+    reference_number: int,
+    output_path: PathInput,
+) -> ReferenceSelectionResult:
     """Publish a new no-overwrite manifest with one explicit first reference."""
     if (
         not isinstance(reference_number, int)
@@ -89,7 +113,12 @@ def select_voice_reference(
         raise ReferenceSelectionError(
             f"Source manifest already defines {REFERENCE_SELECTION_EXTENSION!r}"
         )
-    target = document["voices"][snapshot["entry_index"]]
+    voices = document.get("voices")
+    if not isinstance(voices, list) or not all(
+        isinstance(value, dict) for value in voices
+    ):
+        raise ReferenceSelectionError("Voice manifest entries are malformed")
+    target = voices[snapshot["entry_index"]]
     target.pop("reference", None)
     target["references"] = ordered
     document["version"] = 2
@@ -123,7 +152,9 @@ def select_voice_reference(
     )
 
 
-def validate_reference_selection_provenance(manifest_path, document):
+def validate_reference_selection_provenance(
+    manifest_path: PathInput, document: JsonDocument
+) -> None:
     """Validate an optional selection extension against current reference bytes."""
     provenance = document.get(REFERENCE_SELECTION_EXTENSION)
     if provenance is None:
@@ -161,6 +192,10 @@ def validate_reference_selection_provenance(manifest_path, document):
     except VoiceManifestError as error:
         raise ReferenceSelectionError(str(error)) from error
     character = provenance.get("character")
+    if not isinstance(character, str):
+        raise ReferenceSelectionError(
+            "Voice reference-selection character is malformed"
+        )
     matching = [
         entry
         for entry in entries
@@ -173,6 +208,10 @@ def validate_reference_selection_provenance(manifest_path, document):
         )
     entry = matching[0]
     selected = provenance.get("selected_reference")
+    if not isinstance(selected, str):
+        raise ReferenceSelectionError(
+            "Selected voice reference identity is malformed"
+        )
     if not entry.references or entry.references[0] != selected:
         raise ReferenceSelectionError(
             "Selected voice reference is not first in the manifest"
@@ -182,14 +221,18 @@ def validate_reference_selection_provenance(manifest_path, document):
         raise ReferenceSelectionError(
             "Voice reference-selection candidate inventory is malformed"
         )
-    candidate_paths = []
-    hashes = {}
+    candidate_paths: list[str] = []
+    hashes: dict[str, str] = {}
     for candidate in candidates:
         if not isinstance(candidate, dict) or set(candidate) != {"path", "sha256"}:
             raise ReferenceSelectionError(
                 "Voice reference-selection candidate is malformed"
             )
         relative = candidate.get("path")
+        if not isinstance(relative, str):
+            raise ReferenceSelectionError(
+                "Voice reference-selection candidate path is malformed"
+            )
         path = _contained_reference(Path(manifest_path).resolve().parent, relative)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if digest != candidate.get("sha256"):
@@ -210,7 +253,7 @@ def validate_reference_selection_provenance(manifest_path, document):
         )
 
 
-def _capture_manifest(manifest_path, character):
+def _capture_manifest(manifest_path: PathInput, character: str) -> _ManifestSnapshot:
     manifest_path = Path(manifest_path).expanduser().resolve()
     try:
         payload = manifest_path.read_bytes()
@@ -245,8 +288,8 @@ def _capture_manifest(manifest_path, character):
         raise ReferenceSelectionError(
             f"Voice character {entry.character!r} has no reference candidates"
         )
-    candidates = []
-    seen = set()
+    candidates: list[_ReferenceCandidate] = []
+    seen: set[str] = set()
     for relative in entry.references:
         if relative in seen:
             raise ReferenceSelectionError(
@@ -315,13 +358,13 @@ def _capture_manifest(manifest_path, character):
     }
 
 
-def _contained_reference(root, relative):
+def _contained_reference(root: Path, relative: object) -> Path:
     return contained_regular_file(
         root, relative, "voice reference", error_type=ReferenceSelectionError
     )
 
 
-def _assert_snapshot_unchanged(snapshot):
+def _assert_snapshot_unchanged(snapshot: _ManifestSnapshot) -> None:
     path = snapshot["manifest_path"]
     try:
         if hashlib.sha256(path.read_bytes()).hexdigest() != snapshot["manifest_sha256"]:
@@ -342,7 +385,7 @@ def _assert_snapshot_unchanged(snapshot):
         ) from error
 
 
-def _write_bytes_no_replace(path, payload):
+def _write_bytes_no_replace(path: Path, payload: bytes) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
