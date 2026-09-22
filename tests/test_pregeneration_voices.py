@@ -429,22 +429,22 @@ class VoicePlanStoreTest(unittest.TestCase):
                 AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
-            rhiannon = next(
+            first_group = next(
                 group for group in first.groups if group.character == "Rhiannon"
             )
-            variant = rhiannon.age or rhiannon.source_bank
-            binding = library.binding("Rhiannon", variant_key=variant)
-            planner.create(
+            binding = library.binding("Rhiannon")
+            second = planner.create(
                 job,
                 AppSettings(pocket_gated_model_accepted=True),
                 manifest_path=manifest,
             )
+            second_group = next(
+                group for group in second.groups if group.character == "Rhiannon"
+            )
 
             self.assertEqual(binding.route, "voice")
-            self.assertEqual(
-                library.binding("Rhiannon", variant_key=variant),
-                binding,
-            )
+            self.assertEqual(library.binding("Rhiannon"), binding)
+            self.assertEqual(second_group.group_id, first_group.group_id)
 
     def create_fixture(self, root):
         content = inspect_story_index(write_content(root / "content"))
@@ -514,7 +514,8 @@ class VoicePlanStoreTest(unittest.TestCase):
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
             manifest = write_conflicting_manifest(root / "voices")
-            planner = VoicePlanStore(jobs)
+            library = VoiceLibrary(root / "library")
+            planner = VoicePlanStore(jobs, voice_library=library)
             settings = AppSettings(pocket_gated_model_accepted=True)
             original = planner.create(job, settings, manifest_path=manifest)
             original_group = next(
@@ -554,19 +555,30 @@ class VoicePlanStoreTest(unittest.TestCase):
                     group.decision_context_sha256,
                     original_group.decision_context_sha256,
                 )
-            decisions = VoiceDecisionStore(root / "decisions.json")
-            chosen = original_group.candidates[-1].source_id
-            decisions.remember(original_group, chosen)
-            saved = VoicePlanStore(jobs, decisions=decisions).create(
+            decisions = VoiceDecisionStore(
+                root / "decisions.json",
+                voice_library=library,
+            )
+            chosen = original_group.candidates[-1]
+            decisions.remember(original_group, chosen.source_id)
+            saved = VoicePlanStore(
+                jobs,
+                decisions=decisions,
+                voice_library=library,
+            ).create(
                 changed_job, settings, manifest_path=manifest
             )
             saved_group = next(
                 group for group in saved.groups if group.character == "Rhiannon"
             )
-            self.assertEqual(saved_group.source_id, chosen)
-            self.assertEqual(saved_group.resolution, "saved-player-decision")
+            self.assertEqual(saved_group.route, "voice")
+            self.assertEqual(saved_group.resolution, "saved-voice-assignment")
+            self.assertEqual(
+                library.binding("Rhiannon").source_sha256s,
+                chosen.reference_sha256s,
+            )
 
-    def test_source_audio_is_excluded_and_lines_are_grouped_by_voice_variant(self):
+    def test_source_audio_is_excluded_and_lines_are_grouped_by_character(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)

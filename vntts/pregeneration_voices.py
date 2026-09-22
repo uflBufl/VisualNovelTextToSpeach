@@ -271,11 +271,9 @@ class VoiceDecisionStore:
                     "The selected voice is not part of this voice plan"
                 )
             if self.voice_library is not None:
-                variant_key = group.age or group.source_bank
                 if source_id == default_voice_choice_id:
                     self.voice_library.select(
                         group.character,
-                        variant_key=variant_key,
                         route="narrator",
                         method="manual",
                         evidence={
@@ -298,7 +296,6 @@ class VoiceDecisionStore:
                     if selected is not None and selected.reference_sha256s:
                         self.voice_library.select(
                             group.character,
-                            variant_key=variant_key,
                             route="voice",
                             source_sha256s=selected.reference_sha256s,
                             method="manual",
@@ -313,7 +310,6 @@ class VoiceDecisionStore:
                     else:
                         self.voice_library.select(
                             group.character,
-                            variant_key=variant_key,
                             route="voice",
                             source_id=source_id,
                             method="manual",
@@ -455,15 +451,12 @@ class VoicePlanStore:
                 record.speaker, record.voice_character
             )
             evidence = _variant_evidence(record)
-            variant_key = (
-                _voice_variant_key(evidence) if self.voice_library is not None else None
-            )
+            line_source = _bound_source_for_record(record, queue_bindings)
             bound_source = _effective_assignment_source(
                 settings,
                 character,
                 library=self.voice_library,
-                variant_key=variant_key,
-            ) or _bound_source_for_record(record, queue_bindings)
+            ) or line_source
             portrait_image, portrait_image_sha256 = _portrait_snapshot(
                 Path(job.story_index).expanduser().resolve().parent,
                 evidence[0],
@@ -471,7 +464,7 @@ class VoicePlanStore:
             )
             identity = [
                 normalize_character_name(character),
-                variant_key,
+                line_source,
             ]
             group_id = _digest(identity)
             grouped.setdefault(group_id, []).append(
@@ -479,7 +472,7 @@ class VoicePlanStore:
                     record,
                     character,
                     evidence,
-                    variant_key,
+                    None,
                     bound_source,
                     portrait_image,
                     portrait_image_sha256,
@@ -1469,11 +1462,6 @@ def _variant_evidence(record):
         _optional_variant(record.producer_fields.get(field))
         for field in ("portrait", "age", "source_bank", "source_voice_id")
     )
-
-
-def _voice_variant_key(evidence):
-    _portrait, age, source_bank, _source_voice_id = evidence
-    return age or source_bank
 
 
 def _portrait_snapshot(content_root, portrait, cache):

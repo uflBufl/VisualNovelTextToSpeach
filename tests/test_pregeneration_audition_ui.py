@@ -924,12 +924,10 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             voice_plan_store = Mock()
             voice_plan_store.create.side_effect = (plan, resolved)
             library = VoiceLibrary(root / "voice-library")
-            variant_key = group.age or group.source_bank
             for name in ("rhiannon.wav", "centurion.wav"):
                 library.discover(
                     group.character,
                     Path(plan.voice_manifest).parent / "references" / name,
-                    variant_key=variant_key,
                 )
             library.select("Narrator", route="voice", source_id="preset:marius")
             decisions = VoiceDecisionStore(
