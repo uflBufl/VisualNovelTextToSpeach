@@ -313,6 +313,7 @@ def _omitted_state(
     }
     for ledger in selection.items:
         queue_id = ledger["queue_id"]
+        assert isinstance(queue_id, str)
         decision = {
             "schema": AUDIO_EVENT_OMISSION_SCHEMA,
             "schema_version": AUDIO_EVENT_OMISSION_VERSION,

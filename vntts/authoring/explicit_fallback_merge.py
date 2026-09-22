@@ -384,7 +384,7 @@ def _mutate_explicit_fallback_merge(
 
 
 def _validate_staged_explicit_fallback_merge(
-    staging: Path, output: Path, workspace: Mapping[str, object]
+    staging: Path, output: Path, workspace: dict[str, object]
 ) -> None:
     import_snapshot = load_workspace_json(
         staging / "provenance/import.json", "explicit fallback import snapshot"

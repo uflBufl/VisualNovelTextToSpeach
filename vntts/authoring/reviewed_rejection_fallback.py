@@ -350,6 +350,7 @@ def _mutate_rejection_state(
     decided_at = datetime.now(timezone.utc).isoformat()
     for ledger in selection.ledgers:
         queue_id = ledger["queue_id"]
+        assert isinstance(queue_id, str)
         base_result = state_items[queue_id]
         evidence = {
             "schema": REVIEWED_REJECTION_LIVE_FALLBACK_EVIDENCE_SCHEMA,

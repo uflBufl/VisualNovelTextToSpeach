@@ -705,7 +705,7 @@ def _validate_known_role_route(
 
 def _validate_known_role_ledgers(
     batch: Mapping[str, object],
-    state: Mapping[str, object],
+    state: dict[str, object],
     queue_by_id: Mapping[str, object],
     overrides: Mapping[str, str],
 ) -> None:
@@ -723,7 +723,7 @@ def _validate_known_role_ledgers(
 def _validate_known_role_ledger(
     ledger: object,
     batch: Mapping[str, object],
-    state: Mapping[str, object],
+    state: dict[str, object],
     queue_by_id: Mapping[str, object],
     overrides: Mapping[str, str],
 ) -> str:

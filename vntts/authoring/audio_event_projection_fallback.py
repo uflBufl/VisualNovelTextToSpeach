@@ -349,6 +349,7 @@ def _mutate_projection_state(
     decided_at = datetime.now(timezone.utc).isoformat()
     for ledger in selection.ledgers:
         queue_id = ledger["queue_id"]
+        assert isinstance(queue_id, str)
         queue_item = queue_by_id[queue_id]
         base_result = state_items[queue_id]
         evidence = {

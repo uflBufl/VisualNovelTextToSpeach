@@ -351,7 +351,7 @@ def _reviewed_waveform_import_id(base_document: Mapping[str, object]) -> str:
 
 
 def _validate_staged_reviewed_waveform_workspace(
-    staging: Path, output: Path, workspace: Mapping[str, object]
+    staging: Path, output: Path, workspace: dict[str, object]
 ) -> None:
     import_snapshot = load_workspace_json(
         staging / "provenance/import.json", "reviewed-waveform import"
