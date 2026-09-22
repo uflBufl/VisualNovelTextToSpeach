@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, NotRequired, TypeAlias, TypedDict
 
 from vntts_artifacts.atomic_io import atomic_write_json, atomic_write_text
 from vntts_artifacts.file_integrity import sha256_file
@@ -17,6 +18,27 @@ from vntts.authoring.publication import (
     rename_directory_no_replace,
     staged_directory,
 )
+
+PathInput: TypeAlias = str | Path
+JsonDocument: TypeAlias = dict[str, object]
+ModelStatus: TypeAlias = Literal["missing", "invalid", "installed"]
+VerificationResult: TypeAlias = tuple[str | None, str | None, dict[str, str | None]]
+
+
+class ManagedModelStatus(TypedDict):
+    model_id: str
+    repository: str
+    revision: str
+    installation: str
+    model_directory: str
+    status: ModelStatus
+    reason: str | None
+    expected_tree_sha256: NotRequired[str]
+    actual_tree_sha256: NotRequired[str | None]
+    expected_files: NotRequired[Mapping[str, str]]
+    actual_files: NotRequired[dict[str, str | None]]
+    licenses: NotRequired[object]
+    runtime: NotRequired[object]
 
 
 @dataclass(frozen=True)
@@ -31,11 +53,11 @@ class ManagedModelFiles:
     file_sha256s: Mapping[str, str] | None = None
 
 
-def model_installation(root, model):
+def model_installation(root: PathInput, model: ManagedModelFiles) -> Path:
     return Path(root) / model.model_id / model.revision
 
 
-def _tree_sha256(path):
+def _tree_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     for candidate in sorted(path.rglob("*"), key=lambda value: value.as_posix()):
         if candidate.is_file():
@@ -46,8 +68,8 @@ def _tree_sha256(path):
     return digest.hexdigest()
 
 
-def _verify(model_directory, model):
-    actual_files = {}
+def _verify(model_directory: Path, model: ManagedModelFiles) -> VerificationResult:
+    actual_files: dict[str, str | None] = {}
     for filename, expected in (model.file_sha256s or {}).items():
         path = model_directory / filename
         actual_files[filename] = sha256_file(path) if path.is_file() else None
@@ -60,12 +82,20 @@ def _verify(model_directory, model):
 
 
 def managed_model_status(
-    installation, model, *, metadata, notice, error_type=RuntimeError
-):
+    installation: PathInput,
+    model: ManagedModelFiles,
+    *,
+    metadata: JsonDocument,
+    notice: str,
+    error_type: type[RuntimeError] = RuntimeError,
+) -> ManagedModelStatus:
     """Return common read-only status for one immutable model installation."""
     installation = Path(installation)
     model_directory = installation / "model"
-    status, reason, actual_tree, actual_files = "missing", None, None, {}
+    status: ModelStatus = "missing"
+    reason: str | None = None
+    actual_tree: str | None = None
+    actual_files: dict[str, str | None] = {}
     if installation.exists():
         if not installation.is_dir() or not model_directory.is_dir():
             status, reason = "invalid", "installation shape is invalid"
@@ -98,7 +128,7 @@ def managed_model_status(
                         status, reason = "invalid", "installation metadata changed"
                     else:
                         status = "installed"
-    result = {
+    result: ManagedModelStatus = {
         "model_id": model.model_id,
         "repository": model.repository,
         "revision": model.revision,
@@ -108,29 +138,29 @@ def managed_model_status(
         "reason": reason,
     }
     if model.tree_sha256 is not None:
-        result.update(
-            expected_tree_sha256=model.tree_sha256,
-            actual_tree_sha256=actual_tree,
-        )
+        result["expected_tree_sha256"] = model.tree_sha256
+        result["actual_tree_sha256"] = actual_tree
     if model.file_sha256s is not None:
-        result.update(expected_files=model.file_sha256s, actual_files=actual_files)
+        result["expected_files"] = model.file_sha256s
+        result["actual_files"] = actual_files
     return result
 
 
 def install_managed_model(
-    installation,
-    model,
+    installation: PathInput,
+    model: ManagedModelFiles,
     *,
-    metadata,
-    notice,
-    source=None,
-    fetch_file,
-    error_type=RuntimeError,
-    model_label="model",
-):
+    metadata: JsonDocument,
+    notice: str,
+    source: PathInput | None = None,
+    fetch_file: Callable[[str], PathInput],
+    error_type: type[RuntimeError] = RuntimeError,
+    model_label: str = "model",
+) -> ManagedModelStatus:
     """Copy, verify and atomically publish one pinned local model."""
-    status_args = {"metadata": metadata, "notice": notice, "error_type": error_type}
-    existing = managed_model_status(installation, model, **status_args)
+    existing = managed_model_status(
+        installation, model, metadata=metadata, notice=notice, error_type=error_type
+    )
     if existing["status"] == "installed":
         return existing
     if existing["status"] == "invalid":
@@ -168,15 +198,24 @@ def install_managed_model(
         except AtomicPublicationError as error:
             if (
                 not installation.exists()
-                or managed_model_status(installation, model, **status_args)["status"]
+                or managed_model_status(
+                    installation,
+                    model,
+                    metadata=metadata,
+                    notice=notice,
+                    error_type=error_type,
+                )["status"]
                 != "installed"
             ):
                 raise error_type(str(error)) from error
-        return managed_model_status(installation, model, **status_args)
+        return managed_model_status(
+            installation, model, metadata=metadata, notice=notice, error_type=error_type
+        )
 
 
 __all__ = [
     "ManagedModelFiles",
+    "ManagedModelStatus",
     "install_managed_model",
     "managed_model_status",
     "model_installation",

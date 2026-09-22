@@ -8,7 +8,6 @@
     "vntts/authoring/delivery.py": 6,
     "vntts/authoring/experimental_composite_voice.py": 10,
     "vntts/authoring/legacy_reason_review.py": 9,
-    "vntts/authoring/managed_model_installation.py": 5,
     "vntts/authoring/model_benchmark.py": 20,
     "vntts/authoring/pcm_playback.py": 14,
     "vntts/authoring/pending_resolution.py": 10,

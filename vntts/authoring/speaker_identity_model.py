@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias, TypedDict
+from typing import TypeAlias
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.managed_model_installation import (
     ManagedModelFiles,
+    ManagedModelStatus,
     install_managed_model,
     managed_model_status,
     model_installation,
@@ -41,20 +42,6 @@ MANAGED_MODEL_VERSION = 1
 PathInput: TypeAlias = str | Path
 JsonDocument: TypeAlias = dict[str, object]
 ModelFetcher: TypeAlias = Callable[[str], PathInput]
-
-
-class ManagedSpeakerIdentityModelStatus(TypedDict):
-    model_id: str
-    repository: str
-    revision: str
-    installation: str
-    model_directory: str
-    status: str
-    reason: str | None
-    expected_files: dict[str, str]
-    actual_files: dict[str, str | None]
-    licenses: list[dict[str, str]]
-    runtime: dict[str, str | int]
 
 
 class SpeakerIdentityModelError(RuntimeError):
@@ -140,7 +127,7 @@ def _notice() -> str:
 
 def managed_speaker_identity_status(
     *, root: PathInput | None = None
-) -> ManagedSpeakerIdentityModelStatus:
+) -> ManagedModelStatus:
     installation = managed_speaker_identity_installation(root=root)
     metadata = _metadata()
     status = managed_model_status(
@@ -188,7 +175,7 @@ def install_managed_speaker_identity_model(
     root: PathInput | None = None,
     source: PathInput | None = None,
     fetch_file: ModelFetcher | None = None,
-) -> ManagedSpeakerIdentityModelStatus:
+) -> ManagedModelStatus:
     installation = managed_speaker_identity_installation(root=root)
     fetch = _download_file if fetch_file is None else fetch_file
     result = install_managed_model(

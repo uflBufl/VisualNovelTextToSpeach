@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias, TypedDict
+from typing import TypeAlias
 
 from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.managed_model_installation import (
     ManagedModelFiles,
+    ManagedModelStatus,
     install_managed_model,
     managed_model_status,
     model_installation,
@@ -21,19 +22,6 @@ MANAGED_ASR_VERSION = 1
 
 PathInput: TypeAlias = str | Path
 JsonDocument: TypeAlias = dict[str, object]
-
-
-class ManagedAsrModelStatus(TypedDict):
-    model_id: str
-    repository: str
-    revision: str
-    installation: str
-    model_directory: str
-    status: str
-    reason: str | None
-    expected_tree_sha256: str
-    actual_tree_sha256: str | None
-    licenses: list[dict[str, str]]
 
 
 class ManagedAsrModelError(RuntimeError):
@@ -145,7 +133,7 @@ def _notice(model: ManagedAsrModel) -> str:
 
 def managed_asr_status(
     model: ManagedAsrModel = WHISPER_TINY_EN, *, root: PathInput | None = None
-) -> ManagedAsrModelStatus:
+) -> ManagedModelStatus:
     """Return a deterministic, read-only status document."""
     installation = managed_asr_installation(model, root=root)
     metadata = _metadata(model)
@@ -197,7 +185,7 @@ def install_managed_asr_model(
     root: PathInput | None = None,
     source: PathInput | None = None,
     fetch_file: ModelFetcher | None = None,
-) -> ManagedAsrModelStatus:
+) -> ManagedModelStatus:
     """Atomically import or download and verify one pinned model snapshot."""
     installation = managed_asr_installation(model, root=root)
     fetch = _download_file if fetch_file is None else fetch_file

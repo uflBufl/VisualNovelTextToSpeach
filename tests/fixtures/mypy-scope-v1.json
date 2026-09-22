@@ -62,6 +62,7 @@
     "vntts/authoring/listening_cli.py",
     "vntts/authoring/listening_import.py",
     "vntts/authoring/listening_ui.py",
+    "vntts/authoring/managed_model_installation.py",
     "vntts/authoring/missing_voice_live_fallback.py",
     "vntts/authoring/missing_voice_policy.py",
     "vntts/authoring/missing_voice_reuse.py",
