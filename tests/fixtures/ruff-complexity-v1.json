@@ -117,30 +117,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/config_rebase.py",
-      "scope": "_copy_audio_event_composition_inputs",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/config_rebase.py",
-      "scope": "_route_reference_identity",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/config_rebase.py",
-      "scope": "rebase_workspace_config",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/config_rebase.py",
-      "scope": "validate_config_rebase_workspace",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/delivery.py",
       "scope": "annotate_delivery",
       "count": 1
@@ -299,18 +275,6 @@
       "code": "C901",
       "path": "vntts/authoring/generation_state.py",
       "scope": "_validate_synthesis_identity",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/known_role_reuse.py",
-      "scope": "_validate_bundle",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/known_role_reuse.py",
-      "scope": "publish_known_role_reuse_binding",
       "count": 1
     },
     {
@@ -1449,24 +1413,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/config_rebase.py",
-      "scope": "_copy_audio_event_composition_inputs",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/config_rebase.py",
-      "scope": "rebase_workspace_config",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/config_rebase.py",
-      "scope": "validate_config_rebase_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/experimental_composite_voice.py",
       "scope": "_load_composite_authority",
       "count": 1
@@ -1583,12 +1529,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/generation_state.py",
       "scope": "_validate_synthesis_identity",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/known_role_reuse.py",
-      "scope": "publish_known_role_reuse_binding",
       "count": 1
     },
     {
@@ -2433,18 +2373,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/config_rebase.py",
-      "scope": "rebase_workspace_config",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/config_rebase.py",
-      "scope": "validate_config_rebase_workspace",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/experimental_composite_voice.py",
       "scope": "publish_experimental_composite_voice_input",
       "count": 1
@@ -2519,12 +2447,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/generation_state.py",
       "scope": "_validate_state_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/known_role_reuse.py",
-      "scope": "publish_known_role_reuse_binding",
       "count": 1
     },
     {
