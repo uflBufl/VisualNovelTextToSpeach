@@ -295,6 +295,50 @@ def _reusable_identity(
     workspace: Mapping[str, object],
     cohort_identity: Mapping[str, object],
 ) -> JsonObject:
+    _validate_run_configuration(workspace, cohort_identity)
+    voice_character = _required_text(
+        cohort_identity.get("voice_character"), "Voice character"
+    )
+    manifest_voice_character = _manifest_voice_character(workspace, voice_character)
+    speaker, reference_hashes = _voice_references(
+        directory, workspace, manifest_voice_character
+    )
+    model = _required_text(cohort_identity.get("model"), "Generation model")
+    model_control = _model_control(model)
+    binding = cohort_identity.get("source_reference_binding")
+    if isinstance(binding, dict):
+        binding = {
+            "schema_version": binding.get("schema_version"),
+            "source_voice_character": binding.get("source_voice_character"),
+            "synthesis_voice_character": binding.get("synthesis_voice_character"),
+        }
+    return {
+        "provider": _required_text(
+            cohort_identity.get("provider"), "Generation provider"
+        ),
+        "model": model,
+        "model_control": model_control,
+        "generation_profile": _required_text(
+            cohort_identity.get("generation_profile"), "Generation profile"
+        ),
+        "voice_character": voice_character,
+        "voice_speaker": _required_text(speaker, "Voice speaker"),
+        "ordered_reference_sha256": reference_hashes,
+        "prompt_sha256": _required_sha256(
+            cohort_identity.get("prompt_sha256"), "Prompt sha256"
+        ),
+        "prompt_applied": _required_bool(
+            cohort_identity.get("prompt_applied"), "Prompt-applied marker"
+        ),
+        "text_transform": cohort_identity.get("text_transform"),
+        "repair_strategy": cohort_identity.get("repair_strategy"),
+        "source_reference_binding": binding,
+    }
+
+
+def _validate_run_configuration(
+    workspace: Mapping[str, object], cohort_identity: Mapping[str, object]
+) -> None:
     run_config = workspace.get("run_config")
     if not isinstance(run_config, dict):
         raise VoiceQualityGateError("Workspace run configuration is malformed")
@@ -312,10 +356,11 @@ def _reusable_identity(
         raise VoiceQualityGateError(
             "Reviewed cohort does not match the workspace synthesis run configuration"
         )
-    voice_character = _required_text(
-        cohort_identity.get("voice_character"), "Voice character"
-    )
-    manifest_voice_character = _manifest_voice_character(workspace, voice_character)
+
+
+def _voice_references(
+    directory: Path, workspace: Mapping[str, object], manifest_voice_character: str
+) -> tuple[str, list[str]]:
     manifest_config = workspace.get("voice_manifest")
     if not isinstance(manifest_config, dict) or not isinstance(
         manifest_config.get("path"), str
@@ -365,49 +410,22 @@ def _reusable_identity(
         if not path.is_file():
             raise VoiceQualityGateError("Voice reference is missing or unsafe")
         reference_hashes.append(sha256_file(path))
-    model = _required_text(cohort_identity.get("model"), "Generation model")
+    return matches[0].speaker, reference_hashes
+
+
+def _model_control(model: str) -> JsonObject:
     model_path = Path(model).expanduser()
     if model_path.exists():
         try:
-            model_control = {
+            return {
                 "kind": "path",
                 "sha256": sha256_control_path(model_path),
             }
         except BulkGenerationError as error:
             raise VoiceQualityGateError(str(error)) from error
-    else:
-        model_control = {
-            "kind": "identifier",
-            "sha256": canonical_document_sha256({"model": model}),
-        }
-    binding = cohort_identity.get("source_reference_binding")
-    if isinstance(binding, dict):
-        binding = {
-            "schema_version": binding.get("schema_version"),
-            "source_voice_character": binding.get("source_voice_character"),
-            "synthesis_voice_character": binding.get("synthesis_voice_character"),
-        }
     return {
-        "provider": _required_text(
-            cohort_identity.get("provider"), "Generation provider"
-        ),
-        "model": model,
-        "model_control": model_control,
-        "generation_profile": _required_text(
-            cohort_identity.get("generation_profile"), "Generation profile"
-        ),
-        "voice_character": voice_character,
-        "voice_speaker": _required_text(matches[0].speaker, "Voice speaker"),
-        "ordered_reference_sha256": reference_hashes,
-        "prompt_sha256": _required_sha256(
-            cohort_identity.get("prompt_sha256"), "Prompt sha256"
-        ),
-        "prompt_applied": _required_bool(
-            cohort_identity.get("prompt_applied"), "Prompt-applied marker"
-        ),
-        "text_transform": cohort_identity.get("text_transform"),
-        "repair_strategy": cohort_identity.get("repair_strategy"),
-        "source_reference_binding": binding,
+        "kind": "identifier",
+        "sha256": canonical_document_sha256({"model": model}),
     }
 
 
@@ -498,7 +516,14 @@ def _validated_gate_document(
     policy = document.get("reuse_policy")
     if not isinstance(policy, dict) or policy.get("story_sample_required") is not True:
         raise VoiceQualityGateError("Voice-quality reuse policy is unsafe")
-    identity = document.get("identity")
+    _validate_gate_identity(document.get("identity"))
+    _validate_gate_source(document.get("source_review"))
+    if not _is_gate_document(document):
+        raise VoiceQualityGateError("Voice-quality gate fields are malformed")
+    return copy.deepcopy(document)
+
+
+def _validate_gate_identity(identity: object) -> None:
     if not isinstance(identity, dict):
         raise VoiceQualityGateError("Voice-quality identity is malformed")
     if set(identity) != {
@@ -537,7 +562,9 @@ def _validated_gate_document(
         value = identity.get(field)
         if value is not None:
             _required_text(value, field)
-    source = document.get("source_review")
+
+
+def _validate_gate_source(source: object) -> None:
     if not isinstance(source, dict):
         raise VoiceQualityGateError("Voice-quality source review is malformed")
     for field in (
@@ -558,9 +585,6 @@ def _validated_gate_document(
         for value in assessments
     ):
         raise VoiceQualityGateError("Voice-quality source assessments are unsafe")
-    if not _is_gate_document(document):
-        raise VoiceQualityGateError("Voice-quality gate fields are malformed")
-    return copy.deepcopy(document)
 
 
 def _plan_document(plan: object) -> _PlanDocument:
