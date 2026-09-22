@@ -30,7 +30,9 @@ class PersistentAudioCache:
     def get(self, key):
         if self.max_entries == 0:
             return None
-        path = self.directory / f"{key}.npy"
+        path = self._path_for_key(key)
+        if path is None or path.is_symlink():
+            return None
         try:
             with path.open("rb") as source:
                 audio = np.load(source, allow_pickle=False)
@@ -56,7 +58,9 @@ class PersistentAudioCache:
             or not np.all(np.isfinite(audio))
         ):
             return None
-        path = self.directory / f"{key}.npy"
+        path = self._path_for_key(key)
+        if path is None:
+            return None
         try:
             with atomic_output_path(path) as temporary:
                 with temporary.open("wb") as destination:
@@ -67,6 +71,15 @@ class PersistentAudioCache:
             return None
         return path
 
+    def _path_for_key(self, key):
+        if (
+            not isinstance(key, str)
+            or not key
+            or not all(character.isalnum() or character in "-_" for character in key)
+        ):
+            return None
+        return self.directory / f"{key}.npy"
+
     def _touch_newest(self, path):
         newest = max(
             (
@@ -76,12 +89,12 @@ class PersistentAudioCache:
             default=0,
         )
         timestamp = max(time_ns(), newest + 1_000_000)
-        os.utime(path, ns=(timestamp, timestamp))
+        os.utime(path, ns=(timestamp, timestamp), follow_symlinks=False)
 
     def _prune(self):
         files = sorted(
             self.directory.glob("*.npy"),
-            key=lambda path: path.stat().st_mtime_ns,
+            key=lambda path: path.stat(follow_symlinks=False).st_mtime_ns,
             reverse=True,
         )
         for path in files[self.max_entries :]:

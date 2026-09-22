@@ -70,6 +70,29 @@ class PersistentAudioCacheTest(unittest.TestCase):
         self.assertEqual(files, ["three", "two"])
         self.assertIsNone(cache.get("three"))
 
+    def test_keys_cannot_escape_cache_directory(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            cache = PersistentAudioCache(root / "cache")
+            outside = root / "outside.npy"
+
+            self.assertIsNone(cache.put("../outside", np.array([0.1])))
+            self.assertIsNone(cache.get("../outside"))
+
+            self.assertFalse(outside.exists())
+
+    def test_cache_reads_do_not_follow_symlinks(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            directory = root / "cache"
+            directory.mkdir()
+            outside = root / "outside.npy"
+            with outside.open("wb") as destination:
+                np.save(destination, np.array([0.1], dtype=np.float32))
+            (directory / "linked.npy").symlink_to(outside)
+
+            self.assertIsNone(PersistentAudioCache(directory).get("linked"))
+
 
 if __name__ == "__main__":
     unittest.main()

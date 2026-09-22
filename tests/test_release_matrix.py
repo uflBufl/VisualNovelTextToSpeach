@@ -119,6 +119,31 @@ class ReleaseMatrixTest(unittest.TestCase):
 
         self.assertTrue(any("identical portable artifact" in error for error in errors))
 
+    def test_rejects_non_integer_counts_and_malformed_profile_identity(self):
+        profile = self.profiles[0]
+        report = self.evidence_for(profile)
+        report["display_count"] = True
+        malformed = self.evidence_for(profile)
+        malformed["profile"] = []
+
+        errors = validate_release_evidence(
+            [profile],
+            [(Path("boolean-count.json"), report), (Path("bad-name.json"), malformed)],
+            allow_unsigned=True,
+        )
+
+        self.assertTrue(any("display_count" in error for error in errors))
+        self.assertTrue(any("identity is invalid" in error for error in errors))
+
+    def test_malformed_matrix_root_and_profiles_are_rejected(self):
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "matrix.json"
+            for payload in ([], {"required_profiles": ["not-an-object"]}):
+                with self.subTest(payload=payload):
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "root|profiles"):
+                        load_release_matrix(path)
+
 
 if __name__ == "__main__":
     unittest.main()

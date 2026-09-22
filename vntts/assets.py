@@ -372,7 +372,7 @@ class VoicePackManager:
 
     def validate(self, manifest_path):
         manifest_path = Path(manifest_path).expanduser().resolve()
-        CharacterVoiceRegistry.from_file(manifest_path)
+        registry = CharacterVoiceRegistry.from_file(manifest_path)
         checksum_path = manifest_path.parent / asset_manifest_name
         if not checksum_path.is_file():
             self._write_voice_checksums(manifest_path.parent, manifest_path)
@@ -384,6 +384,15 @@ class VoicePackManager:
         files = manifest.get("files")
         if not isinstance(files, dict):
             raise ModelIntegrityError("Voice checksum file inventory is malformed")
+        expected_files = {
+            str(reference.relative_to(manifest_path.parent))
+            for voice in {
+                id(voice): voice for voice in registry.voices.values()
+            }.values()
+            for reference in voice.references
+        }
+        if set(files) != expected_files:
+            raise ModelIntegrityError("Voice checksum manifest has the wrong files")
         for filename, expected in files.items():
             if not isinstance(filename, str):
                 raise ModelIntegrityError("Voice checksum filename is malformed")

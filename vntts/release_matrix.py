@@ -11,20 +11,26 @@ ReleaseEvidence: TypeAlias = tuple[Path, ReleaseDocument]
 
 
 def _report_integer(value: object) -> int:
-    if not isinstance(value, (str, int, float)):
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return 0
+    if isinstance(value, float) and not value.is_integer():
         return 0
     try:
         return int(value)
-    except ValueError:
+    except OverflowError, ValueError:
         return 0
 
 
 def load_release_matrix(path: PathInput) -> list[ReleaseDocument]:
-    values: ReleaseDocument = json.loads(Path(path).read_text(encoding="utf-8"))
+    values = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(values, dict):
+        raise ValueError("Release matrix root must be an object")
     profiles: object = values.get("required_profiles")
     if not isinstance(profiles, list) or not profiles:
         raise ValueError("Release matrix must contain required_profiles")
-    return profiles
+    if not all(isinstance(profile, dict) for profile in profiles):
+        raise ValueError("Release matrix profiles must be objects")
+    return [profile for profile in profiles if isinstance(profile, dict)]
 
 
 def load_evidence(directory: PathInput) -> list[ReleaseEvidence]:
@@ -46,11 +52,26 @@ def validate_release_evidence(
     allow_unsigned: bool = False,
 ) -> list[str]:
     errors: list[str] = []
-    required = {profile["name"]: profile for profile in profiles}
+    required: dict[str, ReleaseDocument] = {}
+    for position, profile in enumerate(profiles, start=1):
+        if not isinstance(profile, dict):
+            errors.append(f"Release profile {position} is not an object")
+            continue
+        name = profile.get("name")
+        if not isinstance(name, str) or not name.strip():
+            errors.append(f"Release profile {position} has an invalid name")
+            continue
+        if name in required:
+            errors.append(f"Release profile name is duplicated: {name!r}")
+            continue
+        required[name] = profile
     evidence = {}
     artifact_bindings = set()
     for path, report in reports:
         name = report.get("profile")
+        if not isinstance(name, str) or not name.strip():
+            errors.append(f"{path}: release profile identity is invalid")
+            continue
         if name not in required:
             errors.append(f"{path}: unknown release profile {name!r}")
             continue
@@ -86,9 +107,10 @@ def validate_release_evidence(
                     f"expected {profile.get(profile_field)!r}"
                 )
         display_count = _report_integer(report.get("display_count", 0))
-        minimum_displays = profile["minimum_displays"]
-        assert isinstance(minimum_displays, (str, int, float))
-        if display_count < int(minimum_displays):
+        minimum_displays = _report_integer(profile.get("minimum_displays"))
+        if minimum_displays < 1:
+            errors.append(f"{prefix} release profile minimum_displays is invalid")
+        elif display_count < minimum_displays:
             errors.append(
                 f"{prefix} display_count is {display_count}, expected at least "
                 f"{profile['minimum_displays']}"
@@ -109,7 +131,12 @@ def validate_release_evidence(
             or not re.fullmatch(r"[0-9a-f]{40}", signer_thumbprint)
         ):
             errors.append(f"{prefix} executable signer identity is missing or invalid")
-        artifact_bindings.add((archive_sha256, signer_subject, signer_thumbprint))
+        artifact_bindings.add(
+            tuple(
+                value if isinstance(value, str) else None
+                for value in (archive_sha256, signer_subject, signer_thumbprint)
+            )
+        )
         if report.get("smoke_test_process_level") != profile.get("game_process_level"):
             errors.append(
                 f"{prefix} smoke test did not match the game process integrity level"

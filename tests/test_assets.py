@@ -272,6 +272,25 @@ class VoicePackManagerTest(unittest.TestCase):
             with self.assertRaisesRegex(ModelIntegrityError, "inventory"):
                 manager.validate(manifest_path)
 
+    def test_validation_binds_checksum_inventory_to_manifest_references(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = root / "marcus.wav"
+            source.write_bytes(b"local voice data")
+            outside = root / "outside.wav"
+            outside.write_bytes(b"unrelated data")
+            manager = VoicePackManager(root / "managed")
+            manifest_path = manager.import_voice("Marcus", [source])
+            checksum_path = manifest_path.parent / "vntts-asset.json"
+            checksum = json.loads(checksum_path.read_text(encoding="utf-8"))
+
+            for files in ({}, {"../../outside.wav": "0" * 64}):
+                with self.subTest(files=files):
+                    checksum["files"] = files
+                    checksum_path.write_text(json.dumps(checksum), encoding="utf-8")
+                    with self.assertRaisesRegex(ModelIntegrityError, "wrong files"):
+                        manager.validate(manifest_path)
+
 
 if __name__ == "__main__":
     unittest.main()
