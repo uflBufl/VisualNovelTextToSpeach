@@ -12,6 +12,7 @@ from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    AuthoritySnapshot,
     assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
@@ -35,7 +36,9 @@ from vntts.authoring.terminal_conflict_records import (
     require_terminal_conflict_timestamp,
 )
 from vntts.authoring.terminal_conflict_resolution import (
+    TerminalConflictResolutionDocument,
     TerminalConflictResolutionError,
+    TerminalConflictResolutionRecord,
     assert_terminal_conflict_resolution_source_authorities,
     validate_terminal_conflict_resolution_document,
 )
@@ -103,9 +106,21 @@ class TerminalConflictSuccessorDocument(TypedDict):
     unresolved_terminal_conflicts: list[object]
 
 
+@dataclass(frozen=True)
+class _SuccessorInputs:
+    report_snapshot: AuthoritySnapshot
+    report: JsonDocument
+    resolution_snapshot: AuthoritySnapshot
+    resolution: TerminalConflictResolutionDocument
+
+
 def _is_successor_document(
     value: object,
 ) -> TypeGuard[TerminalConflictSuccessorDocument]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _is_successor_record(value: object) -> TypeGuard[_SuccessorRecord]:
     return isinstance(value, dict) and all(isinstance(key, str) for key in value)
 
 
@@ -195,6 +210,59 @@ def publish_terminal_conflict_successor(
     reconciliation_path = Path(reconciliation_path).expanduser().resolve()
     resolution_root = _directory(resolution_directory, "terminal conflict resolution")
     output = Path(output_directory).expanduser().resolve()
+    inputs = _load_successor_inputs(reconciliation_path, resolution_root)
+    if inputs.resolution["source_report_id"] != inputs.report["report_id"]:
+        raise TerminalConflictSuccessorError(
+            "Terminal conflict resolution belongs to another reconciliation"
+        )
+
+    conflicts = {
+        _text(item.get("queue_id"), "Conflict queue ID"): item
+        for item in _objects(
+            inputs.report.get("terminal_conflicts"), "terminal conflicts"
+        )
+    }
+    resolutions = {item["queue_id"]: item for item in inputs.resolution["resolutions"]}
+    if not conflicts or set(conflicts) != set(resolutions):
+        raise TerminalConflictSuccessorError(
+            "Terminal conflict resolution does not cover the exact source conflicts"
+        )
+    resolved, actions = _build_successor_records(conflicts, resolutions)
+    body = _successor_body(inputs, conflicts, resolved, actions)
+    successor_id = canonical_document_sha256(body)
+    document = {**body, "successor_id": successor_id}
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output_exists = output.exists() or output.is_symlink()
+    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
+        atomic_write_json(staging / "successor.json", document, sort_keys=True)
+        load_terminal_conflict_successor(staging)
+        _assert_successor_publication_sources(inputs, resolution_root)
+        if output_exists:
+            existing = load_terminal_conflict_successor(output)
+            if existing.successor_id != successor_id:
+                raise TerminalConflictSuccessorError(
+                    f"Terminal conflict successor output has another identity: {output}"
+                )
+            return existing
+        try:
+            rename_directory_no_replace(staging, output)
+        except (AtomicPublicationError, OSError) as error:
+            raise TerminalConflictSuccessorError(
+                f"Unable to publish terminal conflict successor: {error}"
+            ) from error
+    return TerminalConflictSuccessor(
+        output,
+        successor_id,
+        len(resolved),
+        dict(sorted(actions.items())),
+        True,
+    )
+
+
+def _load_successor_inputs(
+    reconciliation_path: Path, resolution_root: Path
+) -> _SuccessorInputs:
     try:
         report_snapshot = capture_authority_file(
             reconciliation_path, "source authoring reconciliation"
@@ -222,22 +290,14 @@ def publish_terminal_conflict_successor(
         TerminalConflictResolutionError,
     ) as error:
         raise TerminalConflictSuccessorError(str(error)) from error
-    if resolution["source_report_id"] != report["report_id"]:
-        raise TerminalConflictSuccessorError(
-            "Terminal conflict resolution belongs to another reconciliation"
-        )
+    return _SuccessorInputs(report_snapshot, report, resolution_snapshot, resolution)
 
-    conflicts = {
-        _text(item.get("queue_id"), "Conflict queue ID"): item
-        for item in _objects(report.get("terminal_conflicts"), "terminal conflicts")
-    }
-    resolutions = {item["queue_id"]: item for item in resolution["resolutions"]}
-    if not conflicts or set(conflicts) != set(resolutions):
-        raise TerminalConflictSuccessorError(
-            "Terminal conflict resolution does not cover the exact source conflicts"
-        )
 
-    resolved = []
+def _build_successor_records(
+    conflicts: dict[str, JsonDocument],
+    resolutions: dict[str, TerminalConflictResolutionRecord],
+) -> tuple[list[_SuccessorRecord], Counter[str]]:
+    resolved: list[_SuccessorRecord] = []
     actions: Counter[str] = Counter()
     for queue_id in sorted(conflicts):
         conflict = conflicts[queue_id]
@@ -271,16 +331,24 @@ def publish_terminal_conflict_successor(
                 "resolution": copy.deepcopy(decision),
             }
         )
+    return resolved, actions
 
-    body = {
+
+def _successor_body(
+    inputs: _SuccessorInputs,
+    conflicts: dict[str, JsonDocument],
+    resolved: list[_SuccessorRecord],
+    actions: Counter[str],
+) -> JsonDocument:
+    return {
         "schema": TERMINAL_CONFLICT_SUCCESSOR_SCHEMA,
         "schema_version": TERMINAL_CONFLICT_SUCCESSOR_VERSION,
-        "source_reconciliation": str(report_snapshot.path),
-        "source_reconciliation_sha256": report_snapshot.sha256,
-        "source_report_id": report["report_id"],
-        "terminal_resolution": str(resolution_snapshot.path),
-        "terminal_resolution_sha256": resolution_snapshot.sha256,
-        "terminal_resolution_id": resolution["resolution_id"],
+        "source_reconciliation": str(inputs.report_snapshot.path),
+        "source_reconciliation_sha256": inputs.report_snapshot.sha256,
+        "source_report_id": inputs.report["report_id"],
+        "terminal_resolution": str(inputs.resolution_snapshot.path),
+        "terminal_resolution_sha256": inputs.resolution_snapshot.sha256,
+        "terminal_resolution_id": inputs.resolution["resolution_id"],
         "policy": {
             "historical_occurrences": "retained",
             "resolution_match": "exact queue, line, text and queue-record identity",
@@ -295,50 +363,27 @@ def publish_terminal_conflict_successor(
         "resolved_terminal_conflicts": resolved,
         "unresolved_terminal_conflicts": [],
     }
-    successor_id = canonical_document_sha256(body)
-    document = {**body, "successor_id": successor_id}
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output_exists = output.exists() or output.is_symlink()
-    with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
-        atomic_write_json(staging / "successor.json", document, sort_keys=True)
-        load_terminal_conflict_successor(staging)
-        try:
-            assert_authority_snapshot(
-                report_snapshot, "source authoring reconciliation"
-            )
-            assert_authority_snapshot(
-                resolution_snapshot, "terminal conflict resolution"
-            )
-            if (
-                assert_terminal_conflict_resolution_source_authorities(resolution_root)
-                != resolution
-            ):
-                raise TerminalConflictSuccessorError(
-                    "Terminal conflict resolution changed before publication"
-                )
-        except (AuthoringAuthorityError, TerminalConflictResolutionError) as error:
-            raise TerminalConflictSuccessorError(str(error)) from error
-        if output_exists:
-            existing = load_terminal_conflict_successor(output)
-            if existing.successor_id != successor_id:
-                raise TerminalConflictSuccessorError(
-                    f"Terminal conflict successor output has another identity: {output}"
-                )
-            return existing
-        try:
-            rename_directory_no_replace(staging, output)
-        except (AtomicPublicationError, OSError) as error:
+
+def _assert_successor_publication_sources(
+    inputs: _SuccessorInputs, resolution_root: Path
+) -> None:
+    try:
+        assert_authority_snapshot(
+            inputs.report_snapshot, "source authoring reconciliation"
+        )
+        assert_authority_snapshot(
+            inputs.resolution_snapshot, "terminal conflict resolution"
+        )
+        if (
+            assert_terminal_conflict_resolution_source_authorities(resolution_root)
+            != inputs.resolution
+        ):
             raise TerminalConflictSuccessorError(
-                f"Unable to publish terminal conflict successor: {error}"
-            ) from error
-    return TerminalConflictSuccessor(
-        output,
-        successor_id,
-        len(resolved),
-        dict(sorted(actions.items())),
-        True,
-    )
+                "Terminal conflict resolution changed before publication"
+            )
+    except (AuthoringAuthorityError, TerminalConflictResolutionError) as error:
+        raise TerminalConflictSuccessorError(str(error)) from error
 
 
 def load_terminal_conflict_successor(
@@ -376,6 +421,21 @@ def validate_terminal_conflict_successor_document(
     document: object, directory: str | Path
 ) -> TerminalConflictSuccessorDocument:
     value = copy.deepcopy(document)
+    value, raw_records, root = _validate_successor_document_header(value, directory)
+    seen: set[str] = set()
+    counts: Counter[str] = Counter()
+    records: list[_SuccessorRecord] = []
+    for raw_record in raw_records:
+        record, action = _validate_successor_record(raw_record, seen)
+        records.append(record)
+        counts[action] += 1
+    _validate_successor_document_completion(value, records, counts, root)
+    return value
+
+
+def _validate_successor_document_header(
+    value: object, directory: str | Path
+) -> tuple[TerminalConflictSuccessorDocument, list[_SuccessorRecord], Path]:
     fields = {
         "schema",
         "schema_version",
@@ -398,6 +458,18 @@ def validate_terminal_conflict_successor_document(
         or value.get("schema_version") != TERMINAL_CONFLICT_SUCCESSOR_VERSION
     ):
         raise TerminalConflictSuccessorError("Unsupported terminal conflict successor")
+    _validate_successor_document_identity(value)
+    raw_records = value["resolved_terminal_conflicts"]
+    if not isinstance(raw_records, list) or not raw_records:
+        raise TerminalConflictSuccessorError(
+            "Terminal conflict successor resolutions are empty"
+        )
+    return value, raw_records, Path(directory).resolve()
+
+
+def _validate_successor_document_identity(
+    value: TerminalConflictSuccessorDocument,
+) -> None:
     successor_id = _sha256(value["successor_id"], "Successor ID")
     if (
         canonical_document_sha256(
@@ -433,55 +505,58 @@ def validate_terminal_conflict_successor_document(
         raise TerminalConflictSuccessorError(
             "Terminal conflict successor has unresolved conflicts"
         )
-    records = value["resolved_terminal_conflicts"]
-    if not isinstance(records, list) or not records:
+
+
+def _validate_successor_record(
+    value: object, seen: set[str]
+) -> tuple[_SuccessorRecord, str]:
+    if not _is_successor_record(value) or set(value) != {
+        "queue_id",
+        "next_action",
+        "historical_conflict",
+        "resolution",
+    }:
         raise TerminalConflictSuccessorError(
-            "Terminal conflict successor resolutions are empty"
+            "Terminal conflict successor record is malformed"
         )
-    seen = set()
-    counts: Counter[str] = Counter()
-    for record in records:
-        if not isinstance(record, dict) or set(record) != {
-            "queue_id",
-            "next_action",
-            "historical_conflict",
-            "resolution",
-        }:
-            raise TerminalConflictSuccessorError(
-                "Terminal conflict successor record is malformed"
-            )
-        queue_id = _text(record["queue_id"], "Successor queue ID")
-        if queue_id in seen:
-            raise TerminalConflictSuccessorError(
-                "Terminal conflict successor record is duplicated"
-            )
-        seen.add(queue_id)
-        action = record["next_action"]
-        if action not in SUCCESSOR_ACTIONS:
-            raise TerminalConflictSuccessorError(
-                "Terminal conflict successor action is invalid"
-            )
-        occurrences = _validate_historical_conflict(
-            record["historical_conflict"], queue_id
+    record = value
+    queue_id = _text(record["queue_id"], "Successor queue ID")
+    if queue_id in seen:
+        raise TerminalConflictSuccessorError(
+            "Terminal conflict successor record is duplicated"
         )
-        resolution, expected_action = _validate_resolution_projection(
-            record["resolution"], queue_id
+    seen.add(queue_id)
+    action = record["next_action"]
+    if action not in SUCCESSOR_ACTIONS:
+        raise TerminalConflictSuccessorError(
+            "Terminal conflict successor action is invalid"
         )
-        if (
-            {item["queue_record_sha256"] for item in occurrences}
-            != {resolution["queue_record_sha256"]}
-            or {item["text_sha256"] for item in occurrences}
-            != {resolution["text_sha256"]}
-            or {item["line_id"] for item in occurrences} != {resolution["line_id"]}
-        ):
-            raise TerminalConflictSuccessorError(
-                "Terminal conflict successor authority identity changed"
-            )
-        if action != expected_action:
-            raise TerminalConflictSuccessorError(
-                "Terminal conflict successor action changed"
-            )
-        counts[action] += 1
+    occurrences = _validate_historical_conflict(record["historical_conflict"], queue_id)
+    resolution, expected_action = _validate_resolution_projection(
+        record["resolution"], queue_id
+    )
+    if (
+        {item["queue_record_sha256"] for item in occurrences}
+        != {resolution["queue_record_sha256"]}
+        or {item["text_sha256"] for item in occurrences} != {resolution["text_sha256"]}
+        or {item["line_id"] for item in occurrences} != {resolution["line_id"]}
+    ):
+        raise TerminalConflictSuccessorError(
+            "Terminal conflict successor authority identity changed"
+        )
+    if action != expected_action:
+        raise TerminalConflictSuccessorError(
+            "Terminal conflict successor action changed"
+        )
+    return record, action
+
+
+def _validate_successor_document_completion(
+    value: TerminalConflictSuccessorDocument,
+    records: list[_SuccessorRecord],
+    counts: Counter[str],
+    root: Path,
+) -> None:
     if records != sorted(records, key=lambda item: item["queue_id"]):
         raise TerminalConflictSuccessorError(
             "Terminal conflict successor resolutions are not sorted"
@@ -497,7 +572,6 @@ def validate_terminal_conflict_successor_document(
         raise TerminalConflictSuccessorError(
             "Terminal conflict successor summary changed"
         )
-    root = Path(directory).resolve()
     inventory = {
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
@@ -507,7 +581,6 @@ def validate_terminal_conflict_successor_document(
         raise TerminalConflictSuccessorError(
             "Terminal conflict successor inventory changed"
         )
-    return value
 
 
 def _validate_historical_conflict(
@@ -568,6 +641,17 @@ def _validate_historical_conflict(
 def _validate_resolution_projection(
     value: object, queue_id: str
 ) -> tuple[_ResolutionProjection, str]:
+    projection, candidate_ids = _validate_resolution_projection_identity(
+        value, queue_id
+    )
+    return projection, _validate_resolution_projection_selection(
+        projection, candidate_ids, queue_id
+    )
+
+
+def _validate_resolution_projection_identity(
+    value: object, queue_id: str
+) -> tuple[_ResolutionProjection, list[str]]:
     fields = {
         "case_id",
         "queue_id",
@@ -620,6 +704,12 @@ def _validate_resolution_projection(
             "Terminal conflict successor case identity changed"
         )
     _aware_timestamp(value["reviewed_at"], "Resolution review timestamp")
+    return value, candidate_ids
+
+
+def _validate_resolution_projection_selection(
+    value: _ResolutionProjection, candidate_ids: list[str], queue_id: str
+) -> str:
     if value["decision"] == "neither_acceptable":
         if any(
             value[field] is not None
@@ -635,7 +725,7 @@ def _validate_resolution_projection(
             raise TerminalConflictSuccessorError(
                 "Neither successor resolution must not select audio"
             )
-        return value, NEW_REPAIR_HYPOTHESIS
+        return NEW_REPAIR_HYPOTHESIS
     if value["decision"] != "selected_candidate":
         raise TerminalConflictSuccessorError(
             "Terminal conflict successor resolution decision is invalid"
@@ -673,7 +763,7 @@ def _validate_resolution_projection(
     action = (
         APPLY_APPROVED_OUTCOME if authority == "approved" else RETAIN_EXPLICIT_REJECTION
     )
-    return value, action
+    return action
 
 
 __all__ = [
