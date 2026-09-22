@@ -74,148 +74,13 @@ def validate_source_reference_quality_review_document(
     """Validate captured quality-review semantics against one artifact root."""
     session = copy.deepcopy(document)
     path = Path(root).expanduser().resolve() / "review.json"
-    if (
-        session.get("schema") != QUALITY_REVIEW_SCHEMA
-        or session.get("schema_version") != QUALITY_REVIEW_VERSION
-    ):
-        raise SourceReferenceQualityError(
-            "Unsupported source-reference quality review schema"
-        )
-    _aware_timestamp(session.get("created_at"), "quality review created_at")
-    _aware_timestamp(session.get("updated_at"), "quality review updated_at")
-    variants = session.get("variants")
-    if (
-        not isinstance(variants, list)
-        or not variants
-        or session.get("variant_count") != len(variants)
-    ):
-        raise SourceReferenceQualityError("Quality review variant count is invalid")
-    seen = set()
-    completed = 0
-    for index, card in enumerate(variants):
-        if not isinstance(card, dict):
-            raise SourceReferenceQualityError(
-                f"Quality review variant {index} must be an object"
-            )
-        variant_id = _required_text(card.get("variant_id"), "quality variant ID")
-        if variant_id in seen:
-            raise SourceReferenceQualityError(
-                f"Quality review variant is duplicated: {variant_id}"
-            )
-        seen.add(variant_id)
-        for field in ("cluster_id", "character", "source_bank"):
-            _required_text(card.get(field), f"quality variant {variant_id} {field}")
-        reference_kind = card.get("reference_kind", "single_media")
-        if reference_kind == "single_media":
-            media_id = card.get("media_id")
-            if (
-                isinstance(media_id, bool)
-                or not isinstance(media_id, int)
-                or media_id < 0
-            ):
-                raise SourceReferenceQualityError(
-                    f"Quality variant {variant_id} media ID is invalid"
-                )
-        elif reference_kind == "exact_bank_composite":
-            media_ids = card.get("media_ids")
-            if (
-                not isinstance(media_ids, list)
-                or len(media_ids) < 2
-                or any(
-                    isinstance(media_id, bool)
-                    or not isinstance(media_id, int)
-                    or media_id < 0
-                    for media_id in media_ids
-                )
-                or len(media_ids) != len(set(media_ids))
-            ):
-                raise SourceReferenceQualityError(
-                    f"Quality variant {variant_id} composite media IDs are invalid"
-                )
-        else:
-            raise SourceReferenceQualityError(
-                f"Quality variant {variant_id} reference kind is invalid"
-            )
-        portrait = card.get("portrait")
-        if portrait is not None and (
-            not isinstance(portrait, str) or not portrait.strip()
-        ):
-            raise SourceReferenceQualityError(
-                f"Quality variant {variant_id} portrait is invalid"
-            )
-        portrait_image = card.get("portrait_image")
-        if portrait_image is not None:
-            _validate_portrait_record(path.parent, portrait_image, variant_id)
-        _positive_integer(
-            card.get("affected_queue_item_count"),
-            f"quality variant {variant_id} affected count",
-        )
-        _validate_audio_record(path.parent, card.get("reference"), variant_id)
-        context = card.get("decision_context")
-        if context is not None:
-            if (
-                not isinstance(context, dict)
-                or set(context) != {"backend", "model", "generation_profile", "seed"}
-                or any(
-                    not isinstance(context.get(field), str)
-                    or not context[field].strip()
-                    for field in ("backend", "model", "generation_profile")
-                )
-                or not isinstance(context.get("seed"), (str, int))
-                or isinstance(context.get("seed"), bool)
-            ):
-                raise SourceReferenceQualityError(
-                    f"Quality variant {variant_id} decision context is invalid"
-                )
-        generated = card.get("generated_samples")
-        excluded = card.get("excluded_results")
-        if not isinstance(generated, list) or not isinstance(excluded, list):
-            raise SourceReferenceQualityError(
-                f"Quality variant {variant_id} outcomes are invalid"
-            )
-        queue_ids = set()
-        for sample in generated:
-            queue_id = _validate_sample(path.parent, sample, variant_id, audio=True)
-            if queue_id in queue_ids:
-                raise SourceReferenceQualityError(
-                    f"Quality variant {variant_id} queue ID is duplicated"
-                )
-            queue_ids.add(queue_id)
-        for sample in excluded:
-            queue_id = _validate_sample(path.parent, sample, variant_id, audio=False)
-            if queue_id in queue_ids:
-                raise SourceReferenceQualityError(
-                    f"Quality variant {variant_id} queue ID is duplicated"
-                )
-            queue_ids.add(queue_id)
-            _required_text(sample.get("status"), f"excluded {queue_id} status")
-            attempts = sample.get("attempts")
-            if (
-                isinstance(attempts, bool)
-                or not isinstance(attempts, int)
-                or attempts < 0
-            ):
-                raise SourceReferenceQualityError(
-                    f"Excluded result {queue_id} attempts are invalid"
-                )
-        decision = card.get("decision")
-        if decision is not None:
-            if (
-                not isinstance(decision, dict)
-                or decision.get("decision") not in QUALITY_DECISIONS
-            ):
-                raise SourceReferenceQualityError(
-                    f"Quality variant {variant_id} decision is invalid"
-                )
-            _aware_timestamp(
-                decision.get("reviewed_at"),
-                f"quality variant {variant_id} reviewed_at",
-            )
-            if decision["decision"] == "accept" and not generated:
-                raise SourceReferenceQualityError(
-                    f"Quality variant {variant_id} was accepted without generated audio"
-                )
-            completed += 1
+    _validate_quality_review_header(session)
+    variants = _quality_review_variants(session)
+    seen: set[str] = set()
+    completed = sum(
+        _validate_quality_review_variant(path.parent, card, index, seen)
+        for index, card in enumerate(variants)
+    )
     if session.get("completed_count") != completed:
         raise SourceReferenceQualityError("Quality review progress is inconsistent")
     for field in (
@@ -225,6 +90,190 @@ def validate_source_reference_quality_review_document(
     ):
         _required_sha256(session.get(field), f"quality review {field}")
     return session
+
+
+def _validate_quality_review_header(session: JsonObject) -> None:
+    if (
+        session.get("schema") != QUALITY_REVIEW_SCHEMA
+        or session.get("schema_version") != QUALITY_REVIEW_VERSION
+    ):
+        raise SourceReferenceQualityError(
+            "Unsupported source-reference quality review schema"
+        )
+    _aware_timestamp(session.get("created_at"), "quality review created_at")
+    _aware_timestamp(session.get("updated_at"), "quality review updated_at")
+
+
+def _quality_review_variants(session: JsonObject) -> list[object]:
+    variants = session.get("variants")
+    if (
+        not isinstance(variants, list)
+        or not variants
+        or session.get("variant_count") != len(variants)
+    ):
+        raise SourceReferenceQualityError("Quality review variant count is invalid")
+    return variants
+
+
+def _validate_quality_review_variant(
+    root: Path, card: object, index: int, seen: set[str]
+) -> int:
+    if not isinstance(card, dict):
+        raise SourceReferenceQualityError(
+            f"Quality review variant {index} must be an object"
+        )
+    variant_id = _required_text(card.get("variant_id"), "quality variant ID")
+    if variant_id in seen:
+        raise SourceReferenceQualityError(
+            f"Quality review variant is duplicated: {variant_id}"
+        )
+    seen.add(variant_id)
+    _validate_variant_identity(card, variant_id)
+    _validate_variant_reference_kind(card, variant_id)
+    _validate_variant_portrait(root, card, variant_id)
+    _positive_integer(
+        card.get("affected_queue_item_count"),
+        f"quality variant {variant_id} affected count",
+    )
+    _validate_audio_record(root, card.get("reference"), variant_id)
+    _validate_decision_context(card.get("decision_context"), variant_id)
+    generated, excluded = _validate_variant_outcomes(card, variant_id)
+    _validate_variant_samples(root, generated, excluded, variant_id)
+    return _validate_variant_decision(card.get("decision"), generated, variant_id)
+
+
+def _validate_variant_identity(card: JsonObject, variant_id: str) -> None:
+    for field in ("cluster_id", "character", "source_bank"):
+        _required_text(card.get(field), f"quality variant {variant_id} {field}")
+
+
+def _validate_variant_reference_kind(card: JsonObject, variant_id: str) -> None:
+    reference_kind = card.get("reference_kind", "single_media")
+    if reference_kind == "single_media":
+        media_id = card.get("media_id")
+        if isinstance(media_id, bool) or not isinstance(media_id, int) or media_id < 0:
+            raise SourceReferenceQualityError(
+                f"Quality variant {variant_id} media ID is invalid"
+            )
+        return
+    if reference_kind == "exact_bank_composite":
+        media_ids = card.get("media_ids")
+        if (
+            not isinstance(media_ids, list)
+            or len(media_ids) < 2
+            or any(
+                isinstance(media_id, bool)
+                or not isinstance(media_id, int)
+                or media_id < 0
+                for media_id in media_ids
+            )
+            or len(media_ids) != len(set(media_ids))
+        ):
+            raise SourceReferenceQualityError(
+                f"Quality variant {variant_id} composite media IDs are invalid"
+            )
+        return
+    raise SourceReferenceQualityError(
+        f"Quality variant {variant_id} reference kind is invalid"
+    )
+
+
+def _validate_variant_portrait(root: Path, card: JsonObject, variant_id: str) -> None:
+    portrait = card.get("portrait")
+    if portrait is not None and (not isinstance(portrait, str) or not portrait.strip()):
+        raise SourceReferenceQualityError(
+            f"Quality variant {variant_id} portrait is invalid"
+        )
+    portrait_image = card.get("portrait_image")
+    if portrait_image is not None:
+        _validate_portrait_record(root, portrait_image, variant_id)
+
+
+def _validate_decision_context(value: object, variant_id: str) -> None:
+    if value is None:
+        return
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"backend", "model", "generation_profile", "seed"}
+        or any(
+            not isinstance(value.get(field), str) or not value[field].strip()
+            for field in ("backend", "model", "generation_profile")
+        )
+        or not isinstance(value.get("seed"), (str, int))
+        or isinstance(value.get("seed"), bool)
+    ):
+        raise SourceReferenceQualityError(
+            f"Quality variant {variant_id} decision context is invalid"
+        )
+
+
+def _validate_variant_outcomes(
+    card: JsonObject, variant_id: str
+) -> tuple[list[object], list[object]]:
+    generated = card.get("generated_samples")
+    excluded = card.get("excluded_results")
+    if not isinstance(generated, list) or not isinstance(excluded, list):
+        raise SourceReferenceQualityError(
+            f"Quality variant {variant_id} outcomes are invalid"
+        )
+    return generated, excluded
+
+
+def _validate_variant_samples(
+    root: Path,
+    generated: list[object],
+    excluded: list[object],
+    variant_id: str,
+) -> None:
+    queue_ids: set[str] = set()
+    for sample in generated:
+        _add_quality_sample_queue_id(
+            queue_ids,
+            _validate_sample(root, sample, variant_id, audio=True),
+            variant_id,
+        )
+    for sample in excluded:
+        queue_id = _validate_sample(root, sample, variant_id, audio=False)
+        _add_quality_sample_queue_id(queue_ids, queue_id, variant_id)
+        if not isinstance(sample, dict):
+            raise SourceReferenceQualityError(
+                f"Quality variant {variant_id} sample must be an object"
+            )
+        _required_text(sample.get("status"), f"excluded {queue_id} status")
+        attempts = sample.get("attempts")
+        if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0:
+            raise SourceReferenceQualityError(
+                f"Excluded result {queue_id} attempts are invalid"
+            )
+
+
+def _add_quality_sample_queue_id(
+    queue_ids: set[str], queue_id: str, variant_id: str
+) -> None:
+    if queue_id in queue_ids:
+        raise SourceReferenceQualityError(
+            f"Quality variant {variant_id} queue ID is duplicated"
+        )
+    queue_ids.add(queue_id)
+
+
+def _validate_variant_decision(
+    value: object, generated: list[object], variant_id: str
+) -> int:
+    if value is None:
+        return 0
+    if not isinstance(value, dict) or value.get("decision") not in QUALITY_DECISIONS:
+        raise SourceReferenceQualityError(
+            f"Quality variant {variant_id} decision is invalid"
+        )
+    _aware_timestamp(
+        value.get("reviewed_at"), f"quality variant {variant_id} reviewed_at"
+    )
+    if value["decision"] == "accept" and not generated:
+        raise SourceReferenceQualityError(
+            f"Quality variant {variant_id} was accepted without generated audio"
+        )
+    return 1
 
 
 def quality_review_progress(session: Mapping[str, object]) -> tuple[int, int]:
@@ -352,47 +401,65 @@ def _probe_png(payload: bytes, label: str) -> tuple[int, int]:
     if not isinstance(payload, bytes) or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
         raise SourceReferenceQualityError(f"{label.title()} is not a PNG")
     offset = 8
-    width = height = None
-    idat_parts = []
+    dimensions: tuple[int, int] | None = None
+    idat_parts: list[bytes] = []
     saw_iend = False
     while offset < len(payload):
-        if len(payload) - offset < 12:
-            raise SourceReferenceQualityError(f"{label.title()} is truncated")
-        length = struct.unpack(">I", payload[offset : offset + 4])[0]
-        kind = payload[offset + 4 : offset + 8]
-        chunk_end = offset + 12 + length
-        if chunk_end > len(payload):
-            raise SourceReferenceQualityError(f"{label.title()} is truncated")
-        data = payload[offset + 8 : offset + 8 + length]
-        expected_crc = struct.unpack(">I", payload[offset + 8 + length : chunk_end])[0]
-        if zlib.crc32(kind + data) & 0xFFFFFFFF != expected_crc:
-            raise SourceReferenceQualityError(f"{label.title()} has an invalid CRC")
+        kind, data, chunk_end = _read_png_chunk(payload, offset, label)
         if offset == 8:
-            if kind != b"IHDR" or length != 13:
-                raise SourceReferenceQualityError(f"{label.title()} has no valid IHDR")
-            width, height = struct.unpack(">II", data[:8])
-            if width < 1 or height < 1:
-                raise SourceReferenceQualityError(
-                    f"{label.title()} has invalid dimensions"
-                )
+            dimensions = _png_dimensions(kind, data, label)
         elif kind == b"IDAT":
             idat_parts.append(data)
         elif kind == b"IEND":
-            if length != 0 or chunk_end != len(payload):
-                raise SourceReferenceQualityError(f"{label.title()} has invalid IEND")
+            _validate_png_iend(data, chunk_end, len(payload), label)
             saw_iend = True
         offset = chunk_end
-    if width is None or height is None or not idat_parts or not saw_iend:
+    if dimensions is None or not idat_parts or not saw_iend:
         raise SourceReferenceQualityError(f"{label.title()} is incomplete")
+    _validate_png_image_data(idat_parts, label)
+    return dimensions
+
+
+def _read_png_chunk(
+    payload: bytes, offset: int, label: str
+) -> tuple[bytes, bytes, int]:
+    if len(payload) - offset < 12:
+        raise SourceReferenceQualityError(f"{label.title()} is truncated")
+    length = struct.unpack(">I", payload[offset : offset + 4])[0]
+    kind = payload[offset + 4 : offset + 8]
+    chunk_end = offset + 12 + length
+    if chunk_end > len(payload):
+        raise SourceReferenceQualityError(f"{label.title()} is truncated")
+    data = payload[offset + 8 : offset + 8 + length]
+    expected_crc = struct.unpack(">I", payload[offset + 8 + length : chunk_end])[0]
+    if zlib.crc32(kind + data) & 0xFFFFFFFF != expected_crc:
+        raise SourceReferenceQualityError(f"{label.title()} has an invalid CRC")
+    return kind, data, chunk_end
+
+
+def _png_dimensions(kind: bytes, data: bytes, label: str) -> tuple[int, int]:
+    if kind != b"IHDR" or len(data) != 13:
+        raise SourceReferenceQualityError(f"{label.title()} has no valid IHDR")
+    width, height = struct.unpack(">II", data[:8])
+    if width < 1 or height < 1:
+        raise SourceReferenceQualityError(f"{label.title()} has invalid dimensions")
+    return width, height
+
+
+def _validate_png_iend(data: bytes, chunk_end: int, size: int, label: str) -> None:
+    if data or chunk_end != size:
+        raise SourceReferenceQualityError(f"{label.title()} has invalid IEND")
+
+
+def _validate_png_image_data(parts: list[bytes], label: str) -> None:
     try:
-        decoded = zlib.decompress(b"".join(idat_parts))
+        decoded = zlib.decompress(b"".join(parts))
     except zlib.error as error:
         raise SourceReferenceQualityError(
             f"{label.title()} has invalid image data"
         ) from error
     if not decoded:
         raise SourceReferenceQualityError(f"{label.title()} has empty image data")
-    return width, height
 
 
 def _validate_audio_record(root: Path, value: object, label: str) -> Path:
