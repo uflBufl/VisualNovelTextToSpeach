@@ -119,6 +119,7 @@ class QtPcmPlayer(QObject):
         self._started = False
         self._started_at = self._clock()
         self._token = player.play(clip)
+        self._record_playback("queued", clip=clip)
         self._timer.start()
 
     def _poll(self) -> None:
@@ -135,6 +136,7 @@ class QtPcmPlayer(QObject):
             return
         if snapshot.started and not self._started:
             self._started = True
+            self._record_playback("started")
             self.playbackStateChanged.emit(self.PlaybackState.PlayingState)
             if self._token != snapshot.token:
                 return
@@ -151,13 +153,30 @@ class QtPcmPlayer(QObject):
             return
         self._token = None
         self._timer.stop()
+        self._record_playback("finished")
         self.mediaStatusChanged.emit(self.MediaStatus.EndOfMedia)
         self.playbackStateChanged.emit(self.PlaybackState.StoppedState)
 
     def _fail(self, message: str) -> None:
         self.stop()
         self._error = message
+        self._record_playback("failed", reason=message)
         self.errorOccurred.emit(self.Error.ResourceError, message)
+
+    def _record_playback(
+        self, outcome: str, *, clip: PcmClip | None = None, reason: str | None = None
+    ) -> None:
+        from vntts.support import record_audio_lifecycle
+
+        record_audio_lifecycle(
+            "authoring-playback",
+            owner=type(self.parent()).__name__ if self.parent() else "authoring",
+            outcome=outcome,
+            reason=reason,
+            device_name=getattr(self._player, "device_name", None),
+            sample_rate=clip.sample_rate if clip is not None else None,
+            channels=clip.samples.shape[1] if clip is not None else None,
+        )
 
     def _close(self, *_args: object) -> None:
         if self._player is not None:

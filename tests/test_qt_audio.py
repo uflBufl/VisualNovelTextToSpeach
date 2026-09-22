@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PySide6.QtCore import QCoreApplication, QEvent
@@ -48,17 +49,26 @@ class QtAudioTest(unittest.TestCase):
 
     def test_pcm_adapter_reports_only_clean_dac_completion(self):
         pcm = _PcmPlayer()
+        pcm.device_name = "Test output"
         player = QtPcmPlayer(player_factory=lambda: pcm)
         finished = []
         failures = []
         player.mediaStatusChanged.connect(finished.append)
         player.errorOccurred.connect(lambda _error, message: failures.append(message))
 
-        clip = play_audio_bytes(player, None, b"exact audio", "memory:test.wav")
-        pcm.snapshot_value = PlaybackSnapshot(
-            pcm.token, 4, 4, True, False, True, False, None
+        with patch("vntts.support.record_audio_lifecycle") as lifecycle:
+            clip = play_audio_bytes(player, None, b"exact audio", "memory:test.wav")
+            pcm.snapshot_value = PlaybackSnapshot(
+                pcm.token, 4, 4, True, False, True, False, None
+            )
+            player._poll()
+        self.assertEqual(
+            [call.kwargs["outcome"] for call in lifecycle.call_args_list],
+            ["queued", "started", "finished"],
         )
-        player._poll()
+        self.assertEqual(
+            lifecycle.call_args_list[0].kwargs["device_name"], "Test output"
+        )
 
         self.assertIs(clip, pcm.clip)
         self.assertEqual(pcm.loaded, (b"exact audio", "memory:test.wav"))
