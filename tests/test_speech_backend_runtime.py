@@ -61,6 +61,31 @@ class SpeechBackendRuntimeTest(unittest.TestCase):
 
             self.assertNotIn("uv sync", str(raised.exception))
 
+    def test_activation_rejects_runtime_outside_frozen_bundle(self):
+        with TemporaryDirectory() as bundle_directory, TemporaryDirectory() as outside:
+            bundle_root = Path(bundle_directory).resolve()
+            runtime = Path(outside).resolve()
+            (runtime / "Lib/site-packages").mkdir(parents=True)
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("vntts.speech_backend_runtime.sys.platform", "win32"),
+                patch(
+                    "vntts.speech_backend_runtime.get_bundle_root",
+                    return_value=bundle_root,
+                ),
+                patch(
+                    "vntts.speech_backend_runtime.find_bundled_speech_runtime",
+                    return_value=runtime,
+                ),
+                self.assertRaisesRegex(TTSConfigurationError, "outside.*package"),
+            ):
+                activate_backend_runtime(
+                    None,
+                    environment_variable="VNTTS_TEST_RUNTIME",
+                    backend_directory="pocket-tts",
+                    missing_message="run uv sync",
+                )
+
     def test_bounded_cache_evicts_the_least_recently_used_value(self):
         cache = BoundedCache(2)
         cache.put("first", 1)

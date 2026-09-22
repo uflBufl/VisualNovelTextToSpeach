@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytesseract
 
+from tests.symlink_support import symlink_or_skip
 from vntts.package_self_test import (
     probe_bundled_pocket_render,
     probe_bundled_pocket_runtime,
@@ -45,6 +46,48 @@ class RuntimePathsTest(unittest.TestCase):
             self.assertIsNone(
                 find_bundled_speech_runtime("unknown-backend", bundle_root)
             )
+
+    def test_bundled_dependency_lookup_rejects_paths_outside_bundle(self):
+        with (
+            TemporaryDirectory() as bundle_directory,
+            TemporaryDirectory() as outside_directory,
+        ):
+            bundle_root = Path(bundle_directory)
+            outside = Path(outside_directory)
+            runtime = outside / "runtime"
+            runtime.mkdir()
+            runtime_link = bundle_root / "speech-runtimes/pocket-tts"
+            runtime_link.parent.mkdir(parents=True)
+            symlink_or_skip(runtime_link, runtime, target_is_directory=True)
+
+            espeak = outside / "espeak-ng"
+            espeak.write_bytes(b"executable")
+            espeak_data = outside / "espeak-ng-data"
+            espeak_data.mkdir()
+            espeak_root = bundle_root / "espeak-ng"
+            espeak_root.mkdir()
+            symlink_or_skip(espeak_root / "espeak-ng", espeak)
+            symlink_or_skip(
+                espeak_root / "espeak-ng-data",
+                espeak_data,
+                target_is_directory=True,
+            )
+
+            tesseract = outside / "tesseract"
+            tesseract.write_bytes(b"executable")
+            tessdata = outside / "tessdata"
+            tessdata.mkdir()
+            (tessdata / "eng.traineddata").write_bytes(b"language")
+            tesseract_root = bundle_root / "tesseract"
+            tesseract_root.mkdir()
+            symlink_or_skip(tesseract_root / "tesseract", tesseract)
+            symlink_or_skip(
+                tesseract_root / "tessdata", tessdata, target_is_directory=True
+            )
+
+            self.assertIsNone(find_bundled_speech_runtime("pocket-tts", bundle_root))
+            self.assertIsNone(find_bundled_espeak(bundle_root))
+            self.assertIsNone(configure_bundled_dependencies(bundle_root))
 
     def test_configures_tesseract_from_frozen_bundle(self):
         with TemporaryDirectory() as temporary_directory:

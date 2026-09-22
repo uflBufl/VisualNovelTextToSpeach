@@ -43,6 +43,15 @@ class DialogueHistoryTest(unittest.TestCase):
         self.assertEqual(updated.text, "Hello, Timekeeper.")
         self.assertNotEqual(repeated.id, updated.id)
 
+    def test_typewriter_rollback_does_not_erase_longer_captured_text(self):
+        history = self.create_history()
+
+        complete = history.add("Marcus", "Hello, Timekeeper.")
+        regressed = history.add("Marcus", "Hello")
+
+        self.assertIs(regressed, complete)
+        self.assertEqual(history.snapshot()[0].text, "Hello, Timekeeper.")
+
     def test_similar_consecutive_lines_remain_separate(self):
         history = self.create_history()
 

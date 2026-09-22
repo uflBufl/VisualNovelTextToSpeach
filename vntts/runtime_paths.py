@@ -99,8 +99,13 @@ def find_bundled_speech_runtime(
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
         return None
+    bundle_root = bundle_root.resolve()
     runtime_root = (bundle_root / "speech-runtimes" / backend).resolve()
-    return runtime_root if runtime_root.is_dir() else None
+    return (
+        runtime_root
+        if runtime_root.is_relative_to(bundle_root) and runtime_root.is_dir()
+        else None
+    )
 
 
 def find_bundled_espeak(
@@ -109,13 +114,19 @@ def find_bundled_espeak(
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
         return None
+    allowed_root = bundle_root.resolve()
     espeak_root = bundle_root / "espeak-ng"
     executables = [
         executable
         for name in ("espeak-ng.exe", "espeak-ng")
         for executable in espeak_root.rglob(name)
+        if executable.is_file() and executable.resolve().is_relative_to(allowed_root)
     ]
-    data_directories = list(espeak_root.rglob("espeak-ng-data"))
+    data_directories = [
+        directory
+        for directory in espeak_root.rglob("espeak-ng-data")
+        if directory.is_dir() and directory.resolve().is_relative_to(allowed_root)
+    ]
     if not executables or not data_directories:
         return None
     return executables[0], data_directories[0]
@@ -125,6 +136,7 @@ def configure_bundled_dependencies(bundle_root: PathInput | None = None) -> Path
     bundle_root = get_bundle_root() if bundle_root is None else Path(bundle_root)
     if bundle_root is None:
         return None
+    allowed_root = bundle_root.resolve()
 
     bundled_espeak = find_bundled_espeak(bundle_root)
     if bundled_espeak is not None:
@@ -142,13 +154,17 @@ def configure_bundled_dependencies(bundle_root: PathInput | None = None) -> Path
             candidate
             for name in ("tesseract.exe", "tesseract")
             if (candidate := tesseract_directory / name).is_file()
+            and candidate.resolve().is_relative_to(allowed_root)
         ),
         None,
     )
     tessdata_directory = tesseract_directory / "tessdata"
     if tesseract_executable is None:
         return None
-    if not (tessdata_directory / "eng.traineddata").is_file():
+    language_data = tessdata_directory / "eng.traineddata"
+    if not (
+        language_data.is_file() and language_data.resolve().is_relative_to(allowed_root)
+    ):
         return None
 
     import pytesseract

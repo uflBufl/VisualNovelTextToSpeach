@@ -47,7 +47,7 @@ class DialogueHistory:
                 and active.character == character
                 and self._is_continuation(active.text, text)
             ):
-                if active.text == text:
+                if active.text.startswith(text):
                     return active
                 updated = replace(active, text=text)
                 self.entries[-1] = updated

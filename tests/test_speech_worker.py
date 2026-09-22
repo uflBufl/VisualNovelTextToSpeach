@@ -340,6 +340,26 @@ class SpeechWorkerTest(unittest.TestCase):
 
             self.assertNotIn("uv sync", str(raised.exception))
 
+    def test_frozen_runtime_cannot_escape_the_application_bundle(self):
+        with TemporaryDirectory() as bundle_directory, TemporaryDirectory() as outside:
+            bundle_root = Path(bundle_directory).resolve()
+            runtime = Path(outside).resolve()
+            interpreter = runtime / "bin/python"
+            site_packages = runtime / "lib/python3.14/site-packages"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.touch()
+            site_packages.mkdir(parents=True)
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "vntts.speech_worker.find_bundled_speech_runtime",
+                    return_value=runtime,
+                ),
+                patch("vntts.speech_worker.get_bundle_root", return_value=bundle_root),
+                self.assertRaisesRegex(TTSConfigurationError, "outside.*package"),
+            ):
+                _runtime_paths("pocket-tts")
+
     def test_parent_launches_isolated_interpreter_without_host_support_paths(self):
         registry = CharacterVoiceRegistry()
         with TemporaryDirectory() as directory:

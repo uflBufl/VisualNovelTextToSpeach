@@ -493,6 +493,11 @@ def _runtime_paths(
             else default_source_speech_runtime(backend)
         )
     root = Path(root_value).expanduser().resolve()
+    if bundle_root is not None and not root.is_relative_to(bundle_root.resolve()):
+        raise TTSConfigurationError(
+            f"{backend} isolated runtime is outside the application package. "
+            "Reinstall the application from a complete release package."
+        )
     if sys.platform == "win32":
         interpreter = next(
             (

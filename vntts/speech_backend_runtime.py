@@ -90,6 +90,13 @@ def activate_backend_runtime(
     if selected_runtime is None:
         raise TTSConfigurationError(missing_message)
     runtime_directory = Path(selected_runtime).expanduser().resolve()
+    if bundle_root is not None and not runtime_directory.is_relative_to(
+        bundle_root.resolve()
+    ):
+        raise TTSConfigurationError(
+            f"{backend_directory} runtime is outside the application package. "
+            "Reinstall the application from a complete release package."
+        )
     if sys.platform == "win32":
         site_packages = runtime_directory / "Lib" / "site-packages"
     else:
