@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from math import gcd
 from pathlib import Path
 from threading import Lock
+from typing import Protocol
 
 import numpy as np
 import soundfile as sf
+from numpy.typing import NDArray
 from scipy.signal import resample_poly
 
 
@@ -17,17 +20,37 @@ class PcmPlaybackError(RuntimeError):
     pass
 
 
+class _AudioStream(Protocol):
+    time: float
+
+    def start(self) -> None: ...
+
+    def abort(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class _AudioModule(Protocol):
+    def query_devices(self, *, kind: str) -> Mapping[str, float]: ...
+
+    def OutputStream(self, **options: object) -> _AudioStream: ...
+
+
+class _CallbackTimeInfo(Protocol):
+    outputBufferDacTime: float
+
+
 @dataclass(frozen=True)
 class PcmClip:
-    samples: np.ndarray
+    samples: NDArray[np.float32]
     sample_rate: int
 
     @property
-    def frames(self):
+    def frames(self) -> int:
         return len(self.samples)
 
     @property
-    def duration_ms(self):
+    def duration_ms(self) -> int:
         return round(self.frames * 1000 / self.sample_rate)
 
 
@@ -46,13 +69,16 @@ class PlaybackSnapshot:
 class PersistentPcmPlayer:
     """Keep one fixed-format device stream alive and swap prepared PCM buffers."""
 
-    def __init__(self, audio_module=None, *, latency=0.1):
+    def __init__(
+        self, audio_module: _AudioModule | None = None, *, latency: float = 0.1
+    ) -> None:
         if audio_module is None:
-            import sounddevice as audio_module
+            import sounddevice as imported_audio_module
 
-        self.audio_module = audio_module
+            audio_module = imported_audio_module
+        self.audio_module: _AudioModule = audio_module
         try:
-            device = audio_module.query_devices(kind="output")
+            device = self.audio_module.query_devices(kind="output")
             self.sample_rate = int(round(float(device["default_samplerate"])))
             max_channels = int(device["max_output_channels"])
         except Exception as error:
@@ -64,19 +90,21 @@ class PersistentPcmPlayer:
         self.channels = min(2, max_channels)
         self._lock = Lock()
         self._token = 0
-        self._samples = np.empty((0, self.channels), dtype=np.float32)
+        self._samples: NDArray[np.float32] = np.empty(
+            (0, self.channels), dtype=np.float32
+        )
         self._position = 0
         self._audible_origin = 0
-        self._first_dac_time = None
-        self._end_dac_time = None
+        self._first_dac_time: float | None = None
+        self._end_dac_time: float | None = None
         self._playing = False
         self._started = False
         self._underflowed = False
-        self._error = None
+        self._error: str | None = None
         self._closed = False
-        self.stream = None
+        stream: _AudioStream | None = None
         try:
-            self.stream = audio_module.OutputStream(
+            stream = self.audio_module.OutputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 dtype="float32",
@@ -85,15 +113,17 @@ class PersistentPcmPlayer:
                 callback=self._callback,
                 prime_output_buffers_using_stream_callback=True,
             )
-            self.stream.start()
+            stream.start()
         except Exception as error:
-            if self.stream is not None:
-                self.stream.close()
+            if stream is not None:
+                stream.close()
             raise PcmPlaybackError(
                 f"Unable to open the output stream: {error}"
             ) from error
+        assert stream is not None
+        self.stream: _AudioStream = stream
 
-    def load(self, path):
+    def load(self, path: str | Path) -> PcmClip:
         path = Path(path)
         try:
             samples, sample_rate = sf.read(path, dtype="float32", always_2d=True)
@@ -101,7 +131,7 @@ class PersistentPcmPlayer:
             raise PcmPlaybackError(f"Unable to decode {path.name}: {error}") from error
         return self._prepare(samples, sample_rate, path.name)
 
-    def load_bytes(self, payload, *, name="audio"):
+    def load_bytes(self, payload: bytes, *, name: str = "audio") -> PcmClip:
         try:
             samples, sample_rate = sf.read(
                 BytesIO(payload), dtype="float32", always_2d=True
@@ -110,7 +140,9 @@ class PersistentPcmPlayer:
             raise PcmPlaybackError(f"Unable to decode {name}: {error}") from error
         return self._prepare(samples, sample_rate, name)
 
-    def _prepare(self, samples, sample_rate, name):
+    def _prepare(
+        self, samples: NDArray[np.float32], sample_rate: int, name: str
+    ) -> PcmClip:
         if not len(samples) or sample_rate <= 0 or samples.shape[1] not in {1, 2}:
             raise PcmPlaybackError(f"Unsupported PCM layout in {name}")
         if not np.isfinite(samples).all():
@@ -131,7 +163,7 @@ class PersistentPcmPlayer:
             np.ascontiguousarray(samples, dtype=np.float32), self.sample_rate
         )
 
-    def play(self, clip, *, position_frames=0):
+    def play(self, clip: PcmClip, *, position_frames: int = 0) -> int:
         if not isinstance(clip, PcmClip) or clip.sample_rate != self.sample_rate:
             raise PcmPlaybackError("Playback received an incompatible PCM clip")
         position = max(0, min(clip.frames, int(position_frames)))
@@ -148,14 +180,14 @@ class PersistentPcmPlayer:
             self._error = None
             return self._token
 
-    def pause(self):
+    def pause(self) -> None:
         with self._lock:
             self._playing = False
             self._first_dac_time = None
             self._audible_origin = self._position
             self._end_dac_time = None
 
-    def resume(self):
+    def resume(self) -> int:
         with self._lock:
             if self._position >= len(self._samples):
                 self._position = 0
@@ -169,7 +201,7 @@ class PersistentPcmPlayer:
             self._error = None
             return self._token
 
-    def seek(self, position_frames):
+    def seek(self, position_frames: int) -> int:
         with self._lock:
             self._token += 1
             self._position = max(0, min(len(self._samples), int(position_frames)))
@@ -181,7 +213,7 @@ class PersistentPcmPlayer:
             self._error = None
             return self._token
 
-    def stop(self):
+    def stop(self) -> None:
         with self._lock:
             self._token += 1
             self._samples = np.empty((0, self.channels), dtype=np.float32)
@@ -194,7 +226,7 @@ class PersistentPcmPlayer:
             self._underflowed = False
             self._error = None
 
-    def snapshot(self):
+    def snapshot(self) -> PlaybackSnapshot:
         try:
             stream_time = float(self.stream.time)
         except Exception as error:
@@ -225,7 +257,7 @@ class PersistentPcmPlayer:
                 error=self._error,
             )
 
-    def close(self):
+    def close(self) -> None:
         if self._closed:
             return
         self._closed = True
@@ -235,7 +267,13 @@ class PersistentPcmPlayer:
         finally:
             self.stream.close()
 
-    def _callback(self, outdata, frames, time_info, status):
+    def _callback(
+        self,
+        outdata: NDArray[np.float32],
+        frames: int,
+        time_info: _CallbackTimeInfo,
+        status: object,
+    ) -> None:
         outdata.fill(0)
         try:
             with self._lock:

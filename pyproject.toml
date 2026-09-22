@@ -204,6 +204,7 @@ files = [
     "vntts/authoring/missing_voice_reuse_review_ui.py",
     "vntts/authoring/model_benchmark.py",
     "vntts/authoring/offline_fallback_authority.py",
+    "vntts/authoring/pcm_playback.py",
     "vntts/authoring/pending_resolution.py",
     "vntts/authoring/private_files.py",
     "vntts/authoring/publication.py",
