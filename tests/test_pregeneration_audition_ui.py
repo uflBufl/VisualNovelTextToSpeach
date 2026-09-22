@@ -160,20 +160,28 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.start(plan, group_id=group.group_id)
 
             self.assertTrue(panel.choose_all_button.isHidden())
-            self.assertEqual(panel.a_play.text(), "Test selected reference")
-            self.assertEqual(panel.a_use.text(), "Use selected reference")
-            self.assertEqual(panel.neither_button.text(), "Try another voice/reference")
-            self.assertEqual(panel.auto_button.text(), "Keep automatic choice")
-            self.assertIn(
-                "Production set: 1 reference, 1.2 s total", panel.a_reason.text()
+            self.assertEqual(panel.a_play.text(), "Generate preview")
+            self.assertEqual(panel.a_use.text(), f"Use {candidate.source_character}")
+            self.assertEqual(panel.voice_reference.count(), 2)
+            self.assertEqual(
+                panel.voice_reference.currentText(), candidate.source_character
             )
+            self.assertEqual(
+                panel.voice_reference.toolTip(), candidate.source_character
+            )
+            self.assertTrue(panel.auto_button.isHidden())
+            self.assertIn("1 original reference · 1.2 s total", panel.a_reason.text())
+            self.assertIn("future speech and preparation", panel.scope.text())
             panel.reference_details_toggle.setChecked(True)
             self.assertIn(
                 candidate.reference_sha256s[0], panel.reference_details.text()
             )
             alternative = unresolved.candidate_inventory[1]
-            panel.neither_button.click()
-            self.assertIn(alternative.source_character, panel.a_title.text())
+            panel.voice_reference.setCurrentIndex(1)
+            self.assertEqual(
+                panel.voice_reference.currentText(), alternative.source_character
+            )
+            self.assertIn(alternative.source_character, panel.a_box.title())
             panel.a_original.click()
             preview_service.reference_audio.assert_called_once_with(
                 plan, group, alternative.source_id
@@ -216,20 +224,34 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.start(plan)
             panel.a_play.click()
             self.assertFalse(panel.a_use.isEnabled())
+            self.assertFalse(panel.voice_reference.isEnabled())
+            self.assertFalse(panel.preview_phrase.isEnabled())
             pool.tasks.pop().run()
             self.application.processEvents()
 
             self.assertTrue(panel.a_use.isEnabled())
-            self.assertIn(group.candidates[0].source_character, panel.a_title.text())
+            self.assertEqual(
+                panel.voice_reference.currentText(),
+                group.candidates[0].source_character,
+            )
             self.assertEqual(preview_service.generate.call_count, 1)
             self.assertEqual(len(panel._displayed), 1)
             panel.a_play.click()
-            panel.neither_button.click()
+            self.assertEqual(panel.a_play.text(), "Play generated preview")
+            panel.a_play.click()
+            self.assertIn("Playing", panel.status.text())
+            panel.voice_reference.setCurrentIndex(1)
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
             panel.a_play.click()
+            panel.a_play.click()
             self.assertEqual(player.play_bytes.call_count, 4)
+            panel.voice_reference.setCurrentIndex(0)
+            self.assertTrue(panel.a_use.isEnabled())
+            panel.voice_reference.setCurrentIndex(1)
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(preview_service.generate.call_count, 2)
             panel.a_use.click()
             self.assertIn("Saving", panel.status.text())
             pool.tasks.pop().run()
@@ -337,7 +359,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.application.processEvents()
             for index, reference in enumerate((reference_a, reference_b)):
                 if index:
-                    panel.neither_button.click()
+                    panel.voice_reference.setCurrentIndex(index)
                     panel.a_play.click()
                     pool.tasks.pop().run()
                     self.application.processEvents()
@@ -364,7 +386,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
 
             # Narrator selection stores "default", but its original uses its actual source.
-            panel.neither_button.click()
+            panel.voice_reference.setCurrentIndex(2)
             panel.a_play.click()
             self.application.processEvents()
             panel.a_original.click()
@@ -380,6 +402,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             )
             reference_b.write_bytes(b"changed")
             player.reset_mock()
+            panel.a_original.click()
             panel.a_original.click()
             player.play_bytes.assert_not_called()
             self.assertIn("changed", panel.status.text())
@@ -407,11 +430,8 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-            for _ in group.candidates:
-                panel.neither_button.click()
-                while pool.tasks:
-                    pool.tasks.pop(0).run()
-                    self.application.processEvents()
+            for index in range(panel.voice_reference.count()):
+                panel.voice_reference.setCurrentIndex(index)
             decisions.remember_many.assert_not_called()
             self.assertTrue(panel.isVisible())
 
@@ -434,7 +454,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-            self.assertTrue(panel.another_sample_button.isEnabled())
+            self.assertEqual(panel.preview_phrase.count(), 2)
             self.assertTrue(
                 all(
                     call.kwargs.get("text", group.sample_text) == group.sample_text
@@ -442,18 +462,29 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 )
             )
 
-            panel.another_sample_button.click()
+            panel.preview_phrase.setCurrentIndex(1)
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
 
-            self.assertIn(group.alternate_sample_text, panel.sample.text())
+            self.assertEqual(
+                panel.preview_phrase.currentText(), group.alternate_sample_text
+            )
+            self.assertEqual(
+                panel.preview_phrase.toolTip(), group.alternate_sample_text
+            )
             self.assertTrue(panel.a_use.isEnabled())
             alternate_calls = preview_service.generate.call_args_list[-1:]
             self.assertEqual(
                 [call.kwargs["text"] for call in alternate_calls],
                 [group.alternate_sample_text],
             )
+            panel.preview_phrase.setCurrentIndex(0)
+            self.assertEqual(panel.preview_phrase.currentText(), group.sample_text)
+            self.assertTrue(panel.a_use.isEnabled())
+            panel.preview_phrase.setCurrentIndex(1)
+            self.assertTrue(panel.a_use.isEnabled())
+            self.assertEqual(preview_service.generate.call_count, 2)
             panel.shutdown()
             panel.deleteLater()
 
@@ -484,9 +515,9 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             pool.tasks.pop().run()
             self.application.processEvents()
             self.assertEqual(pool.tasks, [])
-            panel.neither_button.click()
+            panel.voice_reference.setCurrentIndex(1)
             self.assertFalse(panel.a_use.isEnabled())
-            panel.neither_button.click()
+            panel.voice_reference.setCurrentIndex(0)
             panel.a_play.click()
             self.assertTrue(panel.a_use.isEnabled())
             self.assertEqual(previews.generate.call_count, 1)
@@ -520,11 +551,11 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-            panel.neither_button.click()
+            panel.voice_reference.setCurrentIndex(1)
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-            panel.another_sample_button.click()
+            panel.preview_phrase.setCurrentIndex(1)
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
@@ -557,7 +588,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.deleteLater)
             self.addCleanup(panel.shutdown)
             panel.start(plan)
-            panel.neither_button.click()
+            panel.voice_reference.setCurrentIndex(1)
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
@@ -605,6 +636,44 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.shutdown()
             panel.deleteLater()
 
+    def test_back_during_save_finishes_the_choice_before_returning(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            plan, group, _manifest = ambiguous_fixture(root)
+            decisions = Mock()
+            preview_service = Mock()
+            preview_service.generate.return_value = generated_preview(root)
+            pool = ManualThreadPool()
+            completed = Mock()
+            cancelled = Mock()
+            panel = VoiceAuditionPanel(
+                decisions,
+                preview_service=preview_service,
+                thread_pool=pool,
+                player=Mock(),
+            )
+            panel.completed.connect(completed)
+            panel.cancelled.connect(cancelled)
+            panel.start(plan, group_id=group.group_id)
+            panel.a_play.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            panel.a_use.click()
+
+            panel.cancel()
+
+            self.assertFalse(panel._cancel_requested)
+            self.assertIn("Finishing", panel.status.text())
+            pool.tasks.pop().run()
+            self.application.processEvents()
+            decisions.remember_many.assert_called_once_with(
+                ((group, group.candidates[0].source_id),)
+            )
+            self.assertEqual(completed.call_count, 1)
+            self.assertEqual(cancelled.call_count, 0)
+            panel.shutdown()
+            panel.deleteLater()
+
     def test_failed_preview_requires_an_explicit_choice_and_next_sample_can_be_accepted(
         self,
     ):
@@ -640,7 +709,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.assertFalse(panel.a_use.isEnabled())
             self.assertIn("failed", panel.status.text())
             decisions.remember_many.assert_not_called()
-            panel.neither_button.click()
+            panel.voice_reference.setCurrentIndex(1)
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
@@ -701,13 +770,13 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.shutdown)
 
             panel.start(plan)
-            for _candidate in group.candidates:
+            for index, _candidate in enumerate(group.candidates):
+                panel.voice_reference.setCurrentIndex(index)
                 panel.a_play.click()
                 pool.tasks.pop().run()
                 self.application.processEvents()
-                panel.neither_button.click()
-            self.assertIn("no original reference", panel.question.text())
-            self.assertIn("no recorded reference", panel.a_reason.text())
+            panel.voice_reference.setCurrentIndex(panel.voice_reference.count() - 1)
+            self.assertIn("No original reference", panel.a_reason.text())
             panel.choose_all_button.click()
             pool.tasks.pop().run()
             self.application.processEvents()
@@ -733,11 +802,11 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             self.addCleanup(panel.shutdown)
 
             panel.start(plan)
-            for _candidate in group.candidates:
+            for index, _candidate in enumerate(group.candidates):
+                panel.voice_reference.setCurrentIndex(index)
                 panel.a_play.click()
                 pool.tasks.pop().run()
                 self.application.processEvents()
-                panel.neither_button.click()
             panel.auto_button.click()
 
             self.assertIn("Retry", panel.status.text())
@@ -782,7 +851,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
                 panel._automatic_source_id(first), first.candidates[0].source_id
             )
 
-    def test_neither_previews_and_selects_configured_narrator(self):
+    def test_voice_selector_previews_and_selects_configured_narrator(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             plan, group, _manifest = ambiguous_fixture(root)
@@ -820,13 +889,13 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.a_play.click()
             pool.tasks.pop().run()
             self.application.processEvents()
-            for _ in group.candidates:
-                panel.neither_button.click()
-                panel.a_play.click()
-                pool.tasks.pop().run()
-                self.application.processEvents()
+            panel.voice_reference.setCurrentIndex(panel.voice_reference.count() - 1)
+            panel.a_play.click()
+            pool.tasks.pop().run()
+            self.application.processEvents()
 
-            self.assertEqual(panel.a_title.text(), "Narrator fallback")
+            self.assertEqual(panel.voice_reference.currentText(), "Narrator fallback")
+            self.assertEqual(panel.a_box.title(), "Original reference for narrator")
             self.assertTrue(panel.a_use.isEnabled())
             self.assertFalse(panel.a_original.isEnabled())
             panel.a_use.click()

@@ -234,6 +234,7 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         self.voice_panel.completed.connect(self._voice_auditions_completed)
         self.voice_panel.cancelled.connect(self._voice_auditions_cancelled)
+        self.voice_panel.saveFailed.connect(lambda: self.cancel_button.setEnabled(True))
         self.input_runner = LatestTaskRunner(self, thread_pool=thread_pool)
         self.input_runner.finished.connect(self._generation_input_finished)
         self.generation_runner = LatestTaskRunner(self, thread_pool=thread_pool)
@@ -829,6 +830,7 @@ class OfflineAudioPreparationDialog(QDialog):
         layout.addWidget(self.voice_confirmation, 1)
         layout.addWidget(self.progress_panel)
         layout.addWidget(self.copy_resume_error)
+        layout.addStretch()
         self.content_scroll = QScrollArea()
         self.content_scroll.setWidgetResizable(True)
         self.content_scroll.setHorizontalScrollBarPolicy(
@@ -926,6 +928,7 @@ class OfflineAudioPreparationDialog(QDialog):
             )
             return
         self._awaiting_voice_confirmation = False
+        self.step.setText("Step 2 of 4 - Inspect selected voice")
         self.voice_confirmation.hide()
         self.auditioning_voices = True
         self.inspecting_voice_plan = True
@@ -1135,6 +1138,7 @@ class OfflineAudioPreparationDialog(QDialog):
         return tuple(choices)
 
     def _show_voice_confirmation(self, plan: VoicePlan) -> None:
+        self.step.setText("Step 2 of 4 - Choose and confirm voices")
         local_voice_controls = self.game_narrator_chooser is None
         show_terms = (
             local_voice_controls and self.settings.speech_backend == "pocket-tts"
@@ -1228,7 +1232,7 @@ class OfflineAudioPreparationDialog(QDialog):
             )
         ]
         self.voice_route_summary.setText(
-            f"{len(exceptions)} of {len(groups)} voice roles use a substitute or need attention."
+            f"{len(exceptions)} of {len(groups)} voice roles use a substitute or have a suggested review."
             if exceptions
             else "No character voice substitutions. Narrator is shown above."
         )
@@ -1269,7 +1273,7 @@ class OfflineAudioPreparationDialog(QDialog):
             )
             references = len(group.reference_sha256s)
             status = (
-                "needs attention"
+                "review suggested"
                 if group.route == "needs-audition"
                 else "approved"
                 if group.resolution == "saved-player-decision"
