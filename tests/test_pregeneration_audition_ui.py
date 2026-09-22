@@ -931,6 +931,51 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
         self._voice_library_patch.stop()
         self._voice_library_directory.cleanup()
 
+    def _inspected_voice_dialog(self, root):
+        content = inspect_story_index(write_story_index(root / "content"))
+        plan, group, _manifest = ambiguous_fixture(root / "voice-fixture")
+        plan, group = with_second_candidate(plan, group)
+        resolved_group = replace(
+            group,
+            route="voice",
+            resolution="saved-player-decision",
+        )
+        resolved = replace(
+            plan,
+            groups=tuple(
+                resolved_group if value.group_id == group.group_id else value
+                for value in plan.groups
+            ),
+        )
+        voice_plan_store = Mock()
+        voice_plan_store.create.side_effect = (plan, resolved)
+        library = VoiceLibrary(root / "voice-library")
+        for name in ("rhiannon.wav", "centurion.wav"):
+            library.discover(
+                group.character,
+                Path(plan.voice_manifest).parent / "references" / name,
+            )
+        library.select("Narrator", route="voice", source_id="preset:marius")
+        decisions = VoiceDecisionStore(root / "decisions.json", voice_library=library)
+        preview_service = Mock()
+        preview_service.generate.return_value = generated_preview(root)
+        input_store = Mock()
+        input_store.materialize.return_value = Mock(ready_items=1)
+        pool = ManualThreadPool()
+        dialog = OfflineAudioPreparationDialog(
+            AppSettings(),
+            discovery=lambda: ContentDiscovery((content,)),
+            job_store=PregenerationJobStore(root / "jobs"),
+            voice_plan_store=voice_plan_store,
+            voice_decisions=decisions,
+            audition_service=preview_service,
+            preview_player=Mock(),
+            input_store=input_store,
+            thread_pool=pool,
+            voice_library=library,
+        )
+        return dialog, pool, plan, group, decisions, voice_plan_store
+
     def test_voice_confirmation_can_return_to_story_selection(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -968,49 +1013,8 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
     def test_inspected_automatic_voice_can_be_saved_and_replanned(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            content = inspect_story_index(write_story_index(root / "content"))
-            plan, group, _manifest = ambiguous_fixture(root / "voice-fixture")
-            plan, group = with_second_candidate(plan, group)
-            resolved_group = replace(
-                group,
-                route="voice",
-                resolution="saved-player-decision",
-            )
-            resolved = replace(
-                plan,
-                groups=tuple(
-                    resolved_group if value.group_id == group.group_id else value
-                    for value in plan.groups
-                ),
-            )
-            voice_plan_store = Mock()
-            voice_plan_store.create.side_effect = (plan, resolved)
-            library = VoiceLibrary(root / "voice-library")
-            for name in ("rhiannon.wav", "centurion.wav"):
-                library.discover(
-                    group.character,
-                    Path(plan.voice_manifest).parent / "references" / name,
-                )
-            library.select("Narrator", route="voice", source_id="preset:marius")
-            decisions = VoiceDecisionStore(
-                root / "decisions.json", voice_library=library
-            )
-            preview_service = Mock()
-            preview_service.generate.return_value = generated_preview(root)
-            input_store = Mock()
-            input_store.materialize.return_value = Mock(ready_items=1)
-            pool = ManualThreadPool()
-            dialog = OfflineAudioPreparationDialog(
-                AppSettings(),
-                discovery=lambda: ContentDiscovery((content,)),
-                job_store=PregenerationJobStore(root / "jobs"),
-                voice_plan_store=voice_plan_store,
-                voice_decisions=decisions,
-                audition_service=preview_service,
-                preview_player=Mock(),
-                input_store=input_store,
-                thread_pool=pool,
-                voice_library=library,
+            dialog, pool, plan, group, decisions, voice_plan_store = (
+                self._inspected_voice_dialog(root)
             )
 
             dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)

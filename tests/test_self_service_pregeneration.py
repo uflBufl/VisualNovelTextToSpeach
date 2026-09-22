@@ -218,6 +218,42 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             library_patch.stop()
         self._voice_library_directory.cleanup()
 
+    def _shared_voice_replan_dialog(self, root):
+        content = inspect_story_index(write_content(root / "content"))
+        manifest = write_manifest(root / "voices")
+        write_voice_references(manifest)
+        original = AppSettings(voice_manifest=str(manifest))
+        selected = original.updated(
+            speech_backend="moss-tts",
+            tts_model="selected/model",
+        )
+
+        def choose_narrator(*_args, **_kwargs):
+            remember_voice_binding(
+                self._voice_library,
+                CharacterVoiceRegistry.from_file(manifest),
+                "Narrator",
+                "character:centurion",
+                method="manual",
+            )
+            return selected
+
+        pool = ManualThreadPool()
+        dialog = OfflineAudioPreparationDialog(
+            original,
+            discovery=lambda: ContentDiscovery((content,)),
+            job_store=PregenerationJobStore(root / "jobs"),
+            voice_decisions=VoiceDecisionStore(root / "decisions.json"),
+            game_narrator_chooser=Mock(side_effect=choose_narrator),
+            thread_pool=pool,
+        )
+        return dialog, pool, selected
+
+    def _run_tasks(self, pool, count=2):
+        for _ in range(count):
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+
     def test_generation_exception_keeps_exact_copyable_details(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -540,40 +576,11 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
     def test_shared_voice_save_replans_selected_stories_with_the_saved_engine(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            content = inspect_story_index(write_content(root / "content"))
-            manifest = write_manifest(root / "voices")
-            write_voice_references(manifest)
-            original = AppSettings(voice_manifest=str(manifest))
-            selected = original.updated(
-                speech_backend="moss-tts",
-                tts_model="selected/model",
-            )
-
-            def choose_narrator(*_args, **_kwargs):
-                remember_voice_binding(
-                    self._voice_library,
-                    CharacterVoiceRegistry.from_file(manifest),
-                    "Narrator",
-                    "character:centurion",
-                    method="manual",
-                )
-                return selected
-
-            pool = ManualThreadPool()
-            dialog = OfflineAudioPreparationDialog(
-                original,
-                discovery=lambda: ContentDiscovery((content,)),
-                job_store=PregenerationJobStore(root / "jobs"),
-                voice_decisions=VoiceDecisionStore(root / "decisions.json"),
-                game_narrator_chooser=Mock(side_effect=choose_narrator),
-                thread_pool=pool,
-            )
+            dialog, pool, selected = self._shared_voice_replan_dialog(root)
             dialog.select_all_button.click()
             stories = dialog.selected_story_ids()
             dialog.continue_button.click()
-            for _ in range(2):
-                pool.tasks.pop(0).run()
-                self.application.processEvents()
+            self._run_tasks(pool)
             self.assertTrue(dialog._awaiting_voice_confirmation)
             self.assertFalse(dialog.stories.isEnabled())
             old_input = dialog.generation_input()
@@ -604,9 +611,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertEqual(dialog.model_choice.text(), "selected/model")
 
             dialog.continue_button.click()
-            for _ in range(2):
-                pool.tasks.pop(0).run()
-                self.application.processEvents()
+            self._run_tasks(pool)
             self.assertTrue(dialog._awaiting_voice_confirmation)
             self.assertEqual(dialog.voice_plan().synthesis_backend, "moss-tts")
             self.assertEqual(dialog.voice_plan().synthesis_model, "selected/model")
