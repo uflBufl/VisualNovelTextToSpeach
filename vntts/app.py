@@ -2828,29 +2828,11 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.controller.apply_settings(settings)
                 if cancelled():
                     return
-                if settings.speech_backend == "coqui-xtts":
-                    model = settings.tts_model
-                    if model is None:
-                        self.signals.onboarding_test_finished.emit(
-                            False,
-                            "Choose an XTTS model before running the setup test.",
-                        )
-                        return
-                    try:
-                        self.controller.model_assets.download(
-                            model,
-                            progress=self.signals.onboarding_test_progress.emit,
-                            cancel_event=cancel_event,
-                        )
-                    except ModelDownloadCancelled as error:
-                        self.signals.onboarding_test_finished.emit(False, str(error))
-                        return
-                    except Exception as error:
-                        self.signals.onboarding_test_finished.emit(
-                            False,
-                            f"Model download or verification failed: {error}",
-                        )
-                        return
+                if (
+                    settings.speech_backend == "coqui-xtts"
+                    and not self._prepare_onboarding_xtts_model(settings, cancel_event)
+                ):
+                    return
                 if cancelled():
                     return
                 self.last_controller_error = None
@@ -2898,6 +2880,31 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                     self._onboarding_test_active = False
 
         Thread(target=run_test, daemon=True).start()
+
+    def _prepare_onboarding_xtts_model(
+        self, settings: AppSettings, cancel_event: Event
+    ) -> bool:
+        model = settings.tts_model
+        if model is None:
+            self.signals.onboarding_test_finished.emit(
+                False, "Choose an XTTS model before running the setup test."
+            )
+            return False
+        try:
+            self.controller.model_assets.download(
+                model,
+                progress=self.signals.onboarding_test_progress.emit,
+                cancel_event=cancel_event,
+            )
+        except ModelDownloadCancelled as error:
+            self.signals.onboarding_test_finished.emit(False, str(error))
+            return False
+        except Exception as error:
+            self.signals.onboarding_test_finished.emit(
+                False, f"Model download or verification failed: {error}"
+            )
+            return False
+        return True
 
     def cancel_onboarding_download(self) -> None:
         self.onboarding_cancel_event.set()
