@@ -11,8 +11,8 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import partial
 from pathlib import Path
+from typing import Iterator, NotRequired, TypeAlias, TypedDict, TypeGuard
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
@@ -47,7 +47,6 @@ from vntts.authoring.terminal_conflict_records import (
     require_terminal_conflict_file,
     require_terminal_conflict_sha256,
     require_terminal_conflict_text,
-    require_terminal_conflict_timestamp,
 )
 from vntts.authoring.workbench import (
     AuthoringWorkbenchError,
@@ -67,21 +66,129 @@ NEITHER_ACCEPTABLE = "neither_acceptable"
 PROGRESS_LEASE_SCHEMA = "vntts.authoring-terminal-conflict-progress-lease"
 PROGRESS_LEASE_VERSION = 1
 
+JsonDocument: TypeAlias = dict[str, object]
+
+
+class TerminalConflictReviewAuthority(TypedDict):
+    queue_sha256: str
+    state_sha256: str
+    item_sha256: str
+    audio_sha256: str
+
+
+class TerminalConflictReviewSourceAuthority(TypedDict):
+    workspace_id: str
+    state: str
+    queue: str
+    review_authority: TerminalConflictReviewAuthority
+
+
+class TerminalConflictReviewCandidate(TypedDict):
+    candidate_id: str
+    authority: str
+    audio: str
+    audio_sha256: str
+    sample_rate: int
+    sample_count: int
+    source_authorities: list[TerminalConflictReviewSourceAuthority]
+    workspace_ids: list[str]
+
+
+class _TerminalConflictCandidateDraft(TypedDict):
+    authority: str
+    audio_sha256: str
+    workspace_ids: list[str]
+    source_authorities: list[TerminalConflictReviewSourceAuthority]
+    audio_bytes: NotRequired[bytes]
+
+
+class TerminalConflictReviewCase(TypedDict):
+    case_id: str
+    queue_id: str
+    line_id: str
+    queue_record_sha256: str
+    text_sha256: str
+    speaker: str
+    voice_character: str
+    text: str
+    candidates: list[TerminalConflictReviewCandidate]
+
+
+class TerminalConflictReviewDocument(TypedDict):
+    schema: str
+    schema_version: int
+    review_id: str
+    source_reconciliation: str
+    source_reconciliation_sha256: str
+    source_report_id: str
+    policy: dict[str, str]
+    case_count: int
+    candidate_count: int
+    cases: list[TerminalConflictReviewCase]
+
+
+class TerminalConflictReviewDecision(TypedDict):
+    case_id: str
+    decision: str
+    reviewed_at: str
+
+
+class TerminalConflictReviewProgress(TypedDict):
+    schema: str
+    schema_version: int
+    review_id: str
+    updated_at: str
+    decisions: list[TerminalConflictReviewDecision]
+    carry_forward: NotRequired[dict[str, object]]
+
+
+def _is_review_document(value: object) -> TypeGuard[TerminalConflictReviewDocument]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _is_progress_document(value: object) -> TypeGuard[TerminalConflictReviewProgress]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
 
 class TerminalConflictReviewError(RuntimeError):
     """Terminal authority conflict evidence is invalid or changed."""
 
 
-_contained_file = partial(
-    require_terminal_conflict_file, error_type=TerminalConflictReviewError
-)
-_text = partial(require_terminal_conflict_text, error_type=TerminalConflictReviewError)
-_sha256 = partial(
-    require_terminal_conflict_sha256, error_type=TerminalConflictReviewError
-)
-_aware_timestamp = partial(
-    require_terminal_conflict_timestamp, error_type=TerminalConflictReviewError
-)
+def _contained_file(root: str | Path, value: object, label: str) -> Path:
+    return Path(
+        require_terminal_conflict_file(
+            root, value, label, error_type=TerminalConflictReviewError
+        )
+    )
+
+
+def _text(value: object, label: str) -> str:
+    return str(
+        require_terminal_conflict_text(
+            value, label, error_type=TerminalConflictReviewError
+        )
+    )
+
+
+def _sha256(value: object, label: str) -> str:
+    return str(
+        require_terminal_conflict_sha256(
+            value, label, error_type=TerminalConflictReviewError
+        )
+    )
+
+
+def _text_list(value: object, label: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TerminalConflictReviewError(f"{label} is invalid")
+    return list(value)
+
+
+def _aware_timestamp(value: object, label: str) -> datetime:
+    parsed = datetime.fromisoformat(_text(value, label))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise TerminalConflictReviewError(f"{label} requires a timezone")
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -94,14 +201,14 @@ class TerminalConflictReview:
     created: bool = False
 
     @property
-    def review(self):
+    def review(self) -> Path:
         return self.directory / "review.json"
 
     @property
-    def progress(self):
+    def progress(self) -> Path:
         return self.directory / "progress.json"
 
-    def to_dict(self):
+    def to_dict(self) -> JsonDocument:
         return {
             "directory": str(self.directory),
             "review": str(self.review),
@@ -114,7 +221,9 @@ class TerminalConflictReview:
         }
 
 
-def publish_terminal_conflict_review(reconciliation_path, output_directory):
+def publish_terminal_conflict_review(
+    reconciliation_path: str | Path, output_directory: str | Path
+) -> TerminalConflictReview:
     """Publish exact distinct WAV choices for every current terminal conflict."""
     reconciliation_path = Path(reconciliation_path).expanduser().resolve()
     output = Path(output_directory).expanduser().resolve()
@@ -134,27 +243,37 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
         raise TerminalConflictReviewError(
             "Authoring reconciliation changed while it was loaded"
         )
-    conflicts = report["terminal_conflicts"]
+    conflicts = _objects(report.get("terminal_conflicts"), "terminal conflicts")
     if not conflicts:
         raise TerminalConflictReviewError(
             "Authoring reconciliation has no terminal conflicts"
         )
-    workspace_records = {value["workspace_id"]: value for value in report["workspaces"]}
+    workspaces = _objects(report.get("workspaces"), "reconciliation workspaces")
+    workspace_records = {
+        _text(value.get("workspace_id"), "Workspace ID"): value
+        for value in workspaces
+    }
     workspace_paths = {
-        workspace_id: Path(value["workspace"]).resolve()
+        workspace_id: Path(_text(value.get("workspace"), "Workspace path")).resolve()
         for workspace_id, value in workspace_records.items()
     }
-    if len(workspace_records) != len(report["workspaces"]):
+    if len(workspace_records) != len(workspaces):
         raise TerminalConflictReviewError("Reconciliation workspaces are duplicated")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output_exists = output.exists() or output.is_symlink()
     with staged_directory(output.parent, prefix=f".{output.name}.staging-") as staging:
-        workspace_queue_ids = {}
+        workspace_queue_ids: dict[str, set[str]] = {}
         for conflict in conflicts:
-            for occurrence in conflict["occurrences"]:
-                workspace_queue_ids.setdefault(occurrence["workspace_id"], set()).add(
-                    conflict["queue_id"]
+            queue_id = _text(conflict.get("queue_id"), "Conflict queue ID")
+            for occurrence in _objects(
+                conflict.get("occurrences"), "terminal conflict occurrences"
+            ):
+                workspace_queue_ids.setdefault(
+                    _text(occurrence.get("workspace_id"), "Conflict workspace ID"),
+                    set(),
+                ).add(
+                    queue_id
                 )
         review_rows = {}
         for workspace_id, queue_ids in sorted(workspace_queue_ids.items()):
@@ -178,8 +297,10 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
         cases = []
         candidate_total = 0
         for position, conflict in enumerate(conflicts, start=1):
-            queue_id = conflict["queue_id"]
-            occurrences = conflict["occurrences"]
+            queue_id = _text(conflict.get("queue_id"), "Conflict queue ID")
+            occurrences = _objects(
+                conflict.get("occurrences"), "terminal conflict occurrences"
+            )
             if len({value["queue_record_sha256"] for value in occurrences}) != 1:
                 raise TerminalConflictReviewError(
                     f"Conflict changes queue content and cannot be audio-reviewed: {queue_id}"
@@ -188,10 +309,15 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
                 raise TerminalConflictReviewError(
                     f"Conflict changes text and cannot be audio-reviewed: {queue_id}"
                 )
-            candidates = {}
-            shared = None
+            candidates: dict[tuple[str, str], _TerminalConflictCandidateDraft] = {}
+            shared: tuple[str, str, str, str] | None = None
             for occurrence in occurrences:
-                workspace_id = occurrence["workspace_id"]
+                workspace_id = _text(
+                    occurrence.get("workspace_id"), "Conflict workspace ID"
+                )
+                authority_name = _text(
+                    occurrence.get("authority"), "Conflict authority"
+                )
                 workspace = workspace_paths.get(workspace_id)
                 if workspace is None:
                     raise TerminalConflictReviewError(
@@ -201,7 +327,7 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
                 expected_review = {
                     "approved": "approved",
                     "rejected": "rejected",
-                }.get(occurrence["authority"])
+                }.get(authority_name)
                 if (
                     expected_review is None
                     or row.review_status != expected_review
@@ -209,6 +335,8 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
                     or hashlib.sha256(row.text.encode("utf-8")).hexdigest()
                     != occurrence["text_sha256"]
                     or row.authority is None
+                    or row.state is None
+                    or row.queue is None
                 ):
                     raise TerminalConflictReviewError(
                         f"Conflict authority changed: {workspace_id}/{queue_id}"
@@ -230,11 +358,11 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
                     raise TerminalConflictReviewError(
                         f"Conflict WAV changed: {workspace_id}/{queue_id}"
                     )
-                identity = (occurrence["authority"], digest)
+                identity = (authority_name, digest)
                 candidate = candidates.setdefault(
                     identity,
                     {
-                        "authority": occurrence["authority"],
+                        "authority": authority_name,
                         "audio_sha256": digest,
                         "audio_bytes": audio,
                         "workspace_ids": [],
@@ -267,6 +395,10 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
                     "Terminal conflict review requires exactly two distinct WAVs: "
                     f"{queue_id}"
                 )
+            if shared is None:
+                raise TerminalConflictReviewError(
+                    f"Conflict display identity changed: {queue_id}"
+                )
             line_id, speaker, voice_character, text = shared
             stable_candidates = []
             for candidate_position, ((_authority, digest), candidate) in enumerate(
@@ -286,7 +418,12 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
                 )
                 destination = staging / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_bytes(candidate.pop("audio_bytes"))
+                audio_bytes = candidate.pop("audio_bytes", None)
+                if audio_bytes is None:
+                    raise TerminalConflictReviewError(
+                        f"Conflict WAV changed while copied: {queue_id}"
+                    )
+                destination.write_bytes(audio_bytes)
                 if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
                     raise TerminalConflictReviewError(
                         f"Conflict WAV changed while copied: {queue_id}"
@@ -354,7 +491,9 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
         atomic_write_json(staging / "review.json", document, sort_keys=True)
         load_terminal_conflict_review(staging)
         assert_authority_snapshot(report_snapshot, "authoring reconciliation")
-        _assert_source_authorities(document)
+        _assert_source_authorities(
+            validate_terminal_conflict_review_document(document, staging)
+        )
         if output_exists:
             existing = load_terminal_conflict_review(output)
             if existing.review_id != review_id:
@@ -373,7 +512,7 @@ def publish_terminal_conflict_review(reconciliation_path, output_directory):
     )
 
 
-def load_terminal_conflict_review(directory):
+def load_terminal_conflict_review(directory: str | Path) -> TerminalConflictReview:
     """Load one immutable conflict review and its optional decision progress."""
     directory = _review_directory(directory)
     review_path = directory / "review.json"
@@ -401,7 +540,9 @@ def load_terminal_conflict_review(directory):
     )
 
 
-def load_terminal_conflict_review_document(directory):
+def load_terminal_conflict_review_document(
+    directory: str | Path,
+) -> TerminalConflictReviewDocument:
     """Return one exact validated immutable review document."""
     directory = _review_directory(directory)
     try:
@@ -417,7 +558,9 @@ def load_terminal_conflict_review_document(directory):
     return document
 
 
-def load_terminal_conflict_candidate_audio(directory, case_id, candidate_id):
+def load_terminal_conflict_candidate_audio(
+    directory: str | Path, case_id: str, candidate_id: str
+) -> bytes:
     """Return exact copied WAV bytes for one displayed blind candidate."""
     directory = _review_directory(directory)
     document = load_terminal_conflict_review_document(directory)
@@ -441,10 +584,12 @@ def load_terminal_conflict_candidate_audio(directory, case_id, candidate_id):
     return payload
 
 
-def validate_terminal_conflict_review_document(document, directory):
+def validate_terminal_conflict_review_document(
+    document: object, directory: str | Path
+) -> TerminalConflictReviewDocument:
     value = copy.deepcopy(document)
     if (
-        not isinstance(value, dict)
+        not _is_review_document(value)
         or value.get("schema") != TERMINAL_CONFLICT_REVIEW_SCHEMA
         or value.get("schema_version") != TERMINAL_CONFLICT_REVIEW_VERSION
     ):
@@ -620,8 +765,8 @@ def validate_terminal_conflict_review_document(document, directory):
                     raise TerminalConflictReviewError(
                         "Terminal conflict source paths must be absolute"
                     )
-                authority = source["review_authority"]
-                if not isinstance(authority, dict) or set(authority) != {
+                review_authority = source["review_authority"]
+                if not isinstance(review_authority, dict) or set(review_authority) != {
                     "queue_sha256",
                     "state_sha256",
                     "item_sha256",
@@ -630,7 +775,7 @@ def validate_terminal_conflict_review_document(document, directory):
                     raise TerminalConflictReviewError(
                         "Terminal conflict review authority is malformed"
                     )
-                for key, authority_digest in authority.items():
+                for key, authority_digest in review_authority.items():
                     _sha256(
                         authority_digest,
                         f"Terminal conflict review authority {key}",
@@ -651,7 +796,9 @@ def validate_terminal_conflict_review_document(document, directory):
     return value
 
 
-def load_terminal_conflict_review_progress(directory):
+def load_terminal_conflict_review_progress(
+    directory: str | Path,
+) -> TerminalConflictReviewProgress:
     directory = _review_directory(directory)
     try:
         review_snapshot = capture_authority_file(
@@ -673,7 +820,13 @@ def load_terminal_conflict_review_progress(directory):
     return validated
 
 
-def record_terminal_conflict_decision(directory, case_id, decision, *, overwrite=False):
+def record_terminal_conflict_decision(
+    directory: str | Path,
+    case_id: str,
+    decision: str,
+    *,
+    overwrite: bool = False,
+) -> TerminalConflictReviewProgress:
     """Atomically record one human winner without changing source workspaces."""
     directory = _review_directory(directory)
     with _progress_lock(directory):
@@ -720,7 +873,7 @@ def record_terminal_conflict_decision(directory, case_id, decision, *, overwrite
         if existing is not None and not overwrite:
             raise TerminalConflictReviewError("Terminal conflict is already decided")
         now = datetime.now(timezone.utc).isoformat()
-        replacement = {
+        replacement: TerminalConflictReviewDecision = {
             "case_id": case_id,
             "decision": decision,
             "reviewed_at": now,
@@ -746,7 +899,9 @@ def record_terminal_conflict_decision(directory, case_id, decision, *, overwrite
         return load_terminal_conflict_review_progress(directory)
 
 
-def carry_terminal_conflict_decisions(source_directory, target_directory):
+def carry_terminal_conflict_decisions(
+    source_directory: str | Path, target_directory: str | Path
+) -> TerminalConflictReviewProgress:
     """Carry content-identical decisions into a current-authority review.
 
     A completed decision belongs to the immutable candidate copies in the
@@ -853,7 +1008,9 @@ def carry_terminal_conflict_decisions(source_directory, target_directory):
         return load_terminal_conflict_review_progress(target_directory)
 
 
-def carry_approved_cohort_terminal_conflict_decisions(directory):
+def carry_approved_cohort_terminal_conflict_decisions(
+    directory: str | Path,
+) -> TerminalConflictReviewProgress:
     """Reuse exact human cohort approvals for matching current candidates.
 
     Rejections are intentionally not promoted: rejecting one cohort WAV does
@@ -870,8 +1027,12 @@ def carry_approved_cohort_terminal_conflict_decisions(directory):
     if (directory / "progress.json").exists():
         progress = load_terminal_conflict_review_progress(directory)
     else:
-        progress = {"decisions": []}
-    completed = {decision["case_id"] for decision in progress["decisions"]}
+        progress = None
+    completed = (
+        {decision["case_id"] for decision in progress["decisions"]}
+        if progress is not None
+        else set()
+    )
     carried = []
     for case in review["cases"]:
         if case["case_id"] in completed:
@@ -899,10 +1060,16 @@ def carry_approved_cohort_terminal_conflict_decisions(directory):
         raise TerminalConflictReviewError(
             "No exact approved cohort decisions can be carried"
         )
+    if progress is None:
+        raise TerminalConflictReviewError(
+            "No terminal conflict decisions were recorded"
+        )
     return progress
 
 
-def _candidate_has_exact_cohort_approval(case, candidate):
+def _candidate_has_exact_cohort_approval(
+    case: TerminalConflictReviewCase, candidate: TerminalConflictReviewCandidate
+) -> bool:
     for source in candidate["source_authorities"]:
         try:
             snapshot = capture_authority_file(
@@ -912,7 +1079,10 @@ def _candidate_has_exact_cohort_approval(case, candidate):
             if snapshot.sha256 != authority["state_sha256"]:
                 continue
             state = snapshot.json_document("cohort-approved terminal conflict state")
-            item = state.get("items", {}).get(case["queue_id"])
+            items = state.get("items")
+            if not isinstance(items, dict):
+                continue
+            item = items.get(case["queue_id"])
             if (
                 not isinstance(item, dict)
                 or canonical_document_sha256(item) != authority["item_sha256"]
@@ -969,22 +1139,28 @@ def _candidate_has_exact_cohort_approval(case, candidate):
     return False
 
 
-def validate_terminal_conflict_review_progress_document(progress, review):
+def validate_terminal_conflict_review_progress_document(
+    progress: object, review: TerminalConflictReviewDocument
+) -> TerminalConflictReviewProgress:
     """Return validated mutable decisions for an already validated review."""
     return _validate_progress(progress, review)
 
 
-def assert_terminal_conflict_progress_carry_forward(progress, review):
+def assert_terminal_conflict_progress_carry_forward(
+    progress: TerminalConflictReviewProgress, review: TerminalConflictReviewDocument
+) -> None:
     """Recheck an optional predecessor decision ledger and its authorities."""
     _assert_progress_carry_forward(progress, review)
 
 
-def assert_terminal_conflict_review_source_authorities(review):
+def assert_terminal_conflict_review_source_authorities(
+    review: TerminalConflictReviewDocument,
+) -> None:
     """Require every source state, queue, item and WAV to match the review."""
     _assert_source_authorities(review)
 
 
-def _assert_source_authorities(review):
+def _assert_source_authorities(review: TerminalConflictReviewDocument) -> None:
     try:
         report_snapshot = capture_authority_file(
             review["source_reconciliation"], "source reconciliation"
@@ -999,7 +1175,10 @@ def _assert_source_authorities(review):
         raise TerminalConflictReviewError(
             "Source reconciliation changed after conflict review publication"
         )
-    workspace_records = {value["workspace_id"]: value for value in report["workspaces"]}
+    workspace_records = {
+        _text(value.get("workspace_id"), "Workspace ID"): value
+        for value in _objects(report.get("workspaces"), "reconciliation workspaces")
+    }
     for case in review["cases"]:
         for candidate in case["candidates"]:
             for source in candidate["source_authorities"]:
@@ -1009,7 +1188,9 @@ def _assert_source_authorities(review):
                     raise TerminalConflictReviewError(
                         "Terminal conflict workspace disappeared from reconciliation"
                     )
-                workspace = Path(workspace_record["workspace"]).resolve()
+                workspace = Path(
+                    _text(workspace_record.get("workspace"), "Workspace path")
+                ).resolve()
                 expected_state = (
                     workspace / "generated-audio" / "generation-state.json"
                 ).resolve()
@@ -1046,14 +1227,22 @@ def _assert_source_authorities(review):
     assert_authority_snapshot(report_snapshot, "source reconciliation")
 
 
-def _validate_progress(progress, review):
+def _objects(value: object, label: str) -> list[JsonDocument]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise TerminalConflictReviewError(f"{label.capitalize()} are malformed")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _validate_progress(
+    progress: object, review: TerminalConflictReviewDocument
+) -> TerminalConflictReviewProgress:
     value = copy.deepcopy(progress)
     version = value.get("schema_version") if isinstance(value, dict) else None
     required = {"schema", "schema_version", "review_id", "updated_at", "decisions"}
     if version == TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION:
         required.add("carry_forward")
     if (
-        not isinstance(value, dict)
+        not _is_progress_document(value)
         or value.get("schema") != TERMINAL_CONFLICT_PROGRESS_SCHEMA
         or version not in SUPPORTED_TERMINAL_CONFLICT_PROGRESS_VERSIONS
         or value.get("review_id") != review["review_id"]
@@ -1123,11 +1312,21 @@ def _validate_progress(progress, review):
     return value
 
 
-def _assert_progress_carry_forward(progress, review, seen=None):
+def _assert_progress_carry_forward(
+    progress: TerminalConflictReviewProgress,
+    review: TerminalConflictReviewDocument,
+    seen: set[tuple[str, str]] | None = None,
+) -> None:
     if progress.get("schema_version") != TERMINAL_CONFLICT_PROGRESS_CARRY_VERSION:
         return
     carry = progress["carry_forward"]
-    key = (carry["source_review"], carry["source_progress"])
+    source_review_path = _text(
+        carry["source_review"], "Terminal conflict carry-forward source review"
+    )
+    source_progress_path = _text(
+        carry["source_progress"], "Terminal conflict carry-forward source progress"
+    )
+    key = (source_review_path, source_progress_path)
     observed = set() if seen is None else set(seen)
     if key in observed:
         raise TerminalConflictReviewError(
@@ -1136,14 +1335,15 @@ def _assert_progress_carry_forward(progress, review, seen=None):
     observed.add(key)
     try:
         review_snapshot = capture_authority_file(
-            carry["source_review"], "carried terminal conflict review"
+            source_review_path, "carried terminal conflict review"
         )
         progress_snapshot = capture_authority_file(
-            carry["source_progress"], "carried terminal conflict progress"
+            source_progress_path, "carried terminal conflict progress"
         )
-        if (
-            review_snapshot.sha256 != carry["source_review_sha256"]
-            or progress_snapshot.sha256 != carry["source_progress_sha256"]
+        if review_snapshot.sha256 != _sha256(
+            carry["source_review_sha256"], "Carried review SHA-256"
+        ) or progress_snapshot.sha256 != _sha256(
+            carry["source_progress_sha256"], "Carried progress SHA-256"
         ):
             raise TerminalConflictReviewError(
                 "Carried terminal conflict authority changed"
@@ -1158,7 +1358,9 @@ def _assert_progress_carry_forward(progress, review, seen=None):
         )
     except AuthoringAuthorityError as error:
         raise TerminalConflictReviewError(str(error)) from error
-    if source_review["review_id"] != carry["source_review_id"]:
+    if source_review["review_id"] != _sha256(
+        carry["source_review_id"], "Terminal conflict source review ID"
+    ):
         raise TerminalConflictReviewError(
             "Carried terminal conflict review identity changed"
         )
@@ -1170,7 +1372,7 @@ def _assert_progress_carry_forward(progress, review, seen=None):
     target_decisions = {
         decision["case_id"]: decision for decision in progress["decisions"]
     }
-    for case_id in carry["case_ids"]:
+    for case_id in _text_list(carry["case_ids"], "Terminal conflict carried case IDs"):
         source_case = source_cases.get(case_id)
         target_case = target_cases.get(case_id)
         if (
@@ -1188,7 +1390,7 @@ def _assert_progress_carry_forward(progress, review, seen=None):
     assert_authority_snapshot(progress_snapshot, "carried terminal conflict progress")
 
 
-def _review_directory(directory):
+def _review_directory(directory: str | Path) -> Path:
     argument = Path(directory).expanduser()
     if argument.is_symlink():
         raise TerminalConflictReviewError(
@@ -1208,7 +1410,7 @@ def _review_directory(directory):
 
 
 @contextmanager
-def _progress_lock(directory):
+def _progress_lock(directory: Path) -> Iterator[None]:
     path = directory / ".progress.lock"
     guard_path = directory / ".progress.lock.guard"
     lease = {

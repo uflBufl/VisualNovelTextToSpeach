@@ -5,8 +5,8 @@ from __future__ import annotations
 import copy
 from collections import Counter
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path, PurePosixPath
+from typing import TypeAlias, TypedDict, TypeGuard
 
 from vntts_artifacts.atomic_io import atomic_write_json
 
@@ -45,6 +45,74 @@ TERMINAL_CONFLICT_SUCCESSOR_SCHEMA = (
 )
 TERMINAL_CONFLICT_SUCCESSOR_VERSION = 1
 
+JsonDocument: TypeAlias = dict[str, object]
+
+
+class _HistoricalOccurrence(TypedDict):
+    workspace_id: str
+    authority: str
+    line_id: str
+    text_sha256: str
+    queue_record_sha256: str
+
+
+class _ResolutionProjection(TypedDict):
+    case_id: str
+    queue_id: str
+    line_id: str
+    queue_record_sha256: str
+    text_sha256: str
+    candidate_ids: list[str]
+    reviewed_at: str
+    decision: str
+    selected_candidate_id: str | None
+    selected_authority: str | None
+    selected_audio: str | None
+    selected_audio_sha256: str | None
+    sample_rate: int | None
+    sample_count: int | None
+
+
+class _SuccessorRecord(TypedDict):
+    queue_id: str
+    next_action: str
+    historical_conflict: object
+    resolution: object
+
+
+class _SuccessorSummary(TypedDict):
+    historical_conflict_count: int
+    resolved_conflict_count: int
+    unresolved_conflict_count: int
+    action_counts: dict[str, int]
+
+
+class TerminalConflictSuccessorDocument(TypedDict):
+    schema: str
+    schema_version: int
+    successor_id: str
+    source_reconciliation: str
+    source_reconciliation_sha256: str
+    source_report_id: str
+    terminal_resolution: str
+    terminal_resolution_sha256: str
+    terminal_resolution_id: str
+    policy: dict[str, str]
+    summary: _SuccessorSummary
+    resolved_terminal_conflicts: list[_SuccessorRecord]
+    unresolved_terminal_conflicts: list[object]
+
+
+def _is_successor_document(
+    value: object,
+) -> TypeGuard[TerminalConflictSuccessorDocument]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _is_resolution_projection(value: object) -> TypeGuard[_ResolutionProjection]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
 APPLY_APPROVED_OUTCOME = "apply_selected_approved_outcome"
 RETAIN_EXPLICIT_REJECTION = "retain_explicit_rejection"
 NEW_REPAIR_HYPOTHESIS = "new_repair_hypothesis_required"
@@ -59,18 +127,40 @@ class TerminalConflictSuccessorError(RuntimeError):
     """A resolution cannot safely project a successor reconciliation."""
 
 
-_text = partial(
-    require_terminal_conflict_text, error_type=TerminalConflictSuccessorError
-)
-_directory = partial(
-    require_terminal_conflict_directory, error_type=TerminalConflictSuccessorError
-)
-_sha256 = partial(
-    require_terminal_conflict_sha256, error_type=TerminalConflictSuccessorError
-)
-_aware_timestamp = partial(
-    require_terminal_conflict_timestamp, error_type=TerminalConflictSuccessorError
-)
+def _text(value: object, label: str) -> str:
+    return str(
+        require_terminal_conflict_text(
+            value, label, error_type=TerminalConflictSuccessorError
+        )
+    )
+
+
+def _directory(value: str | Path, label: str) -> Path:
+    return Path(
+        require_terminal_conflict_directory(
+            value, label, error_type=TerminalConflictSuccessorError
+        )
+    )
+
+
+def _sha256(value: object, label: str) -> str:
+    return str(
+        require_terminal_conflict_sha256(
+            value, label, error_type=TerminalConflictSuccessorError
+        )
+    )
+
+
+def _aware_timestamp(value: object, label: str) -> object:
+    return require_terminal_conflict_timestamp(
+        value, label, error_type=TerminalConflictSuccessorError
+    )
+
+
+def _objects(value: object, label: str) -> list[JsonDocument]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise TerminalConflictSuccessorError(f"{label.capitalize()} are malformed")
+    return [item for item in value if isinstance(item, dict)]
 
 
 @dataclass(frozen=True)
@@ -78,14 +168,14 @@ class TerminalConflictSuccessor:
     directory: Path
     successor_id: str
     resolved_count: int
-    action_counts: dict
+    action_counts: dict[str, int]
     created: bool = False
 
     @property
-    def successor(self):
+    def successor(self) -> Path:
         return self.directory / "successor.json"
 
-    def to_dict(self):
+    def to_dict(self) -> JsonDocument:
         return {
             "directory": str(self.directory),
             "successor": str(self.successor),
@@ -97,10 +187,10 @@ class TerminalConflictSuccessor:
 
 
 def publish_terminal_conflict_successor(
-    reconciliation_path,
-    resolution_directory,
-    output_directory,
-):
+    reconciliation_path: str | Path,
+    resolution_directory: str | Path,
+    output_directory: str | Path,
+) -> TerminalConflictSuccessor:
     """Publish a read-only successor that retains every historical occurrence."""
     reconciliation_path = Path(reconciliation_path).expanduser().resolve()
     resolution_root = _directory(resolution_directory, "terminal conflict resolution")
@@ -137,7 +227,10 @@ def publish_terminal_conflict_successor(
             "Terminal conflict resolution belongs to another reconciliation"
         )
 
-    conflicts = {item["queue_id"]: item for item in report["terminal_conflicts"]}
+    conflicts = {
+        _text(item.get("queue_id"), "Conflict queue ID"): item
+        for item in _objects(report.get("terminal_conflicts"), "terminal conflicts")
+    }
     resolutions = {item["queue_id"]: item for item in resolution["resolutions"]}
     if not conflicts or set(conflicts) != set(resolutions):
         raise TerminalConflictSuccessorError(
@@ -145,11 +238,13 @@ def publish_terminal_conflict_successor(
         )
 
     resolved = []
-    actions = Counter()
+    actions: Counter[str] = Counter()
     for queue_id in sorted(conflicts):
         conflict = conflicts[queue_id]
         decision = resolutions[queue_id]
-        occurrences = conflict["occurrences"]
+        occurrences = _objects(
+            conflict.get("occurrences"), "terminal conflict occurrences"
+        )
         queue_records = {item["queue_record_sha256"] for item in occurrences}
         text_hashes = {item["text_sha256"] for item in occurrences}
         line_ids = {item["line_id"] for item in occurrences}
@@ -246,7 +341,9 @@ def publish_terminal_conflict_successor(
     )
 
 
-def load_terminal_conflict_successor(directory):
+def load_terminal_conflict_successor(
+    directory: str | Path,
+) -> TerminalConflictSuccessor:
     root = _directory(directory, "terminal conflict successor")
     document = load_terminal_conflict_successor_document(root)
     return TerminalConflictSuccessor(
@@ -258,7 +355,9 @@ def load_terminal_conflict_successor(directory):
     )
 
 
-def load_terminal_conflict_successor_document(directory):
+def load_terminal_conflict_successor_document(
+    directory: str | Path,
+) -> TerminalConflictSuccessorDocument:
     root = _directory(directory, "terminal conflict successor")
     try:
         snapshot = capture_authority_file(
@@ -273,7 +372,9 @@ def load_terminal_conflict_successor_document(directory):
     return document
 
 
-def validate_terminal_conflict_successor_document(document, directory):
+def validate_terminal_conflict_successor_document(
+    document: object, directory: str | Path
+) -> TerminalConflictSuccessorDocument:
     value = copy.deepcopy(document)
     fields = {
         "schema",
@@ -291,7 +392,7 @@ def validate_terminal_conflict_successor_document(document, directory):
         "unresolved_terminal_conflicts",
     }
     if (
-        not isinstance(value, dict)
+        not _is_successor_document(value)
         or set(value) != fields
         or value.get("schema") != TERMINAL_CONFLICT_SUCCESSOR_SCHEMA
         or value.get("schema_version") != TERMINAL_CONFLICT_SUCCESSOR_VERSION
@@ -313,13 +414,13 @@ def validate_terminal_conflict_successor_document(document, directory):
             raise TerminalConflictSuccessorError(
                 "Terminal conflict successor source paths must be absolute"
             )
-    for field in (
-        "source_reconciliation_sha256",
-        "source_report_id",
-        "terminal_resolution_sha256",
-        "terminal_resolution_id",
+    for digest, label in (
+        (value["source_reconciliation_sha256"], "Source Reconciliation Sha256"),
+        (value["source_report_id"], "Source Report Id"),
+        (value["terminal_resolution_sha256"], "Terminal Resolution Sha256"),
+        (value["terminal_resolution_id"], "Terminal Resolution Id"),
     ):
-        _sha256(value[field], field.replace("_", " ").title())
+        _sha256(digest, label)
     if value["policy"] != {
         "historical_occurrences": "retained",
         "resolution_match": "exact queue, line, text and queue-record identity",
@@ -338,7 +439,7 @@ def validate_terminal_conflict_successor_document(document, directory):
             "Terminal conflict successor resolutions are empty"
         )
     seen = set()
-    counts = Counter()
+    counts: Counter[str] = Counter()
     for record in records:
         if not isinstance(record, dict) or set(record) != {
             "queue_id",
@@ -409,7 +510,9 @@ def validate_terminal_conflict_successor_document(document, directory):
     return value
 
 
-def _validate_historical_conflict(value, queue_id):
+def _validate_historical_conflict(
+    value: object, queue_id: str
+) -> list[_HistoricalOccurrence]:
     if not isinstance(value, dict) or set(value) != {
         "queue_id",
         "reason",
@@ -462,7 +565,9 @@ def _validate_historical_conflict(value, queue_id):
     return occurrences
 
 
-def _validate_resolution_projection(value, queue_id):
+def _validate_resolution_projection(
+    value: object, queue_id: str
+) -> tuple[_ResolutionProjection, str]:
     fields = {
         "case_id",
         "queue_id",
@@ -479,7 +584,7 @@ def _validate_resolution_projection(value, queue_id):
         "sample_rate",
         "sample_count",
     }
-    if not isinstance(value, dict) or set(value) != fields:
+    if not _is_resolution_projection(value) or set(value) != fields:
         raise TerminalConflictSuccessorError(
             "Terminal conflict successor resolution is malformed"
         )
@@ -551,12 +656,11 @@ def _validate_resolution_projection(value, queue_id):
         part in {"", ".", ".."} for part in selected_audio.parts
     ):
         raise TerminalConflictSuccessorError("Selected successor audio path is invalid")
-    for field in ("sample_rate", "sample_count"):
-        if (
-            isinstance(value[field], bool)
-            or not isinstance(value[field], int)
-            or value[field] <= 0
-        ):
+    for field, amount in (
+        ("sample_rate", value["sample_rate"]),
+        ("sample_count", value["sample_count"]),
+    ):
+        if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
             raise TerminalConflictSuccessorError(
                 f"Selected successor {field.replace('_', ' ')} is invalid"
             )

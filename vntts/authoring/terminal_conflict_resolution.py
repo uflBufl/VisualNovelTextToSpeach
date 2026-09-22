@@ -5,8 +5,8 @@ from __future__ import annotations
 import copy
 import hashlib
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path, PurePosixPath
+from typing import TypeAlias, TypedDict, TypeGuard
 
 from vntts_artifacts.atomic_io import atomic_write_json
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
@@ -41,26 +41,89 @@ from vntts.authoring.terminal_conflict_review import (
 TERMINAL_CONFLICT_RESOLUTION_SCHEMA = "vntts.authoring-terminal-conflict-resolution"
 TERMINAL_CONFLICT_RESOLUTION_VERSION = 1
 
+JsonDocument: TypeAlias = dict[str, object]
+
+
+class TerminalConflictResolutionRecord(TypedDict):
+    case_id: str
+    queue_id: str
+    line_id: str
+    queue_record_sha256: str
+    text_sha256: str
+    candidate_ids: list[str]
+    reviewed_at: str
+    decision: str
+    selected_candidate_id: str | None
+    selected_authority: str | None
+    selected_audio: str | None
+    selected_audio_sha256: str | None
+    sample_rate: int | None
+    sample_count: int | None
+
+
+class TerminalConflictResolutionDocument(TypedDict):
+    schema: str
+    schema_version: int
+    resolution_id: str
+    source_review: str
+    source_review_sha256: str
+    source_progress: str
+    source_progress_sha256: str
+    source_review_id: str
+    source_report_id: str
+    policy: dict[str, str]
+    case_count: int
+    selected_count: int
+    neither_count: int
+    resolutions: list[TerminalConflictResolutionRecord]
+
+
+def _is_resolution_document(
+    value: object,
+) -> TypeGuard[TerminalConflictResolutionDocument]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
 
 class TerminalConflictResolutionError(RuntimeError):
     """Completed terminal conflict decisions cannot be published safely."""
 
 
-_contained_file = partial(
-    require_terminal_conflict_file, error_type=TerminalConflictResolutionError
-)
-_directory = partial(
-    require_terminal_conflict_directory, error_type=TerminalConflictResolutionError
-)
-_text = partial(
-    require_terminal_conflict_text, error_type=TerminalConflictResolutionError
-)
-_sha256 = partial(
-    require_terminal_conflict_sha256, error_type=TerminalConflictResolutionError
-)
-_aware_timestamp = partial(
-    require_terminal_conflict_timestamp, error_type=TerminalConflictResolutionError
-)
+def _contained_file(root: str | Path, value: object, label: str) -> Path:
+    return Path(
+        require_terminal_conflict_file(
+            root, value, label, error_type=TerminalConflictResolutionError
+        )
+    )
+
+
+def _directory(value: str | Path, label: str) -> Path:
+    return Path(
+        require_terminal_conflict_directory(
+            value, label, error_type=TerminalConflictResolutionError
+        )
+    )
+
+
+def _text(value: object, label: str) -> str:
+    return str(
+        require_terminal_conflict_text(
+            value, label, error_type=TerminalConflictResolutionError
+        )
+    )
+
+
+def _sha256(value: object, label: str) -> str:
+    return str(
+        require_terminal_conflict_sha256(
+            value, label, error_type=TerminalConflictResolutionError
+        )
+    )
+
+
+def _aware_timestamp(value: object, label: str) -> object:
+    return require_terminal_conflict_timestamp(
+        value, label, error_type=TerminalConflictResolutionError
+    )
 
 
 @dataclass(frozen=True)
@@ -73,10 +136,10 @@ class TerminalConflictResolution:
     created: bool = False
 
     @property
-    def resolution(self):
+    def resolution(self) -> Path:
         return self.directory / "resolution.json"
 
-    def to_dict(self):
+    def to_dict(self) -> JsonDocument:
         return {
             "directory": str(self.directory),
             "resolution": str(self.resolution),
@@ -88,7 +151,9 @@ class TerminalConflictResolution:
         }
 
 
-def publish_terminal_conflict_resolution(review_directory, output_directory):
+def publish_terminal_conflict_resolution(
+    review_directory: str | Path, output_directory: str | Path
+) -> TerminalConflictResolution:
     """Publish exact completed decisions without changing any source workspace."""
     review_root = _directory(review_directory, "terminal conflict review")
     output = Path(output_directory).expanduser().resolve()
@@ -200,7 +265,7 @@ def publish_terminal_conflict_resolution(review_directory, output_directory):
                 }
             )
 
-        records.sort(key=lambda value: value["queue_id"])
+        records.sort(key=lambda value: str(value["queue_id"]))
 
         body = {
             "schema": TERMINAL_CONFLICT_RESOLUTION_SCHEMA,
@@ -258,7 +323,9 @@ def publish_terminal_conflict_resolution(review_directory, output_directory):
     )
 
 
-def load_terminal_conflict_resolution(directory):
+def load_terminal_conflict_resolution(
+    directory: str | Path,
+) -> TerminalConflictResolution:
     """Load and fully validate one immutable resolution publication."""
     root = _directory(directory, "terminal conflict resolution")
     document = load_terminal_conflict_resolution_document(root)
@@ -272,7 +339,9 @@ def load_terminal_conflict_resolution(directory):
     )
 
 
-def load_terminal_conflict_resolution_document(directory):
+def load_terminal_conflict_resolution_document(
+    directory: str | Path,
+) -> TerminalConflictResolutionDocument:
     root = _directory(directory, "terminal conflict resolution")
     try:
         snapshot = capture_authority_file(
@@ -287,7 +356,9 @@ def load_terminal_conflict_resolution_document(directory):
     return document
 
 
-def assert_terminal_conflict_resolution_source_authorities(directory):
+def assert_terminal_conflict_resolution_source_authorities(
+    directory: str | Path,
+) -> TerminalConflictResolutionDocument:
     """Recheck resolution, review, progress and every historical source CAS."""
     root = _directory(directory, "terminal conflict resolution")
     try:
@@ -398,7 +469,9 @@ def assert_terminal_conflict_resolution_source_authorities(directory):
     return resolution
 
 
-def validate_terminal_conflict_resolution_document(document, directory):
+def validate_terminal_conflict_resolution_document(
+    document: object, directory: str | Path
+) -> TerminalConflictResolutionDocument:
     value = copy.deepcopy(document)
     fields = {
         "schema",
@@ -417,7 +490,7 @@ def validate_terminal_conflict_resolution_document(document, directory):
         "resolutions",
     }
     if (
-        not isinstance(value, dict)
+        not _is_resolution_document(value)
         or set(value) != fields
         or value.get("schema") != TERMINAL_CONFLICT_RESOLUTION_SCHEMA
         or value.get("schema_version") != TERMINAL_CONFLICT_RESOLUTION_VERSION
@@ -441,13 +514,13 @@ def validate_terminal_conflict_resolution_document(document, directory):
             raise TerminalConflictResolutionError(
                 "Terminal conflict resolution source paths must be absolute"
             )
-    for field in (
-        "source_review_sha256",
-        "source_progress_sha256",
-        "source_review_id",
-        "source_report_id",
+    for digest, label in (
+        (value["source_review_sha256"], "Source Review Sha256"),
+        (value["source_progress_sha256"], "Source Progress Sha256"),
+        (value["source_review_id"], "Source Review Id"),
+        (value["source_report_id"], "Source Report Id"),
     ):
-        _sha256(value[field], field.replace("_", " ").title())
+        _sha256(digest, label)
     if value["policy"] != {
         "workspace_mutation": "forbidden",
         "historical_authority_suppression": "forbidden",
@@ -570,8 +643,9 @@ def validate_terminal_conflict_resolution_document(document, directory):
             raise TerminalConflictResolutionError(
                 "Selected terminal conflict identity changed"
             )
-        audio = _contained_file(root, record["selected_audio"], "selected WAV")
-        selected_paths.add(PurePosixPath(record["selected_audio"]).as_posix())
+        selected_audio = _text(record["selected_audio"], "Selected resolution WAV")
+        audio = _contained_file(root, selected_audio, "selected WAV")
+        selected_paths.add(PurePosixPath(selected_audio).as_posix())
         if hashlib.sha256(audio.read_bytes()).hexdigest() != digest:
             raise TerminalConflictResolutionError(
                 "Selected terminal conflict WAV changed"

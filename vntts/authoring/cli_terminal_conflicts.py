@@ -84,34 +84,39 @@ def configure_parsers(
 
 
 def handle(arguments: argparse.Namespace) -> int:
+    payload: dict[str, object]
     if arguments.command == "terminal-conflict-resolution":
-        result = publish_terminal_conflict_resolution(
+        resolution = publish_terminal_conflict_resolution(
             arguments.review_directory, arguments.output
         )
-        payload = result.to_dict()
+        payload = resolution.to_dict()
     elif arguments.command == "terminal-conflict-carry":
-        payload = carry_terminal_conflict_decisions(
-            arguments.source_review_directory,
-            arguments.target_review_directory,
+        payload = dict(
+            carry_terminal_conflict_decisions(
+                arguments.source_review_directory,
+                arguments.target_review_directory,
+            )
         )
     elif arguments.command == "terminal-conflict-cohort-carry":
-        payload = carry_approved_cohort_terminal_conflict_decisions(
-            arguments.review_directory
+        payload = dict(
+            carry_approved_cohort_terminal_conflict_decisions(
+                arguments.review_directory
+            )
         )
     elif arguments.command == "terminal-conflict-successor":
-        result = publish_terminal_conflict_successor(
+        successor = publish_terminal_conflict_successor(
             arguments.reconciliation,
             arguments.resolution_directory,
             arguments.output,
         )
-        payload = result.to_dict()
+        payload = successor.to_dict()
     elif arguments.command == "terminal-conflict-merge":
-        result = merge_terminal_conflict_resolution(
+        merged = merge_terminal_conflict_resolution(
             arguments.base_workspace,
             arguments.successor_directory,
             arguments.workspaces_root,
         )
-        payload = {"directory": str(result.directory), "created": result.created}
+        payload = {"directory": str(merged.directory), "created": merged.created}
     else:
         raise ValueError(
             f"Unsupported terminal-conflict command: {arguments.command!r}"
