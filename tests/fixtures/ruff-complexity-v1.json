@@ -231,30 +231,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/model_benchmark.py",
-      "scope": "_comparison_voice_context",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/model_benchmark.py",
-      "scope": "benchmark_model_variants",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/model_benchmark.py",
-      "scope": "build_failure_comparison_corpus",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/model_benchmark.py",
-      "scope": "load_model_variants",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/offline_fallback_authority.py",
       "scope": "_load_authority",
       "count": 1
@@ -341,54 +317,6 @@
       "code": "C901",
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "_build_sources",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "_validate_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "analyze_text_timing_bytes",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "load_speech_robustness_corpus",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "publish_speech_robustness_corpus",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/silence_comparison.py",
-      "scope": "load_silence_comparison",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/silence_comparison.py",
-      "scope": "load_silence_comparison_input_plan",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/silence_comparison.py",
-      "scope": "publish_silence_comparison",
       "count": 1
     },
     {
@@ -1173,12 +1101,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/model_benchmark.py",
-      "scope": "benchmark_model_variants",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/offline_fallback_authority.py",
       "scope": "_load_authority",
       "count": 1
@@ -1241,42 +1163,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "_build_sources",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "_validate_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "load_speech_robustness_corpus",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "publish_speech_robustness_corpus",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/silence_comparison.py",
-      "scope": "load_silence_comparison",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/silence_comparison.py",
-      "scope": "publish_silence_comparison",
       "count": 1
     },
     {
@@ -1851,18 +1737,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/model_benchmark.py",
-      "scope": "benchmark_model_variants",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/model_benchmark.py",
-      "scope": "build_failure_comparison_corpus",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/offline_fallback_authority.py",
       "scope": "_load_authority",
       "count": 1
@@ -1907,30 +1781,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "_build_sources",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/robustness_corpus.py",
-      "scope": "_validate_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/silence_comparison.py",
-      "scope": "load_silence_comparison",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/silence_comparison.py",
-      "scope": "publish_silence_comparison",
       "count": 1
     },
     {
