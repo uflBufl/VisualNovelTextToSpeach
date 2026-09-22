@@ -313,6 +313,7 @@ files = [
     "vntts/profiles.py",
     "vntts/profiles_ui.py",
     "vntts/pregeneration_acceptance.py",
+    "vntts/pregeneration_activation.py",
     "vntts/pregeneration_audition.py",
     "vntts/pregeneration_audition_ui.py",
     "vntts/pregeneration_contract.py",

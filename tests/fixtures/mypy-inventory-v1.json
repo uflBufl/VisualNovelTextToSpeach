@@ -10,7 +10,6 @@
     "vntts/dialog_capture.py": 21,
     "vntts/durable_settings.py": 10,
     "vntts/game_content_importer.py": 17,
-    "vntts/pregeneration_activation.py": 5,
     "vntts/pregeneration_ui.py": 119,
     "vntts/services/tts_engine.py": 19,
     "vntts/speech_presentation.py": 10,

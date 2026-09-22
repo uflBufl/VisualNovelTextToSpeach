@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter, process_time
+from typing import Protocol
 
 from vntts.chapter_voice_preload import ChapterVoicePreloader
 from vntts.game_pack import GamePackError, import_game_pack
@@ -13,10 +15,32 @@ from vntts.settings import AppSettings
 from vntts.support import record_background_operation
 
 
+class _Cancellation(Protocol):
+    def is_set(self) -> bool: ...
+
+
+class _Controller(Protocol):
+    @property
+    def is_ready(self) -> bool: ...
+
+    def shutdown(self) -> None: ...
+
+    def apply_settings(
+        self,
+        settings: AppSettings,
+        *,
+        cancellation: _Cancellation | None = None,
+    ) -> object: ...
+
+    def prepare_startup(self) -> None: ...
+
+    def start(self) -> bool: ...
+
+
 class OfflinePackActivationError(RuntimeError):
     """A published pack could not replace the active runtime configuration."""
 
-    def __init__(self, message, *, rollback_failed=False):
+    def __init__(self, message: str, *, rollback_failed: bool = False) -> None:
         super().__init__(message)
         self.rollback_failed = bool(rollback_failed)
 
@@ -33,19 +57,23 @@ class OfflinePackActivationResult:
 
 
 class OfflinePackActivator:
-    def __init__(self, *, save_settings=None):
+    def __init__(
+        self,
+        *,
+        save_settings: Callable[[AppSettings], str | Path] | None = None,
+    ) -> None:
         self.save_settings = save_settings or (lambda settings: settings.save())
 
     def activate(
         self,
-        current_settings,
-        pack_result,
-        controller,
-        cancellation=None,
-        restart_previous=None,
+        current_settings: AppSettings,
+        pack_result: OfflinePackResult,
+        controller: _Controller,
+        cancellation: _Cancellation | None = None,
+        restart_previous: _Cancellation | None = None,
         *,
-        generation_settings=None,
-    ):
+        generation_settings: AppSettings | None = None,
+    ) -> OfflinePackActivationResult:
         if not isinstance(current_settings, AppSettings):
             raise OfflinePackActivationError("Current settings are invalid")
         if generation_settings is not None and not isinstance(
@@ -136,7 +164,13 @@ class OfflinePackActivator:
         return OfflinePackActivationResult(candidate, settings_path, was_ready)
 
 
-def _restore_runtime(controller, settings, *, was_ready, restart_previous=None):
+def _restore_runtime(
+    controller: _Controller,
+    settings: AppSettings,
+    *,
+    was_ready: bool,
+    restart_previous: _Cancellation | None = None,
+) -> Exception | None:
     try:
         controller.shutdown()
         if controller.apply_settings(settings) is False:
@@ -151,14 +185,14 @@ def _restore_runtime(controller, settings, *, was_ready, restart_previous=None):
     return None
 
 
-def _raise_if_cancelled(cancellation):
+def _raise_if_cancelled(cancellation: _Cancellation | None) -> None:
     if cancellation is not None and cancellation.is_set():
         raise OfflinePackActivationCancelled(
             "Offline game pack activation was cancelled"
         )
 
 
-def _record_activation_phase(name, started, cpu_started):
+def _record_activation_phase(name: str, started: float, cpu_started: float) -> None:
     record_background_operation(
         f"pregeneration-activation-{name}",
         (perf_counter() - started) * 1000,
