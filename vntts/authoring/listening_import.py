@@ -7,7 +7,7 @@ import json
 import shutil
 import sys
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -214,6 +214,22 @@ def import_listening_session(
 def _validate_session(
     root: Path, session: JsonObject
 ) -> tuple[list[JsonObject], dict[Path, Path]]:
+    trials = _validate_session_header(session)
+    trial_ids: set[str] = set()
+    audio: dict[Path, Path] = {}
+    validated_trials: list[JsonObject] = []
+    completed = 0
+    for index, trial in enumerate(trials):
+        if not _is_json_object(trial):
+            raise ListeningImportError(f"Listening trial {index} must be an object")
+        completed += _validate_session_trial(root, trial, trial_ids, audio)
+        validated_trials.append(trial)
+    if session.get("completed_count") != completed:
+        raise ListeningImportError("Listening session completed_count is inconsistent")
+    return validated_trials, audio
+
+
+def _validate_session_header(session: JsonObject) -> list[object]:
     source_kind = session.get("source_kind")
     if not isinstance(source_kind, str) or not source_kind.strip():
         raise ListeningImportError(
@@ -228,49 +244,56 @@ def _validate_session(
         "dimensions"
     ) != list(LEGACY_DIMENSIONS):
         raise ListeningImportError("Listening session decision mode is unsupported")
-    trial_ids: set[str] = set()
-    audio: dict[Path, Path] = {}
-    validated_trials: list[JsonObject] = []
-    completed = 0
-    for index, trial in enumerate(trials):
-        if not _is_json_object(trial):
-            raise ListeningImportError(f"Listening trial {index} must be an object")
-        trial_id = trial.get("trial_id")
-        if not isinstance(trial_id, str) or not trial_id or trial_id in trial_ids:
-            raise ListeningImportError("Listening session trial IDs are invalid")
-        trial_ids.add(trial_id)
-        validated_trials.append(trial)
-        rating = trial.get("rating")
-        if rating is not None:
-            if not isinstance(rating, dict) or rating.get("preference") not in {
-                "a",
-                "b",
-                "tie",
-            }:
-                raise ListeningImportError(
-                    f"Listening trial {trial_id!r} rating is invalid"
-                )
-            completed += 1
-        sides = trial.get("audio")
-        if not isinstance(sides, dict) or set(sides) != {"a", "b"}:
-            raise ListeningImportError(f"Listening trial {trial_id!r} audio is invalid")
-        for side in ("a", "b"):
-            relative = _safe_relative(sides[side], f"trial {trial_id!r} side {side}")
-            if relative.suffix.casefold() != ".wav":
-                raise ListeningImportError(
-                    f"Listening trial {trial_id!r} side {side} must be a WAV file"
-                )
-            source = _within(root, relative, f"trial {trial_id!r} side {side}")
-            if not source.is_file():
-                raise ListeningImportError(f"Listening audio is missing: {source}")
-            if relative in audio:
-                raise ListeningImportError(
-                    f"Listening audio path is reused by more than one side: {relative}"
-                )
-            audio[relative] = source
-    if session.get("completed_count") != completed:
-        raise ListeningImportError("Listening session completed_count is inconsistent")
-    return validated_trials, audio
+    return trials
+
+
+def _validate_session_trial(
+    root: Path,
+    trial: JsonObject,
+    trial_ids: set[str],
+    audio: dict[Path, Path],
+) -> int:
+    trial_id = trial.get("trial_id")
+    if not isinstance(trial_id, str) or not trial_id or trial_id in trial_ids:
+        raise ListeningImportError("Listening session trial IDs are invalid")
+    trial_ids.add(trial_id)
+    _validate_trial_rating(trial, trial_id)
+    _validate_trial_audio(root, trial, trial_id, audio)
+    return int(trial.get("rating") is not None)
+
+
+def _validate_trial_rating(trial: JsonObject, trial_id: str) -> None:
+    rating = trial.get("rating")
+    if rating is not None and (
+        not isinstance(rating, dict)
+        or rating.get("preference") not in {"a", "b", "tie"}
+    ):
+        raise ListeningImportError(f"Listening trial {trial_id!r} rating is invalid")
+
+
+def _validate_trial_audio(
+    root: Path,
+    trial: JsonObject,
+    trial_id: str,
+    audio: dict[Path, Path],
+) -> None:
+    sides = trial.get("audio")
+    if not isinstance(sides, dict) or set(sides) != {"a", "b"}:
+        raise ListeningImportError(f"Listening trial {trial_id!r} audio is invalid")
+    for side in ("a", "b"):
+        relative = _safe_relative(sides[side], f"trial {trial_id!r} side {side}")
+        if relative.suffix.casefold() != ".wav":
+            raise ListeningImportError(
+                f"Listening trial {trial_id!r} side {side} must be a WAV file"
+            )
+        source = _within(root, relative, f"trial {trial_id!r} side {side}")
+        if not source.is_file():
+            raise ListeningImportError(f"Listening audio is missing: {source}")
+        if relative in audio:
+            raise ListeningImportError(
+                f"Listening audio path is reused by more than one side: {relative}"
+            )
+        audio[relative] = source
 
 
 def _validate_key(
@@ -281,6 +304,26 @@ def _validate_key(
     trials: Sequence[JsonObject],
     audio_sha256: dict[Path, str],
 ) -> tuple[SourceControl, ...]:
+    _validate_key_identity(session, key, key_sha256)
+    sources = _key_sources(key)
+    source_controls = _validate_source_inventory(sources)
+    _validate_source_digest(sources, session)
+    models, assignments = _key_models_and_assignments(key)
+    model_ids = _model_ids(models)
+    _validate_key_assignments(
+        assignments,
+        trials,
+        key_path,
+        model_ids,
+        audio_sha256,
+        source_controls,
+    )
+    return tuple(sorted(source_controls.items(), key=lambda item: str(item[0])))
+
+
+def _validate_key_identity(
+    session: JsonObject, key: JsonObject, key_sha256: str
+) -> None:
     if key_sha256 != session.get("blind_key_sha256"):
         raise ListeningImportError(
             "Blind-listening key is missing, changed, or mismatched"
@@ -290,9 +333,16 @@ def _validate_key(
             raise ListeningImportError(
                 f"Blind-listening key {field} does not match session"
             )
+
+
+def _key_sources(key: JsonObject) -> list[object]:
     sources = key.get("sources")
     if not isinstance(sources, list) or not sources:
         raise ListeningImportError("Blind-listening key source inventory is invalid")
+    return sources
+
+
+def _validate_source_inventory(sources: Sequence[object]) -> dict[Path, str]:
     source_controls: dict[Path, str] = {}
     for source in sources:
         if not _is_json_object(source) or not isinstance(source.get("path"), str):
@@ -308,6 +358,10 @@ def _validate_key(
                 f"Blind-listening source report is missing or changed: {source_path}"
             )
         source_controls[source_path] = source_sha256
+    return source_controls
+
+
+def _validate_source_digest(sources: Sequence[object], session: JsonObject) -> None:
     source_digest = hashlib.sha256(
         json.dumps(sources, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -315,6 +369,9 @@ def _validate_key(
         raise ListeningImportError(
             "Blind-listening source inventory digest is inconsistent"
         )
+
+
+def _key_models_and_assignments(key: JsonObject) -> tuple[list[object], list[object]]:
     models = key.get("models")
     assignments = key.get("assignments")
     if (
@@ -323,6 +380,10 @@ def _validate_key(
         or not isinstance(assignments, list)
     ):
         raise ListeningImportError("Blind-listening key models/assignments are invalid")
+    return models, assignments
+
+
+def _model_ids(models: Sequence[object]) -> list[str]:
     model_ids: list[str] = []
     for model in models:
         if not _is_json_object(model):
@@ -335,6 +396,17 @@ def _validate_key(
         model_ids.append(values[0])
     if len(model_ids) != len(set(model_ids)):
         raise ListeningImportError("Blind-listening key contains duplicate models")
+    return model_ids
+
+
+def _validate_key_assignments(
+    assignments: Sequence[object],
+    trials: Sequence[JsonObject],
+    key_path: Path,
+    model_ids: Sequence[str],
+    audio_sha256: Mapping[Path, str],
+    source_controls: dict[Path, str],
+) -> None:
     expected_ids = {
         trial_id
         for trial in trials
@@ -347,60 +419,77 @@ def _validate_key(
     }
     seen: set[str] = set()
     for assignment in assignments:
-        if not _is_json_object(assignment) or set(assignment) != {
-            "trial_id",
-            "a",
-            "b",
-        }:
+        trial_id = _validate_assignment_header(assignment, expected_ids, seen)
+        if not _is_json_object(assignment):
             raise ListeningImportError("Blind-listening assignment is invalid")
-        trial_id = assignment["trial_id"]
-        if trial_id not in expected_ids:
-            raise ListeningImportError(
-                f"Blind assignment references unknown trial {trial_id!r}"
-            )
-        if trial_id in seen:
-            raise ListeningImportError(f"Duplicate blind assignment for {trial_id!r}")
-        seen.add(trial_id)
-        sides = []
-        for side in ("a", "b"):
-            value = assignment[side]
-            if not isinstance(value, dict) or value.get("model_id") not in model_ids:
-                raise ListeningImportError(
-                    f"Blind assignment {trial_id!r} side {side} has an unknown model"
-                )
-            if not isinstance(value.get("source"), str) or not value["source"].strip():
-                raise ListeningImportError(
-                    f"Blind assignment {trial_id!r} side {side} has no source provenance"
-                )
-            provenance_audio = Path(value["source"]).expanduser().resolve()
-            audio = _object_field(trial_by_id[trial_id], "audio")
-            relative = _safe_relative(
-                audio.get(side),
-                f"trial {trial_id!r} side {side}",
-            )
-            _within(
-                key_path.parent,
-                relative,
-                f"trial {trial_id!r} side {side}",
-            )
-            if (
-                not provenance_audio.is_file()
-                or sha256_file(provenance_audio) != audio_sha256[relative]
-            ):
-                raise ListeningImportError(
-                    f"Blind assignment {trial_id!r} side {side} audio does not match its alias"
-                )
-            source_controls[provenance_audio] = audio_sha256[relative]
-            sides.append(value["model_id"])
-        if sides[0] == sides[1]:
-            raise ListeningImportError(
-                f"Blind assignment {trial_id!r} compares a model with itself"
-            )
+        _validate_assignment_sides(
+            assignment,
+            trial_id,
+            trial_by_id[trial_id],
+            key_path,
+            model_ids,
+            audio_sha256,
+            source_controls,
+        )
     if seen != expected_ids:
         raise ListeningImportError(
             "Blind-listening assignments do not cover every trial"
         )
-    return tuple(sorted(source_controls.items(), key=lambda item: str(item[0])))
+
+
+def _validate_assignment_header(
+    assignment: object, expected_ids: set[str], seen: set[str]
+) -> str:
+    if not _is_json_object(assignment) or set(assignment) != {"trial_id", "a", "b"}:
+        raise ListeningImportError("Blind-listening assignment is invalid")
+    trial_id = assignment["trial_id"]
+    if trial_id not in expected_ids:
+        raise ListeningImportError(
+            f"Blind assignment references unknown trial {trial_id!r}"
+        )
+    if trial_id in seen:
+        raise ListeningImportError(f"Duplicate blind assignment for {trial_id!r}")
+    seen.add(trial_id)
+    return trial_id
+
+
+def _validate_assignment_sides(
+    assignment: JsonObject,
+    trial_id: str,
+    trial: JsonObject,
+    key_path: Path,
+    model_ids: Sequence[str],
+    audio_sha256: Mapping[Path, str],
+    source_controls: dict[Path, str],
+) -> None:
+    sides: list[str] = []
+    for side in ("a", "b"):
+        value = assignment[side]
+        if not isinstance(value, dict) or value.get("model_id") not in model_ids:
+            raise ListeningImportError(
+                f"Blind assignment {trial_id!r} side {side} has an unknown model"
+            )
+        if not isinstance(value.get("source"), str) or not value["source"].strip():
+            raise ListeningImportError(
+                f"Blind assignment {trial_id!r} side {side} has no source provenance"
+            )
+        provenance_audio = Path(value["source"]).expanduser().resolve()
+        audio = _object_field(trial, "audio")
+        relative = _safe_relative(audio.get(side), f"trial {trial_id!r} side {side}")
+        _within(key_path.parent, relative, f"trial {trial_id!r} side {side}")
+        if (
+            not provenance_audio.is_file()
+            or sha256_file(provenance_audio) != audio_sha256[relative]
+        ):
+            raise ListeningImportError(
+                f"Blind assignment {trial_id!r} side {side} audio does not match its alias"
+            )
+        source_controls[provenance_audio] = audio_sha256[relative]
+        sides.append(value["model_id"])
+    if sides[0] == sides[1]:
+        raise ListeningImportError(
+            f"Blind assignment {trial_id!r} compares a model with itself"
+        )
 
 
 def _validate_report(
