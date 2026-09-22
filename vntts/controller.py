@@ -3326,19 +3326,19 @@ class AppController:
             }
         )
         try:
-            outcome = (
-                play_route(
+            if callable(play_route):
+                outcome = play_route(
                     backend,
                     route,
                     playback_guard=lambda: reader.wait_until_playable(chunk),
                 )
-                if callable(play_route)
-                else play_prepared(
+            else:
+                assert callable(play_prepared)
+                outcome = play_prepared(
                     live_backend,
                     route.prepared,
                     playback_guard=lambda: reader.wait_until_playable(chunk),
                 )
-            )
         finally:
             audio_lifecycle_context.reset(context_token)
         if not isinstance(outcome, PlaybackOutcome):
