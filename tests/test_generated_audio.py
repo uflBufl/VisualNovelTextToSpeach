@@ -290,6 +290,26 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertEqual(old_results[0].narrator_fallback_role, "Unknown")
         self.assertIsNone(new_result.narrator_fallback_role)
 
+    def test_reload_revalidates_metadata_when_wav_is_unchanged(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            library, _audio = self.create_library(root)
+            manifest = root / "generated-audio.json"
+            line_hash = text_sha256("Hello.")
+            self.assertIsNotNone(library.find("game:1", line_hash))
+            entry = json.loads(manifest.read_text(encoding="utf-8"))["entries"][0]
+
+            write_generated_audio_manifest(manifest, {}, [{**entry, "sample_count": 5}])
+            invalid, state = library.find_with_preflight("game:1", line_hash)
+            write_generated_audio_manifest(
+                manifest, {}, [{**entry, "provider": "updated-provider"}]
+            )
+            updated = library.find("game:1", line_hash)
+
+        self.assertIsNone(invalid)
+        self.assertEqual(state, "generated-audio-metadata-mismatch")
+        self.assertEqual(updated.provider, "updated-provider")
+
     def test_character_defaults_preserve_recordings_and_apply_only_to_live_synthesis(
         self,
     ):

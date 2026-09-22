@@ -332,7 +332,7 @@ class GeneratedAudioLibrary:
     ) -> None:
         self.warn = warn or (lambda _message: None)
         self.cache: BoundedCache[
-            tuple[str, str, str, str | None], PreparedGeneratedAudio
+            tuple[str, str, str], tuple[NDArray[np.float32], int]
         ] = BoundedCache(cache_size)
         self.warned_entries: set[tuple[str, str]] = set()
         self.reload_lock = Lock()
@@ -447,18 +447,19 @@ class GeneratedAudioLibrary:
             entry.line_id,
             entry.text_sha256,
             entry.audio_sha256,
-            narrator_fallback_role,
         )
         cached = self.cache.get(cache_key)
-        if cached is not None:
-            return cached, "generated-audio-entry-verified"
-        try:
-            samples, sample_rate = _read_pcm16_mono_wav_bytes(payload)
-        except Pcm16MonoWavError as error:
-            self._warn_once(
-                entry, f"Generated audio is invalid: {entry.audio}: {error}"
-            )
-            return None, "generated-audio-invalid-wav"
+        if cached is None:
+            try:
+                samples, sample_rate = _read_pcm16_mono_wav_bytes(payload)
+            except Pcm16MonoWavError as error:
+                self._warn_once(
+                    entry, f"Generated audio is invalid: {entry.audio}: {error}"
+                )
+                return None, "generated-audio-invalid-wav"
+            self.cache.put(cache_key, (samples, sample_rate))
+        else:
+            samples, sample_rate = cached
         if sample_rate != entry.sample_rate or len(samples) != entry.sample_count:
             self._warn_once(
                 entry,
@@ -476,7 +477,6 @@ class GeneratedAudioLibrary:
             voice_character=getattr(entry, "voice_character", None),
             recorded_voice=recorded_voice_identity(entry),
         )
-        self.cache.put(cache_key, prepared)
         return prepared, "generated-audio-entry-verified"
 
     def find_live_fallback(
