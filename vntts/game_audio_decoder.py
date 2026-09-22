@@ -59,7 +59,11 @@ def find_game_decoder():
     name = "vgmstream-cli.exe" if sys.platform == "win32" else "vgmstream-cli"
     if bundle is not None:
         path = bundle / "vgmstream" / name
-        return path if path.is_file() else None
+        return (
+            path
+            if path.is_file() and path.resolve().is_relative_to(bundle.resolve())
+            else None
+        )
     installed = shutil.which(name)
     if installed:
         return Path(installed).absolute()
@@ -245,9 +249,18 @@ def ensure_game_decoder(
             if manifest.is_file():
                 try:
                     files = json.loads(manifest.read_text(encoding="utf-8"))
-                    if executable.name in files and all(
-                        Path(n).name == n and sha256_file(destination / n) == h
-                        for n, h in files.items()
+                    if (
+                        isinstance(files, dict)
+                        and executable.name in files
+                        and all(
+                            isinstance(name, str)
+                            and Path(name).name == name
+                            and isinstance(checksum, str)
+                            and not (path := destination / name).is_symlink()
+                            and path.is_file()
+                            and sha256_file(path) == checksum
+                            for name, checksum in files.items()
+                        )
                     ):
                         probe_game_decoder(executable, cancellation)
                         return executable

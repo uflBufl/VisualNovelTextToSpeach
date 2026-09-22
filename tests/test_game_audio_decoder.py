@@ -10,6 +10,7 @@ from threading import Event, Timer
 from unittest.mock import Mock, call, patch
 from zipfile import ZipFile
 
+from tests.symlink_support import symlink_or_skip
 from vntts import game_audio_decoder as decoder
 
 
@@ -186,6 +187,20 @@ class GameAudioDecoderTest(unittest.TestCase):
             path.touch()
             self.assertEqual(decoder.find_game_decoder(), path)
 
+    def test_bundle_rejects_decoder_outside_application(self):
+        outside = self.root / "outside-decoder"
+        outside.write_bytes(b"decoder")
+        bundle = self.root / "bundle"
+        name = (
+            "vgmstream-cli.exe" if decoder.sys.platform == "win32" else "vgmstream-cli"
+        )
+        executable = bundle / "vgmstream" / name
+        executable.parent.mkdir(parents=True)
+        symlink_or_skip(executable, outside)
+
+        with patch.object(decoder, "get_bundle_root", return_value=bundle):
+            self.assertIsNone(decoder.find_game_decoder())
+
     def test_cached_manifest_is_checksum_bound(self):
         # A manifest cannot redirect file checks outside the managed directory.
         folder = self.root / "r2117-linux"
@@ -202,3 +217,26 @@ class GameAudioDecoderTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(decoder.DecoderSetupError, "offline"):
                 decoder.ensure_game_decoder(storage_root=self.root)
+
+    def test_cached_manifest_rejects_symlinked_decoder(self):
+        folder = self.root / "r2117-linux"
+        folder.mkdir()
+        outside = self.root / "outside-decoder"
+        outside.write_bytes(b"decoder")
+        symlink_or_skip(folder / "vgmstream-cli", outside)
+        (folder / "verified.json").write_text(
+            json.dumps(
+                {"vgmstream-cli": hashlib.sha256(outside.read_bytes()).hexdigest()}
+            )
+        )
+        with (
+            patch.object(decoder, "find_game_decoder", return_value=None),
+            patch.object(decoder, "get_bundle_root", return_value=None),
+            patch.object(decoder.sys, "platform", "linux"),
+            patch.object(decoder.platform, "machine", return_value="x86_64"),
+            patch.object(decoder, "_download", side_effect=OSError("offline")),
+            patch.object(decoder, "probe_game_decoder") as probe,
+            self.assertRaisesRegex(decoder.DecoderSetupError, "offline"),
+        ):
+            decoder.ensure_game_decoder(storage_root=self.root)
+        probe.assert_not_called()
