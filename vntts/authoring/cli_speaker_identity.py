@@ -83,16 +83,23 @@ def configure_parsers(
 
 def handle(arguments: argparse.Namespace) -> int:
     if arguments.command == "speaker-identity-inventory":
-        document = build_reference_inventory(arguments.manifest)
-        write_reference_inventory(document, arguments.output)
-        _print({"output": str(arguments.output.resolve()), **_summary(document)})
+        inventory_document = build_reference_inventory(arguments.manifest)
+        write_reference_inventory(inventory_document, arguments.output)
+        _print(
+            {
+                "output": str(arguments.output.resolve()),
+                **_summary(inventory_document),
+            }
+        )
         return 0
     if arguments.command == "speaker-identity-labels":
         inventory = load_reference_inventory(arguments.inventory)
         draft = _read_pair_draft(arguments.pairs)
-        document = build_labelled_pairs(inventory, draft)
-        write_labelled_pairs(document, arguments.output)
-        _print({"output": str(arguments.output.resolve()), **_summary(document)})
+        labels_document = build_labelled_pairs(inventory, draft)
+        write_labelled_pairs(labels_document, arguments.output)
+        _print(
+            {"output": str(arguments.output.resolve()), **_summary(labels_document)}
+        )
         return 0
     if arguments.command == "speaker-identity-model-install":
         _print(install_managed_speaker_identity_model(source=arguments.source))
@@ -109,14 +116,14 @@ def handle(arguments: argparse.Namespace) -> int:
             if arguments.offline
             else Path(install_managed_speaker_identity_model()["model_directory"])
         )
-        document = build_speaker_identity_report(
+        report_document = build_speaker_identity_report(
             inventory,
             labels,
             make_speechbrain_embedder(model_directory, device=arguments.device),
             installed_model_descriptor(),
         )
-        write_speaker_identity_report(document, arguments.output)
-        _print({"output": str(arguments.output.resolve()), **_summary(document)})
+        write_speaker_identity_report(report_document, arguments.output)
+        _print({"output": str(arguments.output.resolve()), **_summary(report_document)})
         return 0
     raise SpeakerIdentityError(f"No speaker-identity handler for {arguments.command!r}")
 
