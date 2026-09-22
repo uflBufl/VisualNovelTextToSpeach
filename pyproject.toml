@@ -342,6 +342,7 @@ files = [
     "vntts/speech_worker.py",
     "vntts/speech_worker_messages.py",
     "vntts/settings.py",
+    "vntts/services/tts_engine.py",
     "vntts/subprocess_utils.py",
     "vntts/support.py",
     "vntts/support_ui.py",

@@ -204,6 +204,7 @@
     "vntts/runtime_installation.py",
     "vntts/runtime_ownership.py",
     "vntts/runtime_paths.py",
+    "vntts/services/tts_engine.py",
     "vntts/settings.py",
     "vntts/source_audio_semantics.py",
     "vntts/speech_presentation.py",

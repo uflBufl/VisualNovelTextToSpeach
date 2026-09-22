@@ -1,15 +1,48 @@
 import re
 import warnings
 from collections import OrderedDict
+from collections.abc import Callable, Mapping, Sequence
 from os import PathLike
 from threading import Lock
 from time import monotonic
+from typing import Protocol, TypeAlias
 
 import numpy as np
 
-from vntts.audio_output import SynchronousPcmPlaybackMixin
+from vntts.audio_output import AudioData, AudioOutput, SynchronousPcmPlaybackMixin
 from vntts.playback import PlaybackStatus, PreparedPlayback
 from vntts.synthesis import SynthesisCachePolicy
+
+SpeakerWav: TypeAlias = str | PathLike[str] | list[str]
+
+
+class _TorchCuda(Protocol):
+    def is_available(self) -> bool: ...
+
+
+class _TorchModule(Protocol):
+    cuda: _TorchCuda
+
+    def device(self, name: str) -> object: ...
+
+
+class _TTSSynthesizer(Protocol):
+    output_sample_rate: int
+
+
+class _TTSModel(Protocol):
+    is_multi_speaker: bool
+    speakers: Sequence[str] | None
+    is_multi_lingual: bool
+    languages: Sequence[str] | None
+    synthesizer: _TTSSynthesizer
+
+    def to(self, device: object) -> _TTSModel: ...
+
+    def tts(self, *, text: str, **arguments: object) -> object: ...
+
+
+_TTSFactory: TypeAlias = Callable[..., _TTSModel]
 
 
 class TTSError(Exception):
@@ -28,7 +61,7 @@ class AudioPlaybackError(RuntimeError):
     pass
 
 
-tts_profiles = {
+tts_profiles: dict[str, dict[str, object]] = {
     "stable": {
         "temperature": 0.70,
         "top_p": 0.80,
@@ -65,12 +98,12 @@ torchaudio_load_deprecation = (
 terminal_incomplete_punctuation = re.compile(r"\s*(?:\.{2,}|…+|[,;:])\s*$")
 
 
-def prepare_speech_text(text):
+def prepare_speech_text(text: str) -> str:
     text = text.strip()
     return terminal_incomplete_punctuation.sub(".", text)
 
 
-def get_tts_profile(name):
+def get_tts_profile(name: str) -> dict[str, object]:
     try:
         return dict(tts_profiles[name])
     except KeyError as error:
@@ -86,21 +119,21 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
 
     def __init__(
         self,
-        model_name="tts_models/en/vctk/vits",
-        speaker=None,
-        language=None,
-        speaker_wav=None,
-        synthesis_options=None,
-        volume=1.0,
+        model_name: str = "tts_models/en/vctk/vits",
+        speaker: str | None = None,
+        language: str | None = None,
+        speaker_wav: SpeakerWav | None = None,
+        synthesis_options: Mapping[str, object] | None = None,
+        volume: float = 1.0,
         *,
-        tts_factory=None,
-        torch_module=None,
-        audio_output=None,
-        clock=monotonic,
-        audio_cache_size=32,
-        playback_latency="high",
-        persisted_voice_cache=True,
-    ):
+        tts_factory: _TTSFactory | None = None,
+        torch_module: _TorchModule | None = None,
+        audio_output: AudioOutput | None = None,
+        clock: Callable[[], float] = monotonic,
+        audio_cache_size: int = 32,
+        playback_latency: object = "high",
+        persisted_voice_cache: bool = True,
+    ) -> None:
         if tts_factory is None:
             from TTS.api import TTS
 
@@ -123,12 +156,12 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
         self.default_speaker_wav = speaker_wav
         if synthesis_options is None and "xtts" in model_name.casefold():
             synthesis_options = get_tts_profile(default_tts_profile)
-        self.synthesis_options = dict(synthesis_options or {})
+        self.synthesis_options: dict[str, object] = dict(synthesis_options or {})
         self.set_volume(volume)
-        self.cached_speakers = set()
+        self.cached_speakers: set[str] = set()
         self.persisted_voice_cache = bool(persisted_voice_cache)
         self.audio_cache_size = max(0, int(audio_cache_size))
-        self.audio_cache = OrderedDict()
+        self.audio_cache: OrderedDict[object, object] = OrderedDict()
         # Coqui model inference and the audio device are independent resources.
         # Separate locks let live mode prepare the next sentence while the
         # current sentence is playing, without allowing two model inferences or
@@ -139,9 +172,9 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
         self.playback_active = False
         self.active_playback_stop = None
         self.last_playback_underrun = False
-        self.last_synthesis_ms = None
-        self.last_playback_ms = None
-        self.last_cache_source = None
+        self.last_synthesis_ms: float | None = None
+        self.last_playback_ms: float | None = None
+        self.last_cache_source: str | None = None
         self.last_synthesis_cancelled = False
         self.sample_rate = self.tts.synthesizer.output_sample_rate
         if not self.sample_rate:
@@ -149,13 +182,13 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
 
     def speak(
         self,
-        text,
-        speaker=None,
-        language=None,
-        speaker_wav=None,
-        synthesis_options=None,
-        playback_guard=None,
-    ):
+        text: str,
+        speaker: str | None = None,
+        language: str | None = None,
+        speaker_wav: SpeakerWav | None = None,
+        synthesis_options: Mapping[str, object] | None = None,
+        playback_guard: Callable[[], bool] | None = None,
+    ) -> bool:
         audio = self.synthesize(
             text,
             speaker=speaker,
@@ -166,7 +199,12 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
 
         return self.play(audio, playback_guard=playback_guard)
 
-    def play(self, audio, *, playback_guard=None):
+    def play(
+        self,
+        audio: object,
+        *,
+        playback_guard: Callable[[], bool] | None = None,
+    ) -> bool:
         """Play already-synthesized audio.
 
         Live mode uses this separately from ``synthesize`` so sentence N+1 can
@@ -178,18 +216,18 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
         self.last_playback_underrun = outcome.underflowed
         if outcome.status is PlaybackStatus.FAILED:
             raise AudioPlaybackError(outcome.error or "Audio playback failed")
-        return outcome.successful
+        return bool(outcome.successful)
 
     def synthesize(
         self,
-        text,
-        speaker=None,
-        language=None,
-        speaker_wav=None,
-        synthesis_options=None,
-        cache_policy=SynthesisCachePolicy.USE,
-        cancellation=None,
-    ):
+        text: str,
+        speaker: str | None = None,
+        language: str | None = None,
+        speaker_wav: SpeakerWav | None = None,
+        synthesis_options: Mapping[str, object] | None = None,
+        cache_policy: SynthesisCachePolicy | str = SynthesisCachePolicy.USE,
+        cancellation: Callable[[], object] | None = None,
+    ) -> object:
         with self.synthesis_lock:
             return self._synthesize_locked(
                 text,
@@ -203,14 +241,14 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
 
     def prepare_synthesis(
         self,
-        text,
-        speaker=None,
-        language=None,
-        speaker_wav=None,
-        synthesis_options=None,
-        cache_policy=SynthesisCachePolicy.USE,
-        cancellation=None,
-    ):
+        text: str,
+        speaker: str | None = None,
+        language: str | None = None,
+        speaker_wav: SpeakerWav | None = None,
+        synthesis_options: Mapping[str, object] | None = None,
+        cache_policy: SynthesisCachePolicy | str = SynthesisCachePolicy.USE,
+        cancellation: Callable[[], object] | None = None,
+    ) -> PreparedPlayback:
         """Return exact call-bound synthesis metrics without opening a device."""
         with self.synthesis_lock:
             audio = self._synthesize_locked(
@@ -233,14 +271,14 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
 
     def _synthesize_locked(
         self,
-        text,
-        speaker=None,
-        language=None,
-        speaker_wav=None,
-        synthesis_options=None,
-        cache_policy=SynthesisCachePolicy.USE,
-        cancellation=None,
-    ):
+        text: str,
+        speaker: str | None = None,
+        language: str | None = None,
+        speaker_wav: SpeakerWav | None = None,
+        synthesis_options: Mapping[str, object] | None = None,
+        cache_policy: SynthesisCachePolicy | str = SynthesisCachePolicy.USE,
+        cancellation: Callable[[], object] | None = None,
+    ) -> object:
         try:
             cache_policy = SynthesisCachePolicy(cache_policy)
         except ValueError as error:
@@ -248,7 +286,7 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
                 f"Unknown synthesis cache policy {cache_policy!r}"
             ) from error
 
-        def cancellation_requested():
+        def cancellation_requested() -> bool:
             return bool(cancellation()) if cancellation is not None else False
 
         self.last_synthesis_cancelled = cancellation_requested()
@@ -317,7 +355,7 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
             self._cache_audio(cache_key, audio)
         return audio
 
-    def _audio_cache_key(self, text, arguments):
+    def _audio_cache_key(self, text: str, arguments: Mapping[str, object]) -> object:
         reusable_arguments = dict(arguments)
         if reusable_arguments.get("speaker") is not None:
             # Once a named voice has been cloned, Coqui only needs its ID. This
@@ -331,7 +369,7 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
             )
         )
 
-    def _cache_value(self, value):
+    def _cache_value(self, value: object) -> object:
         if isinstance(value, dict):
             return tuple(
                 sorted((name, self._cache_value(item)) for name, item in value.items())
@@ -346,7 +384,7 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
             return repr(value)
         return value
 
-    def _cache_audio(self, cache_key, audio):
+    def _cache_audio(self, cache_key: object, audio: object) -> None:
         if self.audio_cache_size == 0:
             return
         self.audio_cache.pop(cache_key, None)
@@ -354,7 +392,9 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
         while len(self.audio_cache) > self.audio_cache_size:
             self.audio_cache.popitem(last=False)
 
-    def _resolve_speaker(self, speaker, speaker_wav=None):
+    def _resolve_speaker(
+        self, speaker: str | None, speaker_wav: SpeakerWav | None = None
+    ) -> str | None:
         speaker = speaker if speaker is not None else self.default_speaker
         if speaker_wav is not None:
             return speaker
@@ -382,7 +422,7 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
             )
         return speaker
 
-    def _resolve_language(self, language):
+    def _resolve_language(self, language: str | None) -> str | None:
         language = language if language is not None else self.default_language
         if not self.tts.is_multi_lingual:
             if language is not None:
@@ -406,7 +446,7 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
             )
         return language
 
-    def has_speaker(self, speaker):
+    def has_speaker(self, speaker: str) -> bool:
         if speaker in (self.tts.speakers or []) or speaker in self.cached_speakers:
             return True
         if not self.persisted_voice_cache:
@@ -432,39 +472,32 @@ class TTSEngine(SynchronousPcmPlaybackMixin):
         self.cached_speakers.add(speaker)
         return True
 
-    def set_volume(self, volume):
+    def set_volume(self, volume: float) -> None:
         if isinstance(volume, bool) or not isinstance(volume, (int, float)):
             raise TTSConfigurationError("Volume must be a number from 0 to 1")
         if not 0 <= volume <= 1:
             raise TTSConfigurationError("Volume must be between 0 and 1")
         self.volume = float(volume)
 
-    def set_speed(self, speed):
+    def set_speed(self, speed: float) -> None:
         if isinstance(speed, bool) or not isinstance(speed, (int, float)):
             raise TTSConfigurationError("Speech speed must be a number")
         if not 0.5 <= speed <= 1.5:
             raise TTSConfigurationError("Speech speed must be between 0.5 and 1.5")
         self.synthesis_options["speed"] = float(speed)
 
-    def _scaled_audio(self, audio):
-        if self.volume == 1:
-            return audio
-        try:
-            return audio * self.volume
-        except TypeError:
-            return [sample * self.volume for sample in audio]
-
-    def _prepare_audio(self, audio, fade_seconds=0.01):
-        audio = self._scaled_audio(audio)
-        samples = np.asarray(audio)
+    def _prepare_audio(self, audio: object, fade_seconds: float = 0.01) -> AudioData:
+        samples: AudioData = np.asarray(audio, dtype=np.float32)
+        if self.volume != 1:
+            samples = samples * self.volume
         if samples.ndim == 0 or len(samples) < 4:
-            return audio
+            return samples
 
         fade_samples = min(round(self.sample_rate * fade_seconds), len(samples) // 2)
         if fade_samples < 2:
-            return audio
+            return samples
 
-        prepared = samples.astype(np.float32, copy=True)
+        prepared: AudioData = samples.astype(np.float32, copy=True)
         fade = np.linspace(0.0, 1.0, fade_samples, dtype=prepared.dtype)
         shape = (fade_samples,) + (1,) * (prepared.ndim - 1)
         prepared[:fade_samples] *= fade.reshape(shape)
