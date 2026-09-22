@@ -3,7 +3,7 @@
 from threading import Event
 from time import monotonic
 
-from PySide6.QtCore import QSignalBlocker, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -34,6 +34,7 @@ from vntts.game_content_importer import (
     GameContentImportCancelled,
     Reverse1999GameImporter,
 )
+from vntts.game_narrator import load_original_reference
 from vntts.pregeneration_acceptance import OfflineAcceptanceWorker
 from vntts.pregeneration_audition_ui import VoiceAuditionPanel, VoiceAuditionUIError
 from vntts.pregeneration_generation import (
@@ -1220,11 +1221,14 @@ class OfflineAudioPreparationDialog(QDialog):
             and isinstance(source_id, str)
             and source_id.startswith("character:")
         ):
+            self.voice_confirmation_status.setText(
+                "Choose an imported narrator voice before listening."
+            )
             return
         try:
-            registry = CharacterVoiceRegistry.from_file(self._voice_plan.voice_manifest)
-            voice = registry.resolve_source(source_id)
-            reference = voice.references[0]
+            reference = load_original_reference(
+                self._voice_plan.voice_manifest, source_id
+            )
             if self._narrator_player is None:
                 self._narrator_player = QtPcmPlayer(self)
                 self._narrator_player.errorOccurred.connect(
@@ -1233,8 +1237,15 @@ class OfflineAudioPreparationDialog(QDialog):
                     )
                 )
             self._narrator_player.stop()
-            self._narrator_player.setSource(QUrl.fromLocalFile(str(reference)))
-            self._narrator_player.play()
+            clip = self._narrator_player.play_bytes(
+                reference.payload, source=str(reference.path)
+            )
+            if clip is None:
+                return
+            self.voice_confirmation_status.setText(
+                f"Playing {reference.character}'s {reference.duration_seconds:.1f} s "
+                "original reference."
+            )
         except Exception as error:
             self.voice_confirmation_status.setText(
                 f"Unable to play the original game voice: {error}"

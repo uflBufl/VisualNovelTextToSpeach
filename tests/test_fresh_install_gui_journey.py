@@ -298,7 +298,11 @@ def _first_process(root):
             raise AssertionError("Centurion was not offered as a game narrator")
         dialog.narrator_choice.setCurrentIndex(narrator_index)
         dialog.play_narrator_reference.click()
-        player.play.assert_called_once()
+        player.play_bytes.assert_called_once()
+        if not player.play_bytes.call_args.args[0]:
+            raise AssertionError("Narrator playback did not receive reference bytes")
+        if "Centurion" not in dialog.voice_confirmation_status.text():
+            raise AssertionError("Narrator playback status hid the selected voice")
         if "Pocket TTS" not in dialog.narrator_status.text():
             raise AssertionError("The selected generation engine was not visible")
 
