@@ -34,10 +34,19 @@ class StreamingAudioStream(Protocol):
     def abort(self) -> object: ...
 
 
-class _StreamingAudioContext(Protocol):
-    def __enter__(self) -> StreamingAudioStream: ...
+class _StreamingAudioContext(StreamingAudioStream, Protocol):
+    def __enter__(self) -> _StreamingAudioContext: ...
 
-    def __exit__(self, *args: object) -> object: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object | None,
+    ) -> object: ...
+
+    def stop(self) -> object: ...
+
+    def close(self) -> object: ...
 
 
 class AudioOutput(Protocol):
@@ -75,13 +84,19 @@ def resolve_audio_output(audio_output: AudioOutput | None) -> AudioOutput:
 
 
 class _LoggedOutputStream:
-    def __init__(self, stream, stream_id, fields, context):
+    def __init__(
+        self,
+        stream: _StreamingAudioContext,
+        stream_id: str,
+        fields: dict[str, object],
+        context: dict[str, object],
+    ) -> None:
         self.stream = stream
         self.stream_id = stream_id
         self.fields = fields
         self.context = context
 
-    def _record(self, operation, outcome, reason):
+    def _record(self, operation: str, outcome: str, reason: str) -> None:
         record_audio_lifecycle(
             operation,
             **self.context,
@@ -92,7 +107,7 @@ class _LoggedOutputStream:
             owner=current_thread().name,
         )
 
-    def __enter__(self):
+    def __enter__(self) -> _LoggedOutputStream:
         try:
             entered = self.stream.__enter__()
         except Exception:
@@ -103,10 +118,15 @@ class _LoggedOutputStream:
         self._record("start", "complete", "context-enter")
         return self
 
-    def __exit__(self, *args):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object | None,
+    ) -> object:
         self._record("stop", "requested", "context-exit")
         try:
-            result = self.stream.__exit__(*args)
+            result = self.stream.__exit__(exc_type, exc_value, traceback)
         except Exception:
             self._record("close", "failed", "context-exit")
             raise
@@ -114,10 +134,10 @@ class _LoggedOutputStream:
         self._record("close", "complete", "context-exit")
         return result
 
-    def write(self, audio):
+    def write(self, audio: object) -> object:
         return self.stream.write(audio)
 
-    def abort(self):
+    def abort(self) -> object:
         self._record("abort", "requested", "caller-request")
         try:
             result = self.stream.abort()
@@ -127,7 +147,7 @@ class _LoggedOutputStream:
         self._record("abort", "complete", "caller-request")
         return result
 
-    def stop(self):
+    def stop(self) -> object:
         self._record("stop", "requested", "caller-request")
         try:
             result = self.stream.stop()
@@ -137,7 +157,7 @@ class _LoggedOutputStream:
         self._record("stop", "complete", "caller-request")
         return result
 
-    def close(self):
+    def close(self) -> object:
         try:
             result = self.stream.close()
         except Exception:
@@ -146,18 +166,24 @@ class _LoggedOutputStream:
         self._record("close", "complete", "caller-request")
         return result
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> object:
         return getattr(self.stream, name)
 
 
 class _LoggedAudioOutput:
-    def __init__(self, output):
+    def __init__(self, output: AudioOutput) -> None:
         self.output = output
         self.lock = Lock()
-        self.convenience = None
+        self.convenience: tuple[str, dict[str, object], dict[str, object]] | None = None
 
-    def _device_fields(self):
-        fields = {}
+    def get_stream(self) -> _AudioStream:
+        return self.output.get_stream()
+
+    def query_devices(self, *, kind: str) -> object:
+        return self.output.query_devices(kind=kind)
+
+    def _device_fields(self) -> dict[str, object]:
+        fields: dict[str, object] = {}
         try:
             device = self.output.query_devices(kind="output")
             if isinstance(device, Mapping):
@@ -172,18 +198,30 @@ class _LoggedAudioOutput:
             pass
         return fields
 
-    def OutputStream(self, **options):
+    def OutputStream(
+        self,
+        *,
+        samplerate: int,
+        channels: int,
+        dtype: str,
+        latency: object,
+    ) -> _LoggedOutputStream:
         stream_id = uuid4().hex
         fields = {
             **self._device_fields(),
-            "sample_rate": options.get("samplerate"),
-            "channels": options.get("channels"),
-            "dtype": options.get("dtype"),
-            "latency": options.get("latency"),
+            "sample_rate": samplerate,
+            "channels": channels,
+            "dtype": dtype,
+            "latency": latency,
         }
         context = dict(audio_lifecycle_context.get() or {})
         try:
-            stream = self.output.OutputStream(**options)
+            stream = self.output.OutputStream(
+                samplerate=samplerate,
+                channels=channels,
+                dtype=dtype,
+                latency=latency,
+            )
         except Exception:
             record_audio_lifecycle(
                 "open",
@@ -206,7 +244,7 @@ class _LoggedAudioOutput:
         )
         return _LoggedOutputStream(stream, stream_id, fields, context)
 
-    def play(self, audio, sample_rate, *, latency):
+    def play(self, audio: object, sample_rate: int, *, latency: object) -> object:
         stream_id = uuid4().hex
         context = dict(audio_lifecycle_context.get() or {})
         fields = {
@@ -242,19 +280,19 @@ class _LoggedAudioOutput:
         )
         return result
 
-    def wait(self):
+    def wait(self) -> object:
         try:
             return self.output.wait()
         finally:
             self._finish_convenience("close", "convenience-wait")
 
-    def stop(self):
+    def stop(self) -> object:
         try:
             return self.output.stop()
         finally:
             self._finish_convenience("abort", "convenience-stop")
 
-    def _finish_convenience(self, operation, reason):
+    def _finish_convenience(self, operation: str, reason: str) -> None:
         with self.lock:
             active, self.convenience = self.convenience, None
         if active is None:
@@ -270,7 +308,7 @@ class _LoggedAudioOutput:
             owner=current_thread().name,
         )
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> object:
         return getattr(self.output, name)
 
 
