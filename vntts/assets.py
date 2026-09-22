@@ -162,6 +162,10 @@ class ModelAssetManager:
                 progress,
                 cancel_event,
             )
+            if expected_length is not None and output.stat().st_size != expected_length:
+                raise ModelIntegrityError(
+                    f"Downloaded model file has the wrong size: {filename}"
+                )
 
         self._check_cancelled(cancel_event)
         self._validate_upstream_hash(model_path, asset)

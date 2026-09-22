@@ -112,6 +112,30 @@ class ModelAssetManagerTest(unittest.TestCase):
         self.assertEqual(progress[-1][0], 100)
         self.assertIn("checksums passed", progress[-1][1])
 
+    def test_truncated_download_is_not_marked_ready(self):
+        asset = self.create_asset()
+        files = {
+            asset.urls[0]: b"complete-model-weights",
+            asset.urls[1]: b"publisher-hash\n",
+        }
+        complete_opener = MemoryOpener(files)
+
+        def opener(request, timeout):
+            if request.get_method() == "GET" and request.full_url == asset.urls[0]:
+                complete_opener.requests.append(request)
+                return MemoryResponse(b"truncated")
+            return complete_opener(request, timeout)
+
+        with TemporaryDirectory() as temporary_directory:
+            manager = ModelAssetManager(temporary_directory, opener=opener)
+
+            with self.assertRaisesRegex(ModelIntegrityError, "size"):
+                manager.download(asset.name, asset=asset)
+
+            self.assertFalse(
+                (manager.model_path(asset.name) / "vntts-asset.json").exists()
+            )
+
     def test_cancelled_download_keeps_partial_file_and_retry_resumes(self):
         asset = self.create_asset()
         model_data = b"x" * (2 * 1024 * 1024 + 17)
