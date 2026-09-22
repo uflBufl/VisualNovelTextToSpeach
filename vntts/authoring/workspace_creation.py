@@ -903,6 +903,30 @@ def create_failure_reference_workspace(
         (base_directory / "generated-audio/generation-state.json", state_sha256),
         (base_directory / "queue.jsonl", queue_sha256),
     ]
+    return _publish_failure_reference_workspace(
+        root,
+        base_directory,
+        base_document,
+        binding,
+        binding_document,
+        queue_sha256,
+        base_workspace_sha256,
+        state_sha256,
+        base_snapshots,
+    )
+
+
+def _publish_failure_reference_workspace(
+    root: Path,
+    base_directory: Path,
+    base_document: WorkspaceDocument,
+    binding: FailureReferenceBinding,
+    binding_document: JsonDocument,
+    queue_sha256: str,
+    base_workspace_sha256: str,
+    state_sha256: str,
+    base_snapshots: list[WorkspaceSnapshot],
+) -> WorkspaceCreationResult:
     binding_snapshots: list[WorkspaceSnapshot] = []
     try:
         with (
@@ -912,83 +936,117 @@ def create_failure_reference_workspace(
             ) as leases,
             staged_directory(root, prefix=".reference-binding-staging-") as staging,
         ):
-            if any((base_directory / "generated-audio").rglob("*.partial.wav")):
-                raise AuthoringWorkbenchError(
-                    "Failure-reference base became active before publication"
-                )
-            for tree_name in ("provenance", "inputs", "generated-audio"):
-                _copy_workspace_tree_snapshot(
-                    base_directory / tree_name,
-                    staging / tree_name,
-                    base_snapshots,
-                )
-            (staging / "generated-audio/.generation-lease.json").unlink(missing_ok=True)
-            (staging / "generated-audio/.generation-lease.guard").unlink(
-                missing_ok=True
-            )
-            (staging / "queue.jsonl").write_bytes(
-                _read_file_bytes(
-                    base_directory / "queue.jsonl", "failure-reference base queue"
-                )
-            )
-            target_binding = staging / "inputs" / "failure-reference-binding"
-            _copy_workspace_tree_snapshot(
-                binding.directory,
-                target_binding,
+            binding_config, destination = _stage_failure_reference_workspace(
+                staging,
+                root,
+                base_directory,
+                base_document,
+                binding,
+                binding_document,
+                base_workspace_sha256,
+                state_sha256,
+                base_snapshots,
                 binding_snapshots,
             )
-            binding_path = target_binding / "binding.json"
-            binding_config, destination, workspace = (
-                _failure_reference_workspace_document(
-                    root,
-                    base_document,
-                    binding,
-                    binding_document,
-                    target_binding,
-                    binding_path,
-                    base_workspace_sha256,
-                    state_sha256,
-                )
+            _assert_failure_reference_sources_unchanged(
+                (*base_snapshots, *binding_snapshots)
             )
-            atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
-            import_snapshot = _load_json(
-                staging / "provenance/import.json", "failure-reference import snapshot"
-            )
-            _validate_workspace_input_config(staging, workspace, import_snapshot)
-            _validate_workspace_failure_reference_binding(staging, workspace)
-            _validate_workspace_carry_forward(staging, workspace)
-            _validate_workspace_offline_fallback_state(staging, workspace)
-            _validate_workspace_outcome_merge(staging, workspace)
-            for path, digest in (*base_snapshots, *binding_snapshots):
-                if not path.is_file() or sha256_file(path) != digest:
-                    raise AuthoringWorkbenchError(
-                        "Failure-reference source changed before workspace publication"
-                    )
             for lease in leases:
                 lease.assert_owned()
-            if destination.exists():
-                _directory, existing = _load_workspace(destination)
-                if existing.get("failure_reference_binding") != binding_config:
-                    raise AuthoringWorkbenchError(
-                        "Failure-reference destination conflicts with another binding"
-                    )
-                return WorkspaceCreationResult(destination, False)
-            try:
-                _rename_directory_no_replace(staging, destination)
-            except (AtomicPublicationError, OSError, FinalGamePackError) as error:
-                if destination.exists():
-                    _directory, existing = _load_workspace(destination)
-                    if existing.get("failure_reference_binding") == binding_config:
-                        for lease in leases:
-                            lease.mark_committed()
-                        return WorkspaceCreationResult(destination, False)
-                raise AuthoringWorkbenchError(
-                    f"Unable to publish failure-reference workspace: {error}"
-                ) from error
-            for lease in leases:
-                lease.mark_committed()
+            return _publish_failure_reference_staging(
+                staging, destination, binding_config, leases
+            )
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
+
+
+def _stage_failure_reference_workspace(
+    staging: Path,
+    root: Path,
+    base_directory: Path,
+    base_document: WorkspaceDocument,
+    binding: FailureReferenceBinding,
+    binding_document: JsonDocument,
+    base_workspace_sha256: str,
+    state_sha256: str,
+    base_snapshots: list[WorkspaceSnapshot],
+    binding_snapshots: list[WorkspaceSnapshot],
+) -> tuple[JsonDocument, Path]:
+    if any((base_directory / "generated-audio").rglob("*.partial.wav")):
+        raise AuthoringWorkbenchError(
+            "Failure-reference base became active before publication"
+        )
+    for tree_name in ("provenance", "inputs", "generated-audio"):
+        _copy_workspace_tree_snapshot(
+            base_directory / tree_name, staging / tree_name, base_snapshots
+        )
+    (staging / "generated-audio/.generation-lease.json").unlink(missing_ok=True)
+    (staging / "generated-audio/.generation-lease.guard").unlink(missing_ok=True)
+    (staging / "queue.jsonl").write_bytes(
+        _read_file_bytes(base_directory / "queue.jsonl", "failure-reference base queue")
+    )
+    target_binding = staging / "inputs" / "failure-reference-binding"
+    _copy_workspace_tree_snapshot(binding.directory, target_binding, binding_snapshots)
+    binding_path = target_binding / "binding.json"
+    binding_config, destination, workspace = _failure_reference_workspace_document(
+        root,
+        base_document,
+        binding,
+        binding_document,
+        target_binding,
+        binding_path,
+        base_workspace_sha256,
+        state_sha256,
+    )
+    atomic_write_json(staging / "workspace.json", workspace, sort_keys=True)
+    import_snapshot = _load_json(
+        staging / "provenance/import.json", "failure-reference import snapshot"
+    )
+    _validate_workspace_input_config(staging, workspace, import_snapshot)
+    _validate_workspace_failure_reference_binding(staging, workspace)
+    _validate_workspace_carry_forward(staging, workspace)
+    _validate_workspace_offline_fallback_state(staging, workspace)
+    _validate_workspace_outcome_merge(staging, workspace)
+    return binding_config, destination
+
+
+def _assert_failure_reference_sources_unchanged(
+    snapshots: Iterable[WorkspaceSnapshot],
+) -> None:
+    for path, digest in snapshots:
+        if not path.is_file() or sha256_file(path) != digest:
+            raise AuthoringWorkbenchError(
+                "Failure-reference source changed before workspace publication"
+            )
+
+
+def _publish_failure_reference_staging(
+    staging: Path,
+    destination: Path,
+    binding_config: JsonDocument,
+    leases: Sequence[GenerationLease],
+) -> WorkspaceCreationResult:
+    if destination.exists():
+        _directory, existing = _load_workspace(destination)
+        if existing.get("failure_reference_binding") != binding_config:
+            raise AuthoringWorkbenchError(
+                "Failure-reference destination conflicts with another binding"
+            )
+        return WorkspaceCreationResult(destination, False)
+    try:
+        _rename_directory_no_replace(staging, destination)
+    except (AtomicPublicationError, OSError, FinalGamePackError) as error:
+        if destination.exists():
+            _directory, existing = _load_workspace(destination)
+            if existing.get("failure_reference_binding") == binding_config:
+                for lease in leases:
+                    lease.mark_committed()
+                return WorkspaceCreationResult(destination, False)
+        raise AuthoringWorkbenchError(
+            f"Unable to publish failure-reference workspace: {error}"
+        ) from error
+    for lease in leases:
+        lease.mark_committed()
     return WorkspaceCreationResult(destination, True)
 
 

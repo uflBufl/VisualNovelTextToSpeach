@@ -297,60 +297,11 @@ def _published_decision_context(
     candidate_evidence: dict[str, dict[str, JsonObject]],
 ) -> JsonObject:
     """Publish shared synthesis facts without revealing differing blind arms."""
-    run_configs: list[JsonObject] = []
-    for candidate in candidates:
-        for snapshot in candidate_snapshots[candidate["candidate_id"]]:
-            run_config = snapshot["workspace"].get("run_config")
-            run_configs.append(
-                _object(run_config, "Candidate run config")
-                if isinstance(run_config, dict)
-                else {}
-            )
+    run_configs = _candidate_run_configs(candidates, candidate_snapshots)
     outcome_items = [
         item for evidence in candidate_evidence.values() for item in evidence.values()
     ]
-    references = {
-        tuple(
-            _text(reference.get("path"), "Candidate reference path")
-            for reference in candidate["ordered_references"]
-        )
-        for candidate in candidates
-    }
-    reference = "Hidden for this blind comparison"
-    if len(references) == 1:
-        paths = next(iter(references))
-        reference = ", ".join("/".join(Path(value).parts[-2:]) for value in paths)
-        if len(paths) > 1:
-            reference = f"{len(paths)}-file composite: {reference}"
-    strategies: set[object] = set()
-    for candidate in candidates:
-        hypothesis = candidate.get("render_hypothesis")
-        strategies.add(
-            hypothesis.get("strategy")
-            if isinstance(hypothesis, dict)
-            else "direct render"
-        )
-    controls = _shared_value(strategies)
-    hypotheses: list[JsonObject] = []
-    for candidate in candidates:
-        hypothesis = candidate.get("render_hypothesis")
-        if isinstance(hypothesis, dict):
-            hypotheses.append(hypothesis)
-    pause_values = {hypothesis.get("pause_ms") for hypothesis in hypotheses}
-    if (
-        len(hypotheses) == len(candidates)
-        and len(pause_values) == 1
-        and isinstance(hypotheses[0].get("pause_ms"), int)
-    ):
-        if isinstance(controls, str):
-            controls += f", {hypotheses[0]['pause_ms']} ms inserted pause"
     mode = document.get("target_mode", "missing")
-
-    def synthesis_value(item_field: str, config_field: str) -> object:
-        values = {item.get(item_field) for item in outcome_items}
-        if any(value not in {None, ""} for value in values):
-            return _shared_value(values)
-        return _shared_value({config.get(config_field) for config in run_configs})
 
     return {
         "purpose": (
@@ -362,14 +313,14 @@ def _published_decision_context(
         "synthesis_voice": _shared_value(
             {candidate["voice_character"] for candidate in candidates}
         ),
-        "reference": reference,
-        "backend": synthesis_value("provider", "backend"),
-        "model": synthesis_value("model", "model"),
-        "generation_profile": synthesis_value(
-            "generation_profile", "generation_profile"
+        "reference": _published_reference(candidates),
+        "backend": _synthesis_value(outcome_items, run_configs, "provider", "backend"),
+        "model": _synthesis_value(outcome_items, run_configs, "model", "model"),
+        "generation_profile": _synthesis_value(
+            outcome_items, run_configs, "generation_profile", "generation_profile"
         ),
         "seed": _shared_value({item.get("seed") for item in outcome_items}),
-        "controls": controls,
+        "controls": _published_controls(candidates),
         "effect": (
             "select this checksum-bound fallback WAV, or keep the line unresolved"
             if mode == "failed"
@@ -389,6 +340,76 @@ def _published_decision_context(
             ),
         },
     }
+
+
+def _candidate_run_configs(
+    candidates: list[PlanCandidate],
+    candidate_snapshots: dict[str, list[CandidateSnapshot]],
+) -> list[JsonObject]:
+    return [
+        _object(run_config, "Candidate run config")
+        if isinstance(run_config, dict)
+        else {}
+        for candidate in candidates
+        for snapshot in candidate_snapshots[candidate["candidate_id"]]
+        for run_config in (snapshot["workspace"].get("run_config"),)
+    ]
+
+
+def _published_reference(candidates: list[PlanCandidate]) -> str:
+    references = {
+        tuple(
+            _text(reference.get("path"), "Candidate reference path")
+            for reference in candidate["ordered_references"]
+        )
+        for candidate in candidates
+    }
+    if len(references) != 1:
+        return "Hidden for this blind comparison"
+    paths = next(iter(references))
+    reference = ", ".join("/".join(Path(value).parts[-2:]) for value in paths)
+    return f"{len(paths)}-file composite: {reference}" if len(paths) > 1 else reference
+
+
+def _published_controls(candidates: list[PlanCandidate]) -> object:
+    hypotheses = [
+        hypothesis
+        for candidate in candidates
+        if isinstance(hypothesis := candidate.get("render_hypothesis"), dict)
+    ]
+    controls = _shared_value(
+        {
+            hypothesis.get("strategy")
+            if isinstance(hypothesis, dict)
+            else "direct render"
+            for hypothesis in (
+                candidate.get("render_hypothesis") for candidate in candidates
+            )
+        }
+    )
+    pause_values = {hypothesis.get("pause_ms") for hypothesis in hypotheses}
+    if (
+        len(hypotheses) == len(candidates)
+        and len(pause_values) == 1
+        and isinstance(hypotheses[0].get("pause_ms"), int)
+        and isinstance(controls, str)
+    ):
+        return f"{controls}, {hypotheses[0]['pause_ms']} ms inserted pause"
+    return controls
+
+
+def _synthesis_value(
+    outcome_items: list[JsonObject],
+    run_configs: list[JsonObject],
+    item_field: str,
+    config_field: str,
+) -> object:
+    values = {item.get(item_field) for item in outcome_items}
+    return (
+        _shared_value(values)
+        if any(value not in {None, ""} for value in values)
+        else _shared_value({config.get(config_field) for config in run_configs})
+    )
 
 
 def build_missing_voice_reuse_review(

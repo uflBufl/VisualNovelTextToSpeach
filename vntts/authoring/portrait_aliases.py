@@ -122,14 +122,7 @@ def build_portrait_alias_plan(
     max_dhash_distance: int = DEFAULT_MAX_DHASH_DISTANCE,
 ) -> PortraitAliasPlan:
     """Suggest same-character expression aliases without granting authority."""
-    if (
-        not isinstance(max_dhash_distance, int)
-        or isinstance(max_dhash_distance, bool)
-        or not 0 <= max_dhash_distance <= MAX_DHASH_DISTANCE
-    ):
-        raise PortraitAliasError(
-            f"Portrait dHash distance must be an integer from 0 to {MAX_DHASH_DISTANCE}"
-        )
+    _validate_dhash_distance(max_dhash_distance)
     path = Path(quality_review_path).expanduser().resolve()
     payload = _read(path, "source-reference quality review")
     source_sha256 = hashlib.sha256(payload).hexdigest()
@@ -137,65 +130,8 @@ def build_portrait_alias_plan(
         review = load_source_reference_quality_review(path)
     except SourceReferenceQualityError as error:
         raise PortraitAliasError(str(error)) from error
-    variants: list[_PortraitVariant] = []
-    review_variants = review.get("variants")
-    if not isinstance(review_variants, list):
-        raise PortraitAliasError("Source-reference quality review variants are invalid")
-    for card in review_variants:
-        decision = card.get("decision")
-        portrait_image = card.get("portrait_image")
-        if (
-            not isinstance(decision, dict)
-            or decision.get("decision") != "accept"
-            or not isinstance(portrait_image, dict)
-        ):
-            continue
-        image_path = _contained_file(path.parent, portrait_image.get("image"))
-        image_payload = _read(image_path, f"portrait {card['variant_id']}")
-        image_sha256 = hashlib.sha256(image_payload).hexdigest()
-        if image_sha256 != portrait_image.get("image_sha256"):
-            raise PortraitAliasError(f"Portrait image changed: {card['variant_id']}")
-        variant_id = _required_text(card.get("variant_id"), "quality variant ID")
-        variants.append(
-            {
-                "variant_id": variant_id,
-                "character": _required_text(card.get("character"), "quality character"),
-                "portrait": card["portrait"],
-                "source_bank": _required_text(
-                    card.get("source_bank"), "quality source bank"
-                ),
-                "portrait_image_sha256": image_sha256,
-                "dhash": _dhash(image_payload, variant_id),
-            }
-        )
-    suggestions: list[_PortraitAliasSuggestion] = []
-    for first, second in combinations(variants, 2):
-        if (
-            first["character"].casefold() != second["character"].casefold()
-            or first["source_bank"].casefold() != second["source_bank"].casefold()
-            or first["portrait"] == second["portrait"]
-        ):
-            continue
-        distance = _hamming(first["dhash"], second["dhash"])
-        if distance > max_dhash_distance:
-            continue
-        members = sorted(
-            (copy.deepcopy(first), copy.deepcopy(second)),
-            key=lambda value: value["variant_id"],
-        )
-        suggestion_body: _PortraitAliasSuggestionBody = {
-            "character": members[0]["character"],
-            "source_bank": members[0]["source_bank"],
-            "dhash_distance": distance,
-            "variants": members,
-        }
-        suggestions.append(
-            {
-                "suggestion_id": canonical_document_sha256(suggestion_body),
-                **suggestion_body,
-            }
-        )
-    suggestions.sort(key=lambda value: value["suggestion_id"])
+    variants = _eligible_portrait_variants(path, review)
+    suggestions = _portrait_alias_suggestions(variants, max_dhash_distance)
     body: _PortraitAliasPlanBody = {
         "schema": PORTRAIT_ALIAS_PLAN_SCHEMA,
         "schema_version": PORTRAIT_ALIAS_PLAN_VERSION,
@@ -225,6 +161,93 @@ def build_portrait_alias_plan(
             "Source-reference quality review changed while aliases were planned"
         )
     return PortraitAliasPlan(document["plan_id"], document)
+
+
+def _validate_dhash_distance(max_dhash_distance: int) -> None:
+    if (
+        not isinstance(max_dhash_distance, int)
+        or isinstance(max_dhash_distance, bool)
+        or not 0 <= max_dhash_distance <= MAX_DHASH_DISTANCE
+    ):
+        raise PortraitAliasError(
+            f"Portrait dHash distance must be an integer from 0 to {MAX_DHASH_DISTANCE}"
+        )
+
+
+def _eligible_portrait_variants(
+    path: Path, review: JsonObject
+) -> list[_PortraitVariant]:
+    review_variants = review.get("variants")
+    if not isinstance(review_variants, list):
+        raise PortraitAliasError("Source-reference quality review variants are invalid")
+    variants: list[_PortraitVariant] = []
+    for card in review_variants:
+        decision = card.get("decision")
+        portrait_image = card.get("portrait_image")
+        if (
+            not isinstance(decision, dict)
+            or decision.get("decision") != "accept"
+            or not isinstance(portrait_image, dict)
+        ):
+            continue
+        variants.append(_accepted_portrait_variant(path, card, portrait_image))
+    return variants
+
+
+def _accepted_portrait_variant(
+    path: Path, card: JsonObject, portrait_image: JsonObject
+) -> _PortraitVariant:
+    image_path = _contained_file(path.parent, portrait_image.get("image"))
+    image_payload = _read(image_path, f"portrait {card['variant_id']}")
+    image_sha256 = hashlib.sha256(image_payload).hexdigest()
+    if image_sha256 != portrait_image.get("image_sha256"):
+        raise PortraitAliasError(f"Portrait image changed: {card['variant_id']}")
+    variant_id = _required_text(card.get("variant_id"), "quality variant ID")
+    return {
+        "variant_id": variant_id,
+        "character": _required_text(card.get("character"), "quality character"),
+        "portrait": card["portrait"],
+        "source_bank": _required_text(card.get("source_bank"), "quality source bank"),
+        "portrait_image_sha256": image_sha256,
+        "dhash": _dhash(image_payload, variant_id),
+    }
+
+
+def _portrait_alias_suggestions(
+    variants: list[_PortraitVariant], max_dhash_distance: int
+) -> list[_PortraitAliasSuggestion]:
+    suggestions: list[_PortraitAliasSuggestion] = []
+    for first, second in combinations(variants, 2):
+        if not _eligible_alias_pair(first, second):
+            continue
+        distance = _hamming(first["dhash"], second["dhash"])
+        if distance <= max_dhash_distance:
+            suggestions.append(_portrait_alias_suggestion(first, second, distance))
+    return sorted(suggestions, key=lambda value: value["suggestion_id"])
+
+
+def _eligible_alias_pair(first: _PortraitVariant, second: _PortraitVariant) -> bool:
+    return (
+        first["character"].casefold() == second["character"].casefold()
+        and first["source_bank"].casefold() == second["source_bank"].casefold()
+        and first["portrait"] != second["portrait"]
+    )
+
+
+def _portrait_alias_suggestion(
+    first: _PortraitVariant, second: _PortraitVariant, distance: int
+) -> _PortraitAliasSuggestion:
+    members = sorted(
+        (copy.deepcopy(first), copy.deepcopy(second)),
+        key=lambda value: value["variant_id"],
+    )
+    body: _PortraitAliasSuggestionBody = {
+        "character": members[0]["character"],
+        "source_bank": members[0]["source_bank"],
+        "dhash_distance": distance,
+        "variants": members,
+    }
+    return {"suggestion_id": canonical_document_sha256(body), **body}
 
 
 def write_portrait_alias_plan(plan: PortraitAliasPlan, output: str | Path) -> Path:

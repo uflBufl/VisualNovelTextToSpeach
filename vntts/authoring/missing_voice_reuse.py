@@ -1200,6 +1200,20 @@ def _validate_plan(
 ) -> _PlanDocument:
     document = plan.document if isinstance(plan, MissingVoiceReusePlan) else plan
     document = _object(document, "Missing-voice reuse plan")
+    _validate_plan_header(document)
+    targets, samples, candidates, cohorts = _plan_sections(document)
+    sample_ids = _validate_plan_inventory(
+        document, targets, samples, candidates, cohorts
+    )
+    target_mode = _validate_candidate_inventory(document, candidates)
+    _validate_candidate_mode(document, targets, candidates, sample_ids, target_mode)
+    validated = _object(copy.deepcopy(document), "Missing-voice reuse plan")
+    if not _is_plan_document(validated):
+        raise MissingVoiceReuseError("Missing-voice reuse plan fields are malformed")
+    return validated
+
+
+def _validate_plan_header(document: JsonObject) -> None:
     if (
         document.get("schema") != MISSING_VOICE_REUSE_PLAN_SCHEMA
         or document.get("schema_version") != MISSING_VOICE_REUSE_PLAN_VERSION
@@ -1210,12 +1224,27 @@ def _validate_plan(
         {key: value for key, value in document.items() if key != "plan_id"}
     ):
         raise MissingVoiceReuseError("Missing-voice reuse plan identity is invalid")
+
+
+def _plan_sections(
+    document: JsonObject,
+) -> tuple[JsonObjects, JsonObjects, JsonObjects, JsonObjects]:
     targets = _objects(document.get("targets"), "plan targets")
     samples = _objects(document.get("comparison_samples"), "plan samples")
     candidates = _objects(document.get("candidates"), "plan candidates")
     cohorts = _objects(document.get("cohorts"), "plan cohorts")
     if not all((targets, samples, candidates, cohorts)):
         raise MissingVoiceReuseError("Missing-voice reuse plan is incomplete")
+    return targets, samples, candidates, cohorts
+
+
+def _validate_plan_inventory(
+    document: JsonObject,
+    targets: JsonObjects,
+    samples: JsonObjects,
+    candidates: JsonObjects,
+    cohorts: JsonObjects,
+) -> list[str]:
     queue_ids = [_string(value.get("queue_id"), "queue ID") for value in targets]
     if queue_ids != sorted(set(queue_ids)):
         raise MissingVoiceReuseError("Missing-voice targets are not canonical")
@@ -1233,6 +1262,10 @@ def _validate_plan(
         raise MissingVoiceReuseError("Missing-voice reuse counts are inconsistent")
     if document.get("comparison_sample_queue_ids") != sample_ids:
         raise MissingVoiceReuseError("Missing-voice sample order changed")
+    return sample_ids
+
+
+def _validate_candidate_inventory(document: JsonObject, candidates: JsonObjects) -> str:
     candidate_ids = [
         _string(value.get("candidate_id"), "candidate ID") for value in candidates
     ]
@@ -1249,67 +1282,74 @@ def _validate_plan(
             {key: value for key, value in candidate.items() if key != "candidate_id"}
         ):
             raise MissingVoiceReuseError("Missing-voice candidate identity changed")
+    return target_mode
+
+
+def _validate_candidate_mode(
+    document: JsonObject,
+    targets: JsonObjects,
+    candidates: JsonObjects,
+    sample_ids: list[str],
+    target_mode: str,
+) -> None:
     candidate_mode = document.get("candidate_mode")
     if candidate_mode is None:
         if any("render_hypothesis" in candidate for candidate in candidates):
             raise MissingVoiceReuseError(
                 "Missing-voice candidate hypothesis mode is absent"
             )
-    elif candidate_mode == INLINE_PAUSE_MARKER and target_mode == "failed":
-        target_by_id = {
-            _string(target["queue_id"], "queue ID"): target for target in targets
-        }
-        for candidate in candidates:
-            hypothesis_value = candidate.get("render_hypothesis")
-            hypothesis = (
-                _object(hypothesis_value, "render hypothesis")
-                if hypothesis_value is not None
-                else None
-            )
-            prompts = hypothesis.get("prompts") if hypothesis is not None else None
-            if (
-                hypothesis is None
-                or hypothesis.get("strategy") != INLINE_PAUSE_MARKER
-                or not isinstance(hypothesis.get("pause_ms"), int)
-                or isinstance(hypothesis.get("pause_ms"), bool)
-                or not 50 <= _int(hypothesis["pause_ms"], "pause_ms") <= 1000
-                or not isinstance(prompts, list)
-                or [
-                    _string(
-                        _object(prompt, "inline-pause prompt").get("queue_id"),
-                        "queue ID",
-                    )
-                    for prompt in prompts
-                ]
-                != sample_ids
-            ):
-                raise MissingVoiceReuseError(
-                    "Missing-voice inline-pause hypothesis is invalid"
-                )
-            for prompt_value in prompts:
-                prompt = _object(prompt_value, "inline-pause prompt")
-                prompt_queue_id = _string(prompt.get("queue_id"), "queue ID")
-                target = target_by_id[prompt_queue_id]
-                if (
-                    prompt.get("source_text_sha256") != target["text_sha256"]
-                    or not isinstance(prompt.get("derived_prompt_sha256"), str)
-                    or len(
-                        _string(prompt["derived_prompt_sha256"], "derived prompt hash")
-                    )
-                    != 64
-                    or not isinstance(prompt.get("marker_count"), int)
-                    or isinstance(prompt.get("marker_count"), bool)
-                    or _int(prompt["marker_count"], "marker count") < 1
-                ):
-                    raise MissingVoiceReuseError(
-                        "Missing-voice inline-pause prompt identity is invalid"
-                    )
-    else:
+        return
+    if candidate_mode != INLINE_PAUSE_MARKER or target_mode != "failed":
         raise MissingVoiceReuseError("Missing-voice candidate mode is invalid")
-    validated = _object(copy.deepcopy(document), "Missing-voice reuse plan")
-    if not _is_plan_document(validated):
-        raise MissingVoiceReuseError("Missing-voice reuse plan fields are malformed")
-    return validated
+    target_by_id = {
+        _string(target["queue_id"], "queue ID"): target for target in targets
+    }
+    for candidate in candidates:
+        _validate_inline_pause_candidate(candidate, sample_ids, target_by_id)
+
+
+def _validate_inline_pause_candidate(
+    candidate: JsonObject, sample_ids: list[str], target_by_id: dict[str, JsonObject]
+) -> None:
+    hypothesis_value = candidate.get("render_hypothesis")
+    hypothesis = (
+        _object(hypothesis_value, "render hypothesis")
+        if hypothesis_value is not None
+        else None
+    )
+    prompts = hypothesis.get("prompts") if hypothesis is not None else None
+    if (
+        hypothesis is None
+        or hypothesis.get("strategy") != INLINE_PAUSE_MARKER
+        or not isinstance(hypothesis.get("pause_ms"), int)
+        or isinstance(hypothesis.get("pause_ms"), bool)
+        or not 50 <= _int(hypothesis["pause_ms"], "pause_ms") <= 1000
+        or not isinstance(prompts, list)
+        or [
+            _string(_object(prompt, "inline-pause prompt").get("queue_id"), "queue ID")
+            for prompt in prompts
+        ]
+        != sample_ids
+    ):
+        raise MissingVoiceReuseError("Missing-voice inline-pause hypothesis is invalid")
+    for prompt_value in prompts:
+        prompt = _object(prompt_value, "inline-pause prompt")
+        prompt_queue_id = _string(prompt.get("queue_id"), "queue ID")
+        _validate_inline_pause_prompt(prompt, target_by_id[prompt_queue_id])
+
+
+def _validate_inline_pause_prompt(prompt: JsonObject, target: JsonObject) -> None:
+    if (
+        prompt.get("source_text_sha256") != target["text_sha256"]
+        or not isinstance(prompt.get("derived_prompt_sha256"), str)
+        or len(_string(prompt["derived_prompt_sha256"], "derived prompt hash")) != 64
+        or not isinstance(prompt.get("marker_count"), int)
+        or isinstance(prompt.get("marker_count"), bool)
+        or _int(prompt["marker_count"], "marker count") < 1
+    ):
+        raise MissingVoiceReuseError(
+            "Missing-voice inline-pause prompt identity is invalid"
+        )
 
 
 def _assert_sources_unchanged(
