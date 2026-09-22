@@ -285,14 +285,15 @@ def voice_binding_label(binding: VoiceBinding | None) -> str | None:
         return "Narrator"
     if binding.route == "live-fallback":
         return "Backend default live voice"
-    if binding.source_id:
-        return binding.source_id.removeprefix("preset:").replace("_", " ").title()
+    source_id = binding.source_id
+    if isinstance(source_id, str) and source_id:
+        return source_id.removeprefix("preset:").replace("_", " ").title()
     evidence = binding.provenance.get("evidence")
     if isinstance(evidence, dict):
         source = evidence.get("source_character")
         if isinstance(source, str) and source.strip():
             return source.strip()
-    return binding.role
+    return binding.role if isinstance(binding.role, str) else None
 
 
 def voice_binding_source_id(binding: VoiceBinding | None) -> str | None:
@@ -300,8 +301,9 @@ def voice_binding_source_id(binding: VoiceBinding | None) -> str | None:
         return None
     if binding.route != "voice":
         return default_voice_choice_id
-    if binding.source_id is not None:
-        return binding.source_id
+    source_id = binding.source_id
+    if isinstance(source_id, str):
+        return source_id
     identity = hashlib.sha256(
         "\0".join(binding.source_sha256s).encode("ascii")
     ).hexdigest()
@@ -425,6 +427,8 @@ def registry_with_voice_library(
             binding.role, variant_key=binding.variant_key
         )
         source_id = voice_binding_source_id(binding)
+        if source_id is None:
+            continue
         name = source_id.removeprefix("character:").title()
         evidence = binding.provenance.get("evidence")
         metadata = evidence if isinstance(evidence, dict) else {}
