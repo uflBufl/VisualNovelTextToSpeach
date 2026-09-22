@@ -156,75 +156,80 @@ def validate_story_audio_cues(value: object) -> tuple[dict[str, object], ...]:
     """Validate extractor cue provenance without assigning event semantics."""
     if not isinstance(value, (list, tuple)):
         raise ValueError("story_audio_cues must be a list")
-    cues = []
-    for expected_index, source in enumerate(value, start=1):
-        if not isinstance(source, dict):
-            raise ValueError(f"story_audio_cues[{expected_index}] must be an object")
-        cue = dict(source)
-        if cue.get("cue_index") != expected_index:
-            raise ValueError(
-                "story_audio_cues must have consecutive source-order indices"
-            )
-        audio_id = cue.get("source_audio_id")
-        if not isinstance(audio_id, str) or not audio_id.isdecimal():
-            raise ValueError(
-                f"story_audio_cues[{expected_index}] source_audio_id is invalid"
-            )
-        for field in _CUE_INTEGER_FIELDS:
-            field_value = cue.get(field)
-            if not isinstance(field_value, int) or isinstance(field_value, bool):
-                raise ValueError(
-                    f"story_audio_cues[{expected_index}] {field} is invalid"
-                )
-        for field in _CUE_NUMBER_FIELDS:
-            field_value = cue.get(field)
-            if (
-                not isinstance(field_value, (int, float))
-                or isinstance(field_value, bool)
-                or not math.isfinite(field_value)
-            ):
-                raise ValueError(
-                    f"story_audio_cues[{expected_index}] {field} is invalid"
-                )
-        status = cue.get("audio_status")
-        if status not in _CUE_STATUS_MAP:
-            raise ValueError(
-                f"story_audio_cues[{expected_index}] audio_status is invalid"
-            )
-        if cue.get("source_audio_status") != _CUE_STATUS_MAP[status]:
-            raise ValueError(
-                f"story_audio_cues[{expected_index}] source_audio_status is inconsistent"
-            )
-        reason = cue.get("audio_reason")
-        if not isinstance(reason, str) or not reason.strip():
-            raise ValueError(
-                f"story_audio_cues[{expected_index}] audio_reason is invalid"
-            )
-        for field in ("source_event", "source_bank"):
-            field_value = cue.get(field)
-            if field_value is not None and (
-                not isinstance(field_value, str) or not field_value.strip()
-            ):
-                raise ValueError(
-                    f"story_audio_cues[{expected_index}] {field} is invalid"
-                )
-        media_ids = _cue_media_ids(cue, expected_index, "source_media_ids")
-        available_ids = _cue_media_ids(cue, expected_index, "available_media_ids")
-        if not set(available_ids).issubset(media_ids):
-            raise ValueError(
-                f"story_audio_cues[{expected_index}] available media is not declared"
-            )
-        if status == "installed" and (
-            not cue.get("source_event")
-            or not cue.get("source_bank")
-            or not media_ids
-            or not available_ids
+    return tuple(
+        _validate_story_audio_cue(source, expected_index)
+        for expected_index, source in enumerate(value, start=1)
+    )
+
+
+def _validate_story_audio_cue(source: object, expected_index: int) -> dict[str, object]:
+    if not isinstance(source, dict):
+        raise ValueError(f"story_audio_cues[{expected_index}] must be an object")
+    cue = dict(source)
+    if cue.get("cue_index") != expected_index:
+        raise ValueError("story_audio_cues must have consecutive source-order indices")
+    audio_id = cue.get("source_audio_id")
+    if not isinstance(audio_id, str) or not audio_id.isdecimal():
+        raise ValueError(
+            f"story_audio_cues[{expected_index}] source_audio_id is invalid"
+        )
+    _validate_cue_numbers(cue, expected_index)
+    status = _validate_cue_status(cue, expected_index)
+    _validate_cue_text(cue, expected_index)
+    media_ids = _cue_media_ids(cue, expected_index, "source_media_ids")
+    available_ids = _cue_media_ids(cue, expected_index, "available_media_ids")
+    if not set(available_ids).issubset(media_ids):
+        raise ValueError(
+            f"story_audio_cues[{expected_index}] available media is not declared"
+        )
+    if status == "installed" and (
+        not cue.get("source_event")
+        or not cue.get("source_bank")
+        or not media_ids
+        or not available_ids
+    ):
+        raise ValueError(
+            f"story_audio_cues[{expected_index}] installed provenance is incomplete"
+        )
+    return cue
+
+
+def _validate_cue_numbers(cue: dict[str, object], cue_index: int) -> None:
+    for field in _CUE_INTEGER_FIELDS:
+        field_value = cue.get(field)
+        if not isinstance(field_value, int) or isinstance(field_value, bool):
+            raise ValueError(f"story_audio_cues[{cue_index}] {field} is invalid")
+    for field in _CUE_NUMBER_FIELDS:
+        field_value = cue.get(field)
+        if (
+            not isinstance(field_value, (int, float))
+            or isinstance(field_value, bool)
+            or not math.isfinite(field_value)
         ):
-            raise ValueError(
-                f"story_audio_cues[{expected_index}] installed provenance is incomplete"
-            )
-        cues.append(cue)
-    return tuple(cues)
+            raise ValueError(f"story_audio_cues[{cue_index}] {field} is invalid")
+
+
+def _validate_cue_status(cue: dict[str, object], cue_index: int) -> str:
+    status = cue.get("audio_status")
+    if not isinstance(status, str) or status not in _CUE_STATUS_MAP:
+        raise ValueError(f"story_audio_cues[{cue_index}] audio_status is invalid")
+    if cue.get("source_audio_status") != _CUE_STATUS_MAP[status]:
+        raise ValueError(
+            f"story_audio_cues[{cue_index}] source_audio_status is inconsistent"
+        )
+    return status
+
+
+def _validate_cue_text(cue: dict[str, object], cue_index: int) -> None:
+    reason = cue.get("audio_reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError(f"story_audio_cues[{cue_index}] audio_reason is invalid")
+    for field in ("source_event", "source_bank"):
+        field_value = cue.get(field)
+        if field_value is not None and (
+            not isinstance(field_value, str) or not field_value.strip()
+        ):
+            raise ValueError(f"story_audio_cues[{cue_index}] {field} is invalid")
 
 
 def _cue_media_ids(
