@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.symlink_support import symlink_or_skip
 from vntts.release_matrix import (
     load_evidence,
     load_release_matrix,
@@ -60,6 +61,22 @@ class ReleaseMatrixTest(unittest.TestCase):
             validate_release_evidence(self.profiles, reports),
             [],
         )
+
+    def test_evidence_loader_ignores_symlinked_reports(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            outside = root / "outside.json"
+            outside.write_text(
+                json.dumps(self.evidence_for(self.profiles[0])),
+                encoding="utf-8",
+            )
+            symlink_or_skip(evidence / "linked.json", outside)
+
+            reports = load_evidence(evidence)
+
+        self.assertEqual(reports, [])
 
     def test_rejects_missing_mismatched_and_unsigned_evidence(self):
         report = self.evidence_for(self.profiles[0])
@@ -140,6 +157,7 @@ class ReleaseMatrixTest(unittest.TestCase):
             path = Path(temporary_directory) / "matrix.json"
             for payload in (
                 [],
+                {"version": True, "required_profiles": [{}]},
                 {"version": 1, "required_profiles": ["not-an-object"]},
                 {"version": 2, "required_profiles": [{}]},
             ):
