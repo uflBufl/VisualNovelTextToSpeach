@@ -445,6 +445,40 @@ class TTSBenchmarkTest(unittest.TestCase):
             self.assertEqual(len(wavs), 1)
             self.assertEqual(wavs[0].read_bytes(), b"published elsewhere")
 
+    def test_failed_staging_cleanup_removes_published_wav(self):
+        registry = CharacterVoiceRegistry(
+            [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
+        )
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            original_unlink = Path.unlink
+
+            def fail_staged_unlink(path, *args, **kwargs):
+                if path.parent.name.startswith(".tts-benchmark-"):
+                    raise OSError("staging cleanup failed")
+                return original_unlink(path, *args, **kwargs)
+
+            with (
+                patch(
+                    "vntts.tts_benchmark.Path.unlink",
+                    autospec=True,
+                    side_effect=fail_staged_unlink,
+                ),
+                self.assertRaisesRegex(OSError, "staging cleanup failed"),
+            ):
+                benchmark_backend(
+                    "fake",
+                    registry,
+                    ["Kamuta"],
+                    "A line.",
+                    output,
+                    backend_factory=lambda _name, _registry, _cache: (
+                        FakeRenderingBackend()
+                    ),
+                )
+
+            self.assertEqual(list(output.glob("*.wav")), [])
+
     def test_uses_typed_render_sample_rate_for_published_wav(self):
         registry = CharacterVoiceRegistry(
             [CharacterVoice("Kamuta", "kamuta", references=(Path("voice.wav"),))]
