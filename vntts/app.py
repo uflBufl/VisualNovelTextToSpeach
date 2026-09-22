@@ -30,6 +30,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -61,7 +62,7 @@ from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
 )
-from vntts.calibration import show_calibration_overlay
+from vntts.calibration import DialogRegionOverlay, show_calibration_overlay
 from vntts.configuration_apply import ConfigurationApplyMixin
 from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dashboard_ui import (
@@ -71,6 +72,7 @@ from vntts.dashboard_ui import (
     configure_floating_window,
 )
 from vntts.diagnostics import (
+    DiagnosticSnapshot,
     diagnostic_error_guidance,
     diagnostic_remediation,
     macos_permission_warnings,
@@ -1694,8 +1696,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.profile_store = profile_store or GameProfileStore.load()
         self.correction_store = correction_store or OCRCorrectionStore.load()
         self.hotkey_listener: _HotkeyListener | None = None
-        self.calibration_overlay = None
-        self.onboarding_wizard = self.diagnostics_dialog = None
+        self.calibration_overlay: DialogRegionOverlay | None = None
+        self.onboarding_wizard = None
+        self.diagnostics_dialog: DiagnosticsDialog | None = None
         self.diagnostics_refresh_generation = 0
         self.readiness_dialog = self.pregeneration_dialog = self.support_dialog = None
         self.narrator_dialog = None
@@ -1710,12 +1713,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.unknown_speaker_mapping_in_progress = None
         self.resume_live_after_unknown_mapping = False
         self.onboarding_cancel_event = Event()
-        self.live_voice_preflight_prompt = None
-        self.live_voice_preflight_assign_button = None
-        self.live_voice_preflight_narrator_button = None
-        self.live_voice_preflight_cancel_button = None
-        self.live_voice_preflight_action_prompt = None
-        self.pending_live_voice_preflight_speakers = ()
+        self.live_voice_preflight_prompt: QMessageBox | None = None
+        self.live_voice_preflight_assign_button: QAbstractButton | None = None
+        self.live_voice_preflight_narrator_button: QAbstractButton | None = None
+        self.live_voice_preflight_cancel_button: QAbstractButton | None = None
+        self.live_voice_preflight_action_prompt: QMessageBox | None = None
+        self.pending_live_voice_preflight_speakers: tuple[str, ...] = ()
         self.restore_compact_after_calibration = False
         self._notification_recovery = None
         self._background_notification_shown = False
@@ -2439,7 +2442,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return
         self._start_live_with_preflight(allow_scope_bootstrap=False)
 
-    def _offer_story_match_recovery(self, message):
+    def _offer_story_match_recovery(self, message: str) -> bool:
         self.show_dashboard()
         self.dashboard.show_reading()
         prompt = QMessageBox(self.dashboard)
@@ -2486,7 +2489,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.live_changed.emit(False)
         return False
 
-    def _show_live_voice_preflight(self, speakers):
+    def _show_live_voice_preflight(self, speakers: tuple[str, ...]) -> None:
         if self.live_voice_preflight_prompt is not None:
             self.live_voice_preflight_prompt.setProperty(
                 "vntts_live_voice_preflight_handled",
@@ -2537,7 +2540,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         prompt.open()
         QTimer.singleShot(0, lambda: configure_floating_window(prompt))
 
-    def _live_voice_preflight_clicked(self, button):
+    def _live_voice_preflight_clicked(self, button: QAbstractButton) -> None:
         prompt = self.sender()
         if not isinstance(prompt, QMessageBox):
             return
@@ -2565,7 +2568,12 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             ),
         )
 
-    def _complete_live_voice_preflight_action(self, prompt, action, speakers):
+    def _complete_live_voice_preflight_action(
+        self,
+        prompt: QMessageBox,
+        action: str,
+        speakers: tuple[str, ...],
+    ) -> None:
         if self._shutting_down or prompt is not self.live_voice_preflight_action_prompt:
             return
         self.live_voice_preflight_action_prompt = None
@@ -2578,14 +2586,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             self.set_status("Live reading cancelled: character voices need a decision")
 
-    def _review_live_voice_preflight(self):
+    def _review_live_voice_preflight(self) -> None:
         speakers = self.pending_live_voice_preflight_speakers
         if not speakers:
             return
         self.resume_live_after_unknown_mapping = True
         self._open_pending_speaker_mapping(speakers[0])
 
-    def _live_voice_preflight_finished(self, _result):
+    def _live_voice_preflight_finished(self, _result: int) -> None:
         prompt = self.sender()
         if isinstance(prompt, QMessageBox) and not prompt.property(
             "vntts_live_voice_preflight_handled"
@@ -2597,23 +2605,23 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.live_voice_preflight_narrator_button = None
             self.live_voice_preflight_cancel_button = None
 
-    def toggle_speech_pause(self):
+    def toggle_speech_pause(self) -> None:
         if self.narrator_dialog is not None:
             return
         self.signals.speech_paused_changed.emit(self.controller.toggle_speech_pause())
 
-    def skip_current_speech(self):
+    def skip_current_speech(self) -> None:
         self.controller.skip_current_speech()
 
-    def repeat_last_speech(self):
+    def repeat_last_speech(self) -> None:
         if self.narrator_dialog is not None:
             return
         self.controller.repeat_last_speech()
 
-    def clear_speech_queue(self):
+    def clear_speech_queue(self) -> None:
         self.controller.clear_speech_queue()
 
-    def emergency_stop(self):
+    def emergency_stop(self) -> None:
         if self.narrator_dialog is not None:
             self._resume_live_after_narrator = False
             self.narrator_dialog.reject()
@@ -2623,7 +2631,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.signals.live_changed.emit(False)
         self.signals.speech_paused_changed.emit(False)
 
-    def calibrate(self):
+    def calibrate(self) -> None:
         try:
             geometry = self.controller.get_capture_geometry()
         except WindowCaptureError as error:
@@ -2636,7 +2644,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             self.readiness_dialog.hide()
         QTimer.singleShot(200, lambda: self._open_calibration_overlay(geometry))
 
-    def _open_calibration_overlay(self, geometry):
+    def _open_calibration_overlay(self, geometry: WindowGeometry | None) -> None:
         try:
             self.calibration_overlay = show_calibration_overlay(geometry)
         except Exception as error:
@@ -2647,14 +2655,14 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if self.settings.active_profile_id:
             self.calibration_overlay.selected.connect(self.update_profile_region)
 
-    def restore_control_window(self):
+    def restore_control_window(self) -> None:
         if self.restore_compact_after_calibration:
             self.show_compact_controls()
         else:
             self.show_dashboard()
         self.restore_compact_after_calibration = False
 
-    def open_diagnostics(self):
+    def open_diagnostics(self) -> None:
         if self.diagnostics_dialog is None:
             self.diagnostics_dialog = DiagnosticsDialog()
             self.diagnostics_dialog.refresh_requested.connect(self.refresh_diagnostics)
@@ -2680,7 +2688,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.diagnostics_dialog.raise_()
         self.diagnostics_dialog.activateWindow()
 
-    def refresh_diagnostics(self):
+    def refresh_diagnostics(self) -> None:
         permission_status = get_macos_permission_status()
         if permission_status["screen_capture"] is False:
             self.signals.diagnostics_failed.emit(
@@ -2700,7 +2708,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             lambda: self._capture_diagnostic_snapshot(generation),
         )
 
-    def _capture_diagnostic_snapshot(self, generation):
+    def _capture_diagnostic_snapshot(self, generation: int) -> None:
         if generation != self.diagnostics_refresh_generation:
             return
         self.diagnostics_refresh_runner.start(
@@ -2708,18 +2716,22 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             notify=False,
         )
 
-    def _diagnostics_closed(self, dialog):
+    def _diagnostics_closed(self, dialog: DiagnosticsDialog) -> None:
         if self.diagnostics_dialog is dialog:
             self.diagnostics_refresh_runner.cancel()
 
-    def _diagnostics_refresh_is_current(self, generation):
+    def _diagnostics_refresh_is_current(self, generation: int) -> bool:
         return bool(
             generation == self.diagnostics_refresh_generation
             and self.diagnostics_dialog is not None
             and self.diagnostics_dialog.refresh_in_flight
         )
 
-    def _diagnostics_refresh_finished(self, snapshot, error):
+    def _diagnostics_refresh_finished(
+        self,
+        snapshot: DiagnosticSnapshot,
+        error: Exception | None,
+    ) -> None:
         if not self._diagnostics_refresh_is_current(
             self.diagnostics_refresh_generation
         ):
@@ -2729,13 +2741,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         else:
             self.update_diagnostics_snapshot(snapshot)
 
-    def update_diagnostics_snapshot(self, snapshot):
+    def update_diagnostics_snapshot(self, snapshot: DiagnosticSnapshot) -> None:
         self.dashboard.set_diagnostic(snapshot)
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.set_snapshot(snapshot)
             self.diagnostics_dialog.restore_after_capture()
 
-    def set_diagnostics_error(self, message):
+    def set_diagnostics_error(self, message: str) -> None:
         if self.diagnostics_dialog is not None:
             self.diagnostics_dialog.set_warning(
                 message,
@@ -2743,13 +2755,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
             self.diagnostics_dialog.restore_after_capture()
 
-    def _run_diagnostics_remediation(self, remediation):
+    def _run_diagnostics_remediation(self, remediation: str) -> None:
         if remediation == "macos-permissions":
             self.open_macos_permissions()
         elif remediation == "settings":
             self.open_settings()
 
-    def run_onboarding(self):
+    def run_onboarding(self) -> None:
         if self.narrator_dialog is not None:
             self.dashboard.show_voices()
             return
@@ -2784,15 +2796,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         wizard.raise_()
         wizard.activateWindow()
 
-    def run_onboarding_test(self, settings):
+    def run_onboarding_test(self, settings: AppSettings) -> None:
         cancel_event = Event()
         self.onboarding_cancel_event = cancel_event
         self._onboarding_test_active = True
 
-        def run_test():
+        def run_test() -> None:
             started = preview_succeeded = False
 
-            def cancelled():
+            def cancelled() -> bool:
                 if not cancel_event.is_set():
                     return False
                 self.signals.onboarding_test_finished.emit(
@@ -2807,9 +2819,16 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 if cancelled():
                     return
                 if settings.speech_backend == "coqui-xtts":
+                    model = settings.tts_model
+                    if model is None:
+                        self.signals.onboarding_test_finished.emit(
+                            False,
+                            "Choose an XTTS model before running the setup test.",
+                        )
+                        return
                     try:
                         self.controller.model_assets.download(
-                            settings.tts_model,
+                            model,
                             progress=self.signals.onboarding_test_progress.emit,
                             cancel_event=cancel_event,
                         )
@@ -2870,30 +2889,30 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
 
         Thread(target=run_test, daemon=True).start()
 
-    def cancel_onboarding_download(self):
+    def cancel_onboarding_download(self) -> None:
         self.onboarding_cancel_event.set()
         self.controller.request_shutdown()
         self.set_status("Cancelling setup test in background...")
 
-    def _create_settings_dialog(self):
+    def _create_settings_dialog(self) -> SettingsDialog:
         return SettingsDialog(
             self.settings, voice_library=self.controller.voice_library
         )
 
-    def _create_asset_manager_dialog(self):
+    def _create_asset_manager_dialog(self) -> AssetManagerDialog:
         return AssetManagerDialog(self.settings)
 
-    def _configure_macos_launch_at_login(self, enabled):
+    def _configure_macos_launch_at_login(self, enabled: bool) -> None:
         configure_macos_launch_at_login(enabled)
 
-    def show_dashboard(self):
+    def show_dashboard(self) -> None:
         self.compact_controller.hide()
         self.dashboard.show()
         self.dashboard.raise_()
         self.dashboard.activateWindow()
         self._save_compact_preference(False)
 
-    def show_compact_controls(self, *, persist=True):
+    def show_compact_controls(self, *, persist: bool = True) -> None:
         geometry = None
         try:
             geometry = self.controller.get_capture_geometry()
@@ -2906,7 +2925,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if persist:
             self._save_compact_preference(True)
 
-    def notify_background_mode(self):
+    def notify_background_mode(self) -> None:
         if self._background_notification_shown:
             return
         self._background_notification_shown = True

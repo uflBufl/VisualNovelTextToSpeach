@@ -1181,7 +1181,7 @@ class DiagnosticsComponent:
         target = self.controller.capture_target
         return None if target is None else target.get_geometry()
 
-    def latest(self) -> object:
+    def latest(self) -> DiagnosticSnapshot | None:
         with self.controller.diagnostic_lock:
             return self.controller.last_diagnostic
 
@@ -1189,7 +1189,7 @@ class DiagnosticsComponent:
         reader = self.controller.live_reader
         return None if reader is None else reader.get_pipeline_metrics()
 
-    def inspect_current_dialog(self, *, notify: bool = True) -> object:
+    def inspect_current_dialog(self, *, notify: bool = True) -> DiagnosticSnapshot:
         controller = self.controller
         registry = (
             controller.voice_router.registry

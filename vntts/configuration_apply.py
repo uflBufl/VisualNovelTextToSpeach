@@ -108,6 +108,8 @@ class _Signals(Protocol):
 
 
 class _ReadinessDialog(Protocol):
+    def hide(self) -> None: ...
+
     def update_settings(self, settings: AppSettings) -> None: ...
 
 
