@@ -50,8 +50,11 @@ def find_managed_speech_runtime(backend: str) -> Path | None:
     location = managed_runtime_location(backend)
     if location is None:
         return None
+    marker = location / "verified.json"
+    if marker.is_symlink() or marker.is_junction():
+        return None
     try:
-        report = json.loads((location / "verified.json").read_text(encoding="utf-8"))
+        report = json.loads(marker.read_text(encoding="utf-8"))
     except OSError, ValueError:
         return None
     if (
