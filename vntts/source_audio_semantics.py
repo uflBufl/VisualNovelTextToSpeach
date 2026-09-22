@@ -69,6 +69,7 @@ def validate_source_audio_semantic_evidence(
     if (
         not _is_json_document(document)
         or document.get("schema") != SEMANTIC_EVIDENCE_SCHEMA
+        or type(document.get("schema_version")) is not int
         or document.get("schema_version") != SEMANTIC_EVIDENCE_VERSION
     ):
         raise SourceAudioSemanticEvidenceError(

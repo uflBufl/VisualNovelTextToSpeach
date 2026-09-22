@@ -224,6 +224,29 @@ def add_semantic_evidence(story_path):
 
 
 class PregenerationInputStoreTest(unittest.TestCase):
+    def test_semantic_evidence_rejects_boolean_schema_version(self):
+        with TemporaryDirectory() as temporary_directory:
+            story = add_semantic_evidence(
+                write_content(Path(temporary_directory) / "content")
+            )
+            evidence_path = story.parent / "source-audio-semantic-evidence.json"
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence["schema_version"] = True
+            evidence["evidence_id"] = canonical_document_sha256(
+                {
+                    key: value
+                    for key, value in evidence.items()
+                    if key not in {"evidence_id", "generated_at"}
+                }
+            )
+            atomic_write_json(evidence_path, evidence, sort_keys=True)
+
+            with self.assertRaisesRegex(
+                SourceAudioSemanticEvidenceError,
+                "Unsupported.*schema",
+            ):
+                load_source_audio_semantic_evidence(evidence_path)
+
     def test_semantic_evidence_requires_generation_timestamp(self):
         with TemporaryDirectory() as temporary_directory:
             story = add_semantic_evidence(
