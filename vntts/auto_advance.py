@@ -73,6 +73,7 @@ def send_windows_key(keycode, *, user32=None):
     user32 = user32 or ctypes.windll.user32
     sent = user32.SendInput(len(events), ctypes.byref(events), ctypes.sizeof(Input))
     if sent != len(events):
+        user32.SendInput(1, ctypes.byref(events[1]), ctypes.sizeof(Input))
         raise OSError("Windows SendInput could not post the auto-advance key")
     return True
 
@@ -129,9 +130,12 @@ class DialogueAdvancer:
 
             quartz = Quartz
         keycode = macos_virtual_keys[self.key]
-        for pressed in (True, False):
-            event = quartz.CGEventCreateKeyboardEvent(None, keycode, pressed)
-            if event is None:
-                raise RuntimeError("macOS could not create an auto-advance key event")
+        events = tuple(
+            quartz.CGEventCreateKeyboardEvent(None, keycode, pressed)
+            for pressed in (True, False)
+        )
+        if any(event is None for event in events):
+            raise RuntimeError("macOS could not create an auto-advance key event")
+        for event in events:
             quartz.CGEventPost(quartz.kCGHIDEventTap, event)
         return True

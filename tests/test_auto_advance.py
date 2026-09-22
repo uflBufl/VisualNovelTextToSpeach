@@ -3,7 +3,7 @@ from unittest.mock import Mock, call
 
 from pynput import keyboard
 
-from vntts.auto_advance import DialogueAdvancer
+from vntts.auto_advance import DialogueAdvancer, send_windows_key
 
 
 class FakeKeyboardController:
@@ -48,6 +48,16 @@ class DialogueAdvancerTest(unittest.TestCase):
         sender.assert_called_once_with(0x27)
         controller_factory.assert_not_called()
 
+    def test_windows_partial_send_releases_key_before_reporting_failure(self):
+        user32 = Mock()
+        user32.SendInput.side_effect = (1, 1)
+
+        with self.assertRaisesRegex(OSError, "could not post"):
+            send_windows_key(0x20, user32=user32)
+
+        self.assertEqual(user32.SendInput.call_count, 2)
+        self.assertEqual(user32.SendInput.call_args_list[1].args[0], 1)
+
     def test_rejects_unknown_key(self):
         with self.assertRaises(ValueError):
             DialogueAdvancer("escape")
@@ -78,6 +88,21 @@ class DialogueAdvancerTest(unittest.TestCase):
             [call(0, "down"), call(0, "up")],
         )
         controller_factory.assert_not_called()
+
+    def test_macos_does_not_press_key_until_release_event_exists(self):
+        quartz = Mock()
+        quartz.kCGHIDEventTap = 0
+        quartz.CGEventCreateKeyboardEvent.side_effect = ["down", None]
+        advancer = DialogueAdvancer(
+            "space",
+            platform="darwin",
+            quartz_module=quartz,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "could not create"):
+            advancer.advance()
+
+        quartz.CGEventPost.assert_not_called()
 
     def test_macos_refuses_native_input_without_accessibility_permission(self):
         advancer = DialogueAdvancer(
