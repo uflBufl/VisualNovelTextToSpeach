@@ -169,6 +169,7 @@
     "vntts/native_resources.py",
     "vntts/ocr.py",
     "vntts/ocr_backend.py",
+    "vntts/ocr_benchmark.py",
     "vntts/ocr_corrections.py",
     "vntts/ocr_corrections_ui.py",
     "vntts/ocr_review.py",

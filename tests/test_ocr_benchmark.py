@@ -57,6 +57,22 @@ class OCRBenchmarkTest(unittest.TestCase):
             self.assertEqual(result, output.resolve())
             self.assertIn('"version": 1', output.read_text(encoding="utf-8"))
 
+    def test_rejects_non_text_expectation_fields(self):
+        with TemporaryDirectory() as temporary_directory:
+            image_path = Path(temporary_directory) / "dialog.png"
+            Image.new("RGB", (10, 10), "black").save(image_path)
+
+            with self.assertRaisesRegex(ValueError, "expected text"):
+                benchmark_ocr(
+                    [image_path],
+                    backend=FakeOCRBackend(),
+                    repeats=1,
+                    warmups=0,
+                    expectations={"dialog.png": {"text": 42}},
+                    clock=lambda: 0.0,
+                    cpu_clock=lambda: 0.0,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
