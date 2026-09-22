@@ -9,7 +9,6 @@
     "vntts/authoring/workbench_ui.py": 112,
     "vntts/dialog_capture.py": 21,
     "vntts/durable_settings.py": 10,
-    "vntts/game_audio_decoder.py": 9,
     "vntts/game_content_importer.py": 17,
     "vntts/pregeneration_acceptance.py": 3,
     "vntts/pregeneration_activation.py": 5,

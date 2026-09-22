@@ -14,7 +14,11 @@ from typing import TypeAlias
 from vntts_artifacts.atomic_io import atomic_write_json
 
 from vntts.cli import CLIReportResult
-from vntts.game_audio_decoder import find_game_decoder, probe_game_decoder
+from vntts.game_audio_decoder import (
+    DecoderSetupError,
+    find_game_decoder,
+    probe_game_decoder,
+)
 from vntts.onboarding import probe_tesseract
 from vntts.release_runtime import PROBE_MODULES, runtime_probe_script
 from vntts.runtime_paths import (
@@ -458,7 +462,10 @@ def _append_pocket_render_check(
 
 
 def _probe_game_decoder() -> object:
-    return probe_game_decoder(find_game_decoder())
+    path = find_game_decoder()
+    if path is None:
+        raise DecoderSetupError("Bundled game-audio decoder is unavailable")
+    return probe_game_decoder(path)
 
 
 def run_package_self_test(

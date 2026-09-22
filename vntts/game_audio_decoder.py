@@ -9,8 +9,11 @@ import signal
 import subprocess
 import sys
 import wave
+from collections.abc import Callable, Sequence
+from os import PathLike
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
@@ -22,8 +25,11 @@ from vntts.authoring.advisory_lock import AdvisoryLockBusyError, exclusive_advis
 from vntts.runtime_paths import get_bundle_root
 from vntts.subprocess_utils import terminate_process
 
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QWidget
+
 VERSION = "r2117"
-ARCHIVES = {
+ARCHIVES: dict[str, tuple[str, str]] = {
     "win32": (
         "vgmstream-win64.zip",
         "6c4a8a3813864fefed081bbd337dbc0ad93bf88e0b92f5db98d7ab258b22dc6c",
@@ -36,6 +42,12 @@ ARCHIVES = {
 SOURCE_URL = f"https://codeload.github.com/vgmstream/vgmstream/zip/refs/tags/{VERSION}"
 SOURCE_SHA256 = "1b9245a61a6d123f56ad853d9e0098c62447fa9ada58a6c116b195ff6ccb1219"
 _VERIFICATION_RECORD_READ_LIMIT = 64 * 1024
+PathInput: TypeAlias = str | PathLike[str]
+ProgressCallback: TypeAlias = Callable[[str], object]
+
+
+class Cancellation(Protocol):
+    def is_set(self) -> bool: ...
 
 
 class DecoderSetupError(RuntimeError):
@@ -50,12 +62,12 @@ class DecoderSetupRequired(DecoderSetupError):
     """Homebrew modifies a shared installation and needs explicit UI consent."""
 
 
-def _cancel(event):
+def _cancel(event: Cancellation | None) -> None:
     if event is not None and event.is_set():
         raise DecoderSetupCancelled("Game-audio preparation cancelled")
 
 
-def find_game_decoder():
+def find_game_decoder() -> Path | None:
     bundle = get_bundle_root()
     name = "vgmstream-cli.exe" if sys.platform == "win32" else "vgmstream-cli"
     if bundle is not None:
@@ -76,21 +88,25 @@ def find_game_decoder():
     return None
 
 
-def _run(command, cancellation=None, *, timeout=900):
+def _run(
+    command: Sequence[str],
+    cancellation: Cancellation | None = None,
+    *,
+    timeout: float = 900,
+) -> None:
     _cancel(cancellation)
     with TemporaryDirectory(prefix="vntts-decoder-log-") as directory:
         with (Path(directory) / "output").open("w+b") as output:
+            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if not isinstance(creation_flags, int) or isinstance(creation_flags, bool):
+                raise DecoderSetupError("Windows process flags are unavailable")
             process = subprocess.Popen(
                 command,
                 stdout=output,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 start_new_session=os.name != "nt",
-                **(
-                    {"creationflags": subprocess.CREATE_NO_WINDOW}
-                    if sys.platform == "win32"
-                    else {}
-                ),
+                creationflags=creation_flags if sys.platform == "win32" else 0,
             )
             try:
                 from time import monotonic
@@ -138,7 +154,9 @@ def _run(command, cancellation=None, *, timeout=900):
                                 pass
 
 
-def probe_game_decoder(path, cancellation=None):
+def probe_game_decoder(
+    path: PathInput, cancellation: Cancellation | None = None
+) -> str:
     """Exercise real native loading and PCM decoding, not just file existence."""
     with TemporaryDirectory(prefix="vntts-decoder-probe-") as directory:
         source, output = Path(directory) / "input.wav", Path(directory) / "output.wav"
@@ -162,7 +180,13 @@ def probe_game_decoder(path, cancellation=None):
     return str(path)
 
 
-def _download(url, expected, output, progress, cancellation):
+def _download(
+    url: str,
+    expected: str,
+    output: Path,
+    progress: ProgressCallback,
+    cancellation: Cancellation | None,
+) -> None:
     digest = hashlib.sha256()
     received = 0
     with (
@@ -187,8 +211,12 @@ def _download(url, expected, output, progress, cancellation):
 
 
 def ensure_game_decoder(
-    *, cancellation=None, progress=None, allow_homebrew=False, storage_root=None
-):
+    *,
+    cancellation: Cancellation | None = None,
+    progress: ProgressCallback | None = None,
+    allow_homebrew: bool = False,
+    storage_root: PathInput | None = None,
+) -> Path:
     progress = progress or (lambda _message: None)
     _cancel(cancellation)
     try:
@@ -261,10 +289,10 @@ def ensure_game_decoder(
                         payload = source.read(_VERIFICATION_RECORD_READ_LIMIT + 1)
                     if len(payload) > _VERIFICATION_RECORD_READ_LIMIT:
                         raise ValueError("verification record is too large")
-                    files = json.loads(payload)
+                    verified_files: object = json.loads(payload)
                     if (
-                        isinstance(files, dict)
-                        and executable.name in files
+                        isinstance(verified_files, dict)
+                        and executable.name in verified_files
                         and all(
                             isinstance(name, str)
                             and Path(name).name == name
@@ -272,7 +300,7 @@ def ensure_game_decoder(
                             and not (path := destination / name).is_symlink()
                             and path.is_file()
                             and sha256_file(path) == checksum
-                            for name, checksum in files.items()
+                            for name, checksum in verified_files.items()
                         )
                     ):
                         probe_game_decoder(executable, cancellation)
@@ -290,7 +318,7 @@ def ensure_game_decoder(
                     progress,
                     cancellation,
                 )
-                files = {}
+                files: dict[str, str] = {}
                 with ZipFile(archive) as package:
                     if (
                         sum(info.file_size for info in package.infolist())
@@ -330,7 +358,9 @@ def ensure_game_decoder(
         ) from error
 
 
-def _stage_file(source, target):
+def _stage_file(source: PathInput, target: PathInput) -> None:
+    source = Path(source)
+    target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="copy-", dir=target.parent) as directory:
         temporary = Path(directory) / target.name
@@ -339,7 +369,7 @@ def _stage_file(source, target):
         temporary.replace(target)
 
 
-def stage_game_decoder(destination):
+def stage_game_decoder(destination: PathInput) -> Path:
     """Release builders collect native dependencies with PyInstaller afterwards."""
     destination = Path(destination)
     path = ensure_game_decoder(allow_homebrew=True, progress=print)
@@ -386,11 +416,11 @@ def stage_game_decoder(destination):
     return destination
 
 
-def confirm_decoder_setup(parent, error):
+def confirm_decoder_setup(parent: QWidget | None, error: DecoderSetupRequired) -> bool:
     """Ask on the GUI thread only; the actual installation stays in the worker."""
     from PySide6.QtWidgets import QMessageBox
 
-    return (
+    return bool(
         QMessageBox.question(
             parent,
             "Set up game-audio decoder",
