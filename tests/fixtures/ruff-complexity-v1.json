@@ -118,12 +118,6 @@
     {
       "code": "C901",
       "path": "vntts/authoring/failure_reference_binding.py",
-      "scope": "_load_audit_snapshots",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/failure_reference_binding.py",
       "scope": "publish_failure_reference_binding",
       "count": 1
     },
@@ -143,60 +137,6 @@
       "code": "C901",
       "path": "vntts/authoring/generation_manifest.py",
       "scope": "snapshot_recorded_voices",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_active_attempt",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_failure_repair_record",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_live_fallback_decision",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_reviewed_waveform_publication",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_state_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_success_item",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_synthesis_configuration",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_synthesis_controls",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_synthesis_identity",
       "count": 1
     },
     {
@@ -477,24 +417,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/controller.py",
-      "scope": "AppController._stable_live_frame_route",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/controller.py",
-      "scope": "create_dialog_read_scheduler",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/controller_components.py",
-      "scope": "RuntimeLifecycleComponent._apply_settings",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/controller_components.py",
       "scope": "RuntimeLifecycleComponent._initialize_backend",
       "count": 1
@@ -513,26 +435,8 @@
     },
     {
       "code": "C901",
-      "path": "vntts/game_content_importer.py",
-      "scope": "Reverse1999GameImporter.prepare_voice_roles",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/game_narrator.py",
-      "scope": "bind_game_narrator",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/game_narrator_ui.py",
       "scope": "GameNarratorDialog._finished",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/game_narrator_ui.py",
-      "scope": "GameNarratorDialog._role_changed",
       "count": 1
     },
     {
@@ -640,12 +544,6 @@
     {
       "code": "C901",
       "path": "vntts/live_replay_capture_recover.py",
-      "scope": "_load_observations",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/live_replay_capture_recover.py",
       "scope": "_longest_explicit_run",
       "count": 1
     },
@@ -711,12 +609,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/moss_cpp_installation.py",
-      "scope": "ensure_moss_cpp",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/moss_delay_backend.py",
       "scope": "MossTTSDelayVoiceRouterBackend.__init__",
       "count": 1
@@ -735,12 +627,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/ocr_corrections_ui.py",
-      "scope": "OCRCorrectionsDialog.validate_rows",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/onboarding_ui.py",
       "scope": "ConfigurationPage.validation_errors",
       "count": 1
@@ -749,12 +635,6 @@
       "code": "C901",
       "path": "vntts/pregeneration_activation.py",
       "scope": "OfflinePackActivator.activate",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/pregeneration_audition.py",
-      "scope": "VoiceAuditionPreviewService.generate",
       "count": 1
     },
     {
@@ -771,38 +651,8 @@
     },
     {
       "code": "C901",
-      "path": "vntts/pregeneration_pack.py",
-      "scope": "inspect_story_audio",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/pregeneration_queue.py",
-      "scope": "_effective_voice_routes",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/pregeneration_queue.py",
       "scope": "_load_existing",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/pregeneration_recovery.py",
-      "scope": "plan_automatic_recovery",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/pregeneration_ui.py",
-      "scope": "OfflineAudioPreparationDialog._refresh_story_statuses",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/pregeneration_ui.py",
-      "scope": "OfflineAudioPreparationDialog._selection_changed",
       "count": 1
     },
     {
@@ -893,12 +743,6 @@
       "code": "C901",
       "path": "vntts/speech_backend.py",
       "scope": "PocketTTSVoiceRouterBackend._render_chunks",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/speech_presentation.py",
-      "scope": "narrator_voice_label",
       "count": 1
     },
     {
@@ -1041,48 +885,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_active_attempt",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_failure_repair_record",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_live_fallback_decision",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_reviewed_waveform_publication",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_state_document",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_synthesis_controls",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_synthesis_identity",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/listening_ui.py",
       "scope": "ModelListeningDialog.poll_playback",
       "count": 1
@@ -1157,12 +959,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/render_hypothesis_review.py",
       "scope": "import_accepted_render_hypothesis",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/render_hypothesis_review.py",
-      "scope": "publish_render_hypothesis_review",
       "count": 1
     },
     {
@@ -1269,12 +1065,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/controller.py",
-      "scope": "AppController._stable_live_frame_route",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/controller_components.py",
       "scope": "RuntimeLifecycleComponent._initialize_backend",
       "count": 1
@@ -1283,12 +1073,6 @@
       "code": "PLR0912",
       "path": "vntts/game_audio_decoder.py",
       "scope": "ensure_game_decoder",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/game_narrator.py",
-      "scope": "bind_game_narrator",
       "count": 1
     },
     {
@@ -1383,12 +1167,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/moss_cpp_installation.py",
-      "scope": "ensure_moss_cpp",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/ocr.py",
       "scope": "recognize_speaker_from_data",
       "count": 1
@@ -1407,12 +1185,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/pregeneration_audition.py",
-      "scope": "VoiceAuditionPreviewService.generate",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/pregeneration_generation.py",
       "scope": "OfflineGenerationWorker._execute",
       "count": 1
@@ -1421,18 +1193,6 @@
       "code": "PLR0912",
       "path": "vntts/pregeneration_pack.py",
       "scope": "OfflinePackPublisher.publish",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/pregeneration_pack.py",
-      "scope": "inspect_story_audio",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/pregeneration_queue.py",
-      "scope": "_effective_voice_routes",
       "count": 1
     },
     {
@@ -1665,18 +1425,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "tests/test_pregeneration_setup.py",
-      "scope": "OfflineAudioPreparationDialogTest.test_failed_first_pass_runs_automatic_recovery_before_accepting",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "tests/test_self_service_pregeneration.py",
-      "scope": "SelfServicePregenerationJourneyTest.test_ambiguous_voice_choice_resumes_then_completes_without_line_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "tests/test_self_service_pregeneration.py",
       "scope": "SelfServicePregenerationJourneyTest.test_game_narrator_and_routes_are_confirmed_before_generation",
       "count": 1
@@ -1727,18 +1475,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/failure_repair.py",
       "scope": "compress_single_sentence_boundary_silence",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_failure_repair_record",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/generation_state.py",
-      "scope": "_validate_state_document",
       "count": 1
     },
     {
@@ -1882,12 +1618,6 @@
     {
       "code": "PLR0915",
       "path": "vntts/controller.py",
-      "scope": "AppController._get_live_sequence_status_locked",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/controller.py",
       "scope": "AppController._play_live_chunk",
       "count": 1
     },
@@ -1901,12 +1631,6 @@
       "code": "PLR0915",
       "path": "vntts/game_audio_decoder.py",
       "scope": "ensure_game_decoder",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/game_narrator.py",
-      "scope": "bind_game_narrator",
       "count": 1
     },
     {
@@ -2013,12 +1737,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/pregeneration_audition.py",
-      "scope": "VoiceAuditionPreviewService.generate",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/pregeneration_audition_ui.py",
       "scope": "VoiceAuditionPanel.__init__",
       "count": 1
@@ -2027,12 +1745,6 @@
       "code": "PLR0915",
       "path": "vntts/pregeneration_pack.py",
       "scope": "OfflinePackPublisher.publish",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/pregeneration_ui.py",
-      "scope": "OfflineAudioPreparationDialog._selection_changed",
       "count": 1
     },
     {
