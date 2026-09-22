@@ -52,7 +52,7 @@ from vntts.services.tts_engine import default_tts_profile, get_tts_profile
 from vntts.settings import AppSettings
 from vntts.support import record_background_operation
 from vntts.versioned_json import read_versioned_json, write_versioned_json
-from vntts.voice_library import VoiceLibrary
+from vntts.voice_library import VoiceLibrary, VoiceSelection
 from vntts.voices import (
     CharacterVoice,
     CharacterVoiceRegistry,
@@ -328,67 +328,84 @@ class VoiceDecisionStore:
                     "The selected voice is not part of this voice plan"
                 )
             validated_selections.append((group, source_id))
+        library_selections: list[VoiceSelection] = []
         for group, source_id in validated_selections:
             if self.voice_library is not None:
-                if source_id == default_voice_choice_id:
-                    self.voice_library.select(
-                        group.character,
-                        route="narrator",
-                        method="manual",
-                        evidence={
-                            "decision_context_sha256": group.decision_context_sha256
-                        },
-                        algorithm="voice-audition-v1",
+                selected = next(
+                    (
+                        candidate
+                        for candidate in (
+                            *group.candidates,
+                            *group.candidate_inventory,
+                        )
+                        if candidate.source_id == source_id
+                    ),
+                    None,
+                )
+                evidence: JsonObject = {
+                    "decision_context_sha256": group.decision_context_sha256
+                }
+                if selected is not None:
+                    evidence.update(
+                        {
+                            "source_id": selected.source_id,
+                            "source_character": selected.source_character,
+                            "speaker": selected.source_speaker,
+                        }
                     )
-                else:
-                    selected = next(
-                        (
-                            candidate
-                            for candidate in (
-                                *group.candidates,
-                                *group.candidate_inventory,
-                            )
-                            if candidate.source_id == source_id
+                library_selections.append(
+                    VoiceSelection(
+                        role=group.character,
+                        route=(
+                            "narrator"
+                            if source_id == default_voice_choice_id
+                            else "voice"
                         ),
-                        None,
+                        source_sha256s=(
+                            selected.reference_sha256s
+                            if selected is not None and selected.reference_sha256s
+                            else ()
+                        ),
+                        source_id=(
+                            None
+                            if source_id == default_voice_choice_id
+                            or (selected is not None and selected.reference_sha256s)
+                            else source_id
+                        ),
+                        method="manual",
+                        evidence=evidence,
+                        algorithm="voice-audition-v1",
+                        timestamp=decided_at,
                     )
-                    if selected is not None and selected.reference_sha256s:
-                        self.voice_library.select(
-                            group.character,
-                            route="voice",
-                            source_sha256s=selected.reference_sha256s,
-                            method="manual",
-                            evidence={
-                                "source_id": selected.source_id,
-                                "source_character": selected.source_character,
-                                "speaker": selected.source_speaker,
-                                "decision_context_sha256": group.decision_context_sha256,
-                            },
-                            algorithm="voice-audition-v1",
-                        )
-                    else:
-                        self.voice_library.select(
-                            group.character,
-                            route="voice",
-                            source_id=source_id,
-                            method="manual",
-                            evidence={
-                                "decision_context_sha256": group.decision_context_sha256
-                            },
-                            algorithm="voice-audition-v1",
-                        )
+                )
             decisions[_decision_key(group.group_id, group.decision_context_sha256)] = {
                 "group_id": group.group_id,
                 "decision_context_sha256": group.decision_context_sha256,
                 "source_id": source_id,
                 "decided_at": decided_at,
             }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        write_versioned_json(
-            self.path,
-            voice_decisions_schema_version,
-            {"decisions": decisions},
+        previous_bindings = (
+            self.voice_library.bindings() if self.voice_library is not None else None
         )
+        if self.voice_library is not None:
+            self.voice_library.select_many(library_selections)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            write_versioned_json(
+                self.path,
+                voice_decisions_schema_version,
+                {"decisions": decisions},
+            )
+        except Exception as error:
+            if self.voice_library is not None and previous_bindings is not None:
+                try:
+                    self.voice_library.replace_bindings(previous_bindings)
+                except Exception as rollback_error:
+                    error.add_note(
+                        "Unable to restore the previous voice bindings: "
+                        f"{rollback_error}"
+                    )
+            raise
 
     def _load(self) -> dict[str, JsonObject]:
         if not self.path.is_file():
@@ -442,6 +459,37 @@ class VoicePlanStore:
         )
 
     def create(
+        self,
+        job: PregenerationJob,
+        settings: AppSettings,
+        *,
+        manifest_path: str | Path | None = None,
+        cancellation: Cancellation | None = None,
+        ignore_decisions: bool = False,
+    ) -> VoicePlan:
+        previous_bindings = (
+            self.voice_library.bindings() if self.voice_library is not None else None
+        )
+        try:
+            return self._create(
+                job,
+                settings,
+                manifest_path=manifest_path,
+                cancellation=cancellation,
+                ignore_decisions=ignore_decisions,
+            )
+        except Exception as error:
+            if self.voice_library is not None and previous_bindings is not None:
+                try:
+                    self.voice_library.replace_bindings(previous_bindings)
+                except Exception as rollback_error:
+                    error.add_note(
+                        "Unable to restore the previous voice bindings: "
+                        f"{rollback_error}"
+                    )
+            raise
+
+    def _create(
         self,
         job: PregenerationJob,
         settings: AppSettings,

@@ -26,6 +26,7 @@ from vntts.document_identity import canonical_document_sha256
 from vntts.pregeneration_setup import PregenerationJobStore, inspect_story_index
 from vntts.pregeneration_voices import (
     PLAYER_VOICE_CANDIDATES_FIELD,
+    PregenerationVoiceCancelled,
     PregenerationVoiceError,
     VoiceDecisionStore,
     VoicePlanStore,
@@ -751,6 +752,33 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(library.binding("Narrator").source_id, "preset:marius")
             self.assertEqual(library.binding("Unrelated Role").route, "narrator")
 
+    def test_cancelled_rematching_restores_previous_bindings(self):
+        class CancelAtFinalGate:
+            calls = 0
+
+            def is_set(self):
+                self.calls += 1
+                return self.calls >= 3
+
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            library = VoiceLibrary(root / "library")
+            library.select("Rhiannon", route="narrator")
+            store = VoicePlanStore(jobs, voice_library=library)
+
+            with self.assertRaises(PregenerationVoiceCancelled):
+                store.create(
+                    job,
+                    AppSettings(pocket_gated_model_accepted=True),
+                    manifest_path=write_manifest(root / "voices"),
+                    cancellation=CancelAtFinalGate(),
+                    ignore_decisions=True,
+                )
+
+            self.assertEqual(library.binding("Rhiannon").route, "narrator")
+            self.assertFalse(store.path_for(job).exists())
+
     def test_character_defaults_apply_to_future_audio_with_manual_override_priority(
         self,
     ):
@@ -1337,6 +1365,36 @@ class VoicePlanStoreTest(unittest.TestCase):
                 )
 
             self.assertEqual(library.bindings(), ())
+            self.assertFalse(decisions.path.exists())
+
+    def test_decision_write_failure_restores_the_complete_voice_library(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            library = VoiceLibrary(root / "library")
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=write_manifest(root / "voices"),
+            )
+            original = library.bindings()
+            decisions = VoiceDecisionStore(
+                root / "decisions.json",
+                voice_library=library,
+            )
+
+            with (
+                patch(
+                    "vntts.pregeneration_voices.write_versioned_json",
+                    side_effect=OSError("disk unavailable"),
+                ),
+                self.assertRaisesRegex(OSError, "disk unavailable"),
+            ):
+                decisions.remember_many(
+                    tuple((group, "default") for group in plan.groups[:2])
+                )
+
+            self.assertEqual(library.bindings(), original)
             self.assertFalse(decisions.path.exists())
 
 

@@ -9,7 +9,7 @@ from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from vntts.voice_library import VoiceLibrary, VoiceLibraryError
+from vntts.voice_library import VoiceLibrary, VoiceLibraryError, VoiceSelection
 
 
 def write_wav(path: Path, frames: bytes) -> None:
@@ -21,6 +21,20 @@ def write_wav(path: Path, frames: bytes) -> None:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_batch_selection_is_atomic_when_a_later_choice_is_invalid(self) -> None:
+        with TemporaryDirectory() as directory:
+            library = VoiceLibrary(Path(directory) / "library")
+
+            with self.assertRaisesRegex(VoiceLibraryError, "exactly one source"):
+                library.select_many(
+                    (
+                        VoiceSelection("Alice", "narrator"),
+                        VoiceSelection("Bob", "voice"),
+                    )
+                )
+
+            self.assertEqual(library.bindings(), ())
+
     def test_boolean_document_version_is_rejected(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory) / "library"

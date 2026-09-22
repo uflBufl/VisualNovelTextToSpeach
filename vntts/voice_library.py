@@ -64,6 +64,20 @@ class VoiceBinding:
         return self.source_sha256s[0] if len(self.source_sha256s) == 1 else None
 
 
+@dataclass(frozen=True)
+class VoiceSelection:
+    role: str
+    route: VoiceRoute
+    variant_key: str | None = None
+    source_sha256s: tuple[str, ...] = ()
+    source_id: str | None = None
+    method: Literal["automatic", "manual"] = "manual"
+    evidence: object | None = None
+    algorithm: str | None = None
+    timestamp: str | None = None
+    only_if_unbound: bool = False
+
+
 class VoiceLibrary:
     """Durable voice choices at a caller-selected fixed directory or JSON path."""
 
@@ -148,15 +162,47 @@ class VoiceLibrary:
         only_if_unbound: bool = False,
     ) -> VoiceBinding:
         """Atomically replace one choice, or leave it intact when requested."""
-        identity, display_role, display_variant = _role_identity(role, variant_key)
+        selected_checksums = _selected_checksums(source_sha256, source_sha256s)
+        return self.select_many(
+            (
+                VoiceSelection(
+                    role=role,
+                    route=route,
+                    variant_key=variant_key,
+                    source_sha256s=selected_checksums,
+                    source_id=source_id,
+                    method=method,
+                    evidence=evidence,
+                    algorithm=algorithm,
+                    timestamp=timestamp,
+                    only_if_unbound=only_if_unbound,
+                ),
+            )
+        )[0]
+
+    def select_many(
+        self, selections: Iterable[VoiceSelection]
+    ) -> tuple[VoiceBinding, ...]:
+        """Validate and persist a group of choices in one atomic write."""
+        selections = tuple(selections)
+        if not selections:
+            return ()
         with self._write_transaction():
             document = self._load()
-            current = document["bindings"].get(identity)
-            if only_if_unbound and current is not None:
-                return _to_binding(current)
-            selected_checksums = _selected_checksums(source_sha256, source_sha256s)
-            _validate_route_source(route, selected_checksums, source_id)
-            if selected_checksums:
+            results: list[VoiceBinding] = []
+            changed = False
+            for selection in selections:
+                identity, display_role, display_variant = _role_identity(
+                    selection.role, selection.variant_key
+                )
+                current = document["bindings"].get(identity)
+                if selection.only_if_unbound and current is not None:
+                    results.append(_to_binding(current))
+                    continue
+                selected_checksums = tuple(selection.source_sha256s)
+                _validate_route_source(
+                    selection.route, selected_checksums, selection.source_id
+                )
                 alternatives = (
                     document["alternatives"].get(identity, {}).get("items", [])
                 )
@@ -167,17 +213,61 @@ class VoiceLibrary:
                     )
                 for checksum in selected_checksums:
                     self._validate_blob(checksum)
-            binding = _binding_document(
-                display_role,
-                display_variant,
-                route,
-                selected_checksums,
-                source_id,
-                _provenance(method, evidence, algorithm, timestamp),
-            )
-            document["bindings"][identity] = binding
+                binding = _binding_document(
+                    display_role,
+                    display_variant,
+                    selection.route,
+                    selected_checksums,
+                    selection.source_id,
+                    _provenance(
+                        selection.method,
+                        selection.evidence,
+                        selection.algorithm,
+                        selection.timestamp,
+                    ),
+                )
+                document["bindings"][identity] = binding
+                results.append(_to_binding(binding))
+                changed = True
+            if changed:
+                self._write(document)
+        return tuple(results)
+
+    def replace_bindings(self, bindings: Iterable[VoiceBinding]) -> None:
+        """Atomically restore an exact binding snapshot, retaining alternatives."""
+        bindings = tuple(bindings)
+        with self._write_transaction():
+            document = self._load()
+            replacement: dict[str, dict[str, object]] = {}
+            for binding in bindings:
+                identity, display_role, display_variant = _role_identity(
+                    binding.role, binding.variant_key
+                )
+                raw = _binding_document(
+                    display_role,
+                    display_variant,
+                    binding.route,
+                    tuple(binding.source_sha256s),
+                    binding.source_id,
+                    dict(binding.provenance),
+                )
+                available = {
+                    item["sha256"]
+                    for item in document["alternatives"]
+                    .get(identity, {})
+                    .get("items", [])
+                }
+                if any(
+                    checksum not in available for checksum in binding.source_sha256s
+                ):
+                    raise VoiceLibraryError(
+                        "Voice binding source is not an alternative for its role"
+                    )
+                for checksum in binding.source_sha256s:
+                    self._validate_blob(checksum)
+                replacement[identity] = raw
+            document["bindings"] = replacement
             self._write(document)
-        return _to_binding(binding)
 
     def binding(
         self, role: str, *, variant_key: str | None = None
@@ -564,4 +654,5 @@ __all__ = [
     "VoiceBinding",
     "VoiceLibrary",
     "VoiceLibraryError",
+    "VoiceSelection",
 ]
