@@ -252,6 +252,93 @@ def _extract_runtime(
             partial.replace(target)
 
 
+def _download_runtime_if_needed(
+    root: Path,
+    paths: tuple[Path, Path, Path],
+    report: ProgressCallback,
+    cancellation: Cancellation,
+    *,
+    explicit_server: bool,
+    allow_download: bool,
+) -> None:
+    if not explicit_server and (
+        (root / "runtime.zip").exists()
+        or (root / "runtime.zip").is_symlink()
+        or not paths[0].is_file()
+    ):
+        archive = root / "runtime.zip"
+        _download(
+            *ARCHIVE,
+            archive,
+            report,
+            cancellation,
+            allow_download=allow_download,
+        )
+        _extract_runtime(archive, paths[0].parent, cancellation)
+
+
+def _repair_runtime_probe(
+    root: Path,
+    paths: tuple[Path, Path, Path],
+    report: ProgressCallback,
+    cancellation: Cancellation,
+    error: TTSConfigurationError,
+    *,
+    explicit_server: bool,
+    allow_download: bool,
+) -> TTSConfigurationError | None:
+    archive = root / "runtime.zip"
+    if explicit_server or archive.is_file():
+        return error
+    remaining = _remaining_download_bytes(archive, ARCHIVE[2])
+    required = remaining + DOWNLOAD_HEADROOM_BYTES
+    free = shutil.disk_usage(root).free
+    if not allow_download:
+        raise MossCppInstallRequired(remaining, required, free) from error
+    _download(
+        *ARCHIVE,
+        archive,
+        report,
+        cancellation,
+        allow_download=True,
+    )
+    _extract_runtime(archive, paths[0].parent, cancellation)
+    try:
+        _run([str(paths[0]), "--help"], cancellation=cancellation, timeout=30)
+    except TTSConfigurationError as repaired_error:
+        return repaired_error
+    return None
+
+
+def _check_runtime(
+    root: Path,
+    paths: tuple[Path, Path, Path],
+    report: ProgressCallback,
+    cancellation: Cancellation,
+    *,
+    explicit_server: bool,
+    allow_download: bool,
+) -> None:
+    report("Checking MOSS native runtime...")
+    try:
+        _run([str(paths[0]), "--help"], cancellation=cancellation, timeout=30)
+    except TTSConfigurationError as error:
+        error = _repair_runtime_probe(
+            root,
+            paths,
+            report,
+            cancellation,
+            error,
+            explicit_server=explicit_server,
+            allow_download=allow_download,
+        )
+        if error is not None:
+            raise TTSConfigurationError(
+                "MOSS native runtime check failed. "
+                f"Model downloads have not started. {error}"
+            ) from error
+
+
 def ensure_moss_cpp(
     model_name: PathInput | None = None,
     *,
@@ -288,57 +375,22 @@ def ensure_moss_cpp(
     try:
         with exclusive_advisory_lock(root / "setup.lock"):
             _check_cancelled(cancellation)
-            if not explicit_server and (
-                (root / "runtime.zip").exists()
-                or (root / "runtime.zip").is_symlink()
-                or not paths[0].is_file()
-            ):
-                archive = root / "runtime.zip"
-                _download(
-                    *ARCHIVE,
-                    archive,
-                    report,
-                    cancellation,
-                    allow_download=allow_download,
-                )
-                _extract_runtime(archive, paths[0].parent, cancellation)
-            report("Checking MOSS native runtime...")
-            try:
-                _run([str(paths[0]), "--help"], cancellation=cancellation, timeout=30)
-            except TTSConfigurationError as error:
-                repaired = False
-                archive = root / "runtime.zip"
-                if not explicit_server and not archive.is_file():
-                    remaining = _remaining_download_bytes(archive, ARCHIVE[2])
-                    required = remaining + DOWNLOAD_HEADROOM_BYTES
-                    free = shutil.disk_usage(root).free
-                    if not allow_download:
-                        raise MossCppInstallRequired(
-                            remaining, required, free
-                        ) from error
-                    _download(
-                        *ARCHIVE,
-                        archive,
-                        report,
-                        cancellation,
-                        allow_download=True,
-                    )
-                    _extract_runtime(archive, paths[0].parent, cancellation)
-                    try:
-                        _run(
-                            [str(paths[0]), "--help"],
-                            cancellation=cancellation,
-                            timeout=30,
-                        )
-                    except TTSConfigurationError as repaired_error:
-                        error = repaired_error
-                    else:
-                        repaired = True
-                if not repaired:
-                    raise TTSConfigurationError(
-                        "MOSS native runtime check failed. "
-                        f"Model downloads have not started. {error}"
-                    ) from error
+            _download_runtime_if_needed(
+                root,
+                paths,
+                report,
+                cancellation,
+                explicit_server=explicit_server,
+                allow_download=allow_download,
+            )
+            _check_runtime(
+                root,
+                paths,
+                report,
+                cancellation,
+                explicit_server=explicit_server,
+                allow_download=allow_download,
+            )
             if not explicit_model:
                 for name, digest, size in MODELS:
                     _download(
