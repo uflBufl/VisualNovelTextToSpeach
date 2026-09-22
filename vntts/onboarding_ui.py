@@ -565,11 +565,6 @@ class ConfigurationPage(QWizardPage):
 
     def _use_narrator_file(self, path: str) -> None:
         if path.strip():
-            self.narrator_assignments = {
-                name: source
-                for name, source in self.narrator_assignments.items()
-                if name.strip().casefold() != "narrator"
-            }
             self.update_validation_summary()
 
     def browse_narrator_reference(self) -> None:
