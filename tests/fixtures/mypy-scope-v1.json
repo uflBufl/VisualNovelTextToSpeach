@@ -157,6 +157,7 @@
     "vntts/live_snapshot.py",
     "vntts/live_speaker_corpus.py",
     "vntts/live_speech.py",
+    "vntts/macos.py",
     "vntts/macos_ui.py",
     "vntts/main.py",
     "vntts/moss_compat.py",
