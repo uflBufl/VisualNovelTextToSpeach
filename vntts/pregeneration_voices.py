@@ -400,6 +400,14 @@ class VoicePlanStore:
         manifest_path = _selected_manifest(settings, manifest_path)
         registry, manifest_sha256, manifest_document = _load_registry(manifest_path)
         if self.voice_library is not None:
+            for binding in self.voice_library.bindings():
+                if (
+                    binding.route == "narrator"
+                    and binding.provenance.get("method") == "automatic"
+                ):
+                    self.voice_library.clear(
+                        binding.role, variant_key=binding.variant_key
+                    )
             registry = registry_with_voice_library(registry, self.voice_library)
         queue_bindings = _manifest_queue_bindings(manifest_document, registry)
         candidate_variants = _manifest_candidate_variants(
@@ -750,11 +758,7 @@ class VoicePlanStore:
                 if narrator_candidate is not None
                 else None
             )
-        if (
-            self.voice_library is not None
-            and route != "needs-audition"
-            and assignment_source is None
-        ):
+        if self.voice_library is not None and assignment_source is None:
             if route == "voice":
                 remember_voice_binding(
                     self.voice_library,
@@ -780,16 +784,6 @@ class VoicePlanStore:
                         algorithm="voice-plan-v1",
                         only_if_unbound=True,
                     )
-            elif route == "narrator":
-                self.voice_library.select(
-                    character,
-                    variant_key=variant_key,
-                    route="narrator",
-                    method="automatic",
-                    evidence={"resolution": resolution},
-                    algorithm="voice-plan-v1",
-                    only_if_unbound=True,
-                )
         selected_identity = _candidate_identity(
             (source_id, candidate) if candidate is not None else None
         )
@@ -1090,6 +1084,12 @@ def _effective_assignment_source(
         binding = library.binding(character, variant_key=variant_key)
         if binding is None and variant_key is not None:
             binding = library.binding(character)
+        if (
+            binding is not None
+            and binding.route == "narrator"
+            and binding.provenance.get("method") == "automatic"
+        ):
+            binding = None
         source_id = voice_binding_source_id(binding) if binding is not None else None
         if (
             source_id
@@ -1259,7 +1259,10 @@ def _validate_player_voice_variant(variant, index, version):
             isinstance(voice_character, str) and bool(voice_character.strip()),
         ),
         ("reference_sha256", _is_sha256(variant.get("reference_sha256"))),
-        ("source_voice_ids", _canonical_texts(variant.get("source_voice_ids"))),
+        (
+            "source_voice_ids",
+            _canonical_texts(variant.get("source_voice_ids"), allow_empty=True),
+        ),
         ("source_line_ids", _canonical_texts(variant.get("source_line_ids"))),
         (
             "source_event_ids",
@@ -1391,10 +1394,10 @@ def _manifest_candidate_variants(
     return tuple(variants)
 
 
-def _canonical_texts(values):
+def _canonical_texts(values, *, allow_empty=False):
     if (
         not isinstance(values, list)
-        or not values
+        or (not values and not allow_empty)
         or any(not isinstance(value, str) or not value.strip() for value in values)
     ):
         return False

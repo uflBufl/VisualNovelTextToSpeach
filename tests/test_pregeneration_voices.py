@@ -410,7 +410,7 @@ def write_player_candidate_manifest(
 
 
 class VoicePlanStoreTest(unittest.TestCase):
-    def test_planning_persists_one_binding_and_rediscovery_keeps_it(self):
+    def test_planning_persists_one_automatic_voice_binding(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             job, jobs = self.create_fixture(root)
@@ -445,6 +445,32 @@ class VoicePlanStoreTest(unittest.TestCase):
             self.assertEqual(binding.route, "voice")
             self.assertEqual(library.binding("Rhiannon"), binding)
             self.assertEqual(second_group.group_id, first_group.group_id)
+
+    def test_planning_discards_obsolete_automatic_narrator_fallback(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_manifest(root / "voices")
+            for reference in ("rhiannon.wav", "centurion.wav"):
+                with wave.open(
+                    str(manifest.parent / "references" / reference), "wb"
+                ) as audio:
+                    audio.setparams((1, 2, 24_000, 0, "NONE", "not compressed"))
+                    audio.writeframes(b"\x00\x00" * 24_000)
+            library = VoiceLibrary(root / "library")
+            library.select("Rhiannon", route="narrator", method="automatic")
+
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+
+            rhiannon = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            self.assertEqual(rhiannon.route, "voice")
+            self.assertEqual(library.binding("Rhiannon").route, "voice")
 
     def create_fixture(self, root):
         content = inspect_story_index(write_content(root / "content"))
@@ -800,6 +826,31 @@ class VoicePlanStoreTest(unittest.TestCase):
                 rhiannon.candidates[0].source_voice_ids,
                 ("play_rhiannon_1",),
             )
+
+    def test_player_import_accepts_empty_optional_source_voice_ids(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            manifest = write_player_candidate_manifest(
+                root / "player-voices",
+                job.story_index_sha256,
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            for variant in document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"]:
+                variant["source_voice_ids"] = []
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+
+            plan = VoicePlanStore(jobs).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+
+            rhiannon = next(
+                group for group in plan.groups if group.character == "Rhiannon"
+            )
+            self.assertEqual(len(rhiannon.candidate_inventory), 2)
+            self.assertEqual(rhiannon.candidate_inventory[0].source_voice_ids, ())
 
     def test_player_audition_keeps_only_three_best_equal_evidence_clips(self):
         with TemporaryDirectory() as temporary_directory:
