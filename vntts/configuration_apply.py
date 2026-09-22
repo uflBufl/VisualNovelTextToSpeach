@@ -1,11 +1,13 @@
 """Background application of already-persisted desktop configuration."""
 
+from collections.abc import Callable
+from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QAbstractButton, QDialog, QPushButton, QTabWidget
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.settings import (
@@ -27,6 +29,9 @@ class _SettingsDialog(Protocol):
     def settings(self) -> AppSettings: ...
 
 
+SettingsCommit = Callable[[AppSettings], Path]
+
+
 class _Controller(Protocol):
     settings: AppSettings
     is_ready: bool
@@ -34,8 +39,8 @@ class _Controller(Protocol):
     def shutdown(self) -> None: ...
 
     def apply_settings(
-        self, settings: AppSettings, *, cancellation: Event
-    ) -> bool | None: ...
+        self, settings: AppSettings, *, cancellation: Event | None = None
+    ) -> object: ...
 
     def prepare_startup(self) -> None: ...
 
@@ -45,17 +50,52 @@ class _Controller(Protocol):
 
     def cancel_settings_apply(self, cancellation: Event) -> bool: ...
 
+    def set_auto_advance_enabled(self, enabled: bool) -> bool: ...
+
+    def assign_voice(
+        self,
+        character: str,
+        source_id: str,
+        *,
+        commit_settings: SettingsCommit,
+    ) -> AppSettings: ...
+
+    def clear_voice_assignment(
+        self,
+        character: str,
+        *,
+        commit_settings: SettingsCommit,
+    ) -> AppSettings: ...
+
+    def set_force_live_narrator(
+        self,
+        enabled: bool,
+        *,
+        commit_settings: SettingsCommit,
+    ) -> AppSettings: ...
+
 
 class _Dashboard(Protocol):
+    live_button: QPushButton
+    sections: QTabWidget
+    prepare_reading_button: QPushButton
+    loading_blocked_buttons: list[QAbstractButton]
+
     def set_configuration(self, settings: AppSettings) -> None: ...
 
+    def show_reading(self) -> None: ...
 
-class _Emitter(Protocol):
+
+class _Signal(Protocol):
+    def disconnect(self, slot: Callable[..., object]) -> object: ...
+
     def emit(self) -> None: ...
 
 
 class _Signals(Protocol):
-    hotkeys_requested: _Emitter
+    onboarding_test_finished: _Signal
+    onboarding_test_progress: _Signal
+    hotkeys_requested: _Signal
 
 
 class _ReadinessDialog(Protocol):
@@ -109,7 +149,7 @@ class ConfigurationApplyMixin:
 
         def _update_auto_advance_action(self) -> None: ...
 
-        def _sync_active_profile(self, settings: AppSettings) -> bool: ...
+        def _sync_active_profile(self, settings: AppSettings | None = None) -> bool: ...
 
     def _refresh_preparation_settings(self) -> None:
         preparation = getattr(self, "pregeneration_dialog", None)

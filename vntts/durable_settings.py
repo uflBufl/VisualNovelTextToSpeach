@@ -11,23 +11,16 @@ from vntts.auto_advance_policy import (
     auto_advance_control_state,
     guard_auto_advance_settings,
 )
+from vntts.configuration_apply import (
+    SettingsCommit,
+    _Controller,
+    _Dashboard,
+    _Signals,
+)
 from vntts.ocr import DialogRegion
 from vntts.settings import AppSettings
 
-SettingsCommit: TypeAlias = Callable[[AppSettings], Path]
 VoiceChange: TypeAlias = Callable[[SettingsCommit], AppSettings]
-
-
-class _Signal(Protocol):
-    def disconnect(self, slot: Callable[..., object]) -> object: ...
-
-    def emit(self) -> None: ...
-
-
-class _Signals(Protocol):
-    onboarding_test_finished: _Signal
-    onboarding_test_progress: _Signal
-    hotkeys_requested: _Signal
 
 
 class _OnboardingTestPage(Protocol):
@@ -42,48 +35,6 @@ class _OnboardingWizard(Protocol):
     def settings(self) -> AppSettings: ...
 
     def deleteLater(self) -> None: ...
-
-
-class _Controller(Protocol):
-    is_ready: bool
-
-    def set_auto_advance_enabled(self, enabled: bool) -> bool: ...
-
-    def apply_settings(self, settings: AppSettings) -> object: ...
-
-    def assign_voice(
-        self,
-        character: str,
-        source_id: str,
-        *,
-        commit_settings: SettingsCommit,
-    ) -> AppSettings: ...
-
-    def clear_voice_assignment(
-        self,
-        character: str,
-        *,
-        commit_settings: SettingsCommit,
-    ) -> AppSettings: ...
-
-    def set_force_live_narrator(
-        self,
-        enabled: bool,
-        *,
-        commit_settings: SettingsCommit,
-    ) -> AppSettings: ...
-
-
-class _Focusable(Protocol):
-    def setFocus(self) -> None: ...
-
-
-class _Dashboard(Protocol):
-    live_button: _Focusable
-
-    def set_configuration(self, settings: AppSettings) -> None: ...
-
-    def show_reading(self) -> None: ...
 
 
 class _ProfileStore(Protocol):
