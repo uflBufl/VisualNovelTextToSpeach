@@ -194,6 +194,8 @@ files = [
     "vntts/authoring/private_files.py",
     "vntts/authoring/publication.py",
     "vntts/authoring/queue_extension.py",
+    "vntts/authoring/reconciliation.py",
+    "vntts/authoring/reconciliation_cli.py",
     "vntts/authoring/reconciliation_merge.py",
     "vntts/authoring/reconciliation_schema.py",
     "vntts/authoring/render_hypothesis_records.py",

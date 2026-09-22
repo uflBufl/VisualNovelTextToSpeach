@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from vntts.authoring.reconciliation import (
@@ -13,7 +14,7 @@ from vntts.authoring.reconciliation import (
 )
 
 
-def create_parser():
+def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Reconcile exact authoring authorities without changing them"
     )
@@ -40,7 +41,7 @@ def create_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     options = create_parser().parse_args(argv)
     try:
         report = build_authoring_reconciliation(

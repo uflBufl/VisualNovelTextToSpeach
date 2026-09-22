@@ -5,18 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TypeAlias
 
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_generation_queue import (
     VoiceGenerationQueue,
     VoiceGenerationQueueError,
+    VoiceGenerationQueueItem,
 )
 
 from vntts.authoring.authority import (
     AuthoringAuthorityError,
+    AuthoritySnapshot,
     canonical_document_sha256,
     capture_authority_file,
     write_json_document_no_replace,
@@ -33,7 +37,10 @@ from vntts.authoring.cohort_bundle import (
     validate_cohort_review_bundle_document,
     validate_cohort_review_progress_document,
 )
-from vntts.authoring.generation_state import validate_generation_state_document
+from vntts.authoring.generation_state import (
+    StateObject,
+    validate_generation_state_document,
+)
 from vntts.authoring.reconciliation_schema import (
     AUTHORING_RECONCILIATION_SCHEMA,
     AUTHORING_RECONCILIATION_VERSION,
@@ -71,25 +78,32 @@ class AuthoringReconciliationError(RuntimeError):
     """Current authoring authorities cannot be reconciled safely."""
 
 
+JsonObject: TypeAlias = dict[str, object]
+SnapshotHashes: TypeAlias = dict[Path, str | None]
+BundleActions: TypeAlias = dict[tuple[str, str], JsonObject]
+WorkspaceQueueIds: TypeAlias = dict[str, set[str]]
+OccurrenceIndex: TypeAlias = dict[str, list[JsonObject]]
+
+
 @dataclass(frozen=True)
 class AuthoringReconciliation:
     """One immutable report over exact read-only authoring snapshots."""
 
     report_id: str
-    document: dict
+    document: JsonObject
 
-    def to_dict(self):
+    def to_dict(self) -> JsonObject:
         return dict(self.document)
 
 
 @dataclass(frozen=True)
 class _WorkspaceSnapshot:
     directory: Path
-    configuration: dict
+    configuration: JsonObject
     summary: WorkspaceSummary
     queue_payload: bytes
     queue: VoiceGenerationQueue
-    state: dict
+    state: StateObject
     state_sha256: str | None
     manifest_sha256: str | None
 
@@ -97,7 +111,7 @@ class _WorkspaceSnapshot:
 @dataclass(frozen=True)
 class _WorkspaceScope:
     scoped_queue_ids: set[str] | None
-    reportable: tuple
+    reportable: tuple[VoiceGenerationQueueItem, ...]
     approved_ids: set[str]
     rejected_ids: set[str]
     generated_ids: set[str]
@@ -109,7 +123,9 @@ class _WorkspaceScope:
     selected_blocked_reasons: tuple[str, ...]
 
 
-def _load_review_bundle(path, *, required, snapshots):
+def _load_review_bundle(
+    path: Path, *, required: bool, snapshots: SnapshotHashes
+) -> tuple[bytes, str | None, CohortReviewResume] | None:
     payload, candidate = _read_json_snapshot(path, "review bundle")
     if (
         candidate.get("schema") != COHORT_REVIEW_BUNDLE_SCHEMA
@@ -162,13 +178,13 @@ def _load_review_bundle(path, *, required, snapshots):
 
 
 def _index_review_bundle(
-    resume,
-    path,
-    workspace_paths,
-    bundle_actions,
-    bundle_workspace_queue_ids,
-    bundle_queue_ids,
-):
+    resume: CohortReviewResume,
+    path: Path,
+    workspace_paths: set[Path],
+    bundle_actions: BundleActions,
+    bundle_workspace_queue_ids: WorkspaceQueueIds,
+    bundle_queue_ids: set[str],
+) -> None:
     for source in resume.original.document["sources"]:
         workspace_paths.add(Path(source["workspace"]).resolve())
         workspace_id = source["workspace_id"]
@@ -199,12 +215,16 @@ def _index_review_bundle(
                     )
 
 
-def _inspect_review_bundles(bundle_root, selected_publications, snapshots):
-    workspace_paths = set()
-    bundle_reports = []
-    bundle_actions = {}
-    bundle_workspace_queue_ids = {}
-    bundle_queue_ids = set()
+def _inspect_review_bundles(
+    bundle_root: Path,
+    selected_publications: tuple[Path, ...] | None,
+    snapshots: SnapshotHashes,
+) -> tuple[set[Path], list[JsonObject], BundleActions, WorkspaceQueueIds, set[str]]:
+    workspace_paths: set[Path] = set()
+    bundle_reports: list[JsonObject] = []
+    bundle_actions: BundleActions = {}
+    bundle_workspace_queue_ids: WorkspaceQueueIds = {}
+    bundle_queue_ids: set[str] = set()
     if not bundle_root.is_dir():
         return (
             workspace_paths,
@@ -255,9 +275,13 @@ def _inspect_review_bundles(bundle_root, selected_publications, snapshots):
     )
 
 
-def _inspect_quality_reviews(authoring_root, quality_reviews, snapshots):
-    quality_reports = []
-    quality_actions = []
+def _inspect_quality_reviews(
+    authoring_root: Path,
+    quality_reviews: Iterable[str | Path],
+    snapshots: SnapshotHashes,
+) -> tuple[list[JsonObject], list[JsonObject]]:
+    quality_reports: list[JsonObject] = []
+    quality_actions: list[JsonObject] = []
     quality_review_paths = tuple(
         sorted(
             (Path(value).expanduser().resolve() for value in quality_reviews),
@@ -289,12 +313,12 @@ def _inspect_quality_reviews(authoring_root, quality_reviews, snapshots):
                 f"Source-reference quality review is invalid: {path}: {error}"
             ) from error
         _remember_snapshot(snapshots, path, payload)
-        pending = []
-        decisions = Counter()
-        for card in session["variants"]:
+        pending: list[str] = []
+        decisions: Counter[str] = Counter()
+        for card in _json_objects(session.get("variants"), "Quality review variants"):
             decision = card.get("decision")
             if decision is None:
-                pending.append(card["variant_id"])
+                pending.append(_required_text(card["variant_id"], "Variant ID"))
                 quality_actions.append(
                     {
                         "action": "human_source_quality_review",
@@ -302,12 +326,25 @@ def _inspect_quality_reviews(authoring_root, quality_reviews, snapshots):
                         "variant_id": card["variant_id"],
                         "character": card["character"],
                         "reference_kind": card.get("reference_kind", "single_media"),
-                        "generated_sample_count": len(card["generated_samples"]),
-                        "excluded_result_count": len(card["excluded_results"]),
+                        "generated_sample_count": len(
+                            _object_list(
+                                card.get("generated_samples"),
+                                "Quality review generated samples",
+                            )
+                        ),
+                        "excluded_result_count": len(
+                            _object_list(
+                                card.get("excluded_results"),
+                                "Quality review excluded results",
+                            )
+                        ),
                     }
                 )
             else:
-                decisions[decision["decision"]] += 1
+                decision_record = _json_object(decision, "Quality review decision")
+                decisions[
+                    _required_text(decision_record.get("decision"), "Quality decision")
+                ] += 1
             _snapshot_quality_card(path.parent, card, snapshots)
         quality_reports.append(
             {
@@ -322,7 +359,9 @@ def _inspect_quality_reviews(authoring_root, quality_reviews, snapshots):
     return quality_reports, quality_actions
 
 
-def _load_workspace_snapshot(workspace_path, workspaces_root, snapshots):
+def _load_workspace_snapshot(
+    workspace_path: Path, workspaces_root: Path, snapshots: SnapshotHashes
+) -> _WorkspaceSnapshot:
     _require_contained_directory(
         workspaces_root, workspace_path, "Review source workspace"
     )
@@ -344,7 +383,7 @@ def _load_workspace_snapshot(workspace_path, workspaces_root, snapshots):
     _remember_snapshot(snapshots, configuration, configuration_payload)
     _snapshot_workspace_voice_controls(directory, workspace, snapshots)
 
-    state = {"active": None, "items": {}}
+    state: StateObject = {"active": None, "items": {}}
     state_sha256 = None
     if summary.state is not None:
         state_payload, state_document = _read_json_snapshot(
@@ -385,16 +424,17 @@ def _load_workspace_snapshot(workspace_path, workspaces_root, snapshots):
 
 
 def _build_workspace_scope(
-    snapshot,
-    primary,
-    bundle_workspace_queue_ids,
-    bundle_queue_ids,
-):
+    snapshot: _WorkspaceSnapshot,
+    primary: Path,
+    bundle_workspace_queue_ids: WorkspaceQueueIds,
+    bundle_queue_ids: set[str],
+) -> _WorkspaceScope:
     workspace = snapshot.configuration
+    workspace_id = _required_text(workspace["workspace_id"], "Workspace ID")
     scoped_queue_ids = (
         None
-        if workspace["workspace_id"] == primary.name
-        else bundle_workspace_queue_ids.get(workspace["workspace_id"], set())
+        if workspace_id == primary.name
+        else bundle_workspace_queue_ids.get(workspace_id, set())
     )
     reportable = tuple(
         item
@@ -420,9 +460,10 @@ def _build_workspace_scope(
         for item in reportable
         if is_spoken_queue_item(item) or item.queue_id in projection_ids
     }
+    state_items = _state_items(snapshot.state)
     relevant = {
         queue_id: value
-        for queue_id, value in snapshot.state["items"].items()
+        for queue_id, value in state_items.items()
         if queue_id in reportable_ids
     }
     approved_ids = {
@@ -471,7 +512,7 @@ def _build_workspace_scope(
         for item in reportable
         if item.queue_id in pending_ids and item.queue_id in generation_eligible_ids
     )
-    selected_blocked_reasons = ()
+    selected_blocked_reasons: tuple[str, ...] = ()
     if selectable_pending_ids:
         try:
             selected_readiness = inspect_generation_readiness(
@@ -507,8 +548,15 @@ def _build_workspace_scope(
     )
 
 
-def _pending_review_action(workspace, item, result, audio_authority, bundle_actions):
-    bundle = bundle_actions.get((workspace["workspace_id"], item.queue_id))
+def _pending_review_action(
+    workspace: JsonObject,
+    item: VoiceGenerationQueueItem,
+    result: JsonObject,
+    audio_authority: tuple[Path, str] | None,
+    bundle_actions: BundleActions,
+) -> tuple[JsonObject, str]:
+    workspace_id = _required_text(workspace["workspace_id"], "Workspace ID")
+    bundle = bundle_actions.get((workspace_id, item.queue_id))
     action = "human_cohort_review" if bundle is not None else "review_plan_required"
     expected_audio_sha256 = result.get("file_sha256")
     if not isinstance(expected_audio_sha256, str) or not _SHA256.fullmatch(
@@ -539,9 +587,15 @@ def _pending_review_action(workspace, item, result, audio_authority, bundle_acti
     return record, action
 
 
-def _workspace_item_outcome(snapshot, scope, item, bundle_actions, snapshots):
+def _workspace_item_outcome(
+    snapshot: _WorkspaceSnapshot,
+    scope: _WorkspaceScope,
+    item: VoiceGenerationQueueItem,
+    bundle_actions: BundleActions,
+    snapshots: SnapshotHashes,
+) -> tuple[None, None, str] | tuple[JsonObject, str, None]:
     workspace = snapshot.configuration
-    result = snapshot.state["items"].get(item.queue_id)
+    result = _state_items(snapshot.state).get(item.queue_id)
     if isinstance(result, dict):
         status = result.get("status")
         review_status = result.get("review_status")
@@ -608,15 +662,15 @@ def _workspace_item_outcome(snapshot, scope, item, bundle_actions, snapshots):
 
 
 def _inspect_workspace_actions(
-    snapshot,
-    scope,
-    bundle_actions,
-    snapshots,
-    occurrence_index,
-):
-    actions = []
-    action_counts = Counter()
-    terminal_counts = Counter()
+    snapshot: _WorkspaceSnapshot,
+    scope: _WorkspaceScope,
+    bundle_actions: BundleActions,
+    snapshots: SnapshotHashes,
+    occurrence_index: OccurrenceIndex,
+) -> tuple[list[JsonObject], Counter[str], Counter[str]]:
+    actions: list[JsonObject] = []
+    action_counts: Counter[str] = Counter()
+    terminal_counts: Counter[str] = Counter()
     for item in scope.reportable:
         record, action, terminal = _workspace_item_outcome(
             snapshot, scope, item, bundle_actions, snapshots
@@ -628,9 +682,11 @@ def _inspect_workspace_actions(
                 snapshot.configuration,
                 item,
                 terminal,
-                state_item=snapshot.state["items"][item.queue_id],
+                state_item=_state_items(snapshot.state)[item.queue_id],
             )
             continue
+        assert record is not None
+        assert action is not None
         actions.append(record)
         action_counts[action] += 1
         _remember_occurrence(
@@ -643,18 +699,18 @@ def _inspect_workspace_actions(
 
 
 def _inspect_workspaces(
-    workspace_paths,
-    workspaces_root,
-    primary,
-    snapshots,
-    bundle_workspace_queue_ids,
-    bundle_queue_ids,
-    bundle_actions,
-):
-    workspace_reports = []
-    actions = []
-    occurrence_index = {}
-    resolved_terminal_conflicts = set()
+    workspace_paths: set[Path],
+    workspaces_root: Path,
+    primary: Path,
+    snapshots: SnapshotHashes,
+    bundle_workspace_queue_ids: WorkspaceQueueIds,
+    bundle_queue_ids: set[str],
+    bundle_actions: BundleActions,
+) -> tuple[list[JsonObject], list[JsonObject], OccurrenceIndex, set[str]]:
+    workspace_reports: list[JsonObject] = []
+    actions: list[JsonObject] = []
+    occurrence_index: OccurrenceIndex = {}
+    resolved_terminal_conflicts: set[str] = set()
     for workspace_path in sorted(workspace_paths, key=str):
         snapshot = _load_workspace_snapshot(workspace_path, workspaces_root, snapshots)
         directory = snapshot.directory
@@ -735,12 +791,12 @@ def _inspect_workspaces(
 
 
 def build_authoring_reconciliation(
-    primary_workspace,
-    bundle_root,
+    primary_workspace: str | Path,
+    bundle_root: str | Path,
     *,
-    bundle_publications=None,
-    quality_reviews=(),
-):
+    bundle_publications: Sequence[str | Path] | None = None,
+    quality_reviews: Iterable[str | Path] = (),
+) -> AuthoringReconciliation:
     """Build an exact report without choosing or mutating review authority."""
     primary = Path(primary_workspace).expanduser().resolve()
     bundle_root = Path(bundle_root).expanduser().resolve()
@@ -757,7 +813,7 @@ def build_authoring_reconciliation(
         _json_inventory(bundle_root) if selected_publications is None else None
     )
 
-    snapshots = {}
+    snapshots: SnapshotHashes = {}
     (
         bundle_workspace_paths,
         bundle_reports,
@@ -830,18 +886,26 @@ def build_authoring_reconciliation(
             "terminal_conflict_count": len(conflicts),
         },
         "workspaces": sorted(
-            workspace_reports, key=lambda value: value["workspace_id"]
+            workspace_reports,
+            key=lambda value: _required_text(value["workspace_id"], "Workspace ID"),
         ),
         "review_bundles": sorted(
-            bundle_reports, key=lambda value: value["publication"]
+            bundle_reports,
+            key=lambda value: _required_text(value["publication"], "Publication"),
         ),
-        "quality_reviews": sorted(quality_reports, key=lambda value: value["review"]),
+        "quality_reviews": sorted(
+            quality_reports,
+            key=lambda value: _required_text(value["review"], "Quality review"),
+        ),
         "actions": sorted(
             [*actions, *quality_actions],
             key=lambda value: (
-                value["action"],
-                value.get("workspace_id", ""),
-                value.get("queue_id", value.get("variant_id", "")),
+                _required_text(value["action"], "Action"),
+                _required_text(value.get("workspace_id", ""), "Workspace ID"),
+                _required_text(
+                    value.get("queue_id", value.get("variant_id", "")),
+                    "Action target",
+                ),
             ),
         ),
         "terminal_conflicts": conflicts,
@@ -850,8 +914,10 @@ def build_authoring_reconciliation(
     return AuthoringReconciliation(report_id, {**body, "report_id": report_id})
 
 
-def _terminal_conflicts(occurrence_index, *, resolved_queue_ids=frozenset()):
-    conflicts = []
+def _terminal_conflicts(
+    occurrence_index: OccurrenceIndex, *, resolved_queue_ids: set[str] | frozenset[str] = frozenset()
+) -> list[JsonObject]:
+    conflicts: list[JsonObject] = []
     for queue_id, occurrences in sorted(occurrence_index.items()):
         terminal = {
             occurrence["authority"]
@@ -897,35 +963,48 @@ def _terminal_conflicts(occurrence_index, *, resolved_queue_ids=frozenset()):
     return conflicts
 
 
-def write_authoring_reconciliation(report, output):
+def write_authoring_reconciliation(
+    report: AuthoringReconciliation | object, output: str | Path
+) -> Path:
     """Publish one validated report without replacing an earlier handoff."""
     document = _validated_report(report)
     try:
-        return write_json_document_no_replace(
-            output, document, "authoring reconciliation"
-        )
+        write_json_document_no_replace(output, document, "authoring reconciliation")
+        return Path(output).expanduser().resolve()
     except AuthoringAuthorityError as error:
         raise AuthoringReconciliationError(str(error)) from error
 
 
-def load_authoring_reconciliation(path):
+def load_authoring_reconciliation(path: str | Path) -> AuthoringReconciliation:
     payload, document = _read_json_snapshot(path, "authoring reconciliation")
     del payload
     validated = _validated_report(document)
-    return AuthoringReconciliation(validated["report_id"], validated)
+    return AuthoringReconciliation(
+        _required_text(validated["report_id"], "Authoring reconciliation ID"),
+        validated,
+    )
 
 
-def _validated_report(report):
+def _validated_report(report: AuthoringReconciliation | object) -> JsonObject:
     document = (
         report.document if isinstance(report, AuthoringReconciliation) else report
     )
     try:
-        return _validate_schema_document(document)
+        validated: JsonObject = _validate_schema_document(document)
+        return validated
     except AuthoringReconciliationSchemaError as error:
         raise AuthoringReconciliationError(str(error)) from error
 
 
-def _action_record(workspace, item, action, *, status, review_status, reason):
+def _action_record(
+    workspace: JsonObject,
+    item: VoiceGenerationQueueItem,
+    action: str,
+    *,
+    status: object,
+    review_status: object,
+    reason: str,
+) -> JsonObject:
     return {
         "action": action,
         "workspace_id": workspace["workspace_id"],
@@ -940,7 +1019,14 @@ def _action_record(workspace, item, action, *, status, review_status, reason):
     }
 
 
-def _remember_occurrence(index, workspace, item, authority, *, state_item=None):
+def _remember_occurrence(
+    index: OccurrenceIndex,
+    workspace: JsonObject,
+    item: VoiceGenerationQueueItem,
+    authority: str,
+    *,
+    state_item: JsonObject | None = None,
+) -> None:
     occurrence = {
         "workspace_id": workspace["workspace_id"],
         "authority": authority,
@@ -953,8 +1039,10 @@ def _remember_occurrence(index, workspace, item, authority, *, state_item=None):
     index.setdefault(item.queue_id, []).append(occurrence)
 
 
-def _project_terminal_merge_actions(actions, occurrence_index):
-    projected = []
+def _project_terminal_merge_actions(
+    actions: list[JsonObject], occurrence_index: OccurrenceIndex
+) -> list[JsonObject]:
+    projected: list[JsonObject] = []
     for action in actions:
         if action["action"] not in {
             "generation_ready_unselected",
@@ -968,7 +1056,9 @@ def _project_terminal_merge_actions(actions, occurrence_index):
             continue
         terminal = [
             occurrence
-            for occurrence in occurrence_index.get(action["queue_id"], ())
+            for occurrence in occurrence_index.get(
+                _required_text(action["queue_id"], "Action queue ID"), []
+            )
             if occurrence["authority"] in {"approved", "rejected", "explicit_fallback"}
         ]
         if len(terminal) != 1:
@@ -1000,7 +1090,9 @@ def _project_terminal_merge_actions(actions, occurrence_index):
     return projected
 
 
-def _snapshot_workspace_voice_controls(directory, workspace, snapshots):
+def _snapshot_workspace_voice_controls(
+    directory: Path, workspace: JsonObject, snapshots: SnapshotHashes
+) -> None:
     voice = workspace.get("voice_manifest")
     if voice is None:
         return
@@ -1030,7 +1122,12 @@ def _snapshot_workspace_voice_controls(directory, workspace, snapshots):
         _remember_snapshot(snapshots, path, payload)
 
 
-def _snapshot_state_audio(output, item, result, snapshots):
+def _snapshot_state_audio(
+    output: Path,
+    item: VoiceGenerationQueueItem,
+    result: JsonObject,
+    snapshots: SnapshotHashes,
+) -> tuple[Path, str] | None:
     if result.get("status") not in {"generated", "approved"}:
         return None
     expected = result.get("file_sha256")
@@ -1050,10 +1147,15 @@ def _snapshot_state_audio(output, item, result, snapshots):
     return path, digest
 
 
-def _snapshot_quality_card(root, card, snapshots):
-    records = [
+def _snapshot_quality_card(
+    root: Path, card: JsonObject, snapshots: SnapshotHashes
+) -> None:
+    generated_samples = card["generated_samples"]
+    if not isinstance(generated_samples, list):
+        raise AuthoringReconciliationError("Quality review generated samples are malformed")
+    records: list[tuple[object, str, str]] = [
         (card["reference"], "audio", "audio_sha256"),
-        *((sample, "audio", "audio_sha256") for sample in card["generated_samples"]),
+        *((sample, "audio", "audio_sha256") for sample in generated_samples),
     ]
     portrait = card.get("portrait_image")
     if isinstance(portrait, dict):
@@ -1073,7 +1175,7 @@ def _snapshot_quality_card(root, card, snapshots):
         _remember_snapshot(snapshots, path, payload)
 
 
-def _load_queue_snapshot(payload):
+def _load_queue_snapshot(payload: bytes) -> VoiceGenerationQueue:
     try:
         with TemporaryDirectory(prefix="vntts-reconciliation-queue-") as directory:
             path = Path(directory) / "queue.jsonl"
@@ -1083,7 +1185,7 @@ def _load_queue_snapshot(payload):
         raise AuthoringReconciliationError(str(error)) from error
 
 
-def _read_json_snapshot(path, label):
+def _read_json_snapshot(path: str | Path, label: str) -> tuple[bytes, JsonObject]:
     payload = _read_bytes(path, label)
     try:
         document = json.loads(payload.decode("utf-8"))
@@ -1096,14 +1198,17 @@ def _read_json_snapshot(path, label):
     return payload, document
 
 
-def _read_bytes(path, label):
+def _read_bytes(path: str | Path, label: str) -> bytes:
     try:
-        return capture_authority_file(path, label).payload
+        snapshot: AuthoritySnapshot = capture_authority_file(path, label)
+        return bytes(snapshot.payload)
     except AuthoringAuthorityError as error:
         raise AuthoringReconciliationError(str(error)) from error
 
 
-def _remember_snapshot(snapshots, path, payload):
+def _remember_snapshot(
+    snapshots: SnapshotHashes, path: str | Path, payload: bytes
+) -> None:
     path = Path(path).resolve()
     digest = hashlib.sha256(payload).hexdigest()
     previous = snapshots.setdefault(path, digest)
@@ -1111,14 +1216,14 @@ def _remember_snapshot(snapshots, path, payload):
         raise AuthoringReconciliationError(f"Authority changed while reading: {path}")
 
 
-def _remember_absence(snapshots, path):
+def _remember_absence(snapshots: SnapshotHashes, path: str | Path) -> None:
     path = Path(path).resolve()
     previous = snapshots.setdefault(path, None)
     if previous is not None:
         raise AuthoringReconciliationError(f"Authority changed while reading: {path}")
 
 
-def _assert_snapshots_unchanged(snapshots):
+def _assert_snapshots_unchanged(snapshots: SnapshotHashes) -> None:
     for path, expected in sorted(snapshots.items(), key=lambda value: str(value[0])):
         if expected is None:
             if path.exists() or path.is_symlink():
@@ -1132,13 +1237,15 @@ def _assert_snapshots_unchanged(snapshots):
             )
 
 
-def _json_inventory(root):
+def _json_inventory(root: Path) -> tuple[str, ...]:
     if not root.is_dir() or root.is_symlink():
         raise AuthoringReconciliationError("Review bundle root is unavailable")
     return tuple(sorted(path.name for path in root.glob("*.json")))
 
 
-def _selected_bundle_publications(root, publications):
+def _selected_bundle_publications(
+    root: Path, publications: Sequence[str | Path] | None
+) -> tuple[Path, ...] | None:
     if publications is None:
         return None
     selected = tuple(
@@ -1164,7 +1271,9 @@ def _selected_bundle_publications(root, publications):
     return selected
 
 
-def _require_contained_directory(root, path, label):
+def _require_contained_directory(
+    root: str | Path, path: str | Path, label: str
+) -> Path:
     root = Path(root).resolve()
     path = Path(path)
     if path.is_symlink() or not path.is_dir():
@@ -1179,7 +1288,7 @@ def _require_contained_directory(root, path, label):
     return resolved
 
 
-def _require_contained_file(root, path, label):
+def _require_contained_file(root: str | Path, path: str | Path, label: str) -> None:
     root = Path(root).resolve()
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -1190,6 +1299,44 @@ def _require_contained_file(root, path, label):
         raise AuthoringReconciliationError(
             f"{label} leaves its canonical root"
         ) from error
+
+
+def _required_text(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise AuthoringReconciliationError(f"{label} is malformed")
+    return value
+
+
+def _json_objects(value: object, label: str) -> list[JsonObject]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise AuthoringReconciliationError(f"{label} are malformed")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _json_object(value: object, label: str) -> JsonObject:
+    if not isinstance(value, dict):
+        raise AuthoringReconciliationError(f"{label} is malformed")
+    return value
+
+
+def _object_list(value: object, label: str) -> list[object]:
+    if not isinstance(value, list):
+        raise AuthoringReconciliationError(f"{label} are malformed")
+    return value
+
+
+def _state_items(state: StateObject) -> dict[str, JsonObject]:
+    items = state.get("items")
+    if not isinstance(items, dict) or not all(
+        isinstance(key, str) and isinstance(value, dict)
+        for key, value in items.items()
+    ):
+        raise AuthoringReconciliationError("Generation state items are malformed")
+    return {
+        key: value
+        for key, value in items.items()
+        if isinstance(key, str) and isinstance(value, dict)
+    }
 
 
 __all__ = [
