@@ -251,6 +251,7 @@ files = [
     "vntts/authoring/voice_quality_gate.py",
     "vntts/authoring/voice_repair_comparison.py",
     "vntts/authoring/workbench.py",
+    "vntts/authoring/workbench_ui.py",
     "vntts/authoring/workbench_contracts.py",
     "vntts/authoring/workspace_config.py",
     "vntts/authoring/workspace_authority.py",

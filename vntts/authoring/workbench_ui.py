@@ -6,10 +6,12 @@ import codecs
 import hashlib
 import json
 import sys
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from itertools import pairwise
 from pathlib import Path
+from typing import TypeAlias, cast
 
 from PySide6.QtCore import (
     QProcess,
@@ -58,7 +60,7 @@ from PySide6.QtWidgets import (
 from vntts_artifacts.audio import Pcm16MonoWavError, probe_pcm16_mono_wav
 
 from vntts.async_ui import LatestTaskRunner
-from vntts.authoring.bulk_generation import ReviewCommit
+from vntts.authoring.bulk_generation import ReviewAuthority, ReviewCommit
 from vntts.authoring.cohort_bundle import (
     CohortReviewBundle,
     build_cohort_review_bundle,
@@ -69,9 +71,12 @@ from vntts.authoring.review_playback_evidence import ReviewPlaybackEvidence
 from vntts.authoring.workbench import (
     AuthoringRuntimeStatus,
     AuthoringWorkbenchError,
+    CollectionSelection,
+    ImmutableHistoryTimestamp,
     ReviewItem,
     WorkspaceCollection,
     WorkspaceSummary,
+    WorkspaceVoice,
     generation_command,
     inspect_workspace,
     list_review_items,
@@ -89,19 +94,36 @@ from vntts.voices import CharacterVoice, CharacterVoiceRegistry
 PROCESS_LOG_CHARACTER_LIMIT = 64 * 1024
 PROCESS_LOG_TRUNCATION_MARKER = "... earlier process output truncated ...\n"
 
+PollEntry: TypeAlias = (
+    tuple[str, object] | tuple[str, str, int | None] | tuple[str, int, int, int, int]
+)
+PollSignature: TypeAlias = tuple[PollEntry, ...]
+ReviewSaver: TypeAlias = Callable[
+    [Path, str, str, ReviewAuthority], ReviewCommit | WorkspaceSummary
+]
+PlaybackPreparer: TypeAlias = Callable[[Path, ReviewItem], tuple[ReviewItem, bytes]]
+CohortBundleBuilder: TypeAlias = Callable[[Sequence[Path]], CohortReviewBundle]
+SpecialistReviewerFactory: TypeAlias = Callable[[CohortReviewBundle, QWidget], QDialog]
+
 
 class AnnouncementLabel(QLabel):
     """Visible status text that emits a native screen-reader announcement."""
 
-    def __init__(self, *arguments, assertive=False, **keywords):
-        super().__init__(*arguments, **keywords)
+    def __init__(
+        self,
+        text: str = "",
+        parent: QWidget | None = None,
+        *,
+        assertive: bool = False,
+    ) -> None:
+        super().__init__(text, parent)
         self._announcement_politeness = (
             QAccessible.AnnouncementPoliteness.Assertive
             if assertive
             else QAccessible.AnnouncementPoliteness.Polite
         )
 
-    def setText(self, text):
+    def setText(self, text: str) -> None:
         message = str(text)
         changed = message != self.text()
         super().setText(message)
@@ -116,7 +138,7 @@ class DisclosureSection(QWidget):
 
     toggled = Signal(bool)
 
-    def __init__(self, title, parent=None):
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.header = QToolButton(self)
         self.header.setText(str(title))
@@ -139,31 +161,31 @@ class DisclosureSection(QWidget):
         self.setFocusProxy(self.header)
         self.setChecked(False)
 
-    def isChecked(self):
-        return self.header.isChecked()
+    def isChecked(self) -> bool:
+        return bool(self.header.isChecked())
 
-    def setChecked(self, checked):
+    def setChecked(self, checked: bool) -> None:
         checked = bool(checked)
         if self.header.isChecked() == checked:
             self._set_expanded(checked, emit=False)
         else:
             self.header.setChecked(checked)
 
-    def first_control(self):
+    def first_control(self) -> QWidget:
         for index in range(self.content_layout.count()):
             item = self.content_layout.itemAt(index)
             widget = item.widget()
             if widget is not None:
-                return widget
+                return cast(QWidget, widget)
             child_layout = item.layout()
             if child_layout is not None:
                 for child_index in range(child_layout.count()):
                     child = child_layout.itemAt(child_index).widget()
                     if child is not None:
-                        return child
+                        return cast(QWidget, child)
         return self.header
 
-    def _set_expanded(self, checked, *, emit=True):
+    def _set_expanded(self, checked: bool, *, emit: bool = True) -> None:
         self.header.setArrowType(
             Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
         )
@@ -184,7 +206,7 @@ class VoiceReference:
 class VoiceReferenceController:
     """Search and navigate the contained references of one workspace snapshot."""
 
-    def __init__(self, manifest_path):
+    def __init__(self, manifest_path: str | Path) -> None:
         self.manifest_path = Path(manifest_path).expanduser().resolve()
         self.registry = CharacterVoiceRegistry.from_file(self.manifest_path)
         self._characters = tuple(
@@ -196,13 +218,17 @@ class VoiceReferenceController:
         self._indexes = {voice.character: 0 for voice in self._characters}
 
     @classmethod
-    def from_workspace(cls, workspace_directory, manifest_path):
+    def from_workspace(
+        cls, workspace_directory: str | Path, manifest_path: str | Path
+    ) -> VoiceReferenceController:
         return cls.from_voices(
             manifest_path, workspace_voice_snapshot(workspace_directory)
         )
 
     @classmethod
-    def from_voices(cls, manifest_path, workspace_voices):
+    def from_voices(
+        cls, manifest_path: str | Path, workspace_voices: Iterable[WorkspaceVoice]
+    ) -> VoiceReferenceController:
         instance = cls.__new__(cls)
         instance.manifest_path = Path(manifest_path).expanduser().resolve()
         voices = tuple(
@@ -221,7 +247,7 @@ class VoiceReferenceController:
         instance._indexes = {voice.character: 0 for voice in voices}
         return instance
 
-    def characters(self, search=""):
+    def characters(self, search: str = "") -> tuple[str, ...]:
         needle = str(search).strip().casefold()
         return tuple(
             voice.character
@@ -231,13 +257,13 @@ class VoiceReferenceController:
             or any(needle in alias.casefold() for alias in voice.aliases)
         )
 
-    def references(self, character):
+    def references(self, character: str) -> tuple[Path, ...]:
         voice = self.registry.resolve(character)
         if voice is None:
             raise AuthoringWorkbenchError(f"Unknown voice character: {character!r}")
-        return voice.references
+        return tuple(voice.references)
 
-    def current(self, character):
+    def current(self, character: str) -> VoiceReference | None:
         references = self.references(character)
         if not references:
             return None
@@ -251,15 +277,15 @@ class VoiceReferenceController:
             pass
         return VoiceReference(character, index, len(references), path, duration)
 
-    def move(self, character, offset):
+    def move(self, character: str, offset: int) -> VoiceReference | None:
         references = self.references(character)
         if not references:
             return None
         current = self._indexes.get(character, 0)
         self._indexes[character] = (current + int(offset)) % len(references)
-        return self.current(character)
+        return cast(VoiceReference, self.current(character))
 
-    def select(self, character, index):
+    def select(self, character: str, index: int) -> VoiceReference:
         references = self.references(character)
         index = int(index)
         if index < 0 or index >= len(references):
@@ -267,23 +293,23 @@ class VoiceReferenceController:
                 f"Reference index is unavailable for {character!r}: {index}"
             )
         self._indexes[character] = index
-        return self.current(character)
+        return cast(VoiceReference, self.current(character))
 
 
 @dataclass(frozen=True)
 class _WorkbenchProjection:
     summary: WorkspaceSummary
     reviews: tuple[ReviewItem, ...]
-    workspace: dict
+    workspace: dict[str, object]
     collections: tuple[WorkspaceCollection, ...]
-    collection_selection: object
-    history: tuple
+    collection_selection: CollectionSelection
+    history: tuple[ImmutableHistoryTimestamp, ...]
     voice_controller: VoiceReferenceController | None
-    poll_signature: tuple
+    poll_signature: PollSignature
 
 
-def _poll_signature(paths):
-    values = []
+def _poll_signature(paths: Iterable[Path]) -> PollSignature:
+    values: list[PollEntry] = []
     for path in paths:
         try:
             status = path.lstat()
@@ -305,12 +331,12 @@ def _poll_signature(paths):
 
 
 def _load_workbench_projection(
-    workspace_directory,
-    selected_collection_ids,
-    local_process_id,
-    local_process_started_at,
-    poll_paths,
-):
+    workspace_directory: Path,
+    selected_collection_ids: tuple[str, ...] | None,
+    local_process_id: int | None,
+    local_process_started_at: str | None,
+    poll_paths: tuple[Path, ...],
+) -> _WorkbenchProjection:
     before = _poll_signature(poll_paths)
     data = load_workbench_projection_data(
         workspace_directory,
@@ -343,12 +369,21 @@ def _load_workbench_projection(
     )
 
 
-def _prepare_review_playback(workspace_directory, selected):
+def _prepare_review_playback(
+    workspace_directory: Path, selected: ReviewItem
+) -> tuple[ReviewItem, bytes]:
     del workspace_directory
     return selected, prepare_review_audio(selected)
 
 
-def _save_review(reviewer, workspace, queue_id, decision, authority, selected):
+def _save_review(
+    reviewer: ReviewSaver | None,
+    workspace: Path,
+    queue_id: str,
+    decision: str,
+    authority: ReviewAuthority,
+    selected: ReviewItem,
+) -> ReviewCommit | WorkspaceSummary:
     if reviewer is None:
         return review_selected_item(selected, decision)
     return reviewer(workspace, queue_id, decision, authority)
@@ -364,22 +399,22 @@ class AuthoringWorkbenchDialog(QDialog):
 
     def __init__(
         self,
-        workspace_directory,
-        parent=None,
+        workspace_directory: str | Path,
+        parent: QWidget | None = None,
         *,
-        settings=None,
-        process=None,
-        stop_timeout_ms=5_000,
-        clock=None,
-        reviewer=None,
-        review_thread_pool=None,
-        projection_loader=None,
-        projection_thread_pool=None,
-        playback_preparer=None,
-        synchronous_projection=False,
-        cohort_bundle_builder=None,
-        specialist_reviewer_factory=None,
-    ):
+        settings: QSettings | None = None,
+        process: QProcess | None = None,
+        stop_timeout_ms: int = 5_000,
+        clock: Callable[[], datetime] | None = None,
+        reviewer: ReviewSaver | None = None,
+        review_thread_pool: QThreadPool | None = None,
+        projection_loader: Callable[..., _WorkbenchProjection] | None = None,
+        projection_thread_pool: QThreadPool | None = None,
+        playback_preparer: PlaybackPreparer | None = None,
+        synchronous_projection: bool = False,
+        cohort_bundle_builder: CohortBundleBuilder | None = None,
+        specialist_reviewer_factory: SpecialistReviewerFactory | None = None,
+    ) -> None:
         super().__init__(parent)
         self._initialize_state(
             workspace_directory,
@@ -410,58 +445,67 @@ class AuthoringWorkbenchDialog(QDialog):
 
     def _initialize_state(
         self,
-        workspace_directory,
-        settings,
-        process,
-        stop_timeout_ms,
-        clock,
-        playback_preparer,
-    ):
+        workspace_directory: str | Path,
+        settings: QSettings | None,
+        process: QProcess | None,
+        stop_timeout_ms: int,
+        clock: Callable[[], datetime] | None,
+        playback_preparer: PlaybackPreparer | None,
+    ) -> None:
         self.workspace_directory = Path(workspace_directory).expanduser().resolve()
         self.settings = settings or QSettings()
         self.process = process or QProcess(self)
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.stop_timeout_ms = int(stop_timeout_ms)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.summary = self.collection_selection = None
-        self.voice_controller = self.active_started_at = None
+        self.summary: WorkspaceSummary | None = None
+        self.collection_selection: CollectionSelection | None = None
+        self.voice_controller: VoiceReferenceController | None = None
+        self.active_started_at: datetime | None = None
         self.close_after_stop = False
         self._finishing = False
         self._process_generation = 0
-        self._stop_generation_token = self.local_process_started_at = None
-        self.process_outcome = self.media_outcome = None
-        self._current_reference_key = self._selected_review_identity = None
+        self._stop_generation_token: int | None = None
+        self.local_process_started_at: str | None = None
+        self.process_outcome: str | None = None
+        self.media_outcome: str | None = None
+        self._current_reference_key: tuple[str, int, Path] | None = None
+        self._selected_review_identity: tuple[object, ...] | None = None
         self._preview_active = False
-        self._review_playback_buffer = None
+        self._review_playback_buffer: object | None = None
         self._review_evidence = ReviewPlaybackEvidence()
         self._playback_prepare_active = False
         self._playback_preparer = playback_preparer or _prepare_review_playback
         self._playback_runner = LatestTaskRunner(self)
         self._playback_runner.finished.connect(self._playback_preparation_finished)
-        self._selected_collection_ids = self._recent_reference_choices = None
+        self._selected_collection_ids: tuple[str, ...] | None = None
+        self._recent_reference_choices: tuple[tuple[str, int], ...] | None = None
         self._collection_selection_version = 0
         self._loading_collections = self._selection_refresh_pending = False
         self._loading_recent_choices = False
         self._stop_requested = self._forced_kill = False
         self._log_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._poll_paths = self._default_poll_paths()
-        self._poll_signature = self._workspace = None
-        self._all_reviews = self._filtered_reviews = ()
-        self._selected_review_queue_id = self._integrity_error = None
-        self._history = ()
+        self._poll_signature: PollSignature | None = None
+        self._workspace: dict[str, object] | None = None
+        self._all_reviews: tuple[ReviewItem, ...] = ()
+        self._filtered_reviews: tuple[ReviewItem, ...] = ()
+        self._selected_review_queue_id: str | None = None
+        self._integrity_error: str | None = None
+        self._history: tuple[ImmutableHistoryTimestamp, ...] = ()
         self._projection_active = self._projection_pending = False
         self._projection_selection_version = 0
 
     def _initialize_task_runners(
         self,
-        projection_loader,
-        synchronous_projection,
-        projection_thread_pool,
-        reviewer,
-        review_thread_pool,
-        cohort_bundle_builder,
-        specialist_reviewer_factory,
-    ):
+        projection_loader: Callable[..., _WorkbenchProjection] | None,
+        synchronous_projection: bool,
+        projection_thread_pool: QThreadPool | None,
+        reviewer: ReviewSaver | None,
+        review_thread_pool: QThreadPool | None,
+        cohort_bundle_builder: CohortBundleBuilder | None,
+        specialist_reviewer_factory: SpecialistReviewerFactory | None,
+    ) -> None:
         self._projection_loader = projection_loader or _load_workbench_projection
         self._synchronous_projection = bool(synchronous_projection)
         self._projection_runner = LatestTaskRunner(
@@ -469,14 +513,16 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self._projection_runner.finished.connect(self._projection_finished)
         self._review_save_active = False
-        self._review_save_queue_id = self._review_save_decision = None
-        self._review_advance_queue_id = self._specialist_reviewer = None
+        self._review_save_queue_id: str | None = None
+        self._review_save_decision: str | None = None
+        self._review_advance_queue_id: str | None = None
+        self._specialist_reviewer: QDialog | None = None
         self._reviewer = reviewer
         review_thread_pool = review_thread_pool or QThreadPool(self)
         review_thread_pool.setMaxThreadCount(1)
         self._review_runner = LatestTaskRunner(self, thread_pool=review_thread_pool)
         self._review_runner.finished.connect(self._review_save_finished)
-        self._review_shortcuts = []
+        self._review_shortcuts: list[QShortcut] = []
         self._specialist_active = False
         self._specialist_runner = LatestTaskRunner(self)
         self._specialist_runner.finished.connect(self._specialist_task_finished)
@@ -487,7 +533,7 @@ class AuthoringWorkbenchDialog(QDialog):
             specialist_reviewer_factory or CohortReviewBundleDialog
         )
 
-    def _build_overview(self):
+    def _build_overview(self) -> None:
         self.setWindowTitle("VNTTS authoring workbench")
         self.setMinimumSize(900, 640)
         self.resize(1_080, 720)
@@ -524,7 +570,7 @@ class AuthoringWorkbenchDialog(QDialog):
         readiness_layout = self.readiness_details.content_layout
         readiness_layout.addWidget(self.readiness_text)
 
-    def _build_voice_widgets(self):
+    def _build_voice_widgets(self) -> None:
         self.collection_tree = QTreeWidget()
         self.collection_tree.setHeaderLabels(["Story collection", "Kind", "Lines"])
         self.collection_tree.setAccessibleName("Story collections in this workspace")
@@ -552,7 +598,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.recent_choice.setAccessibleDescription(
             "Search recent contained reference choices; preview selection never changes workspace synthesis configuration"
         )
-        self.recent_choice.lineEdit().setPlaceholderText(
+        cast(QLineEdit, self.recent_choice.lineEdit()).setPlaceholderText(
             "Search recent narrator/reference previews"
         )
         self.reference_label = QLabel("No voice reference selected")
@@ -586,7 +632,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.player.errorOccurred.connect(self._media_error)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
 
-    def _layout_voice_section(self):
+    def _layout_voice_section(self) -> None:
         voice_header = QHBoxLayout()
         self.voice_search_label = QLabel("Find voice")
         self.voice_search_label.setBuddy(self.voice_search)
@@ -619,7 +665,7 @@ class AuthoringWorkbenchDialog(QDialog):
         voice_layout.addLayout(voice_controls)
         self.voice_box.content_layout.addWidget(self.voice_content)
 
-    def _build_review_table(self):
+    def _build_review_table(self) -> QGridLayout:
         self.review_character = QComboBox()
         self.review_character.setAccessibleName("Filter review by source speaker")
         self.review_status = QComboBox()
@@ -655,7 +701,7 @@ class AuthoringWorkbenchDialog(QDialog):
             "named character without changing generation scope"
         )
         review_filters = QGridLayout()
-        self.review_filter_labels = []
+        self.review_filter_labels: list[QLabel] = []
         for column, (text, widget) in enumerate(
             (
                 ("Speaker", self.review_character),
@@ -713,7 +759,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.setColumnHidden(8, True)
         return review_filters
 
-    def _build_action_controls(self):
+    def _build_action_controls(self) -> tuple[QGridLayout, QHBoxLayout]:
         self.previous_pending = QPushButton("Previous pending")
         self.next_pending = QPushButton("Next pending")
         self.approve = QPushButton("Approve")
@@ -823,7 +869,7 @@ class AuthoringWorkbenchDialog(QDialog):
             generation_actions.addWidget(widget)
         return review_actions, generation_actions
 
-    def _build_technical_section(self):
+    def _build_technical_section(self) -> None:
         self.technical = DisclosureSection("Technical details")
         self.technical.setAccessibleName("Technical process details")
         self.show_technical_columns = QCheckBox("Show technical review columns")
@@ -852,8 +898,11 @@ class AuthoringWorkbenchDialog(QDialog):
         technical_layout.addWidget(self.copy_diagnostics)
 
     def _build_workbench_layout(
-        self, review_filters, review_actions, generation_actions
-    ):
+        self,
+        review_filters: QGridLayout,
+        review_actions: QGridLayout,
+        generation_actions: QHBoxLayout,
+    ) -> None:
         review_panel = QGroupBox("Generated-audio review")
         review_panel.setAccessibleName("Independent generated-audio review scope")
         review_panel.setMinimumHeight(320)
@@ -911,12 +960,12 @@ class AuthoringWorkbenchDialog(QDialog):
         layout.addWidget(self.counts)
         layout.addWidget(self.splitter, 1)
 
-    def _connect_signals(self):
+    def _connect_signals(self) -> None:
         self.voice_search.textChanged.connect(self._populate_voice_choices)
         self.voice_character.currentTextChanged.connect(self._show_reference)
         self.voice_character.activated.connect(self._record_current_reference)
         self.recent_choice.activated.connect(self._choose_recent_reference)
-        self.recent_choice.lineEdit().returnPressed.connect(
+        cast(QLineEdit, self.recent_choice.lineEdit()).returnPressed.connect(
             self._choose_typed_recent_reference
         )
         self.collection_tree.itemChanged.connect(self._collection_selection_changed)
@@ -963,7 +1012,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.process.finished.connect(self._process_finished)
         self.process.errorOccurred.connect(self._process_error)
 
-    def _start_ui(self):
+    def _start_ui(self) -> None:
         self.elapsed_timer = QTimer(self)
         self.elapsed_timer.setInterval(1_000)
         self.elapsed_timer.timeout.connect(self.update_elapsed)
@@ -980,11 +1029,11 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.setFocus()
 
     @staticmethod
-    def _accessible_button(button, name, description):
+    def _accessible_button(button: QPushButton, name: str, description: str) -> None:
         button.setAccessibleName(name)
         button.setAccessibleDescription(description)
 
-    def _restore_collection_selection(self):
+    def _restore_collection_selection(self) -> None:
         stored = self.settings.value(self._workspace_settings_key("collections"))
         if stored is None:
             return
@@ -992,7 +1041,9 @@ class AuthoringWorkbenchDialog(QDialog):
             stored = [stored]
         self._selected_collection_ids = tuple(str(value) for value in stored)
 
-    def _projection_arguments(self):
+    def _projection_arguments(
+        self,
+    ) -> tuple[Path, tuple[str, ...] | None, int | None, str | None, tuple[Path, ...]]:
         return (
             self.workspace_directory,
             self._selected_collection_ids,
@@ -1005,7 +1056,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self._poll_paths,
         )
 
-    def refresh(self):
+    def refresh(self) -> None:
         selected = self._selected_review_item()
         if selected is not None:
             self._selected_review_queue_id = selected.queue_id
@@ -1033,7 +1084,7 @@ class AuthoringWorkbenchDialog(QDialog):
             return
         self._apply_projection(projection)
 
-    def _projection_finished(self, projection, error):
+    def _projection_finished(self, projection: object, error: Exception | None) -> None:
         if not self._projection_active:
             return
         self._projection_active = False
@@ -1051,7 +1102,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self._projection_pending = False
             QTimer.singleShot(0, self.refresh)
 
-    def _default_poll_paths(self):
+    def _default_poll_paths(self) -> tuple[Path, ...]:
         output = self.workspace_directory / "generated-audio"
         return (
             self.workspace_directory / "workspace.json",
@@ -1064,16 +1115,16 @@ class AuthoringWorkbenchDialog(QDialog):
             output / ".job-process.json",
         )
 
-    def _workspace_poll_signature(self):
+    def _workspace_poll_signature(self) -> PollSignature:
         return _poll_signature(self._poll_paths)
 
-    def _poll_authoritative(self):
+    def _poll_authoritative(self) -> None:
         if self._review_save_active or self._projection_active:
             return
         if self._poll_signature != self._workspace_poll_signature():
             self.refresh()
 
-    def _fail_closed(self, error):
+    def _fail_closed(self, error: object) -> None:
         self._projection_pending = False
         self._projection_runner.cancel()
         self._projection_active = False
@@ -1131,7 +1182,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.process.state() != QProcess.ProcessState.NotRunning
         )
 
-    def _apply_projection(self, projection):
+    def _apply_projection(self, projection: _WorkbenchProjection) -> None:
         self.summary = projection.summary
         reviews = projection.reviews
         self._workspace = projection.workspace
@@ -1141,9 +1192,10 @@ class AuthoringWorkbenchDialog(QDialog):
         self.title.setText(self.summary.title)
         self._integrity_error = None
         workspace = projection.workspace
-        run_config = workspace["run_config"]
+        run_config = cast(dict[str, object], workspace["run_config"])
+        narrator_character = str(workspace["narrator_character"])
         self.narrator.setText(
-            f"Narrator: {workspace['narrator_character']} | Backend: {run_config['backend']} | "
+            f"Narrator: {narrator_character} | Backend: {run_config['backend']} | "
             f"Model: {run_config['model']} | Profile: {run_config['generation_profile']}"
         )
         self._populate_collections(projection.collections)
@@ -1157,7 +1209,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self._populate_review_filter_choices()
         self._apply_review_filters()
         self._load_voice_controller(projection.voice_controller)
-        self._populate_recent_choices(workspace["narrator_character"])
+        self._populate_recent_choices(narrator_character)
         self.recent_choice.setEnabled(self.recent_choice.count() > 0)
         running = self.process.state() != QProcess.ProcessState.NotRunning
         owned_elsewhere = self.summary.runtime_status in {
@@ -1203,7 +1255,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.reload_authority.setToolTip("Reload authoritative workspace state")
         self._update_review_actions(preserve_queue_id=True)
 
-    def _show_counts(self):
+    def _show_counts(self) -> None:
         if self.summary is None or self.collection_selection is None:
             return
         self.counts.setText(
@@ -1262,7 +1314,9 @@ class AuthoringWorkbenchDialog(QDialog):
             )
         )
 
-    def _status_text(self):
+    def _status_text(self) -> str:
+        summary = self.summary
+        assert summary is not None
         labels = {
             AuthoringRuntimeStatus.READY: "READY: generation can start",
             AuthoringRuntimeStatus.RUNNING_HERE: "RUNNING HERE: child generation is active",
@@ -1276,15 +1330,15 @@ class AuthoringWorkbenchDialog(QDialog):
         lines = [
             outcome for outcome in (self.process_outcome, self.media_outcome) if outcome
         ]
-        if self.summary.runtime_status in {
+        if summary.runtime_status in {
             AuthoringRuntimeStatus.RUNNING_HERE,
             AuthoringRuntimeStatus.RUNNING_EXTERNAL,
             AuthoringRuntimeStatus.INTERRUPTED,
             AuthoringRuntimeStatus.BLOCKED,
         }:
-            primary = labels[self.summary.runtime_status]
+            primary = labels[summary.runtime_status]
         else:
-            primary = labels[self.summary.runtime_status]
+            primary = labels[summary.runtime_status]
         lines.append(primary)
         selection = self.collection_selection
         if selection is not None and not selection.collection_ids:
@@ -1306,7 +1360,7 @@ class AuthoringWorkbenchDialog(QDialog):
             )
         return "\n".join(lines)
 
-    def _disabled_generation_reason(self):
+    def _disabled_generation_reason(self) -> str:
         if self.collection_selection is None:
             return "Collection selection is unavailable"
         readiness = self.collection_selection.readiness
@@ -1316,25 +1370,32 @@ class AuthoringWorkbenchDialog(QDialog):
             return "; ".join(readiness.blocked_reasons)
         if readiness.ready == 0:
             return "No ready pending or failed lines exist in selected collections"
-        if self.summary.blocked_reasons:
-            return "; ".join(self.summary.blocked_reasons)
-        if self.summary.runtime_status is AuthoringRuntimeStatus.NEEDS_REVIEW:
+        summary = self.summary
+        assert summary is not None
+        if summary.blocked_reasons:
+            return "; ".join(summary.blocked_reasons)
+        if summary.runtime_status is AuthoringRuntimeStatus.NEEDS_REVIEW:
             return "Review generated audio before starting more work"
-        if self.summary.runtime_status in {
+        if summary.runtime_status in {
             AuthoringRuntimeStatus.RUNNING_HERE,
             AuthoringRuntimeStatus.RUNNING_EXTERNAL,
         }:
             return "Generation is already running"
         return "No ready pending lines are available"
 
-    def _show_readiness_details(self, workspace, history=None):
+    def _show_readiness_details(
+        self,
+        workspace: dict[str, object],
+        history: Iterable[ImmutableHistoryTimestamp] | None = None,
+    ) -> None:
+        selection = self.collection_selection
+        assert selection is not None
         story = workspace.get("story_index")
         voice = workspace.get("voice_manifest")
         history = self._history if history is None else tuple(history)
-        readiness = self.collection_selection.readiness
+        readiness = selection.readiness
         lines = [
-            "Collections: "
-            + (", ".join(self.collection_selection.collection_ids) or "none"),
+            "Collections: " + (", ".join(selection.collection_ids) or "none"),
             f"Exact selected queue IDs: {len(readiness.queue_ids)}",
             "Story snapshot: "
             + (
@@ -1356,8 +1417,10 @@ class AuthoringWorkbenchDialog(QDialog):
             lines.append("Selection blockers: " + "; ".join(readiness.blocked_reasons))
         self.readiness_text.setText("\n".join(lines))
 
-    def _show_active(self):
-        attempt = self.summary.active
+    def _show_active(self) -> None:
+        summary = self.summary
+        assert summary is not None
+        attempt = summary.active
         if attempt is None:
             self.active_started_at = None
             self.active.setText("Current attempt: none")
@@ -1370,7 +1433,7 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self.update_elapsed()
 
-    def update_elapsed(self):
+    def update_elapsed(self) -> None:
         if self.active_started_at is None:
             return
         seconds = max(0, int((self.clock() - self.active_started_at).total_seconds()))
@@ -1378,7 +1441,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.active.setText(f"{base} | elapsed {seconds // 60}:{seconds % 60:02d}")
 
     @staticmethod
-    def _parse_datetime(value):
+    def _parse_datetime(value: str | None) -> datetime | None:
         if not value:
             return None
         try:
@@ -1387,7 +1450,7 @@ class AuthoringWorkbenchDialog(QDialog):
             return None
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
-    def _populate_collections(self, collections):
+    def _populate_collections(self, collections: Iterable[WorkspaceCollection]) -> None:
         self._loading_collections = True
         self.collection_tree.blockSignals(True)
         self.collection_tree.clear()
@@ -1417,12 +1480,14 @@ class AuthoringWorkbenchDialog(QDialog):
             self.collection_tree.blockSignals(False)
             self._loading_collections = False
 
-    def _collection_selection_changed(self, _item, _column):
+    def _collection_selection_changed(
+        self, _item: QTreeWidgetItem, _column: int
+    ) -> None:
         if self._loading_collections:
             return
         selected = []
         for index in range(self.collection_tree.topLevelItemCount()):
-            item = self.collection_tree.topLevelItem(index)
+            item = cast(QTreeWidgetItem, self.collection_tree.topLevelItem(index))
             if item.checkState(0) == Qt.CheckState.Checked:
                 selected.append(str(item.data(0, Qt.ItemDataRole.UserRole)))
         self._selected_collection_ids = tuple(selected)
@@ -1436,16 +1501,16 @@ class AuthoringWorkbenchDialog(QDialog):
         self._selection_refresh_pending = True
         QTimer.singleShot(0, self._refresh_collection_selection)
 
-    def _refresh_collection_selection(self):
+    def _refresh_collection_selection(self) -> None:
         self._selection_refresh_pending = False
         self.refresh()
 
-    def _workspace_settings_key(self, suffix):
+    def _workspace_settings_key(self, suffix: str) -> str:
         return (
             f"{self.settings_group}/workspaces/{self.workspace_directory.name}/{suffix}"
         )
 
-    def _workspace_document(self):
+    def _workspace_document(self) -> tuple[Path, dict[str, object]]:
         if self._workspace is not None:
             return self.workspace_directory, self._workspace
         directory, workspace, _workspace_sha256 = load_workspace_authority(
@@ -1453,7 +1518,9 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         return directory, workspace
 
-    def _load_voice_controller(self, controller):
+    def _load_voice_controller(
+        self, controller: VoiceReferenceController | None
+    ) -> None:
         if controller is None:
             self.voice_controller = None
             self.voice_character.clear()
@@ -1470,7 +1537,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.voice_controller = controller
         self._populate_voice_choices()
 
-    def _populate_voice_choices(self):
+    def _populate_voice_choices(self, *_arguments: object) -> None:
         current = self.voice_character.currentText()
         self.voice_character.blockSignals(True)
         self.voice_character.clear()
@@ -1485,7 +1552,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.voice_character.blockSignals(False)
         self._show_reference()
 
-    def _populate_recent_choices(self, narrator_character):
+    def _populate_recent_choices(self, narrator_character: str) -> None:
         self._loading_recent_choices = True
         try:
             values = []
@@ -1500,7 +1567,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 )
                 if isinstance(stored, str):
                     stored = [stored]
-                for encoded in stored:
+                for encoded in cast(Iterable[object], stored):
                     try:
                         value = json.loads(str(encoded))
                     except TypeError, ValueError:
@@ -1541,7 +1608,7 @@ class AuthoringWorkbenchDialog(QDialog):
         finally:
             self._loading_recent_choices = False
 
-    def _store_recent_choices(self, values):
+    def _store_recent_choices(self, values: Iterable[tuple[str, int]]) -> None:
         values = tuple(values)
         if values == self._recent_reference_choices:
             return
@@ -1560,7 +1627,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.sync()
         self._recent_reference_choices = values
 
-    def _record_current_reference(self, *_arguments):
+    def _record_current_reference(self, *_arguments: object) -> None:
         if self._loading_recent_choices or self.voice_controller is None:
             return
         reference = self.voice_controller.current(self.voice_character.currentText())
@@ -1576,16 +1643,16 @@ class AuthoringWorkbenchDialog(QDialog):
                     values.append(choice)
         self._store_recent_choices(values[:8])
         _directory, workspace = self._workspace_document()
-        self._populate_recent_choices(workspace["narrator_character"])
+        self._populate_recent_choices(str(workspace["narrator_character"]))
 
-    def _choose_recent_reference(self, index):
+    def _choose_recent_reference(self, index: int) -> None:
         if self._loading_recent_choices:
             return
         value = self.recent_choice.itemData(index)
         if isinstance(value, (tuple, list)) and len(value) == 2:
             self._apply_recent_reference(str(value[0]), int(value[1]))
 
-    def _choose_typed_recent_reference(self):
+    def _choose_typed_recent_reference(self) -> None:
         typed = self.recent_choice.currentText().strip().casefold()
         for index in range(self.recent_choice.count()):
             if self.recent_choice.itemText(index).casefold() == typed:
@@ -1595,7 +1662,7 @@ class AuthoringWorkbenchDialog(QDialog):
         if self.summary is not None:
             self.status.setText(self._status_text())
 
-    def _apply_recent_reference(self, character, index):
+    def _apply_recent_reference(self, character: str, index: int) -> None:
         if self.summary is None or self.summary.voice_manifest is None:
             return
         try:
@@ -1615,7 +1682,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self._show_reference()
         self._record_current_reference()
 
-    def _show_reference(self):
+    def _show_reference(self, *_arguments: object) -> None:
         reference = (
             self.voice_controller.current(self.voice_character.currentText())
             if self.voice_controller is not None and self.voice_character.currentText()
@@ -1652,14 +1719,14 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self.reference_label.setToolTip(str(reference.path))
 
-    def _move_reference(self, offset):
+    def _move_reference(self, offset: int) -> None:
         if self.voice_controller is None or not self.voice_character.currentText():
             return
         self.voice_controller.move(self.voice_character.currentText(), offset)
         self._show_reference()
         self._record_current_reference()
 
-    def play_reference(self):
+    def play_reference(self) -> None:
         if self.voice_controller is None:
             return
         token = self.voice_controller.current(self.voice_character.currentText())
@@ -1667,6 +1734,8 @@ class AuthoringWorkbenchDialog(QDialog):
             return
         try:
             current = inspect_workspace(self.workspace_directory)
+            if current.voice_manifest is None:
+                raise AuthoringWorkbenchError("Voice manifest is no longer available")
             trusted = VoiceReferenceController.from_workspace(
                 self.workspace_directory, current.voice_manifest
             )
@@ -1684,7 +1753,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.media_outcome = f"PLAYING REFERENCE: {reference.character} {reference.index + 1}/{reference.count}"
         self.status.setText(self._status_text())
 
-    def _media_error(self, _error, message=""):
+    def _media_error(self, _error: object, message: str = "") -> None:
         self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW ERROR: " + (
@@ -1694,7 +1763,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.status.setText(self._status_text())
         self._update_review_actions(preserve_queue_id=True)
 
-    def _media_status_changed(self, status):
+    def _media_status_changed(self, status: object) -> None:
         if status != QMediaPlayer.MediaStatus.EndOfMedia:
             return
         self._review_evidence.complete()
@@ -1705,7 +1774,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.status.setText(self._status_text())
         self._update_review_actions(preserve_queue_id=True)
 
-    def stop_preview(self):
+    def stop_preview(self) -> None:
         self._discard_review_playback_copy()
         self._preview_active = False
         self.media_outcome = "AUDIO PREVIEW STOPPED"
@@ -1713,7 +1782,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.status.setText(self._status_text())
         self._update_review_actions(preserve_queue_id=True)
 
-    def _populate_reviews(self, reviews):
+    def _populate_reviews(self, reviews: Iterable[ReviewItem]) -> None:
         reviews = tuple(reviews)
         self.review_table.setRowCount(len(reviews))
         for row, review in enumerate(reviews):
@@ -1731,11 +1800,11 @@ class AuthoringWorkbenchDialog(QDialog):
                 )
             ):
                 self.review_table.setItem(row, column, QTableWidgetItem(value))
-            self.review_table.item(row, 0).setData(256, review)
+            cast(QTableWidgetItem, self.review_table.item(row, 0)).setData(256, review)
         for column, width in enumerate((190, 120, 120, 110, 80, 120, 260)):
             self.review_table.setColumnWidth(column, width)
 
-    def _populate_review_filter_choices(self):
+    def _populate_review_filter_choices(self) -> None:
         current_scope = getattr(
             self,
             "_stored_review_character_scope",
@@ -1778,7 +1847,9 @@ class AuthoringWorkbenchDialog(QDialog):
             del self._stored_review_collection
 
     @staticmethod
-    def _replace_combo_values(combo, all_label, values):
+    def _replace_combo_values(
+        combo: QComboBox, all_label: str, values: Sequence[str]
+    ) -> None:
         current = combo.currentText() or all_label
         combo.blockSignals(True)
         combo.clear()
@@ -1788,7 +1859,7 @@ class AuthoringWorkbenchDialog(QDialog):
         combo.setCurrentIndex(index if index >= 0 else 0)
         combo.blockSignals(False)
 
-    def _apply_review_filters(self, *_arguments):
+    def _apply_review_filters(self, *_arguments: object) -> None:
         if not hasattr(self, "review_character"):
             return
         character_scope = self.review_character.currentData()
@@ -1796,7 +1867,7 @@ class AuthoringWorkbenchDialog(QDialog):
         collection = self.review_collection.currentText()
         needle = self.review_search.text().strip().casefold()
 
-        def included(item):
+        def included(item: ReviewItem) -> bool:
             narrator = item.voice_character.casefold() == "narrator"
             if character_scope == self.narrator_scope and not narrator:
                 return False
@@ -1834,18 +1905,22 @@ class AuthoringWorkbenchDialog(QDialog):
                     and bool(item.technical_flags)
                 )
             if status == "Approved":
-                return item.status == "approved" and item.review_status == "approved"
+                return bool(
+                    item.status == "approved" and item.review_status == "approved"
+                )
             if status == "Rejected":
-                return item.status == "generated" and item.review_status == "rejected"
+                return bool(
+                    item.status == "generated" and item.review_status == "rejected"
+                )
             if status == "Failed":
-                return item.status == "failed"
+                return bool(item.status == "failed")
             if status == "Failed: audio limit":
-                return (
+                return bool(
                     item.status == "failed"
                     and item.failure_category == "audio limit / missed EOS"
                 )
             if status == "Failed: silence":
-                return (
+                return bool(
                     item.status == "failed"
                     and item.failure_category == "speech silence"
                 )
@@ -1886,7 +1961,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_scope.setText(scope)
         self._update_review_actions(preserve_queue_id=True)
 
-    def open_specialist_reviewer(self):
+    def open_specialist_reviewer(self) -> None:
         if self._specialist_active or self._specialist_reviewer is not None:
             return
         self._start_specialist_task(
@@ -1894,7 +1969,9 @@ class AuthoringWorkbenchDialog(QDialog):
             (self.workspace_directory,),
         )
 
-    def _start_specialist_task(self, function, *arguments):
+    def _start_specialist_task(
+        self, function: CohortBundleBuilder, *arguments: Sequence[Path]
+    ) -> None:
         self._specialist_active = True
         self.specialist_review_status.setText(
             "Building a checksum-bound bundle from the current workspace..."
@@ -1902,7 +1979,9 @@ class AuthoringWorkbenchDialog(QDialog):
         self._update_specialist_action()
         self._specialist_runner.start(function, *arguments)
 
-    def _specialist_task_finished(self, result, error):
+    def _specialist_task_finished(
+        self, result: object, error: Exception | None
+    ) -> None:
         if not self._specialist_active:
             return
         self._specialist_active = False
@@ -1938,7 +2017,7 @@ class AuthoringWorkbenchDialog(QDialog):
         dialog.open()
         self._update_specialist_action()
 
-    def _specialist_review_finished(self, dialog):
+    def _specialist_review_finished(self, dialog: QDialog) -> None:
         if dialog is not self._specialist_reviewer:
             return
         self._specialist_reviewer = None
@@ -1948,13 +2027,13 @@ class AuthoringWorkbenchDialog(QDialog):
         self._update_specialist_action()
         self.refresh()
 
-    def _effective_review_voice(self, item):
+    def _effective_review_voice(self, item: ReviewItem) -> str:
         effective = item.voice_character
         if effective.casefold() == "narrator" and self._workspace is not None:
-            return self._workspace["narrator_character"]
-        return effective
+            return str(self._workspace["narrator_character"])
+        return str(effective)
 
-    def _update_specialist_action(self):
+    def _update_specialist_action(self) -> None:
         self.specialist_review.setEnabled(
             not self._specialist_active
             and self._specialist_reviewer is None
@@ -1963,14 +2042,14 @@ class AuthoringWorkbenchDialog(QDialog):
             and not self._playback_prepare_active
         )
 
-    def _discard_review_playback_copy(self):
+    def _discard_review_playback_copy(self) -> None:
         self.player.stop()
         self._review_evidence.cancel()
         playback = self._review_playback_buffer
         self._review_playback_buffer = None
         release_audio_buffer(self.player, playback)
 
-    def _row_for_queue_id(self, queue_id):
+    def _row_for_queue_id(self, queue_id: str | None) -> int:
         if queue_id is None:
             return -1
         for row in range(self.review_table.rowCount()):
@@ -1980,7 +2059,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 return row
         return -1
 
-    def _first_pending_row(self):
+    def _first_pending_row(self) -> int:
         for row in range(self.review_table.rowCount()):
             item = self.review_table.item(row, 0)
             review = item.data(256) if item is not None else None
@@ -1992,12 +2071,19 @@ class AuthoringWorkbenchDialog(QDialog):
                 return row
         return -1
 
-    def _move_pending(self, offset):
+    def _move_pending(self, offset: int) -> None:
         pending = [
             row
             for row in range(self.review_table.rowCount())
             if (
-                (review := self.review_table.item(row, 0).data(256)).status
+                (
+                    review := cast(
+                        ReviewItem,
+                        cast(QTableWidgetItem, self.review_table.item(row, 0)).data(
+                            256
+                        ),
+                    )
+                ).status
                 == "generated"
                 and review.review_status in {None, "pending_review"}
             )
@@ -2016,7 +2102,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.review_table.setCurrentCell(row, 0)
         self.review_table.scrollToItem(self.review_table.item(row, 0))
 
-    def _next_pending_queue_id(self):
+    def _next_pending_queue_id(self) -> str | None:
         pending = [
             item.queue_id
             for item in self._filtered_reviews
@@ -2027,12 +2113,12 @@ class AuthoringWorkbenchDialog(QDialog):
             return None
         selected = self._selected_review_item()
         if selected is None or selected.queue_id not in pending:
-            return pending[0]
+            return str(pending[0])
         if len(pending) == 1:
             return None
-        return pending[(pending.index(selected.queue_id) + 1) % len(pending)]
+        return str(pending[(pending.index(selected.queue_id) + 1) % len(pending)])
 
-    def _selected_review_item(self):
+    def _selected_review_item(self) -> ReviewItem | None:
         row = self.review_table.currentRow()
         if row < 0:
             return None
@@ -2040,7 +2126,9 @@ class AuthoringWorkbenchDialog(QDialog):
         value = item.data(256) if item is not None else None
         return value if isinstance(value, ReviewItem) else None
 
-    def _update_review_actions(self, *_arguments, preserve_queue_id=False):
+    def _update_review_actions(
+        self, *_arguments: object, preserve_queue_id: bool = False
+    ) -> None:
         selected = self._selected_review_item()
         if selected is not None and not preserve_queue_id:
             self._selected_review_queue_id = selected.queue_id
@@ -2084,7 +2172,9 @@ class AuthoringWorkbenchDialog(QDialog):
         heard = self._review_evidence.allows(selected)
         self.approve.setEnabled(enabled and heard)
         self.reject_button.setEnabled(enabled and heard)
-        self.review_play.setEnabled(enabled and selected.audio is not None)
+        self.review_play.setEnabled(
+            enabled and selected is not None and selected.audio is not None
+        )
         self.review_stop.setEnabled(self._preview_active)
         navigation_enabled = (
             self._first_pending_row() >= 0
@@ -2149,7 +2239,7 @@ class AuthoringWorkbenchDialog(QDialog):
                 f"{review_technical_summary(selected)}"
             )
 
-    def play_selected_outcome(self):
+    def play_selected_outcome(self) -> None:
         if self._playback_prepare_active:
             self.review_action_reason.setText(
                 "Preparing replay: wait for exact WAV validation"
@@ -2168,7 +2258,9 @@ class AuthoringWorkbenchDialog(QDialog):
             self._playback_preparer, self.workspace_directory, selected
         )
 
-    def _playback_preparation_finished(self, result, error):
+    def _playback_preparation_finished(
+        self, result: object, error: Exception | None
+    ) -> None:
         if not self._playback_prepare_active:
             return
         self._playback_prepare_active = False
@@ -2207,7 +2299,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.status.setText(self._status_text())
         self._update_review_actions(preserve_queue_id=True)
 
-    def review_selected(self, decision):
+    def review_selected(self, decision: str) -> None:
         if self._playback_prepare_active:
             self.review_action_reason.setText(
                 "Preparing replay: wait before saving a review decision"
@@ -2248,7 +2340,7 @@ class AuthoringWorkbenchDialog(QDialog):
             selected,
         )
 
-    def _review_save_finished(self, result, error):
+    def _review_save_finished(self, result: object, error: Exception | None) -> None:
         if not self._review_save_active:
             return
         queue_id = self._review_save_queue_id
@@ -2347,7 +2439,7 @@ class AuthoringWorkbenchDialog(QDialog):
         if refresh_terminal_projection:
             QTimer.singleShot(0, self.refresh)
 
-    def start_generation(self):
+    def start_generation(self) -> None:
         if (
             self.collection_selection is None
             or not self.collection_selection.readiness.queue_ids
@@ -2359,7 +2451,7 @@ class AuthoringWorkbenchDialog(QDialog):
             return
         self._start_child(self.collection_selection.readiness.queue_ids)
 
-    def start_failed_retry(self):
+    def start_failed_retry(self) -> None:
         selected_queue_ids = (
             set(self.collection_selection.queue_ids)
             if self.collection_selection is not None
@@ -2383,7 +2475,7 @@ class AuthoringWorkbenchDialog(QDialog):
             return
         self._start_child(failed)
 
-    def _start_child(self, queue_ids):
+    def _start_child(self, queue_ids: Sequence[str]) -> None:
         if self.process.state() != QProcess.ProcessState.NotRunning:
             self.status.setText("Generation is already running in this window")
             return
@@ -2408,7 +2500,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self._forced_kill = False
         self.process.start()
 
-    def stop_child(self):
+    def stop_child(self) -> None:
         if self.process.state() == QProcess.ProcessState.NotRunning:
             return
         self.status.setText("STOPPING: asking generation process to terminate")
@@ -2418,7 +2510,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.process.terminate()
         QTimer.singleShot(self.stop_timeout_ms, lambda: self._kill_if_running(token))
 
-    def _kill_if_running(self, token):
+    def _kill_if_running(self, token: int) -> None:
         if (
             token == self._process_generation
             and token == self._stop_generation_token
@@ -2430,7 +2522,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self._forced_kill = True
             self.process.kill()
 
-    def _process_started(self):
+    def _process_started(self) -> None:
         self.local_process_started_at = process_started_at(self.process.processId())
         self.process_outcome = f"PROCESS STARTED: PID {self.process.processId()}"
         self.status.setText(self.process_outcome)
@@ -2438,7 +2530,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.retry_failed.setEnabled(False)
         self.stop_generation.setEnabled(True)
 
-    def _append_process_output(self, *, final=False):
+    def _append_process_output(self, *, final: bool = False) -> None:
         data = bytes(self.process.readAllStandardOutput())
         text = self._log_decoder.decode(data, final=final)
         if text:
@@ -2456,7 +2548,7 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self.process_log.moveCursor(QTextCursor.MoveOperation.End)
 
-    def _process_finished(self, exit_code, _exit_status):
+    def _process_finished(self, exit_code: int, _exit_status: object) -> None:
         if self._finishing:
             return
         self._finishing = True
@@ -2487,7 +2579,7 @@ class AuthoringWorkbenchDialog(QDialog):
             self.close_after_stop = False
             self.close()
 
-    def _process_error(self, error):
+    def _process_error(self, error: object) -> None:
         terminal = (
             self.process.state() == QProcess.ProcessState.NotRunning
             or error == QProcess.ProcessError.FailedToStart
@@ -2503,7 +2595,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self._append_process_log(self.process_outcome + "\n")
         self.refresh()
 
-    def open_output_folder(self):
+    def open_output_folder(self) -> None:
         try:
             current = inspect_workspace(self.workspace_directory)
         except AuthoringWorkbenchError as error:
@@ -2512,21 +2604,23 @@ class AuthoringWorkbenchDialog(QDialog):
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(current.output))):
             self.status.setText("Unable to open the contained output folder")
 
-    def copy_diagnostic_text(self):
+    def copy_diagnostic_text(self) -> None:
         summary = self.summary.to_dict() if self.summary is not None else {}
         QApplication.clipboard().setText(
             f"Workspace: {self.workspace_directory}\nStatus: {summary}\n\n{self.process_log.toPlainText()}"
         )
 
-    def _technical_toggled(self, checked):
+    def _technical_toggled(self, checked: bool) -> None:
         self.process_log.setVisible(checked)
         self.copy_diagnostics.setVisible(checked)
 
-    def _show_technical_review_columns(self, checked):
+    def _show_technical_review_columns(self, checked: bool) -> None:
         self.review_table.setColumnHidden(6, not checked)
         self.review_table.setColumnHidden(8, not checked)
 
-    def _inspector_section_toggled(self, section, checked):
+    def _inspector_section_toggled(
+        self, section: DisclosureSection, checked: bool
+    ) -> None:
         if not checked:
             return
         QTimer.singleShot(
@@ -2536,7 +2630,7 @@ class AuthoringWorkbenchDialog(QDialog):
             ),
         )
 
-    def _restore_settings(self):
+    def _restore_settings(self) -> None:
         self.settings.beginGroup(self.settings_group)
         geometry = self.settings.value("geometry")
         if geometry is not None:
@@ -2549,27 +2643,35 @@ class AuthoringWorkbenchDialog(QDialog):
             self.splitter.setSizes(restored_sizes)
         else:
             self.splitter.setSizes([560, 180])
-        layout_version = self.settings.value("layout-version", 0, type=int)
+        layout_version = cast(int, self.settings.value("layout-version", 0, type=int))
         generation_expanded = (
-            self.settings.value("generation-expanded", False, type=bool)
+            cast(bool, self.settings.value("generation-expanded", False, type=bool))
             if layout_version >= 2
             else False
         )
         self.generation_section.setChecked(generation_expanded)
-        expanded = self.settings.value("technical-expanded", False, type=bool)
+        expanded = cast(
+            bool, self.settings.value("technical-expanded", False, type=bool)
+        )
         self.technical.setChecked(expanded)
         self._technical_toggled(expanded)
         self.show_technical_columns.setChecked(
-            self.settings.value("technical-review-columns", False, type=bool)
+            cast(
+                bool, self.settings.value("technical-review-columns", False, type=bool)
+            )
         )
-        readiness_expanded = self.settings.value("readiness-expanded", False, type=bool)
+        readiness_expanded = cast(
+            bool, self.settings.value("readiness-expanded", False, type=bool)
+        )
         self.readiness_details.setChecked(readiness_expanded)
         self.readiness_text.setVisible(readiness_expanded)
-        outcome_expanded = self.settings.value(
-            "outcome-details-expanded", False, type=bool
+        outcome_expanded = cast(
+            bool, self.settings.value("outcome-details-expanded", False, type=bool)
         )
         self.outcome_details.setChecked(outcome_expanded)
-        voice_expanded = self.settings.value("voice-expanded", False, type=bool)
+        voice_expanded = cast(
+            bool, self.settings.value("voice-expanded", False, type=bool)
+        )
         self.voice_box.setChecked(voice_expanded)
         self.voice_content.setVisible(voice_expanded)
         self.review_status.setCurrentText(
@@ -2591,7 +2693,7 @@ class AuthoringWorkbenchDialog(QDialog):
         )
         self.settings.endGroup()
 
-    def _save_settings(self):
+    def _save_settings(self) -> None:
         self.settings.beginGroup(self.settings_group)
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("splitter", self.splitter.sizes())
@@ -2621,7 +2723,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.endGroup()
         self.settings.sync()
 
-    def _reset_layout(self):
+    def _reset_layout(self) -> None:
         self.splitter.setSizes([560, 180])
         self.generation_section.setChecked(False)
         self.outcome_details.setChecked(False)
@@ -2642,7 +2744,7 @@ class AuthoringWorkbenchDialog(QDialog):
         self.settings.endGroup()
         self.settings.sync()
 
-    def _install_review_shortcuts(self):
+    def _install_review_shortcuts(self) -> None:
         bindings = (
             ("Ctrl+Shift+Left", lambda: self._move_pending(-1)),
             ("Ctrl+Shift+Right", lambda: self._move_pending(1)),
@@ -2677,11 +2779,11 @@ class AuthoringWorkbenchDialog(QDialog):
             self._review_shortcuts.append(shortcut)
 
     @staticmethod
-    def _trigger_if_enabled(button, callback):
+    def _trigger_if_enabled(button: QPushButton, callback: Callable[[], None]) -> None:
         if button.isEnabled():
             callback()
 
-    def _set_focus_chain(self):
+    def _set_focus_chain(self) -> None:
         widgets = (
             self.review_character,
             self.review_status,
@@ -2721,7 +2823,7 @@ class AuthoringWorkbenchDialog(QDialog):
         for first, second in pairwise(widgets):
             QWidget.setTabOrder(first, second)
 
-    def closeEvent(self, event: QCloseEvent):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if self._specialist_active:
             self.specialist_review_status.setText(
                 "Close deferred: wait for the checksum-bound specialist bundle to finish"
@@ -2766,7 +2868,7 @@ class AuthoringWorkbenchDialog(QDialog):
         event.ignore()
 
 
-def launch_authoring_workbench(workspace_directory):
+def launch_authoring_workbench(workspace_directory: str | Path) -> int:
     application = QApplication.instance() or QApplication(sys.argv)
     try:
         dialog = AuthoringWorkbenchDialog(workspace_directory)
@@ -2777,7 +2879,7 @@ def launch_authoring_workbench(workspace_directory):
     return application.exec()
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if any(value in {"-h", "--help"} for value in arguments):
         print("usage: vntts-authoring-workbench WORKSPACE")
