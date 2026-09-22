@@ -321,12 +321,6 @@
     },
     {
       "code": "C901",
-      "path": "vntts/controller.py",
-      "scope": "AppController._prepare_speaker_announcement",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/controller_components.py",
       "scope": "RuntimeLifecycleComponent._initialize_backend",
       "count": 1
@@ -893,12 +887,6 @@
       "code": "PLR0912",
       "path": "vntts/controller.py",
       "scope": "AppController._play_live_chunk",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/controller.py",
-      "scope": "AppController._prepare_speaker_announcement",
       "count": 1
     },
     {
