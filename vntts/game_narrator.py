@@ -108,7 +108,6 @@ def narrator_preview_plan(
         character="Narrator",
         speakers=("Narrator",),
         portrait=None,
-        age=None,
         source_bank=None,
         source_voice_id=None,
         line_ids=(),

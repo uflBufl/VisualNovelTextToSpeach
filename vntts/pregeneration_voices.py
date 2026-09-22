@@ -142,7 +142,6 @@ class VoiceGroup:
     character: str
     speakers: tuple[str, ...]
     portrait: str | None
-    age: str | None
     source_bank: str | None
     source_voice_id: str | None
     line_ids: tuple[str, ...]
@@ -581,13 +580,11 @@ class VoicePlanStore:
     ):
         records = tuple(value[0] for value in values)
         character = values[0][1]
-        portrait, age, source_bank, source_voice_id = values[0][2]
+        portrait, source_bank, source_voice_id = values[0][2]
         variant_key = values[0][3]
-        if any(value[2][1] != age for value in values):
-            age = None
-        if any(value[2][2] != source_bank for value in values):
+        if any(value[2][1] != source_bank for value in values):
             source_bank = None
-        if any(value[2][3] != source_voice_id for value in values):
+        if any(value[2][2] != source_voice_id for value in values):
             source_voice_id = None
         bound_source = values[0][4]
         portrait_value = next((value for value in values if value[5]), values[0])
@@ -812,7 +809,6 @@ class VoicePlanStore:
             character=character,
             speakers=speakers,
             portrait=portrait,
-            age=age,
             source_bank=source_bank,
             source_voice_id=source_voice_id,
             line_ids=tuple(record.line_id for record in records),
@@ -1460,7 +1456,7 @@ def _candidate_identity(candidate):
 def _variant_evidence(record):
     return tuple(
         _optional_variant(record.producer_fields.get(field))
-        for field in ("portrait", "age", "source_bank", "source_voice_id")
+        for field in ("portrait", "source_bank", "source_voice_id")
     )
 
 

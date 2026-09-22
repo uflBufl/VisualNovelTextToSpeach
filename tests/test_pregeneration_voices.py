@@ -521,19 +521,18 @@ class VoicePlanStoreTest(unittest.TestCase):
             original_group = next(
                 group for group in original.groups if group.character == "Rhiannon"
             )
+            self.assertNotIn("age", original_group.to_document())
             path = Path(job.story_index)
             rows = [json.loads(line) for line in path.read_text().splitlines()]
             first = next(row for row in rows if row.get("line_id") == "line:rhiannon:1")
             second = next(
                 row for row in rows if row.get("line_id") == "line:rhiannon:2"
             )
-            first.update(
-                source_bank="other.bnk", source_voice_id="audio-1", age="adult"
-            )
+            first.update(source_bank="other.bnk", source_voice_id="audio-1")
             second["source_voice_id"] = "audio-2"
             for different_portrait in (False, True):
                 if different_portrait:
-                    second.update(portrait=11, age="child")
+                    second["portrait"] = 11
                 path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
                 changed_job = replace(job, story_index_sha256=sha256_file(path))
                 plan = planner.create(changed_job, settings, manifest_path=manifest)

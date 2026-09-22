@@ -31,5 +31,5 @@ uv run vntts-pregenerate voice-quality-check voice-quality-gate.json \
 technical-attention WAV and the deterministic clean sample selected by the
 ordinary cohort planner must still be heard in the later story. The gate never
 approves or rejects a WAV. `new_review` lists changed identity fields. Reference
-order or bytes, model bytes, backend/model/profile, voice/age/portrait variant,
+order or bytes, model bytes, backend/model/profile, selected voice identity,
 prompt/transform and repair strategy all invalidate reuse.

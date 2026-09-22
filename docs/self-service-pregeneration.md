@@ -26,8 +26,9 @@ queues. Those remain available only in expert diagnostics.
 
 VNTTS automatically reuses exact original game speech, known character aliases,
 previous voice decisions and technically valid references. Reference candidates
-remain separated when portrait, age, bank or speaker evidence conflicts. Only a
-genuinely ambiguous group asks the user to listen.
+retain bank and speaker provenance without splitting one character into multiple
+groups. Portraits are visual context only. Only a genuinely ambiguous group asks
+the user to listen.
 
 One voice card answers a player-level question: "Which voice should this
 character use?" It presents the character and visual context when available,
@@ -37,8 +38,8 @@ player can also choose `Neither sounds right`, `Choose for me`, or `Choose all
 automatically`. Failed previews and cases with only one viable candidate are
 resolved automatically instead of being presented as fake decisions.
 
-A checksum-bound decision is reused in later stories while its character
-variant, ordered reference audio, backend/model and generation profile remain
+A checksum-bound decision is reused in later stories while its character,
+ordered reference audio, backend/model and generation profile remain
 unchanged. A changed control invalidates only the affected voice group. Clean
 generated lines do not require human approval. Optional expert review may inspect
 exceptions, but abandoning that review never blocks creation of a playable pack.
@@ -160,7 +161,8 @@ cannot create a second dashboard or tray process.
 Voice routing is planned in a separate atomic `voice-plan.json` beside the
 selection job. The planner reopens the checksum-bound story index, excludes
 original and non-speakable lines, and groups remaining lines by canonical voice
-character plus exact portrait, age, source-bank and source-voice evidence. It
+character plus any exact queue-to-voice binding. Portrait, source-bank and
+source-voice metadata remain display and provenance evidence only. It
 also validates exact queue-to-voice bindings carried by reviewed source-reference
 manifests. Exact queue bindings split otherwise similar groups and remain
 automatic. The candidate inventory then combines that authority with exact

@@ -467,13 +467,12 @@ class VoiceAuditionPanel(QGroupBox):
             if self._inspection_mode
             else f"Voice sample {self._group_index + 1} of {len(self._groups)}."
         )
-        variant = f" ({group.age})" if group.age else ""
-        self.character.setText(f"Choose a voice for {group.character}{variant}")
+        self.character.setText(f"Choose a voice for {group.character}")
         self._show_portrait(group)
         count = len(group.line_ids)
         self.scope.setText(
             f"This voice will be used for {count} line{'s' if count != 1 else ''} "
-            "in this selection and remembered for this character variant."
+            "in this selection and remembered for this character."
         )
         self._sample_text = group.sample_text
         self.sample.setText(f'Generated preview says: "{self._sample_text}"')
