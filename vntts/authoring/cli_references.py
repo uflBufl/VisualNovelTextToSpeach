@@ -84,6 +84,15 @@ COMMANDS = frozenset(
 def configure_parsers(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
+    _configure_failure_reference_parsers(subparsers)
+    _configure_missing_voice_reuse_parsers(subparsers)
+    _configure_missing_voice_authority_parsers(subparsers)
+    _configure_source_reference_parsers(subparsers)
+
+
+def _configure_failure_reference_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     reference_audit = subparsers.add_parser(
         "failure-reference-audit",
         help="Publish a blinded exact-reference audit for speech-quality failures",
@@ -110,6 +119,10 @@ def configure_parsers(
         "--workspaces-root", type=Path, default=default_workspaces_root()
     )
 
+
+def _configure_missing_voice_reuse_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     missing_voice_reuse = subparsers.add_parser(
         "missing-voice-reuse-plan",
         help="Plan bounded existing-voice comparisons for known unbound roles",
@@ -206,6 +219,10 @@ def configure_parsers(
     missing_voice_binding.add_argument("session", type=Path)
     missing_voice_binding.add_argument("--output", type=Path, required=True)
 
+
+def _configure_missing_voice_authority_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     missing_voice_live_fallback = subparsers.add_parser(
         "missing-voice-live-fallback",
         help="Preflight or atomically authorize one audited missing-role cohort",
@@ -258,6 +275,10 @@ def configure_parsers(
     )
     portrait_alias_decision.add_argument("--output", type=Path, required=True)
 
+
+def _configure_source_reference_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
     references = subparsers.add_parser(
         "reference-report",
         help="Inspect immutable objective metrics for one character's references",
@@ -354,6 +375,44 @@ def configure_parsers(
 
 
 def handle(arguments: argparse.Namespace) -> int:
+    if arguments.command in {
+        "failure-reference-audit",
+        "failure-reference-binding",
+        "create-failure-reference-workspace",
+    }:
+        return _handle_failure_reference(arguments)
+    if arguments.command in {
+        "missing-voice-reuse-plan",
+        "missing-voice-reuse-candidate-workspace",
+        "missing-voice-reuse-candidate-command",
+        "missing-voice-reuse-review",
+        "missing-voice-reuse-review-status",
+        "missing-voice-reuse-review-ui",
+        "missing-voice-reuse-binding",
+    }:
+        return _handle_missing_voice_reuse(arguments)
+    if arguments.command in {
+        "missing-voice-live-fallback",
+        "known-role-reuse-binding",
+        "portrait-alias-plan",
+        "portrait-alias-decision",
+    }:
+        return _handle_missing_voice_authority(arguments)
+    if arguments.command in {
+        "reference-report",
+        "select-reference",
+        "import-reference-review",
+        "build-reference-evaluation",
+        "build-reference-listening-reports",
+        "build-reference-bindings",
+        "extend-reference-bindings",
+        "retire-reference-bindings",
+    }:
+        return _handle_source_references(arguments)
+    raise AssertionError(f"Unhandled reference command: {arguments.command}")
+
+
+def _handle_failure_reference(arguments: argparse.Namespace) -> int:
     if arguments.command == "failure-reference-audit":
         audit = publish_failure_reference_audit(
             arguments.workspace,
@@ -381,6 +440,10 @@ def handle(arguments: argparse.Namespace) -> int:
             )
         )
         return 0
+    raise AssertionError(f"Unhandled reference command: {arguments.command}")
+
+
+def _handle_missing_voice_reuse(arguments: argparse.Namespace) -> int:
     if arguments.command == "missing-voice-reuse-plan":
         plan = build_missing_voice_reuse_plan(
             arguments.workspace,
@@ -470,6 +533,10 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         print(json.dumps(reuse_binding.to_dict(), indent=2, sort_keys=True))
         return 0
+    raise AssertionError(f"Unhandled reference command: {arguments.command}")
+
+
+def _handle_missing_voice_authority(arguments: argparse.Namespace) -> int:
     if arguments.command == "missing-voice-live-fallback":
         live_fallback = authorize_missing_voice_live_fallback(
             arguments.workspace,
@@ -516,6 +583,10 @@ def handle(arguments: argparse.Namespace) -> int:
             json.dumps(decision.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
         )
         return 0
+    raise AssertionError(f"Unhandled reference command: {arguments.command}")
+
+
+def _handle_source_references(arguments: argparse.Namespace) -> int:
     if arguments.command == "reference-report":
         print(
             json.dumps(
