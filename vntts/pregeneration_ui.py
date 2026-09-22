@@ -766,6 +766,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self._checking_story = None
         self._story_audio_checks.clear()
         self._story_playback_speakers.clear()
+        self._prepared_voice_manifest = None
+        self._prepared_voice_job = None
         self._story_audio_changed()
         if self._background_discovery:
             self._set_discovery_loading(True)
@@ -1429,6 +1431,8 @@ class OfflineAudioPreparationDialog(QDialog):
             self.source_status.setText(str(error))
             self.source_status.show()
             return
+        self._prepared_voice_manifest = None
+        self._prepared_voice_job = None
         existing = next(
             (
                 index
@@ -3174,6 +3178,8 @@ class OfflineAudioPreparationDialog(QDialog):
             )
             self.source_status.show()
             return
+        self._prepared_voice_manifest = None
+        self._prepared_voice_job = None
         existing = next(
             (
                 index

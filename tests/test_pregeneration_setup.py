@@ -624,7 +624,11 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 self.assertTrue(dialog.selection_panel.isVisible())
                 dialog.select_all_button.click()
                 self.assertTrue(dialog.continue_button.isEnabled())
+                dialog._prepared_voice_manifest = Path("stale-voices.json")
+                dialog._prepared_voice_job = "stale-job"
                 dialog.refresh_button.click()
+                self.assertIsNone(dialog._prepared_voice_manifest)
+                self.assertIsNone(dialog._prepared_voice_job)
                 self.assertEqual(len(pool.tasks), 1)
                 self.assertTrue(dialog.discovery_panel.isVisible())
                 self.assertFalse(dialog.selection_panel.isVisible())
@@ -1842,6 +1846,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 "vntts.pregeneration_ui.QFileDialog.getExistingDirectory",
                 return_value="/selected/game",
             ):
+                dialog._prepared_voice_manifest = Path("stale-voices.json")
+                dialog._prepared_voice_job = "stale-job"
                 dialog.game_folder_button.click()
             self.assertTrue(dialog.importing)
             self.assertFalse(dialog.source.isEnabled())
@@ -1855,6 +1861,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 "/selected/game",
             )
             self.assertFalse(dialog.importing)
+            self.assertIsNone(dialog._prepared_voice_manifest)
+            self.assertIsNone(dialog._prepared_voice_job)
             self.assertEqual(dialog.source.count(), 1)
             self.assertEqual(dialog.stories.count(), 2)
             self.assertIn("successfully", dialog.source_status.text())
