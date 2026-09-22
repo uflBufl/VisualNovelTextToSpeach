@@ -8,6 +8,7 @@ from multiprocessing import freeze_support
 from pathlib import Path
 from threading import Event, Thread
 from time import perf_counter
+from typing import Protocol
 
 from pynput import keyboard
 from PySide6.QtCore import (
@@ -62,7 +63,7 @@ from vntts.auto_advance_policy import (
 )
 from vntts.calibration import show_calibration_overlay
 from vntts.configuration_apply import ConfigurationApplyMixin
-from vntts.controller import AppController
+from vntts.controller import AppController, LiveSequenceStatus
 from vntts.dashboard_ui import (
     CompactController,
     ControlDashboard,
@@ -1516,6 +1517,12 @@ class SettingsDialog(QDialog):
         }
 
 
+class _HotkeyListener(Protocol):
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+
 class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     application: QApplication
     settings: AppSettings
@@ -1642,15 +1649,15 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_stop_runner = LatestTaskRunner(self)
         self.live_stop_runner.finished.connect(self._live_stop_finished)
         self._live_stop_continuation = None
-        self._live_stop_generation = None
+        self._live_stop_generation: int | None = None
         self.profile_restart_runner = LatestTaskRunner(self)
         self.profile_restart_runner.finished.connect(self._profile_restart_finished)
         self.initial_start_runner = LatestTaskRunner(self)
         self.initial_start_runner.finished.connect(self._initial_start_finished)
-        self._initial_start_generation = None
+        self._initial_start_generation: int | None = None
         self.live_scope_runner = LatestTaskRunner(self)
         self.live_scope_runner.finished.connect(self._live_scope_finished)
-        self._live_scope_generation = None
+        self._live_scope_generation: int | None = None
         self.diagnostics_refresh_runner = LatestTaskRunner(self)
         self.diagnostics_refresh_runner.finished.connect(
             self._diagnostics_refresh_finished
@@ -1686,7 +1693,8 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._onboarding_test_active = False
         self.profile_store = profile_store or GameProfileStore.load()
         self.correction_store = correction_store or OCRCorrectionStore.load()
-        self.hotkey_listener = self.calibration_overlay = None
+        self.hotkey_listener: _HotkeyListener | None = None
+        self.calibration_overlay = None
         self.onboarding_wizard = self.diagnostics_dialog = None
         self.diagnostics_refresh_generation = 0
         self.readiness_dialog = self.pregeneration_dialog = self.support_dialog = None
@@ -2098,7 +2106,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         with QSignalBlocker(self.dashboard.sections):
             self.dashboard.show_reading()
 
-    def prepare_reading(self, *, start_live=False):
+    def prepare_reading(self, *, start_live: bool = False) -> None:
         if self._controller_busy or self._shutting_down:
             return
         if self.narrator_dialog is not None:
@@ -2149,7 +2157,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self._initial_start_generation = generation
         self.initial_start_runner.start(self._initialize_controller, generation)
 
-    def _initialize_controller(self, generation):
+    def _initialize_controller(self, generation: int) -> bool:
         try:
             ready = self.controller.start()
         except Exception:
@@ -2160,7 +2168,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             return False
         return ready
 
-    def _initial_start_finished(self, ready, error):
+    def _initial_start_finished(self, ready: object, error: Exception | None) -> None:
         generation = self._initial_start_generation
         self._initial_start_generation = None
         if not self._lifecycle_is_current(generation):
@@ -2169,6 +2177,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         if error is not None:
             self.show_error(f"Unable to initialize controller: {error}")
             ready = False
+        ready = ready is True
         self.signals.ready_changed.emit(ready)
         if ready:
             self.signals.hotkeys_requested.emit()
@@ -2176,10 +2185,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 self.toggle_live()
         self._start_live_after_initial_start = False
 
-    def schedule_hotkeys(self):
+    def schedule_hotkeys(self) -> None:
         QTimer.singleShot(250, self._start_hotkeys_safely)
 
-    def _start_hotkeys_safely(self):
+    def _start_hotkeys_safely(self) -> None:
         if self._shutting_down:
             return
         if sys.platform == "darwin":
@@ -2196,7 +2205,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         except (TypeError, ValueError) as error:
             self.show_error(f"Unable to register hotkeys: {error}")
 
-    def start_hotkeys(self):
+    def start_hotkeys(self) -> None:
         if self.hotkey_listener is not None:
             self.hotkey_listener.stop()
         read_hotkey = get_hotkey(self.settings)
@@ -2230,19 +2239,19 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         )
         self.hotkey_listener.start()
 
-    def read_once(self):
+    def read_once(self) -> None:
         if self.narrator_dialog is not None:
             return
         self.controller.read_once()
 
-    def toggle_live(self):
+    def toggle_live(self) -> bool:
         if self.narrator_dialog is not None:
             return False
         if not self.controller.is_live_running:
             return self._start_live_with_preflight()
         return self._toggle_controller_live()
 
-    def choose_sequence_position(self):
+    def choose_sequence_position(self) -> bool:
         options = self.controller.live_sequence_anchor_options()
         if not options:
             self.set_status(
@@ -2274,7 +2283,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         event_id = dict(options)[selected]
         return self.controller.resync_live_sequence(event_id)
 
-    def choose_expected_sequence_event(self):
+    def choose_expected_sequence_event(self) -> bool:
         options = self.controller.live_sequence_expected_options()
         if not options:
             self.set_status(
@@ -2300,7 +2309,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             dict(options)[selected]
         )
 
-    def set_sequence_status(self, status):
+    def set_sequence_status(self, status: LiveSequenceStatus) -> None:
         self.dashboard.set_sequence_status(status)
         self.compact_controller.set_sequence_status(status)
         manual = bool(
@@ -2329,7 +2338,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
             )
         )
 
-    def _toggle_controller_live(self):
+    def _toggle_controller_live(self) -> bool:
         running = self.controller.toggle_live()
         self.signals.live_changed.emit(running)
         return running
@@ -2337,9 +2346,9 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
     def _start_live_with_preflight(
         self,
         *,
-        narrator_approval=None,
-        allow_scope_bootstrap=True,
-    ):
+        narrator_approval: object = None,
+        allow_scope_bootstrap: bool = True,
+    ) -> bool:
         del narrator_approval
         unresolved = getattr(self.controller, "unresolved_live_speakers", None)
         result = unresolved() if callable(unresolved) else ()
@@ -2357,7 +2366,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.pending_live_voice_preflight_speakers = ()
         return self._toggle_controller_live()
 
-    def _identify_live_scope_then_start(self):
+    def _identify_live_scope_then_start(self) -> bool:
         if self.live_scope_runner.active or self._live_scope_generation is not None:
             self.set_status("Identifying the current story chapter...")
             return False
@@ -2373,7 +2382,7 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         self.live_scope_runner.start(identify)
         return False
 
-    def _live_scope_finished(self, identified, error):
+    def _live_scope_finished(self, identified: object, error: Exception | None) -> None:
         generation = self._live_scope_generation
         self._live_scope_generation = None
         if not self._lifecycle_is_current(generation):

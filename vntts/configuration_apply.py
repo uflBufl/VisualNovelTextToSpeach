@@ -21,6 +21,14 @@ class _PreparationDialog(Protocol):
 
     def apply_narrator_settings(self, settings: AppSettings) -> None: ...
 
+    def prioritize_line(self, line_id: str, text_sha256: str) -> bool: ...
+
+    readingLineObserved: "_ReadingLineObservedSignal"
+
+
+class _ReadingLineObservedSignal(Protocol):
+    def emit(self, line_id: str, text_sha256: str) -> None: ...
+
 
 class _SettingsDialog(Protocol):
     def exec(self) -> int: ...
