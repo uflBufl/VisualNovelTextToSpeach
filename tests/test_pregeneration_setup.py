@@ -2040,7 +2040,85 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertTrue(
                 voice_plan_store.create.call_args.kwargs["ignore_decisions"]
             )
+            self.assertFalse(dialog.change_voices.isChecked())
             self.assertFalse(dialog.selection_panel.isVisible())
+            dialog.deleteLater()
+
+    def test_failed_voice_rematch_keeps_the_one_shot_request_for_retry(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            pool = ManualThreadPool()
+            voice_plan_store = Mock()
+            voice_plan_store.create.side_effect = ValueError("candidate import failed")
+            dialog = OfflineAudioPreparationDialog(
+                AppSettings(),
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=PregenerationJobStore(root / "jobs"),
+                voice_plan_store=voice_plan_store,
+                thread_pool=pool,
+            )
+
+            dialog.stories.item(0).setCheckState(Qt.CheckState.Checked)
+            dialog.change_voices.setChecked(True)
+            self.assertIn("clears saved character choices", plain_label_text(dialog.summary))
+            dialog.continue_button.click()
+            self.run_next_task(pool)
+
+            self.assertTrue(dialog.change_voices.isChecked())
+            self.assertIn("candidate import failed", dialog.resume_status.text())
+            dialog.deleteLater()
+
+    def test_narrator_draft_stays_visible_and_rolls_back_when_replan_fails(self):
+        from tests.test_pregeneration_voices import write_manifest
+        from vntts.pregeneration_voices import VoicePlanStore
+
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("main-1",))
+            manifest = write_manifest(root / "voices")
+            library = VoiceLibrary(root / "library")
+            library.select("Narrator", route="voice", source_id="preset:alba")
+            settings = AppSettings(
+                voice_manifest=str(manifest),
+                pocket_gated_model_accepted=True,
+            )
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                settings,
+                manifest_path=manifest,
+            )
+            pool = ManualThreadPool()
+            failing_store = Mock()
+            failing_store.create.side_effect = ValueError("replan failed")
+            dialog = OfflineAudioPreparationDialog(
+                settings,
+                discovery=lambda: ContentDiscovery((content,)),
+                job_store=jobs,
+                voice_plan_store=failing_store,
+                voice_library=library,
+                thread_pool=pool,
+            )
+            dialog._job = job
+            dialog._voice_plan = plan
+            dialog._show_voice_confirmation(plan)
+
+            marius = dialog.narrator_choice.findData("preset:marius")
+            self.assertGreaterEqual(marius, 0)
+            dialog.narrator_choice.setCurrentIndex(marius)
+            self.assertIn("Marius", dialog.confirmed_narrator.text())
+            dialog.pocket_voice_cloning.setChecked(False)
+            self.assertEqual(dialog.narrator_choice.currentData(), "preset:marius")
+            dialog.pocket_voice_cloning.setChecked(True)
+            dialog.continue_button.click()
+            self.assertEqual(library.binding("Narrator").source_id, "preset:marius")
+
+            self.run_next_task(pool)
+
+            self.assertEqual(library.binding("Narrator").source_id, "preset:alba")
+            self.assertIn("replan failed", dialog.resume_status.text())
             dialog.deleteLater()
 
     def test_generation_cancel_terminates_before_dialog_closes(self):

@@ -69,6 +69,7 @@ from vntts.pregeneration_setup import (
 )
 from vntts.pregeneration_voices import (
     PregenerationVoiceCancelled,
+    PregenerationVoiceError,
     VoiceDecisionStore,
     VoicePlanStore,
     pregeneration_narrator_source_id,
@@ -264,6 +265,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self._acceptance_result = None
         self._pack_result = None
         self._awaiting_voice_confirmation = False
+        self._pending_voice_rematch = False
+        self._provisional_binding_snapshot = None
         self._changes_rows = ()
         self._resume_error_details = ""
         self._narrator_player = preview_player
@@ -463,7 +466,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.select_none_button = QPushButton("Select none")
         self.select_none_button.clicked.connect(lambda: self._set_all_checked(False))
         self.change_voices = QCheckBox(
-            "Re-match selected story characters automatically"
+            "Re-match selected story characters automatically once"
         )
         self.change_voices.toggled.connect(self._selection_changed)
         self.change_voices.setAccessibleDescription(
@@ -935,16 +938,30 @@ class OfflineAudioPreparationDialog(QDialog):
         )
 
     def _pocket_cloning_toggled(self, enabled):
+        selected_narrator = (
+            self.narrator_choice.currentData()
+            if self._awaiting_voice_confirmation
+            else None
+        )
         self.settings = self.settings.updated(pocket_gated_model_accepted=bool(enabled))
         self._refresh_narrator_status()
         if self._awaiting_voice_confirmation and self._voice_plan is not None:
             self._show_voice_confirmation(self._voice_plan)
             if not self._awaiting_voice_confirmation:
                 return
+            selected_index = self.narrator_choice.findData(selected_narrator)
+            if selected_narrator is not None and selected_index >= 0:
+                self.narrator_choice.setCurrentIndex(selected_index)
+            elif selected_narrator is not None:
+                self.voice_confirmation_status.setText(
+                    "The previous narrator is unavailable with this cloning setting. "
+                    "Choose another narrator before generation."
+                )
             self.continue_button.setText("Update voice routes")
-            self.voice_confirmation_status.setText(
-                "Voice cloning changed. Update the routes before generation."
-            )
+            if selected_narrator is None or selected_index >= 0:
+                self.voice_confirmation_status.setText(
+                    "Voice cloning changed. Update the routes before generation."
+                )
         else:
             self._voice_plan = None
 
@@ -1041,6 +1058,8 @@ class OfflineAudioPreparationDialog(QDialog):
         self.work_summary.setText(self.summary.text())
         self.voice_configuration.setText(
             "Original game audio stays. Changing voices or model may require new recordings."
+            " Changing Narrator here also updates the default for future preparation "
+            "and live speech."
             + (
                 " When finished, the saved audio becomes active for reading automatically. "
                 "This replaces live voice overrides for these story roles; playback does not start."
@@ -1177,6 +1196,7 @@ class OfflineAudioPreparationDialog(QDialog):
     def _narrator_choice_changed(self, _index=None):
         source_id = self.narrator_choice.currentData()
         self._refresh_narrator_status()
+        self.confirmed_narrator.setText(self._narrator_configuration())
         if self._narrator_player is not None:
             self._narrator_player.stop()
         self.play_narrator_reference.setEnabled(
@@ -1264,9 +1284,6 @@ class OfflineAudioPreparationDialog(QDialog):
         current = pregeneration_narrator_source_id(
             self.settings, voice_library=self.voice_library
         )
-        self._awaiting_voice_confirmation = False
-        self.pocket_voice_cloning.setEnabled(False)
-        self.voice_confirmation.hide()
         planned_cloning = getattr(self._voice_plan, "pocket_voice_cloning", None)
         controls_changed = (
             self._voice_plan.synthesis_backend == "pocket-tts"
@@ -1276,21 +1293,32 @@ class OfflineAudioPreparationDialog(QDialog):
         narrator_changed = source_id is not None and source_id != current
         if controls_changed or narrator_changed:
             if narrator_changed:
+                previous_bindings = self.voice_library.bindings()
                 registry = (
                     CharacterVoiceRegistry.from_file(self._voice_plan.voice_manifest)
                     if self._voice_plan.voice_manifest
                     else CharacterVoiceRegistry()
                 )
-                remember_voice_binding(
-                    self.voice_library,
-                    registry,
-                    "Narrator",
-                    source_id,
-                    method="manual",
-                    evidence={"selected_in": "story-preparation"},
-                    algorithm="story-preparation-v1",
-                )
+                try:
+                    remember_voice_binding(
+                        self.voice_library,
+                        registry,
+                        "Narrator",
+                        source_id,
+                        method="manual",
+                        evidence={"selected_in": "story-preparation"},
+                        algorithm="story-preparation-v1",
+                    )
+                except Exception as error:
+                    self.voice_confirmation_status.setText(
+                        f"Unable to save the narrator choice: {error}"
+                    )
+                    return
+                self._provisional_binding_snapshot = previous_bindings
                 self._refresh_narrator_status()
+            self._awaiting_voice_confirmation = False
+            self.pocket_voice_cloning.setEnabled(False)
+            self.voice_confirmation.hide()
             self.planning_voices = True
             self.replanning_voice_decisions = False
             self._show_waiting_phase(
@@ -1304,6 +1332,9 @@ class OfflineAudioPreparationDialog(QDialog):
                 False,
             )
             return
+        self._awaiting_voice_confirmation = False
+        self.pocket_voice_cloning.setEnabled(False)
+        self.voice_confirmation.hide()
         self._start_generation()
 
     def _discover_content(self):
@@ -1810,7 +1841,7 @@ class OfflineAudioPreparationDialog(QDialog):
             "Ready with live speech for remaining lines"
             if live
             else "Offline audio is ready",
-            "Your story audio is saved, but not active yet. Click Use prepared audio, "
+            "Your story audio is saved, but not active yet. Click Use prepared audio. "
             "This also replaces live voice overrides for these story roles. "
             "Then open this story in the game and click Start reading. "
             "Reading uses saved recordings automatically; only uncovered lines need TTS.",
@@ -2455,6 +2486,17 @@ class OfflineAudioPreparationDialog(QDialog):
                 "Estimated after generation starts. First-time model setup and downloads take additional time.",
             ),
         ]
+        if self.change_voices.isChecked():
+            summary_rows.append(
+                (
+                    "Voice re-match",
+                    "Continuing once clears saved character choices for these "
+                    "selected stories and runs automatic matching again. The "
+                    "Narrator and characters used only by other stories stay unchanged. "
+                    "A character shared with another story gets the same new default "
+                    "there for future preparation; existing recordings stay unchanged.",
+                )
+            )
         if can_read:
             live_count = sum(
                 self._story_audio_checks[self._story_audio_key(value)][1].live
@@ -2617,6 +2659,7 @@ class OfflineAudioPreparationDialog(QDialog):
         for selection_id in self._job.selected_story_ids:
             self._story_audio_checks.pop(self._story_audio_key(selection_id), None)
         self.planning_voices = True
+        self._pending_voice_rematch = self.change_voices.isChecked()
         self.step.setText("Step 2 of 4 - Choose and confirm voices")
         self.replanning_voice_decisions = False
         self._close_after_voice_cancel = False
@@ -2634,7 +2677,7 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_runner.start(
             self._create_voice_plan,
             self._job,
-            self.change_voices.isChecked(),
+            self._pending_voice_rematch,
         )
 
     def _create_voice_plan(self, job, ignore_decisions=False):
@@ -2677,6 +2720,20 @@ class OfflineAudioPreparationDialog(QDialog):
 
     def _voice_plan_finished(self, plan, error):
         self.planning_voices = False
+        if error is not None or self._close_after_voice_cancel:
+            restore_error = self._restore_provisional_bindings()
+            if restore_error is not None:
+                self._close_after_voice_cancel = False
+                error = PregenerationVoiceError(
+                    "Voice matching stopped, but the previous voice choices could "
+                    f"not be restored: {restore_error}"
+                )
+        else:
+            self._provisional_binding_snapshot = None
+            if self._pending_voice_rematch:
+                with QSignalBlocker(self.change_voices):
+                    self.change_voices.setChecked(False)
+        self._pending_voice_rematch = False
         if self._close_after_voice_cancel:
             self.reject()
             return
@@ -2720,6 +2777,18 @@ class OfflineAudioPreparationDialog(QDialog):
             )
             return
         self._start_generation_input(plan)
+
+    def _restore_provisional_bindings(self):
+        snapshot = self._provisional_binding_snapshot
+        self._provisional_binding_snapshot = None
+        if snapshot is None:
+            return None
+        try:
+            self.voice_library.replace_bindings(snapshot)
+            self._refresh_narrator_status()
+        except Exception as error:
+            return error
+        return None
 
     def _voice_auditions_completed(self):
         self.auditioning_voices = False
