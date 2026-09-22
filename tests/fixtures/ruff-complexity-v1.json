@@ -201,50 +201,8 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/listening.py",
-      "scope": "_load_blind_key",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/listening.py",
-      "scope": "_load_model_report",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/listening.py",
-      "scope": "_report_fields",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/listening.py",
-      "scope": "create_listening_session_from_reports",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/listening.py",
-      "scope": "load_listening_session",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/listening_cli.py",
       "scope": "main",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/listening_import.py",
-      "scope": "_validate_key",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/listening_import.py",
-      "scope": "_validate_session",
       "count": 1
     },
     {
@@ -443,30 +401,6 @@
       "code": "C901",
       "path": "vntts/authoring/sound_effect_benchmark.py",
       "scope": "benchmark_sound_effects",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_known_role_reuse_overrides_from_manifest",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_missing_voice_reuse_overrides_from_manifest",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_source_reference_overrides_from_manifest",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_validate_approved_reuse_authority",
       "count": 1
     },
     {
@@ -1215,42 +1149,6 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/listening.py",
-      "scope": "_load_blind_key",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/listening.py",
-      "scope": "_load_model_report",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/listening.py",
-      "scope": "_report_fields",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/listening.py",
-      "scope": "load_listening_session",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/listening_import.py",
-      "scope": "_validate_key",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/listening_import.py",
-      "scope": "_validate_session",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/listening_ui.py",
       "scope": "ModelListeningDialog.poll_playback",
       "count": 1
@@ -1379,30 +1277,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/silence_comparison.py",
       "scope": "publish_silence_comparison",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_known_role_reuse_overrides_from_manifest",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_missing_voice_reuse_overrides_from_manifest",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_source_reference_overrides_from_manifest",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_validate_approved_reuse_authority",
       "count": 1
     },
     {
@@ -1953,12 +1827,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/listening_import.py",
-      "scope": "_validate_key",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/listening_ui.py",
       "scope": "ModelListeningDialog.__init__",
       "count": 1
@@ -2063,24 +1931,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/silence_comparison.py",
       "scope": "publish_silence_comparison",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_known_role_reuse_overrides_from_manifest",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_source_reference_overrides_from_manifest",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/source_reference_bindings.py",
-      "scope": "_validate_approved_reuse_authority",
       "count": 1
     },
     {
