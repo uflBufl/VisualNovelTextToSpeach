@@ -18,6 +18,28 @@ FAILURE_REFERENCE_BINDING_SCHEMA = "vntts.authoring-failure-reference-binding"
 FAILURE_REFERENCE_BINDING_VERSION = 2
 _LEGACY_FAILURE_REFERENCE_BINDING_VERSION = 1
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_AUTHORITY_FIELDS = {
+    "workspace_id",
+    "workspace_sha256",
+    "queue_sha256",
+    "state_sha256",
+    "voice_manifest_sha256",
+    "audit_sha256",
+    "blind_key_sha256",
+    "decisions_sha256",
+}
+_GROUP_FIELDS = {
+    "group_id",
+    "synthesis_voice_character",
+    "control_character",
+    "speaker",
+    "candidate_id",
+    "voice_character",
+    "reference",
+    "reference_sha256",
+    "source_reference",
+    "cases",
+}
 
 
 class FailureReferenceBindingError(RuntimeError):
@@ -54,19 +76,55 @@ FailureReferenceBinding.__module__ = "vntts.authoring.failure_reference_binding"
 
 def load_failure_reference_binding(directory: str | Path) -> FailureReferenceBinding:
     """Validate one self-contained selected-reference overlay."""
+    directory, document = _load_binding_document(directory)
+    binding_id, audit_id, decision_set_id, schema_version = _validate_binding_header(
+        document
+    )
+    _validate_binding_authority(document.get("source_authority"))
+    groups, overrides = _binding_inventory(document)
+    expected_overrides, case_count = _validate_binding_groups(
+        directory, groups, schema_version
+    )
+    if overrides != dict(sorted(expected_overrides.items())):
+        raise FailureReferenceBindingError(
+            "Reference binding queue override inventory changed"
+        )
+    if document.get("queue_voice_overrides_sha256") != queue_voice_overrides_sha256(
+        expected_overrides
+    ):
+        raise FailureReferenceBindingError(
+            "Reference binding queue override checksum changed"
+        )
+    return FailureReferenceBinding(
+        directory,
+        binding_id,
+        audit_id,
+        decision_set_id,
+        len(groups),
+        case_count,
+        False,
+    )
+
+
+def _load_binding_document(directory: str | Path) -> tuple[Path, dict[str, object]]:
     argument = Path(directory).expanduser()
     if argument.is_symlink():
         raise FailureReferenceBindingError(
             "Reference binding directory must not be a symlink"
         )
-    directory = argument.resolve()
-    path = directory / "binding.json"
+    resolved = argument.resolve()
+    path = resolved / "binding.json"
     if path.is_symlink():
         raise FailureReferenceBindingError("Reference binding must not be a symlink")
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        return resolved, json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise FailureReferenceBindingError(str(error)) from error
+
+
+def _validate_binding_header(
+    document: dict[str, object],
+) -> tuple[str, str, str, int]:
     schema_version = document.get("schema_version")
     if document.get(
         "schema"
@@ -83,8 +141,21 @@ def load_failure_reference_binding(directory: str | Path) -> FailureReferenceBin
     binding_id = _sha256(document.get("binding_id"), "Reference binding ID")
     if binding_id != canonical_document_sha256(identity):
         raise FailureReferenceBindingError("Reference binding identity changed")
+    _validate_binding_timestamp(document)
+    return (
+        binding_id,
+        _sha256(document.get("audit_id"), "Reference audit ID"),
+        _sha256(document.get("decision_set_id"), "Reference decision-set ID"),
+        schema_version,
+    )
+
+
+def _validate_binding_timestamp(document: dict[str, object]) -> None:
     try:
-        published_at = datetime.fromisoformat(document["published_at"])
+        value = document["published_at"]
+        if not isinstance(value, str):
+            raise TypeError
+        published_at = datetime.fromisoformat(value)
     except (KeyError, TypeError, ValueError) as error:
         raise FailureReferenceBindingError(
             "Reference binding publication timestamp is malformed"
@@ -93,114 +164,101 @@ def load_failure_reference_binding(directory: str | Path) -> FailureReferenceBin
         raise FailureReferenceBindingError(
             "Reference binding publication timestamp requires a timezone"
         )
-    audit_id = _sha256(document.get("audit_id"), "Reference audit ID")
-    decision_set_id = _sha256(
-        document.get("decision_set_id"), "Reference decision-set ID"
-    )
-    authority = document.get("source_authority")
-    if not isinstance(authority, dict) or set(authority) != {
-        "workspace_id",
-        "workspace_sha256",
-        "queue_sha256",
-        "state_sha256",
-        "voice_manifest_sha256",
-        "audit_sha256",
-        "blind_key_sha256",
-        "decisions_sha256",
-    }:
+
+
+def _validate_binding_authority(authority: object) -> None:
+    if not isinstance(authority, dict) or set(authority) != _AUTHORITY_FIELDS:
         raise FailureReferenceBindingError("Reference binding authority is malformed")
     _text(authority["workspace_id"], "Reference binding workspace ID")
     for field in set(authority) - {"workspace_id"}:
         _sha256(authority[field], f"Reference binding {field}")
+
+
+def _binding_inventory(
+    document: dict[str, object],
+) -> tuple[list[object], dict[object, object]]:
     groups = document.get("groups")
     overrides = document.get("queue_voice_overrides")
     if not isinstance(groups, list) or not groups or not isinstance(overrides, dict):
         raise FailureReferenceBindingError("Reference binding inventory is malformed")
-    seen_groups = set()
-    seen_queue_ids = set()
-    expected_overrides = {}
-    voices = set()
-    for group in groups:
-        required_group_fields = {
-            "group_id",
-            "synthesis_voice_character",
-            "control_character",
-            "speaker",
-            "candidate_id",
-            "voice_character",
-            "reference",
-            "reference_sha256",
-            "source_reference",
-            "cases",
-        }
-        accepted_group_shapes = {frozenset(required_group_fields)}
-        if schema_version == FAILURE_REFERENCE_BINDING_VERSION:
-            accepted_group_shapes.add(
-                frozenset({*required_group_fields, "selection_authority"})
-            )
-        if not isinstance(group, dict) or frozenset(group) not in accepted_group_shapes:
-            raise FailureReferenceBindingError("Reference binding group is malformed")
-        group_id = _sha256(group["group_id"], "Reference binding group ID")
-        if group_id in seen_groups:
-            raise FailureReferenceBindingError("Reference binding group is duplicated")
-        seen_groups.add(group_id)
-        voice = _text(group["voice_character"], "Reference binding voice")
-        if voice in voices:
-            raise FailureReferenceBindingError("Reference binding voice is duplicated")
-        voices.add(voice)
-        _text(group["synthesis_voice_character"], "Audited synthesis voice")
-        _text(group["control_character"], "Audited control character")
-        _text(group["speaker"], "Audited speaker")
-        _text(group["candidate_id"], "Reference binding candidate")
-        _safe_relative(group["source_reference"], "Audited source reference")
-        relative = _safe_relative(group["reference"], "Selected reference")
-        reference = _contained_regular_file(directory, relative, "selected reference")
-        digest = _sha256(group["reference_sha256"], "Selected reference SHA-256")
-        if sha256_file(reference) != digest:
-            raise FailureReferenceBindingError("Selected reference changed")
+    return groups, overrides
+
+
+def _validate_binding_groups(
+    directory: Path, groups: list[object], schema_version: int
+) -> tuple[dict[str, str], int]:
+    seen_groups: set[str] = set()
+    seen_queue_ids: set[str] = set()
+    expected_overrides: dict[str, str] = {}
+    voices: set[str] = set()
+    for raw_group in groups:
+        group = _binding_group(raw_group, schema_version)
+        voice = _validate_group_identity(group, seen_groups, voices)
+        digest = _validate_group_reference(directory, group)
         if "selection_authority" in group:
             _validate_selection_authority(
-                group["selection_authority"],
-                selected_reference_sha256=digest,
+                group["selection_authority"], selected_reference_sha256=digest
             )
-        cases = group["cases"]
-        if not isinstance(cases, list) or not cases:
-            raise FailureReferenceBindingError("Reference binding cases are malformed")
-        for case in cases:
-            if not isinstance(case, dict) or set(case) != {
-                "queue_id",
-                "failure_sha256",
-            }:
-                raise FailureReferenceBindingError(
-                    "Reference binding case is malformed"
-                )
-            queue_id = _text(case["queue_id"], "Reference binding queue ID")
-            _sha256(case["failure_sha256"], "Reference failure SHA-256")
-            if queue_id in seen_queue_ids:
-                raise FailureReferenceBindingError(
-                    "Reference binding queue ID is duplicated"
-                )
-            seen_queue_ids.add(queue_id)
-            expected_overrides[queue_id] = voice
-    if overrides != dict(sorted(expected_overrides.items())):
-        raise FailureReferenceBindingError(
-            "Reference binding queue override inventory changed"
-        )
-    if document.get("queue_voice_overrides_sha256") != queue_voice_overrides_sha256(
-        overrides
-    ):
-        raise FailureReferenceBindingError(
-            "Reference binding queue override checksum changed"
-        )
-    return FailureReferenceBinding(
-        directory,
-        binding_id,
-        audit_id,
-        decision_set_id,
-        len(groups),
-        len(seen_queue_ids),
-        False,
-    )
+        _validate_group_cases(group["cases"], voice, seen_queue_ids, expected_overrides)
+    return expected_overrides, len(seen_queue_ids)
+
+
+def _binding_group(group: object, schema_version: int) -> dict[object, object]:
+    accepted_shapes = {frozenset(_GROUP_FIELDS)}
+    if schema_version == FAILURE_REFERENCE_BINDING_VERSION:
+        accepted_shapes.add(frozenset({*_GROUP_FIELDS, "selection_authority"}))
+    if not isinstance(group, dict) or frozenset(group) not in accepted_shapes:
+        raise FailureReferenceBindingError("Reference binding group is malformed")
+    return group
+
+
+def _validate_group_identity(
+    group: dict[object, object], seen_groups: set[str], voices: set[str]
+) -> str:
+    group_id = _sha256(group["group_id"], "Reference binding group ID")
+    if group_id in seen_groups:
+        raise FailureReferenceBindingError("Reference binding group is duplicated")
+    seen_groups.add(group_id)
+    voice = _text(group["voice_character"], "Reference binding voice")
+    if voice in voices:
+        raise FailureReferenceBindingError("Reference binding voice is duplicated")
+    voices.add(voice)
+    _text(group["synthesis_voice_character"], "Audited synthesis voice")
+    _text(group["control_character"], "Audited control character")
+    _text(group["speaker"], "Audited speaker")
+    _text(group["candidate_id"], "Reference binding candidate")
+    return voice
+
+
+def _validate_group_reference(directory: Path, group: dict[object, object]) -> str:
+    _safe_relative(group["source_reference"], "Audited source reference")
+    relative = _safe_relative(group["reference"], "Selected reference")
+    reference = _contained_regular_file(directory, relative, "selected reference")
+    digest = _sha256(group["reference_sha256"], "Selected reference SHA-256")
+    if sha256_file(reference) != digest:
+        raise FailureReferenceBindingError("Selected reference changed")
+    return digest
+
+
+def _validate_group_cases(
+    cases: object,
+    voice: str,
+    seen_queue_ids: set[str],
+    expected_overrides: dict[str, str],
+) -> None:
+    if not isinstance(cases, list) or not cases:
+        raise FailureReferenceBindingError("Reference binding cases are malformed")
+    for case in cases:
+        if not isinstance(case, dict) or set(case) != {"queue_id", "failure_sha256"}:
+            raise FailureReferenceBindingError("Reference binding case is malformed")
+        queue_id = _text(case["queue_id"], "Reference binding queue ID")
+        _sha256(case["failure_sha256"], "Reference failure SHA-256")
+        if queue_id in seen_queue_ids:
+            raise FailureReferenceBindingError(
+                "Reference binding queue ID is duplicated"
+            )
+        seen_queue_ids.add(queue_id)
+        expected_overrides[queue_id] = voice
 
 
 def _validate_selection_authority(
