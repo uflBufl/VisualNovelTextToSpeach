@@ -647,6 +647,22 @@ def clean_dialog_lines_from_data(
 ) -> list[str]:
     """Remove low-confidence background words appended after a full sentence."""
     fallback_lines = list(fallback_lines)
+    words = _recognized_words(data)
+    terminal_position = _last_confident_terminal_position(words)
+    if terminal_position is None or terminal_position == len(words) - 1:
+        return fallback_lines
+
+    suffix = words[terminal_position + 1 :]
+    if not all(_is_suspicious_trailing_word(*word) for word in suffix):
+        return fallback_lines
+
+    cleaned = clean_dialog_lines(
+        " ".join(word for word, _ in words[: terminal_position + 1])
+    )
+    return cleaned or fallback_lines
+
+
+def _recognized_words(data: OcrData) -> list[tuple[str, float]]:
     words: list[tuple[str, float]] = []
     confidences = data.get("conf", [])
     for position, raw_text in enumerate(data.get("text", [])):
@@ -665,25 +681,15 @@ def clean_dialog_lines_from_data(
         if confidence < 0:
             continue
         words.append((text, confidence))
+    return words
 
+
+def _last_confident_terminal_position(words: Sequence[tuple[str, float]]) -> int | None:
     terminal_position = None
     for position, (text, confidence) in enumerate(words):
         if text.rstrip("\"'”’)]}").endswith((".", "!", "?", "…")) and confidence >= 60:
             terminal_position = position
-
-    if terminal_position is None or terminal_position == len(words) - 1:
-        return fallback_lines
-
-    suffix = words[terminal_position + 1 :]
-    if not all(
-        _is_suspicious_trailing_word(word, confidence) for word, confidence in suffix
-    ):
-        return fallback_lines
-
-    cleaned = clean_dialog_lines(
-        " ".join(word for word, _confidence in words[: terminal_position + 1])
-    )
-    return cleaned or fallback_lines
+    return terminal_position
 
 
 def _is_suspicious_trailing_word(word: str, confidence: float) -> bool:

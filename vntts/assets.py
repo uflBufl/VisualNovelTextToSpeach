@@ -110,7 +110,14 @@ class ModelAssetManager:
         manifest_path = model_path / asset_manifest_name
         if not manifest_path.is_file():
             self._adopt_existing_model(model_path, asset)
+        manifest = self._read_checksum_manifest(manifest_path)
+        files = self._validate_checksum_manifest(manifest, model_name, asset)
+        self._validate_model_files(model_path, files)
+        self._validate_upstream_hash(model_path, asset)
+        return model_path
 
+    @staticmethod
+    def _read_checksum_manifest(manifest_path: Path) -> object:
         try:
             if manifest_path.is_symlink() or manifest_path.is_junction():
                 raise ValueError("checksum manifest is an alias")
@@ -123,6 +130,12 @@ class ModelAssetManager:
             raise ModelIntegrityError(
                 f"Unable to read model checksum manifest: {error}"
             ) from error
+        return manifest
+
+    @staticmethod
+    def _validate_checksum_manifest(
+        manifest: object, model_name: str, asset: ModelAsset
+    ) -> dict[str, Any]:
         if not isinstance(manifest, dict):
             raise ModelIntegrityError("Model checksum manifest is malformed")
         if manifest.get("version") != 1:
@@ -136,22 +149,24 @@ class ModelAssetManager:
         expected_files = {Path(urlparse(url).path).name for url in asset.urls}
         if set(files) != expected_files:
             raise ModelIntegrityError("Model checksum manifest has the wrong files")
-        for filename, metadata in files.items():
-            if not isinstance(metadata, dict):
-                raise ModelIntegrityError(
-                    f"Model checksum metadata is malformed: {filename}"
-                )
-            path = model_path / filename
-            self._check_model_file(path, filename)
-            if not path.is_file():
-                raise ModelIntegrityError(f"Model file is missing: {filename}")
-            if path.stat().st_size != metadata.get("size"):
-                raise ModelIntegrityError(f"Model file size changed: {filename}")
-            if sha256_file(path) != metadata.get("sha256"):
-                raise ModelIntegrityError(f"Model checksum failed: {filename}")
+        return files
 
-        self._validate_upstream_hash(model_path, asset)
-        return model_path
+    def _validate_model_files(self, model_path: Path, files: dict[str, Any]) -> None:
+        for filename, metadata in files.items():
+            self._validate_model_file(model_path / filename, filename, metadata)
+
+    def _validate_model_file(self, path: Path, filename: str, metadata: object) -> None:
+        if not isinstance(metadata, dict):
+            raise ModelIntegrityError(
+                f"Model checksum metadata is malformed: {filename}"
+            )
+        self._check_model_file(path, filename)
+        if not path.is_file():
+            raise ModelIntegrityError(f"Model file is missing: {filename}")
+        if path.stat().st_size != metadata.get("size"):
+            raise ModelIntegrityError(f"Model file size changed: {filename}")
+        if sha256_file(path) != metadata.get("sha256"):
+            raise ModelIntegrityError(f"Model checksum failed: {filename}")
 
     def download(
         self,
@@ -267,7 +282,7 @@ class ModelAssetManager:
             with self.opener(request, timeout=30) as response:
                 value = response.headers.get("Content-Length")
                 return int(value) if value else None
-        except (OSError, ValueError):
+        except OSError, ValueError:
             return None
 
     @staticmethod
@@ -334,7 +349,9 @@ class VoicePackManager:
             path.is_symlink() or path.is_junction()
             for path in (pack_path, references_path, pack_path / "manifest.json")
         ):
-            raise VoiceManifestError("Managed voice pack directory must not be an alias")
+            raise VoiceManifestError(
+                "Managed voice pack directory must not be an alias"
+            )
 
     def import_voice(
         self,

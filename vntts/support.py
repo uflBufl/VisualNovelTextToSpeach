@@ -39,6 +39,7 @@ class _Timeline(TypedDict):
     session_id: str | None
     events: OrderedDict[str, SupportDocument]
 
+
 audio_route_fields = (
     "generation",
     "effective_source",
@@ -573,15 +574,12 @@ class PerformanceLog(RuntimeSupportLog):
                 operation, {"count": 0, "total_ms": 0.0, "max_ms": 0.0}
             )
             aggregate["count"] += 1
-            aggregate["total_ms"] = round(
-                aggregate["total_ms"] + elapsed_ms, 3
-            )
+            aggregate["total_ms"] = round(aggregate["total_ms"] + elapsed_ms, 3)
             aggregate["max_ms"] = max(aggregate["max_ms"], elapsed_ms)
             for name in ("files_examined", "bytes_examined"):
-                if (
-                    isinstance(value := event.get(name), (int, float))
-                    and not isinstance(value, bool)
-                ):
+                if isinstance(
+                    value := event.get(name), (int, float)
+                ) and not isinstance(value, bool):
                     aggregate[f"max_{name}"] = max(
                         aggregate.get(f"max_{name}", 0), value
                     )
@@ -923,61 +921,85 @@ def preserve_previous_session(directory: str | Path) -> SupportDocument:
 
 
 def _previous_generation_timelines(path: Path) -> list[SupportDocument]:
-    if path.is_symlink():
+    document = _read_previous_generation_timelines(path)
+    if document is None:
         return []
+    timelines = document["timelines"]
+    assert isinstance(timelines, list)
+    return [
+        sanitized
+        for timeline in timelines[-200:]
+        if (sanitized := _sanitize_previous_timeline(timeline)) is not None
+    ]
+
+
+def _read_previous_generation_timelines(path: Path) -> dict[str, object] | None:
+    if path.is_symlink():
+        return None
     limit = 2 * 1024 * 1024
     try:
         with path.open("rb") as source:
             payload = source.read(limit + 1)
     except OSError:
-        return []
+        return None
     if len(payload) > limit:
-        return []
+        return None
     try:
         document = json.loads(payload)
     except UnicodeError, json.JSONDecodeError:
-        return []
+        return None
     if not isinstance(document, dict) or not isinstance(
         document.get("timelines"), list
     ):
+        return None
+    return document
+
+
+def _sanitize_previous_timeline(timeline: object) -> SupportDocument | None:
+    if not isinstance(timeline, dict):
+        return None
+    generation = timeline.get("generation")
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation < 1
+    ):
+        return None
+    events = _sanitize_previous_events(timeline.get("events"))
+    sanitized: SupportDocument = {"generation": generation, "events": events}
+    session_id = timeline.get("session_id")
+    if session_id is None:
+        return sanitized
+    try:
+        sanitized["session_id"] = UUID(str(session_id)).hex
+    except ValueError, AttributeError:
+        return None
+    return sanitized
+
+
+def _sanitize_previous_events(raw_events: object) -> list[SupportDocument]:
+    if not isinstance(raw_events, list):
         return []
-    result = []
-    for timeline in document["timelines"][-200:]:
-        if not isinstance(timeline, dict):
-            continue
-        generation = timeline.get("generation")
-        if (
-            not isinstance(generation, int)
-            or isinstance(generation, bool)
-            or generation < 1
-        ):
-            continue
-        events: list[SupportDocument] = []
-        sanitized: SupportDocument = {"generation": generation, "events": events}
-        session_id = timeline.get("session_id")
-        if session_id is not None:
-            try:
-                sanitized["session_id"] = UUID(str(session_id)).hex
-            except ValueError, AttributeError:
-                continue
-        raw_events = timeline.get("events")
-        if isinstance(raw_events, list):
-            for event in raw_events[-100:]:
-                if not isinstance(event, dict) or event.get("stage") not in (
-                    generation_timeline_stages + sequence_timeline_stages
-                ):
-                    continue
-                safe_event = {
-                    "stage": event["stage"],
-                    **{
-                        key: _sanitize_event_value(event[key])
-                        for key in ("elapsed_ms", *generation_timeline_detail_fields)
-                        if key in event and event[key] is not None
-                    },
-                }
-                events.append(safe_event)
-        result.append(sanitized)
-    return result
+    return [
+        sanitized
+        for event in raw_events[-100:]
+        if (sanitized := _sanitize_previous_event(event)) is not None
+    ]
+
+
+def _sanitize_previous_event(event: object) -> SupportDocument | None:
+    if not isinstance(event, dict) or event.get("stage") not in (
+        generation_timeline_stages + sequence_timeline_stages
+    ):
+        return None
+    return {
+        "stage": event["stage"],
+        **{
+            key: _sanitize_event_value(event[key])
+            for key in ("elapsed_ms", *generation_timeline_detail_fields)
+            if key in event and event[key] is not None
+        },
+    }
 
 
 def record_native_speech(**details: object) -> None:

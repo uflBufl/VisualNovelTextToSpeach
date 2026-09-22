@@ -411,7 +411,7 @@ class VoiceLibrary:
         return path
 
 
-def _role_identity(role: str, variant_key: str | None) -> tuple[str, str, str | None]:
+def _role_identity(role: object, variant_key: object) -> tuple[str, str, str | None]:
     if not isinstance(role, str) or not (display_role := role.strip()):
         raise VoiceLibraryError("Voice role is required")
     normalized_role = normalize_character_name(display_role)
@@ -474,9 +474,9 @@ def _file_identity(value):
 
 
 def _provenance(
-    method: str, evidence: object | None, algorithm: str | None, timestamp: str | None
+    method: object, evidence: object | None, algorithm: object, timestamp: object
 ) -> dict[str, object]:
-    if method not in {"automatic", "manual"}:
+    if not isinstance(method, str) or method not in {"automatic", "manual"}:
         raise VoiceLibraryError("Voice provenance method must be automatic or manual")
     if algorithm is not None and (
         not isinstance(algorithm, str) or not algorithm.strip()
@@ -518,11 +518,11 @@ def _binding_document(
 
 
 def _validate_route_source(
-    route: str,
+    route: object,
     source_sha256s: tuple[str, ...],
-    source_id: str | None,
+    source_id: object,
 ) -> None:
-    if route not in _ROUTES:
+    if not isinstance(route, str) or route not in _ROUTES:
         raise VoiceLibraryError("Voice route must be voice, narrator, or live-fallback")
     if route == "voice":
         if bool(source_sha256s) == (source_id is not None):
@@ -583,50 +583,64 @@ def _validate_document(document: object) -> None:
     if not isinstance(alternatives, dict) or not isinstance(bindings, dict):
         raise VoiceLibraryError("Voice library requires alternatives and bindings")
     for identity, group in alternatives.items():
-        if not isinstance(group, dict) or not isinstance(group.get("items"), list):
-            raise VoiceLibraryError("Invalid voice alternative inventory")
-        expected, _role, _variant = _role_identity(
-            group.get("role"), group.get("variant_key")
-        )
-        if identity != expected:
-            raise VoiceLibraryError("Voice alternative role identity is invalid")
-        checksums = [
-            item.get("sha256") for item in group["items"] if isinstance(item, dict)
-        ]
-        if len(checksums) != len(group["items"]) or len(set(checksums)) != len(
-            checksums
-        ):
-            raise VoiceLibraryError("Voice alternatives must have unique checksums")
-        for item in group["items"]:
-            if not _is_sha256(item["sha256"]):
-                raise VoiceLibraryError("Voice alternative checksum is invalid")
-            _validate_provenance(item.get("discovery"))
+        _validate_alternative_group(identity, group)
     for identity, binding in bindings.items():
-        if not isinstance(binding, dict):
-            raise VoiceLibraryError("Invalid voice binding")
-        expected, _role, _variant = _role_identity(
-            binding.get("role"), binding.get("variant_key")
+        _validate_binding(identity, binding, alternatives)
+
+
+def _validate_alternative_group(identity: object, group: object) -> None:
+    if not isinstance(group, dict) or not isinstance(group.get("items"), list):
+        raise VoiceLibraryError("Invalid voice alternative inventory")
+    expected, _role, _variant = _role_identity(
+        group.get("role"), group.get("variant_key")
+    )
+    if identity != expected:
+        raise VoiceLibraryError("Voice alternative role identity is invalid")
+    checksums = [
+        item.get("sha256") for item in group["items"] if isinstance(item, dict)
+    ]
+    if len(checksums) != len(group["items"]) or len(set(checksums)) != len(checksums):
+        raise VoiceLibraryError("Voice alternatives must have unique checksums")
+    for item in group["items"]:
+        if not _is_sha256(item["sha256"]):
+            raise VoiceLibraryError("Voice alternative checksum is invalid")
+        _validate_provenance(item.get("discovery"))
+
+
+def _validate_binding(
+    identity: object, binding: object, alternatives: dict[object, object]
+) -> None:
+    if not isinstance(binding, dict):
+        raise VoiceLibraryError("Invalid voice binding")
+    expected, _role, _variant = _role_identity(
+        binding.get("role"), binding.get("variant_key")
+    )
+    if identity != expected:
+        raise VoiceLibraryError("Voice binding role identity is invalid")
+    raw_checksums = binding.get("source_sha256s")
+    if (
+        not isinstance(raw_checksums, list)
+        or any(not _is_sha256(checksum) for checksum in raw_checksums)
+        or len(set(raw_checksums)) != len(raw_checksums)
+    ):
+        raise VoiceLibraryError("Voice binding checksums are invalid")
+    _validate_route_source(
+        binding.get("route"),
+        tuple(raw_checksums),
+        binding.get("source_id"),
+    )
+    group = alternatives.get(identity, {})
+    if not isinstance(group, dict):
+        raise VoiceLibraryError("Invalid voice alternative inventory")
+    items = group.get("items", [])
+    if not isinstance(items, list):
+        raise VoiceLibraryError("Invalid voice alternative inventory")
+    available = {item["sha256"] for item in items if isinstance(item, dict)}
+    if any(checksum not in available for checksum in raw_checksums):
+        raise VoiceLibraryError(
+            "Voice binding source is not an alternative for its role"
         )
-        if identity != expected:
-            raise VoiceLibraryError("Voice binding role identity is invalid")
-        raw_checksums = binding.get("source_sha256s")
-        if (
-            not isinstance(raw_checksums, list)
-            or any(not _is_sha256(checksum) for checksum in raw_checksums)
-            or len(set(raw_checksums)) != len(raw_checksums)
-        ):
-            raise VoiceLibraryError("Voice binding checksums are invalid")
-        _validate_route_source(
-            binding.get("route"), tuple(raw_checksums), binding.get("source_id")
-        )
-        available = {
-            item["sha256"] for item in alternatives.get(identity, {}).get("items", [])
-        }
-        if any(checksum not in available for checksum in raw_checksums):
-            raise VoiceLibraryError(
-                "Voice binding source is not an alternative for its role"
-            )
-        _validate_provenance(binding.get("provenance"))
+    _validate_provenance(binding.get("provenance"))
 
 
 def _validate_provenance(value: object) -> None:

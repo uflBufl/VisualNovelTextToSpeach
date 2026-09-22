@@ -13,7 +13,7 @@ from collections.abc import Callable, Sequence
 from os import PathLike
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Protocol, TypeAlias
+from typing import TYPE_CHECKING, BinaryIO, Protocol, TypeAlias
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
@@ -97,61 +97,80 @@ def _run(
     _cancel(cancellation)
     with TemporaryDirectory(prefix="vntts-decoder-log-") as directory:
         with (Path(directory) / "output").open("w+b") as output:
-            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            if not isinstance(creation_flags, int) or isinstance(creation_flags, bool):
-                raise DecoderSetupError("Windows process flags are unavailable")
-            process = subprocess.Popen(
-                command,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                start_new_session=os.name != "nt",
-                creationflags=creation_flags if sys.platform == "win32" else 0,
-            )
+            process = _start_decoder_process(command, output)
             try:
-                from time import monotonic
-
-                deadline = monotonic() + timeout
-                while True:
-                    _cancel(cancellation)
-                    if monotonic() >= deadline:
-                        raise DecoderSetupError(
-                            "Game-audio decoder setup timed out. Retry when ready."
-                        )
-                    try:
-                        process.wait(timeout=0.1)
-                        break
-                    except subprocess.TimeoutExpired:
-                        continue
-                if process.returncode:
-                    output.seek(max(0, output.tell() - 2000))
-                    detail = output.read().decode("utf-8", errors="replace").strip()
-                    raise DecoderSetupError(f"Game-audio decoder failed: {detail}")
+                _wait_for_decoder_process(process, cancellation, timeout)
+                _raise_decoder_failure(process, output)
             finally:
-                if process.poll() is None:
-                    if os.name == "nt":
-                        terminate_process(process)
-                    else:
-                        # Homebrew can own compiler/download children; stop only
-                        # the process group created for this installation.
-                        try:
-                            os.killpg(process.pid, signal.SIGTERM)
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            pass
-                        except ProcessLookupError:
-                            pass
-                        finally:
-                            try:
-                                os.killpg(process.pid, signal.SIGKILL)
-                            except ProcessLookupError:
-                                pass
-                            try:
-                                process.wait(timeout=5)
-                            except subprocess.TimeoutExpired:
-                                # ponytail: SIGKILL is the strongest local action;
-                                # leave OS cleanup rather than hanging forever.
-                                pass
+                _stop_decoder_process(process)
+
+
+def _start_decoder_process(
+    command: Sequence[str], output: BinaryIO
+) -> subprocess.Popen[bytes]:
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if not isinstance(creation_flags, int) or isinstance(creation_flags, bool):
+        raise DecoderSetupError("Windows process flags are unavailable")
+    return subprocess.Popen(
+        command,
+        stdout=output,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=os.name != "nt",
+        creationflags=creation_flags if sys.platform == "win32" else 0,
+    )
+
+
+def _wait_for_decoder_process(
+    process: subprocess.Popen[bytes],
+    cancellation: Cancellation | None,
+    timeout: float,
+) -> None:
+    from time import monotonic
+
+    deadline = monotonic() + timeout
+    while True:
+        _cancel(cancellation)
+        if monotonic() >= deadline:
+            raise DecoderSetupError(
+                "Game-audio decoder setup timed out. Retry when ready."
+            )
+        try:
+            process.wait(timeout=0.1)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _raise_decoder_failure(process: subprocess.Popen[bytes], output: BinaryIO) -> None:
+    if process.returncode:
+        output.seek(max(0, output.tell() - 2000))
+        detail = output.read().decode("utf-8", errors="replace").strip()
+        raise DecoderSetupError(f"Game-audio decoder failed: {detail}")
+
+
+def _stop_decoder_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        terminate_process(process)
+        return
+    # Homebrew can own compiler/download children; stop only the installation group.
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired, ProcessLookupError:
+        pass
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # ponytail: SIGKILL is the strongest local action; leave OS cleanup.
+            pass
 
 
 def probe_game_decoder(
