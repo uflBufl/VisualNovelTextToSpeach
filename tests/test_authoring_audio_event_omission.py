@@ -26,12 +26,15 @@ from vntts.authoring.game_pack import (
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.workbench import AuthoringWorkbenchError, inspect_workspace
 from vntts.chapter_voice_preload import ChapterDialogue, ChapterVoicePreloader
+from vntts.controller import AppController
 from vntts.generated_audio import (
     AudioEventOmissionRoute,
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
 )
+from vntts.live import SpeechChunk
 from vntts.playback import PlaybackStatus, PreparedPlayback, outcome_for_prepared
+from vntts.settings import AppSettings
 from vntts.speech_backend import SpeechBackendCapabilities
 
 
@@ -118,6 +121,16 @@ class AudioEventOmissionTests(unittest.TestCase):
             backend.voice_override = Mock(return_value=True)
             route = backend.prepare_route(queue_item.speaker, queue_item.text)
             outcome = backend.play_route(route)
+            controller = AppController(AppSettings())
+            controller.speech_backend = backend
+            controller.chapter_voice_preloader = resolver
+            controller.live_reader = Mock()
+            controller.live_reader.wait_until_playable.return_value = True
+            chunk = SpeechChunk(
+                1, queue_item.speaker, queue_item.text, line_id=queue_item.line_id
+            )
+            selected = controller._prepare_live_chunk(chunk)
+            played = controller._play_live_chunk(chunk, selected)
             base_state_after = (
                 base / "generated-audio/generation-state.json"
             ).read_bytes()
@@ -134,6 +147,9 @@ class AudioEventOmissionTests(unittest.TestCase):
         )
         self.assertIsInstance(route, AudioEventOmissionRoute)
         self.assertTrue(outcome.successful)
+        self.assertIsInstance(selected, AudioEventOmissionRoute)
+        self.assertTrue(played)
+        controller.live_reader.seal_generation.assert_called_once_with(1)
         self.assertEqual(outcome.audio_source, "audio-event-omission")
         live.prepare_playback.assert_not_called()
         self.assertEqual(base_state_after, base_state)

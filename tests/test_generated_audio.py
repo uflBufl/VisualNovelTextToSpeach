@@ -1351,7 +1351,7 @@ class GeneratedAudioTest(unittest.TestCase):
             250.0,
             first_audio_ms=25.0,
         )
-        backend._wait_for_source_audio_lead = Mock(return_value=True)
+        backend.playback_owner._wait_for_source_audio_lead = Mock(return_value=True)
 
         outcome = backend.play_route(route)
 
@@ -1695,8 +1695,10 @@ class GeneratedAudioTest(unittest.TestCase):
 
         thread = Thread(target=play)
         thread.start()
-        self.assertTrue(backend.source_audio_completion_stop.wait(0.01) is False)
-        while not backend.playback_active:
+        self.assertTrue(
+            backend.playback_owner.source_audio_completion_stop.wait(0.01) is False
+        )
+        while not backend.playback_owner.playback_active:
             self.assertFalse(completed.wait(0.01))
         self.assertTrue(backend.stop())
         thread.join(1)
@@ -1704,6 +1706,52 @@ class GeneratedAudioTest(unittest.TestCase):
         self.assertTrue(completed.is_set())
         self.assertIs(outcomes[0].status, PlaybackStatus.INTERRUPTED)
         self.assertFalse(output.stopped)
+
+    def test_live_and_original_routes_share_one_playback_owner(self):
+        entered = Event()
+        release = Event()
+        source_finished = Event()
+        live = self.create_live_backend()
+
+        def play_live(prepared, **_kwargs):
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return outcome_for_prepared(prepared, PlaybackStatus.COMPLETED, 0.0)
+
+        live.play_prepared.side_effect = play_live
+        backend = GeneratedAudioFallbackBackend(
+            live, None, self.create_resolver(), audio_output=FakeAudioOutput()
+        )
+        live_route = backend.prepare_route("Ada", "Changed.")
+        original_route = SourceAudioRoute(
+            PreparedSourceAudioPassThrough(
+                "game:1", text_sha256("Hello."), completion_seconds=0.0
+            ),
+            Mock(),
+        )
+        outcomes = []
+        live_worker = Thread(
+            target=lambda: outcomes.append(backend.play_route(live_route))
+        )
+
+        def play_source():
+            outcomes.append(backend.play_route(original_route))
+            source_finished.set()
+
+        source_worker = Thread(target=play_source)
+        live_worker.start()
+        self.assertTrue(entered.wait(1))
+        self.assertTrue(backend.playback_owner.playback_active)
+        source_worker.start()
+        self.assertFalse(source_finished.wait(0.05))
+        release.set()
+        live_worker.join(2)
+        source_worker.join(2)
+        self.assertFalse(live_worker.is_alive() or source_worker.is_alive())
+        self.assertEqual(
+            [outcome.status for outcome in outcomes],
+            [PlaybackStatus.COMPLETED, PlaybackStatus.COMPLETED],
+        )
 
     def test_live_route_keeps_prepare_metrics_and_propagates_limited_result(self):
         live = self.create_live_backend()

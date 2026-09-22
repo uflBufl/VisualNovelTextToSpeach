@@ -36,6 +36,7 @@ from vntts.dialog_capture import (
     report_runtime_error,
 )
 from vntts.generated_audio import (
+    AudioEventOmissionRoute,
     AudioRouteTrace,
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
@@ -261,6 +262,7 @@ def _diagnostic_route_metrics(value: object) -> _DiagnosticRouteMetrics | None:
             LiveFallbackRoute,
             SourceAudioRoute,
             LiveTTSRoute,
+            AudioEventOmissionRoute,
             PreparedPlayback,
         ),
     ):
@@ -3084,6 +3086,7 @@ class AppController:
                         LiveFallbackRoute,
                         SourceAudioRoute,
                         LiveTTSRoute,
+                        AudioEventOmissionRoute,
                     ),
                 )
                 else None
@@ -3122,6 +3125,7 @@ class AppController:
                             SourceAudioRoute,
                             PreparedGeneratedAudio,
                             PreparedSourceAudioPassThrough,
+                            AudioEventOmissionRoute,
                         ),
                     )
                 )
@@ -3215,7 +3219,11 @@ class AppController:
                 return None, None
             if isinstance(
                 dialogue_route,
-                (SourceAudioRoute, PreparedSourceAudioPassThrough),
+                (
+                    SourceAudioRoute,
+                    PreparedSourceAudioPassThrough,
+                    AudioEventOmissionRoute,
+                ),
             ):
                 self.last_visible_speaker_key = speaker_key
                 return None, None
@@ -3300,9 +3308,11 @@ class AppController:
                     0.0,
                     audio_source="live-accessibility-announcement",
                 )
-        backend = getattr(self.speech_backend, "live_backend", self.speech_backend)
-        play = getattr(type(backend), "play_prepared", None)
-        if not callable(play):
+        backend = self.speech_backend
+        play_route = getattr(type(backend), "play_route", None)
+        live_backend = getattr(backend, "live_backend", backend)
+        play_prepared = getattr(type(live_backend), "play_prepared", None)
+        if not callable(play_route) and not callable(play_prepared):
             raise TypeError("Live backend cannot play a typed speaker announcement")
         self.status_handler(f"Announcing speaker: {announced_speaker}")
         reader = self.live_reader
@@ -3316,10 +3326,18 @@ class AppController:
             }
         )
         try:
-            outcome = play(
-                backend,
-                route.prepared,
-                playback_guard=lambda: reader.wait_until_playable(chunk),
+            outcome = (
+                play_route(
+                    backend,
+                    route,
+                    playback_guard=lambda: reader.wait_until_playable(chunk),
+                )
+                if callable(play_route)
+                else play_prepared(
+                    live_backend,
+                    route.prepared,
+                    playback_guard=lambda: reader.wait_until_playable(chunk),
+                )
             )
         finally:
             audio_lifecycle_context.reset(context_token)
@@ -3377,6 +3395,8 @@ class AppController:
             )
 
     def _describe_audio_source(self, prepared: object) -> str:
+        if isinstance(prepared, AudioEventOmissionRoute):
+            return "Authorized silent audio event omission"
         if isinstance(prepared, PendingGeneratedAudioRoute):
             return f"Waiting for prepared audio (line {prepared.line_id})"
         lead_seconds = float(getattr(prepared, "source_audio_lead_seconds", 0.0) or 0.0)
@@ -3486,6 +3506,7 @@ class AppController:
                     PendingGeneratedAudioRoute,
                     LiveFallbackRoute,
                     LiveTTSRoute,
+                    AudioEventOmissionRoute,
                 ),
             )
             else None
@@ -3515,7 +3536,9 @@ class AppController:
             )
         prepared_payload = (
             None
-            if isinstance(prepared, PendingGeneratedAudioRoute)
+            if isinstance(
+                prepared, (PendingGeneratedAudioRoute, AudioEventOmissionRoute)
+            )
             else prepared.prepared
             if isinstance(
                 prepared,

@@ -9,7 +9,7 @@ import wave
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, RLock
 from time import monotonic
 from typing import Protocol, TypeAlias, TypedDict, TypeGuard
 
@@ -614,17 +614,10 @@ class GeneratedAudioFallbackBackend:
         prefix = "generated-audio" if library is not None else "story-audio"
         self.name = f"{prefix}+{live_backend.name}"
         self.capabilities = live_backend.capabilities
-        self.playback_lock = Lock()
         self.generated_preflight_lock = Lock()
-        self.source_audio_completion_stop = Event()
-        self.generated_audio_stop = Event()
-        self.progress_wait_stop = Event()
         self.generated_reservations: BoundedCache[
             tuple[str, str], PreparedGeneratedAudio
         ] = BoundedCache(32)
-        self.active_generated_stream: object | None = None
-        self.active_playback_source: str | None = None
-        self.playback_active = False
         self.live_mode_active = False
         self.volume = 1.0
         self.speed = 1.0
@@ -638,6 +631,7 @@ class GeneratedAudioFallbackBackend:
         )
         self.set_volume(volume, delegate=False)
         self.set_speed(speed, delegate=False)
+        self.playback_owner = AudioRoutePlaybackOwner(self)
 
     def will_use_source_audio(self, character: str, text: str) -> bool:
         """Return whether live playback for this exact line stays in the game."""
@@ -1068,6 +1062,76 @@ class GeneratedAudioFallbackBackend:
     def play_route(
         self, route: RouteDecision, *, playback_guard: PlaybackGuard = None
     ) -> PlaybackOutcome:
+        return self.playback_owner.play_route(route, playback_guard=playback_guard)
+
+    def resolved_pending_route(
+        self, route: PendingGeneratedAudioRoute
+    ) -> GeneratedAudioRoute | None:
+        if self.library is None:
+            return None
+        prepared, _state = self.library.find_with_preflight(
+            route.line_id, route.text_sha256
+        )
+        if prepared is None:
+            return None
+        return GeneratedAudioRoute(
+            prepared,
+            replace(
+                route.trace,
+                effective_source="generated",
+                artifact_preflight_state="generated-audio-entry-verified",
+            ),
+        )
+
+    def prime(self, character: str) -> object:
+        prime = getattr(self.live_backend, "prime", None)
+        return prime(character) if callable(prime) else False
+
+    def set_live_mode_active(self, active: object) -> object:
+        self.live_mode_active = bool(active)
+        configure = getattr(self.live_backend, "set_live_mode_active", None)
+        return configure(active) if callable(configure) else self.live_mode_active
+
+    def set_volume(self, volume: object, *, delegate: bool = True) -> float:
+        self.volume = validate_volume(volume)
+        configure = getattr(self.live_backend, "set_volume", None)
+        if delegate and callable(configure):
+            configure(self.volume)
+        return self.volume
+
+    def set_speed(self, speed: object, *, delegate: bool = True) -> float:
+        self.speed = validate_speed(speed)
+        configure = getattr(self.live_backend, "set_speed", None)
+        if delegate and callable(configure):
+            configure(self.speed)
+        return self.speed
+
+    def stop(self) -> bool:
+        return self.playback_owner.stop()
+
+
+class AudioRoutePlaybackOwner:
+    """Own the one active output route; selection only returns frozen decisions."""
+
+    def __init__(self, router: GeneratedAudioFallbackBackend) -> None:
+        self.router = router
+        self.playback_lock = RLock()
+        self.source_audio_completion_stop = Event()
+        self.generated_audio_stop = Event()
+        self.progress_wait_stop = Event()
+        self.active_generated_stream: object | None = None
+        self.active_playback_source: str | None = None
+        self.playback_active = False
+
+    def play_route(
+        self, route: RouteDecision, *, playback_guard: PlaybackGuard = None
+    ) -> PlaybackOutcome:
+        with self.playback_lock:
+            return self._dispatch_route(route, playback_guard=playback_guard)
+
+    def _dispatch_route(
+        self, route: RouteDecision, *, playback_guard: PlaybackGuard = None
+    ) -> PlaybackOutcome:
         """Play one immutable route and return metrics bound to that route."""
         if isinstance(route, SourceAudioRoute):
             return self._play_source_route(route, playback_guard)
@@ -1093,52 +1157,38 @@ class GeneratedAudioFallbackBackend:
         route: PendingGeneratedAudioRoute,
         playback_guard: Callable[[], bool] | None,
     ) -> PlaybackOutcome:
-        if self.library is None:
+        if self.router.library is None:
             raise RuntimeError("Generated-audio progress route requires a library")
         self.progress_wait_stop.clear()
-        self.progress_wait_request(route.line_id, route.text_sha256)
+        self.router.progress_wait_request(route.line_id, route.text_sha256)
         last_status = (
-            self.library.progress_description(route.line_id, route.text_sha256)
+            self.router.library.progress_description(route.line_id, route.text_sha256)
             or "Waiting for offline preparation to finish the current dialogue..."
         )
-        self.progress_wait_status(last_status)
-        started = self.clock()
+        self.router.progress_wait_status(last_status)
+        started = self.router.clock()
         self.playback_active = True
         self.active_playback_source = "preparing"
         try:
             while playback_guard is None or playback_guard():
-                prepared, _state = self.library.find_with_preflight(
-                    route.line_id, route.text_sha256
-                )
-                if prepared is not None:
-                    self.progress_wait_status(
+                resolved = self.router.resolved_pending_route(route)
+                if resolved is not None:
+                    self.router.progress_wait_status(
                         "Prepared audio is ready; continuing reading."
                     )
-                    return self._play_generated_route(
-                        GeneratedAudioRoute(
-                            prepared,
-                            replace(
-                                route.trace,
-                                effective_source="generated",
-                                artifact_preflight_state=(
-                                    "generated-audio-entry-verified"
-                                ),
-                            ),
-                        ),
-                        playback_guard,
-                    )
-                status = self.library.progress_description(
+                    return self._play_generated_route(resolved, playback_guard)
+                status = self.router.library.progress_description(
                     route.line_id, route.text_sha256
                 )
                 if status is not None and status != last_status:
                     last_status = status
-                    self.progress_wait_status(status)
+                    self.router.progress_wait_status(status)
                 if self.progress_wait_stop.wait(0.25):
                     break
             return _route_outcome(
                 route,
                 PlaybackStatus.INTERRUPTED,
-                (self.clock() - started) * 1000,
+                (self.router.clock() - started) * 1000,
             )
         finally:
             self.playback_active = False
@@ -1155,7 +1205,7 @@ class GeneratedAudioFallbackBackend:
         with self.playback_lock:
             if playback_guard is not None and not playback_guard():
                 return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
-            started = self.clock()
+            started = self.router.clock()
             self.source_audio_completion_stop.clear()
             try:
                 self.playback_active = True
@@ -1172,7 +1222,7 @@ class GeneratedAudioFallbackBackend:
                 return _route_outcome(
                     route,
                     status,
-                    (self.clock() - started) * 1000,
+                    (self.router.clock() - started) * 1000,
                 )
             finally:
                 self.playback_active = False
@@ -1194,7 +1244,7 @@ class GeneratedAudioFallbackBackend:
                     PlaybackStatus.INTERRUPTED,
                     None,
                 )
-            started = self.clock()
+            started = self.router.clock()
             self.generated_audio_stop.clear()
             try:
                 self.playback_active = True
@@ -1202,14 +1252,15 @@ class GeneratedAudioFallbackBackend:
                     return _route_outcome(
                         route,
                         PlaybackStatus.INTERRUPTED,
-                        (self.clock() - started) * 1000,
+                        (self.router.clock() - started) * 1000,
                     )
                 self.active_playback_source = "generated"
                 samples = (
-                    np.asarray(route.prepared.samples, dtype=np.float32) * self.volume
+                    np.asarray(route.prepared.samples, dtype=np.float32)
+                    * self.router.volume
                 )
                 samples, sample_rate = match_output_sample_rate(
-                    self.audio_output,
+                    self.router.audio_output,
                     samples,
                     route.prepared.sample_rate,
                 )
@@ -1221,19 +1272,19 @@ class GeneratedAudioFallbackBackend:
                     return _route_outcome(
                         route,
                         PlaybackStatus.INTERRUPTED,
-                        (self.clock() - started) * 1000,
+                        (self.router.clock() - started) * 1000,
                         source_sample_rate=route.prepared.sample_rate,
                         playback_sample_rate=sample_rate,
                         sample_count=sample_count,
                         expected_playback_ms=expected_playback_ms,
                     )
-                stream_factory = getattr(self.audio_output, "OutputStream", None)
+                stream_factory = getattr(self.router.audio_output, "OutputStream", None)
                 if callable(stream_factory):
                     with stream_factory(
                         samplerate=sample_rate,
                         channels=1,
                         dtype="float32",
-                        latency=self.playback_latency,
+                        latency=self.router.playback_latency,
                     ) as stream:
                         self.active_generated_stream = stream
                         completed, underflowed = write_pcm_chunks(
@@ -1246,12 +1297,12 @@ class GeneratedAudioFallbackBackend:
                             ),
                         )
                 else:
-                    self.audio_output.play(
+                    self.router.audio_output.play(
                         samples,
                         sample_rate,
-                        latency=self.playback_latency,
+                        latency=self.router.playback_latency,
                     )
-                    status = self.audio_output.wait()
+                    status = self.router.audio_output.wait()
                     underflowed = bool(getattr(status, "output_underflow", False))
                     completed = not self.generated_audio_stop.is_set()
                 playable = playback_guard is None or bool(playback_guard())
@@ -1263,7 +1314,7 @@ class GeneratedAudioFallbackBackend:
                 return _route_outcome(
                     route,
                     playback_status,
-                    (self.clock() - started) * 1000,
+                    (self.router.clock() - started) * 1000,
                     underflowed=underflowed,
                     first_audio_ms=route.first_audio_ms,
                     source_sample_rate=route.prepared.sample_rate,
@@ -1275,7 +1326,7 @@ class GeneratedAudioFallbackBackend:
                 return _route_outcome(
                     route,
                     PlaybackStatus.FAILED,
-                    (self.clock() - started) * 1000,
+                    (self.router.clock() - started) * 1000,
                     first_audio_ms=route.first_audio_ms,
                     error=str(error),
                 )
@@ -1293,21 +1344,23 @@ class GeneratedAudioFallbackBackend:
             return _route_outcome(route, PlaybackStatus.INTERRUPTED, None)
         lead_ms = 0.0
         if route.source_audio_lead_seconds > 0:
-            lead_started = self.clock()
+            lead_started = self.router.clock()
             self.playback_active = True
             try:
                 if not self._wait_for_source_audio_lead(route, playback_guard):
                     return _route_outcome(
                         route,
                         PlaybackStatus.INTERRUPTED,
-                        (self.clock() - lead_started) * 1000,
+                        (self.router.clock() - lead_started) * 1000,
                     )
             finally:
                 self.playback_active = False
                 self.active_playback_source = None
-            lead_ms = (self.clock() - lead_started) * 1000
+            lead_ms = (self.router.clock() - lead_started) * 1000
+        self.playback_active = True
+        self.active_playback_source = "live"
         try:
-            outcome = self.live_backend.play_prepared(
+            outcome = self.router.live_backend.play_prepared(
                 route.prepared,
                 playback_guard=playback_guard,
             )
@@ -1319,6 +1372,9 @@ class GeneratedAudioFallbackBackend:
                 first_audio_ms=route.first_audio_ms,
                 error=str(error),
             )
+        finally:
+            self.playback_active = False
+            self.active_playback_source = None
         return replace(
             outcome,
             audio_source=route.trace.effective_source,
@@ -1345,29 +1401,6 @@ class GeneratedAudioFallbackBackend:
         interrupted = self.source_audio_completion_stop.wait(seconds)
         return not interrupted and (playback_guard is None or bool(playback_guard()))
 
-    def prime(self, character: str) -> object:
-        prime = getattr(self.live_backend, "prime", None)
-        return prime(character) if callable(prime) else False
-
-    def set_live_mode_active(self, active: object) -> object:
-        self.live_mode_active = bool(active)
-        configure = getattr(self.live_backend, "set_live_mode_active", None)
-        return configure(active) if callable(configure) else self.live_mode_active
-
-    def set_volume(self, volume: object, *, delegate: bool = True) -> float:
-        self.volume = validate_volume(volume)
-        configure = getattr(self.live_backend, "set_volume", None)
-        if delegate and callable(configure):
-            configure(self.volume)
-        return self.volume
-
-    def set_speed(self, speed: object, *, delegate: bool = True) -> float:
-        self.speed = validate_speed(speed)
-        configure = getattr(self.live_backend, "set_speed", None)
-        if delegate and callable(configure):
-            configure(self.speed)
-        return self.speed
-
     def stop(self) -> bool:
         was_playing = self.playback_active
         self.progress_wait_stop.set()
@@ -1375,7 +1408,7 @@ class GeneratedAudioFallbackBackend:
             self.source_audio_completion_stop.set()
         elif self.active_playback_source == "generated":
             self.generated_audio_stop.set()
-        return bool(self.live_backend.stop()) or was_playing
+        return bool(self.router.live_backend.stop()) or was_playing
 
 
 def _live_fallback_index(
