@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -615,6 +616,7 @@ class RuntimeLifecycleComponent:
 
     def shutdown(self) -> None:
         controller = self.controller
+        live_reader_timed_out = False
         controller.shutdown_requested.set()
         with controller.voice_prime_lock:
             voice_prime_futures = tuple(controller.voice_prime_futures)
@@ -626,6 +628,9 @@ class RuntimeLifecycleComponent:
             controller.live_reader.emergency_stop()
             try:
                 controller.live_reader.wait(timeout_seconds=5.0)
+            except FutureTimeoutError as error:
+                live_reader_timed_out = True
+                controller.error_handler(error)
             except Exception as error:
                 controller.error_handler(error)
             controller.live_reader = None
@@ -638,7 +643,10 @@ class RuntimeLifecycleComponent:
         ):
             executor = getattr(controller, attribute)
             if executor is not None:
-                executor.shutdown(wait=True)
+                executor.shutdown(
+                    wait=not live_reader_timed_out,
+                    cancel_futures=live_reader_timed_out,
+                )
                 setattr(controller, attribute, None)
         controller.schedule_dialog_read = None
         controller._stop_tts()

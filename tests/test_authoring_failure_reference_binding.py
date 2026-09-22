@@ -351,6 +351,42 @@ class FailureReferenceBindingTest(unittest.TestCase):
                     )
             self.assertFalse(any((root / "successors").glob("resume-*")))
 
+    def test_successor_holds_base_generation_lease_while_copying(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit, workspace, _queue_id, _group, _candidate, _decisions = (
+                self.create_decided_audit(root)
+            )
+            binding = root / "binding"
+            publish_failure_reference_binding(audit, binding)
+            original_copy = workspace_creation_module._copy_workspace_tree_snapshot
+
+            def copy_while_locked(source, target, snapshots):
+                original_copy(source, target, snapshots)
+                if Path(source).resolve() == (workspace / "generated-audio").resolve():
+                    with self.assertRaisesRegex(
+                        workspace_creation_module.BulkGenerationError, "generation"
+                    ):
+                        with workspace_creation_module.GenerationLease(
+                            workspace / "generated-audio",
+                            workspace_creation_module.sha256_file(
+                                workspace / "queue.jsonl"
+                            ),
+                            process_checker=workspace_creation_module.process_is_alive,
+                        ):
+                            pass
+
+            with patch.object(
+                workspace_creation_module,
+                "_copy_workspace_tree_snapshot",
+                copy_while_locked,
+            ):
+                created = create_failure_reference_workspace(
+                    workspace, binding, root / "successors"
+                )
+
+        self.assertTrue(created.created)
+
     def test_successor_rejects_binding_mutation_during_snapshot_copy(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

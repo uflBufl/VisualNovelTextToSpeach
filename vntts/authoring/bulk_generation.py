@@ -2205,6 +2205,7 @@ def _store_successful_generation_attempt(
         value["carry_forward"] = copy.deepcopy(carry_forward)
     _state_items(run.state)[plan.queue_id] = value
     run.state["active"] = None
+    run.lease.assert_owned()
     atomic_write_json(run.state_path, run.state, sort_keys=True)
 
 
@@ -2478,6 +2479,7 @@ def _render_and_publish_generation_attempt(
         _assert_workspace_output_identity(
             run.output_argument, run.workspace_output_identity
         )
+    run.lease.assert_owned()
     os.replace(attempt.partial, plan.destination)
     _store_successful_generation_attempt(
         run,
@@ -2548,6 +2550,12 @@ def _execute_generation_item(
                 attempt.partial.unlink()
             raise
         except Exception as error:
+            try:
+                run.lease.assert_owned()
+            except BulkGenerationError:
+                if attempt.partial.exists():
+                    attempt.partial.unlink()
+                raise
             failure = _store_failed_generation_attempt(
                 run,
                 plan,
@@ -3324,7 +3332,20 @@ def publish_generated_manifest(
     """Rebuild the approved-only manifest from authoritative state."""
     state_path = Path(state_path).expanduser().resolve()
     output_directory = state_path.parent
-    state = load_generation_state(state_path)
+    workspace_queue = state_path.parent.parent / "queue.jsonl"
+    workspace_ledger = state_path.parent.parent / "workspace.json"
+    if workspace_ledger.exists():
+        if workspace_ledger.is_symlink() or not workspace_ledger.is_file():
+            raise BulkGenerationError(
+                "Workspace generation state requires a regular workspace ledger"
+            )
+        if workspace_queue.is_symlink() or not workspace_queue.is_file():
+            raise BulkGenerationError(
+                "Workspace generation state requires its canonical queue"
+            )
+        state = load_generation_state(state_path, workspace_queue)
+    else:
+        state = load_generation_state(state_path)
     if not _lease_held:
         with _GenerationLease(
             output_directory,

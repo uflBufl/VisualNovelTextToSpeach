@@ -2,6 +2,7 @@ import io
 import json
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
@@ -1251,6 +1252,60 @@ class MainTest(unittest.TestCase):
         reader.wait.assert_called_once_with(timeout_seconds=5.0)
         reader.stop.assert_not_called()
         reader.clear_queue.assert_not_called()
+
+    def test_shutdown_returns_after_live_reader_timeout_with_blocked_worker(self):
+        started = Event()
+        release = Event()
+        errors = []
+        controller = AppController(AppSettings(), error_handler=errors.append)
+        backend = Mock()
+        controller.tts = backend
+        controller.speech_backend = backend
+        reader = Mock()
+        reader.wait.side_effect = TimeoutError("reader did not stop")
+        controller.live_reader = reader
+        executor = ThreadPoolExecutor(max_workers=1)
+        controller.speech_executor = executor
+        executor.submit(lambda: (started.set(), release.wait()))
+        self.assertTrue(started.wait(1))
+        finished = Event()
+        shutdown_thread = Thread(
+            target=lambda: (controller.shutdown(), finished.set()),
+        )
+
+        shutdown_thread.start()
+        try:
+            self.assertTrue(finished.wait(1))
+        finally:
+            release.set()
+            shutdown_thread.join(1)
+
+        self.assertIsNone(controller.speech_executor)
+        self.assertEqual(len(errors), 1)
+        backend.shutdown.assert_called_once_with()
+
+    def test_shutdown_waits_for_worker_when_live_reader_stops(self):
+        started = Event()
+        release = Event()
+        finished = Event()
+        controller = AppController(AppSettings())
+        controller.live_reader = Mock()
+        executor = ThreadPoolExecutor(max_workers=1)
+        controller.speech_executor = executor
+        executor.submit(lambda: (started.set(), release.wait()))
+        self.assertTrue(started.wait(1))
+        shutdown_thread = Thread(
+            target=lambda: (controller.shutdown(), finished.set()),
+        )
+
+        shutdown_thread.start()
+        try:
+            self.assertFalse(finished.wait(0.1))
+        finally:
+            release.set()
+            shutdown_thread.join(1)
+
+        self.assertTrue(finished.is_set())
 
     def test_controller_explicitly_allows_pocket_gated_model_access(self):
         backend = Mock()

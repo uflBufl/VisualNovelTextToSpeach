@@ -40,6 +40,7 @@ from vntts.authoring.cli import main as authoring_main
 from vntts.authoring.failure_repair import FailureRepairPolicy
 from vntts.authoring.legacy_import import import_legacy_job
 from vntts.authoring.missing_voice_policy import NARRATOR_ROLES, MissingVoicePolicy
+from vntts.authoring.publication import AtomicPublicationError
 from vntts.authoring.queue_extension import publish_additive_generation_queue
 from vntts.authoring.reconciliation_merge import merge_reconciled_terminal_outcomes
 from vntts.authoring.reference_selection import select_voice_reference
@@ -2852,6 +2853,34 @@ class AuthoringWorkbenchTest(unittest.TestCase):
             ]
             self.assertEqual(len(destinations), 1)
             self.assertEqual((destinations[0] / "marker").read_bytes(), marker)
+
+    def test_identical_publication_race_is_idempotent(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = write_legacy_fixture(root / "legacy")
+            imported = import_legacy_job(
+                fixture["job_directory"], root / "imports"
+            ).destination
+
+            def publish_identical(staging, destination):
+                shutil.copytree(staging, destination)
+                raise AtomicPublicationError("simulated publication race")
+
+            with patch(
+                "vntts.authoring.workspace_creation._rename_directory_no_replace",
+                side_effect=publish_identical,
+            ):
+                result = create_resume_workspace(
+                    imported,
+                    root / "workspaces",
+                    story_index=fixture["job"]["story_index"],
+                    voice_manifest=fixture["job"]["voice_manifest"],
+                    backend="moss-tts",
+                    model="moss-v1.5",
+                    generation_profile="stable",
+                )
+
+        self.assertFalse(result.created)
 
     def test_rejects_noncanonical_import_identity_before_path_construction(self):
         with TemporaryDirectory() as directory:

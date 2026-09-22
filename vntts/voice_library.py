@@ -9,20 +9,31 @@ import os
 import shutil
 import stat
 import wave
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock, RLock
 from typing import Literal
 
 from vntts_artifacts.atomic_io import atomic_output_path, atomic_write_json
 from vntts_artifacts.file_integrity import sha256_file
 from vntts_artifacts.voice_manifest import normalize_character_name
 
+from vntts.authoring.advisory_lock import exclusive_advisory_lock
+
 VOICE_LIBRARY_VERSION = 1
 VoiceRoute = Literal["voice", "narrator", "live-fallback"]
 _ROUTES = {"voice", "narrator", "live-fallback"}
 _CROSS_STAT_IDENTITY_RELIABLE = os.name != "nt"
+_THREAD_LOCKS_GUARD = Lock()
+_THREAD_LOCKS: dict[Path, RLock] = {}
+
+
+def _thread_lock(path: Path) -> RLock:
+    with _THREAD_LOCKS_GUARD:
+        return _THREAD_LOCKS.setdefault(path, RLock())
 
 
 class VoiceLibraryError(ValueError):
@@ -82,30 +93,33 @@ class VoiceLibrary:
         identity, display_role, display_variant = _role_identity(role, variant_key)
         payload = _read_wav(reference)
         checksum = hashlib.sha256(payload).hexdigest()
-        self._store_blob(checksum, payload)
-        document = self._load()
-        group = document["alternatives"].setdefault(
-            identity,
-            {"role": display_role, "variant_key": display_variant, "items": []},
-        )
-        if not any(item["sha256"] == checksum for item in group["items"]):
-            group["items"].append(
-                {
-                    "sha256": checksum,
-                    "discovery": _provenance(method, evidence, algorithm, timestamp),
-                }
+        with self._write_transaction():
+            self._store_blob(checksum, payload)
+            document = self._load()
+            group = document["alternatives"].setdefault(
+                identity,
+                {"role": display_role, "variant_key": display_variant, "items": []},
             )
-            group["items"].sort(key=lambda item: item["sha256"])
-        if bind_if_missing and identity not in document["bindings"]:
-            document["bindings"][identity] = _binding_document(
-                display_role,
-                display_variant,
-                "voice",
-                (checksum,),
-                None,
-                _provenance(method, evidence, algorithm, timestamp),
-            )
-        self._write(document)
+            if not any(item["sha256"] == checksum for item in group["items"]):
+                group["items"].append(
+                    {
+                        "sha256": checksum,
+                        "discovery": _provenance(
+                            method, evidence, algorithm, timestamp
+                        ),
+                    }
+                )
+                group["items"].sort(key=lambda item: item["sha256"])
+            if bind_if_missing and identity not in document["bindings"]:
+                document["bindings"][identity] = _binding_document(
+                    display_role,
+                    display_variant,
+                    "voice",
+                    (checksum,),
+                    None,
+                    _provenance(method, evidence, algorithm, timestamp),
+                )
+            self._write(document)
         return VoiceAlternative(
             display_role,
             display_variant,
@@ -135,31 +149,34 @@ class VoiceLibrary:
     ) -> VoiceBinding:
         """Atomically replace one choice, or leave it intact when requested."""
         identity, display_role, display_variant = _role_identity(role, variant_key)
-        document = self._load()
-        current = document["bindings"].get(identity)
-        if only_if_unbound and current is not None:
-            return _to_binding(current)
-        selected_checksums = _selected_checksums(source_sha256, source_sha256s)
-        _validate_route_source(route, selected_checksums, source_id)
-        if selected_checksums:
-            alternatives = document["alternatives"].get(identity, {}).get("items", [])
-            available = {item["sha256"] for item in alternatives}
-            if any(checksum not in available for checksum in selected_checksums):
-                raise VoiceLibraryError(
-                    "Selected voice is not an alternative for this role"
+        with self._write_transaction():
+            document = self._load()
+            current = document["bindings"].get(identity)
+            if only_if_unbound and current is not None:
+                return _to_binding(current)
+            selected_checksums = _selected_checksums(source_sha256, source_sha256s)
+            _validate_route_source(route, selected_checksums, source_id)
+            if selected_checksums:
+                alternatives = (
+                    document["alternatives"].get(identity, {}).get("items", [])
                 )
-            for checksum in selected_checksums:
-                self._validate_blob(checksum)
-        binding = _binding_document(
-            display_role,
-            display_variant,
-            route,
-            selected_checksums,
-            source_id,
-            _provenance(method, evidence, algorithm, timestamp),
-        )
-        document["bindings"][identity] = binding
-        self._write(document)
+                available = {item["sha256"] for item in alternatives}
+                if any(checksum not in available for checksum in selected_checksums):
+                    raise VoiceLibraryError(
+                        "Selected voice is not an alternative for this role"
+                    )
+                for checksum in selected_checksums:
+                    self._validate_blob(checksum)
+            binding = _binding_document(
+                display_role,
+                display_variant,
+                route,
+                selected_checksums,
+                source_id,
+                _provenance(method, evidence, algorithm, timestamp),
+            )
+            document["bindings"][identity] = binding
+            self._write(document)
         return _to_binding(binding)
 
     def binding(
@@ -178,11 +195,22 @@ class VoiceLibrary:
     def clear(self, role: str, *, variant_key: str | None = None) -> bool:
         """Remove one explicit decision while keeping its alternatives."""
         identity, _role, _variant = _role_identity(role, variant_key)
-        document = self._load()
-        if document["bindings"].pop(identity, None) is None:
-            return False
-        self._write(document)
+        with self._write_transaction():
+            document = self._load()
+            if document["bindings"].pop(identity, None) is None:
+                return False
+            self._write(document)
         return True
+
+    @contextmanager
+    def _write_transaction(self) -> Iterator[None]:
+        self.root.mkdir(parents=True, exist_ok=True)
+        lock_path = self.root / ".voice-library.lock"
+        if lock_path.is_symlink():
+            raise VoiceLibraryError("Voice library lock must not be a symlink")
+        with _thread_lock(lock_path):
+            with exclusive_advisory_lock(lock_path, blocking=True):
+                yield
 
     def alternatives(
         self, role: str, *, variant_key: str | None = None

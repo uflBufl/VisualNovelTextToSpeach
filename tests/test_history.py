@@ -43,6 +43,15 @@ class DialogueHistoryTest(unittest.TestCase):
         self.assertEqual(updated.text, "Hello, Timekeeper.")
         self.assertNotEqual(repeated.id, updated.id)
 
+    def test_similar_consecutive_lines_remain_separate(self):
+        history = self.create_history()
+
+        first = history.add("Marcus", "The suitcase is ready for departure.")
+        second = history.add("Marcus", "The suitcase is ready for inspection.")
+
+        self.assertEqual(len(history.snapshot()), 2)
+        self.assertNotEqual(first.id, second.id)
+
     def test_search_matches_speaker_and_dialog_case_insensitively(self):
         history = self.create_history()
         history.add("Marcus", "The suitcase is ready.")

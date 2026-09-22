@@ -4,6 +4,7 @@ import unittest
 import wave
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -19,6 +20,53 @@ def write_wav(path: Path, frames: bytes) -> None:
 
 
 class VoiceLibraryTest(unittest.TestCase):
+    def test_concurrent_role_updates_are_both_retained(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "library"
+            first = VoiceLibrary(root)
+            second = VoiceLibrary(root)
+            first_loaded = Event()
+            release_first = Event()
+            second_loaded = Event()
+            original_first_load = first._load
+            original_second_load = second._load
+
+            def blocked_first_load():
+                document = original_first_load()
+                first_loaded.set()
+                release_first.wait(1)
+                return document
+
+            def observed_second_load():
+                document = original_second_load()
+                second_loaded.set()
+                return document
+
+            first._load = blocked_first_load
+            second._load = observed_second_load
+            first_thread = Thread(
+                target=first.select,
+                kwargs={"role": "Alice", "route": "narrator"},
+            )
+            second_thread = Thread(
+                target=second.select,
+                kwargs={"role": "Bob", "route": "narrator"},
+            )
+            first_thread.start()
+            self.assertTrue(first_loaded.wait(1))
+            second_thread.start()
+            second_loaded.wait(0.1)
+            release_first.set()
+            first_thread.join(1)
+            second_thread.join(1)
+
+            self.assertFalse(first_thread.is_alive())
+            self.assertFalse(second_thread.is_alive())
+            self.assertEqual(
+                {binding.role for binding in VoiceLibrary(root).bindings()},
+                {"Alice", "Bob"},
+            )
+
     def test_windows_reference_is_opened_in_binary_mode(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -2052,6 +2052,60 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
 
         self.assertEqual(successor["lease_id"], "successor")
 
+    def test_lease_takeover_before_final_wav_publication_leaves_state_unmodified(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            output = root / "output"
+            original_inspection = bulk_module.inspect_generated_speech
+
+            def lose_lease(*args, **kwargs):
+                inspected = original_inspection(*args, **kwargs)
+                lease_path = output / ".generation-lease.json"
+                lease = json.loads(lease_path.read_text(encoding="utf-8"))
+                lease["lease_id"] = "successor"
+                atomic_write_json(lease_path, lease, sort_keys=True)
+                return inspected
+
+            with (
+                patch.object(
+                    bulk_module,
+                    "inspect_generated_speech",
+                    side_effect=lose_lease,
+                ),
+                self.assertRaisesRegex(BulkGenerationError, "ownership"),
+            ):
+                self.run_generation(queue, output, SyntheticRenderer())
+
+            state = json.loads(
+                (output / "generation-state.json").read_text(encoding="utf-8")
+            )
+            completed = [
+                path
+                for path in output.rglob("*.wav")
+                if not path.name.endswith(".partial.wav")
+            ]
+
+        self.assertEqual(state["items"], {})
+        self.assertEqual(completed, [])
+
+    def test_workspace_manifest_publication_revalidates_canonical_queue_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            item = queue_item()
+            queue = write_queue(root / "queue.jsonl", [item])
+            result = self.run_generation(
+                queue, root / "generated-audio", SyntheticRenderer()
+            )
+            (root / "workspace.json").write_text("{}", encoding="utf-8")
+            state = json.loads(result.state.read_text(encoding="utf-8"))
+            state["items"][item["queue_id"]]["line_id"] = "wrong-line"
+            atomic_write_json(result.state, state, sort_keys=True)
+
+            with self.assertRaisesRegex(BulkGenerationError, "identity"):
+                publish_generated_manifest(result.state)
+
     def test_review_and_publish_respect_live_generation_lease(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

@@ -2,7 +2,6 @@ import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
-from difflib import SequenceMatcher
 from pathlib import Path
 from threading import RLock
 from uuid import uuid4
@@ -112,6 +111,4 @@ class DialogueHistory:
 
     @staticmethod
     def _is_continuation(previous: str, current: str) -> bool:
-        if previous.startswith(current) or current.startswith(previous):
-            return True
-        return SequenceMatcher(None, previous, current).ratio() >= 0.65
+        return previous.startswith(current) or current.startswith(previous)
