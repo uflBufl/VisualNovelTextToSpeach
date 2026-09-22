@@ -727,6 +727,53 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog.close()
             dialog.deleteLater()
 
+    def test_manual_game_folder_can_replace_discovery_while_it_is_loading(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            importer = Mock()
+            importer.availability.return_value = ImporterAvailability(True, "Ready")
+            importer.import_installed.return_value = content
+            pool = ManualThreadPool()
+            with (
+                patch(
+                    "vntts.pregeneration_ui.discover_game_content",
+                    return_value=ContentDiscovery(()),
+                ),
+                patch(
+                    "vntts.pregeneration_ui.QFileDialog.getExistingDirectory",
+                    return_value="/selected/game",
+                ),
+            ):
+                dialog = OfflineAudioPreparationDialog(
+                    AppSettings(),
+                    importer=importer,
+                    job_store=PregenerationJobStore(root / "jobs"),
+                    thread_pool=pool,
+                )
+                self.addCleanup(dialog.deleteLater)
+                dialog.show()
+                self.application.processEvents()
+
+                self.assertTrue(dialog.discovery_game_folder_button.isVisibleTo(dialog))
+                self.assertEqual(len(pool.tasks), 1)
+                dialog.discovery_game_folder_button.click()
+
+            self.assertFalse(dialog.discovery_runner.active)
+            self.assertTrue(dialog.importing)
+            self.assertFalse(dialog.discovery_panel.isVisible())
+            self.assertTrue(dialog.continue_button.isHidden())
+            self.assertEqual(len(pool.tasks), 2)
+            pool.tasks.pop(1).run()
+            self.application.processEvents()
+            self.assertEqual(dialog.source.count(), 1)
+            pool.tasks.pop(0).run()
+            self.application.processEvents()
+            self.assertEqual(dialog.source.count(), 1)
+            self.assertEqual(
+                importer.import_installed.call_args.args[1], "/selected/game"
+            )
+
     def test_story_filters_preserve_selection_across_refresh_and_sources(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1111,6 +1158,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             updates = []
             dialog.phaseChanged.connect(updates.append)
             dialog.continue_button.click()
+            self.assertTrue(dialog.continue_button.isHidden())
             self.assertTrue(
                 all("Preparing" in dialog.stories.item(row).text() for row in range(2))
             )
@@ -1118,7 +1166,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._render_generation_progress(
                 OfflineGenerationProgress(generated=1, failed=1)
             )
-            self.assertIn("2 of 3 lines processed and saved", updates[-1])
+            self.assertIn("2 of 3 lines processed", updates[-1])
+            self.assertIn("Pending: 1", updates[-1])
+            self.assertEqual(dialog.progress_story_readiness.count(), 2)
+            self.assertIn("Preparing", dialog.progress_story_readiness.item(0).text())
             dialog._voice_plan_finished(
                 None, ValueError("No character references. Import the game again.")
             )
@@ -1154,6 +1205,10 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             self.assertIn(
                 "all remaining lines are playable from the current line",
                 dialog.stories.item(0).text(),
+            )
+            self.assertIn(
+                "all remaining lines are playable from the current line",
+                dialog.progress_story_readiness.item(0).text(),
             )
 
     def test_scoped_regeneration_keeps_story_scope_and_reuses_voice_decisions(self):
@@ -1662,7 +1717,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             generator = Mock()
             generator.inspect_progress.side_effect = (
                 OfflineGenerationProgress(
-                    generated=1,
+                    ready_line_ids=("reverse1999:1",),
                     active_phase="generating",
                     runtime_status="GPU: RTX 2070 SUPER; auxiliary: CPU",
                 ),
@@ -1681,6 +1736,8 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             )
             dialog._generation_input = Mock(ready_items=4)
             dialog.generating = True
+            reading = Mock()
+            dialog.readingRequested.connect(reading)
             dialog.show()
 
             dialog._start_generation_progress()
@@ -1688,11 +1745,15 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
             dialog._poll_generation_progress()
             self.assertEqual(len(pool.tasks), 1)
             self.run_next_task(pool)
-            self.assertEqual(dialog.progress_bar.value(), 1)
-            self.assertIn("1 of 4", plain_label_text(dialog.progress_counts))
+            self.assertEqual(dialog.progress_bar.value(), 0)
+            self.assertIn("0 of 4", plain_label_text(dialog.progress_counts))
             self.assertIn("saved on disk", dialog.progress_guarantee.text())
             self.assertIn("RTX 2070 SUPER", dialog.progress_runtime.text())
             self.assertTrue(dialog.progress_runtime.isVisible())
+            self.assertEqual(dialog.play_ready_button.text(), "Start reading (1 ready)")
+            self.assertTrue(dialog.play_ready_button.isEnabled())
+            dialog.play_ready_button.click()
+            reading.assert_called_once_with()
 
             dialog._poll_generation_progress()
             self.run_next_task(pool)

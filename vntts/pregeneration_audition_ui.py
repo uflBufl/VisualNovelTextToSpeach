@@ -347,7 +347,7 @@ class VoiceAuditionPanel(QGroupBox):
         if source_id is None:
             self.status.setText(
                 "No working automatic voice remains. Retry this preview, or return "
-                "to the voice plan and use Change selected voice."
+                "to the voice plan and use Edit selected role in Voices."
             )
             return
         self._record_choice(source_id)
@@ -361,7 +361,7 @@ class VoiceAuditionPanel(QGroupBox):
             if source_id is None:
                 self.status.setText(
                     "No working automatic voice remains. Retry the failed preview, "
-                    "or return to the voice plan and use Change selected voice."
+                    "or return to the voice plan and use Edit selected role in Voices."
                 )
                 return
             choices.append((group, source_id))

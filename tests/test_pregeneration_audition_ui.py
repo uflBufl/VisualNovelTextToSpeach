@@ -741,7 +741,7 @@ class VoiceAuditionPanelTest(unittest.TestCase):
             panel.auto_button.click()
 
             self.assertIn("Retry", panel.status.text())
-            self.assertIn("Change selected voice", panel.status.text())
+            self.assertIn("Edit selected role in Voices", panel.status.text())
 
     def test_failed_bulk_choice_stays_atomic_and_successful_retry_restores_candidate(
         self,

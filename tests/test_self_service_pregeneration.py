@@ -760,7 +760,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn("Model:", self.application.clipboard().text())
             self.assertNotIn("Model:", dialog.voice_configuration.text())
             self.assertIn(
-                "Changing voices or model may require new recordings",
+                "Voice or model changes may require new recordings",
                 dialog.voice_configuration.text(),
             )
             self.assertFalse(dialog.voice_panel.preview_service._closed)

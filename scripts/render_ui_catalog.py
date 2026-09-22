@@ -11,6 +11,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import Any, Callable
 from unittest.mock import Mock, patch
 
@@ -82,7 +83,17 @@ def _render_stories(
 
     from vntts.app import SettingsDialog, build_unknown_speaker_prompt
     from vntts.dashboard_ui import ControlDashboard, RuntimeControlState
+    from vntts.game_content_importer import ImporterAvailability
     from vntts.game_narrator_ui import GameNarratorDialog
+    from vntts.pregeneration_generation import OfflineGenerationProgress
+    from vntts.pregeneration_setup import (
+        ContentDiscovery,
+        GameContent,
+        PregenerationJobStore,
+        StorySelection,
+    )
+    from vntts.pregeneration_ui import OfflineAudioPreparationDialog
+    from vntts.pregeneration_voices import VoiceGroup, VoicePlan
     from vntts.settings import AppSettings
     from vntts.voice_library import VoiceLibrary
 
@@ -94,6 +105,7 @@ def _render_stories(
     palette.setColor(QPalette.ColorRole.Base, QColor("#151515"))
     palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#303030"))
     palette.setColor(QPalette.ColorRole.Text, QColor("#f0f0f0"))
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#a8a8a8"))
     palette.setColor(QPalette.ColorRole.Button, QColor("#555555"))
     palette.setColor(QPalette.ColorRole.ButtonText, QColor("#f0f0f0"))
     palette.setColor(QPalette.ColorRole.Highlight, QColor("#148a2b"))
@@ -298,6 +310,232 @@ def _render_stories(
         prompt, _choose, _continue, _cancel = build_unknown_speaker_prompt("Selone")
         return prompt
 
+    def offline_preparation(state: str) -> Any:
+        temporary = TemporaryDirectory(prefix="vntts-ui-catalog-")
+        root = Path(temporary.name)
+        story_index = root / "story-index.jsonl"
+        story_index.touch()
+        chapters = (
+            StorySelection(
+                "chapter-7",
+                "Chapter 7 - The long night",
+                "chapter",
+                0,
+                tuple(f"chapter-7:{index}" for index in range(18)),
+                18,
+                18,
+                3,
+                15,
+                3,
+                ("Narrator", "Believer IV", "Centurion"),
+                ("Narrator", "Believer IV", "Centurion"),
+                1_400,
+            ),
+            StorySelection(
+                "chapter-8",
+                "Chapter 8 - The road ahead",
+                "chapter",
+                1,
+                tuple(f"chapter-8:{index}" for index in range(24)),
+                24,
+                24,
+                5,
+                19,
+                4,
+                ("Narrator", "Believer IV", "Centurion", "Selone"),
+                ("Narrator", "Believer IV", "Centurion", "Selone"),
+                1_900,
+            ),
+            StorySelection(
+                "side-story",
+                "A long side-story title that still has to remain readable",
+                "story",
+                2,
+                tuple(f"side-story:{index}" for index in range(12)),
+                12,
+                12,
+                2,
+                10,
+                2,
+                ("Narrator", "Selone"),
+                ("Narrator", "Selone"),
+                900,
+            ),
+        )
+        content = GameContent(
+            "reverse1999",
+            "Reverse: 1999",
+            "3.7",
+            story_index,
+            "a" * 64,
+            chapters,
+        )
+        importer = Mock()
+        importer.availability.return_value = ImporterAvailability(True, "Ready")
+        pool = Mock()
+        pool.start.side_effect = lambda _task: None
+        discovery = None if state == "loading" else lambda: ContentDiscovery((content,))
+        offline_settings = settings.updated(
+            speech_backend="pocket-tts",
+            tts_model=None,
+            tts_profile="default",
+            narrator_speaker="alba",
+        )
+        voice_library = VoiceLibrary(root / "voice-library")
+        voice_library.select(
+            "Narrator", route="voice", source_id="preset:alba", method="manual"
+        )
+        dialog = OfflineAudioPreparationDialog(
+            offline_settings,
+            discovery=discovery,
+            importer=importer,
+            job_store=PregenerationJobStore(root / "jobs"),
+            thread_pool=pool,
+            game_narrator_chooser=Mock(return_value=None),
+            voice_library=voice_library,
+            automatic_activation=True,
+        )
+        dialog._catalog_temporary_directory = temporary
+        dialog.resize(1040, 760)
+        if state == "loading":
+            return dialog
+
+        dialog.select_all_button.click()
+        dialog._unsaved_story_selections.clear()
+        if state == "selection":
+            dialog.continue_button.setFocus()
+            return dialog
+
+        dialog._job = SimpleNamespace(
+            story_index_sha256=content.story_index_sha256,
+            selected_story_ids=("chapter-7", "chapter-8"),
+            estimate=SimpleNamespace(original_audio_lines=8, selected_lines=42),
+        )
+        dialog._story_selection_drafts[content.story_index_sha256] = {
+            "chapter-7",
+            "chapter-8",
+        }
+        dialog._populate_stories(content)
+        if state == "confirmation":
+            dialog.step.setText("Step 2 of 4 - Choose and confirm voices")
+            plan = VoicePlan(
+                "catalog-job",
+                "2026-09-22T00:00:00+00:00",
+                content.story_index_sha256,
+                None,
+                None,
+                "pocket-tts",
+                None,
+                "en",
+                "stable",
+                False,
+                "b" * 64,
+                (
+                    VoiceGroup(
+                        "believer",
+                        "Believer IV",
+                        ("Believer IV",),
+                        None,
+                        None,
+                        None,
+                        ("chapter-7:4", "chapter-8:3"),
+                        "The storm has passed.",
+                        None,
+                        "voice",
+                        "character:centurion",
+                        "Centurion",
+                        "Centurion",
+                        ("1" * 64,),
+                        "c" * 64,
+                        "d" * 64,
+                        "automatic-character-match",
+                    ),
+                    VoiceGroup(
+                        "selone",
+                        "Selone",
+                        ("Selone",),
+                        None,
+                        None,
+                        None,
+                        ("chapter-8:9",),
+                        "We should keep moving.",
+                        None,
+                        "narrator",
+                        "preset:alba",
+                        None,
+                        None,
+                        (),
+                        "e" * 64,
+                        "f" * 64,
+                        "automatic-narrator-fallback",
+                    ),
+                ),
+            )
+            dialog._show_voice_confirmation(plan)
+            dialog.content_scroll.show()
+            dialog.continue_button.setFocus()
+            return dialog
+
+        dialog._generation_input = SimpleNamespace(ready_items=34)
+        dialog.generating = True
+        dialog.step.setText("Step 3 of 4 - Generate and check audio")
+        dialog.cancel_button.setText("Cancel generation")
+        dialog._start_generation_progress()
+        if state == "partial-ready":
+            progress = OfflineGenerationProgress(
+                generated=14,
+                active_phase="generating",
+                runtime_status="Apple GPU - model loaded",
+                ready_line_ids=tuple(f"chapter-7:{index}" for index in range(14)),
+            )
+            dialog._progress_finished(progress, None)
+            dialog.play_ready_button.setFocus()
+            return dialog
+        if state == "failure":
+            progress = OfflineGenerationProgress(
+                generated=14,
+                failed=1,
+                active_phase="generating",
+                runtime_status="Apple GPU - model loaded",
+                ready_line_ids=tuple(f"chapter-7:{index}" for index in range(14)),
+            )
+            dialog._progress_finished(progress, None)
+            dialog.generating = False
+            dialog._stop_generation_progress()
+            dialog._preparation_paused(
+                "Generation paused",
+                "One line could not be generated safely.",
+            )
+            dialog.resume_status.setText(
+                "Unable to generate one dialogue line safely. Continue to retry it."
+            )
+            dialog.progress_cancel_consequence.setText(
+                "Continue retries only unfinished lines; completed audio stays saved."
+            )
+            dialog.continue_button.setText("Continue preparation")
+            dialog.continue_button.setEnabled(True)
+            dialog.cancel_button.setText("Close")
+            dialog.continue_button.setFocus()
+            return dialog
+
+        dialog.generating = False
+        dialog._generation_result = SimpleNamespace(
+            generated=34,
+            failed=0,
+            other_terminal=0,
+        )
+        result = SimpleNamespace(
+            approved=34,
+            live_fallbacks=0,
+            story_lines=42,
+            omissions=0,
+        )
+        dialog._stop_generation_progress()
+        dialog._show_final_handoff(result)
+        dialog.defer_activation("Reading settings changed after preparation started.")
+        dialog.continue_button.setFocus()
+        return dialog
+
     renderers: dict[str, Callable[[], Any]] = {
         "dashboard.stories-ready": dashboard_stories,
         "dashboard.reading-active": dashboard_reading,
@@ -315,6 +553,16 @@ def _render_stories(
             "Narrator", compact_long_values=True
         ),
         "voice-editor.saved-return": dashboard_voice_saved,
+        "offline-preparation.loading": lambda: offline_preparation("loading"),
+        "offline-preparation.selection": lambda: offline_preparation("selection"),
+        "offline-preparation.voice-confirmation": lambda: offline_preparation(
+            "confirmation"
+        ),
+        "offline-preparation.partial-ready": lambda: offline_preparation(
+            "partial-ready"
+        ),
+        "offline-preparation.failure": lambda: offline_preparation("failure"),
+        "offline-preparation.completed": lambda: offline_preparation("completed"),
     }
     surfaces = {surface["id"]: surface for surface in catalog["surfaces"]}
     allowed_surfaces = set(surfaces)

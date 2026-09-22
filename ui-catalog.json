@@ -181,7 +181,15 @@
       "mission": "Choose stories, prepare durable audio and understand progress, recovery and activation.",
       "canonical_owner": "dashboard",
       "related": ["dashboard", "voice-editor", "voice-audition"],
-      "contracts": ["app-shell", "single-mission", "voice-selection"]
+      "contracts": ["app-shell", "single-mission", "responsive-form", "voice-selection"],
+      "stories": [
+        {"id": "offline-preparation.loading", "title": "Finding game content", "state": "Discovery runs without exposing unusable controls"},
+        {"id": "offline-preparation.selection", "title": "Choose stories", "state": "Detected source, persisted selection and preparation estimate"},
+        {"id": "offline-preparation.voice-confirmation", "title": "Confirm voice routes", "state": "Selected stories, narrator and automatic substitutions are reviewable before generation"},
+        {"id": "offline-preparation.partial-ready", "title": "Partially ready", "state": "Durable progress and playable chapter readiness remain visible during generation"},
+        {"id": "offline-preparation.failure", "title": "Resumable failure", "state": "Failure explains what was kept and the exact retry action"},
+        {"id": "offline-preparation.completed", "title": "Preparation complete", "state": "Saved coverage and a deferred activation consequence are explicit"}
+      ]
     },
     {
       "id": "voice-audition",
