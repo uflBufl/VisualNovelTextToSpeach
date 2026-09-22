@@ -28,6 +28,17 @@ class OfflineFallbackAuthorityError(ValueError):
 
 
 @dataclass(frozen=True)
+class _AuthorityDefinition:
+    """Schema-specific fields needed to validate one authority artifact."""
+
+    kind: str
+    authority_id: str
+    decisions: object
+    source_hashes: object
+    expected_outcome: str
+
+
+@dataclass(frozen=True)
 class OfflineFallbackAuthority:
     source: Path
     payload: bytes
@@ -67,22 +78,73 @@ def load_offline_fallback_authorities(
     selected_queue_ids: Iterable[object],
 ) -> tuple[OfflineFallbackAuthority, ...]:
     """Load exact automatic-unresolved artifacts for every selected source item."""
-    selected = {
+    selected = _selected_queue_ids(selected_queue_ids)
+    if not selected:
+        return _empty_selection_authorities(paths)
+    if not paths:
+        return ()
+    loaded = tuple(_load_authority(path) for path in paths)
+    by_queue_id = _authorities_by_queue_id(loaded)
+    if set(by_queue_id) != selected:
+        raise OfflineFallbackAuthorityError(
+            "Offline fallback authorities must cover every selected queue ID exactly"
+        )
+    _validate_failed_source_items(by_queue_id, source_items)
+    return _sorted_authorities(loaded)
+
+
+def validate_offline_fallback_authority_records(
+    records: object,
+    directory: str | Path,
+    source_items: Mapping[str, object],
+) -> tuple[OfflineFallbackAuthority, ...]:
+    """Revalidate copied authority snapshots bound into a workspace ledger."""
+    expected_by_id = _load_snapshot_authorities(records, directory)
+    by_queue_id = _snapshot_authorities_by_queue_id(expected_by_id.values())
+    _validate_snapshot_source_items(by_queue_id, source_items)
+    return _sorted_authorities(expected_by_id.values())
+
+
+def _load_authority(path: str | Path) -> OfflineFallbackAuthority:
+    source = _authority_source(path)
+    payload, document = _authority_document(source)
+    definition = _authority_definition(document)
+    source_item_sha256s = _authority_source_item_sha256s(definition)
+    _verify_authority_source(source, payload)
+    return OfflineFallbackAuthority(
+        source=source,
+        payload=payload,
+        source_sha256=hashlib.sha256(payload).hexdigest(),
+        kind=definition.kind,
+        authority_id=definition.authority_id,
+        queue_ids=tuple(source_item_sha256s),
+        source_item_sha256s=source_item_sha256s,
+    )
+
+
+def _selected_queue_ids(selected_queue_ids: Iterable[object]) -> set[str]:
+    return {
         _required_text(value, "Offline fallback queue ID")
         for value in selected_queue_ids
     }
-    if not selected:
-        if paths:
-            raise OfflineFallbackAuthorityError(
-                "Offline fallback authority requires selected queue IDs"
-            )
-        return ()
-    if not paths:
-        return ()
-    loaded = tuple(_load_authority(path) for path in paths or ())
-    by_queue_id = {}
-    authority_ids = set()
-    for authority in loaded:
+
+
+def _empty_selection_authorities(
+    paths: Iterable[str | Path] | None,
+) -> tuple[OfflineFallbackAuthority, ...]:
+    if paths:
+        raise OfflineFallbackAuthorityError(
+            "Offline fallback authority requires selected queue IDs"
+        )
+    return ()
+
+
+def _authorities_by_queue_id(
+    authorities: Iterable[OfflineFallbackAuthority],
+) -> dict[str, OfflineFallbackAuthority]:
+    by_queue_id: dict[str, OfflineFallbackAuthority] = {}
+    authority_ids: set[str] = set()
+    for authority in authorities:
         if authority.authority_id in authority_ids:
             raise OfflineFallbackAuthorityError(
                 "Offline fallback authority is duplicated"
@@ -94,11 +156,14 @@ def load_offline_fallback_authorities(
                     f"Offline fallback queue has multiple authorities: {queue_id!r}"
                 )
             by_queue_id[queue_id] = authority
-    if set(by_queue_id) != selected:
-        raise OfflineFallbackAuthorityError(
-            "Offline fallback authorities must cover every selected queue ID exactly"
-        )
-    for queue_id, authority in by_queue_id.items():
+    return by_queue_id
+
+
+def _validate_failed_source_items(
+    authorities_by_queue_id: Mapping[str, OfflineFallbackAuthority],
+    source_items: Mapping[str, object],
+) -> None:
+    for queue_id, authority in authorities_by_queue_id.items():
         source_item = source_items.get(queue_id)
         if not isinstance(source_item, dict) or source_item.get("status") != "failed":
             raise OfflineFallbackAuthorityError(
@@ -111,101 +176,123 @@ def load_offline_fallback_authorities(
             raise OfflineFallbackAuthorityError(
                 f"Offline fallback authority is stale for {queue_id!r}"
             )
-    return tuple(sorted(loaded, key=lambda value: value.authority_id))
 
 
-def validate_offline_fallback_authority_records(
+def _sorted_authorities(
+    authorities: Iterable[OfflineFallbackAuthority],
+) -> tuple[OfflineFallbackAuthority, ...]:
+    return tuple(sorted(authorities, key=lambda value: value.authority_id))
+
+
+def _load_snapshot_authorities(
     records: object,
     directory: str | Path,
-    source_items: Mapping[str, object],
-) -> tuple[OfflineFallbackAuthority, ...]:
-    """Revalidate copied authority snapshots bound into a workspace ledger."""
+) -> dict[str, OfflineFallbackAuthority]:
     if not isinstance(records, list) or not records:
         raise OfflineFallbackAuthorityError(
             "Workspace offline fallback authority ledger is missing"
         )
-    expected_by_id = {}
+    expected_by_id: dict[str, OfflineFallbackAuthority] = {}
     for record in records:
-        if not isinstance(record, dict) or set(record) != {
-            "schema",
-            "schema_version",
-            "kind",
-            "authority_id",
-            "source_sha256",
-            "path",
-            "queue_ids",
-            "source_item_sha256s",
-        }:
-            raise OfflineFallbackAuthorityError(
-                "Workspace offline fallback authority ledger is malformed"
-            )
-        if (
-            record.get("schema") != OFFLINE_FALLBACK_AUTHORITY_SCHEMA
-            or record.get("schema_version") != OFFLINE_FALLBACK_AUTHORITY_VERSION
-        ):
-            raise OfflineFallbackAuthorityError(
-                "Workspace offline fallback authority schema is unsupported"
-            )
-        relative = Path(_required_text(record.get("path"), "Authority snapshot path"))
-        if relative.is_absolute() or ".." in relative.parts:
-            raise OfflineFallbackAuthorityError(
-                "Workspace offline fallback authority path is unsafe"
-            )
-        candidate = Path(directory) / relative
-        if candidate.is_symlink():
-            raise OfflineFallbackAuthorityError(
-                "Workspace offline fallback authority path is unsafe"
-            )
-        path = candidate.resolve()
-        try:
-            path.relative_to(Path(directory).resolve())
-        except ValueError as error:
-            raise OfflineFallbackAuthorityError(
-                "Workspace offline fallback authority leaves its root"
-            ) from error
-        authority = _load_authority(path)
+        relative, authority = _snapshot_authority(record, directory)
         if authority.authority_id in expected_by_id:
             raise OfflineFallbackAuthorityError(
                 "Workspace offline fallback authority is duplicated"
             )
-        expected = authority.snapshot_record(relative.as_posix())
-        if expected != record:
+        if authority.snapshot_record(relative.as_posix()) != record:
             raise OfflineFallbackAuthorityError(
                 "Workspace offline fallback authority snapshot changed"
             )
         expected_by_id[authority.authority_id] = authority
-    by_queue_id = {}
-    for authority in expected_by_id.values():
+    return expected_by_id
+
+
+def _snapshot_authority(
+    record: object,
+    directory: str | Path,
+) -> tuple[Path, OfflineFallbackAuthority]:
+    if not isinstance(record, dict) or set(record) != {
+        "schema",
+        "schema_version",
+        "kind",
+        "authority_id",
+        "source_sha256",
+        "path",
+        "queue_ids",
+        "source_item_sha256s",
+    }:
+        raise OfflineFallbackAuthorityError(
+            "Workspace offline fallback authority ledger is malformed"
+        )
+    if (
+        record.get("schema") != OFFLINE_FALLBACK_AUTHORITY_SCHEMA
+        or record.get("schema_version") != OFFLINE_FALLBACK_AUTHORITY_VERSION
+    ):
+        raise OfflineFallbackAuthorityError(
+            "Workspace offline fallback authority schema is unsupported"
+        )
+    relative = Path(_required_text(record.get("path"), "Authority snapshot path"))
+    return relative, _snapshot_authority_at_path(relative, directory)
+
+
+def _snapshot_authority_at_path(
+    relative: Path,
+    directory: str | Path,
+) -> OfflineFallbackAuthority:
+    if relative.is_absolute() or ".." in relative.parts:
+        raise OfflineFallbackAuthorityError(
+            "Workspace offline fallback authority path is unsafe"
+        )
+    candidate = Path(directory) / relative
+    if candidate.is_symlink():
+        raise OfflineFallbackAuthorityError(
+            "Workspace offline fallback authority path is unsafe"
+        )
+    path = candidate.resolve()
+    try:
+        path.relative_to(Path(directory).resolve())
+    except ValueError as error:
+        raise OfflineFallbackAuthorityError(
+            "Workspace offline fallback authority leaves its root"
+        ) from error
+    return _load_authority(path)
+
+
+def _snapshot_authorities_by_queue_id(
+    authorities: Iterable[OfflineFallbackAuthority],
+) -> dict[str, OfflineFallbackAuthority]:
+    by_queue_id: dict[str, OfflineFallbackAuthority] = {}
+    for authority in authorities:
         for queue_id in authority.queue_ids:
             if queue_id in by_queue_id:
                 raise OfflineFallbackAuthorityError(
                     "Workspace offline fallback authority queue IDs overlap"
                 )
             by_queue_id[queue_id] = authority
-    for queue_id, authority in by_queue_id.items():
+    return by_queue_id
+
+
+def _validate_snapshot_source_items(
+    authorities_by_queue_id: Mapping[str, OfflineFallbackAuthority],
+    source_items: Mapping[str, object],
+) -> None:
+    for queue_id, authority in authorities_by_queue_id.items():
         source_item = source_items.get(queue_id)
-        source_item_sha256 = (
-            source_item
-            if is_lowercase_sha256(source_item)
-            else canonical_document_sha256(source_item)
-            if isinstance(source_item, dict)
-            else None
-        )
-        if source_item_sha256 != authority.source_item_sha256s[queue_id]:
+        if _source_item_sha256(source_item) != authority.source_item_sha256s[queue_id]:
             raise OfflineFallbackAuthorityError(
                 f"Workspace offline fallback authority is stale for {queue_id!r}"
             )
-    loaded = tuple(
-        sorted(expected_by_id.values(), key=lambda value: value.authority_id)
-    )
-    if [value.authority_id for value in loaded] != sorted(expected_by_id):
-        raise OfflineFallbackAuthorityError(
-            "Workspace offline fallback authority ledger is not canonical"
-        )
-    return loaded
 
 
-def _load_authority(path: str | Path) -> OfflineFallbackAuthority:
+def _source_item_sha256(source_item: object) -> str | None:
+    if isinstance(source_item, str) and is_lowercase_sha256(source_item):
+        return source_item
+    if isinstance(source_item, dict):
+        return canonical_document_sha256(source_item)
+    return None
+
+
+def _authority_source(path: str | Path) -> Path:
     candidate = Path(path).expanduser()
     if candidate.is_symlink():
         raise OfflineFallbackAuthorityError(
@@ -216,6 +303,10 @@ def _load_authority(path: str | Path) -> OfflineFallbackAuthority:
         raise OfflineFallbackAuthorityError(
             f"Offline fallback authority is missing or unsafe: {source}"
         )
+    return source
+
+
+def _authority_document(source: Path) -> tuple[bytes, dict[str, object]]:
     try:
         payload = source.read_bytes()
         document = json.loads(payload.decode("utf-8"))
@@ -225,100 +316,155 @@ def _load_authority(path: str | Path) -> OfflineFallbackAuthority:
         raise OfflineFallbackAuthorityError(
             "Offline fallback authority must be a JSON object"
         )
+    return payload, document
+
+
+def _authority_definition(document: dict[str, object]) -> _AuthorityDefinition:
     schema = document.get("schema")
     if schema == FAILED_VOICE_DECISION_SCHEMA:
-        kind = "failed_voice_review"
-        authority_id = _canonical_id(document, "decision_id")
-        binding = document.get("binding")
-        if (
-            document.get("schema_version") != 1
-            or not isinstance(binding, dict)
-            or binding.get("target_mode") != "failed"
-            or binding.get("queue_voice_overrides") != {}
-            or binding.get("selected_candidates") != []
-        ):
-            raise OfflineFallbackAuthorityError(
-                "Failed-voice fallback authority is not a zero-override decision"
-            )
-        decisions = binding.get("decisions")
-        source_hashes = binding.get("source_failed_state_item_sha256s")
-        expected_outcome = "neither"
-    elif schema == FAILED_PROMPT_SELECTION_SCHEMA:
-        kind = "failed_prompt_review"
-        authority_id = _canonical_id(document, "selection_id")
-        if document.get("schema_version") != 1:
-            raise OfflineFallbackAuthorityError(
-                "Failed-prompt fallback authority schema is unsupported"
-            )
-        decisions = document.get("decisions")
-        source_hashes = None
-        expected_outcome = "keep_unresolved"
-    else:
+        return _failed_voice_authority_definition(document)
+    if schema == FAILED_PROMPT_SELECTION_SCHEMA:
+        return _failed_prompt_authority_definition(document)
+    raise OfflineFallbackAuthorityError(
+        "Offline fallback authority schema is unsupported"
+    )
+
+
+def _failed_voice_authority_definition(
+    document: dict[str, object],
+) -> _AuthorityDefinition:
+    authority_id = _canonical_id(document, "decision_id")
+    binding = document.get("binding")
+    if (
+        document.get("schema_version") != 1
+        or not isinstance(binding, dict)
+        or binding.get("target_mode") != "failed"
+        or binding.get("queue_voice_overrides") != {}
+        or binding.get("selected_candidates") != []
+    ):
         raise OfflineFallbackAuthorityError(
-            "Offline fallback authority schema is unsupported"
+            "Failed-voice fallback authority is not a zero-override decision"
         )
-    if not isinstance(decisions, list) or not decisions:
+    return _AuthorityDefinition(
+        kind="failed_voice_review",
+        authority_id=authority_id,
+        decisions=binding.get("decisions"),
+        source_hashes=binding.get("source_failed_state_item_sha256s"),
+        expected_outcome="neither",
+    )
+
+
+def _failed_prompt_authority_definition(
+    document: dict[str, object],
+) -> _AuthorityDefinition:
+    authority_id = _canonical_id(document, "selection_id")
+    if document.get("schema_version") != 1:
+        raise OfflineFallbackAuthorityError(
+            "Failed-prompt fallback authority schema is unsupported"
+        )
+    return _AuthorityDefinition(
+        kind="failed_prompt_review",
+        authority_id=authority_id,
+        decisions=document.get("decisions"),
+        source_hashes=None,
+        expected_outcome="keep_unresolved",
+    )
+
+
+def _authority_source_item_sha256s(
+    definition: _AuthorityDefinition,
+) -> dict[str, str]:
+    if not isinstance(definition.decisions, list) or not definition.decisions:
         raise OfflineFallbackAuthorityError(
             "Offline fallback authority decisions are empty"
         )
-    queue_ids = []
-    decision_hashes: dict[str, str] = {}
-    for decision in decisions:
-        if (
-            not isinstance(decision, dict)
-            or decision.get("decision") != expected_outcome
-            or decision.get("review_decision_origin") != AUTOMATIC_UNRESOLVED_ORIGIN
-        ):
-            raise OfflineFallbackAuthorityError(
-                "Offline fallback authority is not automatically unresolved"
+    queue_ids: list[str] = []
+    decision_hashes: dict[str, object] = {}
+    for decision in definition.decisions:
+        decision_document, current_ids = _authority_decision(
+            decision, definition.expected_outcome
+        )
+        if definition.kind == "failed_prompt_review":
+            decision_hashes.update(
+                _prompt_decision_hashes(decision_document, current_ids)
             )
-        current_ids = decision.get("queue_ids")
-        current_hashes = decision.get("source_state_item_sha256s")
-        if (
-            not isinstance(current_ids, list)
-            or not current_ids
-            or current_ids != sorted(set(current_ids))
-        ):
-            raise OfflineFallbackAuthorityError(
-                "Offline fallback authority queue IDs are not canonical"
-            )
-        if kind == "failed_prompt_review":
-            if not isinstance(current_hashes, dict) or set(current_hashes) != set(
-                current_ids
-            ):
-                raise OfflineFallbackAuthorityError(
-                    "Failed-prompt fallback authority source hashes are incomplete"
-                )
-            decision_hashes.update(current_hashes)
         queue_ids.extend(current_ids)
     if queue_ids != sorted(set(queue_ids)):
         raise OfflineFallbackAuthorityError(
             "Offline fallback authority queue IDs overlap or are not canonical"
         )
-    if kind == "failed_voice_review":
-        decision_hashes = source_hashes if isinstance(source_hashes, dict) else {}
+    source_hashes = (
+        definition.source_hashes
+        if definition.kind == "failed_voice_review"
+        else decision_hashes
+    )
+    return _complete_source_hashes(source_hashes, queue_ids)
+
+
+def _authority_decision(
+    decision: object,
+    expected_outcome: str,
+) -> tuple[dict[str, object], list[str]]:
     if (
-        not isinstance(decision_hashes, dict)
-        or set(decision_hashes) != set(queue_ids)
-        or any(not is_lowercase_sha256(value) for value in decision_hashes.values())
+        not isinstance(decision, dict)
+        or decision.get("decision") != expected_outcome
+        or decision.get("review_decision_origin") != AUTOMATIC_UNRESOLVED_ORIGIN
+    ):
+        raise OfflineFallbackAuthorityError(
+            "Offline fallback authority is not automatically unresolved"
+        )
+    return decision, _canonical_queue_ids(decision.get("queue_ids"))
+
+
+def _canonical_queue_ids(queue_ids: object) -> list[str]:
+    if (
+        not isinstance(queue_ids, list)
+        or not queue_ids
+        or not all(isinstance(queue_id, str) for queue_id in queue_ids)
+        or queue_ids != sorted(set(queue_ids))
+    ):
+        raise OfflineFallbackAuthorityError(
+            "Offline fallback authority queue IDs are not canonical"
+        )
+    return queue_ids
+
+
+def _prompt_decision_hashes(
+    decision: dict[str, object],
+    queue_ids: list[str],
+) -> dict[str, object]:
+    source_hashes = decision.get("source_state_item_sha256s")
+    if not isinstance(source_hashes, dict) or set(source_hashes) != set(queue_ids):
+        raise OfflineFallbackAuthorityError(
+            "Failed-prompt fallback authority source hashes are incomplete"
+        )
+    return source_hashes
+
+
+def _complete_source_hashes(
+    source_hashes: object,
+    queue_ids: list[str],
+) -> dict[str, str]:
+    if (
+        not isinstance(source_hashes, dict)
+        or set(source_hashes) != set(queue_ids)
+        or any(not is_lowercase_sha256(value) for value in source_hashes.values())
     ):
         raise OfflineFallbackAuthorityError(
             "Offline fallback authority source hashes are incomplete"
         )
-    payload_sha256 = hashlib.sha256(payload).hexdigest()
-    if sha256_file(source) != payload_sha256:
+    return {
+        queue_id: source_hashes[queue_id]
+        for queue_id in sorted(source_hashes)
+        if is_lowercase_sha256(source_hashes[queue_id])
+    }
+
+
+def _verify_authority_source(source: Path, payload: bytes) -> None:
+    if sha256_file(source) != hashlib.sha256(payload).hexdigest():
         raise OfflineFallbackAuthorityError(
             "Offline fallback authority changed while it was loaded"
         )
-    return OfflineFallbackAuthority(
-        source=source,
-        payload=payload,
-        source_sha256=payload_sha256,
-        kind=kind,
-        authority_id=authority_id,
-        queue_ids=tuple(queue_ids),
-        source_item_sha256s=dict(sorted(decision_hashes.items())),
-    )
 
 
 def _canonical_id(document: dict[str, object], field: str) -> str:
