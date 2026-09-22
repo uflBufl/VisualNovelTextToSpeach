@@ -33,6 +33,12 @@
     },
     {
       "code": "C901",
+      "path": "scripts/render_ui_catalog.py",
+      "scope": "_render_stories",
+      "count": 1
+    },
+    {
+      "code": "C901",
       "path": "scripts/smoke_speech_runtime.py",
       "scope": "check_runtime",
       "count": 1
@@ -1527,6 +1533,24 @@
     },
     {
       "code": "PLR0915",
+      "path": "scripts/render_ui_catalog.py",
+      "scope": "_render_stories",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "scripts/render_ui_catalog.py",
+      "scope": "_render_stories.offline_preparation",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "scripts/render_ui_catalog.py",
+      "scope": "_render_stories.voice_editor",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
       "path": "tests/test_authoring_failure_reference_audit.py",
       "scope": "FailureReferenceAuditTest.test_imports_exact_blind_preference_into_fresh_audit",
       "count": 1
@@ -1605,8 +1629,20 @@
     },
     {
       "code": "PLR0915",
+      "path": "tests/test_game_narrator.py",
+      "scope": "GameNarratorTest.test_main_and_preparation_persist_only_an_accepted_selection",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
       "path": "tests/test_live_replay.py",
       "scope": "LiveReplayTest.test_serialized_media_paths_are_contained_and_not_symlinks",
+      "count": 1
+    },
+    {
+      "code": "PLR0915",
+      "path": "tests/test_pregeneration_audition_ui.py",
+      "scope": "VoiceAuditionPanelTest.test_auto_preview_replay_candidate_cycle_and_persisted_choice",
       "count": 1
     },
     {
