@@ -207,38 +207,8 @@
     },
     {
       "code": "C901",
-      "path": "vntts/authoring/reference_composite.py",
-      "scope": "publish_composite_quality_review",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/reference_composite.py",
-      "scope": "publish_exact_bank_reference_composite",
-      "count": 1
-    },
-    {
-      "code": "C901",
       "path": "vntts/authoring/reference_selection.py",
       "scope": "validate_reference_selection_provenance",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/render_hypothesis_review.py",
-      "scope": "_validate_review_document",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/render_hypothesis_review.py",
-      "scope": "import_accepted_render_hypothesis",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/render_hypothesis_review.py",
-      "scope": "publish_render_hypothesis_review",
       "count": 1
     },
     {
@@ -299,18 +269,6 @@
       "code": "C901",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "merge_terminal_conflict_resolution",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/voice_quality_gate.py",
-      "scope": "_reusable_identity",
-      "count": 1
-    },
-    {
-      "code": "C901",
-      "path": "vntts/authoring/voice_quality_gate.py",
-      "scope": "_validated_gate_document",
       "count": 1
     },
     {
@@ -909,26 +867,8 @@
     },
     {
       "code": "PLR0912",
-      "path": "vntts/authoring/reference_composite.py",
-      "scope": "publish_composite_quality_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/reference_composite.py",
-      "scope": "publish_exact_bank_reference_composite",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
       "path": "vntts/authoring/reference_selection.py",
       "scope": "validate_reference_selection_provenance",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/render_hypothesis_review.py",
-      "scope": "import_accepted_render_hypothesis",
       "count": 1
     },
     {
@@ -965,18 +905,6 @@
       "code": "PLR0912",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "merge_terminal_conflict_resolution",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/voice_quality_gate.py",
-      "scope": "_reusable_identity",
-      "count": 1
-    },
-    {
-      "code": "PLR0912",
-      "path": "vntts/authoring/voice_quality_gate.py",
-      "scope": "_validated_gate_document",
       "count": 1
     },
     {
@@ -1491,30 +1419,6 @@
     },
     {
       "code": "PLR0915",
-      "path": "vntts/authoring/reference_composite.py",
-      "scope": "publish_composite_quality_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/reference_composite.py",
-      "scope": "publish_exact_bank_reference_composite",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/render_hypothesis_review.py",
-      "scope": "import_accepted_render_hypothesis",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/render_hypothesis_review.py",
-      "scope": "publish_render_hypothesis_review",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
       "path": "vntts/authoring/robustness_asr.py",
       "scope": "build_speech_robustness_asr_report",
       "count": 1
@@ -1553,12 +1457,6 @@
       "code": "PLR0915",
       "path": "vntts/authoring/terminal_conflict_workspace.py",
       "scope": "merge_terminal_conflict_resolution",
-      "count": 1
-    },
-    {
-      "code": "PLR0915",
-      "path": "vntts/authoring/voice_quality_gate.py",
-      "scope": "_reusable_identity",
       "count": 1
     },
     {
