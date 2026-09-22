@@ -11,6 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
+from typing import Callable, Mapping, Protocol, Sequence, TypeAlias, cast
 
 from PySide6.QtCore import (
     Qt,
@@ -40,8 +41,11 @@ from PySide6.QtWidgets import (
 
 from vntts.async_ui import LatestTaskRunner
 from vntts.authoring.cohort_bundle import (
+    CohortBundleProjection,
     CohortBundleSample,
     CohortReviewBundle,
+    CohortReviewRecoveredAssessment,
+    CohortReviewResume,
     execute_cohort_bundle_decision,
     load_cohort_review_bundle,
     load_cohort_review_bundle_samples,
@@ -62,15 +66,16 @@ from vntts.authoring.review_context_ui import (
     review_scroll_area,
 )
 from vntts.authoring.voice_quality_gate import (
+    VoiceQualityCohortCompatibility,
     inspect_voice_quality_cohort,
     load_voice_quality_gate,
 )
 from vntts.authoring.workbench import prepare_review_audio, review_technical_summary
+from vntts.qt_audio import PcmClip, play_audio_bytes, release_audio_buffer
 from vntts.qt_audio import QtPcmPlayer as QMediaPlayer
-from vntts.qt_audio import play_audio_bytes, release_audio_buffer
 
 
-def _display_required_reason(reason):
+def _display_required_reason(reason: str) -> str:
     prefix = "technical-attention: "
     if reason.startswith(prefix):
         return "advisory measurement; listening decides: " + reason.removeprefix(prefix)
@@ -79,7 +84,7 @@ def _display_required_reason(reason):
 
 @dataclass(frozen=True)
 class _DecisionTaskResult:
-    projection: object
+    projection: CohortBundleProjection
     checkpoint_error: Exception | None
     bundle: CohortReviewBundle | None
     samples: tuple[CohortBundleSample, ...]
@@ -97,12 +102,181 @@ class _QualityGateContext:
     cohort_count: int
 
 
-def _load_quality_gated_review_session(bundle_path, gate_path, persist=True):
+SampleLoaderResult: TypeAlias = tuple[
+    CohortReviewBundle, tuple[CohortBundleSample, ...]
+]
+ResumableLoaderResult: TypeAlias = tuple[
+    CohortReviewResume,
+    CohortReviewBundle,
+    tuple[CohortBundleSample, ...],
+    tuple[CohortReviewRecoveredAssessment, ...],
+]
+SampleLoader: TypeAlias = Callable[[CohortReviewBundle | Path], SampleLoaderResult]
+PlaybackPreparer: TypeAlias = Callable[
+    [CohortBundleSample], tuple[CohortBundleSample, bytes]
+]
+DecisionExecutor: TypeAlias = Callable[
+    [
+        CohortReviewBundle,
+        str,
+        str,
+        str,
+        Sequence[str],
+        Mapping[str, object],
+        int | None,
+    ],
+    CohortBundleProjection,
+]
+ObservationWriter: TypeAlias = Callable[
+    [
+        Path,
+        CohortReviewBundle | None,
+        CohortReviewBundle,
+        dict[tuple[str, str], set[str]],
+        dict[tuple[str, str], set[str]],
+        dict[tuple[str, str], dict[str, set[str]]],
+    ],
+    Path,
+]
+Confirmer: TypeAlias = Callable[[str, Mapping[str, object], int, int], bool]
+ObservationSnapshot: TypeAlias = tuple[
+    Path | None,
+    CohortReviewBundle | None,
+    CohortReviewBundle,
+    dict[tuple[str, str], set[str]],
+    dict[tuple[str, str], set[str]],
+    dict[tuple[str, str], dict[str, set[str]]],
+]
+
+
+class _DecisionProjectionLike(Protocol):
+    next_bundle: CohortReviewBundle
+
+
+class _DecisionTaskLike(Protocol):
+    projection: _DecisionProjectionLike
+    checkpoint_error: Exception | None
+    bundle: CohortReviewBundle | None
+    samples: tuple[CohortBundleSample, ...]
+    refresh_error: Exception | None
+    commit_seconds: float
+    checkpoint_seconds: float
+    refresh_seconds: float
+
+
+def _parse_decision_task_result(value: object) -> _DecisionTaskLike | None:
+    projection = getattr(value, "projection", None)
+    next_bundle = getattr(projection, "next_bundle", None)
+    bundle = getattr(value, "bundle", None)
+    samples = getattr(value, "samples", None)
+    if not isinstance(next_bundle, CohortReviewBundle) or not isinstance(
+        samples, tuple
+    ):
+        return None
+    if bundle is not None and not isinstance(bundle, CohortReviewBundle):
+        return None
+    if any(
+        error is not None and not isinstance(error, Exception)
+        for error in (
+            getattr(value, "checkpoint_error", None),
+            getattr(value, "refresh_error", None),
+        )
+    ):
+        return None
+    if not all(isinstance(sample, CohortBundleSample) for sample in samples):
+        return None
+    if not all(
+        isinstance(getattr(value, name, None), (int, float))
+        for name in ("commit_seconds", "checkpoint_seconds", "refresh_seconds")
+    ):
+        return None
+    return cast(_DecisionTaskLike, value)
+
+
+def _parse_sample_loader_result(value: object) -> SampleLoaderResult | None:
+    if not isinstance(value, tuple) or len(value) != 2:
+        return None
+    bundle, samples = value
+    if not isinstance(bundle, CohortReviewBundle) or not isinstance(samples, tuple):
+        return None
+    if not all(isinstance(sample, CohortBundleSample) for sample in samples):
+        return None
+    return bundle, samples
+
+
+def _parse_resumable_loader_result(value: object) -> ResumableLoaderResult | None:
+    if not isinstance(value, tuple) or len(value) != 4:
+        return None
+    resume, bundle, samples, assessments = value
+    if (
+        not isinstance(resume, CohortReviewResume)
+        or not isinstance(bundle, CohortReviewBundle)
+        or not isinstance(samples, tuple)
+        or not isinstance(assessments, tuple)
+    ):
+        return None
+    if not all(isinstance(sample, CohortBundleSample) for sample in samples):
+        return None
+    if not all(
+        isinstance(assessment, CohortReviewRecoveredAssessment)
+        for assessment in assessments
+    ):
+        return None
+    return resume, bundle, samples, assessments
+
+
+def _parse_quality_loader_result(
+    value: object,
+) -> (
+    tuple[
+        CohortReviewResume,
+        CohortReviewBundle,
+        tuple[CohortBundleSample, ...],
+        tuple[CohortReviewRecoveredAssessment, ...],
+        _QualityGateContext | None,
+    ]
+    | None
+):
+    if not isinstance(value, tuple) or len(value) != 5:
+        return None
+    resumable = _parse_resumable_loader_result(value[:4])
+    context = value[4]
+    if resumable is None or not (
+        context is None or isinstance(context, _QualityGateContext)
+    ):
+        return None
+    return (*resumable, context)
+
+
+def _parse_playback_result(
+    value: object,
+) -> tuple[CohortBundleSample, bytes] | None:
+    if not isinstance(value, tuple) or len(value) != 2:
+        return None
+    sample, audio_bytes = value
+    return (
+        (sample, audio_bytes)
+        if isinstance(sample, CohortBundleSample) and isinstance(audio_bytes, bytes)
+        else None
+    )
+
+
+def _load_quality_gated_review_session(
+    bundle_path: Path,
+    gate_path: Path,
+    persist: bool = True,
+) -> tuple[
+    CohortReviewResume,
+    CohortReviewBundle,
+    tuple[CohortBundleSample, ...],
+    tuple[CohortReviewRecoveredAssessment, ...],
+    _QualityGateContext | None,
+]:
     gate = load_voice_quality_gate(gate_path)
     session = load_resumable_cohort_review_session(bundle_path, persist=False)
     resume, bundle, _samples, _assessments = session
-    cached = {}
-    compatibilities = []
+    cached: dict[tuple[str, str], VoiceQualityCohortCompatibility] = {}
+    compatibilities: list[VoiceQualityCohortCompatibility] = []
     for cohort in bundle.document["cohorts"]:
         identity = cohort["identity"]
         reusable_key = json.dumps(
@@ -166,7 +340,7 @@ def _load_quality_gated_review_session(bundle_path, gate_path, persist=True):
     return (*session, context)
 
 
-def _prepare_sample(sample):
+def _prepare_sample(sample: CohortBundleSample) -> tuple[CohortBundleSample, bytes]:
     return sample, prepare_review_audio(sample.item)
 
 
@@ -182,9 +356,14 @@ _DEFECT_REASON_LABELS = {
 
 
 def _write_observation_task(
-    bundle_path, original_bundle, bundle, heard, bad, bad_reasons
-):
-    return write_cohort_review_observations(
+    bundle_path: Path,
+    original_bundle: CohortReviewBundle | None,
+    bundle: CohortReviewBundle,
+    heard: dict[tuple[str, str], set[str]],
+    bad: dict[tuple[str, str], set[str]],
+    bad_reasons: dict[tuple[str, str], dict[str, set[str]]],
+) -> Path:
+    path: Path = write_cohort_review_observations(
         bundle_path,
         original_bundle,
         bundle,
@@ -192,17 +371,18 @@ def _write_observation_task(
         bad,
         bad_reasons,
     )
+    return path
 
 
 def _execute_bundle_decision_task(
-    bundle,
-    workspace_id,
-    cohort_id,
-    decision,
-    reviewed,
-    assessments,
-    next_clean_samples_per_bucket,
-):
+    bundle: CohortReviewBundle,
+    workspace_id: str,
+    cohort_id: str,
+    decision: str,
+    reviewed: Sequence[str],
+    assessments: Mapping[str, object],
+    next_clean_samples_per_bucket: int | None,
+) -> CohortBundleProjection:
     return execute_cohort_bundle_decision(
         bundle,
         workspace_id,
@@ -215,16 +395,16 @@ def _execute_bundle_decision_task(
 
 
 def _execute_and_checkpoint_bundle_decision(
-    publication,
-    original,
-    bundle,
-    workspace_id,
-    cohort_id,
-    decision,
-    reviewed,
-    assessments,
-    next_clean_samples_per_bucket,
-):
+    publication: Path,
+    original: CohortReviewBundle,
+    bundle: CohortReviewBundle,
+    workspace_id: str,
+    cohort_id: str,
+    decision: str,
+    reviewed: Sequence[str],
+    assessments: Mapping[str, object],
+    next_clean_samples_per_bucket: int | None,
+) -> _DecisionTaskResult:
     started = time.perf_counter()
     projection = _execute_bundle_decision_task(
         bundle,
@@ -284,16 +464,17 @@ class CohortReviewBundleDialog(QDialog):
 
     def __init__(
         self,
-        bundle,
-        parent=None,
+        bundle: CohortReviewBundle | str | Path,
+        parent: QWidget | None = None,
         *,
-        sample_loader=load_cohort_review_bundle_samples,
-        playback_preparer=_prepare_sample,
-        decision_executor=_execute_bundle_decision_task,
-        observation_writer=_write_observation_task,
-        confirmer=None,
-        quality_gate=None,
-    ):
+        sample_loader: SampleLoader
+        | Callable[[Path], ResumableLoaderResult] = load_cohort_review_bundle_samples,
+        playback_preparer: PlaybackPreparer = _prepare_sample,
+        decision_executor: DecisionExecutor = _execute_bundle_decision_task,
+        observation_writer: ObservationWriter = _write_observation_task,
+        confirmer: Confirmer | None = None,
+        quality_gate: str | Path | None = None,
+    ) -> None:
         super().__init__(parent)
         self._initialize_session(
             bundle,
@@ -317,20 +498,20 @@ class CohortReviewBundleDialog(QDialog):
 
     def _initialize_session(
         self,
-        bundle,
-        sample_loader,
-        playback_preparer,
-        decision_executor,
-        observation_writer,
-        confirmer,
-        quality_gate,
-    ):
+        bundle: CohortReviewBundle | str | Path,
+        sample_loader: SampleLoader | Callable[[Path], ResumableLoaderResult],
+        playback_preparer: PlaybackPreparer,
+        decision_executor: DecisionExecutor,
+        observation_writer: ObservationWriter,
+        confirmer: Confirmer | None,
+        quality_gate: str | Path | None,
+    ) -> None:
         self.bundle_path = None
-        self.original_bundle = None
+        self.original_bundle: CohortReviewBundle | None = None
         self.quality_gate_path = (
             None if quality_gate is None else Path(quality_gate).expanduser().resolve()
         )
-        self.quality_gate_context = None
+        self.quality_gate_context: _QualityGateContext | None = None
         if isinstance(bundle, CohortReviewBundle):
             if self.quality_gate_path is not None:
                 raise CohortReviewError(
@@ -355,11 +536,15 @@ class CohortReviewBundleDialog(QDialog):
         )
         self._checkpoint_observations_enabled = self._checkpoint_decisions
         self.confirmer = confirmer or self._confirm_decision
-        self.samples = ()
-        self.samples_by_cohort = {}
-        self.heard = defaultdict(set)
-        self.bad = defaultdict(set)
-        self.bad_reasons = defaultdict(dict)
+        self.samples: tuple[CohortBundleSample, ...] = ()
+        self.samples_by_cohort: dict[
+            tuple[str, str], tuple[CohortBundleSample, ...]
+        ] = {}
+        self.heard: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
+        self.bad: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
+        self.bad_reasons: defaultdict[tuple[str, str], dict[str, set[str]]] = (
+            defaultdict(dict)
+        )
         self._updating_defect_controls = False
         self._load_active = False
         self._load_failed = False
@@ -367,15 +552,15 @@ class CohortReviewBundleDialog(QDialog):
         self._decision_active = False
         self._observation_active = False
         self._playback_serial = 0
-        self._pending_observation = None
+        self._pending_observation: ObservationSnapshot | None = None
         self._close_after_observation = False
-        self._decision_started_at = None
+        self._decision_started_at: float | None = None
         self._decision_scope_text = ""
-        self._playback_target = None
-        self._playback_buffer = None
+        self._playback_target: tuple[str, str, str, str] | None = None
+        self._playback_buffer: PcmClip | None = None
         self._initial_cohort_count = self.bundle.document["cohort_count"]
 
-    def _build_status_widgets(self):
+    def _build_status_widgets(self) -> None:
         self.setWindowTitle("VNTTS specialist cohort review")
         self.resize(1280, 820)
         self.setMinimumSize(900, 820)
@@ -434,7 +619,7 @@ class CohortReviewBundleDialog(QDialog):
         )
         self.cohort_audit.hide()
 
-    def _build_sample_widgets(self):
+    def _build_sample_widgets(self) -> None:
         self.sample_position = QLabel("No sample selected")
         self.sample_position.setObjectName("samplePosition")
         self.sample_position.setAccessibleName("Selected sample position")
@@ -451,7 +636,7 @@ class CohortReviewBundleDialog(QDialog):
         self.sample_text.setAccessibleName("Selected sample text")
         self.sample_text.setMinimumHeight(48)
 
-    def _build_sample_table(self):
+    def _build_sample_table(self) -> None:
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
             [
@@ -485,7 +670,7 @@ class CohortReviewBundleDialog(QDialog):
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.doubleClicked.connect(lambda _index: self.play_selected())
 
-    def _build_action_widgets(self):
+    def _build_action_widgets(self) -> None:
         self.previous = QPushButton("Previous sample")
         self.replay = QPushButton("Play selected sample")
         self.stop = QPushButton("Stop sample")
@@ -560,7 +745,7 @@ class CohortReviewBundleDialog(QDialog):
         self.reject_button.clicked.connect(lambda: self.apply_decision("rejected"))
         self.retry_load.clicked.connect(self.reload_bundle)
 
-    def _build_decision_controls(self):
+    def _build_decision_controls(self) -> tuple[QGridLayout, QGroupBox, QVBoxLayout]:
         navigation = review_form_layout()
         navigation.addRow(self.previous, self.next)
         navigation.addRow(self.replay, self.stop)
@@ -573,7 +758,7 @@ class CohortReviewBundleDialog(QDialog):
         decisions = QVBoxLayout()
         decisions.addLayout(evidence_actions)
         decisions.addLayout(terminal_actions)
-        self.defect_checks = {}
+        self.defect_checks: dict[str, QCheckBox] = {}
         defect_layout = QGridLayout()
         for index, (reason, label) in enumerate(_DEFECT_REASON_LABELS.items()):
             control = QCheckBox(label)
@@ -601,7 +786,12 @@ class CohortReviewBundleDialog(QDialog):
         self.shortcuts_help.setAccessibleName("Cohort review keyboard shortcuts")
         return navigation, defect_group, decisions
 
-    def _build_review_groups(self, navigation, defect_group, decisions):
+    def _build_review_groups(
+        self,
+        navigation: QGridLayout,
+        defect_group: QGroupBox,
+        decisions: QVBoxLayout,
+    ) -> tuple[QGroupBox, QGroupBox, QGroupBox, QGroupBox]:
         progress_layout = QGridLayout()
         progress_layout.addWidget(self.summary, 0, 0)
         progress_layout.addWidget(self.quality_baseline, 1, 0)
@@ -644,11 +834,11 @@ class CohortReviewBundleDialog(QDialog):
 
     def _build_layout(
         self,
-        progress_group,
-        cohort_group,
-        sample_group,
-        decision_group,
-    ):
+        progress_group: QGroupBox,
+        cohort_group: QGroupBox,
+        sample_group: QGroupBox,
+        decision_group: QGroupBox,
+    ) -> None:
         review_content = QWidget()
         review_layout = QVBoxLayout(review_content)
         review_layout.setContentsMargins(0, 0, 0, 0)
@@ -689,7 +879,7 @@ class CohortReviewBundleDialog(QDialog):
             "QPushButton#rejectCohort { font-weight: 700; }"
         )
 
-    def _initialize_workers(self):
+    def _initialize_workers(self) -> None:
         self.player = QMediaPlayer(self)
         self.player.mediaStatusChanged.connect(self._media_status_changed)
         self.player.errorOccurred.connect(self._media_error)
@@ -708,7 +898,7 @@ class CohortReviewBundleDialog(QDialog):
         self._operation_timer.setInterval(250)
         self._operation_timer.timeout.connect(self._update_operation_status)
 
-    def _configure_navigation(self):
+    def _configure_navigation(self) -> None:
         focus_order = [
             self.decision_context.technical_toggle,
             self.retry_load,
@@ -731,48 +921,46 @@ class CohortReviewBundleDialog(QDialog):
             self.setTabOrder(current, following)
 
         previous_shortcut = QShortcut(
-            QKeySequence("Left"), self.table, activated=lambda: self._move(-1)
+            QKeySequence("Left"), self.table, lambda: self._move(-1)
         )
         previous_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        QShortcut(QKeySequence("Ctrl+Alt+R"), self, activated=self.play_selected)
+        QShortcut(QKeySequence("Ctrl+Alt+R"), self, self.play_selected)
         replay_shortcut = QShortcut(
-            QKeySequence("Space"), self.table, activated=self.play_selected
+            QKeySequence("Space"), self.table, self.play_selected
         )
         replay_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        QShortcut(QKeySequence("Ctrl+Alt+S"), self, activated=self.stop_playback)
+        QShortcut(QKeySequence("Ctrl+Alt+S"), self, self.stop_playback)
         next_shortcut = QShortcut(
-            QKeySequence("Right"), self.table, activated=lambda: self._move(1)
+            QKeySequence("Right"), self.table, lambda: self._move(1)
         )
         next_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        bad_shortcut = QShortcut(
-            QKeySequence("B"), self.table, activated=self.toggle_bad
-        )
+        bad_shortcut = QShortcut(QKeySequence("B"), self.table, self.toggle_bad)
         bad_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         QShortcut(
             QKeySequence("Ctrl+Return"),
             self,
-            activated=lambda: self.apply_decision("accepted"),
+            lambda: self.apply_decision("accepted"),
         )
         QShortcut(
             QKeySequence("Ctrl+Shift+Return"),
             self,
-            activated=lambda: self.apply_decision("split"),
+            lambda: self.apply_decision("split"),
         )
         QShortcut(
             QKeySequence("Ctrl+Backspace"),
             self,
-            activated=lambda: self.apply_decision("rejected"),
+            lambda: self.apply_decision("rejected"),
         )
 
-    def reload_bundle(self):
+    def reload_bundle(self) -> None:
         if self._load_active or self._decision_active:
             return
         self._load_active = True
         self._load_failed = False
         self.status.setText("Loading and checksum-validating all bundle sources...")
         self._update_actions()
-        operation = self.sample_loader
-        arguments = (self.bundle,)
+        operation: Callable[..., object] = self.sample_loader
+        arguments: tuple[object, ...] = (self.bundle,)
         if self._resumable_load:
             if self.quality_gate_path is None:
                 operation = load_resumable_cohort_review_session
@@ -782,34 +970,51 @@ class CohortReviewBundleDialog(QDialog):
                 arguments = (self.bundle_path, self.quality_gate_path)
         self._load_runner.start(operation, *arguments)
 
-    def _load_finished(self, result, error):
+    def _mark_load_failed(self, message: object) -> None:
+        self._load_failed = True
+        self.quality_gate_context = None
+        self.quality_baseline.hide()
+        self.samples = ()
+        self.samples_by_cohort = {}
+        self.status.setText(f"BLOCKED: {message}")
+        self.retry_load.show()
+        self._populate_cohorts()
+        self._update_actions()
+
+    def _load_finished(self, result: object, error: Exception | None) -> None:
         if not self._load_active:
             return
         self._load_active = False
         if error is not None:
-            self._load_failed = True
-            self.quality_gate_context = None
-            self.quality_baseline.hide()
-            self.samples = ()
-            self.samples_by_cohort = {}
-            self.status.setText(f"BLOCKED: {error}")
-            self.retry_load.show()
-            self._populate_cohorts()
-            self._update_actions()
+            self._mark_load_failed(error)
             return
         self.retry_load.hide()
         self._load_failed = False
+        bundle: CohortReviewBundle
+        samples: tuple[CohortBundleSample, ...]
         if self._resumable_load:
             if self.quality_gate_path is None:
-                _resume, bundle, samples, assessments = result
+                parsed = _parse_resumable_loader_result(result)
+                if parsed is None:
+                    self._mark_load_failed(
+                        "worker returned an invalid review-load result"
+                    )
+                    return
+                _resume, bundle, samples, assessments = parsed
             else:
+                parsed_quality = _parse_quality_loader_result(result)
+                if parsed_quality is None:
+                    self._mark_load_failed(
+                        "worker returned an invalid review-load result"
+                    )
+                    return
                 (
                     _resume,
                     bundle,
                     samples,
                     assessments,
                     self.quality_gate_context,
-                ) = result
+                ) = parsed_quality
             for assessment in assessments:
                 key = (assessment.workspace_id, assessment.cohort_id)
                 self.heard[key].add(assessment.queue_id)
@@ -820,13 +1025,25 @@ class CohortReviewBundleDialog(QDialog):
                     )
             self._resumable_load = False
         else:
-            bundle, samples = result
+            sample_parsed = _parse_sample_loader_result(result)
+            if sample_parsed is None:
+                self._mark_load_failed("worker returned an invalid review-load result")
+                return
+            bundle, samples = sample_parsed
         self._apply_loaded_bundle(bundle, samples)
 
-    def _apply_loaded_bundle(self, bundle, samples, *, status=None):
+    def _apply_loaded_bundle(
+        self,
+        bundle: CohortReviewBundle,
+        samples: Sequence[CohortBundleSample],
+        *,
+        status: str | None = None,
+    ) -> None:
         self.bundle = bundle
         self.samples = tuple(samples)
-        grouped = defaultdict(list)
+        grouped: defaultdict[tuple[str, str], list[CohortBundleSample]] = defaultdict(
+            list
+        )
         for sample in self.samples:
             grouped[(sample.workspace_id, sample.cohort_id)].append(sample)
         self.samples_by_cohort = {key: tuple(values) for key, values in grouped.items()}
@@ -903,7 +1120,7 @@ class CohortReviewBundleDialog(QDialog):
         )
         self._populate_cohorts()
 
-    def _populate_cohorts(self):
+    def _populate_cohorts(self) -> None:
         previous = self.cohort_choice.currentData()
         self.cohort_choice.blockSignals(True)
         self.cohort_choice.clear()
@@ -914,7 +1131,7 @@ class CohortReviewBundleDialog(QDialog):
         ]
         for position, cohort in enumerate(available, start=1):
             key = (cohort["workspace_id"], cohort["cohort_id"])
-            identity = cohort["identity"]
+            identity = cast(Mapping[str, object], cohort["identity"])
             self.cohort_choice.addItem(
                 f"Required {position}/{len(available)} - "
                 f"{identity['voice_character']} role - "
@@ -927,14 +1144,15 @@ class CohortReviewBundleDialog(QDialog):
         self.cohort_choice.blockSignals(False)
         self._show_current_cohort()
 
-    def _current_key(self):
+    def _current_key(self) -> tuple[str, str] | None:
         value = self.cohort_choice.currentData()
         return tuple(value) if isinstance(value, (tuple, list)) else None
 
-    def _current_samples(self):
-        return self.samples_by_cohort.get(self._current_key(), ())
+    def _current_samples(self) -> tuple[CohortBundleSample, ...]:
+        key = self._current_key()
+        return self.samples_by_cohort.get(key, ()) if key is not None else ()
 
-    def _current_cohort(self):
+    def _current_cohort(self) -> Mapping[str, object] | None:
         key = self._current_key()
         return next(
             (
@@ -946,13 +1164,13 @@ class CohortReviewBundleDialog(QDialog):
             None,
         )
 
-    def _toggle_technical_details(self, visible):
+    def _toggle_technical_details(self, visible: bool) -> None:
         self.table.setColumnHidden(5, not visible)
         self.table.setColumnHidden(6, not visible)
         self.cohort_audit.setVisible(bool(visible and self._current_key()))
         self._update_selected_sample_details()
 
-    def _update_selected_sample_details(self):
+    def _update_selected_sample_details(self) -> None:
         sample = self._selected_sample()
         samples = self._current_samples()
         key = self._current_key()
@@ -990,7 +1208,7 @@ class CohortReviewBundleDialog(QDialog):
         self.sample_text.setText(sample.item.text)
         cohort = self._current_cohort()
         if cohort is not None:
-            identity = cohort["identity"]
+            identity = cast(Mapping[str, object], cohort["identity"])
             model = str(identity["model"])
             binding = identity.get("source_reference_binding")
             reference = (
@@ -999,16 +1217,20 @@ class CohortReviewBundleDialog(QDialog):
                 else "Workspace voice manifest reference"
             )
             repair = identity.get("repair_strategy") or "direct render"
+            voice_character = str(identity["voice_character"])
+            provider = str(identity["provider"])
+            generation_profile = str(identity["generation_profile"])
+            seed = str(identity["seed"])
             self.decision_context.set_context(
                 {
                     "purpose": "Approve or reject generated story WAVs",
                     "game_speaker": sample.item.speaker,
-                    "synthesis_voice": identity["voice_character"],
+                    "synthesis_voice": voice_character,
                     "reference": reference,
-                    "backend": identity["provider"],
+                    "backend": provider,
                     "model": review_model_label(model),
-                    "generation_profile": identity["generation_profile"],
-                    "controls": f"{repair} | Seed: {identity['seed']}",
+                    "generation_profile": generation_profile,
+                    "controls": f"{repair} | Seed: {seed}",
                     "effect": (
                         f"apply only to {cohort['item_count']} checksum-bound WAV(s) "
                         "in this cohort"
@@ -1022,19 +1244,23 @@ class CohortReviewBundleDialog(QDialog):
                 ),
             )
             self.cohort_audit.setText(
-                f"Provider: {identity['provider']} | Profile: "
-                f"{identity['generation_profile']} | Repair: "
-                f"{identity['repair_strategy']} | Seed: {identity['seed']}\n"
+                f"Provider: {provider} | Profile: "
+                f"{generation_profile} | Repair: "
+                f"{repair} | Seed: {seed}\n"
                 f"Line: {sample.item.line_id} | Workspace: "
                 f"{cohort['workspace_id']}"
             )
         self.cohort_audit.setVisible(self.technical_details.isChecked())
 
-    def _show_current_cohort(self, *_arguments):
+    def _show_current_cohort(self, *_arguments: object) -> None:
         self.stop_playback()
         samples = self._current_samples()
         self.table.setRowCount(len(samples))
         key = self._current_key()
+        if key is None:
+            self._update_selected_sample_details()
+            self._update_actions()
+            return
         for row, sample in enumerate(samples):
             item = sample.item
             values = (
@@ -1061,14 +1287,16 @@ class CohortReviewBundleDialog(QDialog):
             )
             for column, value in enumerate(values):
                 self.table.setItem(row, column, QTableWidgetItem(value))
-            self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, sample)
+            cell = self.table.item(row, 0)
+            if cell is not None:
+                cell.setData(Qt.ItemDataRole.UserRole, sample)
         if samples:
             self.table.selectRow(0)
         self._toggle_technical_details(self.technical_details.isChecked())
         self._update_selected_sample_details()
         self._update_actions()
 
-    def _selected_sample(self):
+    def _selected_sample(self) -> CohortBundleSample | None:
         row = self.table.currentRow()
         if row < 0 or row >= self.table.rowCount():
             return None
@@ -1076,19 +1304,19 @@ class CohortReviewBundleDialog(QDialog):
         value = cell.data(Qt.ItemDataRole.UserRole) if cell is not None else None
         return value if isinstance(value, CohortBundleSample) else None
 
-    def _selection_changed(self):
+    def _selection_changed(self) -> None:
         self._sync_defect_controls()
         self._update_selected_sample_details()
         self._update_actions()
 
-    def _move(self, offset):
+    def _move(self, offset: int) -> None:
         count = self.table.rowCount()
         if not count:
             return
         row = self.table.currentRow()
         self.table.selectRow((max(row, 0) + offset) % count)
 
-    def play_selected(self):
+    def play_selected(self) -> None:
         if self._playback_prepare_active:
             return
         sample = self._selected_sample()
@@ -1101,7 +1329,7 @@ class CohortReviewBundleDialog(QDialog):
         self._update_actions()
         self._playback_runner.start(self.playback_preparer, sample)
 
-    def _playback_finished(self, result, error):
+    def _playback_finished(self, result: object, error: Exception | None) -> None:
         if not self._playback_prepare_active:
             return
         self._playback_prepare_active = False
@@ -1109,16 +1337,19 @@ class CohortReviewBundleDialog(QDialog):
             self.status.setText(f"REPLAY BLOCKED: {error}")
             self._update_actions()
             return
-        sample, audio_bytes = result
+        parsed = _parse_playback_result(result)
+        if parsed is None:
+            self.status.setText("REPLAY BLOCKED: worker returned invalid audio")
+            self._update_actions()
+            return
+        sample, audio_bytes = parsed
         selected = self._selected_sample()
-        if selected != sample or selected.item.authority is None:
+        authority = selected.item.authority if selected is not None else None
+        if selected != sample or authority is None:
             self.status.setText("REPLAY BLOCKED: sample selection changed")
             self._update_actions()
             return
-        if (
-            hashlib.sha256(audio_bytes).hexdigest()
-            != selected.item.authority.audio_sha256
-        ):
+        if hashlib.sha256(audio_bytes).hexdigest() != authority.audio_sha256:
             self.status.setText("REPLAY BLOCKED: WAV checksum changed")
             self._update_actions()
             return
@@ -1135,12 +1366,12 @@ class CohortReviewBundleDialog(QDialog):
             sample.workspace_id,
             sample.cohort_id,
             sample.item.queue_id,
-            sample.item.authority.audio_sha256,
+            authority.audio_sha256,
         )
         self.status.setText(f"PLAYING: {sample.item.line_id}")
         self._update_actions()
 
-    def _media_status_changed(self, status):
+    def _media_status_changed(self, status: object) -> None:
         if (
             status != QMediaPlayer.MediaStatus.EndOfMedia
             or self._playback_target is None
@@ -1175,7 +1406,9 @@ class CohortReviewBundleDialog(QDialog):
             ),
         )
 
-    def _finish_completed_playback(self, playback_serial, selected_queue_id):
+    def _finish_completed_playback(
+        self, playback_serial: int, selected_queue_id: str | None
+    ) -> None:
         if playback_serial != self._playback_serial:
             return
         self._show_current_cohort()
@@ -1183,34 +1416,38 @@ class CohortReviewBundleDialog(QDialog):
             self._select_queue_id(selected_queue_id)
         self._checkpoint_observations()
 
-    def _media_error(self, _error, message=""):
+    def _media_error(self, _error: object, message: str = "") -> None:
         self._playback_target = None
         self._discard_playback_buffer()
         self.status.setText("AUDIO ERROR: " + (message or self.player.errorString()))
         self._update_actions()
 
-    def stop_playback(self):
+    def stop_playback(self) -> None:
         self.player.stop()
         self._playback_target = None
         self._discard_playback_buffer()
         self._update_actions()
 
-    def _discard_playback_buffer(self):
+    def _discard_playback_buffer(self) -> None:
         playback = self._playback_buffer
         self._playback_buffer = None
         release_audio_buffer(self.player, playback)
 
-    def _select_queue_id(self, queue_id):
+    def _select_queue_id(self, queue_id: str) -> None:
         for row in range(self.table.rowCount()):
-            sample = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-            if sample.item.queue_id == queue_id:
+            cell = self.table.item(row, 0)
+            sample = cell.data(Qt.ItemDataRole.UserRole) if cell is not None else None
+            if (
+                isinstance(sample, CohortBundleSample)
+                and sample.item.queue_id == queue_id
+            ):
                 self.table.selectRow(row)
                 return
 
-    def toggle_bad(self):
+    def toggle_bad(self) -> None:
         sample = self._selected_sample()
         key = self._current_key()
-        if sample is None or sample.item.queue_id not in self.heard[key]:
+        if key is None or sample is None or sample.item.queue_id not in self.heard[key]:
             return
         if sample.item.queue_id in self.bad[key]:
             self.bad[key].remove(sample.item.queue_id)
@@ -1223,7 +1460,7 @@ class CohortReviewBundleDialog(QDialog):
         self._select_queue_id(queue_id)
         self._checkpoint_observations()
 
-    def _sync_defect_controls(self):
+    def _sync_defect_controls(self) -> None:
         sample = self._selected_sample()
         key = self._current_key()
         reasons = (
@@ -1247,7 +1484,7 @@ class CohortReviewBundleDialog(QDialog):
         finally:
             self._updating_defect_controls = False
 
-    def _defect_reasons_changed(self, _checked=False):
+    def _defect_reasons_changed(self, _checked: bool = False) -> None:
         if self._updating_defect_controls:
             return
         sample = self._selected_sample()
@@ -1275,19 +1512,17 @@ class CohortReviewBundleDialog(QDialog):
         self._select_queue_id(queue_id)
         self._checkpoint_observations()
 
-    def _checkpoint_observations(self):
+    def _checkpoint_observations(self) -> None:
         if not self._checkpoint_observations_enabled:
             return
         snapshot = (
             self.bundle_path,
             self.original_bundle,
             self.bundle,
-            {key: frozenset(value) for key, value in self.heard.items()},
-            {key: frozenset(value) for key, value in self.bad.items()},
+            {key: set(value) for key, value in self.heard.items()},
+            {key: set(value) for key, value in self.bad.items()},
             {
-                key: {
-                    queue_id: frozenset(reasons) for queue_id, reasons in values.items()
-                }
+                key: {queue_id: set(reasons) for queue_id, reasons in values.items()}
                 for key, values in self.bad_reasons.items()
             },
         )
@@ -1296,14 +1531,14 @@ class CohortReviewBundleDialog(QDialog):
             return
         self._start_observation_checkpoint(snapshot)
 
-    def _start_observation_checkpoint(self, snapshot):
+    def _start_observation_checkpoint(self, snapshot: ObservationSnapshot) -> None:
         self._observation_active = True
         self.operation.setText(
             "Saving listening progress in background; replay and decisions remain available."
         )
         self._observation_runner.start(self.observation_writer, *snapshot)
 
-    def _observation_finished(self, _result, error):
+    def _observation_finished(self, _result: object, error: Exception | None) -> None:
         if not self._observation_active:
             return
         self._observation_active = False
@@ -1324,7 +1559,7 @@ class CohortReviewBundleDialog(QDialog):
             return
         self._update_actions()
 
-    def apply_decision(self, decision):
+    def apply_decision(self, decision: str) -> None:
         if self._decision_active:
             return
         key = self._current_key()
@@ -1412,8 +1647,8 @@ class CohortReviewBundleDialog(QDialog):
             f"SAVING {decision}: audio replay and navigation remain available"
         )
         self._update_actions()
-        operation = self.decision_executor
-        arguments = (
+        operation: Callable[..., object] = self.decision_executor
+        arguments: tuple[object, ...] = (
             self.bundle,
             key[0],
             key[1],
@@ -1431,7 +1666,7 @@ class CohortReviewBundleDialog(QDialog):
             )
         self._decision_runner.start(operation, *arguments)
 
-    def _decision_finished(self, result, error):
+    def _decision_finished(self, result: object, error: Exception | None) -> None:
         if not self._decision_active:
             return
         self._decision_active = False
@@ -1444,7 +1679,13 @@ class CohortReviewBundleDialog(QDialog):
             self._update_actions()
             return
         if self._checkpoint_decisions:
-            task_result = result
+            task_result = _parse_decision_task_result(result)
+            if task_result is None:
+                self.status.setText(
+                    "SAVE FAILED: worker returned an invalid decision result"
+                )
+                self._update_actions()
+                return
             if task_result.projection.next_bundle.document["cohort_count"] == 0:
                 self._resumable_load = False
                 self._load_failed = False
@@ -1493,14 +1734,26 @@ class CohortReviewBundleDialog(QDialog):
                 status=status,
             )
             return
+        if not isinstance(result, CohortBundleProjection):
+            self.status.setText(
+                "SAVE FAILED: worker returned an invalid decision result"
+            )
+            self._update_actions()
+            return
         self.bundle = result.next_bundle
         self.status.setText(
             "SAVED: source-local authority committed; refreshing exact bundle"
         )
         self.reload_bundle()
 
-    def _confirm_decision(self, decision, cohort, reviewed, bad):
-        item_count = cohort["item_count"]
+    def _confirm_decision(
+        self,
+        decision: str,
+        cohort: Mapping[str, object],
+        reviewed: int,
+        bad: int,
+    ) -> bool:
+        item_count = cast(int, cohort["item_count"])
         if decision == "expand":
             title = "Request more evidence?"
             prompt = (
@@ -1534,9 +1787,9 @@ class CohortReviewBundleDialog(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
-        return answer == QMessageBox.StandardButton.Yes
+        return bool(answer == QMessageBox.StandardButton.Yes)
 
-    def _update_actions(self):
+    def _update_actions(self) -> None:
         sample = self._selected_sample()
         samples = self._current_samples()
         key = self._current_key()
@@ -1562,7 +1815,7 @@ class CohortReviewBundleDialog(QDialog):
         )
         self.mark_bad.setText(
             "Clear selected defect reasons"
-            if ready and sample.item.queue_id in bad
+            if ready and sample is not None and sample.item.queue_id in bad
             else "Mark bad: other or unclear"
         )
         all_heard = bool(samples) and len(heard) == len(samples)
@@ -1744,7 +1997,7 @@ class CohortReviewBundleDialog(QDialog):
         self._update_selected_sample_details()
         self._update_operation_status()
 
-    def _update_operation_status(self):
+    def _update_operation_status(self) -> None:
         if self._decision_active:
             self.progress.show()
             elapsed = (
@@ -1800,7 +2053,7 @@ class CohortReviewBundleDialog(QDialog):
         else:
             self.operation.setText("All cohorts in this bundle are complete.")
 
-    def closeEvent(self, event: QCloseEvent):
+    def closeEvent(self, event: QCloseEvent) -> None:
         if (
             self._load_active
             or self._playback_prepare_active
@@ -1818,7 +2071,11 @@ class CohortReviewBundleDialog(QDialog):
         event.accept()
 
 
-def launch_cohort_review_bundle(bundle_path, *, quality_gate=None):
+def launch_cohort_review_bundle(
+    bundle_path: str | Path,
+    *,
+    quality_gate: str | Path | None = None,
+) -> int:
     application = QApplication.instance() or QApplication(sys.argv)
     try:
         dialog = CohortReviewBundleDialog(bundle_path, quality_gate=quality_gate)
@@ -1829,7 +2086,7 @@ def launch_cohort_review_bundle(bundle_path, *, quality_gate=None):
     return application.exec()
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Review or inspect a checksum-bound specialist cohort bundle"
     )
@@ -1850,7 +2107,7 @@ def build_parser():
     return parser
 
 
-def main(argv=None):
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     if arguments.status:
         try:

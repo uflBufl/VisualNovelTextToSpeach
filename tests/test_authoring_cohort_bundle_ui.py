@@ -593,6 +593,26 @@ class AuthoringCohortBundleUiTest(unittest.TestCase):
         self.assertFalse(dialog.progress.isHidden())
         self.assertIn("Refreshing checksum authority", dialog.operation.text())
 
+    def test_worker_success_results_are_validated_at_qt_boundaries(self):
+        with TemporaryDirectory() as directory:
+            dialog = CohortReviewBundleDialog(self.create_bundle(Path(directory)))
+            dialog._load_active = True
+            dialog._load_finished(object(), None)
+            self.assertIn("BLOCKED", dialog.status.text())
+            self.assertTrue(dialog.retry_load.isEnabled())
+            self.assertFalse(dialog._load_active)
+
+            dialog._playback_prepare_active = True
+            dialog._playback_finished(object(), None)
+            self.assertIn("REPLAY BLOCKED", dialog.status.text())
+            self.assertFalse(dialog._playback_prepare_active)
+
+            dialog._decision_active = True
+            dialog._checkpoint_decisions = False
+            dialog._decision_finished(object(), None)
+            self.assertIn("SAVE FAILED", dialog.status.text())
+            self.assertFalse(dialog._decision_active)
+
     def test_real_decision_removes_completed_cohort_and_selects_next(self):
         with TemporaryDirectory() as directory:
             bundle = self.create_bundle(Path(directory))

@@ -171,6 +171,7 @@ files = [
     "vntts/authoring/cli_workspace.py",
     "vntts/authoring/cli_workspace_transitions.py",
     "vntts/authoring/cohort_bundle.py",
+    "vntts/authoring/cohort_bundle_ui.py",
     "vntts/authoring/cohort_review.py",
     "vntts/authoring/config_rebase.py",
     "vntts/authoring/delivery.py",
