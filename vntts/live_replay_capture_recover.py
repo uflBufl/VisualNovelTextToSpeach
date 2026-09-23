@@ -33,6 +33,7 @@ from vntts.live_replay_sequence_seal import (
     SequenceReplaySealError,
     _decode_json,
     _next_visible_events,
+    _ordered_visible_events,
     _read_contained,
     _read_regular_file,
     _required_sha256,
@@ -227,16 +228,7 @@ def recover_live_replay_capture(
                 None,
             )
             selected = [] if end_index is None else selected[: end_index + 1]
-        expected_visible = tuple(
-            sorted(
-                (
-                    event
-                    for event in plan.events.values()
-                    if event.kind in {"speech", "silent"}
-                ),
-                key=lambda event: (str(event.chapter), event.sequence, event.event_id),
-            )
-        )
+        expected_visible = _ordered_visible_events(plan)
         if (
             complete_visible_chapter
             and len({event.chapter for event in expected_visible}) != 1
@@ -819,10 +811,7 @@ def _recommended_capture_segment(
     plan: LiveSequencePlan, minimum_events: int, *, require_silent: bool
 ) -> JSONDocument:
     """Return one shortest explicit visible run that can satisfy the gate."""
-    visible_events: list[LiveSequenceEvent] = sorted(
-        (event for event in plan.events.values() if event.kind in {"speech", "silent"}),
-        key=lambda event: (str(event.chapter), event.sequence, event.event_id),
-    )
+    visible_events = _ordered_visible_events(plan)
     for start in visible_events:
         segment: list[LiveSequenceEvent] = [start]
         current = start

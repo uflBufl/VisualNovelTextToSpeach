@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from vntts.authoring.cli_workspace import print_workspace_result
 from vntts.authoring.config_rebase import rebase_workspace_config
 from vntts.authoring.experimental_composite_voice import (
     publish_experimental_composite_voice_input,
@@ -23,7 +24,7 @@ from vntts.authoring.reviewed_rejection_fallback import (
 from vntts.authoring.reviewed_waveform_publication import (
     create_reviewed_waveform_publication_workspace,
 )
-from vntts.authoring.workbench import WorkspaceCreationResult, default_workspaces_root
+from vntts.authoring.workbench import default_workspaces_root
 
 COMMANDS = frozenset(
     {
@@ -114,20 +115,9 @@ def configure_parsers(
     failed_prompt_selection.add_argument("output", type=Path)
 
 
-def _print_workspace(result: WorkspaceCreationResult) -> None:
-    print(
-        json.dumps(
-            {"directory": str(result.directory), "created": result.created},
-            ensure_ascii=True,
-            indent=2,
-            sort_keys=True,
-        )
-    )
-
-
 def handle(arguments: argparse.Namespace) -> int:
     if arguments.command == "known-role-live-fallback":
-        _print_workspace(
+        print_workspace_result(
             create_known_role_live_fallback_workspace(
                 arguments.base_workspace,
                 arguments.evidence,
@@ -136,7 +126,7 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "reviewed-waveform-publication":
-        _print_workspace(
+        print_workspace_result(
             create_reviewed_waveform_publication_workspace(
                 arguments.base_workspace,
                 arguments.workspaces_root,
@@ -144,7 +134,7 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "reviewed-rejection-live-fallback":
-        _print_workspace(
+        print_workspace_result(
             create_reviewed_rejection_fallback_workspace(
                 arguments.base_workspace,
                 arguments.workspaces_root,
@@ -152,7 +142,7 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "rebase-workspace-config":
-        _print_workspace(
+        print_workspace_result(
             rebase_workspace_config(
                 arguments.source_workspace,
                 arguments.target_workspace,

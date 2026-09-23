@@ -29,7 +29,7 @@ from vntts_artifacts.voice_generation_queue import (
 from vntts.application_directories import get_local_data_directory
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.chapter_voice_preload import (
-    _source_audio_covers_full_line,
+    _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
 from vntts.settings import AppSettings
@@ -854,11 +854,8 @@ def _selection_from_records(
     original = tuple(
         record
         for record in speakable
-        if record.line_id in authoritative_source_lines
-        and _source_audio_covers_full_line(
-            record.document,
-            completion_contract=completion_contract,
-            semantic_authorized=True,
+        if _has_authoritative_source_audio(
+            record, completion_contract, authoritative_source_lines
         )
     )
     original_ids = {record.line_id for record in original}

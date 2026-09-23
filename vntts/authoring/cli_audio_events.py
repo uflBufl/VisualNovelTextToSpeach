@@ -30,8 +30,8 @@ from vntts.authoring.audio_event_review import (
 from vntts.authoring.audio_event_review import (
     AudioEventReviewError as _AudioEventReviewError,
 )
+from vntts.authoring.cli_workspace import print_workspace_result
 from vntts.authoring.workbench import (
-    WorkspaceCreationResult,
     create_audio_event_composition_workspace,
     default_workspaces_root,
 )
@@ -143,23 +143,9 @@ def configure_review_parsers(
     audio_event_workspace.add_argument("--workspaces-root", type=Path)
 
 
-def _print_workspace_result(result: WorkspaceCreationResult) -> None:
-    print(
-        json.dumps(
-            {
-                "directory": str(result.directory),
-                "created": result.created,
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-    )
-
-
 def handle(arguments: argparse.Namespace) -> int:
     if arguments.command == "audio-event-omission":
-        _print_workspace_result(
+        print_workspace_result(
             create_audio_event_omission_workspace(
                 arguments.base_workspace,
                 arguments.queue_ids,
@@ -168,7 +154,7 @@ def handle(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "audio-event-projection-fallback":
-        _print_workspace_result(
+        print_workspace_result(
             create_audio_event_projection_fallback_workspace(
                 arguments.base_workspace,
                 arguments.queue_ids,

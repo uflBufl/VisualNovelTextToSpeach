@@ -118,7 +118,7 @@ def configure_parsers(
     )
 
 
-def _print_workspace_result(result: WorkspaceCreationResult, **extra: object) -> None:
+def print_workspace_result(result: WorkspaceCreationResult, **extra: object) -> None:
     print(
         json.dumps(
             {
@@ -156,7 +156,7 @@ def handle(arguments: argparse.Namespace) -> int:
                 arguments.audio_event_spoken_projection_queue_ids
             ),
         )
-        _print_workspace_result(
+        print_workspace_result(
             result,
             missing_voice_policy=missing_policy.to_document(),
             failure_repair_policy=repair_policy.to_document(),
@@ -181,5 +181,5 @@ def handle(arguments: argparse.Namespace) -> int:
             arguments.queue_ids,
             arguments.workspaces_root,
         )
-    _print_workspace_result(result)
+    print_workspace_result(result)
     return 0
