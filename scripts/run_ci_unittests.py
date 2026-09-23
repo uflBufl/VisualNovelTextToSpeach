@@ -12,8 +12,20 @@ from pathlib import Path
 from vntts.cli import cli_message
 
 SHARD_TIMEOUTS = {
-    "Darwin": {"qt-app": 180, "qt-assets": 60, "qt-ocr": 60, "remainder": 900},
-    "Windows": {"qt-app": 300, "qt-assets": 60, "qt-ocr": 60, "remainder": 900},
+    "Darwin": {
+        "qt-app": 180,
+        "qt-app-2": 180,
+        "qt-assets": 60,
+        "qt-ocr": 60,
+        "remainder": 900,
+    },
+    "Windows": {
+        "qt-app": 300,
+        "qt-app-2": 300,
+        "qt-assets": 60,
+        "qt-ocr": 60,
+        "remainder": 900,
+    },
 }
 
 
@@ -109,8 +121,12 @@ def _run_sharded_full_discovery(system):
         return 2
     with tempfile.TemporaryDirectory(prefix="vntts-unittest-shards-") as directory:
         root = Path(directory)
+        midpoint = (len(app_ids) + 1) // 2
+        app_shards = [("qt-app", app_ids[:midpoint])]
+        if len(app_ids) > midpoint:
+            app_shards.append(("qt-app-2", app_ids[midpoint:]))
         shards = (
-            ("qt-app", app_ids),
+            *app_shards,
             ("qt-assets", asset_ids),
             ("qt-ocr", ocr_ids),
             ("remainder", remainder_ids),
