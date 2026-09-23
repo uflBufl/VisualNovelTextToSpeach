@@ -567,6 +567,7 @@ class VoicePlanStore:
         controls_sha256 = _digest(controls)
         portrait_snapshots: dict[str, PortraitSnapshot] = {}
         grouped: dict[str, list[GroupValue]] = {}
+        assignment_cache: dict[str, str | None] = {}
         for line_id in job.selected_line_ids:
             record = records[line_id]
             if not record.speakable or _has_authoritative_source_audio(
@@ -578,14 +579,13 @@ class VoicePlanStore:
             )
             evidence = _variant_evidence(record)
             line_source = _bound_source_for_record(record, queue_bindings)
-            bound_source = (
-                _effective_assignment_source(
+            if character not in assignment_cache:
+                assignment_cache[character] = _effective_assignment_source(
                     settings,
                     character,
                     library=self.voice_library,
                 )
-                or line_source
-            )
+            bound_source = assignment_cache[character] or line_source
             portrait_image, portrait_image_sha256 = _portrait_snapshot(
                 Path(job.story_index).expanduser().resolve().parent,
                 evidence[0],
