@@ -139,7 +139,7 @@ class PersistentAudioCache:
     def _prune(self) -> None:
         files = sorted(
             self.directory.glob("*.npy"),
-            key=lambda path: path.stat(follow_symlinks=False).st_mtime_ns,
+            key=_cache_entry_recency,
             reverse=True,
         )
         for path in files[self.max_entries :]:
@@ -147,3 +147,8 @@ class PersistentAudioCache:
                 path.unlink()
             except OSError:
                 pass
+
+
+def _cache_entry_recency(path: Path) -> tuple[int, int, str]:
+    entry = path.stat(follow_symlinks=False)
+    return entry.st_mtime_ns, entry.st_ctime_ns, path.name

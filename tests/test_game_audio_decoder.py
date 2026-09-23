@@ -130,13 +130,15 @@ class GameAudioDecoderTest(unittest.TestCase):
             subprocess.TimeoutExpired("decoder", 5),
         )
         with (
-            patch.object(decoder.subprocess, "Popen", return_value=process),
             patch.object(decoder.os, "name", "posix"),
-            patch.object(decoder.os, "killpg", create=True),
-            self.assertRaisesRegex(decoder.DecoderSetupError, "timed out"),
+            patch.object(decoder.os, "killpg", create=True) as killpg,
         ):
-            decoder._run(["decoder"], timeout=0)
+            decoder._stop_decoder_process(process)
 
+        self.assertEqual(
+            killpg.call_args_list,
+            [call(42, decoder.signal.SIGTERM), call(42, decoder.signal.SIGKILL)],
+        )
         self.assertEqual(
             process.wait.call_args_list,
             [call(timeout=5), call(timeout=5)],
