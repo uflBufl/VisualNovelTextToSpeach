@@ -105,7 +105,7 @@ def _inspect_windows_process(pid: int) -> Literal["live", "dead", "unknown"]:
 def process_started_at(pid: object) -> str | None:
     """Return the operating-system process start identity when inspectable."""
     process_id = _process_id(pid)
-    if process_id is None:
+    if process_id is None or process_id <= 0:
         return None
     try:
         completed = subprocess.run(
@@ -115,8 +115,19 @@ def process_started_at(pid: object) -> str | None:
             text=True,
         )
     except OSError, subprocess.CalledProcessError:
+        output = ""
+    else:
+        output = completed.stdout.strip()
+    if output or sys.platform != "win32":
+        return output or None
+    # Standard Windows installations have no `ps`; retain its output when
+    # available so leases written by older versions keep the same identity.
+    import psutil
+
+    try:
+        return f"psutil:{psutil.Process(process_id).create_time()}"
+    except (psutil.Error, OSError):
         return None
-    return completed.stdout.strip() or None
 
 
 def archive_interrupted_artifact(
