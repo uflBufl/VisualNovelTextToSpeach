@@ -73,6 +73,8 @@ from vntts.authoring.workspace_creation import (
 from vntts.authoring.workspace_foundation import copy_generation_wavs
 
 _terminal_review_outcome = is_terminal_review_outcome
+
+
 class _ReconciliationSelection(TypedDict):
     report_id: str
     base: JsonDocument
