@@ -163,12 +163,14 @@ def capture_live_frame(
     screenshot_directory: PathInput,
     capture_target: object | None = None,
     *,
+    region: DialogRegion | None = None,
     clock: Clock = monotonic,
 ) -> CapturedDialogFrame:
     capture_started = clock()
     image, _output = capture_dialog(
         screenshot_directory,
         save_screenshot=False,
+        region=region,
         capture_target=capture_target,
     )
     return CapturedDialogFrame(
@@ -539,11 +541,13 @@ def analyze_dialog_snapshot(
     clock: Clock = monotonic,
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
+    region: DialogRegion | None = None,
 ) -> tuple[Image.Image, Path | None, OCRResult]:
     capture_started = clock()
     image, output = capture_dialog(
         screenshot_directory,
         save_screenshot=save_screenshot,
+        region=region,
         capture_target=capture_target,
     )
     capture_ms = (clock() - capture_started) * 1000
@@ -588,11 +592,13 @@ def read_dialog(
     voice_resolver: Callable[[str], str] | None = None,
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
+    region: DialogRegion | None = None,
 ) -> None:
     image, output, result = analyze_dialog_snapshot(
         screenshot_directory,
         voice_router.registry,
         capture_target=capture_target,
+        region=region,
         minimum_confidence=minimum_confidence,
         save_screenshot=True,
         diagnostic_handler=diagnostic_handler,
@@ -637,6 +643,7 @@ def read_dialog_safely(
     voice_resolver: Callable[[str], str] | None = None,
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
+    region: DialogRegion | None = None,
 ) -> None:
     try:
         read_dialog(
@@ -650,6 +657,7 @@ def read_dialog_safely(
             voice_resolver,
             ocr_language,
             correction_dictionary,
+            region,
         )
     except Exception as error:
         (error_handler or report_runtime_error)(error)

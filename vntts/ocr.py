@@ -237,13 +237,16 @@ def save_dialog_region(region: DialogRegion, path: str | Path) -> None:
     atomic_write_json(path, region.to_json())
 
 
-def get_dialog_region() -> DialogRegion:
+def get_dialog_region(profile_region: DialogRegion | None = None) -> DialogRegion:
     configured_region = os.environ.get("VNTTS_DIALOG_REGION")
     if configured_region:
         try:
             return parse_dialog_region(configured_region)
         except ValueError as error:
             print(f"Invalid VNTTS_DIALOG_REGION: {error}; using saved/default region")
+
+    if profile_region is not None:
+        return profile_region
 
     region_file = get_dialog_region_file()
     if region_file.is_file():

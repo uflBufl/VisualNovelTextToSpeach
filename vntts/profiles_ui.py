@@ -109,11 +109,14 @@ class GameProfilesDialog(QDialog):
         name = self._ask_name("Save current setup as profile", "Profile name")
         if name is None:
             return
+        active = self.store.get(self.original_settings.active_profile_id)
         try:
             profile = self.store.create(
                 name,
                 self.original_settings,
-                region=get_dialog_region(),
+                region=active.dialog_region
+                if active is not None
+                else get_dialog_region(),
             )
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Unable to create profile", str(error))

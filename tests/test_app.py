@@ -3390,7 +3390,9 @@ class TrayApplicationTest(unittest.TestCase):
         ):
             tray_application.calibrate()
 
-        show_overlay.assert_called_once_with(geometry)
+        show_overlay.assert_called_once_with(
+            geometry, save_region=tray_application._save_calibration_region
+        )
         tray_application.shutdown()
 
     def test_calibration_updates_the_active_game_profile(self):
@@ -3408,6 +3410,24 @@ class TrayApplicationTest(unittest.TestCase):
             tray_application.update_profile_region(region)
 
             self.assertEqual(store.get(profile.id).dialog_region, region)
+            tray_application.shutdown()
+
+    def test_calibration_profile_save_failure_keeps_previous_region(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            profile = store.create("Game", AppSettings())
+            tray_application = TrayApplication(
+                self.application,
+                AppSettings(active_profile_id=profile.id),
+                controller_factory=Mock(return_value=Mock()),
+                profile_store=store,
+            )
+            region = DialogRegion(0.1, 0.6, 0.8, 0.3)
+            with patch.object(store, "update_region", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    tray_application._save_calibration_region(region)
+
+            self.assertEqual(store.get(profile.id).dialog_region, profile.dialog_region)
             tray_application.shutdown()
 
     def test_profile_selection_reloads_runtime_with_profile_settings(self):
@@ -3434,6 +3454,7 @@ class TrayApplicationTest(unittest.TestCase):
                 patch("vntts.app.GameProfilesDialog", return_value=dialog),
                 patch.object(tray_application, "start_hotkeys"),
                 patch("vntts.app.AppSettings.save", return_value=Path("settings.json")),
+                patch("vntts.app.save_dialog_region") as save_region,
             ):
                 tray_application.open_profiles()
                 self.wait_until(
@@ -3441,9 +3462,36 @@ class TrayApplicationTest(unittest.TestCase):
                 )
 
             controller.shutdown.assert_called_once_with()
+            save_region.assert_not_called()
             controller.apply_settings.assert_called_once_with(selected_settings)
             controller.start.assert_called_once_with()
             self.assertIn("Reverse: 1999", tray_application.status_action.text())
+            tray_application.shutdown()
+
+    def test_failed_settings_write_keeps_previous_profile_active(self):
+        with TemporaryDirectory() as temporary_directory:
+            store = GameProfileStore(Path(temporary_directory) / "profiles.json")
+            profile = store.create("Game", AppSettings())
+            original = AppSettings()
+            selected = profile.apply(original)
+            tray_application = TrayApplication(
+                self.application,
+                original,
+                controller_factory=Mock(return_value=Mock()),
+                profile_store=store,
+            )
+            dialog = Mock()
+            dialog.exec.return_value = QDialog.DialogCode.Accepted
+            dialog.settings.return_value = selected
+            with (
+                patch("vntts.app.GameProfilesDialog", return_value=dialog),
+                patch("vntts.app.AppSettings.save", side_effect=OSError("disk full")),
+            ):
+                tray_application.open_profiles()
+
+            self.assertIs(tray_application.settings, original)
+            self.assertFalse(tray_application.profile_restart_runner.active)
+            self.assertIn("disk full", tray_application.status_action.text())
             tray_application.shutdown()
 
     def test_live_modal_stop_wait_does_not_block_qt_events(self):

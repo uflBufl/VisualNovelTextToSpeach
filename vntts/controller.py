@@ -72,9 +72,16 @@ from vntts.live_sequence import (
 from vntts.live_snapshot import read_live_snapshot as read_live_snapshot
 from vntts.live_speaker_corpus import LiveSpeakerCorpus
 from vntts.live_speech import TypedPlaybackBackend, play_typed_text
-from vntts.ocr import OCRResult, UncertainFrameRecorder, default_minimum_ocr_confidence
+from vntts.ocr import (
+    DialogRegion,
+    OCRResult,
+    UncertainFrameRecorder,
+    default_minimum_ocr_confidence,
+    get_dialog_region,
+)
 from vntts.ocr_corrections import OCRCorrectionDictionary, OCRCorrectionStore
 from vntts.playback import PreparedPlayback
+from vntts.profiles import GameProfileStore
 from vntts.runtime_config import (
     get_live_configuration,
     initialize_voice_registry,
@@ -333,6 +340,7 @@ def create_dialog_read_scheduler(
     voice_resolver: Callable[[str], str] | None = None,
     ocr_language: str = "eng",
     correction_dictionary: OCRCorrectionDictionary | None = None,
+    region_provider: Callable[[], DialogRegion] | None = None,
 ) -> Callable[[], bool]:
     active_read: _DialogReadFuture | None = None
     active_read_lock = Lock()
@@ -361,6 +369,7 @@ def create_dialog_read_scheduler(
                 voice_resolver=voice_resolver,
                 ocr_language=ocr_language,
                 correction_dictionary=correction_dictionary,
+                region=region_provider() if region_provider is not None else None,
             )
             return True
 
@@ -449,8 +458,10 @@ class AppController:
             [str, str], _LiveSequencePlanContract
         ] = LiveSequencePlan.load,
         voice_library: VoiceLibrary | None = None,
+        profile_store: GameProfileStore | None = None,
     ) -> None:
         self.settings = settings or AppSettings()
+        self.profile_store = profile_store or GameProfileStore.load()
         self.voice_library = voice_library or application_voice_library()
         self.capture_target_factory = capture_target_factory
         self.model_assets = model_asset_manager_factory()
@@ -894,7 +905,12 @@ class AppController:
         return capture_live_frame(
             get_screenshot_directory(self.settings),
             self.capture_target,
+            region=self._capture_region(),
         )
+
+    def _capture_region(self) -> DialogRegion:
+        profile = self.profile_store.get(self.settings.active_profile_id)
+        return get_dialog_region(profile.dialog_region if profile is not None else None)
 
     def _recognize_live_frame(self, frame: object) -> tuple[str, str]:
         voice_router = self.voice_router

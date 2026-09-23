@@ -475,6 +475,7 @@ class RuntimeLifecycleComponent:
             voice_resolver=controller._resolve_voice_label,
             ocr_language=controller.settings.ocr_language,
             correction_dictionary=controller.correction_dictionary,
+            region_provider=controller._capture_region,
         )
         return screenshot_directory
 
@@ -606,6 +607,7 @@ class RuntimeLifecycleComponent:
             voice_resolver=controller._resolve_voice_label,
             ocr_language=controller.settings.ocr_language,
             correction_dictionary=controller.correction_dictionary,
+            region_provider=controller._capture_region,
         )
         return True
 
@@ -689,6 +691,7 @@ class LiveSessionComponent:
             controller._resolve_voice_label,
             controller.settings.ocr_language,
             controller.correction_dictionary,
+            controller._capture_region(),
         )
         if is_empty(text):
             controller.live_scope_identification_failure = "no-dialog-text"
@@ -1213,6 +1216,7 @@ class DiagnosticsComponent:
             voice_resolver=controller._resolve_voice_label,
             ocr_language=controller.settings.ocr_language,
             correction_dictionary=controller.correction_dictionary,
+            region=controller._capture_region(),
         )
         return controller._publish_diagnostic(snapshots[-1], notify=notify)
 
@@ -1232,6 +1236,7 @@ class DiagnosticsComponent:
             voice_resolver=controller._resolve_voice_label,
             ocr_language=controller.settings.ocr_language,
             correction_dictionary=controller.correction_dictionary,
+            region=controller._capture_region(),
         )
         if result.text and not result.is_confident(
             controller.settings.ocr_minimum_confidence
