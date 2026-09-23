@@ -222,7 +222,7 @@ class GameProfileStore:
         self._save_profiles(profiles)
         self.profiles = profiles
 
-    def get(self, profile_id: str) -> GameProfile | None:
+    def get(self, profile_id: str | None) -> GameProfile | None:
         return next(
             (profile for profile in self.profiles if profile.id == profile_id),
             None,
