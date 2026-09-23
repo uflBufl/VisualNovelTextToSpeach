@@ -55,7 +55,7 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
                 (reference.read_bytes(),),
             )
 
-    def test_linked_child_name_keeps_its_runtime_voice(self):
+    def test_linked_names_share_the_canonical_runtime_voice(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             adult, child = root / "adult.wav", root / "child.wav"
@@ -79,7 +79,26 @@ class CharacterVoiceRegistryTest(unittest.TestCase):
             projected = registry_with_voice_library(registry, library)
 
             self.assertEqual(projected.resolve("Rhiannon").speaker, "adult")
-            self.assertEqual(projected.resolve("Aderyn").speaker, "child")
+            self.assertEqual(projected.resolve("Aderyn").speaker, "adult")
+            library.unlink_person("Aderyn")
+            self.assertEqual(
+                registry_with_voice_library(registry, library)
+                .resolve("Aderyn")
+                .speaker,
+                "child",
+            )
+
+    def test_linked_name_inherits_canonical_manifest_voice_without_a_binding(self):
+        with TemporaryDirectory() as directory:
+            registry = CharacterVoiceRegistry(
+                [CharacterVoice("Rhiannon", "adult"), CharacterVoice("Aderyn", "cry")]
+            )
+            library = VoiceLibrary(Path(directory) / "library")
+            library.link_person("Rhiannon", "Aderyn")
+
+            projected = registry_with_voice_library(registry, library)
+
+            self.assertEqual(projected.resolve("Aderyn").speaker, "adult")
 
     def test_reference_snapshot_preserves_windows_control_bytes(self):
         with TemporaryDirectory() as directory:

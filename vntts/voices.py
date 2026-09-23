@@ -428,16 +428,27 @@ def registry_with_voice_library(
                 binding.role,
             )
     for alias, canonical in library.person_aliases().items():
-        variant_key = library.linked_variant_key(alias)
-        alias_binding = library.binding(alias, variant_key=variant_key)
+        alias_binding = library.binding(alias)
         if alias_binding is not None:
             _project_binding(
                 projected,
                 alias_binding,
-                sources.get((normalize_character_name(canonical), variant_key)),
+                sources.get(
+                    (
+                        normalize_character_name(alias_binding.role),
+                        alias_binding.variant_key,
+                    )
+                ),
                 narrator_source,
                 alias,
             )
+        else:
+            canonical_voice = projected.resolve(canonical)
+            if canonical_voice is not None:
+                projected.set_assignment(
+                    alias,
+                    f"character:{normalize_character_name(canonical_voice.character)}",
+                )
     return projected
 
 

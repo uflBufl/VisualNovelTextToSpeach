@@ -1723,12 +1723,15 @@ class MainTest(unittest.TestCase):
 
         controller.assign_voice("Aderyn", "preset:alba")
 
-        self.assertIsNone(library.binding("Aderyn"))
+        self.assertEqual(library.binding("Aderyn").source_id, "preset:alba")
+        self.assertEqual(library.binding("Rhiannon").source_id, "preset:alba")
         self.assertEqual(controller.voice_assignment_for("Aderyn"), "preset:alba")
         rebuilt = registry_with_voice_library(CharacterVoiceRegistry(), library)
         self.assertEqual(rebuilt.resolve("Aderyn").speaker, "alba")
+        self.assertEqual(rebuilt.resolve("Rhiannon").speaker, "alba")
         controller.clear_voice_assignment("Aderyn")
-        self.assertIsNone(library.binding("Aderyn", variant_key="story-name:aderyn"))
+        self.assertIsNone(library.binding("Aderyn"))
+        self.assertIsNone(library.binding("Rhiannon"))
 
     def test_narrator_fallback_voice_and_force_live_are_independent(self):
         voice_root = TemporaryDirectory()

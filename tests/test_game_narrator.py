@@ -57,7 +57,7 @@ from vntts.voice_library import VoiceLibrary  # noqa: E402
 
 
 class GameNarratorTest(unittest.TestCase):
-    def test_linked_name_impact_uses_the_same_variant_as_save(self):
+    def test_linked_name_impact_uses_the_canonical_voice_choice(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             library = VoiceLibrary(root / "library")
@@ -74,11 +74,12 @@ class GameNarratorTest(unittest.TestCase):
                 dialog._impact_context = (Mock(), Mock(), Mock())
 
                 def inspect(*_args, proposed_voice_library, **_kwargs):
-                    self.assertIsNone(proposed_voice_library.binding("Aderyn"))
                     self.assertEqual(
-                        proposed_voice_library.binding(
-                            "Aderyn", variant_key="story-name:aderyn"
-                        ).route,
+                        proposed_voice_library.binding("Aderyn").route,
+                        "narrator",
+                    )
+                    self.assertEqual(
+                        proposed_voice_library.binding("Rhiannon").route,
                         "narrator",
                     )
                     return ()

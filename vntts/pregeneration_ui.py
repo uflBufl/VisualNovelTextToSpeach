@@ -979,20 +979,23 @@ class OfflineAudioPreparationDialog(QDialog):
             },
             key=str.casefold,
         )
-        if not names:
-            self.voice_confirmation_status.setText(
-                "No other character name is available in the selected stories."
-            )
-            return
         target, accepted = QInputDialog.getItem(
             self,
             "Link character names",
-            f"{role} is the same person as:",
+            f"Treat {role} as another name for:",
             names,
             0,
-            False,
+            True,
         )
         if not accepted:
+            return
+        target = target.strip()
+        if not target or normalize_character_name(target) == normalize_character_name(
+            role
+        ):
+            self.voice_confirmation_status.setText(
+                "Enter a different character name to share its voice."
+            )
             return
         affected_line_ids = {
             line_id
@@ -1020,9 +1023,10 @@ class OfflineAudioPreparationDialog(QDialog):
             QMessageBox.question(
                 self,
                 "Link character names",
-                f"Link {role} and {target} as one person? This affects "
+                f"Treat {role} as another name for {target}? This affects "
                 f"{len(affected_line_ids)} lines in {story_preview}, plus future stories. "
-                "Their recorded voice choices remain separate. You can unlink this name later.",
+                "Both names will share one voice choice and reference list. "
+                "The earlier separate choice can be restored by unlinking.",
             )
             != QMessageBox.StandardButton.Yes
         ):
@@ -3831,6 +3835,7 @@ def _voice_resolution_label(resolution: str) -> str:
         "automatic-narrator-fallback": "No usable character voice; using narrator",
         "exact-source-voice-binding": "Exact game dialogue voice binding",
         "known-character-voice": "Matching game character voice",
+        "linked-reference-needs-preview": "Only a reference under another name is available; preview it before use",
         "narrator-dialogue": "Narration",
         "saved-narrator-assignment": "Saved narrator assignment",
         "saved-player-decision": "Explicitly approved voice",

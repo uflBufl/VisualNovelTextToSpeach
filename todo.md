@@ -123,10 +123,13 @@ Planned implementation order after approval:
 
 ## P1 - Link character identities across story names
 
-- [ ] **Validate manual person links on Windows:** link Aderyn to Rhiannon in
-      the Voice plan, inspect the affected-story preview, keep their adult/child
-      voices distinct in preparation and live reading, then unlink and verify
-      both prior choices survive. Test after save/reopen and a restarted import.
+- [ ] **Validate linked names on Windows:** in a story showing only Aderyn, type
+      Rhiannon as the canonical name in Voice plan. Inspect the shared reference
+      choices and selected voice, prepare a story, restart and read both names
+      with the same voice. A saved short Aderyn clip must remain available for
+      inspection but not become the active choice. With only that clip available,
+      require preview rather than selecting it automatically. Unlink and verify
+      prior choices can be recovered without a fresh game import.
 - [ ] **Suggest cross-name links from game evidence:** evaluate stable game IDs,
       portrait similarity across expressions, bank/source relationships and story
       context; do not infer identity from a similar portrait or voice alone.

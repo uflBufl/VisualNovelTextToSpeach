@@ -460,7 +460,7 @@ class VoiceLibrary:
         return dict(self._load()["person_aliases"])
 
     def linked_variant_key(self, role: str) -> str | None:
-        """Return the explicit route variant required for a linked story name."""
+        """Return the archived pre-link slot for a linked story name."""
         _identity, display_role, _variant = _role_identity(role, None)
         canonical = self.canonical_role(display_role)
         if normalize_character_name(canonical) == normalize_character_name(
@@ -512,14 +512,14 @@ class VoiceLibrary:
         document: _VoiceLibraryDocument,
     ) -> tuple[str, str, str | None]:
         _identity, display_role, _variant = _role_identity(role, None)
-        if variant_key != _linked_variant_key(
-            normalize_character_name(display_role), None
-        ):
-            return _role_identity(display_role, variant_key)
-        canonical = document["person_aliases"].get(
-            normalize_character_name(display_role), display_role
-        )
-        return _role_identity(canonical, variant_key)
+        alias_key = normalize_character_name(display_role)
+        canonical = document["person_aliases"].get(alias_key)
+        if canonical is not None and variant_key in {
+            None,
+            _linked_variant_key(alias_key, None),
+        }:
+            return _role_identity(canonical, None)
+        return _role_identity(display_role, variant_key)
 
     def _write(self, document: _VoiceLibraryDocument) -> None:
         _validate_document(document)

@@ -1225,7 +1225,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
                 routing_role="Aderyn",
                 line_ids=("line:aderyn",),
             )
-            plan = replace(plan, groups=(*plan.groups, aderyn))
+            plan = replace(plan, groups=(aderyn,))
             dialog._voice_plan = plan
             dialog._job = Mock(job_id="job", selected_story_ids=("story",))
             dialog._show_voice_confirmation(plan)
@@ -1236,6 +1236,7 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             dialog._update_identity_actions()
             self.assertFalse(dialog.link_identity.isEnabled())
             first_item.setData(Qt.ItemDataRole.UserRole, original_role)
+            dialog._update_identity_actions()
             for row in range(dialog.voice_routes.count()):
                 item = dialog.voice_routes.item(row)
                 if item.data(Qt.ItemDataRole.UserRole) == "Aderyn":

@@ -695,13 +695,104 @@ class VoicePlanStoreTest(unittest.TestCase):
                 ),
                 voice_binding_source_id(library.binding("Rhiannon")),
             )
-            self.assertNotEqual(
+            self.assertEqual(
                 *(
                     group.source_id
                     for group in groups
                     if group.routing_role in {"Aderyn", "Rhiannon"}
                 ),
             )
+            archived = library.binding("Rhiannon", variant_key="story-name:aderyn")
+            self.assertIn(
+                voice_binding_source_id(archived),
+                {candidate.source_id for candidate in groups[0].candidate_inventory},
+            )
+            self.assertNotEqual(groups[0].source_id, voice_binding_source_id(archived))
+
+            library.clear("Rhiannon")
+            manifest_document = json.loads(manifest.read_text(encoding="utf-8"))
+            manifest_document["voices"] = [
+                voice
+                for voice in manifest_document["voices"]
+                if voice["character"] != "Rhiannon"
+            ]
+            manifest.write_text(json.dumps(manifest_document), encoding="utf-8")
+            no_canonical_reference = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+            aderyn = next(
+                group
+                for group in no_canonical_reference.groups
+                if group.routing_role == "Aderyn"
+            )
+            self.assertEqual(aderyn.route, "needs-audition")
+            self.assertEqual(aderyn.resolution, "linked-reference-needs-preview")
+            self.assertNotEqual(aderyn.source_id, voice_binding_source_id(archived))
+
+    def test_linked_names_share_reference_inventory_and_inherit_selected_voice(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = write_content(root / "content")
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            next(row for row in rows if row.get("line_id") == "line:rhiannon:1")[
+                "voice_character"
+            ] = "Aderyn"
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            content = inspect_story_index(path)
+            jobs = PregenerationJobStore(root / "jobs")
+            job = jobs.create_or_resume(content, ("story",))
+            manifest = write_player_candidate_manifest(
+                root / "player-voices", job.story_index_sha256
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+            document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"][1]["character"] = (
+                "Aderyn"
+            )
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            library = VoiceLibrary(root / "library")
+            library.link_person("Rhiannon", "Aderyn")
+
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+
+            groups = {
+                group.routing_role: group
+                for group in plan.groups
+                if group.character == "Rhiannon"
+            }
+            self.assertEqual(set(groups), {"Aderyn", "Rhiannon"})
+            self.assertEqual(groups["Aderyn"].source_id, groups["Rhiannon"].source_id)
+            self.assertEqual(
+                {
+                    candidate.source_id
+                    for candidate in groups["Aderyn"].candidate_inventory
+                },
+                {
+                    "character:playercandidaterhiannon1",
+                    "character:playercandidaterhiannon2",
+                },
+            )
+
+            library.clear("Rhiannon")
+            document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"] = [
+                document[PLAYER_VOICE_CANDIDATES_FIELD]["variants"][1]
+            ]
+            manifest.write_text(json.dumps(document), encoding="utf-8")
+            alias_only = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+            aderyn = next(
+                group for group in alias_only.groups if group.routing_role == "Aderyn"
+            )
+            self.assertEqual(aderyn.route, "needs-audition")
+            self.assertEqual(aderyn.resolution, "linked-reference-needs-preview")
 
     def test_missing_named_role_and_unattributed_role_use_narrator_without_review(self):
         with TemporaryDirectory() as temporary_directory:

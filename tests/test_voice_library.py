@@ -235,7 +235,9 @@ class VoiceLibraryTest(unittest.TestCase):
                 adult_choice.sha256,
             )
 
-    def test_linked_person_keeps_unqualified_story_name_bindings_separate(self) -> None:
+    def test_linked_names_share_active_voice_and_restore_prior_choice_on_unlink(
+        self,
+    ) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             adult, child = root / "adult.wav", root / "child.wav"
@@ -257,10 +259,18 @@ class VoiceLibraryTest(unittest.TestCase):
                 library.binding("Rhiannon").source_sha256, adult_choice.sha256
             )
             self.assertEqual(library.linked_variant_key("Aderyn"), "story-name:aderyn")
-            self.assertIsNone(library.binding("Aderyn"))
+            self.assertEqual(
+                library.binding("Aderyn").source_sha256, adult_choice.sha256
+            )
             self.assertEqual(
                 library.binding(
                     "Aderyn", variant_key="story-name:aderyn"
+                ).source_sha256,
+                adult_choice.sha256,
+            )
+            self.assertEqual(
+                library.binding(
+                    "Rhiannon", variant_key="story-name:aderyn"
                 ).source_sha256,
                 child_choice.sha256,
             )
