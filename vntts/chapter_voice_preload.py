@@ -14,6 +14,7 @@ from typing import TypeAlias
 from vntts_artifacts.story_index import (
     StoryIndexDocument,
     StoryIndexError,
+    StoryIndexRecord,
     load_story_index,
     load_story_index_document,
 )
@@ -936,6 +937,18 @@ def _source_audio_covers_full_line(
             semantic_authorized=semantic_authorized,
         )
         == "full"
+    )
+
+
+def _has_authoritative_source_audio(
+    record: StoryIndexRecord,
+    completion_contract: str | None,
+    authorized_line_ids: Iterable[str],
+) -> bool:
+    return record.line_id in authorized_line_ids and _source_audio_covers_full_line(
+        record.document,
+        completion_contract=completion_contract,
+        semantic_authorized=True,
     )
 
 

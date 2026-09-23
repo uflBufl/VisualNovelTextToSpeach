@@ -40,7 +40,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
 )
 from vntts.chapter_voice_preload import (
-    _source_audio_covers_full_line,
+    _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
 from vntts.pregeneration_setup import (
@@ -450,18 +450,6 @@ def _voice_library_selection(
     )
 
 
-def _has_authoritative_source_audio(
-    record: StoryIndexRecord,
-    completion_contract: str | None,
-    authorized_line_ids: frozenset[str],
-) -> bool:
-    return record.line_id in authorized_line_ids and _source_audio_covers_full_line(
-        record.document,
-        completion_contract=completion_contract,
-        semantic_authorized=True,
-    )
-
-
 class VoicePlanStore:
     def __init__(
         self,
@@ -581,13 +569,8 @@ class VoicePlanStore:
         grouped: dict[str, list[GroupValue]] = {}
         for line_id in job.selected_line_ids:
             record = records[line_id]
-            if not record.speakable or (
-                record.line_id in authoritative_source_lines
-                and _source_audio_covers_full_line(
-                    record.document,
-                    completion_contract=source_completion,
-                    semantic_authorized=True,
-                )
+            if not record.speakable or _has_authoritative_source_audio(
+                record, source_completion, authoritative_source_lines
             ):
                 continue
             character = synthesis_character_for_line(

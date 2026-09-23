@@ -443,6 +443,19 @@ def _map_dialogue(
     return mappings
 
 
+def _ordered_visible_events(plan: LiveSequencePlan) -> tuple[LiveSequenceEvent, ...]:
+    return tuple(
+        sorted(
+            (
+                event
+                for event in plan.events.values()
+                if event.kind in {"speech", "silent"}
+            ),
+            key=lambda event: (str(event.chapter), event.sequence, event.event_id),
+        )
+    )
+
+
 def _next_visible_events(
     plan: LiveSequencePlan, event: LiveSequenceEvent
 ) -> tuple[LiveSequenceEvent, ...]:

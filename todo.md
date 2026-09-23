@@ -142,12 +142,13 @@ Planned implementation order after approval:
       writes and `bindings()` reads. Gate: phase timings sum to the outer wait;
       remove only measured duplicate work while preserving checksums, saved choices
       and identical plans on cold/repeat runs.
-- [ ] **Benchmark OCR subprocess work on captured dialogue:**
-      `ocr.py:recognize_dialog_image_result` tries up to three profiles, each
-      invoking Tesseract multiple times for speaker and dialogue. Record p50/p95,
-      profile attempts and process calls on a fixed image corpus using
-      `vntts-benchmark-ocr`; try fewer passes only if they preserve speaker/text
-      accuracy, confidence handling and the current uncertain-frame behavior.
+- [ ] **Qualify fewer Tesseract launches with labeled game frames:** the archived
+      11-image corpus measured 488 ms median and 997 ms p95; ordinary frames use
+      three subprocesses, and one frame without dialogue used nine. Reconstructing
+      text from TSV alone disagreed with the existing text pass on 2 of 11 frames,
+      including a spoken line. Compare a combined TXT/TSV pass or another bounded
+      path against manually verified speaker/text labels and uncertain-frame
+      decisions before removing a subprocess.
 
 ## P1 - Qualify remaining Python and speech runtimes
 
@@ -175,20 +176,6 @@ Planned implementation order after approval:
       promotion gate that accepts only the signed archive after every required
       Windows hardware profile passes the existing
       matrix validator without `--allow-unsigned`.
-
-## P2 - Check smaller repeated reads
-
-- [ ] **Measure prepared WAV preflight during Reading:**
-      `GeneratedAudioLibrary.find_with_preflight` reads and hashes the full WAV
-      before consulting its decoded-audio cache. Record file sizes, lookup p95,
-      cache hits and first-PCM delay on repeated and distinct lines. Change reuse
-      only if this is material and every played byte remains checksum-verified.
-- [ ] **Measure repeated startup discovery:** `find_default_voice_manifest`
-      reparses the manifest and checks each reference on every call; story discovery
-      hashes each candidate even when its catalog is cached. Count calls and bytes
-      in one startup and one reopen of Voices/Stories (the local two-index disk-cache
-      discovery took 0.49 seconds). Remove proven redundant passes while keeping
-      content-based invalidation; file size or mtime alone is not integrity proof.
 
 ## P2 - Qualify the real desktop experience
 

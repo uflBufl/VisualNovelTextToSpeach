@@ -29,7 +29,7 @@ from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.application_directories import get_config_directory, get_local_data_directory
 from vntts.chapter_voice_preload import (
-    _source_audio_covers_full_line,
+    _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
 from vntts.game_audio_decoder import Cancellation, ProgressCallback, ensure_game_decoder
@@ -699,13 +699,8 @@ def _candidate_roles(
         normalized = normalize_character_name(character)
         if (
             record.line_id in selected
-            and not (
-                record.line_id in authoritative_source_lines
-                and _source_audio_covers_full_line(
-                    record.document,
-                    completion_contract=source_completion,
-                    semantic_authorized=True,
-                )
+            and not _has_authoritative_source_audio(
+                record, source_completion, authoritative_source_lines
             )
             and record.speakable
             and not is_narrator(character)

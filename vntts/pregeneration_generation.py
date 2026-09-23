@@ -19,7 +19,7 @@ from vntts_artifacts.story_index import StoryIndexError, load_story_index_docume
 from vntts.authoring.bulk_generation import BulkGenerationError, load_generation_state
 from vntts.authoring.generation_manifest import RUNTIME_PROGRESS_MANIFEST_NAME
 from vntts.chapter_voice_preload import (
-    _source_audio_covers_full_line,
+    _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
 from vntts.pregeneration_contract import (
@@ -449,11 +449,8 @@ def _static_ready_line_ids(story_index: Path) -> tuple[str, ...]:
         for record in story.records
         if not record.speakable
         or (
-            record.line_id in authoritative_line_ids
-            and _source_audio_covers_full_line(
-                record.document,
-                completion_contract=completion_contract,
-                semantic_authorized=True,
+            _has_authoritative_source_audio(
+                record, completion_contract, authoritative_line_ids
             )
         )
     )

@@ -13,6 +13,7 @@ from vntts.cli import cli_error, cli_messages
 from vntts.live_replay_sequence_seal import (
     _decode_json,
     _next_visible_events,
+    _ordered_visible_events,
     _read_regular_file,
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
@@ -49,16 +50,7 @@ def audit_live_replay_coverage(
         raise LiveReplayCoverageError(
             f"Story index and sequence plan are incompatible: {error}"
         ) from error
-    visible = tuple(
-        sorted(
-            (
-                event
-                for event in plan.events.values()
-                if event.kind in {"speech", "silent"}
-            ),
-            key=lambda event: (str(event.chapter), event.sequence, event.event_id),
-        )
-    )
+    visible = _ordered_visible_events(plan)
     if len({event.chapter for event in visible}) != 1:
         raise LiveReplayCoverageError(
             "Visible chapter coverage requires a one-chapter sequence plan"
