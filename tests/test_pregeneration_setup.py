@@ -1834,6 +1834,7 @@ class OfflineAudioPreparationDialogTest(unittest.TestCase):
                 AppSettings(),
                 discovery=lambda: ContentDiscovery((content,)),
                 job_store=store,
+                thread_pool=ManualThreadPool(),
             )
 
             self.assertEqual(dialog.selected_story_ids(), ("rhiannon",))

@@ -226,7 +226,8 @@ class WindowsOwnedServerTest(unittest.TestCase):
                 "from vntts.moss_cpp_backend import _launch_owned_process;"
                 "p,j=_launch_owned_process([sys.executable,'-c',"
                 "'import time;time.sleep(60)'],stdin=subprocess.DEVNULL,"
-                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+                "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,"
+                "cwd=None,creationflags=0);"
                 f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid));"
                 "os._exit(17)"
             )
