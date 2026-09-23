@@ -8,7 +8,7 @@ from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 from time import monotonic
 from types import MethodType
-from typing import Protocol, TypeAlias, TypedDict, TypeGuard
+from typing import Protocol, TypeAlias, TypedDict, TypeGuard, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -73,6 +73,26 @@ PlaybackGuard = Callable[[], bool] | None
 ProgressCallback = Callable[[int, int, str], object]
 Clock = Callable[[], float]
 AudioArray: TypeAlias = NDArray[np.float32]
+_CacheKey = TypeVar("_CacheKey")
+
+
+def _read_cached_audio(
+    memory: BoundedCache[_CacheKey, AudioArray],
+    persistent: PersistentAudioCache,
+    key: _CacheKey,
+    persistent_key: str,
+    policy: SynthesisCachePolicy,
+) -> tuple[AudioArray | None, str]:
+    if policy is not SynthesisCachePolicy.USE:
+        return None, "fresh-generation"
+    audio = memory.get(key)
+    if audio is not None:
+        return audio, "memory-cache"
+    audio = persistent.get(persistent_key)
+    if audio is not None:
+        memory.put(key, audio)
+        return audio, "persistent-cache"
+    return None, "fresh-generation"
 
 
 class _ChatterboxTensor(Protocol):
@@ -659,18 +679,14 @@ class ChatterboxNanoVoiceRouterBackend(SynchronousPcmPlaybackMixin):
         cache_key = normalized_character, spoken_text
         persistent_key = self._persistent_cache_key(request.voice, spoken_text)
         started = self.clock()
-        cache_source = "fresh-generation"
-        audio = None
         with self.synthesis_lock:
-            if cache_policy is SynthesisCachePolicy.USE:
-                audio = self.audio_cache.get(cache_key)
-                if audio is not None:
-                    cache_source = "memory-cache"
-                else:
-                    audio = self.persistent_audio_cache.get(persistent_key)
-                    if audio is not None:
-                        cache_source = "persistent-cache"
-                        self.audio_cache.put(cache_key, audio)
+            audio, cache_source = _read_cached_audio(
+                self.audio_cache,
+                self.persistent_audio_cache,
+                cache_key,
+                persistent_key,
+                cache_policy,
+            )
             if request.cancellation_requested():
                 completion = SynthesisCompletion.CANCELLED
                 audio = None
@@ -1130,17 +1146,15 @@ class PocketTTSVoiceRouterBackend:
         voice_key, source = self._resolve_voice_source(request.voice)
         cache_key = voice_key, spoken_text
         persistent_key = self._persistent_cache_key(voice_key, spoken_text, source)
-        may_read_cache = cache_policy is SynthesisCachePolicy.USE
-        cached_audio = self.audio_cache.get(cache_key) if may_read_cache else None
-        cache_source = "memory-cache" if cached_audio is not None else ""
-        if cached_audio is None and may_read_cache:
-            cached_audio = self.persistent_audio_cache.get(persistent_key)
-            if cached_audio is not None:
-                cache_source = "persistent-cache"
-                self.audio_cache.put(cache_key, cached_audio)
+        cached_audio, cache_source = _read_cached_audio(
+            self.audio_cache,
+            self.persistent_audio_cache,
+            cache_key,
+            persistent_key,
+            cache_policy,
+        )
         voice_state = None
         if cached_audio is None:
-            cache_source = "fresh-generation"
             with self.model_lock:
                 resolved_voice_key, voice_state = self._resolve_voice_state(
                     request.voice
@@ -1835,17 +1849,15 @@ class MossTTSVoiceRouterBackend:
             generation_profile=profile,
             generation_options=generation_options,
         )
-        may_read_cache = cache_policy is SynthesisCachePolicy.USE
-        cached_audio = self.audio_cache.get(cache_key) if may_read_cache else None
-        cache_source: str = "memory-cache" if cached_audio is not None else ""
-        if cached_audio is None and may_read_cache:
-            cached_audio = self.persistent_audio_cache.get(persistent_key)
-            if cached_audio is not None:
-                cache_source = "persistent-cache"
-                self.audio_cache.put(cache_key, cached_audio)
+        cached_audio, cache_source = _read_cached_audio(
+            self.audio_cache,
+            self.persistent_audio_cache,
+            cache_key,
+            persistent_key,
+            cache_policy,
+        )
         prompt_audio_codes = None
         if cached_audio is None:
-            cache_source = "fresh-generation"
             with self.model_lock:
                 resolved_voice_key, prompt_audio_codes = self._resolve_prompt_codes(
                     request.voice

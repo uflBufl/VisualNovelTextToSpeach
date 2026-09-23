@@ -27,6 +27,7 @@ from vntts.document_identity import is_lowercase_sha256
 from vntts.live_replay import (
     LiveReplayRunner,
     ReplayRecognizer,
+    _read_contained_file,
     load_live_replay_corpus,
 )
 from vntts.live_sequence import LiveSequenceEvent, LiveSequencePlan
@@ -1005,28 +1006,11 @@ def _read_regular_file(value: PathInput, label: str) -> tuple[Path, bytes]:
 
 
 def _read_contained(root: PathInput, value: object, label: str) -> tuple[str, bytes]:
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
-        raise SequenceReplaySealError(f"{label} must use a contained relative path")
-    relative = PurePosixPath(value)
-    if relative.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative.parts
-    ):
-        raise SequenceReplaySealError(f"{label} must use a contained relative path")
-    root = Path(root).resolve()
-    current = root
-    for part in relative.parts:
-        current /= part
-        if current.is_symlink():
-            raise SequenceReplaySealError(f"{label} path must not contain symlinks")
     try:
-        path = current.resolve()
-        path.relative_to(root)
+        _path, relative, payload = _read_contained_file(root, value, label)
     except (OSError, ValueError) as error:
-        raise SequenceReplaySealError(
-            f"{label} leaves its capture directory"
-        ) from error
-    _path, payload = _read_regular_file(path, label)
-    return relative.as_posix(), payload
+        raise SequenceReplaySealError(str(error)) from error
+    return relative, payload
 
 
 def _required_sha256(value: object, label: str) -> str:

@@ -148,7 +148,9 @@ from vntts.authoring.workspace_config import (
     selected_voice_manifest_path,
     workspace_audio_event_spoken_projection_queue_ids,
     workspace_config_fingerprint,
+    workspace_id_for_config,
     workspace_missing_voice_policy,
+    workspace_successor_config_fingerprint,
 )
 from vntts.authoring.workspace_foundation import (
     copy_workspace_tree_snapshot,
@@ -504,9 +506,7 @@ def _resume_identity_and_document(
         failure_reference_binding=failure_reference_binding,
         queue_extension=queue_extension,
     )
-    workspace_id = (
-        f"resume-{source.import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
-    )
+    workspace_id = workspace_id_for_config(source.import_id, config_fingerprint)
     destination = _within(root, Path(workspace_id), "Workspace destination")
     for existing in root.iterdir():
         if (
@@ -711,34 +711,16 @@ def _failure_reference_workspace_document(
         "base_workspace_sha256": workspace_sha256,
         "base_state_sha256": state_sha256,
     }
-    fingerprint = _workspace_config_fingerprint(
-        _required_text(
-            _json_document(base.get("source"), "Workspace source").get("import_id"),
-            "Workspace import ID",
-        ),
-        base.get("story_index"),
-        base.get("voice_manifest"),
-        _required_text(base.get("narrator_character"), "Narrator character"),
-        _json_document(base.get("run_config"), "Workspace run configuration"),
-        base.get("carry_forward"),
-        base.get("outcome_merge"),
-        config,
-        base.get("terminal_conflict_merge"),
-        base.get("config_rebase"),
-        base.get("audio_event_composition"),
-        base.get("explicit_fallback_merge"),
-        base.get("known_role_live_fallback"),
-        base.get("audio_event_omission"),
-        base.get("audio_event_projection_fallback"),
-        base.get("reviewed_waveform_publication"),
-        base.get("reviewed_rejection_live_fallback"),
-        queue_extension=base.get("queue_extension"),
-    )
     import_id = _required_text(
         _json_document(base.get("source"), "Workspace source").get("import_id"),
         "Workspace import ID",
     )
-    workspace_id = f"resume-{import_id.removeprefix('legacy-')}-{fingerprint[:16]}"
+    fingerprint = workspace_successor_config_fingerprint(
+        base,
+        import_id,
+        overlays={"failure_reference_binding": config},
+    )
+    workspace_id = workspace_id_for_config(import_id, fingerprint)
     workspace = copy.deepcopy(base)
     workspace.update(
         {
@@ -1410,8 +1392,6 @@ def _audio_event_workspace_document(
 ) -> tuple[JsonDocument, Path, WorkspaceDocument]:
     base_source = _json_document(base.get("source"), "Workspace source")
     import_id = _required_text(base_source.get("import_id"), "Workspace import ID")
-    narrator = _required_text(base.get("narrator_character"), "Narrator character")
-    run_config = _json_document(base.get("run_config"), "Workspace run config")
     config = {
         "schema": AUDIO_EVENT_WORKSPACE_SCHEMA,
         "schema_version": AUDIO_EVENT_WORKSPACE_VERSION,
@@ -1431,27 +1411,12 @@ def _audio_event_workspace_document(
         "base_audio_path": "inputs/audio-event-base/rejected.wav",
         "base_audio_sha256": audio_sha256,
     }
-    fingerprint = _workspace_config_fingerprint(
+    fingerprint = workspace_successor_config_fingerprint(
+        base,
         import_id,
-        base.get("story_index"),
-        base.get("voice_manifest"),
-        narrator,
-        run_config,
-        base.get("carry_forward"),
-        base.get("outcome_merge"),
-        base.get("failure_reference_binding"),
-        base.get("terminal_conflict_merge"),
-        base.get("config_rebase"),
-        config,
-        base.get("explicit_fallback_merge"),
-        base.get("known_role_live_fallback"),
-        base.get("audio_event_omission"),
-        base.get("audio_event_projection_fallback"),
-        base.get("reviewed_waveform_publication"),
-        base.get("reviewed_rejection_live_fallback"),
-        queue_extension=base.get("queue_extension"),
+        overlays={"audio_event_composition": config},
     )
-    workspace_id = f"resume-{import_id.removeprefix('legacy-')}-{fingerprint[:16]}"
+    workspace_id = workspace_id_for_config(import_id, fingerprint)
     workspace = copy.deepcopy(base)
     workspace.update(
         {

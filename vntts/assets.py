@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -212,6 +213,7 @@ class ModelAssetManager:
                 downloaded_bytes = self._download_file(
                     url,
                     output,
+                    expected_length,
                     downloaded_bytes,
                     total_bytes,
                     progress,
@@ -243,6 +245,7 @@ class ModelAssetManager:
         self,
         url: str,
         output: Path,
+        expected_length: int | None,
         downloaded_before: int,
         total_bytes: int,
         progress: Callable[[int | None, str], object],
@@ -259,6 +262,26 @@ class ModelAssetManager:
         with self.opener(request, timeout=60) as response:
             status = getattr(response, "status", None) or response.getcode()
             resumes = existing_bytes > 0 and status == 206
+            resume_total = None
+            if resumes:
+                content_range = re.fullmatch(
+                    r"bytes (\d+)-(\d+)/(\d+)",
+                    response.headers.get("Content-Range", ""),
+                )
+                if (
+                    content_range is None
+                    or int(content_range[1]) != existing_bytes
+                    or int(content_range[2]) < existing_bytes
+                    or int(content_range[2]) + 1 != int(content_range[3])
+                    or (
+                        expected_length is not None
+                        and int(content_range[3]) != expected_length
+                    )
+                ):
+                    raise ModelIntegrityError(
+                        f"Model download returned an invalid resume range: {output.name}"
+                    )
+                resume_total = int(content_range[3])
             mode = "ab" if resumes else "wb"
             if not resumes:
                 existing_bytes = 0
@@ -278,6 +301,10 @@ class ModelAssetManager:
                         else None
                     )
                     progress(percent, f"Downloading {output.name}")
+            if resume_total is not None and current_bytes != resume_total:
+                raise ModelIntegrityError(
+                    f"Model download returned an incomplete resume: {output.name}"
+                )
         partial.replace(output)
         return downloaded_before + output.stat().st_size
 

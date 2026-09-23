@@ -30,6 +30,7 @@ from vntts.pregeneration_generation import OfflineGenerationResult
 from vntts.pregeneration_pack import (
     OfflinePackError,
     OfflinePackPublisher,
+    _copy_file,
     _link_verified_file,
     inspect_story_audio,
     load_saved_pack,
@@ -202,6 +203,19 @@ def fixture(
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_copy_rejects_symlinked_source(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "source.wav"
+            target.write_bytes(b"verified audio")
+            alias = root / "alias.wav"
+            try:
+                alias.symlink_to(target)
+            except OSError:
+                self.skipTest("symlinks are unavailable on this host")
+            with self.assertRaises(OfflinePackError):
+                _copy_file(alias, root / "pack.wav")
+
     def test_incremental_reuse_hard_links_verified_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

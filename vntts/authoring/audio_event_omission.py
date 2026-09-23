@@ -47,7 +47,10 @@ from vntts.authoring.workbench import (
     safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
 )
-from vntts.authoring.workspace_config import workspace_config_fingerprint
+from vntts.authoring.workspace_config import (
+    workspace_id_for_config,
+    workspace_successor_config_fingerprint,
+)
 from vntts.authoring.workspace_foundation import (
     copy_generation_wavs,
     copy_workspace_tree_snapshot,
@@ -212,27 +215,12 @@ def _omission_identity(
     }
     batch_id = canonical_document_sha256(batch_body)
     batch = {**batch_body, "batch_id": batch_id}
-    config_fingerprint = workspace_config_fingerprint(
+    config_fingerprint = workspace_successor_config_fingerprint(
+        selection.base_document,
         selection.import_id,
-        selection.base_document.get("story_index"),
-        selection.base_document.get("voice_manifest"),
-        selection.narrator_character,
-        selection.base_document["run_config"],
-        selection.base_document.get("carry_forward"),
-        selection.base_document.get("outcome_merge"),
-        selection.base_document.get("failure_reference_binding"),
-        selection.base_document.get("terminal_conflict_merge"),
-        selection.base_document.get("config_rebase"),
-        selection.base_document.get("audio_event_composition"),
-        selection.base_document.get("explicit_fallback_merge"),
-        selection.base_document.get("known_role_live_fallback"),
-        batch,
-        selection.base_document.get("audio_event_projection_fallback"),
-        selection.base_document.get("reviewed_waveform_publication"),
-        selection.base_document.get("reviewed_rejection_live_fallback"),
-        queue_extension=selection.base_document.get("queue_extension"),
+        overlays={"audio_event_omission": batch},
     )
-    workspace_id = f"resume-{selection.import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
+    workspace_id = workspace_id_for_config(selection.import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     destination = contained_workspace_path(

@@ -1532,6 +1532,9 @@ class OfflineAudioPreparationDialog(QDialog):
             self.source_status.setText(str(error))
             self.source_status.show()
             return
+        self._select_content(content, "Selected extracted game content is ready.")
+
+    def _select_content(self, content: GameContent, status: str) -> None:
         self._prepared_voice_manifest = None
         self._prepared_voice_job = None
         existing = next(
@@ -1544,13 +1547,10 @@ class OfflineAudioPreparationDialog(QDialog):
         )
         if existing is None:
             self._content = (*self._content, content)
-            self.source.addItem(
-                _content_label(content),
-                content.story_index_sha256,
-            )
+            self.source.addItem(_content_label(content), content.story_index_sha256)
             existing = len(self._content) - 1
         self.source.setCurrentIndex(existing)
-        self.source_status.setText("Selected extracted game content is ready.")
+        self.source_status.setText(status)
         self.source_status.show()
         self.import_options_toggle.setChecked(False)
         self._update_import_options()
@@ -3448,28 +3448,7 @@ class OfflineAudioPreparationDialog(QDialog):
             self.source_status.show()
             return
         assert isinstance(content, GameContent)
-        self._prepared_voice_manifest = None
-        self._prepared_voice_job = None
-        existing = next(
-            (
-                index
-                for index, value in enumerate(self._content)
-                if value.story_index_sha256 == content.story_index_sha256
-            ),
-            None,
-        )
-        if existing is None:
-            self._content = (*self._content, content)
-            self.source.addItem(
-                _content_label(content),
-                content.story_index_sha256,
-            )
-            existing = len(self._content) - 1
-        self.source.setCurrentIndex(existing)
-        self.source_status.setText("Installed game content imported successfully.")
-        self.source_status.show()
-        self.import_options_toggle.setChecked(False)
-        self._update_import_options()
+        self._select_content(content, "Installed game content imported successfully.")
 
     def _set_import_controls(self, enabled: bool) -> None:
         self._refresh_story_statuses()

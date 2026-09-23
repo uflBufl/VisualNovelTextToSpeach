@@ -1295,9 +1295,10 @@ def _verify_prepared_file(path: Path, expected_sha256: str, label: str) -> None:
 
 
 def _copy_file(source: str | Path, destination: Path) -> None:
-    source = Path(source).resolve()
+    source = Path(source)
     if not source.is_file() or source.is_symlink():
         raise OfflinePackError(f"Offline pack source is unsafe: {source}")
+    source = source.resolve()
     before = sha256_file(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)

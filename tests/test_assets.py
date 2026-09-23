@@ -57,7 +57,10 @@ class MemoryOpener:
             return MemoryResponse(
                 data[start:],
                 status=206,
-                headers={"Content-Length": str(len(data) - start)},
+                headers={
+                    "Content-Length": str(len(data) - start),
+                    "Content-Range": f"bytes {start}-{len(data) - 1}/{len(data)}",
+                },
             )
         return MemoryResponse(
             data,
@@ -176,6 +179,35 @@ class ModelAssetManagerTest(unittest.TestCase):
             any(request.get_header("Range") for request in get_requests),
             "Retry should continue from the partial file",
         )
+
+    def test_resume_rejects_a_response_for_the_wrong_range(self):
+        asset = self.create_asset()
+        files = {
+            asset.urls[0]: b"complete-model-weights",
+            asset.urls[1]: b"publisher-hash\n",
+        }
+        correct = MemoryOpener(files)
+
+        def opener(request, timeout):
+            if request.get_header("Range"):
+                return MemoryResponse(
+                    files[request.full_url],
+                    status=206,
+                    headers={"Content-Range": "bytes 0-21/22"},
+                )
+            return correct(request, timeout)
+
+        with TemporaryDirectory() as directory:
+            manager = ModelAssetManager(directory, opener=opener)
+            partial = manager.model_path(asset.name) / "model.pth.part"
+            partial.parent.mkdir(parents=True)
+            partial.write_bytes(b"old")
+
+            with self.assertRaisesRegex(ModelIntegrityError, "invalid resume range"):
+                manager.download(asset.name, asset=asset)
+
+            self.assertEqual(partial.read_bytes(), b"old")
+            self.assertFalse((partial.parent / "vntts-asset.json").exists())
 
     def test_validation_detects_modified_model_file(self):
         asset = self.create_asset()

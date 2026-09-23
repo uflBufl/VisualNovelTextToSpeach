@@ -59,7 +59,10 @@ from vntts.authoring.workbench import (
     safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
 )
-from vntts.authoring.workspace_config import workspace_config_fingerprint
+from vntts.authoring.workspace_config import (
+    workspace_id_for_config,
+    workspace_successor_config_fingerprint,
+)
 from vntts.authoring.workspace_foundation import (
     copy_generation_wavs,
     copy_workspace_tree_snapshot,
@@ -352,27 +355,15 @@ def _known_role_identity(
     }
     batch_id = canonical_document_sha256(batch_body)
     batch = {**batch_body, "batch_id": batch_id}
-    config_fingerprint = workspace_config_fingerprint(
+    config_fingerprint = workspace_successor_config_fingerprint(
+        base_document,
         selection.import_id,
-        base_document.get("story_index"),
-        base_document.get("voice_manifest"),
-        selection.narrator_character,
-        selection.run_config,
-        base_document.get("carry_forward"),
-        base_document.get("outcome_merge"),
-        base_document.get("failure_reference_binding"),
-        base_document.get("terminal_conflict_merge"),
-        base_document.get("config_rebase"),
-        base_document.get("audio_event_composition"),
-        base_document.get("explicit_fallback_merge"),
-        batch,
-        base_document.get("audio_event_omission"),
-        base_document.get("audio_event_projection_fallback"),
-        base_document.get("reviewed_waveform_publication"),
-        base_document.get("reviewed_rejection_live_fallback"),
-        queue_extension=base_document.get("queue_extension"),
+        overlays={
+            "known_role_live_fallback": batch,
+            "run_config": selection.run_config,
+        },
     )
-    workspace_id = f"resume-{selection.import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
+    workspace_id = workspace_id_for_config(selection.import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     destination = contained_workspace_path(

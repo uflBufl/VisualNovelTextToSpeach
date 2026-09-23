@@ -46,7 +46,10 @@ from vntts.authoring.workbench import (
     require_workspace_sha256,
     validate_workspace_provenance_extensions,
 )
-from vntts.authoring.workspace_config import workspace_config_fingerprint
+from vntts.authoring.workspace_config import (
+    workspace_id_for_config,
+    workspace_successor_config_fingerprint,
+)
 from vntts.authoring.workspace_foundation import (
     copy_generation_wavs,
     copy_workspace_tree_snapshot,
@@ -284,30 +287,13 @@ def _explicit_fallback_identity(
     plan: _MergePlan, workspaces_root: str | Path | None
 ) -> _MergeIdentity:
     base_document = plan.base_document
-    import_id, narrator_character = _workspace_creation_fields(base_document)
-    config_fingerprint = workspace_config_fingerprint(
+    import_id = _workspace_import_id(base_document)
+    config_fingerprint = workspace_successor_config_fingerprint(
+        base_document,
         import_id,
-        base_document.get("story_index"),
-        base_document.get("voice_manifest"),
-        narrator_character,
-        base_document["run_config"],
-        base_document.get("carry_forward"),
-        base_document.get("outcome_merge"),
-        base_document.get("failure_reference_binding"),
-        base_document.get("terminal_conflict_merge"),
-        base_document.get("config_rebase"),
-        base_document.get("audio_event_composition"),
-        plan.merge,
-        base_document.get("known_role_live_fallback"),
-        base_document.get("audio_event_omission"),
-        base_document.get("audio_event_projection_fallback"),
-        base_document.get("reviewed_waveform_publication"),
-        base_document.get("reviewed_rejection_live_fallback"),
-        queue_extension=base_document.get("queue_extension"),
+        overlays={"explicit_fallback_merge": plan.merge},
     )
-    workspace_id = (
-        f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
-    )
+    workspace_id = workspace_id_for_config(import_id, config_fingerprint)
     root = Path(workspaces_root or default_workspaces_root()).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     destination = contained_workspace_path(
@@ -652,15 +638,12 @@ def _state_items(state: Mapping[str, object]) -> dict[str, JsonDocument]:
     return cast(dict[str, JsonDocument], items)
 
 
-def _workspace_creation_fields(
-    workspace: Mapping[str, object],
-) -> tuple[str, str]:
+def _workspace_import_id(workspace: Mapping[str, object]) -> str:
     source = workspace.get("source")
     import_id = source.get("import_id") if isinstance(source, dict) else None
-    narrator = workspace.get("narrator_character")
-    if not isinstance(import_id, str) or not isinstance(narrator, str):
+    if not isinstance(import_id, str):
         raise AuthoringWorkbenchError("Explicit fallback base is malformed")
-    return import_id, narrator
+    return import_id
 
 
 def _required_text(value: object, label: str) -> str:
