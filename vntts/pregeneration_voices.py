@@ -585,6 +585,11 @@ class VoicePlanStore:
         )
 
         phase_started, cpu_started = perf_counter(), process_time()
+        person_aliases = (
+            self.voice_library.person_aliases()
+            if self.voice_library is not None
+            else {}
+        )
         groups: list[VoiceGroup] = []
         for group_id, values in grouped.items():
             groups.append(
@@ -597,6 +602,7 @@ class VoicePlanStore:
                     controls,
                     ignore_decisions,
                     saved_groups,
+                    person_aliases,
                 )
             )
             if self.voice_library is not None:
@@ -664,7 +670,7 @@ class VoicePlanStore:
             character, variant_key, assignment_source = role_values
             evidence = _variant_evidence(record)
             line_source = _bound_source_for_record(record, queue_bindings)
-            bound_source = assignment_source or line_source
+            bound_source = assignment_source or (None if variant_key else line_source)
             portrait_image, portrait_image_sha256 = _portrait_snapshot(
                 Path(job.story_index).expanduser().resolve().parent,
                 evidence[0],
@@ -673,7 +679,7 @@ class VoicePlanStore:
             identity = [
                 normalize_character_name(character),
                 normalize_character_name(routing_role),
-                line_source,
+                None if variant_key else line_source,
             ]
             group_id = _digest(identity)
             grouped.setdefault(group_id, []).append(
@@ -794,6 +800,7 @@ class VoicePlanStore:
         controls: SynthesisControls,
         ignore_decisions: bool,
         saved_groups: Sequence[JsonObject],
+        person_aliases: Mapping[str, str],
     ) -> VoiceGroup:
         records = tuple(value[0] for value in values)
         character = values[0][1]
@@ -815,13 +822,32 @@ class VoicePlanStore:
             library=self.voice_library,
             variant_key=variant_key,
         )
+        linked_names = (character,)
+        linked_names += tuple(
+            alias
+            for alias, canonical in person_aliases.items()
+            if normalize_character_name(canonical)
+            == normalize_character_name(character)
+        )
+        archived_sources: list[str] = []
+        if self.voice_library is not None:
+            for alias in linked_names[1:]:
+                archived = self.voice_library.binding(
+                    character, variant_key=f"story-name:{alias}"
+                )
+                if archived is not None and archived.route == "voice":
+                    source_id = voice_binding_source_id(archived)
+                    if source_id is not None:
+                        archived_sources.append(source_id)
         candidate_inventory = _candidate_inventory(
-            routing_role,
+            character,
             bound_source,
             settings,
             registry,
             candidate_variants,
             assignment_source=assignment_source,
+            linked_names=linked_names,
+            archived_sources=archived_sources,
         )
         if self.voice_library is not None:
             for available in candidate_inventory:
@@ -949,7 +975,13 @@ class VoicePlanStore:
             candidate = _candidate_from_source(source_id, registry)
             if _requires_audition(eligible_candidates, records):
                 route = "needs-audition"
-                resolution = "ambiguous-voice-evidence"
+                resolution = (
+                    "linked-reference-needs-preview"
+                    if selected_candidate.match_score < _CLEAR_WINNER_SCORE
+                    else "ambiguous-voice-evidence"
+                )
+                source_id = default_voice_choice_id
+                candidate = None
                 if narrator_candidate is not None:
                     source_id = narrator_candidate.source_id
                     candidate = _candidate_from_source(source_id, registry)
@@ -1188,6 +1220,8 @@ def _candidate_inventory(
     candidate_variants: Sequence[JsonObject],
     *,
     assignment_source: str | None = None,
+    linked_names: Sequence[str] = (),
+    archived_sources: Sequence[str] = (),
 ) -> tuple[VoiceCandidate, ...]:
     assignment = assignment_source
     candidates: dict[str, VoiceCandidate] = {}
@@ -1257,6 +1291,9 @@ def _candidate_inventory(
     if bound_source:
         add(bound_source, 120, "Exact voice binding for this dialogue")
 
+    for source_id in archived_sources:
+        add(source_id, 60, "Earlier voice under another name; preview before choosing")
+
     exact = _candidate_for(
         character,
         settings,
@@ -1267,17 +1304,30 @@ def _candidate_inventory(
         add(exact[0], 90, "Exact character name or known alias")
 
     target = normalize_character_name(character)
+    linked_targets = {
+        target,
+        *(normalize_character_name(name) for name in linked_names),
+    }
     for variant in candidate_variants:
         if (
             not isinstance(variant, dict)
-            or normalize_character_name(variant.get("character", "")) != target
+            or normalize_character_name(variant.get("character", ""))
+            not in linked_targets
         ):
             continue
         voice_character = variant.get("voice_character")
         if not isinstance(voice_character, str) or not voice_character.strip():
             continue
         source_id = f"character:{normalize_character_name(voice_character)}"
-        add(source_id, 90, "Reviewed voice for this character", variant)
+        same_name = normalize_character_name(variant["character"]) == target
+        add(
+            source_id,
+            90 if same_name else 60,
+            "Reviewed voice for this character"
+            if same_name
+            else "Reference from another name; preview before choosing",
+            variant,
+        )
 
     return tuple(
         sorted(
@@ -1480,6 +1530,8 @@ def _candidate_decision_identity(candidate: VoiceCandidate) -> JsonObject:
 def _requires_audition(
     candidates: Sequence[VoiceCandidate], records: Sequence[StoryIndexRecord]
 ) -> bool:
+    if candidates and candidates[0].match_score < _CLEAR_WINNER_SCORE:
+        return True
     if len(candidates) < 2 or len(records) <= 1:
         return False
     first, second = candidates[:2]
