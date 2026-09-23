@@ -42,7 +42,10 @@ from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
-from vntts.authoring.authority import canonical_document_sha256
+from vntts.authoring.authority import (
+    canonical_document_sha256,
+    write_json_document_no_replace,
+)
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     JsonDocument,
@@ -869,7 +872,6 @@ class _PublicationLease:
             "destination": str(self.destination),
             "created_at": _now(),
         }
-        encoded = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
         try:
             with exclusive_advisory_lock(self.guard_path):
                 if _path_exists(self.destination):
@@ -890,15 +892,19 @@ class _PublicationLease:
                             f"Another final game-pack publication owns {self.path}"
                         )
                     self._archive_stale(existing_payload)
-                descriptor = os.open(
-                    self.path,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                    0o600,
-                )
-                with os.fdopen(descriptor, "wb") as stream:
-                    stream.write(encoded)
-                    stream.flush()
-                    os.fsync(stream.fileno())
+                try:
+                    write_json_document_no_replace(
+                        self.path,
+                        payload,
+                        "final game-pack publication lease",
+                        error_type=FinalGamePackError,
+                    )
+                except FinalGamePackError as error:
+                    if isinstance(error.__cause__, FileExistsError):
+                        raise FinalGamePackError(
+                            "Another final game-pack publication acquired the destination"
+                        ) from error
+                    raise
         except FileExistsError as error:
             raise FinalGamePackError(
                 "Another final game-pack publication acquired the destination"

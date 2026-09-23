@@ -1756,6 +1756,30 @@ class AuthoringGamePackTest(unittest.TestCase):
 
             self.assertFalse((root / "final-pack").exists())
 
+    def test_publication_lease_write_failure_leaves_no_blocking_lease(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "final-pack"
+            lease_path = root / ".final-pack.publication.json"
+
+            with (
+                patch(
+                    "vntts.authoring.authority.os.fsync",
+                    side_effect=OSError("injected fsync failure"),
+                ),
+                self.assertRaisesRegex(FinalGamePackError, "injected fsync failure"),
+            ):
+                game_pack_module._PublicationLease(destination).__enter__()
+
+            self.assertFalse(lease_path.exists())
+            with game_pack_module._PublicationLease(destination) as lease:
+                self.assertTrue(lease_path.is_file())
+                self.assertEqual(
+                    json.loads(lease_path.read_text(encoding="utf-8"))["owner"],
+                    lease.owner,
+                )
+            self.assertFalse(lease_path.exists())
+
     def test_stale_publication_recovery_cannot_archive_a_replacement_owner(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
