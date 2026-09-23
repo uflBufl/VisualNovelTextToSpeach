@@ -259,7 +259,7 @@ class ControlDashboardTest(unittest.TestCase):
         )
         self.assertIn("first audio 240 ms", dashboard.latency.text())
         self.assertIn("queue 1", dashboard.latency.text())
-        self.assertTrue(dashboard.live_button.isDefault())
+        self.assertFalse(dashboard.live_button.isDefault())
         self.assertIn("Reading is active", dashboard.action_reason.text())
         dashboard.deleteLater()
 
