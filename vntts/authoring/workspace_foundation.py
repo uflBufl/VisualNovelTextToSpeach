@@ -162,6 +162,59 @@ def copy_generation_wavs(
     return owners
 
 
+def stage_single_base_successor(
+    staging: Path,
+    base_directory: Path,
+    queue_path: Path,
+    state: Mapping[str, object],
+    snapshots: MutableSequence[tuple[Path, str]],
+    *,
+    input_name: str,
+    label: str,
+    wav_label: str,
+    error_type: type[Exception],
+) -> Path:
+    """Snapshot the common immutable inputs of one-base successors."""
+    for tree_name in ("provenance", "inputs"):
+        copy_workspace_tree_snapshot(
+            base_directory / tree_name,
+            staging / tree_name,
+            snapshots,
+            error_type=error_type,
+        )
+    inputs = staging / "inputs" / input_name
+    inputs.mkdir(parents=True)
+    for filename, source, description in (
+        (
+            "base-workspace.json",
+            base_directory / "workspace.json",
+            f"{label} base workspace",
+        ),
+        (
+            "base-generation-state.json",
+            base_directory / "generated-audio/generation-state.json",
+            f"{label} base state",
+        ),
+    ):
+        (inputs / filename).write_bytes(
+            read_regular_file(source, description, error_type=error_type)
+        )
+    (staging / "queue.jsonl").write_bytes(
+        read_regular_file(queue_path, f"{label} queue", error_type=error_type)
+    )
+    output = staging / "generated-audio"
+    output.mkdir()
+    copy_generation_wavs(
+        base_directory,
+        output,
+        state,
+        snapshots,
+        target_label=wav_label,
+        error_type=error_type,
+    )
+    return output
+
+
 __all__ = [
     "contained_path",
     "contained_regular_file",
@@ -172,4 +225,5 @@ __all__ = [
     "read_regular_file",
     "require_sha256",
     "safe_relative_path",
+    "stage_single_base_successor",
 ]

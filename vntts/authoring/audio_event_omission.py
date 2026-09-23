@@ -6,7 +6,6 @@ import copy
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import partial
 from pathlib import Path
 
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -18,7 +17,6 @@ from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
-    process_is_alive,
 )
 from vntts.authoring.bulk_generation import (
     _state_items as _generation_state_items,
@@ -30,9 +28,7 @@ from vntts.authoring.generation_state import (
     AUDIO_EVENT_OMISSION_VERSION,
 )
 from vntts.authoring.publication import (
-    AtomicPublicationError,
-    generation_publication_leases,
-    rename_directory_no_replace,
+    publish_single_base_successor,
     staged_directory,
 )
 from vntts.authoring.workbench import (
@@ -42,7 +38,6 @@ from vntts.authoring.workbench import (
     default_workspaces_root,
     load_workspace_authority,
     load_workspace_json,
-    read_workspace_file_bytes,
     require_workspace_sha256,
     safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
@@ -52,16 +47,9 @@ from vntts.authoring.workspace_config import (
     workspace_successor_config_fingerprint,
 )
 from vntts.authoring.workspace_foundation import (
-    copy_generation_wavs,
-    copy_workspace_tree_snapshot,
+    stage_single_base_successor,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
-
-_copy_base_wavs = partial(
-    copy_generation_wavs,
-    target_label="Audio-event omission WAV",
-    error_type=AuthoringWorkbenchError,
-)
 
 SCHEMA = "vntts.authoring-audio-event-omission-batch"
 SCHEMA_VERSION = 1
@@ -256,34 +244,17 @@ def _stage_omission_workspace(
     selection: _OmissionSelection,
     snapshots: list[tuple[Path, str]],
 ) -> Path:
-    for tree_name in ("provenance", "inputs"):
-        copy_workspace_tree_snapshot(
-            selection.base_directory / tree_name,
-            staging / tree_name,
-            snapshots,
-            error_type=AuthoringWorkbenchError,
-        )
-    omission_inputs = staging / "inputs/audio-event-omission"
-    omission_inputs.mkdir(parents=True)
-    (omission_inputs / "base-workspace.json").write_bytes(
-        read_workspace_file_bytes(
-            selection.base_directory / "workspace.json",
-            "audio-event omission base workspace",
-        )
+    return stage_single_base_successor(
+        staging,
+        selection.base_directory,
+        selection.queue_path,
+        selection.state,
+        snapshots,
+        input_name="audio-event-omission",
+        label="audio-event omission",
+        wav_label="Audio-event omission WAV",
+        error_type=AuthoringWorkbenchError,
     )
-    (omission_inputs / "base-generation-state.json").write_bytes(
-        read_workspace_file_bytes(
-            selection.base_directory / "generated-audio/generation-state.json",
-            "audio-event omission base state",
-        )
-    )
-    (staging / "queue.jsonl").write_bytes(
-        read_workspace_file_bytes(selection.queue_path, "audio-event omission queue")
-    )
-    output = staging / "generated-audio"
-    output.mkdir()
-    _copy_base_wavs(selection.base_directory, output, selection.state, snapshots)
-    return output
 
 
 def _omitted_state(
@@ -363,27 +334,16 @@ def _publish_staged_omission_workspace(
     snapshots: list[tuple[Path, str]],
 ) -> None:
     try:
-        with generation_publication_leases(
-            ((selection.base_directory / "generated-audio", selection.queue_sha256),),
-            process_checker=process_is_alive,
-        ) as leases:
-            if any(
-                (selection.base_directory / "generated-audio").rglob("*.partial.wav")
-            ):
-                raise AuthoringWorkbenchError("Audio-event omission base became active")
-            for path, digest in snapshots:
-                if not path.is_file() or sha256_file(path) != digest:
-                    raise AuthoringWorkbenchError(
-                        "Audio-event omission authority changed before publication"
-                    )
-            leases[0].assert_owned()
-            try:
-                rename_directory_no_replace(staging, identity.destination)
-            except (AtomicPublicationError, OSError) as error:
-                raise AuthoringWorkbenchError(
-                    f"Unable to publish audio-event omission workspace: {error}"
-                ) from error
-            leases[0].mark_committed()
+        publish_single_base_successor(
+            staging,
+            identity.destination,
+            selection.base_directory,
+            selection.queue_sha256,
+            snapshots,
+            label="Audio-event omission",
+            publish_label="audio-event omission",
+            error_type=AuthoringWorkbenchError,
+        )
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
 

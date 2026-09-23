@@ -31,7 +31,7 @@ from vntts.authoring.workbench import (
     list_review_items,
     load_workspace_authority,
 )
-from vntts.authoring.workspace_config import workspace_config_fingerprint
+from vntts.authoring.workspace_config import workspace_successor_config_fingerprint
 from vntts.document_identity import is_lowercase_sha256
 
 COHORT_REVIEW_PLAN_SCHEMA = "vntts.authoring-cohort-review-plan"
@@ -768,25 +768,10 @@ def _validate_bound_workspace_fingerprint(
     ):
         raise CohortReviewError("Workspace configuration is malformed")
     try:
-        current_fingerprint = workspace_config_fingerprint(
+        current_fingerprint = workspace_successor_config_fingerprint(
+            {**workspace, "narrator_character": narrator.strip()},
             import_id,
-            workspace.get("story_index"),
-            workspace.get("voice_manifest"),
-            narrator.strip(),
-            run_config,
-            workspace.get("carry_forward"),
-            workspace.get("outcome_merge"),
-            workspace.get("failure_reference_binding"),
-            workspace.get("terminal_conflict_merge"),
-            workspace.get("config_rebase"),
-            workspace.get("audio_event_composition"),
-            workspace.get("explicit_fallback_merge"),
-            workspace.get("known_role_live_fallback"),
-            workspace.get("audio_event_omission"),
-            workspace.get("audio_event_projection_fallback"),
-            workspace.get("reviewed_waveform_publication"),
-            workspace.get("reviewed_rejection_live_fallback"),
-            queue_extension=workspace.get("queue_extension"),
+            overlays={"run_config": run_config},
         )
     except (TypeError, ValueError) as error:
         raise CohortReviewError("Workspace configuration is malformed") from error

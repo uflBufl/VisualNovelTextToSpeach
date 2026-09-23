@@ -11,7 +11,9 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from vntts.authoring.generation_lease import GenerationLease
+from vntts_artifacts.file_integrity import sha256_file
+
+from vntts.authoring.generation_lease import GenerationLease, process_is_alive
 
 
 class AtomicPublicationError(RuntimeError):
@@ -48,6 +50,37 @@ def generation_publication_leases(
             for output, queue_sha256 in normalized
         )
         yield leases
+
+
+def publish_single_base_successor(
+    staging: Path,
+    destination: Path,
+    base_directory: Path,
+    queue_sha256: str,
+    snapshots: Iterable[tuple[Path, str]],
+    *,
+    label: str,
+    publish_label: str,
+    error_type: type[Exception],
+) -> None:
+    """Publish one immutable successor while its source authority is stable."""
+    output = base_directory / "generated-audio"
+    with generation_publication_leases(
+        ((output, queue_sha256),), process_checker=process_is_alive
+    ) as leases:
+        if any(output.rglob("*.partial.wav")):
+            raise error_type(f"{label} base became active")
+        for path, digest in snapshots:
+            if not path.is_file() or sha256_file(path) != digest:
+                raise error_type(f"{label} authority changed before publication")
+        leases[0].assert_owned()
+        try:
+            rename_directory_no_replace(staging, destination)
+        except (AtomicPublicationError, OSError) as error:
+            raise error_type(
+                f"Unable to publish {publish_label} workspace: {error}"
+            ) from error
+        leases[0].mark_committed()
 
 
 def rename_directory_no_replace(source: str | Path, destination: str | Path) -> None:
@@ -107,6 +140,7 @@ def rename_directory_no_replace(source: str | Path, destination: str | Path) -> 
 __all__ = [
     "AtomicPublicationError",
     "generation_publication_leases",
+    "publish_single_base_successor",
     "rename_directory_no_replace",
     "staged_directory",
 ]

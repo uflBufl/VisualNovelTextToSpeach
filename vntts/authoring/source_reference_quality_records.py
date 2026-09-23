@@ -8,7 +8,7 @@ import json
 import shutil
 import struct
 import zlib
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Iterable, Mapping, MutableSequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -357,6 +357,59 @@ def accepted_source_reference_variants(
     return tuple(accepted)
 
 
+def capture_quality_outcomes(
+    outcomes: Iterable[tuple[JsonObject, object, Path]],
+    state_directory: Path,
+    staging: Path,
+    snapshots: MutableSequence[tuple[Path, str]],
+    *,
+    error_type: type[Exception] = SourceReferenceQualityError,
+    generated_label: str = "Generated evaluation audio",
+) -> tuple[list[JsonObject], list[JsonObject]]:
+    """Copy checksum-bound generated samples and retain other outcomes as evidence."""
+    generated: list[JsonObject] = []
+    excluded: list[JsonObject] = []
+    for common, result, relative in outcomes:
+        queue_id = _capture_text(
+            common.get("queue_id"), "Quality sample queue ID", error_type
+        )
+        result_document = result if isinstance(result, Mapping) else {}
+        if result_document.get("status", "pending") not in {"generated", "approved"}:
+            failure = result_document.get("failure")
+            excluded.append(
+                {
+                    **common,
+                    "status": result_document.get("status", "pending"),
+                    "attempts": result_document.get("attempts", 0),
+                    "error": _optional_text(result_document.get("last_error")),
+                    "completion": _optional_failure_text(failure, "completion"),
+                    "failure_kind": _optional_failure_text(failure, "kind"),
+                }
+            )
+            continue
+        source = contained_regular_file(
+            state_directory,
+            _capture_text(
+                result_document.get("path"),
+                f"{generated_label} {queue_id} path",
+                error_type,
+            ),
+            f"{generated_label} {queue_id}",
+            error_type=error_type,
+        )
+        digest = _capture_sha256(
+            result_document.get("file_sha256"),
+            f"{generated_label} {queue_id} hash",
+            error_type,
+        )
+        if sha256_file(source) != digest:
+            raise error_type(f"{generated_label} changed: {queue_id}")
+        snapshots.append((source, digest))
+        audio = _copy_audio(source, digest, staging / relative)
+        generated.append({**common, "audio": relative.as_posix(), **audio})
+    return generated, excluded
+
+
 def _copy_audio(source: Path, digest: str, destination: Path) -> JsonObject:
     try:
         info = probe_pcm16_mono_wav(source)
@@ -542,6 +595,31 @@ def _required_text(value: object, label: str) -> str:
     return value.strip()
 
 
+def _capture_text(value: object, label: str, error_type: type[Exception]) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise error_type(f"{label.title()} must be non-empty text")
+    return value.strip()
+
+
+def _capture_sha256(value: object, label: str, error_type: type[Exception]) -> str:
+    value = _capture_text(value, label, error_type)
+    if not is_lowercase_sha256(value):
+        raise error_type(f"{label.title()} must be lowercase SHA-256")
+    return value
+
+
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _optional_failure_text(value: object, field: str) -> str | None:
+    return (
+        value.get(field)
+        if isinstance(value, Mapping) and isinstance(value.get(field), str)
+        else None
+    )
+
+
 def _required_sha256(value: object, label: str) -> str:
     value = _required_text(value, label)
     if not is_lowercase_sha256(value):
@@ -589,6 +667,7 @@ __all__ = [
     "SourceReferenceQualityError",
     "SourceReferenceQualityResult",
     "accepted_source_reference_variants",
+    "capture_quality_outcomes",
     "load_source_reference_quality_review",
     "next_pending_quality_variant",
     "quality_review_progress",

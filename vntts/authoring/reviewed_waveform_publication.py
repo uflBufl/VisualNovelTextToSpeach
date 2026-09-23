@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping
-from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -20,7 +19,6 @@ from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
-    process_is_alive,
 )
 from vntts.authoring.generation_manifest import write_generated_manifest_from_state
 from vntts.authoring.generation_state import (
@@ -29,9 +27,7 @@ from vntts.authoring.generation_state import (
     REVIEWED_WAVEFORM_PUBLICATION_VERSION,
 )
 from vntts.authoring.publication import (
-    AtomicPublicationError,
-    generation_publication_leases,
-    rename_directory_no_replace,
+    publish_single_base_successor,
     staged_directory,
 )
 from vntts.authoring.workbench import (
@@ -41,7 +37,6 @@ from vntts.authoring.workbench import (
     default_workspaces_root,
     load_workspace_authority,
     load_workspace_json,
-    read_workspace_file_bytes,
     require_workspace_sha256,
     safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
@@ -52,16 +47,9 @@ from vntts.authoring.workspace_config import (
     workspace_successor_config_fingerprint,
 )
 from vntts.authoring.workspace_foundation import (
-    copy_generation_wavs,
-    copy_workspace_tree_snapshot,
+    stage_single_base_successor,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
-
-_copy_base_wavs = partial(
-    copy_generation_wavs,
-    target_label="Reviewed-waveform WAV",
-    error_type=AuthoringWorkbenchError,
-)
 
 
 def create_reviewed_waveform_publication_workspace(
@@ -264,33 +252,17 @@ def _stage_reviewed_waveform_workspace(
     state: Mapping[str, object],
     snapshots: list[tuple[Path, str]],
 ) -> Path:
-    for tree_name in ("provenance", "inputs"):
-        copy_workspace_tree_snapshot(
-            base_directory / tree_name,
-            staging / tree_name,
-            snapshots,
-            error_type=AuthoringWorkbenchError,
-        )
-    publication_inputs = staging / "inputs/reviewed-waveform"
-    publication_inputs.mkdir(parents=True)
-    (publication_inputs / "base-workspace.json").write_bytes(
-        read_workspace_file_bytes(
-            base_directory / "workspace.json", "reviewed-waveform base workspace"
-        )
+    return stage_single_base_successor(
+        staging,
+        base_directory,
+        queue_path,
+        state,
+        snapshots,
+        input_name="reviewed-waveform",
+        label="reviewed-waveform",
+        wav_label="Reviewed-waveform WAV",
+        error_type=AuthoringWorkbenchError,
     )
-    (publication_inputs / "base-generation-state.json").write_bytes(
-        read_workspace_file_bytes(
-            base_directory / "generated-audio/generation-state.json",
-            "reviewed-waveform base state",
-        )
-    )
-    (staging / "queue.jsonl").write_bytes(
-        read_workspace_file_bytes(queue_path, "reviewed-waveform queue")
-    )
-    output = staging / "generated-audio"
-    output.mkdir()
-    _copy_base_wavs(base_directory, output, state, snapshots)
-    return output
 
 
 def _published_waveform_state(
@@ -352,27 +324,16 @@ def _publish_staged_reviewed_waveform_workspace(
     snapshots: list[tuple[Path, str]],
 ) -> None:
     try:
-        with generation_publication_leases(
-            ((base_directory / "generated-audio", queue_sha256),),
-            process_checker=process_is_alive,
-        ) as leases:
-            if any((base_directory / "generated-audio").rglob("*.partial.wav")):
-                raise AuthoringWorkbenchError(
-                    "Reviewed-waveform publication base became active"
-                )
-            for path, digest in snapshots:
-                if not path.is_file() or sha256_file(path) != digest:
-                    raise AuthoringWorkbenchError(
-                        "Reviewed-waveform authority changed before publication"
-                    )
-            leases[0].assert_owned()
-            try:
-                rename_directory_no_replace(staging, destination)
-            except (AtomicPublicationError, OSError) as error:
-                raise AuthoringWorkbenchError(
-                    f"Unable to publish reviewed-waveform workspace: {error}"
-                ) from error
-            leases[0].mark_committed()
+        publish_single_base_successor(
+            staging,
+            destination,
+            base_directory,
+            queue_sha256,
+            snapshots,
+            label="Reviewed-waveform publication",
+            publish_label="reviewed-waveform",
+            error_type=AuthoringWorkbenchError,
+        )
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
 

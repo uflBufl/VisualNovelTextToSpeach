@@ -33,6 +33,7 @@ from vntts.authoring.source_reference_quality_records import (
     QUALITY_REVIEW_VERSION,
     SourceReferenceQualityResult,
     _copy_audio,
+    capture_quality_outcomes,
     load_source_reference_quality_review,
 )
 from vntts.authoring.source_reference_review import FIXED_EVALUATION_CORPUS
@@ -163,13 +164,27 @@ def publish_composite_quality_review(
             staging / reference_relative,
         )
         reference["audio"] = reference_relative.as_posix()
-        generated, excluded = _copy_review_outcomes(
-            declared_queue_ids,
-            queue_by_id,
-            state_items,
+        generated, excluded = capture_quality_outcomes(
+            (
+                (
+                    {
+                        "queue_id": queue_id,
+                        "evaluation_kind": queue_by_id[queue_id].document.get(
+                            "evaluation_kind"
+                        ),
+                        "text": queue_by_id[queue_id].text,
+                        "text_sha256": queue_by_id[queue_id].text_sha256,
+                    },
+                    state_items.get(queue_id),
+                    Path("audio") / "hotel-composite" / f"generated-{index}.wav",
+                )
+                for index, queue_id in enumerate(declared_queue_ids, start=1)
+            ),
             state_path.parent,
             staging,
             snapshots,
+            error_type=ReferenceCompositeError,
+            generated_label="Generated composite sample",
         )
         session = _composite_quality_session(
             inputs,
@@ -282,69 +297,6 @@ def _load_composite_review_sources(
         affected,
         [(composite_source, composite_sha256), (report_path, report_sha256)],
     )
-
-
-def _copy_review_outcomes(
-    queue_ids: list[str],
-    queue_by_id: dict[str, VoiceGenerationQueueItem],
-    state_items: dict[object, object],
-    state_directory: Path,
-    staging: Path,
-    snapshots: list[Snapshot],
-) -> tuple[list[JsonObject], list[JsonObject]]:
-    generated: list[JsonObject] = []
-    excluded: list[JsonObject] = []
-    for index, queue_id in enumerate(queue_ids, start=1):
-        item = queue_by_id[queue_id]
-        result = state_items.get(queue_id)
-        status = result.get("status") if isinstance(result, dict) else "pending"
-        common = {
-            "queue_id": queue_id,
-            "evaluation_kind": item.document.get("evaluation_kind"),
-            "text": item.text,
-            "text_sha256": item.text_sha256,
-        }
-        if status in {"generated", "approved"}:
-            if not isinstance(result, dict):
-                raise ReferenceCompositeError(
-                    f"Generated composite result is malformed: {queue_id}"
-                )
-            source = _contained_file(
-                state_directory,
-                _text(result.get("path"), f"Generated sample {queue_id} path"),
-            )
-            digest = _sha256(
-                result.get("file_sha256"), f"Generated sample {queue_id} hash"
-            )
-            if sha256_file(source) != digest:
-                raise ReferenceCompositeError(
-                    f"Generated composite sample changed: {queue_id}"
-                )
-            relative = Path("audio") / "hotel-composite" / f"generated-{index}.wav"
-            copied = _copy_audio(source, digest, staging / relative)
-            generated.append({**common, "audio": relative.as_posix(), **copied})
-            snapshots.append((source, digest))
-        else:
-            failure = result.get("failure", {}) if isinstance(result, dict) else {}
-            excluded.append(
-                {
-                    **common,
-                    "status": status,
-                    "attempts": result.get("attempts", 0)
-                    if isinstance(result, dict)
-                    else 0,
-                    "error": result.get("last_error")
-                    if isinstance(result, dict)
-                    else None,
-                    "completion": failure.get("completion")
-                    if isinstance(failure, dict)
-                    else None,
-                    "failure_kind": failure.get("kind")
-                    if isinstance(failure, dict)
-                    else None,
-                }
-            )
-    return generated, excluded
 
 
 def _composite_quality_session(
