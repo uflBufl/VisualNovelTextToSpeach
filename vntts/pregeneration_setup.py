@@ -729,13 +729,27 @@ class PregenerationJobStore:
         return bool(self.published_packs(job))
 
     def published_packs(self, job: PregenerationJob) -> tuple[Path, ...]:
-        root = self.path_for(job.job_id).parent / "game-packs"
-        if not root.is_dir():
+        job_directory = self.path_for(job.job_id).parent
+        root = job_directory / "game-packs"
+        if (
+            not root.is_dir()
+            or any(
+                path.is_symlink() or path.is_junction()
+                for path in (job_directory, root)
+            )
+        ):
             return ()
         manifests: list[Path] = []
         for manifest in root.glob("pack-*/game-pack.json"):
             identity = manifest.parent.name.removeprefix("pack-")
-            if len(identity) == 24 and manifest.is_file():
+            if (
+                len(identity) == 24
+                and manifest.is_file()
+                and not any(
+                    path.is_symlink() or path.is_junction()
+                    for path in (manifest.parent, manifest)
+                )
+            ):
                 try:
                     int(identity, 16)
                 except ValueError:

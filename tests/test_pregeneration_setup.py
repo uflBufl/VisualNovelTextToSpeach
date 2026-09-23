@@ -17,6 +17,7 @@ from vntts_artifacts.atomic_io import atomic_write_json  # noqa: E402
 from vntts_artifacts.file_integrity import sha256_file  # noqa: E402
 from vntts_artifacts.story_index import load_story_index_document  # noqa: E402
 
+from tests.symlink_support import symlink_or_skip  # noqa: E402
 from vntts.document_identity import canonical_document_sha256  # noqa: E402
 from vntts.game_content_importer import (  # noqa: E402
     GameContentImportCancelled,
@@ -558,6 +559,35 @@ class PregenerationSetupTest(unittest.TestCase):
 
             store.mark_prepared(rhiannon)
             self.assertEqual(store.prepared_story_ids(content), {"main-1", "rhiannon"})
+
+    def test_published_packs_reject_symlinked_path_components(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            content = inspect_story_index(write_story_index(root / "content"))
+            store = PregenerationJobStore(root / "jobs")
+            job = store.create_or_resume(content, ("main-1",))
+            job_directory = store.path_for(job.job_id).parent
+            game_packs = job_directory / "game-packs"
+            pack_directory = game_packs / f"pack-{'a' * 24}"
+            manifest = pack_directory / "game-pack.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}", encoding="utf-8")
+
+            self.assertEqual(store.published_packs(job), (manifest,))
+            for path, target_is_directory in (
+                (job_directory, True),
+                (game_packs, True),
+                (pack_directory, True),
+                (manifest, False),
+            ):
+                outside = root / f"outside-{path.name}"
+                path.rename(outside)
+                symlink_or_skip(path, outside, target_is_directory=target_is_directory)
+                self.assertEqual(store.published_packs(job), ())
+                path.unlink()
+                outside.rename(path)
+
+            self.assertEqual(store.published_packs(job), (manifest,))
 
 
 class OfflineAudioPreparationDialogTest(unittest.TestCase):
