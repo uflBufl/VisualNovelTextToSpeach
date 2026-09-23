@@ -731,12 +731,8 @@ class PregenerationJobStore:
     def published_packs(self, job: PregenerationJob) -> tuple[Path, ...]:
         job_directory = self.path_for(job.job_id).parent
         root = job_directory / "game-packs"
-        if (
-            not root.is_dir()
-            or any(
-                path.is_symlink() or path.is_junction()
-                for path in (job_directory, root)
-            )
+        if not root.is_dir() or any(
+            path.is_symlink() or path.is_junction() for path in (job_directory, root)
         ):
             return ()
         manifests: list[Path] = []

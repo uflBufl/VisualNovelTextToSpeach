@@ -126,7 +126,7 @@ def process_started_at(pid: object) -> str | None:
 
     try:
         return f"psutil:{psutil.Process(process_id).create_time()}"
-    except (psutil.Error, OSError):
+    except psutil.Error, OSError:
         return None
 
 
