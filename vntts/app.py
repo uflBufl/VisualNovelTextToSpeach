@@ -1,5 +1,6 @@
 import argparse
 import sys
+from collections.abc import Callable
 from dataclasses import asdict
 from multiprocessing import freeze_support
 from pathlib import Path
@@ -171,7 +172,7 @@ application_name = "Visual Novel Text to Speech"
 default_xtts_model = "tts_models/multilingual/multi-dataset/xtts_v2"
 
 
-def _onboarding_preview(text):
+def _onboarding_preview(text: str) -> str:
     preview = " ".join(text.split())
     return f"{preview[:157]}..." if len(preview) > 160 else preview
 
@@ -2762,14 +2763,13 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                             progress=self.signals.onboarding_test_progress.emit,
                             cancel_event=cancel_event,
                         )
-                    except ModelDownloadCancelled as error:
-                        self.signals.onboarding_test_finished.emit(False, str(error))
-                        return
                     except Exception as error:
-                        self.signals.onboarding_test_finished.emit(
-                            False,
-                            f"Model download or verification failed: {error}",
+                        message = (
+                            str(error)
+                            if isinstance(error, ModelDownloadCancelled)
+                            else f"Model download or verification failed: {error}"
                         )
+                        self.signals.onboarding_test_finished.emit(False, message)
                         return
                 if cancelled():
                     return
@@ -2817,17 +2817,20 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
                 finally:
                     self._onboarding_test_active = False
 
-        def run_owned_test():
-            try:
-                self.session_owner.run(
-                    generation, lambda _cancellation: run_test(), None
-                )
-            finally:
-                self._onboarding_test_active = False
+        Thread(
+            target=lambda: self._run_owned_onboarding_test(generation, run_test),
+            daemon=True,
+        ).start()
 
-        Thread(target=run_owned_test, daemon=True).start()
+    def _run_owned_onboarding_test(
+        self, generation: int, run_test: Callable[[], None]
+    ) -> None:
+        try:
+            self.session_owner.run(generation, lambda _cancellation: run_test(), None)
+        finally:
+            self._onboarding_test_active = False
 
-    def cancel_onboarding_download(self):
+    def cancel_onboarding_download(self) -> None:
         self.session_owner.cancel()
         self.set_status("Cancelling setup test in background...")
 
@@ -3450,7 +3453,10 @@ class TrayApplication(ConfigurationApplyMixin, DurableSettingsMixin, QObject):
         preparation.apply_narrator_settings(candidate, voice_changed=True)
         if dialog.select_affected_after_save is not True:
             return False
-        preparation.select_voice_affected_stories(dialog._impact_results)
+        results = dialog._impact_results
+        if results is None:
+            return False
+        preparation.select_voice_affected_stories(results)
         return True
 
     def _narrator_finished(self, result):

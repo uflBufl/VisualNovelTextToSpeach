@@ -10,10 +10,10 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING
 
-from vntts_artifacts.file_integrity import sha256_file
-
-from vntts.authoring.generation_lease import GenerationLease, process_is_alive
+if TYPE_CHECKING:
+    from vntts.authoring.generation_lease import GenerationLease
 
 
 class AtomicPublicationError(RuntimeError):
@@ -34,6 +34,8 @@ def generation_publication_leases(
     process_checker: Callable[[object], bool],
 ) -> Iterator[tuple[GenerationLease, ...]]:
     """Hold generation leases for a stable, deadlock-free source set."""
+    from vntts.authoring.generation_lease import GenerationLease
+
     normalized = sorted(
         {(Path(output).resolve(), queue_sha256) for output, queue_sha256 in sources},
         key=lambda item: str(item[0]),
@@ -64,6 +66,10 @@ def publish_single_base_successor(
     error_type: type[Exception],
 ) -> None:
     """Publish one immutable successor while its source authority is stable."""
+    from vntts_artifacts.file_integrity import sha256_file
+
+    from vntts.authoring.generation_lease import process_is_alive
+
     output = base_directory / "generated-audio"
     with generation_publication_leases(
         ((output, queue_sha256),), process_checker=process_is_alive

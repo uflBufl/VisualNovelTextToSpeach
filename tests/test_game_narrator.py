@@ -1219,7 +1219,7 @@ class GameNarratorTest(unittest.TestCase):
         pool = ManualThreadPool()
         original = AppSettings(
             speech_backend="moss-tts",
-            tts_model="custom-moss-model",
+            tts_model="custom-moss-model.gguf",
             tts_profile="natural",
         )
         dialog = GameNarratorDialog(
@@ -1238,7 +1238,7 @@ class GameNarratorTest(unittest.TestCase):
         self.assertFalse(dialog.save_button.isEnabled())
         self.assertIn("change the engine in Settings", dialog.status.text())
         self.assertEqual(dialog._settings().speech_backend, "moss-tts")
-        self.assertEqual(dialog._settings().tts_model, "custom-moss-model")
+        self.assertEqual(dialog._settings().tts_model, "custom-moss-model.gguf")
         self.assertEqual(dialog._settings().tts_profile, "natural")
         dialog.reject()
         self.run_task(pool)

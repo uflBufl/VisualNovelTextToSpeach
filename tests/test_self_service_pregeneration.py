@@ -226,7 +226,7 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
         original = AppSettings(voice_manifest=str(manifest))
         selected = original.updated(
             speech_backend="moss-tts",
-            tts_model="selected/model",
+            tts_model="selected-model.gguf",
         )
 
         def choose_narrator(*_args, **_kwargs):
@@ -605,17 +605,17 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn("Engine:", plain_label_text(dialog.narrator_status))
             dialog.copy_narrator_details.click()
             self.assertIn(
-                engine_model_label("moss-tts", "selected/model"),
+                engine_model_label("moss-tts", "selected-model.gguf"),
                 self.application.clipboard().text(),
             )
             self.assertEqual(dialog.engine_choice.currentData(), "moss-tts")
-            self.assertEqual(dialog.model_choice.text(), "selected/model")
+            self.assertEqual(dialog.model_choice.text(), "selected-model.gguf")
 
             dialog.continue_button.click()
             self._run_tasks(pool)
             self.assertTrue(dialog._awaiting_voice_confirmation)
             self.assertEqual(dialog.voice_plan().synthesis_backend, "moss-tts")
-            self.assertEqual(dialog.voice_plan().synthesis_model, "selected/model")
+            self.assertEqual(dialog.voice_plan().synthesis_model, "selected-model.gguf")
             self.assertNotEqual(dialog.generation_input().identity, old_input.identity)
             self.assertTrue(old_input.directory.exists())
             self.assertTrue(dialog.narrator_controls.isHidden())
@@ -640,8 +640,8 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             dialog.engine_choice.setCurrentIndex(
                 dialog.engine_choice.findData("moss-tts")
             )
-            dialog.model_choice.setText("selected/model")
-            self.assertEqual(dialog.settings.tts_model, "selected/model")
+            dialog.model_choice.setText("selected-model.gguf")
+            self.assertEqual(dialog.settings.tts_model, "selected-model.gguf")
             self.assertEqual(settings.speech_backend, "pocket-tts")
             dialog.select_all_button.click()
             self.assertIn("Stories:", plain_label_text(dialog.story_context))
@@ -662,7 +662,9 @@ class SelfServicePregenerationJourneyTest(unittest.TestCase):
             self.assertIn("Source:", plain_label_text(dialog.story_context))
             self.assertTrue(dialog.copy_progress_configuration.isVisibleTo(dialog))
             dialog.copy_progress_configuration.click()
-            self.assertIn("Model: selected/model", self.application.clipboard().text())
+            self.assertIn(
+                "Model: selected-model.gguf", self.application.clipboard().text()
+            )
             self.assertIn(str(content.story_index), self.application.clipboard().text())
             dialog.reject()
             dialog.deleteLater()
