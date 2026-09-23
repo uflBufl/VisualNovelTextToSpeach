@@ -42,7 +42,9 @@ class RelativePathContractTest(unittest.TestCase):
                 with self.subTest(validate=validate.__module__, value=value):
                     with self.assertRaises(error_type):
                         validate(value, "Audio")
-            self.assertEqual(validate("audio/voice.wav", "Audio").as_posix(), "audio/voice.wav")
+            self.assertEqual(
+                validate("audio/voice.wav", "Audio").as_posix(), "audio/voice.wav"
+            )
 
 
 if __name__ == "__main__":
