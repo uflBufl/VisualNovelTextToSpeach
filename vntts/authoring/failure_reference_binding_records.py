@@ -12,7 +12,7 @@ from vntts_artifacts.file_integrity import sha256_file
 
 from vntts.authoring.source_reference_bindings import queue_voice_overrides_sha256
 from vntts.document_identity import canonical_document_sha256
-from vntts.path_safety import contained_regular_file
+from vntts.path_safety import contained_regular_file, safe_relative_path
 
 FAILURE_REFERENCE_BINDING_SCHEMA = "vntts.authoring-failure-reference-binding"
 FAILURE_REFERENCE_BINDING_VERSION = 2
@@ -412,14 +412,9 @@ def _contained_regular_file(
 def _safe_relative(value: object, label: str) -> PurePosixPath:
     if isinstance(value, PurePosixPath):
         value = value.as_posix()
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
-        raise FailureReferenceBindingError(f"{label} must be a safe relative path")
-    relative = PurePosixPath(value.strip())
-    if relative.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative.parts
-    ):
-        raise FailureReferenceBindingError(f"{label} must be a safe relative path")
-    return relative
+    return PurePosixPath(
+        *safe_relative_path(value, label, error_type=FailureReferenceBindingError).parts
+    )
 
 
 def _text(value: object, label: str) -> str:

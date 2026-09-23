@@ -9,10 +9,20 @@ from PySide6.QtWidgets import (
     QApplication,
     QFormLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QSizePolicy,
     QWidget,
 )
+
+
+def add_composite_form_row(
+    form: QFormLayout, label_text: str, field: QWidget, field_layout: QLayout
+) -> QLabel:
+    label = QLabel(label_text)
+    label.setBuddy(field)
+    form.addRow(label, field_layout)
+    return label
 
 
 def make_text_copyable(root: QWidget) -> None:

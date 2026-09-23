@@ -39,6 +39,7 @@ from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationSetupError,
     inspect_story_index,
+    load_verified_story_index_document,
 )
 from vntts.subprocess_utils import last_output_line, terminate_process
 from vntts.voices import is_narrator, synthesis_character_for_line
@@ -674,18 +675,14 @@ def _candidate_roles(
 ) -> tuple[str, ...]:
     story_index = Path(job.story_index).expanduser().resolve()
     try:
-        if sha256_file(story_index) != job.story_index_sha256:
-            raise GameContentImportError(
-                "Selected dialogue changed before character voices were prepared"
-            )
-        document = load_story_index_document(story_index)
+        document = load_verified_story_index_document(
+            story_index, job.story_index_sha256
+        )
         available = (
             _cached_playable_voice_roles(Path(reference_index))
             if reference_index is not None and Path(reference_index).exists()
             else _playable_voice_roles(document)
         )
-    except GameContentImportError:
-        raise
     except (OSError, StoryIndexError, ValueError) as error:
         raise GameContentImportError(
             f"Unable to inspect selected character voices: {error}"

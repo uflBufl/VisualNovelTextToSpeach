@@ -99,6 +99,43 @@ class RuntimeControlState:
         return reasons.get(control, "Control is unavailable in the current state.")
 
 
+def _apply_transport_capabilities(
+    state: RuntimeControlState,
+    *,
+    read_button: QPushButton,
+    live_button: QPushButton,
+    pause_button: QPushButton,
+    skip_button: QPushButton,
+    repeat_button: QPushButton,
+    stop_button: QPushButton,
+) -> None:
+    read_button.setEnabled(state.can_read)
+    live_button.setEnabled(state.can_toggle_live)
+    pause_button.setEnabled(state.can_pause)
+    skip_button.setEnabled(state.can_skip)
+    repeat_button.setEnabled(state.can_replay)
+    stop_button.setEnabled(state.can_emergency_stop)
+    for button, enabled, control in (
+        (pause_button, state.can_pause, "pause"),
+        (skip_button, state.can_skip, "skip"),
+        (repeat_button, state.can_replay, "replay"),
+        (stop_button, state.can_emergency_stop, "emergency"),
+    ):
+        button.setToolTip("" if enabled else state.reason_for(control))
+
+
+def _set_live_button_presentation(button: QPushButton, running: bool) -> None:
+    button.setText("Stop reading" if running else "Start reading")
+    button.setDefault(not running)
+    button.setStyleSheet("" if running else "font-weight: 700;")
+    button.setAccessibleDescription(
+        "Stop following new dialogue; queued speech may finish. "
+        "Use Emergency stop to cancel playback immediately."
+        if running
+        else "Start following dialogue in the game"
+    )
+
+
 class ControlDashboard(QMainWindow):
     main_section_changed = Signal(str)
     reading_setup_requested = Signal()
@@ -853,24 +890,19 @@ class ControlDashboard(QMainWindow):
         self.prepare_reading_button.setText(
             "Select game window" if window_problem else "Set up reading"
         )
-        self.read_button.setEnabled(state.can_read)
-        self.live_button.setEnabled(state.can_toggle_live)
-        self.pause_button.setEnabled(state.can_pause)
-        self.skip_button.setEnabled(state.can_skip)
-        self.repeat_button.setEnabled(state.can_replay)
-        self.stop_button.setEnabled(state.can_emergency_stop)
+        _apply_transport_capabilities(
+            state,
+            read_button=self.read_button,
+            live_button=self.live_button,
+            pause_button=self.pause_button,
+            skip_button=self.skip_button,
+            repeat_button=self.repeat_button,
+            stop_button=self.stop_button,
+        )
         self.sequence_resync_button.setEnabled(state.ready)
         self.sequence_expected_button.setEnabled(
             state.ready and self._sequence_expected_candidate_count > 0
         )
-        disabled_controls = (
-            (self.pause_button, state.can_pause, "pause"),
-            (self.skip_button, state.can_skip, "skip"),
-            (self.repeat_button, state.can_replay, "replay"),
-            (self.stop_button, state.can_emergency_stop, "emergency"),
-        )
-        for button, enabled, control in disabled_controls:
-            button.setToolTip("" if enabled else state.reason_for(control))
         if state.ready:
             self._set_action_reason(
                 "Ready. Playback controls activate when dialogue is speaking, "
@@ -900,7 +932,7 @@ class ControlDashboard(QMainWindow):
         if running:
             self.show_reading()
         self.mode.setText("Reading in game" if running else "Stopped")
-        self.live_button.setText("Stop reading" if running else "Start reading")
+        _set_live_button_presentation(self.live_button, running)
         if self._ready:
             self._set_action_reason(
                 "Reading is active; use playback controls or stop reading."
@@ -1178,25 +1210,20 @@ class CompactController(QWidget):
 
     def set_runtime_controls(self, state: RuntimeControlState) -> None:
         self._ready = state.ready
-        self.read_button.setEnabled(state.can_read)
-        self.live_button.setEnabled(state.can_toggle_live)
-        self.pause_button.setEnabled(state.can_pause)
-        self.skip_button.setEnabled(state.can_skip)
-        self.repeat_button.setEnabled(state.can_replay)
-        self.stop_button.setEnabled(state.can_emergency_stop)
+        _apply_transport_capabilities(
+            state,
+            read_button=self.read_button,
+            live_button=self.live_button,
+            pause_button=self.pause_button,
+            skip_button=self.skip_button,
+            repeat_button=self.repeat_button,
+            stop_button=self.stop_button,
+        )
         self.sequence_expected_button.setEnabled(
             state.ready
             and not self.sequence_expected_button.isHidden()
             and self._sequence_expected_candidate_count > 0
         )
-        disabled_controls = (
-            (self.pause_button, state.can_pause, "pause"),
-            (self.skip_button, state.can_skip, "skip"),
-            (self.repeat_button, state.can_replay, "replay"),
-            (self.stop_button, state.can_emergency_stop, "emergency"),
-        )
-        for button, enabled, control in disabled_controls:
-            button.setToolTip("" if enabled else state.reason_for(control))
         if state.ready:
             self._set_action_reason(
                 "Ready. Playback controls activate as dialogue state changes."
@@ -1222,7 +1249,7 @@ class CompactController(QWidget):
     def set_live(self, running: bool) -> None:
         self._live = bool(running)
         self.mode.setText("Reading" if running else "Stopped")
-        self.live_button.setText("Stop reading" if running else "Start reading")
+        _set_live_button_presentation(self.live_button, running)
         if self._ready:
             self._set_action_reason(
                 "Reading active; playback controls are available."

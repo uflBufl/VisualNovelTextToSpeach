@@ -59,6 +59,7 @@ from vntts.chapter_voice_preload import (
 from vntts.document_identity import is_lowercase_sha256
 from vntts.game_pack import GamePackImport, import_game_pack
 from vntts.generated_audio import GeneratedAudioLibrary
+from vntts.path_safety import safe_relative_path
 from vntts.pregeneration_contract import (
     OfflineGenerationCancelled,
     OfflineGenerationError,
@@ -1351,14 +1352,9 @@ def _link_verified_file(
 
 
 def _safe_relative(value: object, label: str) -> PurePosixPath:
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
-        raise OfflinePackError(f"{label} path is invalid")
-    relative = PurePosixPath(value)
-    if relative.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative.parts
-    ):
-        raise OfflinePackError(f"{label} leaves its component directory")
-    return relative
+    return PurePosixPath(
+        *safe_relative_path(value, label, error_type=OfflinePackError).parts
+    )
 
 
 def _load_existing(

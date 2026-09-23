@@ -47,6 +47,8 @@ from vntts.authoring.source_reference_quality_records import (
 from vntts.authoring.source_reference_review import (
     REFERENCE_EVALUATION_SCHEMA,
     REFERENCE_EVALUATION_VERSION,
+    SourceReferenceReviewError,
+    _variant_evaluation_queue_ids,
     load_source_reference_plan,
 )
 from vntts.cli import cli_error, cli_success
@@ -369,9 +371,11 @@ def _stage_quality_outcomes(
     generated: list[JsonObject] = []
     excluded: list[JsonObject] = []
     contexts: list[JsonObject] = []
-    for item_index, (expected_kind, queue_id) in enumerate(
-        _variant_queue_ids(variant, variant_id)
-    ):
+    try:
+        queue_ids = _variant_evaluation_queue_ids(variant, variant_id)
+    except SourceReferenceReviewError as error:
+        raise SourceReferenceQualityError(str(error)) from error
+    for item_index, (expected_kind, queue_id) in enumerate(queue_ids):
         _stage_quality_outcome(
             variant_id,
             cluster,
@@ -386,38 +390,6 @@ def _stage_quality_outcomes(
             contexts,
         )
     return generated, excluded, contexts
-
-
-def _variant_queue_ids(variant: JsonObject, variant_id: str) -> list[tuple[str, str]]:
-    queue_ids: list[tuple[str, str]] = []
-    source_match_queue_id = variant.get("source_match_queue_id")
-    if source_match_queue_id is not None:
-        queue_ids.append(
-            (
-                "source-match",
-                _required_text(
-                    source_match_queue_id,
-                    f"variant {variant_id} source-match queue ID",
-                ),
-            )
-        )
-    fixed = variant.get("fixed_queue_ids")
-    if not isinstance(fixed, list):
-        raise SourceReferenceQualityError(
-            f"Variant {variant_id} fixed queue IDs must be a list"
-        )
-    queue_ids.extend(
-        (
-            f"fixed-{index}",
-            _required_text(value, f"variant {variant_id} fixed queue ID"),
-        )
-        for index, value in enumerate(fixed, start=1)
-    )
-    if len(queue_ids) != len({queue_id for _kind, queue_id in queue_ids}):
-        raise SourceReferenceQualityError(
-            f"Variant {variant_id} queue IDs are duplicated"
-        )
-    return queue_ids
 
 
 def _stage_quality_outcome(

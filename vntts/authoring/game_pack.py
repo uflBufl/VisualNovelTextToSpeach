@@ -73,6 +73,7 @@ from vntts.authoring.source_reference_bindings import (
     queue_voice_overrides_from_manifest,
     queue_voice_overrides_sha256,
 )
+from vntts.path_safety import safe_relative_path
 from vntts.source_audio_semantics import (
     SourceAudioSemanticEvidence,
     SourceAudioSemanticEvidenceError,
@@ -1346,14 +1347,9 @@ def _contained_source(root: str | Path, relative: PurePosixPath, label: str) -> 
 
 
 def _safe_relative(value: object, label: str) -> PurePosixPath:
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
-        raise FinalGamePackError(f"{label} must be a safe POSIX-relative path")
-    relative = PurePosixPath(value.strip())
-    if relative.is_absolute() or any(
-        part in {"", ".", ".."} for part in relative.parts
-    ):
-        raise FinalGamePackError(f"{label} must be a safe POSIX-relative path")
-    return relative
+    return PurePosixPath(
+        *safe_relative_path(value, label, error_type=FinalGamePackError).parts
+    )
 
 
 def _load_story(path: Path) -> _Story:
