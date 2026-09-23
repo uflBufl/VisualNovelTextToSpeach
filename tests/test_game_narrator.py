@@ -433,6 +433,46 @@ class GameNarratorTest(unittest.TestCase):
         manifest.write_text(json.dumps(document))
         return manifest, originals
 
+    @staticmethod
+    def add_player_candidate_excerpts(manifest):
+        document = json.loads(manifest.read_text())
+        player_evidence = document["vntts.player.voice_candidates"]
+        player_evidence["schema_version"] = 3
+        for index, variant in enumerate(player_evidence["variants"], 1):
+            variant["source_excerpts"] = [
+                {
+                    "line_id": variant["source_line_ids"][0],
+                    "title": "Greeting",
+                    "text": f"Original spoken line {index}.",
+                }
+            ]
+        manifest.write_text(json.dumps(document))
+
+    def assert_player_candidate_options(
+        self, dialog, importer, preserved_source, replacement_source
+    ):
+        self.assertEqual(dialog.references.count(), 2, dialog.status.text())
+        self.assertEqual(
+            tuple(
+                dialog.references.itemData(index)
+                for index in range(dialog.references.count())
+            ),
+            (preserved_source, replacement_source),
+        )
+        self.assertIn("3.170 s", dialog.references.itemText(0))
+        self.assertIn("Original spoken line 1", dialog.references.itemText(0))
+        self.assertIn("1.950 s", dialog.references.itemText(1))
+        self.assertIn("Original spoken line 2", dialog.references.itemText(1))
+        self.assertNotIn(
+            "raw-short-narrator-reference",
+            tuple(
+                dialog.references.itemData(index)
+                for index in range(dialog.references.count())
+            ),
+        )
+        self.assertEqual(dialog.references.currentData(), preserved_source)
+        importer.narrator_references.assert_not_called()
+
     def assert_saved_candidate_reopens(self, importer, *, role="Narrator"):
         reopened_pool = ManualThreadPool()
         reopened = GameNarratorDialog(
@@ -462,18 +502,7 @@ class GameNarratorTest(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             manifest, originals = self.player_candidate_manifest(root)
-            document = json.loads(manifest.read_text())
-            player_evidence = document["vntts.player.voice_candidates"]
-            player_evidence["schema_version"] = 3
-            for index, variant in enumerate(player_evidence["variants"], 1):
-                variant["source_excerpts"] = [
-                    {
-                        "line_id": variant["source_line_ids"][0],
-                        "title": "Greeting",
-                        "text": f"Original spoken line {index}.",
-                    }
-                ]
-            manifest.write_text(json.dumps(document))
+            self.add_player_candidate_excerpts(manifest)
             importer = Mock()
             importer.narrator_characters.return_value = ("Mrs. Owen",)
             importer.prepare_voice_roles.return_value = manifest
@@ -510,27 +539,9 @@ class GameNarratorTest(unittest.TestCase):
                 while pool.tasks:
                     self.run_task(pool)
 
-                self.assertEqual(dialog.references.count(), 2, dialog.status.text())
-                self.assertEqual(
-                    tuple(
-                        dialog.references.itemData(index)
-                        for index in range(dialog.references.count())
-                    ),
-                    (preserved_source, replacement_source),
+                self.assert_player_candidate_options(
+                    dialog, importer, preserved_source, replacement_source
                 )
-                self.assertIn("3.170 s", dialog.references.itemText(0))
-                self.assertIn("Original spoken line 1", dialog.references.itemText(0))
-                self.assertIn("1.950 s", dialog.references.itemText(1))
-                self.assertIn("Original spoken line 2", dialog.references.itemText(1))
-                self.assertNotIn(
-                    "raw-short-narrator-reference",
-                    tuple(
-                        dialog.references.itemData(index)
-                        for index in range(dialog.references.count())
-                    ),
-                )
-                self.assertEqual(dialog.references.currentData(), preserved_source)
-                importer.narrator_references.assert_not_called()
 
                 dialog.original_button.click()
                 self.run_task(pool)
