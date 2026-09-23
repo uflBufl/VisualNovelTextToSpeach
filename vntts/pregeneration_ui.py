@@ -3,7 +3,7 @@
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from threading import Event
-from time import monotonic
+from time import monotonic, process_time
 from typing import TypeAlias, TypeGuard, cast
 
 from PySide6.QtCore import QSignalBlocker, QSize, Qt, QThreadPool, QTimer, Signal
@@ -95,6 +95,7 @@ from vntts.speech_presentation import (
     speech_configuration_label,
     speech_configuration_rows,
 )
+from vntts.support import record_background_operation
 from vntts.ui_text import (
     copy_text_button,
     make_text_copyable,
@@ -3143,14 +3144,35 @@ class OfflineAudioPreparationDialog(QDialog):
     ) -> tuple[
         PregenerationInput, OfflinePreparationChanges, GenerationResourceEstimate | None
     ]:
+        started, cpu_started = monotonic(), process_time()
         prepared = self.input_store.materialize(
             job, plan, cancellation=self.voice_cancel_event
         )
+        record_background_operation(
+            "pregeneration-acceptance-materialize",
+            (monotonic() - started) * 1000,
+            "complete",
+            cpu_ms=(process_time() - cpu_started) * 1000,
+        )
+        started, cpu_started = monotonic(), process_time()
         changes = self.publisher.inspect_changes(job, prepared, self.voice_cancel_event)
+        record_background_operation(
+            "pregeneration-acceptance-inspect-changes",
+            (monotonic() - started) * 1000,
+            "complete",
+            cpu_ms=(process_time() - cpu_started) * 1000,
+        )
+        started, cpu_started = monotonic(), process_time()
         resources = (
             estimate_generation_resources(prepared)
             if isinstance(prepared, PregenerationInput)
             else None
+        )
+        record_background_operation(
+            "pregeneration-acceptance-resource-estimate",
+            (monotonic() - started) * 1000,
+            "complete",
+            cpu_ms=(process_time() - cpu_started) * 1000,
         )
         return prepared, changes, resources
 

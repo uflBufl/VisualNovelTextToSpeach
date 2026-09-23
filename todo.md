@@ -113,23 +113,14 @@ Planned implementation order after approval:
 
 ## P1 - Reduce preparation and post-generation saving latency
 
-- [ ] **Collect one fresh finalization profile:** inspect the recorded
-      `pregeneration-acceptance-*`, `pregeneration-publication-*`,
-      `pregeneration-activation-*` and existing `game-pack-validation` phases from
-      the last generated line to the usable saved game pack on representative
-      Windows and macOS stories. Compare wall/CPU time, copied audio bytes and
-      cache reuse; use the last completed phase to identify a failed or stalled
-      boundary.
-      The captured Windows baseline took 73.8 seconds after recovery: acceptance
-      33.14 seconds, publication 38.09 seconds and activation 2.29 seconds. Three
-      adjacent full validations each rescanned 1,071 files / 382.5 MB in about two
-      seconds. Add missing acceptance timings around input materialization,
-      `inspect_changes` and resource estimation in
-      `pregeneration_ui.py:_prepare_input_with_changes`; split publication
-      `audio-routes` into reused/base and new WAV counts, copied/hashed bytes and
-      elapsed time. Gate: phase timings explain the 33.14/38.09-second waits in
-      a fresh support archive; then expose the dominant phase in the UI and
-      optimize it from evidence.
+- [ ] **Validate finalization on Windows:** repeat the 1,071-file story that took
+      73.8 seconds after recovery (acceptance 33.14, publication 38.09,
+      activation 2.29). Inspect the new `pregeneration-acceptance-*` and existing
+      `pregeneration-publication-*` phases from the last generated line to usable
+      audio. Require identical published bytes and corruption failures, with
+      faster cold publication and unchanged resume. If a long phase remains,
+      measure its file counts/bytes before changing another validation boundary;
+      expose the dominant phase in the UI.
 - [ ] **Ready after the profile:** classify every finalization check by the invariant
       it protects. Remove checks already proven by an unchanged checksum-bound
       generation state; retain trust-boundary and corruption checks. Reuse one
