@@ -59,6 +59,29 @@ def write_manifest(root):
 
 
 class AuthoringReferenceSelectionTest(unittest.TestCase):
+    def test_temp_cleanup_failure_does_not_hide_published_selection(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = write_manifest(root)
+            output = root / "selected.json"
+            real_unlink = Path.unlink
+
+            def fail_temp_cleanup(path, *args, **kwargs):
+                if path.suffix == ".tmp":
+                    raise PermissionError("temporary file is still open")
+                return real_unlink(path, *args, **kwargs)
+
+            with patch.object(Path, "unlink", fail_temp_cleanup):
+                result = select_voice_reference(manifest, "Hero", 2, output)
+
+            self.assertEqual(result.output, output.resolve())
+            self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8"))["voices"][0][
+                    "references"
+                ][0],
+                "references/hero-2.wav",
+            )
+
     def test_reports_and_publishes_explicit_no_overwrite_selection(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

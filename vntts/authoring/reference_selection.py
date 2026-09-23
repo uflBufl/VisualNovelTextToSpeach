@@ -5,8 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias, TypedDict
@@ -17,6 +15,7 @@ from vntts_artifacts.voice_manifest import (
     validate_voice_manifest,
 )
 
+from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.workspace_foundation import contained_regular_file
 from vntts.reference_quality import ReferenceQualityReport, analyze_reference_bytes
 
@@ -139,10 +138,9 @@ def select_voice_reference(
     except VoiceManifestError as error:
         raise ReferenceSelectionError(str(error)) from error
     _assert_snapshot_unchanged(snapshot)
-    payload = (
-        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
-    _write_bytes_no_replace(output, payload)
+    write_json_document_no_replace(
+        output, document, "reference-selection", error_type=ReferenceSelectionError
+    )
     return ReferenceSelectionResult(
         output,
         snapshot["character"],
@@ -381,33 +379,3 @@ def _assert_snapshot_unchanged(snapshot: _ManifestSnapshot) -> None:
         raise ReferenceSelectionError(
             f"Voice selection input changed during selection: {error}"
         ) from error
-
-
-def _write_bytes_no_replace(path: Path, payload: bytes) -> None:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        raise ReferenceSelectionError(
-            f"Unable to create reference-selection output directory {path.parent}: {error}"
-        ) from error
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, delete=False
-        ) as destination:
-            temporary = Path(destination.name)
-            destination.write(payload)
-            destination.flush()
-            os.fsync(destination.fileno())
-        os.link(temporary, path)
-    except FileExistsError as error:
-        raise ReferenceSelectionError(
-            f"Reference-selection output exists: {path}"
-        ) from error
-    except OSError as error:
-        raise ReferenceSelectionError(
-            f"Unable to publish reference-selection manifest {path}: {error}"
-        ) from error
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)

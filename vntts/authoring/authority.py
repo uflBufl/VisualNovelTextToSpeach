@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -119,7 +120,9 @@ def write_json_document_no_replace(
         raise error_type(f"Unable to publish {label} {path}: {error}") from error
     finally:
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            # ponytail: failed cleanup may leave a private temp file, not undo publication.
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
     return path
 
 
