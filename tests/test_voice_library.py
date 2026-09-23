@@ -100,6 +100,7 @@ class VoiceLibraryTest(unittest.TestCase):
             reference = root / "voice.wav"
             write_wav(reference, b"\x1a\r\n")
             real_open = os.open
+            native_binary_flag = getattr(os, "O_BINARY", 0)
             binary_flag = 0x40000000
             flags_seen = 0
 
@@ -107,7 +108,8 @@ class VoiceLibraryTest(unittest.TestCase):
                 nonlocal flags_seen
                 if Path(path) == reference:
                     flags_seen = flags
-                return real_open(path, flags & ~binary_flag, *args)
+                flags = flags & ~binary_flag | native_binary_flag
+                return real_open(path, flags, *args)
 
             with (
                 patch("vntts.voice_library.os.O_BINARY", binary_flag, create=True),

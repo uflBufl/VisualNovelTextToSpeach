@@ -1332,7 +1332,7 @@ class GameNarratorTest(unittest.TestCase):
             self.assertLessEqual(dialog.height(), 560)
             self.assertEqual(
                 dialog.game_installation.text(),
-                "/Games/Reverse 1999/StreamingAssets/Windows",
+                str(importer.selected_installation_root.return_value),
             )
             self.assertTrue(dialog.save_button.isDefault())
             growth = QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow

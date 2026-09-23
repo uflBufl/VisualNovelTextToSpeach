@@ -132,7 +132,7 @@ class GameAudioDecoderTest(unittest.TestCase):
         with (
             patch.object(decoder.subprocess, "Popen", return_value=process),
             patch.object(decoder.os, "name", "posix"),
-            patch.object(decoder.os, "killpg"),
+            patch.object(decoder.os, "killpg", create=True),
             self.assertRaisesRegex(decoder.DecoderSetupError, "timed out"),
         ):
             decoder._run(["decoder"], timeout=0)
