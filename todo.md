@@ -142,21 +142,12 @@ Planned implementation order after approval:
       73.8 seconds after recovery (acceptance 33.14, publication 38.09,
       activation 2.29). Inspect the new `pregeneration-acceptance-*` and existing
       `pregeneration-publication-*` phases from the last generated line to usable
-      audio. Require identical published bytes and corruption failures, with
-      faster cold publication and unchanged resume. If a long phase remains,
-      measure its file counts/bytes before changing another validation boundary;
-      expose the dominant phase in the UI.
-- [ ] **Ready after the profile:** classify every finalization check by the invariant
-      it protects. Remove checks already proven by an unchanged checksum-bound
-      generation state; retain trust-boundary and corruption checks. Reuse one
-      immutable validation result within the same transaction and an already
-      published checksum identity across activation, but do not infer unchanged
-      content from weak file metadata or skip the deep publication boundary.
-- [ ] **Ready after the optimization:** add a regression benchmark for cold
-      finalization and an unchanged resume. Require identical published pack
-      contents and failure behavior, while telemetry proves there is no duplicate
-      read/decode/hash of the same WAV inside one transaction and the unchanged path
-      completes within a small, measured bound instead of minutes.
+      audio. The local 1,090-WAV copy took 7.65 seconds cold and 0.65 seconds on
+      unchanged reuse; its longest phases were terminal validation (3.48 seconds),
+      staged validation (1.92 seconds) and audio copy (1.47 seconds). Require the
+      Windows result to preserve published bytes and corruption failures; if a
+      phase remains materially slower, collect its file counts and bytes before
+      changing its validation boundary.
 
 ## P1 - Measure remaining player latency
 
