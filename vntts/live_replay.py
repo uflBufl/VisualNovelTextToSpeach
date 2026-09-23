@@ -38,14 +38,9 @@ from vntts.dialog_capture import (
 )
 from vntts.document_identity import is_lowercase_sha256
 from vntts.generated_audio import (
-    AudioEventOmissionRoute,
     AudioRouteTrace,
     GeneratedAudioFallbackBackend,
     GeneratedAudioLibrary,
-    GeneratedAudioRoute,
-    LiveFallbackRoute,
-    LiveTTSRoute,
-    PendingGeneratedAudioRoute,
     PlaybackStatus,
     RouteDecision,
     SourceAudioRoute,
@@ -728,17 +723,7 @@ class LiveReplayRunner:
             return prepared
 
         def play(chunk: SpeechChunk, prepared: object) -> bool:
-            if not isinstance(
-                prepared,
-                (
-                    SourceAudioRoute,
-                    GeneratedAudioRoute,
-                    PendingGeneratedAudioRoute,
-                    LiveFallbackRoute,
-                    LiveTTSRoute,
-                    AudioEventOmissionRoute,
-                ),
-            ):
+            if not isinstance(prepared, RouteDecision):
                 raise TypeError("Replay playback requires an audio route")
             playback_started = monotonic()
             outcome = router.play_route(

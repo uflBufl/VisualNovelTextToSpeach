@@ -72,6 +72,12 @@ Planned implementation order after approval:
       generate a preview, save the 3.17-second candidate, reopen, and prepare a
       story. Gate: the saved choice remains selected and offline generation uses
       that exact reference; no automatic choice silently replaces it.
+- [ ] **Validate Rhiannon's playable references on Windows:** with extractor
+      commit `fbc38c2` installed, run a fresh voice import. Confirm her main-bank
+      Greeting (15.3 s) and Chitchat I (14.9 s) appear in Voices and Stories,
+      play the correct original, and can produce a preview and survive save/reopen.
+      The previous report cache must not hide them; reject clips with other
+      technical defects. Keep the 45.8-second Chitchat II optional, not a default.
 - [ ] **Validate the Windows preview startup repair:** Python 3.14 `Popen` does not
       retain a `_thread` handle, so the suspended owned MOSS process failed before
       model loading. The launcher now finds and resumes the process thread through
@@ -87,6 +93,10 @@ Planned implementation order after approval:
       `Keep automatic choice`, and `Change selected voice...` are clear;
       and an explicit choice survives reopening while an untouched recommendation
       remains automatic.
+- [ ] **Validate the no-choice voice route on Windows:** in a real story, return
+      from Inspect selected voice before playback, during a preview and after a
+      failed save. Confirm Back becomes enabled, no reference is silently saved,
+      and the player can pick narrator fallback or return later.
 
 ## P0 - Stabilize Windows audio and the OpenMOSS runtime
 
@@ -111,44 +121,51 @@ Planned implementation order after approval:
       telemetry and measure the real game-plus-render headroom rather than inferring
       acceleration from configuration.
 
+## P1 - Link character identities across story names
+
+- [ ] **Validate manual person links on Windows:** link Aderyn to Rhiannon in
+      the Voice plan, inspect the affected-story preview, keep their adult/child
+      voices distinct in preparation and live reading, then unlink and verify
+      both prior choices survive. Test after save/reopen and a restarted import.
+- [ ] **Suggest cross-name links from game evidence:** evaluate stable game IDs,
+      portrait similarity across expressions, bank/source relationships and story
+      context; do not infer identity from a similar portrait or voice alone.
+      Auto-link only when independent, high-confidence evidence is unambiguous;
+      otherwise offer a suggestion the player can confirm or dismiss. Do not
+      auto-link Rhiannon/Aderyn merely because this one player knows the story;
+      current story rows lack a stable shared character ID and imported portrait
+      coverage is sparse.
+
 ## P1 - Reduce preparation and post-generation saving latency
 
 - [ ] **Validate finalization on Windows:** repeat the 1,071-file story that took
       73.8 seconds after recovery (acceptance 33.14, publication 38.09,
       activation 2.29). Inspect the new `pregeneration-acceptance-*` and existing
       `pregeneration-publication-*` phases from the last generated line to usable
-      audio. Require identical published bytes and corruption failures, with
-      faster cold publication and unchanged resume. If a long phase remains,
-      measure its file counts/bytes before changing another validation boundary;
-      expose the dominant phase in the UI.
-- [ ] **Ready after the profile:** classify every finalization check by the invariant
-      it protects. Remove checks already proven by an unchanged checksum-bound
-      generation state; retain trust-boundary and corruption checks. Reuse one
-      immutable validation result within the same transaction and an already
-      published checksum identity across activation, but do not infer unchanged
-      content from weak file metadata or skip the deep publication boundary.
-- [ ] **Ready after the optimization:** add a regression benchmark for cold
-      finalization and an unchanged resume. Require identical published pack
-      contents and failure behavior, while telemetry proves there is no duplicate
-      read/decode/hash of the same WAV inside one transaction and the unchanged path
-      completes within a small, measured bound instead of minutes.
+      audio. The local 1,090-WAV copy took 7.65 seconds cold and 0.65 seconds on
+      unchanged reuse; its longest phases were terminal validation (3.48 seconds),
+      staged validation (1.92 seconds) and audio copy (1.47 seconds). Require the
+      Windows result to preserve published bytes and corruption failures; if a
+      phase remains materially slower, collect its file counts and bytes before
+      changing its validation boundary.
 
 ## P1 - Measure remaining player latency
 
-- [ ] **Profile remaining Voice plan work:** on the local 253 MB reference index,
-      the new checksum-bound role cache reduced repeated `_candidate_roles` from
-      9.18 to 0.37 seconds. Collect the new candidate-preparation/store phase logs
-      in a real plan and count candidate WAV reads/hashes, `VoiceLibrary.discover`
-      writes and `bindings()` reads. Gate: phase timings sum to the outer wait;
-      remove only measured duplicate work while preserving checksums, saved choices
-      and identical plans on cold/repeat runs.
+- [ ] **Validate repeated Voice plan in the real UI:** on the local 253 MB reference
+      index, repeated role selection fell from 9.18 to 0.37 seconds. The plan-store
+      fixture now produces identical groups while reducing library reads from
+      3646 to 214; warm creation took about 0.25 seconds. On an installed game,
+      capture the candidate-preparation/store phase logs for first open and reopen;
+      require the warm phases to explain the whole wait and saved choices to remain
+      identical. Investigate any remaining phase above one second before changing it.
 - [ ] **Qualify fewer Tesseract launches with labeled game frames:** the archived
       11-image corpus measured 488 ms median and 997 ms p95; ordinary frames use
       three subprocesses, and one frame without dialogue used nine. Reconstructing
       text from TSV alone disagreed with the existing text pass on 2 of 11 frames,
-      including a spoken line. Compare a combined TXT/TSV pass or another bounded
-      path against manually verified speaker/text labels and uncertain-frame
-      decisions before removing a subprocess.
+      including a spoken line. The available combined TXT/TSV API also changed
+      output or confidence on 2 of 11 frames because it cannot keep the current
+      PSM 6 setting. Test another bounded path against manually verified
+      speaker/text labels and uncertain-frame decisions before removing a subprocess.
 
 ## P1 - Qualify remaining Python and speech runtimes
 

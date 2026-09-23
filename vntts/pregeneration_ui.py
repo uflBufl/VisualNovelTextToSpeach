@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -103,7 +104,7 @@ from vntts.ui_text import (
     set_labeled_text,
 )
 from vntts.voice_default_impact import StoryVoiceImpact
-from vntts.voice_library import VoiceLibrary
+from vntts.voice_library import VoiceLibrary, VoiceLibraryError
 from vntts.voices import (
     CharacterVoiceRegistry,
     VoiceBinding,
@@ -698,6 +699,13 @@ class OfflineAudioPreparationDialog(QDialog):
                 item is not None
             )
         )
+        self.link_identity = QPushButton("Link same person...")
+        self.link_identity.clicked.connect(self._link_selected_person)
+        self.unlink_identity = QPushButton("Unlink name")
+        self.unlink_identity.clicked.connect(self._unlink_selected_person)
+        self.voice_routes.currentItemChanged.connect(
+            lambda _item, _previous: self._update_identity_actions()
+        )
         self.back_to_story_selection = QPushButton("Back to story selection")
         self.back_to_story_selection.clicked.connect(self._return_to_story_selection)
         self.show_all_voice_routes = QCheckBox(
@@ -726,6 +734,8 @@ class OfflineAudioPreparationDialog(QDialog):
         route_actions = QHBoxLayout()
         route_actions.addWidget(self.back_to_story_selection)
         route_actions.addStretch()
+        route_actions.addWidget(self.link_identity)
+        route_actions.addWidget(self.unlink_identity)
         route_actions.addWidget(self.inspect_character_voice)
         route_actions.addWidget(self.choose_character_voice)
         confirmation_layout.addLayout(route_actions)
@@ -922,9 +932,118 @@ class OfflineAudioPreparationDialog(QDialog):
         self.voice_confirmation.hide()
         self.auditioning_voices = True
         self.inspecting_voice_plan = True
-        self.cancel_button.setText("Back to voice plan")
+        self.cancel_button.setText("Back without choosing")
+        self.cancel_button.setToolTip(
+            "None of these voices? Return without saving one; choose another source or narrator in the voice plan."
+        )
         self.continue_button.hide()
         self.selection_panel.hide()
+
+    def _selected_routing_role(self) -> str | None:
+        item = self.voice_routes.currentItem()
+        role = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        return role if isinstance(role, str) and role else None
+
+    def _update_identity_actions(self) -> None:
+        role = self._selected_routing_role()
+        if role and normalize_character_name(role) == "narrator":
+            role = None
+        linked = bool(role and self.voice_library.linked_variant_key(role))
+        self.link_identity.setEnabled(bool(role) and not linked)
+        self.unlink_identity.setEnabled(linked)
+
+    def _link_selected_person(self) -> None:
+        role = self._selected_routing_role()
+        plan = self._voice_plan
+        if (
+            role is None
+            or normalize_character_name(role) == "narrator"
+            or plan is None
+            or self.has_pending_work()
+        ):
+            return
+        names = sorted(
+            {
+                self.voice_library.canonical_role(group.routing_role or group.character)
+                for group in plan.groups
+                if normalize_character_name(group.routing_role or group.character)
+                != normalize_character_name(role)
+                and normalize_character_name(group.character) != "narrator"
+                and normalize_character_name(
+                    self.voice_library.canonical_role(
+                        group.routing_role or group.character
+                    )
+                )
+                != normalize_character_name(role)
+            },
+            key=str.casefold,
+        )
+        if not names:
+            self.voice_confirmation_status.setText(
+                "No other character name is available in the selected stories."
+            )
+            return
+        target, accepted = QInputDialog.getItem(
+            self,
+            "Link character names",
+            f"{role} is the same person as:",
+            names,
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        affected_line_ids = {
+            line_id
+            for group in plan.groups
+            if normalize_character_name(group.routing_role or group.character)
+            == normalize_character_name(role)
+            for line_id in group.line_ids
+        }
+        content = self.current_content()
+        stories = (
+            [
+                selection.title
+                for selection in content.selections
+                if self._job is not None
+                and selection.selection_id in self._job.selected_story_ids
+                and affected_line_ids.intersection(selection.line_ids)
+            ]
+            if content is not None
+            else []
+        )
+        story_preview = ", ".join(stories[:4]) or "selected stories"
+        if len(stories) > 4:
+            story_preview += f" and {len(stories) - 4} more"
+        if (
+            QMessageBox.question(
+                self,
+                "Link character names",
+                f"Link {role} and {target} as one person? This affects "
+                f"{len(affected_line_ids)} lines in {story_preview}, plus future stories. "
+                "Their recorded voice choices remain separate. You can unlink this name later.",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        try:
+            self.voice_library.link_person(target, role)
+        except (OSError, VoiceLibraryError) as error:
+            self.voice_confirmation_status.setText(f"Unable to link names: {error}")
+            return
+        self._voice_auditions_completed()
+
+    def _unlink_selected_person(self) -> None:
+        role = self._selected_routing_role()
+        if role is None or self.has_pending_work():
+            return
+        try:
+            if not self.voice_library.unlink_person(role):
+                return
+        except (OSError, VoiceLibraryError) as error:
+            self.voice_confirmation_status.setText(f"Unable to unlink name: {error}")
+            return
+        self._voice_auditions_completed()
 
     def _return_to_story_selection(self) -> None:
         if self.has_pending_work():
@@ -1226,6 +1345,9 @@ class OfflineAudioPreparationDialog(QDialog):
             else "No character voice substitutions. Narrator is shown above."
         )
         visible = exceptions if self.show_all_voice_routes.isChecked() else groups
+        show_portraits = bool(groups) and all(
+            group.portrait_image and group.portrait_image_sha256 for group in groups
+        )
         self.voice_routes.setVisible(bool(visible))
         for group in sorted(
             visible,
@@ -1236,6 +1358,13 @@ class OfflineAudioPreparationDialog(QDialog):
                 value.group_id,
             ),
         ):
+            routing_role = group.routing_role or group.character
+            display_role = (
+                f"{routing_role} (same person as {group.character})"
+                if normalize_character_name(routing_role)
+                != normalize_character_name(group.character)
+                else group.character
+            )
             lines = len(group.line_ids)
             if group.route == "narrator":
                 source = self.narrator_choice.currentText()
@@ -1260,6 +1389,10 @@ class OfflineAudioPreparationDialog(QDialog):
                 and candidate.reference_duration_seconds is not None
                 else ""
             )
+            if route.startswith("Player candidate "):
+                route = "Game voice"
+                if candidate is not None and candidate.source_excerpts:
+                    route += f" ({candidate.source_excerpts[0][:55]})"
             references = len(group.reference_sha256s)
             status = (
                 "review suggested"
@@ -1271,14 +1404,14 @@ class OfflineAudioPreparationDialog(QDialog):
                 else "automatic"
             )
             item = QListWidgetItem(
-                f"{group.character} -> {route} | {status} | {lines} "
+                f"{display_role} -> {route} | {status} | {lines} "
                 f"line{'s' if lines != 1 else ''} | {references} reference"
                 f"{'s' if references != 1 else ''}{duration}\n"
                 f"{_voice_resolution_label(group.resolution)}"
             )
-            item.setData(Qt.ItemDataRole.UserRole, group.character)
+            item.setData(Qt.ItemDataRole.UserRole, routing_role)
             item.setData(int(Qt.ItemDataRole.UserRole) + 1, group.group_id)
-            if group.portrait_image and group.portrait_image_sha256:
+            if show_portraits and group.portrait_image and group.portrait_image_sha256:
                 try:
                     if sha256_file(group.portrait_image) == group.portrait_image_sha256:
                         pixmap = QPixmap(group.portrait_image)
@@ -1287,10 +1420,11 @@ class OfflineAudioPreparationDialog(QDialog):
                 except OSError:
                     pass
             self.voice_routes.addItem(item)
-            if group.character == selected_character:
+            if routing_role == selected_character:
                 self.voice_routes.setCurrentItem(item)
         if self.voice_routes.currentItem() is None and self.voice_routes.count():
             self.voice_routes.setCurrentRow(0)
+        self._update_identity_actions()
 
     def _narrator_choice_changed(self, _index: int | None = None) -> None:
         source_id = self.narrator_choice.currentData()
@@ -3122,9 +3256,14 @@ class OfflineAudioPreparationDialog(QDialog):
         if self.inspecting_voice_plan:
             self.inspecting_voice_plan = False
             self.cancel_button.setText("Cancel")
+            self.cancel_button.setToolTip("")
             self.cancel_button.setEnabled(True)
             assert self._voice_plan is not None
             self._show_voice_confirmation(self._voice_plan)
+            self.voice_confirmation_status.setText(
+                "No new voice was saved. If none of the references fit, choose another "
+                "voice or narrator fallback before continuing."
+            )
             return
         if self._close_after_voice_cancel:
             self.reject()
@@ -3547,8 +3686,8 @@ class OfflineAudioPreparationDialog(QDialog):
             self.reject()
             return
         if self.auditioning_voices and self.inspecting_voice_plan:
-            self.voice_panel.cancel()
             self.cancel_button.setEnabled(False)
+            self.voice_panel.cancel()
             return
         if (
             self.planning_voices

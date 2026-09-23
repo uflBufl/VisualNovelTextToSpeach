@@ -128,6 +128,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._ignore_preview_result = False
         self._shutdown_requested = False
         self._inspection_mode = False
+        self._show_portraits = False
         self._playing_source: str | None = None
 
         self.summary = QLabel()
@@ -170,6 +171,10 @@ class VoiceAuditionPanel(QGroupBox):
         self.a_reason = QLabel()
         self.a_reason.setAccessibleName("Voice sample details")
         self.a_reason.setWordWrap(True)
+        self.a_reason.setTextFormat(Qt.TextFormat.PlainText)
+        self.a_reason.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.reference_details_toggle = QCheckBox("Technical reference details")
         self.reference_details = QLabel()
         self.reference_details.setWordWrap(True)
@@ -273,6 +278,11 @@ class VoiceAuditionPanel(QGroupBox):
             self.preview_service = _preview_service_factory()
         self._plan = plan
         self._inspection_mode = group_id is not None
+        self._show_portraits = all(
+            group.portrait_image and group.portrait_image_sha256
+            for group in plan.groups
+            if group.character != "Narrator"
+        )
         self._groups = groups
         self._group_index = 0
         self._pending_decisions = []
@@ -426,12 +436,28 @@ class VoiceAuditionPanel(QGroupBox):
         self._candidate_entries = tuple(entries)
         with QSignalBlocker(self.voice_reference):
             self.voice_reference.clear()
-            for candidate, _choice, narrator in self._candidate_entries:
-                label = "Narrator fallback" if narrator else candidate.source_character
+            for index, (candidate, _choice, narrator) in enumerate(
+                self._candidate_entries, 1
+            ):
+                duration = (
+                    f"{candidate.reference_duration_seconds:.1f} s"
+                    if candidate.reference_duration_seconds is not None
+                    else "duration unavailable"
+                )
+                excerpt = (
+                    candidate.source_excerpts[0]
+                    if candidate.source_excerpts
+                    else "text unavailable"
+                )
+                label = (
+                    f"Narrator fallback - {duration}"
+                    if narrator
+                    else f"Reference {index} - {duration} - {excerpt[:65]}"
+                )
                 self.voice_reference.addItem(label)
                 self.voice_reference.setItemData(
                     self.voice_reference.count() - 1,
-                    label,
+                    "\n".join(candidate.source_excerpts) or label,
                     Qt.ItemDataRole.ToolTipRole,
                 )
             self.voice_reference.setCurrentIndex(0)
@@ -465,7 +491,10 @@ class VoiceAuditionPanel(QGroupBox):
                 )
             self.preview_phrase.setCurrentIndex(0)
         self._sample_text = group.sample_text
-        self.voice_reference.setToolTip(self.voice_reference.currentText())
+        self.voice_reference.setToolTip(
+            self.voice_reference.currentData(Qt.ItemDataRole.ToolTipRole)
+            or self.voice_reference.currentText()
+        )
         self.preview_phrase.setToolTip(self.preview_phrase.currentText())
         self.voice_reference.setEnabled(len(self._candidate_entries) > 1)
         self.preview_phrase.setEnabled(self.preview_phrase.count() > 1)
@@ -480,7 +509,10 @@ class VoiceAuditionPanel(QGroupBox):
         ):
             return
         self._candidate_offset = index
-        self.voice_reference.setToolTip(self.voice_reference.currentText())
+        self.voice_reference.setToolTip(
+            self.voice_reference.currentData(Qt.ItemDataRole.ToolTipRole)
+            or self.voice_reference.currentText()
+        )
         self._show_current_candidate()
 
     def _preview_phrase_selected(self, index: int) -> None:
@@ -501,9 +533,7 @@ class VoiceAuditionPanel(QGroupBox):
         self._displayed = ()
         candidate, _choice, narrator = self._current_entry()
         self.a_box.setTitle(
-            "Original reference for narrator"
-            if narrator
-            else f"Original reference for {candidate.source_character}"
+            "Original reference for narrator" if narrator else "Original game reference"
         )
         reference_count = len(candidate.reference_sha256s)
         reference_summary = (
@@ -517,7 +547,11 @@ class VoiceAuditionPanel(QGroupBox):
             if reference_count
             else "No original reference"
         )
-        self.a_reason.setText(f"{reference_summary}\n{candidate.recommendation}")
+        transcript = "\n".join(candidate.source_excerpts) or "Text unavailable."
+        self.a_reason.setText(
+            f"{reference_summary}\nOriginal spoken text: {transcript}\n"
+            f"{candidate.recommendation}"
+        )
         details = [f"Voice source: {candidate.source_speaker}"]
         details.extend(
             f"{index}. SHA-256 {checksum}"
@@ -539,9 +573,7 @@ class VoiceAuditionPanel(QGroupBox):
             if candidate.reference_sha256s
             else "This voice has no recorded reference."
         )
-        self.a_use.setText(
-            "Use narrator voice" if narrator else f"Use {candidate.source_character}"
-        )
+        self.a_use.setText("Use narrator voice" if narrator else "Use this voice")
         self.a_use.setAccessibleDescription(
             "Save this voice for future speech and story preparation"
         )
@@ -763,7 +795,11 @@ class VoiceAuditionPanel(QGroupBox):
     def _show_portrait(self, group: VoiceGroup) -> None:
         self.portrait_image.clear()
         self.portrait_image.setVisible(False)
-        if not group.portrait_image or not group.portrait_image_sha256:
+        if (
+            not self._show_portraits
+            or not group.portrait_image
+            or not group.portrait_image_sha256
+        ):
             return
         try:
             if sha256_file(group.portrait_image) != group.portrait_image_sha256:

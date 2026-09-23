@@ -55,6 +55,17 @@ class PersistentAudioCacheTest(unittest.TestCase):
 
         np.testing.assert_allclose(audio, expected)
 
+    def test_invalid_audio_is_rejected_on_write_and_read(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            cache = PersistentAudioCache(root)
+            invalid = np.array([0.1, np.nan], dtype=np.float32)
+            self.assertIsNone(cache.put("invalid", invalid))
+            self.assertFalse((root / "invalid.npy").exists())
+            with (root / "invalid.npy").open("wb") as destination:
+                np.save(destination, invalid, allow_pickle=False)
+            self.assertIsNone(cache.get("invalid"))
+
     def test_cache_works_when_no_follow_utime_is_unavailable(self):
         with TemporaryDirectory() as temporary_directory:
             cache = PersistentAudioCache(temporary_directory)

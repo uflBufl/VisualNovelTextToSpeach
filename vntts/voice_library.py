@@ -23,7 +23,8 @@ from vntts_artifacts.voice_manifest import normalize_character_name
 
 from vntts.authoring.advisory_lock import exclusive_advisory_lock
 
-VOICE_LIBRARY_VERSION = 1
+VOICE_LIBRARY_VERSION = 3
+_VOICE_LIBRARY_VERSIONS = frozenset({1, 2, VOICE_LIBRARY_VERSION})
 VoiceRoute = Literal["voice", "narrator", "live-fallback"]
 _ROUTES = {"voice", "narrator", "live-fallback"}
 _CROSS_STAT_IDENTITY_RELIABLE = os.name != "nt"
@@ -62,6 +63,8 @@ class _VoiceLibraryDocument(TypedDict):
     version: int
     alternatives: dict[str, _AlternativeGroupDocument]
     bindings: dict[str, _BindingDocument]
+    person_aliases: dict[str, str]
+    person_link_migrations: dict[str, list[dict[str, object]]]
 
 
 def _thread_lock(path: Path) -> RLock:
@@ -137,12 +140,14 @@ class VoiceLibrary:
         bind_if_missing: bool = False,
     ) -> VoiceAlternative:
         """Store a WAV alternative; optionally bind it only when no choice exists."""
-        identity, display_role, display_variant = _role_identity(role, variant_key)
         payload = _read_wav(reference)
         checksum = hashlib.sha256(payload).hexdigest()
         with self._write_transaction():
-            self._store_blob(checksum, payload)
             document = self._load()
+            identity, display_role, display_variant = self._role_identity(
+                role, variant_key, document
+            )
+            self._store_blob(checksum, payload)
             group = document["alternatives"].setdefault(
                 identity,
                 {"role": display_role, "variant_key": display_variant, "items": []},
@@ -225,8 +230,8 @@ class VoiceLibrary:
             results: list[VoiceBinding] = []
             changed = False
             for selection in selections:
-                identity, display_role, display_variant = _role_identity(
-                    selection.role, selection.variant_key
+                identity, display_role, display_variant = self._role_identity(
+                    selection.role, selection.variant_key, document
                 )
                 current = document["bindings"].get(identity)
                 if selection.only_if_unbound and current is not None:
@@ -272,8 +277,8 @@ class VoiceLibrary:
             document = self._load()
             replacement: dict[str, _BindingDocument] = {}
             for binding in bindings:
-                identity, display_role, display_variant = _role_identity(
-                    binding.role, binding.variant_key
+                identity, display_role, display_variant = self._role_identity(
+                    binding.role, binding.variant_key, document
                 )
                 raw = _binding_document(
                     display_role,
@@ -303,8 +308,12 @@ class VoiceLibrary:
     def binding(
         self, role: str, *, variant_key: str | None = None
     ) -> VoiceBinding | None:
-        identity, _role, _variant = _role_identity(role, variant_key)
-        raw = self._load()["bindings"].get(identity)
+        document = self._load()
+        identity, _role, _variant = self._role_identity(role, variant_key, document)
+        raw = document["bindings"].get(identity)
+        if raw is None and variant_key is not None:
+            raw_identity, _raw_role, _raw_variant = _role_identity(role, variant_key)
+            raw = document["bindings"].get(raw_identity)
         return _to_binding(raw) if raw is not None else None
 
     def bindings(self) -> tuple[VoiceBinding, ...]:
@@ -315,9 +324,9 @@ class VoiceLibrary:
 
     def clear(self, role: str, *, variant_key: str | None = None) -> bool:
         """Remove one explicit decision while keeping its alternatives."""
-        identity, _role, _variant = _role_identity(role, variant_key)
         with self._write_transaction():
             document = self._load()
+            identity, _role, _variant = self._role_identity(role, variant_key, document)
             if document["bindings"].pop(identity, None) is None:
                 return False
             self._write(document)
@@ -336,8 +345,12 @@ class VoiceLibrary:
     def alternatives(
         self, role: str, *, variant_key: str | None = None
     ) -> tuple[VoiceAlternative, ...]:
-        identity, _role, _variant = _role_identity(role, variant_key)
-        group = self._load()["alternatives"].get(identity)
+        document = self._load()
+        identity, _role, _variant = self._role_identity(role, variant_key, document)
+        group = document["alternatives"].get(identity)
+        if group is None and variant_key is not None:
+            raw_identity, _raw_role, _raw_variant = _role_identity(role, variant_key)
+            group = document["alternatives"].get(raw_identity)
         if group is None:
             return ()
         return tuple(
@@ -379,6 +392,79 @@ class VoiceLibrary:
             for checksum in binding["source_sha256s"]:
                 self._validate_blob(checksum)
 
+    def link_person(self, canonical_role: str, alias: str) -> None:
+        """Link story names without merging their existing voice routes."""
+        canonical_identity, canonical_display, _ = _role_identity(canonical_role, None)
+        alias_identity, _alias_display, _ = _role_identity(alias, None)
+        canonical_key = canonical_identity.removesuffix(":")
+        alias_key = alias_identity.removesuffix(":")
+        if canonical_key == alias_key:
+            raise VoiceLibraryError("Person alias must differ from its canonical role")
+        with self._write_transaction():
+            document = self._load()
+            existing = document["person_aliases"].get(alias_key)
+            if existing == canonical_display:
+                return
+            if existing is not None:
+                raise VoiceLibraryError(
+                    "Person alias is already linked to another role"
+                )
+            if canonical_key in document["person_aliases"]:
+                raise VoiceLibraryError("Canonical role must not itself be an alias")
+            migrations = _person_link_migrations(alias, document)
+            _move_linked_voice_data(
+                document,
+                canonical_display,
+                migrations,
+                linking=True,
+            )
+            document["person_aliases"][alias_key] = canonical_display
+            document["person_link_migrations"][alias_key] = migrations
+            self._write(document)
+
+    def unlink_person(self, alias: str) -> bool:
+        """Remove one explicit story-name alias without changing voice data."""
+        identity, _display, _ = _role_identity(alias, None)
+        with self._write_transaction():
+            document = self._load()
+            alias_key = identity.removesuffix(":")
+            canonical = document["person_aliases"].get(alias_key)
+            if canonical is None:
+                return False
+            migrations = document["person_link_migrations"].get(alias_key, ())
+            _move_linked_voice_data(
+                document,
+                canonical,
+                migrations,
+                linking=False,
+            )
+            del document["person_aliases"][alias_key]
+            document["person_link_migrations"].pop(alias_key, None)
+            self._write(document)
+        return True
+
+    def canonical_role(self, role: str) -> str:
+        """Return the explicitly linked person name, otherwise the supplied role."""
+        document = self._load()
+        _identity, display_role, _variant = _role_identity(role, None)
+        return document["person_aliases"].get(
+            normalize_character_name(display_role), display_role
+        )
+
+    def person_aliases(self) -> dict[str, str]:
+        """Return a copy of explicit story-name links for live voice routing."""
+        return dict(self._load()["person_aliases"])
+
+    def linked_variant_key(self, role: str) -> str | None:
+        """Return the explicit route variant required for a linked story name."""
+        _identity, display_role, _variant = _role_identity(role, None)
+        canonical = self.canonical_role(display_role)
+        if normalize_character_name(canonical) == normalize_character_name(
+            display_role
+        ):
+            return None
+        return f"story-name:{normalize_character_name(display_role)}"
+
     def copy_to(self, path: str | Path) -> VoiceLibrary:
         """Copy the complete library to a new, unused directory."""
         target = VoiceLibrary(path)
@@ -395,6 +481,8 @@ class VoiceLibrary:
                 "version": VOICE_LIBRARY_VERSION,
                 "alternatives": {},
                 "bindings": {},
+                "person_aliases": {},
+                "person_link_migrations": {},
             }
         if self.path.is_symlink():
             raise VoiceLibraryError("Voice library index must not be a symlink")
@@ -403,8 +491,31 @@ class VoiceLibrary:
         except (OSError, json.JSONDecodeError) as error:
             raise VoiceLibraryError(f"Unable to read voice library: {error}") from error
         if _validate_document(document):
+            if document["version"] != VOICE_LIBRARY_VERSION:
+                return {
+                    **document,
+                    "version": VOICE_LIBRARY_VERSION,
+                    "person_aliases": document.get("person_aliases", {}),
+                    "person_link_migrations": _legacy_link_migrations(document),
+                }
             return document
         raise VoiceLibraryError("Unsupported voice library document")
+
+    def _role_identity(
+        self,
+        role: object,
+        variant_key: object,
+        document: _VoiceLibraryDocument,
+    ) -> tuple[str, str, str | None]:
+        _identity, display_role, _variant = _role_identity(role, None)
+        if variant_key != _linked_variant_key(
+            normalize_character_name(display_role), None
+        ):
+            return _role_identity(display_role, variant_key)
+        canonical = document["person_aliases"].get(
+            normalize_character_name(display_role), display_role
+        )
+        return _role_identity(canonical, variant_key)
 
     def _write(self, document: _VoiceLibraryDocument) -> None:
         _validate_document(document)
@@ -458,6 +569,100 @@ def _role_identity(role: object, variant_key: object) -> tuple[str, str, str | N
     if display_variant is not None and not normalized_variant:
         raise VoiceLibraryError("Voice variant key must contain letters or numbers")
     return f"{normalized_role}:{normalized_variant}", display_role, display_variant
+
+
+def _person_link_migrations(
+    alias: str, document: _VoiceLibraryDocument
+) -> list[dict[str, object]]:
+    alias_key = normalize_character_name(alias)
+    variants: dict[tuple[str, str | None], dict[str, object]] = {}
+    for groups in (document["alternatives"], document["bindings"]):
+        for value in groups.values():
+            role = value["role"]
+            variant_key = value["variant_key"]
+            if normalize_character_name(role) != alias_key or variant_key is not None:
+                continue
+            variants[(role, variant_key)] = {
+                "role": role,
+                "variant_key": variant_key,
+                "linked_variant_key": _linked_variant_key(alias_key, variant_key),
+            }
+    variants.setdefault(
+        (alias, None),
+        {
+            "role": alias,
+            "variant_key": None,
+            "linked_variant_key": _linked_variant_key(alias_key, None),
+        },
+    )
+    return list(variants.values())
+
+
+def _legacy_link_migrations(document: object) -> dict[str, list[dict[str, object]]]:
+    if not isinstance(document, dict):
+        return {}
+    aliases = document.get("person_aliases", {})
+    if not isinstance(aliases, dict):
+        return {}
+    return {
+        alias: [
+            {
+                "role": alias,
+                "variant_key": None,
+                "linked_variant_key": _linked_variant_key(alias, None),
+            }
+        ]
+        for alias in aliases
+        if isinstance(alias, str)
+    }
+
+
+def _linked_variant_key(alias: str, variant_key: str | None) -> str:
+    suffix = "" if variant_key is None else f":{normalize_character_name(variant_key)}"
+    return f"story-name:{normalize_character_name(alias)}{suffix}"
+
+
+def _move_linked_voice_data(
+    document: _VoiceLibraryDocument,
+    canonical_role: str,
+    migrations: Iterable[dict[str, object]],
+    *,
+    linking: bool,
+) -> None:
+    moves: list[tuple[str, str, str, str | None]] = []
+    for migration in migrations:
+        role = migration.get("role")
+        variant_key = migration.get("variant_key")
+        linked_variant_key = migration.get("linked_variant_key")
+        if (
+            not isinstance(role, str)
+            or variant_key is not None
+            and not isinstance(variant_key, str)
+            or not isinstance(linked_variant_key, str)
+        ):
+            raise VoiceLibraryError("Voice library person link migration is invalid")
+        source_identity, _source_role, _source_variant = _role_identity(
+            role, variant_key
+        )
+        target_identity, _target_role, _target_variant = _role_identity(
+            canonical_role, linked_variant_key
+        )
+        if linking:
+            moves.append(
+                (source_identity, target_identity, canonical_role, linked_variant_key)
+            )
+        else:
+            moves.append((target_identity, source_identity, role, variant_key))
+    for groups in (document["alternatives"], document["bindings"]):
+        for source, target, role, variant_key in moves:
+            if source not in groups:
+                continue
+            if target in groups:
+                raise VoiceLibraryError("Person link would merge existing voice data")
+            value = groups.pop(source)
+            value["role"] = role
+            value["variant_key"] = variant_key
+            groups[target] = value
 
 
 def _read_wav(reference: str | Path) -> bytes:
@@ -617,13 +822,59 @@ def _validate_document(document: object) -> TypeGuard[_VoiceLibraryDocument]:
     if (
         not isinstance(document, dict)
         or type(document.get("version")) is not int
-        or document.get("version") != VOICE_LIBRARY_VERSION
+        or document.get("version") not in _VOICE_LIBRARY_VERSIONS
     ):
         raise VoiceLibraryError("Unsupported voice library document")
     alternatives = document.get("alternatives")
     bindings = document.get("bindings")
     if not isinstance(alternatives, dict) or not isinstance(bindings, dict):
         raise VoiceLibraryError("Voice library requires alternatives and bindings")
+    aliases = document.get("person_aliases", {})
+    if (
+        document["version"] == VOICE_LIBRARY_VERSION
+        and "person_aliases" not in document
+    ) or not isinstance(aliases, dict):
+        raise VoiceLibraryError("Voice library person aliases are invalid")
+    for alias, canonical in aliases.items():
+        if (
+            not isinstance(alias, str)
+            or normalize_character_name(alias) != alias
+            or not isinstance(canonical, str)
+            or not canonical.strip()
+            or normalize_character_name(canonical) == alias
+        ):
+            raise VoiceLibraryError("Voice library person alias is invalid")
+    if document["version"] == VOICE_LIBRARY_VERSION:
+        migrations = document.get("person_link_migrations")
+        if not isinstance(migrations, dict) or set(migrations) != set(aliases):
+            raise VoiceLibraryError("Voice library person link migrations are invalid")
+        for alias, values in migrations.items():
+            if not isinstance(values, list) or not values:
+                raise VoiceLibraryError(
+                    "Voice library person link migration is invalid"
+                )
+            for value in values:
+                if not isinstance(value, dict) or set(value) != {
+                    "role",
+                    "variant_key",
+                    "linked_variant_key",
+                }:
+                    raise VoiceLibraryError(
+                        "Voice library person link migration is invalid"
+                    )
+                role = value["role"]
+                variant_key = value["variant_key"]
+                linked_variant_key = value["linked_variant_key"]
+                if (
+                    not isinstance(role, str)
+                    or normalize_character_name(role) != alias
+                    or variant_key is not None
+                    and not isinstance(variant_key, str)
+                    or linked_variant_key != _linked_variant_key(alias, variant_key)
+                ):
+                    raise VoiceLibraryError(
+                        "Voice library person link migration is invalid"
+                    )
     for identity, group in alternatives.items():
         _validate_alternative_group(identity, group)
     for identity, binding in bindings.items():
