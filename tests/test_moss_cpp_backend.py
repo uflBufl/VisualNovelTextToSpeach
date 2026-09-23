@@ -1425,6 +1425,49 @@ class MossCppBackendTest(unittest.TestCase):
             self.backend(startup_cancellation=cancellation)
         self.assertEqual(len(self.children), 1)
 
+    def test_failed_load_after_server_restart_releases_owned_resources(self):
+        backend = self.backend()
+        backend._stop_server()
+        directories = []
+
+        def wrong_info(*_args, **_kwargs):
+            directories.append(Path(backend.server_directory.name))
+            return 200, {}, b'{"architecture":"moss_tts_delay"}'
+
+        with (
+            patch.object(backend, "_http", side_effect=wrong_info),
+            self.assertRaisesRegex(TTSConfigurationError, "Local v1.5"),
+        ):
+            backend.load()
+
+        self.assertIsNotNone(self.children[-1].poll())
+        self.assertIsNone(backend.server_log)
+        self.assertIsNone(backend.server_directory)
+        self.assertFalse(directories[0].exists())
+
+    def test_cancelled_load_after_server_restart_stops_child(self):
+        backend = self.backend()
+        backend._stop_server()
+        cancellation = Event()
+        backend.startup_cancellation = cancellation
+        directories = []
+
+        def cancel_during_http(*_args, **_kwargs):
+            directories.append(Path(backend.server_directory.name))
+            cancellation.set()
+            raise OSError("not ready")
+
+        with (
+            patch.object(backend, "_http", side_effect=cancel_during_http),
+            self.assertRaisesRegex(TTSSynthesisError, "cancelled"),
+        ):
+            backend.load()
+
+        self.assertIsNotNone(self.children[-1].poll())
+        self.assertIsNone(backend.server_log)
+        self.assertIsNone(backend.server_directory)
+        self.assertFalse(directories[0].exists())
+
     def test_onboarding_checks_cpp_files_without_installing_mlx(self):
         settings = AppSettings(speech_backend="moss-tts", tts_model=str(self.model))
         diagnostics = OnboardingDiagnostics()

@@ -1145,40 +1145,46 @@ class MossCppVoiceRouterBackend(MossTTSVoiceRouterBackend):
         with self.server_lock:
             if self.server is not None and self.server.poll() is None:
                 return
-        # Hardware availability may change between owned-server lifetimes.
-        # A fallback is one attempt, not a verdict cached by this backend.
-        self._fallback_category = None
-        self._fallback_used = False
-        controls = self._controls_for_start()
-        while True:
-            self._set_effective_controls(controls)
-            started, category, exit_code = self._start_server_once(cancelled, controls)
-            if started:
-                return
-            record_native_speech(
-                operation="server-failed",
-                outcome="failed",
-                model_key=self._native_model_key,
-                exit_code=exit_code,
-                fallback_reason=category,
-                gpu_layers=self.gpu_layers,
-                local_gpu=self.local_gpu,
-                aux_cpu_threads=self.aux_cpu_threads,
-                **_native_stage_timings(
-                    self.server_log.name if self.server_log is not None else None,
-                    0,
-                    {},
-                    self.startup_timeout,
-                ),
-            )
-            fallback = self._startup_fallback(category)
-            self._stop_server()
-            if fallback is None:
-                raise TTSConfigurationError(
-                    "MOSS C++ server exited while loading. Check its DLLs and model "
-                    "files; automatic hardware fallback was not applicable."
+        try:
+            # Hardware availability may change between owned-server lifetimes.
+            # A fallback is one attempt, not a verdict cached by this backend.
+            self._fallback_category = None
+            self._fallback_used = False
+            controls = self._controls_for_start()
+            while True:
+                self._set_effective_controls(controls)
+                started, category, exit_code = self._start_server_once(
+                    cancelled, controls
                 )
-            controls = fallback
+                if started:
+                    return
+                record_native_speech(
+                    operation="server-failed",
+                    outcome="failed",
+                    model_key=self._native_model_key,
+                    exit_code=exit_code,
+                    fallback_reason=category,
+                    gpu_layers=self.gpu_layers,
+                    local_gpu=self.local_gpu,
+                    aux_cpu_threads=self.aux_cpu_threads,
+                    **_native_stage_timings(
+                        self.server_log.name if self.server_log is not None else None,
+                        0,
+                        {},
+                        self.startup_timeout,
+                    ),
+                )
+                fallback = self._startup_fallback(category)
+                self._stop_server()
+                if fallback is None:
+                    raise TTSConfigurationError(
+                        "MOSS C++ server exited while loading. Check its DLLs and model "
+                        "files; automatic hardware fallback was not applicable."
+                    )
+                controls = fallback
+        except BaseException:
+            self._stop_server()
+            raise
 
     def _startup_fallback(self, category: str | None) -> NativeControls | None:
         if not self._adaptive_managed_runtime or self._fallback_used:
