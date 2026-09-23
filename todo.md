@@ -130,14 +130,13 @@ Planned implementation order after approval:
       inspection but not become the active choice. With only that clip available,
       require preview rather than selecting it automatically. Unlink and verify
       prior choices can be recovered without a fresh game import.
-- [ ] **Suggest cross-name links from game evidence:** evaluate stable game IDs,
-      portrait similarity across expressions, bank/source relationships and story
-      context; do not infer identity from a similar portrait or voice alone.
-      Auto-link only when independent, high-confidence evidence is unambiguous;
-      otherwise offer a suggestion the player can confirm or dismiss. Do not
-      auto-link Rhiannon/Aderyn merely because this one player knows the story;
-      current story rows lack a stable shared character ID and imported portrait
-      coverage is sparse.
+- [ ] **Validate game-evidence name suggestions in the real Voice plan:** select
+      The You That's Meant To Be and inspect Aderyn. The only proposed match
+      should be Rhiannon, based on five shared portrait IDs and the same voiced
+      source bank; unrelated names must not be suggested. Cancel the link dialog
+      and confirm no voice changes, then confirm the link, restart and unlink it.
+      Gate: no automatic identity or voice change before confirmation, generation
+      never waits for a decision, and the prior separate choices remain recoverable.
 
 ## P1 - Reduce preparation and post-generation saving latency
 

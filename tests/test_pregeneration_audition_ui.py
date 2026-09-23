@@ -21,6 +21,7 @@ from tests.test_pregeneration_setup import (  # noqa: E402
     write_story_index,
 )
 from vntts.game_content_importer import Reverse1999GameImporter  # noqa: E402
+from vntts.person_link_suggestions import PersonLinkSuggestion  # noqa: E402
 from vntts.pregeneration_audition import (  # noqa: E402
     VoiceAuditionCancelled,
     VoiceAuditionPreviewService,
@@ -1257,6 +1258,85 @@ class OfflineAudioPreparationAuditionTest(unittest.TestCase):
             self.assertEqual(dialog.voice_library.canonical_role("Aderyn"), "Rhiannon")
             self.assertTrue(dialog.planning_voices)
             self.assertEqual(len(pool.tasks), 1)
+
+    def test_voice_plan_suggests_but_does_not_link_matching_names(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            dialog, _pool, plan, rhiannon, _decisions, _store = (
+                self._inspected_voice_dialog(root)
+            )
+            self.addCleanup(dialog.deleteLater)
+            aderyn = replace(
+                rhiannon,
+                group_id="a" * 64,
+                character="Aderyn",
+                routing_role="Aderyn",
+                line_ids=("line:aderyn",),
+            )
+            suggestion = PersonLinkSuggestion(
+                left_role="Aderyn",
+                right_role="Rhiannon",
+                shared_portraits=("314612.png", "314623.png"),
+                shared_source_banks=("activityvoc_story_hero3146.bnk",),
+            )
+            plan = replace(
+                plan,
+                groups=(aderyn, rhiannon),
+                person_link_suggestions=(suggestion,),
+            )
+            dialog._voice_plan = plan
+            dialog._job = Mock(
+                job_id=plan.job_id,
+                story_index_sha256=plan.story_index_sha256,
+                selected_story_ids=(),
+            )
+            dialog._show_voice_confirmation(plan)
+            dialog.show_all_voice_routes.setChecked(True)
+            self.assertEqual(dialog.voice_routes.count(), 2)
+            for row in range(dialog.voice_routes.count()):
+                item = dialog.voice_routes.item(row)
+                if item.data(Qt.ItemDataRole.UserRole) == "Aderyn":
+                    dialog.voice_routes.setCurrentRow(row)
+                    break
+
+            self.assertFalse(dialog.identity_suggestion.isHidden())
+            self.assertIn("Rhiannon", dialog.identity_suggestion.text())
+            self.assertIn("2 matching portraits", dialog.identity_suggestion.text())
+            self.assertEqual(dialog.voice_library.canonical_role("Aderyn"), "Aderyn")
+            with patch(
+                "vntts.pregeneration_ui.QInputDialog.getItem",
+                return_value=("", False),
+            ) as choose:
+                dialog.link_identity.click()
+            self.assertEqual(choose.call_args.args[3][0], "Rhiannon")
+            self.assertEqual(choose.call_args.args[4], 0)
+            self.assertEqual(dialog.voice_library.canonical_role("Aderyn"), "Aderyn")
+
+            second = replace(suggestion, right_role="Gwyndolyn")
+            dialog._voice_plan = replace(
+                plan, person_link_suggestions=(suggestion, second)
+            )
+            dialog._update_identity_actions()
+            with patch(
+                "vntts.pregeneration_ui.QInputDialog.getItem",
+                return_value=("", False),
+            ) as choose:
+                dialog.link_identity.click()
+            self.assertEqual(choose.call_args.args[3][0], "")
+
+            dialog.voice_library.link_person("Rhiannon", "Gwyndolyn")
+            dialog._update_identity_actions()
+            with patch(
+                "vntts.pregeneration_ui.QInputDialog.getItem",
+                return_value=("", False),
+            ) as choose:
+                dialog.link_identity.click()
+            self.assertEqual(choose.call_args.args[3].count("Rhiannon"), 1)
+            self.assertEqual(choose.call_args.args[3][0], "Rhiannon")
+
+            dialog._job.story_index_sha256 = "stale"
+            dialog._update_identity_actions()
+            self.assertTrue(dialog.identity_suggestion.isHidden())
 
     def test_voice_plan_hides_icons_when_portrait_coverage_is_sparse(self):
         with TemporaryDirectory() as temporary_directory:

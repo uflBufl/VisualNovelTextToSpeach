@@ -40,6 +40,7 @@ from vntts.game_content_importer import (
     Reverse1999GameImporter,
 )
 from vntts.game_narrator import load_original_reference
+from vntts.person_link_suggestions import PersonLinkSuggestion
 from vntts.pregeneration_audition_ui import (
     VoiceAuditionPanel,
     VoiceAuditionUIError,
@@ -704,6 +705,11 @@ class OfflineAudioPreparationDialog(QDialog):
         self.link_identity.clicked.connect(self._link_selected_person)
         self.unlink_identity = QPushButton("Unlink name")
         self.unlink_identity.clicked.connect(self._unlink_selected_person)
+        self.identity_suggestion = QLabel()
+        self.identity_suggestion.setTextFormat(Qt.TextFormat.PlainText)
+        self.identity_suggestion.setWordWrap(True)
+        self.identity_suggestion.setAccessibleName("Possible same-person match")
+        self.identity_suggestion.hide()
         self.voice_routes.currentItemChanged.connect(
             lambda _item, _previous: self._update_identity_actions()
         )
@@ -732,6 +738,7 @@ class OfflineAudioPreparationDialog(QDialog):
         confirmation_layout.addWidget(self.voice_route_summary)
         confirmation_layout.addWidget(self.show_all_voice_routes)
         confirmation_layout.addWidget(self.voice_routes)
+        confirmation_layout.addWidget(self.identity_suggestion)
         route_actions = QHBoxLayout()
         route_actions.addWidget(self.back_to_story_selection)
         route_actions.addStretch()
@@ -952,6 +959,66 @@ class OfflineAudioPreparationDialog(QDialog):
         linked = bool(role and self.voice_library.linked_variant_key(role))
         self.link_identity.setEnabled(bool(role) and not linked)
         self.unlink_identity.setEnabled(linked)
+        suggestions = self._suggested_person_links(role) if not linked else ()
+        if suggestions:
+            matches = ", ".join(
+                f"{target} ({len(suggestion.shared_portraits)} matching portraits, "
+                f"{len(suggestion.shared_source_banks)} shared voice bank"
+                f"{'s' if len(suggestion.shared_source_banks) != 1 else ''})"
+                for target, suggestion in suggestions
+            )
+            self.identity_suggestion.setText(
+                f"Possible same person: {matches}. Confirm before linking; "
+                "the voice will not change automatically."
+            )
+        self.identity_suggestion.setVisible(bool(suggestions))
+
+    def _suggested_person_links(
+        self, role: str | None, *, plan: VoicePlan | None = None
+    ) -> tuple[tuple[str, PersonLinkSuggestion], ...]:
+        plan = plan or self._voice_plan
+        if role is None or plan is None or not plan.person_link_suggestions:
+            return ()
+        if self._job is not None and (
+            plan.job_id != self._job.job_id
+            or plan.story_index_sha256 != self._job.story_index_sha256
+        ):
+            return ()
+        key = normalize_character_name(role)
+        relevant = tuple(
+            suggestion
+            for suggestion in plan.person_link_suggestions
+            if key == normalize_character_name(suggestion.left_role)
+            or key == normalize_character_name(suggestion.right_role)
+        )
+        if not relevant or self.voice_library.linked_variant_key(role):
+            return ()
+        canonical_key = normalize_character_name(
+            self.voice_library.canonical_role(role)
+        )
+        matches: dict[str, tuple[str, PersonLinkSuggestion]] = {}
+        for suggestion in relevant:
+            left = normalize_character_name(suggestion.left_role)
+            right = normalize_character_name(suggestion.right_role)
+            target = (
+                suggestion.right_role
+                if key == left
+                else suggestion.left_role
+                if key == right
+                else None
+            )
+            if target is None:
+                continue
+            target = self.voice_library.canonical_role(target)
+            target_key = normalize_character_name(target)
+            if target_key == canonical_key:
+                continue
+            previous = matches.get(target_key)
+            if previous is None or len(suggestion.shared_portraits) > len(
+                previous[1].shared_portraits
+            ):
+                matches[target_key] = target, suggestion
+        return tuple(sorted(matches.values(), key=lambda match: match[0].casefold()))
 
     def _link_selected_person(self) -> None:
         role = self._selected_routing_role()
@@ -963,7 +1030,10 @@ class OfflineAudioPreparationDialog(QDialog):
             or self.has_pending_work()
         ):
             return
-        names = sorted(
+        suggestions = self._suggested_person_links(role)
+        suggested_names = [target for target, _suggestion in suggestions]
+        suggested_keys = {normalize_character_name(name) for name in suggested_names}
+        other_names = sorted(
             {
                 self.voice_library.canonical_role(group.routing_role or group.character)
                 for group in plan.groups
@@ -979,10 +1049,23 @@ class OfflineAudioPreparationDialog(QDialog):
             },
             key=str.casefold,
         )
+        names = suggested_names + [
+            name
+            for name in other_names
+            if normalize_character_name(name) not in suggested_keys
+        ]
+        if len(suggestions) != 1:
+            names.insert(0, "")
+        prompt = f"Treat {role} as another name for:"
+        if len(suggestions) == 1:
+            prompt = (
+                f"Game evidence suggests {suggestions[0][0]}. "
+                "Confirm the identity, or choose another name:"
+            )
         target, accepted = QInputDialog.getItem(
             self,
             "Link character names",
-            f"Treat {role} as another name for:",
+            prompt,
             names,
             0,
             True,
@@ -1333,11 +1416,20 @@ class OfflineAudioPreparationDialog(QDialog):
             for group in (plan.groups if isinstance(plan.groups, (tuple, list)) else ())
             if normalize_character_name(group.character) != "narrator"
         )
+        suggested_roles = {
+            normalize_character_name(group.routing_role or group.character)
+            for group in groups
+            if self._suggested_person_links(
+                group.routing_role or group.character, plan=plan
+            )
+        }
         exceptions = [
             group
             for group in groups
             if (
                 group.route != "voice"
+                or normalize_character_name(group.routing_role or group.character)
+                in suggested_roles
                 or normalize_character_name(group.character)
                 != normalize_character_name(
                     group.source_character or group.source_speaker or ""

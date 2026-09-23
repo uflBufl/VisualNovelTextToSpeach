@@ -43,6 +43,10 @@ from vntts.chapter_voice_preload import (
     _has_authoritative_source_audio,
     _validated_source_audio_line_ids,
 )
+from vntts.person_link_suggestions import (
+    PersonLinkSuggestion,
+    suggest_person_links,
+)
 from vntts.pregeneration_setup import (
     PregenerationJob,
     PregenerationJobStore,
@@ -250,6 +254,7 @@ class VoicePlan:
     pocket_voice_cloning: bool
     synthesis_controls_sha256: str
     groups: tuple[VoiceGroup, ...]
+    person_link_suggestions: tuple[PersonLinkSuggestion, ...] = ()
 
     @property
     def generation_line_count(self) -> int:
@@ -279,6 +284,9 @@ class VoicePlan:
             "pocket_voice_cloning": self.pocket_voice_cloning,
             "synthesis_controls_sha256": self.synthesis_controls_sha256,
             "groups": [group.to_document() for group in self.groups],
+            "person_link_suggestions": [
+                suggestion.to_document() for suggestion in self.person_link_suggestions
+            ],
         }
 
 
@@ -628,6 +636,9 @@ class VoicePlanStore:
             pocket_voice_cloning=bool(controls["pocket_voice_cloning"]),
             synthesis_controls_sha256=controls_sha256,
             groups=tuple(groups),
+            person_link_suggestions=suggest_person_links(
+                records.values(), person_aliases
+            ),
         )
         return self._persist_plan(job, plan)
 
@@ -822,7 +833,7 @@ class VoicePlanStore:
             library=self.voice_library,
             variant_key=variant_key,
         )
-        linked_names = (character,)
+        linked_names: tuple[str, ...] = (character,)
         linked_names += tuple(
             alias
             for alias, canonical in person_aliases.items()

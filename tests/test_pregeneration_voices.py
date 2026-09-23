@@ -602,6 +602,64 @@ class VoicePlanStoreTest(unittest.TestCase):
                 chosen.reference_sha256s,
             )
 
+    def test_voice_plan_preserves_person_link_suggestions_without_linking(self):
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            job, jobs = self.create_fixture(root)
+            path = Path(job.story_index)
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            for row in rows:
+                match row.get("line_id"):
+                    case "line:original":
+                        row["source_voice_id"] = "r-10"
+                    case "line:rhiannon:1":
+                        row["voice_character"] = "Aderyn"
+                        row["source_voice_id"] = "a-10"
+                    case "line:rhiannon:2":
+                        row["portrait"] = 11
+                        row["source_voice_id"] = "r-11"
+                    case "line:unknown":
+                        row["speaker"] = "Aderyn"
+                        row["voice_character"] = "Aderyn"
+                        row["portrait"] = 11
+                        row["source_bank"] = "rhiannon.bnk"
+                        row["source_voice_id"] = "a-11"
+                    case "line:unattributed":
+                        row["speaker"] = "Rhiannon"
+                        row["voice_character"] = "Rhiannon"
+                        row["portrait"] = 10
+                        row["source_bank"] = "rhiannon.bnk"
+                        row["source_voice_id"] = "r-10"
+            path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            job = replace(job, story_index_sha256=sha256_file(path))
+            library = VoiceLibrary(root / "library")
+            manifest = write_manifest(root / "voices")
+            plan = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+
+            self.assertEqual(len(plan.person_link_suggestions), 1)
+            suggestion = plan.person_link_suggestions[0]
+            self.assertEqual(
+                (suggestion.left_role, suggestion.right_role), ("Aderyn", "Rhiannon")
+            )
+            self.assertEqual(suggestion.shared_portraits, ("10", "11"))
+            self.assertEqual(suggestion.shared_source_banks, ("rhiannon.bnk",))
+            self.assertEqual(
+                plan.to_document()["person_link_suggestions"],
+                [suggestion.to_document()],
+            )
+            self.assertEqual(library.canonical_role("Aderyn"), "Aderyn")
+            library.link_person("Rhiannon", "Aderyn")
+            linked = VoicePlanStore(jobs, voice_library=library).create(
+                job,
+                AppSettings(pocket_gated_model_accepted=True),
+                manifest_path=manifest,
+            )
+            self.assertEqual(linked.person_link_suggestions, ())
+
     def test_source_audio_is_excluded_and_lines_are_grouped_by_character(self):
         with TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
