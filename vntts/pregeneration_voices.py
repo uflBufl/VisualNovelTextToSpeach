@@ -822,7 +822,7 @@ class VoicePlanStore:
             library=self.voice_library,
             variant_key=variant_key,
         )
-        linked_names = (character,)
+        linked_names: tuple[str, ...] = (character,)
         linked_names += tuple(
             alias
             for alias, canonical in person_aliases.items()
