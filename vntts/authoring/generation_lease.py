@@ -20,6 +20,7 @@ from vntts.authoring.advisory_lock import (
     AdvisoryLockBusyError,
     exclusive_advisory_lock,
 )
+from vntts.authoring.authority import write_json_document_no_replace
 from vntts.authoring.workspace_foundation import load_json_object
 
 LEASE_SCHEMA = "vntts.authoring-generation-lease"
@@ -244,18 +245,19 @@ class GenerationLease:
                     "started_at": datetime.now(timezone.utc).isoformat(),
                 }
                 self.document = lease
-                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
                 try:
-                    descriptor = os.open(self.path, flags, 0o600)
-                except FileExistsError as error:
-                    raise BulkGenerationError(
-                        "Another generation process acquired the output"
-                    ) from error
-                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                    json.dump(lease, stream, sort_keys=True)
-                    stream.write("\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
+                    write_json_document_no_replace(
+                        self.path,
+                        lease,
+                        "generation lease",
+                        error_type=BulkGenerationError,
+                    )
+                except BulkGenerationError as error:
+                    if isinstance(error.__cause__, FileExistsError):
+                        raise BulkGenerationError(
+                            "Another generation process acquired the output"
+                        ) from error
+                    raise
         except AdvisoryLockBusyError as error:
             raise BulkGenerationError(
                 "Another generation process acquired the output"

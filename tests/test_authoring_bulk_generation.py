@@ -1830,6 +1830,40 @@ class AuthoringBulkGenerationTest(unittest.TestCase):
             self.assertFalse((output / ".generation-lease.json").exists())
             self.assertFalse(holder.is_alive())
 
+    def test_failed_generation_lease_write_leaves_no_partial_owner(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            output.mkdir()
+            lease = bulk_module._GenerationLease(
+                output,
+                "1" * 64,
+                process_checker=lambda _pid: False,
+            )
+            real_fsync = os.fsync
+
+            def fail_lease_fsync(descriptor):
+                if os.fstat(descriptor).st_size > 1:
+                    raise OSError("disk full")
+                return real_fsync(descriptor)
+
+            with (
+                patch(
+                    "vntts.authoring.generation_lease.os.fsync",
+                    side_effect=fail_lease_fsync,
+                ),
+                self.assertRaises((OSError, BulkGenerationError)),
+            ):
+                lease.__enter__()
+
+            self.assertFalse(lease.path.exists())
+            with bulk_module._GenerationLease(
+                output,
+                "1" * 64,
+                process_checker=lambda _pid: False,
+            ) as recovered:
+                recovered.assert_owned()
+            self.assertFalse(lease.path.exists())
+
     def test_live_lease_with_unknown_start_identity_blocks_takeover(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
