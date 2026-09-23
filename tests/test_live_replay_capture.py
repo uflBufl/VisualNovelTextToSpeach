@@ -1,5 +1,6 @@
 import hashlib
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -237,6 +238,64 @@ class LiveReplayCaptureTest(unittest.TestCase):
             (root / "corpus.json").write_text("occupied", encoding="utf-8")
             with self.assertRaisesRegex(LiveReplayCaptureError, "already exists"):
                 session.finish()
+
+    def test_capture_retries_after_partial_frame_write(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "capture"
+            session = LiveReplayCaptureSession(root)
+            original_named_temporary_file = tempfile.NamedTemporaryFile
+
+            class PartialWriter:
+                def __init__(self, stream):
+                    self.stream = stream
+                    self.name = stream.name
+
+                def __enter__(self):
+                    self.stream.__enter__()
+                    return self
+
+                def __exit__(self, *arguments):
+                    return self.stream.__exit__(*arguments)
+
+                def write(self, payload):
+                    self.stream.write(payload[:1])
+                    raise OSError("injected partial write")
+
+                def __getattr__(self, name):
+                    return getattr(self.stream, name)
+
+            with patch(
+                "vntts.live_replay_capture.tempfile.NamedTemporaryFile",
+                side_effect=lambda **kwargs: PartialWriter(
+                    original_named_temporary_file(**kwargs)
+                ),
+            ):
+                with self.assertRaisesRegex(LiveReplayCaptureError, "partial write"):
+                    session.note_uncertain_observation(frame("red"))
+
+            self.assertEqual(session.frame_count, 0)
+            self.assertEqual(session.uncertain_observations, 0)
+            self.assertEqual(list((root / "frames").iterdir()), [])
+            session.note_uncertain_observation(frame("red"))
+            self.assertEqual(session.frame_count, 1)
+            self.assertEqual(session.uncertain_observations, 1)
+            self.assertEqual(
+                [path.name for path in (root / "frames").iterdir()],
+                ["frame-000001.png"],
+            )
+
+    def test_capture_keeps_frame_when_temp_cleanup_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "capture"
+            session = LiveReplayCaptureSession(root)
+            with patch(
+                "vntts.live_replay_capture.Path.unlink",
+                side_effect=OSError("injected cleanup failure"),
+            ):
+                session.observe(frame("red"), "Narrator", "A line.")
+
+            self.assertEqual(session.frame_count, 1)
+            self.assertTrue((root / "frames" / "frame-000001.png").is_file())
 
     def test_capture_rejects_a_story_index_symlink(self):
         with TemporaryDirectory() as directory:

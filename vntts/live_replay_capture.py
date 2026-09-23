@@ -197,9 +197,9 @@ class LiveReplayCaptureSession:
     def note_uncertain_observation(
         self, frame: Image.Image | CapturedImageFrame | None = None
     ) -> None:
-        self.uncertain_observations += 1
         if frame is not None:
             frame_spec = self._write_frame(frame)
+            self.uncertain_observations += 1
             self._record_observation(
                 frame_spec,
                 status="uncertain",
@@ -208,6 +208,8 @@ class LiveReplayCaptureSession:
                 story_line=None,
                 story_match="ocr-uncertain",
             )
+            return
+        self.uncertain_observations += 1
 
     def observe(
         self,
@@ -518,17 +520,15 @@ class LiveReplayCaptureSession:
         image.convert("RGB").save(payload, format="PNG")
         content = payload.getvalue()
         digest = hashlib.sha256(content).hexdigest()
-        self.frame_count += 1
-        relative = PurePosixPath("frames") / f"frame-{self.frame_count:06d}.png"
+        relative = PurePosixPath("frames") / f"frame-{self.frame_count + 1:06d}.png"
         path = self.directory.joinpath(*relative.parts)
         try:
-            with path.open("xb") as stream:
-                stream.write(content)
-                stream.flush()
-        except OSError as error:
+            _write_payload_no_replace(path, content)
+        except LiveReplayCaptureError as error:
             raise LiveReplayCaptureError(
                 f"Unable to save replay frame: {error}"
             ) from error
+        self.frame_count += 1
         return {"path": relative.as_posix(), "sha256": digest}
 
     def _corpus_record(self, index: int, item: DialogueItem) -> CorpusRecord:
@@ -679,7 +679,10 @@ def _write_payload_no_replace(path: Path, payload: bytes) -> None:
         ) from error
     finally:
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _write_json_no_replace(path: Path, document: object) -> None:
