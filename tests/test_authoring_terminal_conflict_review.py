@@ -456,6 +456,35 @@ class TerminalConflictReviewTest(unittest.TestCase):
             self.assertFalse(lock.exists())
             self.assertEqual(len(list(output.glob(".progress.lock.interrupted-*"))), 1)
 
+    def test_progress_lease_write_failure_leaves_no_partial_lock(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            _primary, _secondary, _queue_id, report_path = self.create_fixture(root)
+            output = root / "conflict-review"
+            created = publish_terminal_conflict_review(report_path, output)
+            case_id = json.loads(created.review.read_text(encoding="utf-8"))["cases"][
+                0
+            ]["case_id"]
+            lock = output / ".progress.lock"
+
+            with (
+                patch(
+                    "vntts.authoring.authority.os.fsync",
+                    side_effect=OSError("injected fsync failure"),
+                ),
+                self.assertRaisesRegex(
+                    TerminalConflictReviewError, "injected fsync failure"
+                ),
+            ):
+                record_terminal_conflict_decision(output, case_id, NEITHER_ACCEPTABLE)
+
+            self.assertFalse(lock.exists())
+            progress = record_terminal_conflict_decision(
+                output, case_id, NEITHER_ACCEPTABLE
+            )
+            self.assertEqual(progress["decisions"][0]["case_id"], case_id)
+            self.assertFalse(lock.exists())
+
     def test_live_progress_lease_blocks_concurrent_decision(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

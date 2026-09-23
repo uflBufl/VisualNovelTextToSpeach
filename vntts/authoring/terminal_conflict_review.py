@@ -27,6 +27,7 @@ from vntts.authoring.authority import (
     assert_authority_snapshot,
     canonical_document_sha256,
     capture_authority_file,
+    write_json_document_no_replace,
 )
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
@@ -1635,15 +1636,6 @@ def _recover_stale_progress_lock(directory: Path, path: Path) -> None:
         ) from error
 
 
-def _create_progress_lock(path: Path) -> int:
-    try:
-        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError as error:
-        raise TerminalConflictReviewError(
-            "Another terminal conflict decision is being saved"
-        ) from error
-
-
 def _remove_progress_lock(path: Path, guard_path: Path, lease: _ProgressLease) -> None:
     try:
         with exclusive_advisory_lock(guard_path, blocking=True):
@@ -1662,17 +1654,24 @@ def _progress_lock(directory: Path) -> Iterator[None]:
         with exclusive_advisory_lock(guard_path):
             if path.exists():
                 _recover_stale_progress_lock(directory, path)
-            descriptor = _create_progress_lock(path)
+            try:
+                write_json_document_no_replace(
+                    path,
+                    lease,
+                    "terminal conflict progress lock",
+                    error_type=TerminalConflictReviewError,
+                )
+            except TerminalConflictReviewError as error:
+                if isinstance(error.__cause__, FileExistsError):
+                    raise TerminalConflictReviewError(
+                        "Another terminal conflict decision is being saved"
+                    ) from error
+                raise
     except AdvisoryLockBusyError as error:
         raise TerminalConflictReviewError(
             "Another terminal conflict decision is being saved"
         ) from error
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(lease, stream, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
         yield
     finally:
         _remove_progress_lock(path, guard_path, lease)
