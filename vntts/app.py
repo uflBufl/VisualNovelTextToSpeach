@@ -159,6 +159,7 @@ from vntts.support import (
     record_background_operation,
 )
 from vntts.support_ui import SupportCenterDialog
+from vntts.ui_text import add_composite_form_row as _add_composite_form_row
 from vntts.ui_text import make_text_copyable
 from vntts.voice_library import VoiceLibrary
 from vntts.voices import (
@@ -175,18 +176,6 @@ from vntts.window_capture import (
 
 application_name = "Visual Novel Text to Speech"
 default_xtts_model = "tts_models/multilingual/multi-dataset/xtts_v2"
-
-
-def _add_composite_form_row(
-    form: QFormLayout,
-    label_text: str,
-    field: QWidget,
-    field_layout: QHBoxLayout,
-) -> QLabel:
-    label = QLabel(label_text)
-    label.setBuddy(field)
-    form.addRow(label, field_layout)
-    return label
 
 
 def _onboarding_preview(text: str) -> str:

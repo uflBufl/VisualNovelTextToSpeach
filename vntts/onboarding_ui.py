@@ -54,6 +54,7 @@ from vntts.release_backends import (
 from vntts.settings import AppSettings
 from vntts.speech_backend import default_moss_tts_model
 from vntts.speech_presentation import speech_configuration_rows
+from vntts.ui_text import add_composite_form_row as _add_composite_form_row
 from vntts.ui_text import make_text_copyable, set_labeled_text
 from vntts.voices import application_voice_library, find_default_voice_manifest
 from vntts.window_capture import (
@@ -84,18 +85,6 @@ def _is_diagnostic_results(value: object) -> TypeGuard[tuple[DiagnosticResult, .
     return isinstance(value, tuple) and all(
         isinstance(result, DiagnosticResult) for result in value
     )
-
-
-def _add_composite_form_row(
-    form: QFormLayout,
-    label_text: str,
-    field: QWidget,
-    field_layout: QHBoxLayout,
-) -> QLabel:
-    label = QLabel(label_text)
-    label.setBuddy(field)
-    form.addRow(label, field_layout)
-    return label
 
 
 class ConfigurationPage(QWizardPage):

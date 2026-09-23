@@ -10,7 +10,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TypedDict, TypeGuard
 
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -24,6 +24,7 @@ from vntts.authoring.publication import (
     staged_directory,
 )
 from vntts.authoring.workspace_foundation import load_json_object, require_sha256
+from vntts.path_safety import safe_relative_path
 
 SESSION_SCHEMA = "r1999.model-listening-session"
 KEY_SCHEMA = "r1999.model-listening-key"
@@ -741,12 +742,7 @@ def _load_json(path: PathInput, description: str) -> JsonObject:
 
 
 def _safe_relative(value: object, label: str) -> Path:
-    if not isinstance(value, str) or not value.strip() or "\\" in value:
-        raise ListeningImportError(f"{label} must be a non-empty POSIX-relative path")
-    pure = PurePosixPath(value)
-    if pure.is_absolute() or any(part in {"", ".", ".."} for part in value.split("/")):
-        raise ListeningImportError(f"{label} must stay within the session directory")
-    return Path(*pure.parts)
+    return safe_relative_path(value, label, error_type=ListeningImportError)
 
 
 def _within(root: PathInput, relative: Path, label: str) -> Path:
