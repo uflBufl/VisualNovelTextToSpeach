@@ -21,6 +21,7 @@ from vntts.authoring.reference_composite import (
 from vntts.authoring.source_reference_quality import (
     load_source_reference_quality_review,
 )
+from vntts.authoring.source_reference_quality_records import capture_quality_outcomes
 from vntts.synthesis import (
     SynthesisChunk,
     SynthesisChunkStream,
@@ -263,6 +264,41 @@ class AuthoringReferenceCompositeTest(unittest.TestCase):
             ):
                 publish_composite_quality_review(
                     composite.directory, generation.state, root / "changed-quality"
+                )
+
+    def test_quality_review_keeps_composite_error_for_changed_generated_sample(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "generation" / "sample.wav"
+            self.write_wav(source, frequency=250)
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            source.write_bytes(b"changed")
+
+            with self.assertRaisesRegex(
+                ReferenceCompositeError, "Generated composite sample changed"
+            ):
+                capture_quality_outcomes(
+                    [
+                        (
+                            {
+                                "queue_id": "sample",
+                                "evaluation_kind": "fixed",
+                                "text": "Test",
+                                "text_sha256": hashlib.sha256(b"Test").hexdigest(),
+                            },
+                            {
+                                "status": "generated",
+                                "path": "sample.wav",
+                                "file_sha256": digest,
+                            },
+                            Path("audio/generated-01.wav"),
+                        )
+                    ],
+                    source.parent,
+                    root / "staging",
+                    [],
+                    error_type=ReferenceCompositeError,
+                    generated_label="Generated composite sample",
                 )
 
     def test_rejects_changed_reference_and_existing_output(self):

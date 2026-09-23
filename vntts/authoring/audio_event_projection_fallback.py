@@ -6,7 +6,6 @@ import copy
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import partial
 from pathlib import Path
 
 from vntts_artifacts.atomic_io import atomic_write_json
@@ -18,7 +17,6 @@ from vntts.authoring.authority import canonical_document_sha256
 from vntts.authoring.bulk_generation import (
     BulkGenerationError,
     load_generation_state,
-    process_is_alive,
 )
 from vntts.authoring.bulk_generation import (
     _state_items as _generation_state_items,
@@ -30,9 +28,7 @@ from vntts.authoring.generation_state import (
     LIVE_FALLBACK_SCHEMA,
 )
 from vntts.authoring.publication import (
-    AtomicPublicationError,
-    generation_publication_leases,
-    rename_directory_no_replace,
+    publish_single_base_successor,
     staged_directory,
 )
 from vntts.authoring.workbench import (
@@ -42,7 +38,6 @@ from vntts.authoring.workbench import (
     default_workspaces_root,
     load_workspace_authority,
     load_workspace_json,
-    read_workspace_file_bytes,
     require_workspace_sha256,
     safe_workspace_relative_path,
     validate_workspace_provenance_extensions,
@@ -53,16 +48,9 @@ from vntts.authoring.workspace_config import (
     workspace_successor_config_fingerprint,
 )
 from vntts.authoring.workspace_foundation import (
-    copy_generation_wavs,
-    copy_workspace_tree_snapshot,
+    stage_single_base_successor,
 )
 from vntts.authoring.workspace_state import load_stable_workspace_generation_state
-
-_copy_base_wavs = partial(
-    copy_generation_wavs,
-    target_label="Audio-event projection WAV",
-    error_type=AuthoringWorkbenchError,
-)
 
 SCHEMA = "vntts.authoring-audio-event-projection-fallback-batch"
 SCHEMA_VERSION = 1
@@ -293,34 +281,18 @@ def _stage_projection(
         ),
         (selection.queue_path, selection.queue_sha256),
     ]
-    for tree_name in ("provenance", "inputs"):
-        copy_workspace_tree_snapshot(
-            selection.base_directory / tree_name,
-            staging / tree_name,
-            snapshots,
-            error_type=AuthoringWorkbenchError,
-        )
-    projection_inputs = staging / "inputs/audio-event-projection"
-    projection_inputs.mkdir(parents=True)
-    (projection_inputs / "base-workspace.json").write_bytes(
-        read_workspace_file_bytes(
-            selection.base_directory / "workspace.json",
-            "audio-event projection base workspace",
-        )
+    output = stage_single_base_successor(
+        staging,
+        selection.base_directory,
+        selection.queue_path,
+        selection.state,
+        snapshots,
+        input_name="audio-event-projection",
+        label="audio-event projection",
+        wav_label="Audio-event projection WAV",
+        error_type=AuthoringWorkbenchError,
     )
-    (projection_inputs / "base-generation-state.json").write_bytes(
-        read_workspace_file_bytes(
-            selection.base_directory / "generated-audio/generation-state.json",
-            "audio-event projection base state",
-        )
-    )
-    (staging / "queue.jsonl").write_bytes(
-        read_workspace_file_bytes(selection.queue_path, "audio-event projection queue")
-    )
-    output = staging / "generated-audio"
-    output.mkdir()
     target_state = copy.deepcopy(selection.state)
-    _copy_base_wavs(selection.base_directory, output, selection.state, snapshots)
     return _ProjectionStaging(output, snapshots, target_state)
 
 
@@ -416,29 +388,16 @@ def _publish_projection(
     snapshots: list[tuple[Path, str]],
 ) -> None:
     try:
-        with generation_publication_leases(
-            ((selection.base_directory / "generated-audio", selection.queue_sha256),),
-            process_checker=process_is_alive,
-        ) as leases:
-            if any(
-                (selection.base_directory / "generated-audio").rglob("*.partial.wav")
-            ):
-                raise AuthoringWorkbenchError(
-                    "Audio-event projection base became active"
-                )
-            for path, digest in snapshots:
-                if not path.is_file() or sha256_file(path) != digest:
-                    raise AuthoringWorkbenchError(
-                        "Audio-event projection authority changed before publication"
-                    )
-            leases[0].assert_owned()
-            try:
-                rename_directory_no_replace(staging, identity.destination)
-            except (AtomicPublicationError, OSError) as error:
-                raise AuthoringWorkbenchError(
-                    f"Unable to publish audio-event projection workspace: {error}"
-                ) from error
-            leases[0].mark_committed()
+        publish_single_base_successor(
+            staging,
+            identity.destination,
+            selection.base_directory,
+            selection.queue_sha256,
+            snapshots,
+            label="Audio-event projection",
+            publish_label="audio-event projection",
+            error_type=AuthoringWorkbenchError,
+        )
     except BulkGenerationError as error:
         raise AuthoringWorkbenchError(str(error)) from error
 

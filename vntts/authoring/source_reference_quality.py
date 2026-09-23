@@ -38,6 +38,7 @@ from vntts.authoring.source_reference_quality_records import (
     _required_text,
     _utc_now,
     accepted_source_reference_variants,
+    capture_quality_outcomes,
     load_source_reference_quality_review,
     next_pending_quality_variant,
     quality_review_progress,
@@ -368,139 +369,55 @@ def _stage_quality_outcomes(
     inputs: _QualityReviewInputs,
     snapshots: MutableSequence[tuple[Path, str]],
 ) -> tuple[list[JsonObject], list[JsonObject], list[JsonObject]]:
-    generated: list[JsonObject] = []
-    excluded: list[JsonObject] = []
     contexts: list[JsonObject] = []
     try:
         queue_ids = _variant_evaluation_queue_ids(variant, variant_id)
     except SourceReferenceReviewError as error:
         raise SourceReferenceQualityError(str(error)) from error
-    for item_index, (expected_kind, queue_id) in enumerate(queue_ids):
-        _stage_quality_outcome(
-            variant_id,
-            cluster,
-            expected_kind,
-            queue_id,
-            item_index,
-            staging,
-            inputs,
-            snapshots,
-            generated,
-            excluded,
-            contexts,
+    outcomes = []
+    for item_index, (expected_kind, queue_id) in enumerate(queue_ids, start=1):
+        item = inputs.generation.queue_by_id.get(queue_id)
+        if item is None:
+            raise SourceReferenceQualityError(
+                f"Variant {variant_id} queue item is absent: {queue_id}"
+            )
+        if (
+            item.document.get("reference_cluster_id") != cluster["cluster_id"]
+            or item.document.get("evaluation_kind") != expected_kind
+            or item.speaker != cluster["character"]
+        ):
+            raise SourceReferenceQualityError(
+                f"Variant {variant_id} queue binding changed: {queue_id}"
+            )
+        result = inputs.generation.state_items.get(queue_id)
+        if isinstance(result, dict):
+            contexts.append(
+                {
+                    "backend": result.get("provider"),
+                    "model": result.get("model"),
+                    "generation_profile": result.get("generation_profile"),
+                    "seed": result.get("seed"),
+                }
+            )
+        outcomes.append(
+            (
+                {
+                    "queue_id": queue_id,
+                    "evaluation_kind": expected_kind,
+                    "text": item.text,
+                    "text_sha256": item.text_sha256,
+                },
+                result,
+                Path("audio") / variant_id / f"generated-{item_index:02d}.wav",
+            )
         )
+    generated, excluded = capture_quality_outcomes(
+        outcomes,
+        inputs.generation.path.parent,
+        staging,
+        snapshots,
+    )
     return generated, excluded, contexts
-
-
-def _stage_quality_outcome(
-    variant_id: str,
-    cluster: JsonObject,
-    expected_kind: str,
-    queue_id: str,
-    item_index: int,
-    staging: Path,
-    inputs: _QualityReviewInputs,
-    snapshots: MutableSequence[tuple[Path, str]],
-    generated: MutableSequence[JsonObject],
-    excluded: MutableSequence[JsonObject],
-    contexts: MutableSequence[JsonObject],
-) -> None:
-    item = inputs.generation.queue_by_id.get(queue_id)
-    if item is None:
-        raise SourceReferenceQualityError(
-            f"Variant {variant_id} queue item is absent: {queue_id}"
-        )
-    if (
-        item.document.get("reference_cluster_id") != cluster["cluster_id"]
-        or item.document.get("evaluation_kind") != expected_kind
-        or item.speaker != cluster["character"]
-    ):
-        raise SourceReferenceQualityError(
-            f"Variant {variant_id} queue binding changed: {queue_id}"
-        )
-    result = inputs.generation.state_items.get(queue_id)
-    if isinstance(result, dict):
-        contexts.append(
-            {
-                "backend": result.get("provider"),
-                "model": result.get("model"),
-                "generation_profile": result.get("generation_profile"),
-                "seed": result.get("seed"),
-            }
-        )
-    result_document = result if isinstance(result, dict) else {}
-    common = {
-        "queue_id": queue_id,
-        "evaluation_kind": expected_kind,
-        "text": item.text,
-        "text_sha256": item.text_sha256,
-    }
-    if result_document.get("status", "pending") in {"generated", "approved"}:
-        _stage_generated_quality_sample(
-            variant_id,
-            queue_id,
-            item_index,
-            result_document,
-            common,
-            staging,
-            inputs.generation.path.parent,
-            snapshots,
-            generated,
-        )
-        return
-    excluded.append(_excluded_quality_result(common, result))
-
-
-def _stage_generated_quality_sample(
-    variant_id: str,
-    queue_id: str,
-    item_index: int,
-    result: JsonObject,
-    common: JsonObject,
-    staging: Path,
-    state_directory: Path,
-    snapshots: MutableSequence[tuple[Path, str]],
-    generated: MutableSequence[JsonObject],
-) -> None:
-    relative = _required_text(result.get("path"), f"generated result {queue_id} path")
-    source = _contained_file(state_directory, relative, f"generated result {queue_id}")
-    digest = _required_sha256(
-        result.get("file_sha256"), f"generated result {queue_id} hash"
-    )
-    if sha256_file(source) != digest:
-        raise SourceReferenceQualityError(
-            f"Generated evaluation audio changed: {queue_id}"
-        )
-    snapshots.append((source, digest))
-    generated_relative = (
-        Path("audio") / variant_id / f"generated-{item_index + 1:02d}.wav"
-    )
-    audio_record = _copy_audio(source, digest, staging / generated_relative)
-    generated.append({**common, "audio": generated_relative.as_posix(), **audio_record})
-
-
-def _excluded_quality_result(common: JsonObject, result: object) -> JsonObject:
-    return {
-        **common,
-        "status": result.get("status", "pending")
-        if isinstance(result, dict)
-        else "pending",
-        "attempts": result.get("attempts", 0) if isinstance(result, dict) else 0,
-        "error": _optional_result_text(result, "last_error"),
-        "completion": _optional_failure_text(result, "completion"),
-        "failure_kind": _optional_failure_text(result, "kind"),
-    }
-
-
-def _optional_result_text(result: object, field: str) -> str | None:
-    value = result.get(field) if isinstance(result, dict) else None
-    return value if isinstance(value, str) else None
-
-
-def _optional_failure_text(result: object, field: str) -> str | None:
-    failure = result.get("failure") if isinstance(result, dict) else None
-    value = failure.get(field) if isinstance(failure, dict) else None
-    return value if isinstance(value, str) else None
 
 
 def _quality_review_session(

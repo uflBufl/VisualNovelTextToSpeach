@@ -126,41 +126,34 @@ def workspace_config_fingerprint(
     queue_extension: object | None = None,
 ) -> str:
     """Return the canonical SHA-256 identity of one workspace configuration."""
-    fingerprint = {
+    fingerprint: dict[str, object] = {
         "import_id": import_id,
         "story_index": story_config,
         "voice_manifest": voice_config,
         "narrator_character": narrator_character,
         "run_config": run_config,
     }
-    if carry_forward is not None:
-        fingerprint["carry_forward"] = carry_forward
-    if outcome_merge is not None:
-        fingerprint["outcome_merge"] = outcome_merge
-    if terminal_conflict_merge is not None:
-        fingerprint["terminal_conflict_merge"] = terminal_conflict_merge
-    if failure_reference_binding is not None:
-        fingerprint["failure_reference_binding"] = failure_reference_binding
-    if config_rebase is not None:
-        fingerprint["config_rebase"] = config_rebase
-    if audio_event_composition is not None:
-        fingerprint["audio_event_composition"] = audio_event_composition
-    if explicit_fallback_merge is not None:
-        fingerprint["explicit_fallback_merge"] = explicit_fallback_merge
-    if known_role_live_fallback is not None:
-        fingerprint["known_role_live_fallback"] = known_role_live_fallback
-    if audio_event_omission is not None:
-        fingerprint["audio_event_omission"] = audio_event_omission
-    if audio_event_projection_fallback is not None:
-        fingerprint["audio_event_projection_fallback"] = audio_event_projection_fallback
-    if reviewed_waveform_publication is not None:
-        fingerprint["reviewed_waveform_publication"] = reviewed_waveform_publication
-    if reviewed_rejection_live_fallback is not None:
-        fingerprint["reviewed_rejection_live_fallback"] = (
-            reviewed_rejection_live_fallback
-        )
-    if queue_extension is not None:
-        fingerprint["queue_extension"] = queue_extension
+    fingerprint.update(
+        {
+            field: value
+            for field, value in {
+                "carry_forward": carry_forward,
+                "outcome_merge": outcome_merge,
+                "failure_reference_binding": failure_reference_binding,
+                "terminal_conflict_merge": terminal_conflict_merge,
+                "config_rebase": config_rebase,
+                "audio_event_composition": audio_event_composition,
+                "explicit_fallback_merge": explicit_fallback_merge,
+                "known_role_live_fallback": known_role_live_fallback,
+                "audio_event_omission": audio_event_omission,
+                "audio_event_projection_fallback": audio_event_projection_fallback,
+                "reviewed_waveform_publication": reviewed_waveform_publication,
+                "reviewed_rejection_live_fallback": reviewed_rejection_live_fallback,
+                "queue_extension": queue_extension,
+            }.items()
+            if value is not None
+        }
+    )
     payload = json.dumps(
         fingerprint,
         ensure_ascii=False,

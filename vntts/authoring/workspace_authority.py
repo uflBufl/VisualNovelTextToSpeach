@@ -74,9 +74,7 @@ from vntts.authoring.workspace_config import (
     normalize_workspace_run_config,
     workspace_failure_repair_policy,
     workspace_queue_sha256,
-)
-from vntts.authoring.workspace_config import (
-    workspace_config_fingerprint as _workspace_config_fingerprint,
+    workspace_successor_config_fingerprint,
 )
 from vntts.authoring.workspace_foundation import (
     contained_path,
@@ -458,25 +456,10 @@ def _validate_workspace_config_identity(
     narrator: str,
     run_config: object,
 ) -> None:
-    expected_config = _workspace_config_fingerprint(
+    expected_config = workspace_successor_config_fingerprint(
+        {**workspace, "narrator_character": narrator},
         expected_import_id,
-        workspace.get("story_index"),
-        workspace.get("voice_manifest"),
-        narrator,
-        run_config,
-        workspace.get("carry_forward"),
-        workspace.get("outcome_merge"),
-        workspace.get("failure_reference_binding"),
-        workspace.get("terminal_conflict_merge"),
-        workspace.get("config_rebase"),
-        workspace.get("audio_event_composition"),
-        workspace.get("explicit_fallback_merge"),
-        workspace.get("known_role_live_fallback"),
-        workspace.get("audio_event_omission"),
-        workspace.get("audio_event_projection_fallback"),
-        workspace.get("reviewed_waveform_publication"),
-        workspace.get("reviewed_rejection_live_fallback"),
-        workspace.get("queue_extension"),
+        overlays={"run_config": run_config},
     )
     if (
         workspace.get("config_fingerprint") != expected_config
