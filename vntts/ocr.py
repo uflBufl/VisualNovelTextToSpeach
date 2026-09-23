@@ -500,22 +500,7 @@ def _has_ocr_geometry(data: OcrData) -> bool:
 def calculate_ocr_confidence(data: OcrData) -> float:
     weighted_confidence = 0.0
     total_weight = 0
-    confidences = data.get("conf", [])
-    for position, raw_text in enumerate(data.get("text", [])):
-        if not isinstance(raw_text, str):
-            continue
-        text = raw_text.strip()
-        if not text or position >= len(confidences):
-            continue
-        raw_confidence = confidences[position]
-        if not isinstance(raw_confidence, (str, int, float)):
-            continue
-        try:
-            confidence = float(raw_confidence)
-        except TypeError, ValueError:
-            continue
-        if confidence < 0:
-            continue
+    for text, confidence in _recognized_words(data):
         weight = max(1, sum(character.isalnum() for character in text))
         weighted_confidence += confidence * weight
         total_weight += weight

@@ -113,19 +113,14 @@ Planned implementation order after approval:
 
 ## P1 - Reduce preparation and post-generation saving latency
 
-- [ ] **Collect one fresh finalization profile:** inspect the recorded
-      `pregeneration-acceptance-*`, `pregeneration-publication-*`,
-      `pregeneration-activation-*` and existing `game-pack-validation` phases from
-      the last generated line to the usable saved game pack on representative
-      Windows and macOS stories. Compare wall/CPU time, copied audio bytes and
-      cache reuse; use the last completed phase to identify a failed or stalled
-      boundary.
-      The captured Windows baseline took 73.8 seconds after recovery: acceptance
-      33.14 seconds, publication 38.09 seconds and activation 2.29 seconds. Three
-      adjacent full validations each rescanned 1,071 files / 382.5 MB in about two
-      seconds. Gate: the support archive identifies the dominant internal phase;
-      then expose that phase in the UI and optimize it from evidence rather than
-      hiding the wait behind a generic saving message.
+- [ ] **Validate finalization on Windows:** repeat the 1,071-file story that took
+      73.8 seconds after recovery (acceptance 33.14, publication 38.09,
+      activation 2.29). Inspect the new `pregeneration-acceptance-*` and existing
+      `pregeneration-publication-*` phases from the last generated line to usable
+      audio. Require identical published bytes and corruption failures, with
+      faster cold publication and unchanged resume. If a long phase remains,
+      measure its file counts/bytes before changing another validation boundary;
+      expose the dominant phase in the UI.
 - [ ] **Ready after the profile:** classify every finalization check by the invariant
       it protects. Remove checks already proven by an unchanged checksum-bound
       generation state; retain trust-boundary and corruption checks. Reuse one
@@ -137,6 +132,32 @@ Planned implementation order after approval:
       contents and failure behavior, while telemetry proves there is no duplicate
       read/decode/hash of the same WAV inside one transaction and the unchanged path
       completes within a small, measured bound instead of minutes.
+
+## P1 - Measure remaining player latency
+
+- [ ] **Profile cold and repeated Voice plan creation:** the 2026-09-22 local log
+      recorded 10.77 seconds for `_create_voice_plan`, including 2.59 seconds in
+      `pregeneration-voice-plan-story`; the remaining 8.18 seconds are not
+      attributed. Time `prepare_voice_candidates`, manifest selection and each
+      `VoicePlanStore` phase separately. Count candidate references, WAV reads/
+      hashes, `VoiceLibrary.discover` writes and `bindings()` reads: `_resolve_group`
+      discovers every candidate and refreshes the registry after each group.
+      Gate: timings sum to the outer wait; remove only measured duplicate work,
+      preserving checksums, saved choices and identical plans on cold/repeat runs.
+- [ ] **Profile live capture on representative game frames:**
+      `live.py:_run_capture` calls the dialogue and render fingerprints, presence
+      and completion checks on each capture. On a synthetic 1280x320 frame their
+      medians totaled about 30 ms, with 21.6 ms in
+      `fingerprint_dialog_frame`. Measure per-stage p50/p95 and CPU on animated,
+      static and typewriter frames at the actual capture interval. Optimize the
+      dominant image pass only if material; gate on unchanged frame routing,
+      ellipsis detection, auto-advance and no duplicate speech in replay.
+- [ ] **Benchmark OCR subprocess work on captured dialogue:**
+      `ocr.py:recognize_dialog_image_result` tries up to three profiles, each
+      invoking Tesseract multiple times for speaker and dialogue. Record p50/p95,
+      profile attempts and process calls on a fixed image corpus using
+      `vntts-benchmark-ocr`; try fewer passes only if they preserve speaker/text
+      accuracy, confidence handling and the current uncertain-frame behavior.
 
 ## P1 - Qualify remaining Python and speech runtimes
 
@@ -164,6 +185,20 @@ Planned implementation order after approval:
       promotion gate that accepts only the signed archive after every required
       Windows hardware profile passes the existing
       matrix validator without `--allow-unsigned`.
+
+## P2 - Check smaller repeated reads
+
+- [ ] **Measure prepared WAV preflight during Reading:**
+      `GeneratedAudioLibrary.find_with_preflight` reads and hashes the full WAV
+      before consulting its decoded-audio cache. Record file sizes, lookup p95,
+      cache hits and first-PCM delay on repeated and distinct lines. Change reuse
+      only if this is material and every played byte remains checksum-verified.
+- [ ] **Measure repeated startup discovery:** `find_default_voice_manifest`
+      reparses the manifest and checks each reference on every call; story discovery
+      hashes each candidate even when its catalog is cached. Count calls and bytes
+      in one startup and one reopen of Voices/Stories (the local two-index disk-cache
+      discovery took 0.49 seconds). Remove proven redundant passes while keeping
+      content-based invalidation; file size or mtime alone is not integrity proof.
 
 ## P2 - Qualify the real desktop experience
 

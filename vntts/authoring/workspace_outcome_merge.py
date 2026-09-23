@@ -62,7 +62,8 @@ from vntts.authoring.workspace_authority import (
     _within,
 )
 from vntts.authoring.workspace_config import (
-    workspace_config_fingerprint,
+    workspace_id_for_config,
+    workspace_successor_config_fingerprint,
 )
 from vntts.authoring.workspace_creation import (
     _copy_workspace_tree_snapshot,
@@ -72,9 +73,6 @@ from vntts.authoring.workspace_creation import (
 from vntts.authoring.workspace_foundation import copy_generation_wavs
 
 _terminal_review_outcome = is_terminal_review_outcome
-_workspace_config_fingerprint = workspace_config_fingerprint
-
-
 class _ReconciliationSelection(TypedDict):
     report_id: str
     base: JsonDocument
@@ -419,31 +417,12 @@ def _outcome_merge_identity(
         ]
     source = _outcome_json_object(base.document.get("source"), "base source")
     import_id = _required_text(source.get("import_id"), "Base import ID")
-    config_fingerprint = _workspace_config_fingerprint(
+    config_fingerprint = workspace_successor_config_fingerprint(
+        base.document,
         import_id,
-        base.document.get("story_index"),
-        base.document.get("voice_manifest"),
-        _required_text(
-            base.document.get("narrator_character"), "Base narrator character"
-        ),
-        base.document["run_config"],
-        base.document.get("carry_forward"),
-        outcome_merge,
-        base.document.get("failure_reference_binding"),
-        base.document.get("terminal_conflict_merge"),
-        base.document.get("config_rebase"),
-        base.document.get("audio_event_composition"),
-        base.document.get("explicit_fallback_merge"),
-        base.document.get("known_role_live_fallback"),
-        base.document.get("audio_event_omission"),
-        base.document.get("audio_event_projection_fallback"),
-        base.document.get("reviewed_waveform_publication"),
-        base.document.get("reviewed_rejection_live_fallback"),
-        queue_extension=base.document.get("queue_extension"),
+        overlays={"outcome_merge": outcome_merge},
     )
-    workspace_id = (
-        f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
-    )
+    workspace_id = workspace_id_for_config(import_id, config_fingerprint)
     return outcome_merge, config_fingerprint, workspace_id
 
 

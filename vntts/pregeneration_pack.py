@@ -298,8 +298,11 @@ class OfflinePackPublisher:
     ) -> OfflinePreparationChanges:
         """Read-only forecast using the same validated base and resume state as publication."""
         _raise_if_cancelled(cancel_event)
+        phase_started, cpu_started = perf_counter(), process_time()
         story = load_story_index_document(generation_input.story_index)
         base, _source = _load_incremental_base(self.base_pack, job, story)
+        _record_acceptance_phase("base-load", phase_started, cpu_started)
+        phase_started, cpu_started = perf_counter(), process_time()
         queue = VoiceGenerationQueue.load(generation_input.queue)
         if sha256_file(generation_input.queue) != generation_input.queue_sha256:
             raise OfflinePackError("Generation queue changed before confirmation")
@@ -309,6 +312,7 @@ class OfflinePackPublisher:
             if state_path.exists()
             else {"items": {}}
         )
+        _record_acceptance_phase("resume-state", phase_started, cpu_started)
         state_items = _state_items(state)
         results = tuple(state_items.values())
         saved = {
@@ -325,6 +329,7 @@ class OfflinePackPublisher:
         }
         selected = {record.line_id for record in story.records}
         replacements = preserved = 0
+        phase_started, cpu_started = perf_counter(), process_time()
         if base is not None and base.generated_audio_manifest is not None:
             document = load_generated_audio_document(base.generated_audio_manifest)
             library = GeneratedAudioLibrary(document, cache_size=1)
@@ -338,6 +343,16 @@ class OfflinePackPublisher:
                     preserved += 1
                 elif saved.get(record.line_id) != record.audio_sha256:
                     replacements += 1
+            _record_acceptance_phase(
+                "base-records",
+                phase_started,
+                cpu_started,
+                files_examined=len(document.records),
+                bytes_examined=sum(
+                    _file_size(record.audio) for record in document.records
+                ),
+            )
+        phase_started, cpu_started = perf_counter(), process_time()
         queued = {item.line_id for item in queue.items}
         authoritative_source_lines = _validated_source_audio_line_ids(
             generation_input.story_index, story
@@ -354,6 +369,7 @@ class OfflinePackPublisher:
             and record.line_id not in queued
             for record in story.records
         )
+        _record_acceptance_phase("source-coverage", phase_started, cpu_started)
         _raise_if_cancelled(cancel_event)
         return OfflinePreparationChanges(
             reused=len(saved),
@@ -682,7 +698,9 @@ def _pack_staging_bytes(
     voices: tuple[VoiceManifestEntry, ...],
 ) -> int:
     copies: dict[str, Path] = {}
-    for record in approved_manifest_entries(state, generation_result.output):
+    for record in approved_manifest_entries(
+        state, generation_result.output, validate_files=False
+    ):
         relative = _safe_relative(record["audio"], "Generated WAV")
         copies[f"audio/{record['audio_sha256']}.wav"] = generation_result.output / Path(
             *relative.parts
@@ -909,9 +927,12 @@ def _load_incremental_base(
         ) or imported.pack.game_version != (job.game_version or "local"):
             return None, None
         source_path = Path(job.story_index).expanduser().resolve()
-        if sha256_file(source_path) != job.story_index_sha256:
-            raise OfflinePackError("Selected source story changed")
-        source = load_story_index_document(source_path)
+        try:
+            source = load_verified_story_index_document(
+                source_path, job.story_index_sha256
+            )
+        except ValueError as error:
+            raise OfflinePackError("Selected source story changed") from error
         base_story = load_story_index_document(imported.story_index)
     except (GamePackError, OSError, StoryIndexError, ValueError) as error:
         raise OfflinePackError(
@@ -1088,7 +1109,9 @@ def _write_cumulative_routes(
             )
             if value.get("line_id") not in current_line_ids
         )
-    for record in approved_manifest_entries(state, generation_result.output):
+    for record in approved_manifest_entries(
+        state, generation_result.output, validate_files=False
+    ):
         relative = _safe_relative(record["audio"], "Generated WAV")
         records.append(
             _portable_generated_record(
@@ -1295,9 +1318,10 @@ def _verify_prepared_file(path: Path, expected_sha256: str, label: str) -> None:
 
 
 def _copy_file(source: str | Path, destination: Path) -> None:
-    source = Path(source).resolve()
+    source = Path(source)
     if not source.is_file() or source.is_symlink():
         raise OfflinePackError(f"Offline pack source is unsafe: {source}")
+    source = source.resolve()
     before = sha256_file(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
@@ -1390,6 +1414,18 @@ def _record_publication_phase(
 ) -> None:
     record_background_operation(
         f"pregeneration-publication-{name}",
+        (perf_counter() - started) * 1000,
+        "complete",
+        cpu_ms=(process_time() - cpu_started) * 1000,
+        **details,
+    )
+
+
+def _record_acceptance_phase(
+    name: str, started: float, cpu_started: float, **details: object
+) -> None:
+    record_background_operation(
+        f"pregeneration-acceptance-{name}",
         (perf_counter() - started) * 1000,
         "complete",
         cpu_ms=(process_time() - cpu_started) * 1000,

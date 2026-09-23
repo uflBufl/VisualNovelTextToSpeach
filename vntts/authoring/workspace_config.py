@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 from vntts_artifacts.file_integrity import sha256_file
 
@@ -169,6 +170,59 @@ def workspace_config_fingerprint(
     return hashlib.sha256(payload).hexdigest()
 
 
+_SUCCESSOR_OVERLAY_FIELDS = frozenset(
+    {
+        "run_config",
+        "carry_forward",
+        "outcome_merge",
+        "failure_reference_binding",
+        "terminal_conflict_merge",
+        "config_rebase",
+        "audio_event_composition",
+        "explicit_fallback_merge",
+        "known_role_live_fallback",
+        "audio_event_omission",
+        "audio_event_projection_fallback",
+        "reviewed_waveform_publication",
+        "reviewed_rejection_live_fallback",
+        "queue_extension",
+    }
+)
+
+
+def workspace_successor_config_fingerprint(
+    workspace: Mapping[str, object],
+    import_id: str,
+    *,
+    overlays: Mapping[str, object],
+) -> str:
+    """Fingerprint a successor that replaces only its named provenance overlays."""
+    unknown = set(overlays) - _SUCCESSOR_OVERLAY_FIELDS
+    if unknown:
+        raise ValueError(f"Unknown workspace successor overlays: {sorted(unknown)!r}")
+    fields = {
+        field: workspace.get(field)
+        for field in _SUCCESSOR_OVERLAY_FIELDS
+        if field != "run_config"
+    }
+    fields.update(
+        {field: value for field, value in overlays.items() if field != "run_config"}
+    )
+    return workspace_config_fingerprint(
+        import_id,
+        workspace.get("story_index"),
+        workspace.get("voice_manifest"),
+        cast(str, workspace.get("narrator_character")),
+        overlays.get("run_config", workspace.get("run_config")),
+        **fields,
+    )
+
+
+def workspace_id_for_config(import_id: str, config_fingerprint: str) -> str:
+    """Return the canonical directory name for one workspace configuration."""
+    return f"resume-{import_id.removeprefix('legacy-')}-{config_fingerprint[:16]}"
+
+
 def workspace_queue_sha256(
     workspace: Mapping[str, object], *, error_type: type[Exception] = ValueError
 ) -> str:
@@ -251,7 +305,9 @@ __all__ = [
     "selected_voice_manifest_path",
     "workspace_audio_event_spoken_projection_queue_ids",
     "workspace_config_fingerprint",
+    "workspace_id_for_config",
     "workspace_failure_repair_policy",
     "workspace_missing_voice_policy",
     "workspace_queue_sha256",
+    "workspace_successor_config_fingerprint",
 ]

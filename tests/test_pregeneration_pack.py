@@ -30,6 +30,8 @@ from vntts.pregeneration_generation import OfflineGenerationResult
 from vntts.pregeneration_pack import (
     OfflinePackError,
     OfflinePackPublisher,
+    _copy_file,
+    _ensure_pack_disk_space,
     _link_verified_file,
     inspect_story_audio,
     load_saved_pack,
@@ -202,6 +204,19 @@ def fixture(
 
 
 class OfflinePackPublisherTest(unittest.TestCase):
+    def test_copy_rejects_symlinked_source(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "source.wav"
+            target.write_bytes(b"verified audio")
+            alias = root / "alias.wav"
+            try:
+                alias.symlink_to(target)
+            except OSError:
+                self.skipTest("symlinks are unavailable on this host")
+            with self.assertRaises(OfflinePackError):
+                _copy_file(alias, root / "pack.wav")
+
     def test_incremental_reuse_hard_links_verified_audio(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -447,7 +462,18 @@ class OfflinePackPublisherTest(unittest.TestCase):
             )
             base = publisher.publish(job, inputs, result)
             publisher = OfflinePackPublisher(base_pack=base.manifest)
-            unchanged = publisher.inspect_changes(job, inputs)
+            with patch(
+                "vntts.pregeneration_pack.load_story_index_document",
+                wraps=load_story_index_document,
+            ) as story_load:
+                unchanged = publisher.inspect_changes(job, inputs)
+            self.assertEqual(
+                sum(
+                    Path(call.args[0]).resolve() == Path(job.story_index).resolve()
+                    for call in story_load.call_args_list
+                ),
+                1,
+            )
             self.assertEqual(unchanged.replacement_candidates, 0)
             fresh = publisher.inspect_changes(job, replace(inputs, identity="c" * 64))
             self.assertEqual(
@@ -507,6 +533,30 @@ class OfflinePackPublisherTest(unittest.TestCase):
                 (items[1]["line_id"], items[1]["text_sha256"]),
                 library.live_fallbacks,
             )
+
+    def test_rejects_generated_wav_changed_after_terminal_validation(self):
+        with TemporaryDirectory() as temporary_directory:
+            job, generation_input, generation_result, _items = fixture(
+                Path(temporary_directory)
+            )
+            state = json.loads(generation_result.state.read_text())
+            approved = next(
+                item for item in state["items"].values() if item["status"] == "approved"
+            )
+            audio = generation_result.output / approved["path"]
+
+            def change_after_preflight(*args):
+                _ensure_pack_disk_space(*args)
+                audio.write_bytes(b"changed after validation")
+
+            with (
+                patch(
+                    "vntts.pregeneration_pack._ensure_pack_disk_space",
+                    side_effect=change_after_preflight,
+                ),
+                self.assertRaisesRegex(OfflinePackError, "hash does not match"),
+            ):
+                OfflinePackPublisher().publish(job, generation_input, generation_result)
 
     def test_rejects_changed_prepared_story_before_publication(self):
         with TemporaryDirectory() as temporary_directory:

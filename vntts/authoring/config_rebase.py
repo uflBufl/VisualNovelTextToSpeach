@@ -53,8 +53,9 @@ from vntts.authoring.workbench import (
 )
 from vntts.authoring.workspace_config import (
     selected_voice_manifest_path,
-    workspace_config_fingerprint,
+    workspace_id_for_config,
     workspace_missing_voice_policy,
+    workspace_successor_config_fingerprint,
 )
 from vntts.authoring.workspace_voice_runtime import (
     FailureReferenceRuntimeBinding,
@@ -252,7 +253,7 @@ def _publish_rebase_workspace(
     projected_state, records = _project_terminal_state(selection, state, routes)
     rebase = _rebase_ledger(selection, state, routes.target_voice, records)
     fingerprint = _rebase_config_fingerprint(selection, rebase, composition)
-    workspace_id = _rebase_workspace_id(selection.target_import_id, fingerprint)
+    workspace_id = workspace_id_for_config(selection.target_import_id, fingerprint)
     destination = contained_workspace_path(
         root, Path(workspace_id), "Config rebase destination"
     )
@@ -628,30 +629,14 @@ def _rebase_config_fingerprint(
     selection: _RebaseSelection, rebase: JsonObject, composition: JsonObject | None
 ) -> str:
     target = selection.target_document
-    return workspace_config_fingerprint(
+    return workspace_successor_config_fingerprint(
+        target,
         selection.target_import_id,
-        target.get("story_index"),
-        target.get("voice_manifest"),
-        _text(target.get("narrator_character"), "Config rebase narrator character"),
-        target["run_config"],
-        target.get("carry_forward"),
-        target.get("outcome_merge"),
-        target.get("failure_reference_binding"),
-        target.get("terminal_conflict_merge"),
-        config_rebase=rebase,
-        audio_event_composition=composition,
-        explicit_fallback_merge=target.get("explicit_fallback_merge"),
-        known_role_live_fallback=target.get("known_role_live_fallback"),
-        audio_event_omission=target.get("audio_event_omission"),
-        audio_event_projection_fallback=target.get("audio_event_projection_fallback"),
-        reviewed_waveform_publication=target.get("reviewed_waveform_publication"),
-        reviewed_rejection_live_fallback=target.get("reviewed_rejection_live_fallback"),
-        queue_extension=target.get("queue_extension"),
+        overlays={
+            "config_rebase": rebase,
+            "audio_event_composition": composition,
+        },
     )
-
-
-def _rebase_workspace_id(target_import_id: str, fingerprint: str) -> str:
-    return "resume-" + target_import_id.removeprefix("legacy-") + f"-{fingerprint[:16]}"
 
 
 def _stage_rebase_workspace(
